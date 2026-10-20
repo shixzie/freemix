@@ -403,6 +403,11 @@ pub enum SessionEvent {
     WebAccess {
         message: fm_protocol::WebAccessMessage,
     },
+    /// The daemon answered a slideshow listing request (IN-009). The
+    /// window is also in the replicated model.
+    SlideshowSlides {
+        message: fm_protocol::SlideshowSlidesMessage,
+    },
     /// One valid input thumbnail arrived for `input` (Protocol 2.59); the
     /// decoded image is available from
     /// [`TcpSession::latest_input_thumbnails`].
@@ -862,6 +867,25 @@ impl TcpSession {
             return Err(TcpSessionError::NotConnected);
         }
         self.send_wire_wait(&WireMessage::WebAccessRequest(request), None)?;
+        self.flush_wire_wait(None)
+    }
+
+    /// Asks for a window of a slideshow's listing (IN-009). The answer
+    /// arrives later as [`SessionEvent::SlideshowSlides`] naming the same
+    /// `request_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected or when encoding or writing the
+    /// request fails.
+    pub fn send_slideshow_slides_request(
+        &mut self,
+        request: fm_protocol::SlideshowSlidesRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        self.send_wire_wait(&WireMessage::SlideshowSlidesRequest(request), None)?;
         self.flush_wire_wait(None)
     }
 
@@ -1463,6 +1487,10 @@ impl TcpSession {
                 self.intake(WireMessage::WebAccess(message.clone()))?;
                 Ok(SessionEvent::WebAccess { message })
             }
+            WireMessage::SlideshowSlides(message) => {
+                self.intake(WireMessage::SlideshowSlides(message.clone()))?;
+                Ok(SessionEvent::SlideshowSlides { message })
+            }
             // Title, playlist, grade, title animation, title layout, scene
             // animation, scene layout, and animation preset states complete a
             // snapshot while
@@ -1479,7 +1507,8 @@ impl TcpSession {
             | WireMessage::MediaState(_)
             | WireMessage::CueListState(_)
             | WireMessage::ScriptState(_)
-            | WireMessage::ShortcutState(_)) => {
+            | WireMessage::ShortcutState(_)
+            | WireMessage::StillState(_)) => {
                 self.intake(message)?;
                 self.transition_disconnect();
                 Err(TcpSessionError::UnexpectedMessage)
@@ -1499,7 +1528,8 @@ impl TcpSession {
             | WireMessage::DisplayInventoryRequest(_)
             | WireMessage::CaptureDevicesRequest(_)
             | WireMessage::SystemAudioDevicesRequest(_)
-            | WireMessage::WebAccessRequest(_) => {
+            | WireMessage::WebAccessRequest(_)
+            | WireMessage::SlideshowSlidesRequest(_) => {
                 self.transition_disconnect();
                 Err(TcpSessionError::UnexpectedMessage)
             }

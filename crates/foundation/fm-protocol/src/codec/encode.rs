@@ -222,6 +222,46 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             })?;
             record.field_string("run", super::script::encode_run(&message.run)?)?;
         }
+        WireMessage::StillState(message) => {
+            record.kind("still_state");
+            record.field("revision", message.revision)?;
+            record.field("input", message.input)?;
+            super::still::encode_source(&message.source, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+            super::still::encode_page_status(&message.status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        WireMessage::SlideshowSlidesRequest(message) => {
+            record.kind("slideshow_slides_request");
+            validate_request_id(&message.request_id)?;
+            super::still::check_window(message.offset, message.limit)?;
+            record.field_str("request_id", &message.request_id)?;
+            record.field("input", message.input)?;
+            record.field("offset", message.offset)?;
+            record.field("limit", message.limit)?;
+        }
+        WireMessage::SlideshowSlides(message) => {
+            record.kind("slideshow_slides");
+            validate_request_id(&message.request_id)?;
+            if message.total as usize > crate::MAX_SLIDESHOW_SLIDES
+                || (!message.slides.is_empty()
+                    && u64::from(message.offset) + message.slides.len() as u64
+                        > u64::from(message.total))
+            {
+                return Err(CodecError::InvalidField {
+                    field: "total",
+                    value: message.total.to_string(),
+                });
+            }
+            record.field_str("request_id", &message.request_id)?;
+            record.field("input", message.input)?;
+            record.field("generation", message.generation)?;
+            record.field("offset", message.offset)?;
+            record.field("total", message.total)?;
+            record.field_string("slides", super::still::encode_slides(&message.slides)?)?;
+        }
         WireMessage::MediaState(message) => {
             record.kind("media_state");
             record.field("revision", message.revision)?;
@@ -559,6 +599,13 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
                 record.field_string(name, value)
             })?;
         }
+        CommandPayload::PageNavigate { input, navigation } => {
+            record.field("payload", "page_navigate")?;
+            record.field("input", input)?;
+            super::still::encode_navigation(*navigation, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         CommandPayload::Media { input, operation } => {
             record.field("payload", media_payload_name(*operation))?;
             record.field("input", input)?;
@@ -702,6 +749,14 @@ fn encode_input_catalogue_command(
                         record.field_string(name, value)
                     })
                 }
+                LiveInputSource::Image(config) => super::still::encode_source(
+                    &crate::WireStillSource::Image((**config).clone()),
+                    &mut |name, value| record.field_string(name, value),
+                ),
+                LiveInputSource::Slideshow(config) => super::still::encode_source(
+                    &crate::WireStillSource::Slideshow((**config).clone()),
+                    &mut |name, value| record.field_string(name, value),
+                ),
             }
         }
         CommandPayload::RemoveInput { input } => {
@@ -1618,6 +1673,13 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         });
     }
     record.field("shortcut_states", message.shortcut_states)?;
+    if message.still_states > crate::MAX_STILL_STATES {
+        return Err(CodecError::InvalidField {
+            field: "still_states",
+            value: message.still_states.to_string(),
+        });
+    }
+    record.field("still_states", message.still_states)?;
     record.field_string(
         "input_categories",
         super::input_lifecycle::encode_categories(&message.input_categories)?,
@@ -2127,13 +2189,19 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             network_stream,
             capture,
             system_audio,
+            still,
         } => {
             validate_new_input_name(name)?;
             record.field("event", "input_added")?;
             record.field("input", input)?;
             record.field_str("name", name)?;
-            match (network_stream, capture, system_audio) {
-                (Some(config), None, None) => {
+            match (network_stream, capture, system_audio, still) {
+                (None, None, None, Some(source)) => {
+                    super::still::encode_source(source, &mut |name, value| {
+                        record.field_string(name, value)
+                    })?;
+                }
+                (Some(config), None, None, None) => {
                     record.field("kind", "network_stream")?;
                     super::network_stream::encode_config(
                         config,
@@ -2141,19 +2209,19 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
                         &mut |name, value| record.field_string(name, value),
                     )?;
                 }
-                (None, Some(config), None) => {
+                (None, Some(config), None, None) => {
                     record.field("kind", "capture")?;
                     super::capture::encode_config(config, &mut |name, value| {
                         record.field_string(name, value)
                     })?;
                 }
-                (None, None, Some(config)) => {
+                (None, None, Some(config), None) => {
                     record.field("kind", "system_audio")?;
                     super::system_audio::encode_config(config, &mut |name, value| {
                         record.field_string(name, value)
                     })?;
                 }
-                (None, None, None) => {}
+                (None, None, None, None) => {}
                 _ => {
                     return Err(CodecError::InvalidField {
                         field: "kind",
@@ -2484,6 +2552,18 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             record.field_string("added", super::input_lifecycle::encode_added(added)?)?;
             record.field_string("refused", super::input_lifecycle::encode_refused(refused)?)?;
         }
+        EventPayload::PageNavigated {
+            input,
+            frame,
+            navigation,
+        } => {
+            record.field("event", "page_navigated")?;
+            record.field("input", input)?;
+            record.field("frame", frame)?;
+            super::still::encode_navigation(*navigation, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         EventPayload::MediaChanged {
             frame,
             operation,
@@ -2650,6 +2730,7 @@ fn encode_durable_gap(record: &mut Record, message: &DurableGap) -> Result<(), C
     record.field("current_revision", message.current_revision)
 }
 
+#[allow(clippy::too_many_lines)]
 fn encode_runtime_event(
     record: &mut Record,
     message: &RuntimeEventMessage,
@@ -2706,6 +2787,13 @@ fn encode_runtime_event(
         RuntimeLifecycleEvent::LiveLanStatus(status) => {
             record.field("event", "live_lan_status")?;
             super::live_lan::encode_status(status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        RuntimeLifecycleEvent::SlideshowPage { input, status } => {
+            record.field("event", "slideshow_page")?;
+            record.field("input", input)?;
+            super::still::encode_page_status(status, &mut |name, value| {
                 record.field_string(name, value)
             })?;
         }

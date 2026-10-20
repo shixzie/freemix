@@ -135,6 +135,13 @@ pub enum WireCueAction {
         input: WireInputId,
         operation: WireCueMediaOperation,
     },
+    /// Steps paged input `input` (a slideshow, IN-009): token
+    /// `page.<input>.<next|previous|first|last>` or
+    /// `page.<input>.goto.<page>`.
+    Page {
+        input: WireInputId,
+        navigation: crate::PagedNavigation,
+    },
     /// Defers the cue's remaining actions by `frames` (at least one).
     Wait {
         frames: u32,

@@ -799,6 +799,7 @@ fn serve_streams_snapshot_peer(
             cue_list_states: 0,
             script_states: 0,
             shortcut_states: 0,
+            still_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             stream_targets: Vec::new(),
@@ -1695,6 +1696,7 @@ fn write_handshake_snapshot(
             cue_list_states: 0,
             script_states: 0,
             shortcut_states: 0,
+            still_states: 0,
             input_categories: vec![fm_protocol::InputCategoryStatus {
                 id: 1,
                 name: "Cameras".into(),
@@ -1813,6 +1815,7 @@ fn write_handshake_version_with_fade_to_black(
             cue_list_states: 0,
             script_states: 0,
             shortcut_states: 0,
+            still_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             stream_targets: Vec::new(),
@@ -12614,6 +12617,7 @@ fn remote_network_stream_commands_send_exact_payloads() {
             network_stream: Some(Box::new(config.redacted())),
             system_audio: None,
             capture: None,
+            still: None,
         },
         domain: "project",
     });
@@ -13025,6 +13029,7 @@ fn remote_srt_and_rtmp_commands_send_secret_edits() {
             network_stream: Some(Box::new(config.redacted())),
             system_audio: None,
             capture: None,
+            still: None,
         },
         domain: "project",
     });
@@ -13375,6 +13380,7 @@ fn remote_capture_commands_send_exact_payloads() {
             network_stream: None,
             system_audio: None,
             capture: Some(Box::new(config.clone())),
+            still: None,
         },
         domain: "project",
     });
@@ -13723,6 +13729,7 @@ fn remote_system_audio_commands_send_exact_payloads() {
             network_stream: None,
             system_audio: Some(Box::new(config.clone())),
             capture: None,
+            still: None,
         },
         domain: "project",
     });
@@ -14785,4 +14792,238 @@ fn remote_script_set_sends_the_exact_source() {
     let _ = std::fs::remove_dir_all(&directory);
     assert_success(&output);
     server.finish();
+}
+
+/// IN-008, IN-009: local image and slideshow adds copy host pictures and a
+/// host folder into the project's assets and store asset URIs; bad
+/// settings are refused before anything is written.
+#[test]
+fn local_image_and_slideshow_inputs_import_host_pictures() {
+    use fm_types::still::{SlideTransitionStyle, SlideshowSource};
+    let context = ContractContext::new();
+    assert_success(&invoke_bounded(&["new", context.project_path()]));
+    let pictures = context.root.join("Event Slides");
+    fs::create_dir_all(&pictures).unwrap();
+    for name in ["1.png", "2.png", "notes.txt"] {
+        let path = pictures.join(name);
+        if name.ends_with(".png") {
+            image::RgbaImage::from_pixel(4, 4, image::Rgba([200, 10, 10, 255]))
+                .save(&path)
+                .unwrap();
+        } else {
+            fs::write(&path, b"not a picture").unwrap();
+        }
+    }
+    let logo = pictures.join("1.png");
+    let logo = logo.to_str().unwrap();
+    let folder = pictures.to_str().unwrap();
+    let added = invoke_bounded(&[
+        "input-add-image",
+        context.project_path(),
+        "40",
+        "Logo",
+        logo,
+        "--fit",
+        "1:1",
+    ]);
+    assert_success(&added);
+    assert!(
+        stdout(&added).contains("project-import-picture:"),
+        "{}",
+        stdout(&added)
+    );
+    assert_success(&invoke_bounded(&[
+        "input-add-slideshow",
+        context.project_path(),
+        "41",
+        "Slides",
+        "--folder",
+        folder,
+        "--cut",
+        "--slide-frames",
+        "50",
+        "--manual",
+    ]));
+    assert_success(&invoke_bounded(&[
+        "input-add-slideshow",
+        context.project_path(),
+        "42",
+        "List",
+        "--picture",
+        &format!("{logo} | Opening"),
+        "--picture",
+        "asset://1.png",
+        "--ken-burns",
+        "--random",
+        "7",
+    ]));
+    for (arguments, message) in [
+        (vec!["43", "Bad", "relative.png"], "invalid picture input"),
+        (vec!["43", "Bad", "/tmp/notes.txt"], "invalid picture input"),
+        (vec!["43", "Bad", logo, "--fit", "zoom"], "fit"),
+        (vec!["43", "Bad", logo, "--key", "k"], "--key"),
+    ] {
+        let mut full = vec!["input-add-image", context.project_path()];
+        full.extend(arguments);
+        assert_failure_contains(&invoke_bounded(&full), message);
+    }
+    for (arguments, message) in [
+        (vec!["43", "Bad"], "--folder or --picture"),
+        (
+            vec!["43", "Bad", "--folder", folder, "--picture", logo],
+            "--picture",
+        ),
+        (
+            vec!["43", "Bad", "--folder", folder, "--slide-frames", "0"],
+            "invalid picture input",
+        ),
+        (
+            vec!["43", "Bad", "--folder", "asset://../up"],
+            "invalid picture input",
+        ),
+    ] {
+        let mut full = vec!["input-add-slideshow", context.project_path()];
+        full.extend(arguments);
+        assert_failure_contains(&invoke_bounded(&full), message);
+    }
+    let stored = ProjectStore::new(&context.project).unwrap().load().unwrap();
+    let assets = ProjectStore::new(&context.project).unwrap().assets_root();
+    let mut kinds = stored
+        .project()
+        .inputs()
+        .iter()
+        .filter(|input| input.id.get().get() >= 40);
+    let InputKind::Image(image) = &kinds.next().unwrap().kind else {
+        panic!("input 40 is an image");
+    };
+    assert_eq!(image.asset_uri, "asset://1.png");
+    assert_eq!(image.fit, fm_types::OutputScaling::OneToOne);
+    let InputKind::Slideshow(slides) = &kinds.next().unwrap().kind else {
+        panic!("input 41 is a slideshow");
+    };
+    assert_eq!(
+        slides.source,
+        SlideshowSource::Folder {
+            asset_uri: "asset://Event Slides".into()
+        }
+    );
+    assert_eq!(slides.transition, SlideTransitionStyle::Cut);
+    assert_eq!(slides.slide_frames, 50);
+    assert!(!slides.auto_advance);
+    let mut copied = fs::read_dir(assets.join("Event Slides"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    copied.sort();
+    assert_eq!(copied, ["1.png", "2.png"]);
+    let InputKind::Slideshow(list) = &kinds.next().unwrap().kind else {
+        panic!("input 42 is a slideshow");
+    };
+    let SlideshowSource::List(items) = &list.source else {
+        panic!("input 42 lists its pictures");
+    };
+    // The identical host picture reuses the asset the image imported.
+    assert_eq!(items[0].asset_uri, "asset://1.png");
+    assert_eq!(items[0].caption.as_deref(), Some("Opening"));
+    assert_eq!(items[1].asset_uri, "asset://1.png");
+    assert!(list.ken_burns);
+    assert!(kinds.next().is_none());
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+/// IN-008, IN-009: the remote image add sends the exact source with a host
+/// path for the daemon to import, and `remote-page-navigate` sends the exact
+/// step (pages counted from 1) and completes on the switcher realization.
+#[test]
+fn remote_image_add_and_page_navigate_send_exact_payloads() {
+    let config =
+        fm_types::still::ImageInputConfig::new("/srv/show/logo.png", fm_types::OutputScaling::Fill);
+    let server = FakeRemoteServer::start_edit(RemoteEdit {
+        role: Role::Graphics,
+        key: "remote-image-add",
+        payload: CommandPayload::AddInput {
+            input: input(9),
+            name: "Logo".into(),
+            source: fm_protocol::LiveInputSource::Image(Box::new(config.clone())),
+        },
+        event: EventPayload::InputAdded {
+            input: input(9),
+            name: "Logo".into(),
+            network_stream: None,
+            system_audio: None,
+            capture: None,
+            still: Some(Box::new(fm_protocol::WireStillSource::Image(
+                fm_types::still::ImageInputConfig::new(
+                    "asset://logo.png",
+                    fm_types::OutputScaling::Fill,
+                ),
+            ))),
+        },
+        domain: "project",
+    });
+    let output = invoke(&[
+        "remote-input-add-image",
+        &server.address(),
+        "9",
+        "Logo",
+        "/srv/show/logo.png",
+        "--fit",
+        "fill",
+        "--key",
+        "remote-image-add",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    server.finish();
+
+    let navigation = fm_protocol::PagedNavigation::Goto(2);
+    let server = FakeRemoteServer::start_edit(RemoteEdit {
+        role: Role::Operator,
+        key: "remote-page",
+        payload: CommandPayload::PageNavigate {
+            input: input(2),
+            navigation,
+        },
+        event: EventPayload::PageNavigated {
+            input: input(2),
+            frame: 1,
+            navigation,
+        },
+        domain: "switcher",
+    });
+    let output = invoke(&[
+        "remote-page-navigate",
+        &server.address(),
+        "2",
+        "goto",
+        "3",
+        "--key",
+        "remote-page",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    server.finish();
+
+    for (arguments, message) in [
+        (vec!["9", "goto", "0"], "page"),
+        (vec!["9", "skip"], "page action"),
+        (vec!["9", "next", "2"], "2"),
+    ] {
+        let mut full = vec!["remote-page-navigate", "127.0.0.1:9"];
+        full.extend(arguments);
+        assert_failure_contains(&invoke_bounded(&full), message);
+    }
+    assert_failure_contains(
+        &invoke_bounded(&[
+            "remote-input-add-slideshow",
+            "127.0.0.1:9",
+            "9",
+            "Slides",
+            "--picture",
+            "relative.png",
+        ]),
+        "invalid picture input",
+    );
 }

@@ -48,7 +48,7 @@ use std::{
 };
 
 use fm_codec_ffmpeg::{Adapter, Config as FfmpegConfig};
-use fm_codec_image::{decode_still, sniff_still_format};
+use fm_codec_image::sniff_still_format;
 use fm_control::ControlService;
 use fm_engine::EngineMediaFault;
 use fm_frame::CpuVideoFrame;
@@ -62,7 +62,6 @@ use freemixd::native_media::{
 use super::{
     AppFailure, AppResult, CommandRefusal, NativeDaemon, Policy, RejectionCode,
     native_clock_domain, native_files, native_generator_frame, native_streams,
-    retained_frame_timing, still_limits,
 };
 
 /// What the native runtime realizes for one input: a change of key means a
@@ -85,6 +84,11 @@ pub(crate) enum NativeSourceKey {
     Color,
     Alias,
     MixFeed,
+    /// A still image input (IN-008): another file or fit decodes anew.
+    Image(String, fm_types::OutputScaling),
+    /// A slideshow input (IN-009): its slides change live; another fit
+    /// starts a new source.
+    Slideshow(fm_types::OutputScaling),
 }
 
 impl NativeSourceKey {
@@ -106,6 +110,8 @@ impl NativeSourceKey {
             InputKind::Color => Self::Color,
             InputKind::Alias { .. } => Self::Alias,
             InputKind::MixFeed(_) => Self::MixFeed,
+            InputKind::Image(image) => Self::Image(image.asset_uri.clone(), image.fit),
+            InputKind::Slideshow(slideshow) => Self::Slideshow(slideshow.fit),
         }
     }
 
@@ -125,7 +131,12 @@ impl NativeSourceKey {
                 "generator input {input} has a test tone, which the native media runtime does \
                  not realize"
             )),
-            Self::Generator(_) | Self::Media(_) | Self::Network | Self::Scene { .. } => None,
+            Self::Generator(_)
+            | Self::Media(_)
+            | Self::Network
+            | Self::Scene { .. }
+            | Self::Image(..)
+            | Self::Slideshow(_) => None,
             Self::SystemAudio if super::native_system_audio::SUPPORTED => None,
             Self::SystemAudio => Some(format!(
                 "system audio input {input} cannot be added: {}",
@@ -341,6 +352,7 @@ impl NativeDaemon {
         for input in removed.iter().chain(&replaced) {
             self.files.remove(*input);
             self.stills.retain(|still| still.input != *input);
+            self.slides.forget(*input);
             resolved.retain(|source| source.input() != *input);
             eprintln!("FREEMIXD_INPUT\tv=1\tinput={input}\tretired");
         }
@@ -380,7 +392,12 @@ impl NativeDaemon {
                     let path = self.asset_path(asset_uri);
                     if path.as_ref().is_some_and(|path| is_still(path)) {
                         let path = path.expect("checked above");
-                        self.stills.push(start_still(input, path, size)?);
+                        self.stills.push(start_still(
+                            input,
+                            path,
+                            dimensions,
+                            fm_types::OutputScaling::Fit,
+                        )?);
                         Some(blank()?)
                     } else {
                         let path = path.unwrap_or_else(|| self.assets_root.join(asset_uri));
@@ -424,6 +441,29 @@ impl NativeDaemon {
                         frame: frame.clone(),
                     });
                     pushed.push(input);
+                    Some(frame)
+                }
+                // A still image decodes off the loop and is uploaded once
+                // when it arrives (IN-008).
+                NativeSourceKey::Image(asset_uri, fit) => {
+                    match self.asset_path(asset_uri) {
+                        Some(path) => {
+                            self.stills
+                                .push(start_still(input, path, dimensions, *fit)?);
+                        }
+                        None => eprintln!("FREEMIXD_INPUT\tv=1\tinput={input}\tunrealized"),
+                    }
+                    Some(blank()?)
+                }
+                // A slideshow composes its slides into its source each frame
+                // they change (IN-009).
+                NativeSourceKey::Slideshow(_) => {
+                    self.slides.forget(input);
+                    let frame = blank()?;
+                    resolved.push(NativeResolvedSource::LiveFrame {
+                        input,
+                        frame: frame.clone(),
+                    });
                     Some(frame)
                 }
                 NativeSourceKey::Network | NativeSourceKey::SystemAudio => {
@@ -529,49 +569,40 @@ impl NativeDaemon {
     }
 }
 
-/// Whether the file at `path` starts like a still image (one read of eight
-/// bytes; a file that cannot be read plays, and faults, as a media file).
+/// Whether the file at `path` starts like a still image (one read of its
+/// first bytes; a file that cannot be read plays, and faults, as a media
+/// file).
 fn is_still(path: &std::path::Path) -> bool {
-    let mut prefix = Vec::with_capacity(8);
+    let mut prefix = Vec::with_capacity(fm_codec_image::STILL_SNIFF_BYTES);
     File::open(path)
-        .and_then(|file| file.take(8).read_to_end(&mut prefix))
+        .and_then(|file| {
+            file.take(fm_codec_image::STILL_SNIFF_BYTES as u64)
+                .read_to_end(&mut prefix)
+        })
         .is_ok()
         && sniff_still_format(&prefix).is_ok()
 }
 
-/// Decodes the still image at `path` on its own thread.
-fn start_still(input: InputId, path: PathBuf, size: (u32, u32)) -> AppResult<PendingStill> {
+/// Decodes the still image at `path` on its own thread, placed in the
+/// show raster with `fit`.
+fn start_still(
+    input: InputId,
+    path: PathBuf,
+    dimensions: fm_types::VideoDimensions,
+    fit: fm_types::OutputScaling,
+) -> AppResult<PendingStill> {
     let (sender, result) = mpsc::sync_channel(1);
     thread::Builder::new()
         .name(format!("freemix-still-{input}"))
         .spawn(move || {
-            let _ = sender.send(decode_still_file(&path, size));
+            let _ = sender.send(crate::stills::decode_picture_file(
+                &path,
+                dimensions,
+                fit,
+                native_clock_domain(),
+            ));
         })?;
     Ok(PendingStill { input, result })
-}
-
-fn decode_still_file(
-    path: &std::path::Path,
-    (width, height): (u32, u32),
-) -> Result<CpuVideoFrame, EngineMediaFault> {
-    let dimensions =
-        fm_types::VideoDimensions::new(width, height).ok_or(EngineMediaFault::Unsupported)?;
-    let limits = still_limits(dimensions).map_err(|_| EngineMediaFault::Unsupported)?;
-    let mut encoded = Vec::new();
-    File::open(path)
-        .map_err(|_| EngineMediaFault::SourceMissing)?
-        .take(u64::try_from(limits.max_encoded_bytes.saturating_add(1)).unwrap_or(u64::MAX))
-        .read_to_end(&mut encoded)
-        .map_err(|_| EngineMediaFault::SourceMissing)?;
-    let timing =
-        retained_frame_timing(native_clock_domain()).map_err(|_| EngineMediaFault::DecodeFailed)?;
-    let decoded =
-        decode_still(&encoded, timing, limits).map_err(|_| EngineMediaFault::Unsupported)?;
-    let size = decoded.frame.payload().dimensions();
-    if (size.width(), size.height()) != (width, height) {
-        return Err(EngineMediaFault::Unsupported);
-    }
-    Ok(decoded.frame)
 }
 
 #[cfg(test)]

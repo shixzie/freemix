@@ -8294,4 +8294,208 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Último disparo en el fotograma {frame}: {count} acciones",
         ),
     ),
+    (Msg::CueActSlideNext, t("Diapositiva siguiente")),
+    (Msg::CueActSlidePrevious, t("Diapositiva anterior")),
+    (Msg::CueActSlideFirst, t("Primera diapositiva")),
+    (Msg::CueActSlideLast, t("Última diapositiva")),
+    (Msg::CueActSlideGoto, t("Ir a la diapositiva")),
+    (
+        Msg::CueParamSlideshowHover,
+        t("La entrada de presentación cuyas diapositivas avanza esta acción"),
+    ),
+    (
+        Msg::CueParamSlideHover,
+        t("Número de diapositiva que mostrar, contando desde 1; pasado el final muestra la última"),
+    ),
+    (
+        Msg::CuePvSlideNext,
+        t("Mostrar la diapositiva siguiente de {input}"),
+    ),
+    (
+        Msg::CuePvSlidePrevious,
+        t("Mostrar la diapositiva anterior de {input}"),
+    ),
+    (
+        Msg::CuePvSlideFirst,
+        t("Mostrar la primera diapositiva de {input}"),
+    ),
+    (
+        Msg::CuePvSlideLast,
+        t("Mostrar la última diapositiva de {input}"),
+    ),
+    (
+        Msg::CuePvSlideGoto,
+        t("Mostrar la diapositiva {page} de {input}"),
+    ),
+    (Msg::CuePvRefNotSlideshow, t("no es una presentación")),
+    (Msg::NameImage, t("Imagen")),
+    (Msg::KindImageKey, t("IMAGEN FIJA")),
+    (
+        Msg::KindImageHover,
+        t(
+            "Una imagen fija (PNG, JPEG, WebP, GIF, BMP, TIFF o SVG) colocada en el cuadro del show; el servidor la copia al proyecto",
+        ),
+    ),
+    (Msg::NameSlideshow, t("Presentación")),
+    (Msg::KindSlideshowKey, t("PRESENTACIÓN")),
+    (
+        Msg::KindSlideshowHover,
+        t(
+            "Imágenes de una carpeta o de una lista mostradas una tras otra, con corte o fundido, Ken Burns opcional y control de siguiente/anterior",
+        ),
+    ),
+    (Msg::StPicture, t("Archivo de imagen")),
+    (
+        Msg::StPictureHover,
+        t(
+            "La imagen que mostrar: una ruta absoluta en la máquina del servidor (se copia al proyecto) o una URI asset:// que ya esté en él; soltar un archivo en la ventana la rellena",
+        ),
+    ),
+    (
+        Msg::StPathCaption,
+        t("Ruta absoluta en la máquina del servidor, o asset://"),
+    ),
+    (Msg::StFit, t("Colocación")),
+    (Msg::StFitFit, t("AJUSTAR")),
+    (
+        Msg::StFitFitHover,
+        t(
+            "Mostrar la imagen entera lo más grande posible, conservando su forma; el resto del cuadro queda vacío",
+        ),
+    ),
+    (Msg::StFitFill, t("LLENAR")),
+    (
+        Msg::StFitFillHover,
+        t("Cubrir todo el cuadro conservando la forma de la imagen; lo que sobra se recorta"),
+    ),
+    (Msg::StFitStretch, t("ESTIRAR")),
+    (
+        Msg::StFitStretchHover,
+        t("Estirar la imagen exactamente al cuadro, cambiando su forma si hace falta"),
+    ),
+    (Msg::StFitOneToOne, t("1:1")),
+    (
+        Msg::StFitOneToOneHover,
+        t(
+            "Un píxel de imagen por píxel del cuadro, centrado: una imagen pequeña conserva su tamaño y una grande se recorta",
+        ),
+    ),
+    (Msg::StSource, t("Diapositivas de")),
+    (Msg::StSourceFolder, t("CARPETA")),
+    (
+        Msg::StSourceFolderHover,
+        t(
+            "Todas las imágenes de una carpeta, en orden de nombre; el servidor copia la carpeta al proyecto y sigue esa copia, así que las imágenes que se añadan o quiten entran o salen del show",
+        ),
+    ),
+    (Msg::StSourceList, t("LISTA")),
+    (
+        Msg::StSourceListHover,
+        t("Una lista explícita de hasta 64 imágenes, en tu orden, cada una con un pie opcional"),
+    ),
+    (Msg::StFolder, t("Carpeta de imágenes")),
+    (
+        Msg::StFolderHover,
+        t(
+            "La carpeta de imágenes: una ruta absoluta en la máquina del servidor (se copia al proyecto) o una carpeta asset:// que ya esté en él; soltar una carpeta en la ventana la rellena",
+        ),
+    ),
+    (Msg::StPictures, t("Lista de imágenes")),
+    (
+        Msg::StPicturesHover,
+        t(
+            "Una imagen por línea, como ruta o URI asset://; escribe ' | ' y un texto tras la ruta para ponerle pie; los archivos soltados se añaden",
+        ),
+    ),
+    (Msg::StPicturesCaption, t("Una por línea; ruta | pie")),
+    (Msg::StTiming, t("Tiempos")),
+    (Msg::StSlideSeconds, t("Cada diapositiva")),
+    (
+        Msg::StSlideSecondsHover,
+        t("Cuánto dura cada diapositiva antes de la siguiente, en segundos"),
+    ),
+    (Msg::StCut, t("CORTE AL SIGUIENTE")),
+    (
+        Msg::StCutHover,
+        t("Cada diapositiva sustituye a la anterior al instante"),
+    ),
+    (Msg::StFade, t("FUNDIDO AL SIGUIENTE")),
+    (
+        Msg::StFadeHover,
+        t("Cada diapositiva se funde sobre la anterior"),
+    ),
+    (
+        Msg::StFadeSecondsHover,
+        t("Cuánto dura el fundido entre diapositivas, en segundos"),
+    ),
+    (Msg::StKenBurns, t("Ken Burns")),
+    (
+        Msg::StKenBurnsHover,
+        t("Un paneo y zoom lentos sobre cada diapositiva mientras se muestra"),
+    ),
+    (Msg::StRandom, t("Orden aleatorio")),
+    (
+        Msg::StRandomHover,
+        t("Mostrar las diapositivas en orden mezclado, el mismo cada vez que se reproduce el show"),
+    ),
+    (Msg::StLoop, t("Volver a empezar al final")),
+    (
+        Msg::StLoopHover,
+        t(
+            "Tras la última diapositiva, empezar otra vez por la primera; desactivado, la última se queda",
+        ),
+    ),
+    (Msg::StAutoAdvance, t("Avanzar automáticamente")),
+    (
+        Msg::StAutoAdvanceHover,
+        t(
+            "Pasar a la siguiente diapositiva al acabar su tiempo; desactivado, cada diapositiva se queda hasta que avances",
+        ),
+    ),
+    (Msg::StReasonPictureEmpty, t("elige un archivo de imagen")),
+    (
+        Msg::StReasonPictureType,
+        t("no es un archivo de imagen (PNG, JPEG, WebP, GIF, BMP, TIFF o SVG)"),
+    ),
+    (
+        Msg::StReasonPathInvalid,
+        t("usa una ruta absoluta en la máquina del servidor o una URI asset://"),
+    ),
+    (Msg::StReasonFolderEmpty, t("elige una carpeta de imágenes")),
+    (Msg::StReasonPicturesEmpty, t("añade al menos una imagen")),
+    (
+        Msg::StReasonPicturesTooMany,
+        t("una lista admite como mucho 64 imágenes; usa una carpeta para más"),
+    ),
+    (
+        Msg::StReasonNoSlides,
+        t("la presentación no tiene diapositivas"),
+    ),
+    (Msg::MediaSlideshows, t("Presentaciones")),
+    (
+        Msg::StPageHover,
+        t("La diapositiva al aire y cuántas tiene la presentación"),
+    ),
+    (Msg::StFirst, t("PRIMERA")),
+    (Msg::StFirstHover, t("Mostrar la primera diapositiva")),
+    (
+        Msg::StPreviousHover,
+        t("Mostrar la diapositiva anterior (la última si se repite)"),
+    ),
+    (
+        Msg::StNextHover,
+        t("Mostrar la diapositiva siguiente (la primera si se repite)"),
+    ),
+    (Msg::StLast, t("ÚLTIMA")),
+    (Msg::StLastHover, t("Mostrar la última diapositiva")),
+    (Msg::StNoSlide, t("Sin diapositiva")),
+    (
+        Msg::StSlideNameHover,
+        t("El pie o el nombre de archivo de la diapositiva al aire"),
+    ),
+    (
+        Msg::StSlideKeyHover,
+        t("Mostrar la diapositiva {page}: {name}"),
+    ),
+    (Msg::ThumbSlideshowEmpty, t("Aún sin imágenes")),
 ];

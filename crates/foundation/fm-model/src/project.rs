@@ -1803,6 +1803,8 @@ impl Project {
                 | InputKind::Device { .. }
                 | InputKind::NetworkStream(_)
                 | InputKind::SystemAudio(_)
+                | InputKind::Image(_)
+                | InputKind::Slideshow(_)
                 | InputKind::MixFeed(_)
                 | InputKind::Title(_)
                 | InputKind::Simulated(_) => None,
@@ -2067,6 +2069,21 @@ impl Project {
         }
         *self = candidate;
         Ok(())
+    }
+
+    /// Rewrites the file asset URIs of input `input` (see
+    /// [`InputKind::map_file_asset_uris`]): a bundle export or append
+    /// moving its media file, image, or listed slides to new keys. Returns
+    /// whether anything changed; an unknown input changes nothing.
+    pub fn map_input_file_assets(
+        &mut self,
+        input: InputId,
+        map: impl FnMut(&str) -> Option<String>,
+    ) -> bool {
+        self.inputs
+            .iter_mut()
+            .find(|candidate| candidate.id == input)
+            .is_some_and(|input| input.kind.map_file_asset_uris(map))
     }
 
     /// Points an existing media input at a new asset URI.
@@ -4218,6 +4235,12 @@ pub enum InputKind {
     /// `PulseAudio`/`PipeWire` source such as a sink monitor, or an ALSA capture
     /// device, named by the operator. Audio-only: it has no picture.
     SystemAudio(fm_types::system_audio::SystemAudioConfig),
+    /// A still picture from the project's assets placed by a fit policy
+    /// (schema 60, IN-008). Silent.
+    Image(fm_types::still::ImageInputConfig),
+    /// A slideshow of the pictures in an asset folder or an explicit list
+    /// (schema 60, IN-009): a paged input. Silent.
+    Slideshow(fm_types::still::SlideshowConfig),
     Scene {
         scene_id: SceneId,
         audio_source: Option<InputId>,
@@ -4241,6 +4264,53 @@ pub enum InputKind {
     /// A title scene instantiated from a stored template. It is a leaf: it
     /// renders its own picture, is silent, and references no other input.
     Title(TitleInput),
+}
+
+impl InputKind {
+    /// Every project asset file the input shows directly: a media file, an
+    /// image, or the pictures of an explicit slideshow list, in order. A
+    /// slideshow folder is not a file and is not listed.
+    #[must_use]
+    pub fn file_asset_uris(&self) -> Vec<&str> {
+        match self {
+            Self::Media { asset_uri, .. } => vec![asset_uri.as_str()],
+            Self::Image(config) => vec![config.asset_uri.as_str()],
+            Self::Slideshow(config) => match &config.source {
+                fm_types::still::SlideshowSource::List(items) => {
+                    items.iter().map(|item| item.asset_uri.as_str()).collect()
+                }
+                fm_types::still::SlideshowSource::Folder { .. } => Vec::new(),
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    /// Rewrites every URI [`Self::file_asset_uris`] lists for which `map`
+    /// returns a new URI; returns whether anything changed.
+    pub fn map_file_asset_uris(&mut self, mut map: impl FnMut(&str) -> Option<String>) -> bool {
+        let mut changed = false;
+        let mut apply = |uri: &mut String| {
+            if let Some(mapped) = map(uri)
+                && mapped != *uri
+            {
+                *uri = mapped;
+                changed = true;
+            }
+        };
+        match self {
+            Self::Media { asset_uri, .. } => apply(asset_uri),
+            Self::Image(config) => apply(&mut config.asset_uri),
+            Self::Slideshow(config) => {
+                if let fm_types::still::SlideshowSource::List(items) = &mut config.source {
+                    for item in items {
+                        apply(&mut item.asset_uri);
+                    }
+                }
+            }
+            _ => {}
+        }
+        changed
+    }
 }
 
 /// The switcher bus a [`InputKind::MixFeed`] input re-enters.

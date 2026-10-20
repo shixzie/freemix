@@ -223,6 +223,10 @@ pub fn cue_action_token(action: &WireCueAction) -> String {
             WireCueMediaOperation::Restart => format!("media_restart.{input}"),
             WireCueMediaOperation::Seek { frame } => format!("media_seek.{input}.{frame}"),
         },
+        WireCueAction::Page { input, navigation } => match navigation {
+            crate::PagedNavigation::Goto(page) => format!("page.{input}.goto.{page}"),
+            other => format!("page.{input}.{}", other.token()),
+        },
         WireCueAction::Wait { frames } => format!("wait.{frames}"),
         WireCueAction::Delay { millis } => format!("delay.{millis}"),
         WireCueAction::RunScript { script } => format!("run_script.{script}"),
@@ -354,6 +358,14 @@ pub fn parse_cue_action_token(value: &str) -> Option<WireCueAction> {
             operation: WireCueMediaOperation::Seek {
                 frame: parse_canonical_u64(frame)?,
             },
+        },
+        ["page", id, "goto", page] => WireCueAction::Page {
+            input: input(id)?,
+            navigation: crate::PagedNavigation::from_token("goto", Some(parse_u32(page)?))?,
+        },
+        ["page", id, action] if *action != "goto" => WireCueAction::Page {
+            input: input(id)?,
+            navigation: crate::PagedNavigation::from_token(action, None)?,
         },
         ["wait", frames] => WireCueAction::Wait {
             frames: parse_u32(frames)?,

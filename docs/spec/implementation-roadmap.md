@@ -27,9 +27,10 @@ highest-value remaining items, ranked:
    key overrides, Web operator buttons, scoped/chorded keys, dynamic targets,
    mouse bindings, and import/export of a shortcut set (see the RC-004
    boundary below). This is a P0 row.
-5. **Wire the tested library-only crates: Media List and slideshow (`IN-006`,
-   `IN-009`, `OR-015`).** `ListPlayer` and the slideshow are covered by tests
-   but used by no app; wiring them is cheap breadth for real shows.
+5. **Wire the tested library-only crates: Media List (`IN-006`, `OR-015`).**
+   `ListPlayer` is covered by tests but used by no app; wiring it is cheap
+   breadth for real shows. (The slideshow, `IN-009`, is now wired end to
+   end; see its boundary below.)
 6. **Auto key and the remaining keyer refinements (`SW-008`).** Key/fill
    (luma or alpha), clip, choke, edge softness, and despill now run natively,
    persist, and are edited in Studio; auto key is still CPU-only and unwired,
@@ -1834,7 +1835,7 @@ portrait rungs; and the native GPU path is untested. `SW-015` remains
 planned.
 
 
-Current implementation boundary for IN-008 and IN-010: `fm-video::test_signal` generates 75%, 100%, and EBU bars plus a bars/ramp/PLUGE layout with exact BT.709/BT.601 narrow-range 8/10-bit Y'CbCr and full-range RGBA codes, and a static generator renders solid colour or bars once per setting instead of per frame. `fm-playback::image_sequence` discovers numbered sequences (padding, duplicate detection, reject/hold/skip gap policies), maps time or output frames to sequence frames exactly with Once/Loop/Hold ends, and bounds a prefetch cache; `fm-codec-image::ImageSequenceSource` decodes bounded PNG/JPEG frames of one size, preloads and pins a sequence, and suggests the first opaque frame as a stinger cut point. ICC conversion, still fit/fill and reload, GPU-side generation, RP 219 raster geometry, daemon/CLI/model wiring, asynchronous decode, alpha video, and Studio controls are not implemented, so `IN-008` and `IN-010` remain planned.
+Current implementation boundary for IN-008 and IN-010: `fm-video::test_signal` generates 75%, 100%, and EBU bars plus a bars/ramp/PLUGE layout with exact BT.709/BT.601 narrow-range 8/10-bit Y'CbCr and full-range RGBA codes, and a static generator renders solid colour or bars once per setting instead of per frame. `fm-playback::image_sequence` discovers numbered sequences (padding, duplicate detection, reject/hold/skip gap policies), maps time or output frames to sequence frames exactly with Once/Loop/Hold ends, and bounds a prefetch cache; `fm-codec-image::ImageSequenceSource` decodes bounded PNG/JPEG frames of one size, preloads and pins a sequence, and suggests the first opaque frame as a stinger cut point. Still pictures as inputs (decode, ICC, fit/fill, reload) now have their own boundary under item 5 slideshows below; GPU-side generation, RP 219 raster geometry, daemon/CLI/model wiring, asynchronous decode, alpha video, and Studio controls are not implemented, so `IN-008` and `IN-010` remain planned.
 
 Exit: `P0` switcher, composition, audio, display, record, and control rows pass.
 
@@ -3809,17 +3810,81 @@ language), the Cues window adds the same to its fault note, and
 `freemix-cli` prints `reason=` and `message=`. The Scripts window's Stop
 run and Clear failed run keep a row of their own below the run status.
 
-Current implementation boundary for item 5 slideshows (`IN-009`):
-`fm-playback` provides a deterministic slideshow with per-slide frame
-durations, ordered or seeded-random cycles without repeats, cut or crossfade
-frames with exact basis-point weights, exact rational Ken Burns crops that
-edits cannot disturb on air, live insert, remove, and move that refuse to drop
-on-air slides, large-set thumbnail suppression with filename labels, and
-natural-sorted, extension-filtered folder listing from caller-supplied names.
-Remaining gaps: nothing decodes images or produces thumbnails, the compositor
-does not consume crops or mix weights, there is no filesystem scan or watch,
-no engine, protocol, persistence, daemon, or Studio wiring, and only cut and
-crossfade transitions exist. `IN-009` remains planned.
+Current implementation boundary for still image and slideshow inputs
+(`IN-008`, `IN-009`): Protocol 2.73 (schema 63) adds two input kinds.
+
+- `fm-codec-image` decodes PNG, JPEG, WebP, GIF (first frame), BMP, TIFF,
+  and SVG (rasterized with `resvg`) under byte, pixel, and dimension
+  limits, applies EXIF orientation, converts embedded ICC profiles to sRGB,
+  keeps straight alpha, and places the picture in the show raster with
+  Fit, Fill, Stretch, or 1:1 (`decode_still_for_output`).
+- An image input names one picture asset and a fit. A slideshow names an
+  asset folder (every picture file directly inside it, in natural name
+  order, at most 10,000) or an explicit list of up to 64 pictures with
+  optional captions, a per-slide hold in frames, a cut or a fade, Ken Burns,
+  ordered or seeded-random order, loop, and auto-advance; a show holds at
+  most 8 slideshows. Both persist exactly (schema 63), are undoable adds,
+  replaceable sources, and duplicable.
+- The engine runs each slideshow on the show clock with
+  `fm-playback::Slideshow` (not journaled: replaying the same commands gives
+  the same slides, fades, and crops frame for frame). `page_navigate`, a
+  generic paged-input step (next, previous, first, last, goto, compatible
+  with `fm_types::paged`), is a live switcher operation realized on the next
+  frame, also available as the cue action `page.<input>.…`. A folder's
+  listing is supplied by the daemon; a listing change keeps the slide on air.
+- Clients may name absolute host paths in a request; the daemon copies a
+  file, or a folder's pictures, into the project's assets first and the
+  show only ever holds asset URIs. Both daemons rescan a folder slideshow's
+  asset folder every 2 s and on each project revision, so pictures added to
+  or removed from it join or leave the show.
+- The simulated daemon decodes slides and composes the fade and Ken Burns
+  crop on the CPU, for Program, the monitor taps, and the input bank
+  thumbnails. Native `freemixd` decodes an image once (at startup or on a
+  live add) and uploads it once; a slideshow's slides are decoded on worker
+  threads, each uploaded once and kept (on air, next, and a few spare), and
+  each frame composes the incoming slide over the outgoing one on the GPU
+  with the crop and fade. A still media file larger than the show is now
+  fitted instead of stopping startup.
+- Studio's Add input dialog has Picture and Slideshow kinds (path fields,
+  since the host has no native file dialog, filled by dropping files or a
+  folder on the window; folder or list; timing, fade, Ken Burns, order,
+  loop, auto-advance, and placement). The media transport panel has a
+  Slideshows section per slideshow with FIRST, previous, next, and LAST
+  keys, the slide on air and the count, and a strip of slide keys (numbered
+  names, fetched in windows with `slideshow_slides_request`) that go to a
+  slide. The cue editor has a slideshow step action. Help is in English and
+  Spanish and every new control is in the hover audit.
+- The CLI adds `input-add-image` and `input-add-slideshow` (copying host
+  pictures into the project), their `remote-` forms, and
+  `remote-page-navigate`.
+- Tests cover decoding (formats, orientation, ICC, alpha, limits, fit),
+  the slideshow model, engine slideshows (holds, fades, Ken Burns, live
+  navigation, folder follow, replay), persistence, the wire form and its
+  refusals, client replication, the simulated daemon (host import, folder
+  import and follow, stepping, slide windows, reconnect), a native daemon
+  process test (an image at startup with Fit, an oversized still, a live
+  Fill image, and a stepped slideshow, all read back from Program), the CLI,
+  and the Studio forms and panel.
+
+Remaining gaps:
+- Studio has no per-slide picture thumbnails in the strip (numbered names
+  only) and no native file or folder dialog;
+- captions are metadata and labels only; nothing draws them on the picture;
+- only cut and fade transitions exist; OSC and keyboard shortcuts do not step
+  slides, and scripts cannot;
+- a host folder is copied once, so live edits follow the project's copy,
+  not the original folder; there is no filesystem watch, only a 2 s rescan;
+- portable bundle export, asset audit, and relink do not yet treat a
+  slideshow folder as an asset;
+- native Ken Burns crops are whole source pixels, a random order's next
+  slide is prefetched approximately, and the slideshow textures are outside
+  the media registry's retained-byte accounting;
+- animated GIF and WebP show their first frame; there are no solid colour
+  or bars changes here (`IN-010` remains separate);
+- no Windows or macOS native run has been exercised (the code is portable
+  and cross-checked to compile for macOS).
+
+`IN-008` and `IN-009` remain planned.
 
 Current implementation boundary for item 6: `fm-automation` provides a typed
 per-input trigger catalog (transition and overlay in/out, completion,

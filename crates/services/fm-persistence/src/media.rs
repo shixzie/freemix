@@ -282,9 +282,82 @@ impl ProjectStore {
         })
     }
 
-    /// Removes the asset an [`Self::import_media_file`] copy created at
-    /// `asset_uri`, when an import is abandoned. A file that is already
-    /// gone is not an error.
+    /// Copies every picture file directly inside the external folder
+    /// `source` (regular files with a picture extension, at most
+    /// `max_pictures` in name order) into a new folder of this bundle's
+    /// assets, for a folder slideshow (IN-009).
+    ///
+    /// The folder key is derived from the folder name as
+    /// [`Self::import_media_file`] derives a file key; an occupied key is
+    /// never reused, `name-2`, `name-3`, ... are tried instead. The
+    /// returned URI names the folder.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BundleError::NotRegularFile`] when `source` is not a
+    /// folder, [`BundleError::NoAvailableKey`], or an I/O error (after
+    /// removing the partial copy).
+    pub fn import_picture_folder(
+        &self,
+        source: &Path,
+        max_pictures: usize,
+    ) -> Result<ImportedAsset, BundleError> {
+        if !fs::metadata(source)?.is_dir() {
+            return Err(BundleError::NotRegularFile(source.to_path_buf()));
+        }
+        let mut names = fs::read_dir(source)?
+            .filter_map(Result::ok)
+            .filter(|entry| fs::metadata(entry.path()).is_ok_and(|meta| meta.is_file()))
+            .map(|entry| entry.file_name())
+            .filter(|name| fm_types::still::is_image_file_name(&name.to_string_lossy()))
+            .collect::<Vec<_>>();
+        names.sort();
+        names.truncate(max_pictures);
+        let base = imported_key(source.file_name().unwrap_or_else(|| OsStr::new("slides")));
+        let assets_root = self.assets_root();
+        fs::create_dir_all(&assets_root)?;
+        for attempt in 1..=MAX_KEY_SUFFIX {
+            let key = if attempt <= 1 {
+                base.clone()
+            } else {
+                format!("{base}-{attempt}")
+            };
+            if asset_uri_key(&asset_uri(&key)).is_err() {
+                continue;
+            }
+            let folder = assets_root.join(&key);
+            match fs::create_dir(&folder) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+            let mut bytes = 0_u64;
+            let mut taken = BTreeSet::new();
+            for name in &names {
+                let file = imported_key(name);
+                if !taken.insert(file.clone()) {
+                    continue;
+                }
+                match fsutil::copy_new_file(&source.join(name), &folder.join(&file)) {
+                    Ok(copied) => bytes = bytes.saturating_add(copied),
+                    Err(error) => {
+                        let _ = fs::remove_dir_all(&folder);
+                        return Err(error.into());
+                    }
+                }
+            }
+            return Ok(ImportedAsset {
+                asset_uri: asset_uri(&key),
+                disposition: AssetDisposition::Copied { bytes },
+            });
+        }
+        Err(BundleError::NoAvailableKey { key: base })
+    }
+
+    /// Removes the asset an [`Self::import_media_file`] copy (or the folder
+    /// an [`Self::import_picture_folder`] copy) created at `asset_uri`, when
+    /// an import is abandoned. A file that is already gone is not an
+    /// error.
     ///
     /// # Errors
     ///
@@ -294,7 +367,11 @@ impl ProjectStore {
         let key = asset_uri_key(asset_uri).map_err(|error| {
             io::Error::new(io::ErrorKind::InvalidInput, format!("{asset_uri}: {error}"))
         })?;
-        match fs::remove_file(self.assets_root().join(key)) {
+        let path = self.assets_root().join(key);
+        if fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir()) {
+            return fs::remove_dir_all(path).map_err(Into::into);
+        }
+        match fs::remove_file(path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error.into()),
             _ => Ok(()),
         }

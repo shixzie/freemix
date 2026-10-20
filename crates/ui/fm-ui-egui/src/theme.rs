@@ -780,6 +780,8 @@ pub(crate) enum KeyIcon {
     /// Fire or play the row now, or show what is folded under it: a
     /// right-pointing triangle.
     Play,
+    /// Step back (the previous slide): a left-pointing triangle.
+    Back,
 }
 
 /// Paints `icon` centred in `rect`, about `extent` points across.
@@ -810,6 +812,14 @@ pub(crate) fn paint_key_icon(
                 centre + Vec2::new(-half * 0.6, -half * 0.75),
                 centre + Vec2::new(half * 0.75, 0.0),
                 centre + Vec2::new(-half * 0.6, half * 0.75),
+            ];
+            painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
+        }
+        KeyIcon::Back => {
+            let points = vec![
+                centre + Vec2::new(half * 0.6, -half * 0.75),
+                centre + Vec2::new(-half * 0.75, 0.0),
+                centre + Vec2::new(half * 0.6, half * 0.75),
             ];
             painter.add(egui::Shape::convex_polygon(points, color, Stroke::NONE));
         }

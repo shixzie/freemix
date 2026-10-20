@@ -2502,7 +2502,6 @@ Protocol 2.70 adds key/fill keys and matte refinements to scene layers
   <softness> on|off` and the options `--clip <black> <white>`,
   `--choke <n>`, `--edge-softness <n>`, and `--despill green|blue
   <strength>`.
-- 2.69 is refused.
 
 Protocol 2.71 pairs phones and tablets with the web gateway and lets an
 admin console list and revoke them (RC-007, RC-014).
@@ -2601,6 +2600,58 @@ OSC addresses that run show actions.
   repeats never re-fire. Keys are project state; Studio-local overrides,
   Web operator buttons, and the CLI have no shortcut commands yet.
 - 2.71 is refused.
+
+Protocol 2.73 (schema 63) adds still image and slideshow inputs (IN-008, IN-009) and a
+generic paged-input step.
+
+- `input_add` takes `kind=image` with `uri` and `fit`
+  (`fit|fill|stretch|1:1`), or `kind=slideshow` with `slideshow`, the
+  compact settings
+  `<slide frames>~<cut|fade>~<fade frames>~<ken burns 0|1>~<ordered|random.<seed>>~<loop 0|1>~<auto advance 0|1>~<fit>~<folder|list>~<source>`.
+  A folder source is `<length>:<asset URI>`; a list source is a
+  comma-separated list of `<length>:<URI>~<length>:<caption>` or
+  `<length>:<URI>~-` (no caption). Texts are written raw after their
+  canonical byte lengths, so the line encoding escapes them once. Hold
+  `1..=1000000` frames, fade `1..=3600` frames (kept, unused, by a cut), at
+  most 64 list entries and 4 KiB of list text, captions of at most 256
+  bytes, at most 8 slideshows per show; a picture is a PNG, JPEG, WebP, GIF,
+  BMP, TIFF, or SVG file by extension.
+- In a client's command (`input_add` and the `image:<fit>:<uri>` /
+  `slideshow:<settings>` replacement sources) a picture or folder is a
+  project `asset://` URI or an absolute host path on the server's machine
+  (`/…`, `C:\…`, `\\server\…`). The server copies a host file into the
+  project's assets (reusing an identical one) and a host folder's picture
+  files into a new asset folder, rewrites the command to name them, and
+  removes copies a refused command did not use. Every record the server
+  sends (`input_added`, `still_state`, slides) names project assets only;
+  a host path there refuses the record.
+- `page_navigate` with `input` and `action=next|previous|first|last`, or
+  `action=goto` with a zero-based `page`, steps a paged input; it is a live
+  operation (switcher authority) realized on the next frame, and answered by
+  the durable event `page_navigated` (`input`, `frame`, `action`[, `page`]).
+  Next and Previous wrap when the slideshow loops. A cue action
+  `page.<input>.<next|previous|first|last>` or `page.<input>.goto.<page>`
+  steps it from a cue list.
+- A snapshot's `still_states` (0 to 256) announces one `still_state` per
+  image and slideshow input, in input order, after the `shortcut_state`
+  records: `revision`, `input`, the source fields as above, and the page
+  status `page`, `count`, `listing`, and `label`. `slideshow_page` runtime
+  events carry the same status when the slide on air, the slide count, or
+  the folder listing changes. `page` lies inside `count` (both 0 while the
+  slideshow has no slides); `listing` is the folder listing generation;
+  `label` is the slide's caption or file name, at most 256 bytes.
+- `slideshow_slides_request` with `request_id`, `input`, `offset`, and
+  `limit` (1 to 64) asks for a window of a slideshow's listing; the answer
+  `slideshow_slides` carries `request_id`, `input`, `generation`, `offset`,
+  `total`, and `slides` (`<length>:<asset URI>~<length>:<caption>` or
+  `~-`, comma-separated, inside `total`, at most 12 KiB). A client drops a
+  window for another `generation`.
+- Both daemons follow a folder slideshow's asset folder (rescanned every 2 s
+  and on each project revision) and keep the slide on air through listing
+  changes. The simulated daemon decodes slides and composes them on the CPU;
+  native `freemixd` decodes each picture once off the frame loop, uploads it
+  once, and composes the cut, fade, and Ken Burns crop on the GPU.
+- 2.72 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

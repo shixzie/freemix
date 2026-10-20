@@ -32,6 +32,7 @@ mod scene_animation;
 mod scene_layer;
 mod script;
 mod shortcut;
+mod still;
 mod stream_target;
 mod system_audio;
 mod title_animation;
@@ -1480,6 +1481,80 @@ impl<A: AuthorizationHook> ControlService<A> {
         media::media_states(&self.engine)
     }
 
+    /// Returns the `still_state` records a session writes after
+    /// [`Self::script_states`]-ordered follow-on records, last of a
+    /// snapshot's: one per image or slideshow input in ascending input
+    /// order, exactly as many as the snapshot announces (IN-008, IN-009).
+    #[must_use]
+    pub fn still_states(&self) -> Vec<fm_protocol::StillStateMessage> {
+        still::still_states(&self.engine)
+    }
+
+    /// Answers a slideshow listing request (IN-009).
+    #[must_use]
+    pub fn slideshow_slides(
+        &self,
+        request: &fm_protocol::SlideshowSlidesRequest,
+    ) -> fm_protocol::SlideshowSlidesMessage {
+        still::slideshow_slides(&self.engine, request)
+    }
+
+    /// Installs the pictures the server found in a folder slideshow's
+    /// folder (see [`Engine::set_slideshow_listing`]). Runtime state; the
+    /// next frame reports the change.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an input that is not a folder slideshow.
+    pub fn set_slideshow_listing(
+        &mut self,
+        input: InputId,
+        listing: Vec<fm_engine::EngineSlide>,
+    ) -> Result<(), fm_engine::EngineSlideshowError> {
+        self.engine.set_slideshow_listing(input, listing)
+    }
+
+    /// The pictures slideshow input `input` lists now (see
+    /// [`Engine::slideshow_listing`]).
+    #[must_use]
+    pub fn slideshow_listing(&self, input: InputId) -> &[fm_engine::EngineSlide] {
+        self.engine.slideshow_listing(input)
+    }
+
+    /// A slideshow input's settings, page, label, and listing generation.
+    #[must_use]
+    pub fn slideshow_status(&self, input: InputId) -> Option<fm_engine::EngineSlideshowStatus> {
+        self.engine.slideshow_status(input)
+    }
+
+    /// Every slideshow input's status, ascending by input.
+    #[must_use]
+    pub fn slideshow_statuses(&self) -> Vec<fm_engine::EngineSlideshowStatus> {
+        self.engine.slideshow_statuses()
+    }
+
+    /// What slideshow input `input` showed on the last realized frame
+    /// (see [`Engine::slideshow_shown`]); the monitor and native renderers
+    /// draw it.
+    #[must_use]
+    pub fn slideshow_shown(
+        &self,
+        input: InputId,
+    ) -> Option<(
+        Option<fm_engine::EngineSlideView>,
+        Option<fm_engine::EngineSlideView>,
+        u16,
+    )> {
+        self.engine.slideshow_shown(input)
+    }
+
+    /// Whether any slideshow changes on the next frame absent commands
+    /// (see [`Engine::slideshows_advancing`]).
+    #[must_use]
+    pub fn slideshows_advancing(&self) -> bool {
+        self.engine.slideshows_advancing()
+    }
+
     /// Media input `input`'s projected status (see
     /// [`Engine::media_status`]).
     #[must_use]
@@ -2146,6 +2221,19 @@ impl<A: AuthorizationHook> ControlService<A> {
                 events.push(self.availability_event(server, media_frame.input, offline)?);
             }
         }
+        // A slideshow reports a change of slide, count, or listing.
+        let revision_now = self.engine.revision().get();
+        for slideshow in frame
+            .slideshows
+            .iter()
+            .filter(|slideshow| slideshow.changed)
+        {
+            let event = RuntimeLifecycleEvent::SlideshowPage {
+                input: WireInputId::from_domain(slideshow.input),
+                status: Box::new(still::frame_status(slideshow)),
+            };
+            events.push(self.runtime_event(server, revision_now, generation, event)?);
+        }
         let frames_per_second = u64::from(self.engine.frame_rate().numerator())
             .div_ceil(u64::from(self.engine.frame_rate().denominator()));
         let revision = self.engine.revision().get();
@@ -2524,7 +2612,9 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         CommandPayload::SelectPreview { .. } => CommandClass::SelectPreview,
         // Which outputs Fade to Black fades belongs to the switcher operator
         // (like overlay output inclusion).
-        CommandPayload::SetFadeToBlackOutput { .. }
+        // Stepping a slideshow is an operator control, like a media transport.
+        CommandPayload::PageNavigate { .. }
+        | CommandPayload::SetFadeToBlackOutput { .. }
         | CommandPayload::SetFadeToBlackOutputDuration { .. }
         | CommandPayload::SetFadeToBlackCurve { .. }
         | CommandPayload::Cut
@@ -2649,6 +2739,10 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         CommandPayload::Media { input, operation } => {
             media::media_engine_command(*input, *operation)
         }
+        CommandPayload::PageNavigate { input, navigation } => EngineCommand::PageNavigate {
+            input: input.to_domain(),
+            navigation: *navigation,
+        },
         CommandPayload::InputLifecycle(operation) => {
             EngineCommand::InputLifecycle(input_lifecycle::engine_edit(operation))
         }
@@ -2971,6 +3065,8 @@ fn engine_input_source(source: &LiveInputSource) -> EngineInputSource {
         LiveInputSource::NetworkStream(config) => EngineInputSource::NetworkStream(config.clone()),
         LiveInputSource::Capture(config) => EngineInputSource::Capture(config.clone()),
         LiveInputSource::SystemAudio(config) => EngineInputSource::SystemAudio(config.clone()),
+        LiveInputSource::Image(config) => EngineInputSource::Image(config.clone()),
+        LiveInputSource::Slideshow(config) => EngineInputSource::Slideshow(config.clone()),
     }
 }
 
@@ -2991,6 +3087,8 @@ fn wire_input_source(source: &EngineInputSource) -> LiveInputSource {
         EngineInputSource::NetworkStream(config) => LiveInputSource::NetworkStream(config.clone()),
         EngineInputSource::Capture(config) => LiveInputSource::Capture(config.clone()),
         EngineInputSource::SystemAudio(config) => LiveInputSource::SystemAudio(config.clone()),
+        EngineInputSource::Image(config) => LiveInputSource::Image(config.clone()),
+        EngineInputSource::Slideshow(config) => LiveInputSource::Slideshow(config.clone()),
     }
 }
 
@@ -3548,6 +3646,23 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
     }) {
         return grade::grade_changed(engine, edit);
     }
+    if let Some(payload) = outcome.events.iter().find_map(|event| {
+        let EngineEvent::PageNavigated {
+            input,
+            frame,
+            navigation,
+        } = &event.payload
+        else {
+            return None;
+        };
+        Some(EventPayload::PageNavigated {
+            input: WireInputId::from_domain(*input),
+            frame: *frame,
+            navigation: *navigation,
+        })
+    }) {
+        return payload;
+    }
     if let Some((input, frame, operation)) = outcome.events.iter().find_map(|event| {
         let EngineEvent::MediaChanged {
             input,
@@ -3730,6 +3845,15 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
                     EngineInputSource::SystemAudio(config) => Some(config.clone()),
                     _ => None,
                 },
+                still: match source {
+                    EngineInputSource::Image(config) => Some(Box::new(
+                        fm_protocol::WireStillSource::Image((**config).clone()),
+                    )),
+                    EngineInputSource::Slideshow(config) => Some(Box::new(
+                        fm_protocol::WireStillSource::Slideshow((**config).clone()),
+                    )),
+                    _ => None,
+                },
             }),
             EngineEvent::InputRemoved { input } => Some(EventPayload::InputRemoved {
                 input: WireInputId::from_domain(*input),
@@ -3875,6 +3999,7 @@ fn snapshot_record(
         cue_list_states: cue::cue_list_state_count(engine),
         script_states: script::script_state_count(engine),
         shortcut_states: shortcut::shortcut_state_count(engine),
+        still_states: still::still_state_count(engine),
         input_categories: input_lifecycle::wire_categories(engine.show()),
         audio_mixer: audio_mixer::wire_status(engine.show()),
         fade_to_black_excluded_outputs: audio_mixer::wire_excluded_outputs(engine.show()),

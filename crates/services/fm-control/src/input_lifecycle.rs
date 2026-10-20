@@ -65,6 +65,8 @@ pub fn wire_source(source: &InputSourceSpec) -> WireInputSource {
             endpoint: config.url.clone(),
         },
         InputSourceSpec::SystemAudio(config) => WireInputSource::SystemAudio(config.clone()),
+        InputSourceSpec::Image(config) => WireInputSource::Image(config.clone()),
+        InputSourceSpec::Slideshow(config) => WireInputSource::Slideshow(Box::new(config.clone())),
     }
 }
 
@@ -91,6 +93,8 @@ pub fn model_source(source: &WireInputSource) -> InputSourceSpec {
             fm_types::network_stream::NetworkStreamConfig::new(endpoint.clone()),
         ),
         WireInputSource::SystemAudio(config) => InputSourceSpec::SystemAudio(config.clone()),
+        WireInputSource::Image(config) => InputSourceSpec::Image(config.clone()),
+        WireInputSource::Slideshow(config) => InputSourceSpec::Slideshow((**config).clone()),
     }
 }
 

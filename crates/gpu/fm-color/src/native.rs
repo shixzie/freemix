@@ -297,6 +297,18 @@ impl NativeWorkingFrame {
     pub const fn metadata(&self) -> VideoFrameMetadata {
         self.metadata
     }
+
+    /// This frame's timing and metadata over `texture`: a working-space
+    /// picture composed from working frames (a slideshow's slides) stays a
+    /// working frame.
+    #[must_use]
+    pub const fn with_texture(&self, texture: NativeTexture) -> Self {
+        Self {
+            texture,
+            timing: self.timing,
+            metadata: self.metadata,
+        }
+    }
 }
 
 /// Color-owned native importer containing only its compiled GPU pipeline.

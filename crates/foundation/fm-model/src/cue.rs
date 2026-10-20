@@ -124,6 +124,12 @@ pub enum CueAction {
         input: InputId,
         operation: CueMediaOperation,
     },
+    /// Steps paged input `input` (a slideshow) by `navigation` (IN-009,
+    /// schema 60).
+    Page {
+        input: InputId,
+        navigation: fm_types::paged::PagedNavigation,
+    },
     /// Defers the cue's remaining actions by `frames` (`1..=`
     /// [`MAX_CUE_WAIT_FRAMES`]).
     Wait { frames: u32 },
@@ -231,7 +237,8 @@ impl CueAction {
             | Self::TitleOff { input }
             | Self::AudioGain { input, .. }
             | Self::AudioMute { input, .. }
-            | Self::Media { input, .. } => Some(*input),
+            | Self::Media { input, .. }
+            | Self::Page { input, .. } => Some(*input),
             Self::Take { input, .. } => *input,
             Self::OverlayOff { .. }
             | Self::FadeToBlack { .. }
@@ -508,6 +515,12 @@ pub fn cue_action_is_valid(action: &CueAction) -> bool {
         CueAction::Wait { frames } => (1..=MAX_CUE_WAIT_FRAMES).contains(frames),
         CueAction::Delay { millis } => (1..=MAX_CUE_DELAY_MS).contains(millis),
         CueAction::RunScript { script } => *script != 0,
+        CueAction::Page { navigation, .. } => match navigation {
+            fm_types::paged::PagedNavigation::Goto(page) => {
+                *page < fm_types::paged::MAX_PAGED_PAGES
+            }
+            _ => true,
+        },
         CueAction::Preview { .. }
         | CueAction::Media { .. }
         | CueAction::TitleOff { .. }

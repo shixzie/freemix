@@ -17,6 +17,7 @@ mod recorder_status;
 mod scene_layer;
 mod script;
 mod shortcut;
+mod still;
 mod stream_target;
 mod system_audio;
 mod version;
@@ -179,6 +180,15 @@ pub use shortcut::{
     MAX_SHORTCUT_TEXT_BYTES, MAX_SHORTCUTS, SHORTCUT_OSC_PREFIX, ShortcutFireChange, ShortcutSpec,
     ShortcutStateMessage, ShortcutStatus, WireShortcutAction, WireShortcutCueOperation,
     WireShortcutKey, shortcut_key_is_valid, shortcut_name_is_valid, shortcut_osc_is_valid,
+};
+pub use still::{
+    ImageInputConfig, MAX_IMAGE_URI_BYTES, MAX_SLIDE_CAPTION_BYTES, MAX_SLIDE_FRAMES,
+    MAX_SLIDE_LABEL_BYTES, MAX_SLIDE_TRANSITION_FRAMES, MAX_SLIDESHOW_FOLDER_BYTES,
+    MAX_SLIDESHOW_INPUTS, MAX_SLIDESHOW_ITEMS, MAX_SLIDESHOW_ITEMS_BYTES, MAX_SLIDESHOW_SLIDES,
+    MAX_SLIDESHOW_SLIDES_BYTES, MAX_SLIDESHOW_SLIDES_PAGE, MAX_STILL_STATES, PagedNavigation,
+    SlideOrder, SlideTransitionStyle, SlideshowConfig, SlideshowItem, SlideshowPage,
+    SlideshowPageStatus, SlideshowSlide, SlideshowSlidesMessage, SlideshowSlidesRequest,
+    SlideshowSource, StillInputError, StillStateMessage, WireStillSource, slide_label_is_valid,
 };
 pub use stream_target::{
     DEFAULT_STREAM_TARGET_SRT_LATENCY_MS, MAX_STREAM_RECONNECT_ATTEMPTS,

@@ -392,6 +392,7 @@ fn validate_cue_lists(project: &Project, errors: &mut Vec<ValidationError>) {
                     | crate::CueAction::TitleOff { .. }
             );
             let is_media = matches!(action, crate::CueAction::Media { .. });
+            let is_page = matches!(action, crate::CueAction::Page { .. });
             match found {
                 None => errors.push(ValidationError {
                     entity: Some(EntityRef::Input(input)),
@@ -400,7 +401,8 @@ fn validate_cue_lists(project: &Project, errors: &mut Vec<ValidationError>) {
                 }),
                 Some(found)
                     if (is_title && !matches!(found.kind, InputKind::Title(_)))
-                        || (is_media && !matches!(found.kind, InputKind::Media { .. })) =>
+                        || (is_media && !matches!(found.kind, InputKind::Media { .. }))
+                        || (is_page && !matches!(found.kind, InputKind::Slideshow(_))) =>
                 {
                     errors.push(ValidationError {
                         entity: Some(EntityRef::Input(input)),
@@ -836,6 +838,7 @@ fn validate_media_playback(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
     for input in project.inputs() {
         let entity = Some(EntityRef::Input(input.id));
@@ -867,6 +870,24 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
             } => validate_capture_input(entity, stable_key, capture, errors),
             InputKind::NetworkStream(config) => validate_network_stream(entity, config, errors),
             InputKind::SystemAudio(config) => validate_system_audio(entity, config, errors),
+            InputKind::Image(config) => {
+                if let Err(error) = config.validate() {
+                    errors.push(ValidationError {
+                        entity,
+                        field: still_field(true, error),
+                        kind: ValidationErrorKind::OutOfRange,
+                    });
+                }
+            }
+            InputKind::Slideshow(config) => {
+                if let Err(error) = config.validate() {
+                    errors.push(ValidationError {
+                        entity,
+                        field: still_field(false, error),
+                        kind: ValidationErrorKind::OutOfRange,
+                    });
+                }
+            }
             InputKind::Scene {
                 scene_id,
                 audio_source,
@@ -936,6 +957,43 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
     validate_network_stream_listen_ports(project, errors);
     validate_capture_input_count(project, errors);
     validate_system_audio_count(project, errors);
+    validate_slideshow_count(project, errors);
+}
+
+/// The validation field of an image (`kind.image`) or slideshow
+/// (`kind.slideshow`) configuration error (IN-008, IN-009).
+const fn still_field(image: bool, error: fm_types::still::StillInputError) -> &'static str {
+    use fm_types::still::StillInputError;
+    match error {
+        StillInputError::InvalidUri | StillInputError::UnsupportedType if image => {
+            "kind.image.asset_uri"
+        }
+        StillInputError::InvalidUri
+        | StillInputError::UnsupportedType
+        | StillInputError::EmptyList
+        | StillInputError::TooManyItems
+        | StillInputError::InvalidCaption => "kind.slideshow.items",
+        StillInputError::InvalidFolder => "kind.slideshow.folder",
+        StillInputError::InvalidSlideFrames => "kind.slideshow.slide_frames",
+        StillInputError::InvalidTransitionFrames => "kind.slideshow.transition_frames",
+    }
+}
+
+/// IN-009: a bounded number of slideshow inputs keeps every snapshot that
+/// carries their settings inside one line.
+fn validate_slideshow_count(project: &Project, errors: &mut Vec<ValidationError>) {
+    if let Some(input) = project
+        .inputs()
+        .iter()
+        .filter(|input| matches!(input.kind, InputKind::Slideshow(_)))
+        .nth(fm_types::still::MAX_SLIDESHOW_INPUTS)
+    {
+        errors.push(ValidationError {
+            entity: Some(EntityRef::Input(input.id)),
+            field: "kind.slideshow",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
 }
 
 /// AU-011: a system audio input names a usable device.

@@ -76,6 +76,7 @@ use freemixd::overlay_layout::{overlay_border_width, overlay_transform};
 
 use crate::grading::GradeCache;
 use crate::scene_render;
+use crate::stills::{SlidesShown, StillPictures};
 use crate::title_render::{self, TitleAssets, TitleKey};
 
 /// The order taps render within one cadence step: the cheap, latency-visible
@@ -237,6 +238,8 @@ pub(crate) struct RealizedMonitorState {
     /// holds; the tap replays a phase it saw start over the following wall
     /// time (see [`SimulatedMonitorTap::replay_titles`]).
     pub(crate) airs: Vec<(InputId, TitleAir)>,
+    /// What every slideshow input shows, ascending by input (IN-009).
+    pub(crate) slideshows: Vec<(InputId, SlidesShown)>,
 }
 
 /// The realized fields whose change publishes a frame immediately.
@@ -247,6 +250,7 @@ type ChangeKey = (
     Vec<RealizedOverlay>,
     Vec<(InputId, AnimSample)>,
     Vec<(InputId, AnimSample)>,
+    Vec<(InputId, SlidesShown)>,
 );
 
 impl RealizedMonitorState {
@@ -277,6 +281,7 @@ impl RealizedMonitorState {
                 .into_iter()
                 .map(|title| (title.input, title.air))
                 .collect(),
+            slideshows: SlidesShown::all(control),
         }
     }
 
@@ -312,6 +317,7 @@ impl RealizedMonitorState {
             self.overlays.clone(),
             self.titles.clone(),
             self.scenes.clone(),
+            self.slideshows.clone(),
         )
     }
 }
@@ -387,6 +393,9 @@ pub(crate) struct SimulatedMonitorTap {
     /// Whether the previous step rendered for a demanded state, so a phase
     /// first seen now started while this tap was watching.
     watching: bool,
+    /// Decoded image and slide pictures at the fitted size (IN-008,
+    /// IN-009).
+    stills: StillPictures,
     /// The latest Program picture with overlays composited.
     program_overlaid: Option<(ProgramKey, Option<Arc<ImageFrame>>)>,
     /// Scene compositions performed, observed by tests to prove caching.
@@ -556,15 +565,49 @@ impl SimulatedMonitorTap {
         }
         // Other non-simulated inputs are never registered, so they render
         // nothing. A simulated input carries its input grade.
-        let source = self
-            .pipeline
-            .as_ref()
-            .and_then(|pipeline| pipeline.render_source(input, state.frame).ok())?;
+        let source = match self.still_picture(input, state, project) {
+            Some(still) => still,
+            None => self
+                .pipeline
+                .as_ref()
+                .and_then(|pipeline| pipeline.render_source(input, state.frame).ok())?,
+        };
         match self.grades.input(input) {
             Some(grade) => fm_compositor::apply_grade(&source, grade).ok(),
             None => Some(source),
         }
         .map(Arc::new)
+    }
+
+    /// An image input's picture, or what a slideshow input shows, over
+    /// black at the fitted size; `None` for any other input or a picture
+    /// that does not decode.
+    fn still_picture(
+        &mut self,
+        input: InputId,
+        state: &RealizedMonitorState,
+        project: &Project,
+    ) -> Option<ImageFrame> {
+        let pipeline = self.pipeline.as_ref()?;
+        let size = (pipeline.width(), pipeline.height());
+        let store = self.titles.store()?;
+        match &project
+            .inputs()
+            .iter()
+            .find(|known| known.id == input)?
+            .kind
+        {
+            InputKind::Image(image) => self.stills.image(store, &image.asset_uri, image.fit, size),
+            InputKind::Slideshow(_) => {
+                let shown = state
+                    .slideshows
+                    .iter()
+                    .find(|(slideshow, _)| *slideshow == input)
+                    .map(|(_, shown)| shown)?;
+                self.stills.slides(store, shown, size)
+            }
+            _ => None,
+        }
     }
 
     /// Returns the scene picture of `input` at the fitted size, composing it
@@ -1266,6 +1309,7 @@ mod tests {
             titles: Vec::new(),
             scenes: Vec::new(),
             airs: Vec::new(),
+            slideshows: Vec::new(),
         }
     }
 

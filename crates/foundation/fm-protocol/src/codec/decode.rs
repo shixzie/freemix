@@ -245,6 +245,60 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
             script: super::script::decode_status(&mut fields)?,
             run: super::script::decode_run(&fields.required("run")?)?,
         }),
+        "still_state" => WireMessage::StillState(crate::StillStateMessage {
+            revision: fields.canonical_required("revision")?,
+            input: fields.canonical_input("input")?,
+            source: {
+                let kind = fields.required("kind")?;
+                super::still::decode_project_source(&kind, &mut fields)?.ok_or(
+                    CodecError::InvalidField {
+                        field: "kind",
+                        value: kind,
+                    },
+                )?
+            },
+            status: super::still::decode_page_status(&mut fields)?,
+        }),
+        "slideshow_slides_request" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            let input = fields.canonical_input("input")?;
+            let offset = fields.canonical_u32("offset")?;
+            let limit = fields.canonical_u32("limit")?;
+            super::still::check_window(offset, limit)?;
+            WireMessage::SlideshowSlidesRequest(crate::SlideshowSlidesRequest {
+                request_id,
+                input,
+                offset,
+                limit,
+            })
+        }
+        "slideshow_slides" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            let input = fields.canonical_input("input")?;
+            let generation = fields.canonical_required("generation")?;
+            let offset = fields.canonical_u32("offset")?;
+            let total = fields.canonical_u32("total")?;
+            let slides = super::still::decode_slides(&fields.required("slides")?)?;
+            if total as usize > crate::MAX_SLIDESHOW_SLIDES
+                || (!slides.is_empty()
+                    && u64::from(offset) + slides.len() as u64 > u64::from(total))
+            {
+                return Err(CodecError::InvalidField {
+                    field: "total",
+                    value: total.to_string(),
+                });
+            }
+            WireMessage::SlideshowSlides(crate::SlideshowSlidesMessage {
+                request_id,
+                input,
+                generation,
+                offset,
+                total,
+                slides,
+            })
+        }
         "media_state" => WireMessage::MediaState(MediaStateMessage {
             revision: fields.canonical_required("revision")?,
             frame: fields.canonical_required("frame")?,
@@ -631,6 +685,10 @@ fn decode_command_payload(
                 }
             })?,
         ),
+        "page_navigate" => CommandPayload::PageNavigate {
+            input: fields.canonical_input("input")?,
+            navigation: super::still::decode_navigation(fields)?,
+        },
         media if media.starts_with("media_") => {
             let input = fields.canonical_input("input")?;
             let operation =
@@ -1332,6 +1390,18 @@ fn decode_live_input_source(fields: &mut Fields) -> Result<LiveInputSource, Code
         "system_audio" => Ok(LiveInputSource::SystemAudio(Box::new(
             super::system_audio::decode_config(fields)?,
         ))),
+        "image" | "slideshow" => match super::still::decode_source(&kind, fields)? {
+            Some(crate::WireStillSource::Image(config)) => {
+                Ok(LiveInputSource::Image(Box::new(config)))
+            }
+            Some(crate::WireStillSource::Slideshow(config)) => {
+                Ok(LiveInputSource::Slideshow(Box::new(config)))
+            }
+            None => Err(CodecError::InvalidField {
+                field: "kind",
+                value: kind,
+            }),
+        },
         _ => Err(CodecError::InvalidField {
             field: "kind",
             value: kind,
@@ -1719,6 +1789,16 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         cue_list_states: super::cue::parse_list_count(&fields.required("cue_list_states")?)?,
         script_states: super::script::parse_state_count(&fields.required("script_states")?)?,
         shortcut_states: super::shortcut::parse_state_count(&fields.required("shortcut_states")?)?,
+        still_states: {
+            let value = fields.required("still_states")?;
+            parse_canonical_u64(&value)
+                .and_then(|count| u16::try_from(count).ok())
+                .filter(|count| *count <= crate::MAX_STILL_STATES)
+                .ok_or(CodecError::InvalidField {
+                    field: "still_states",
+                    value,
+                })?
+        },
         input_categories: super::input_lifecycle::decode_categories(
             &fields.required("input_categories")?,
         )?,
@@ -2344,7 +2424,8 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         "input_added" => {
             let input = fields.canonical_input("input")?;
             let name = decode_new_input_name(fields)?;
-            let (mut network_stream, mut capture, mut system_audio) = (None, None, None);
+            let (mut network_stream, mut capture, mut system_audio, mut still) =
+                (None, None, None, None);
             match fields.optional("kind").as_deref() {
                 None => {}
                 Some("network_stream") => {
@@ -2359,6 +2440,9 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
                 Some("system_audio") => {
                     system_audio = Some(Box::new(super::system_audio::decode_config(fields)?));
                 }
+                Some(kind @ ("image" | "slideshow")) => {
+                    still = super::still::decode_project_source(kind, fields)?.map(Box::new);
+                }
                 Some(other) => {
                     return Err(CodecError::InvalidField {
                         field: "kind",
@@ -2372,6 +2456,7 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
                 network_stream,
                 capture,
                 system_audio,
+                still,
             }
         }
         "input_removed" => EventPayload::InputRemoved {
@@ -2410,6 +2495,11 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             active: fields.boolean("active")?,
         },
         "media_changed" => decode_media_changed(fields)?,
+        "page_navigated" => EventPayload::PageNavigated {
+            input: fields.canonical_input("input")?,
+            frame: fields.canonical_required("frame")?,
+            navigation: super::still::decode_navigation(fields)?,
+        },
         "audio_mixer_changed" => {
             let operation = fields.required("operation")?;
             EventPayload::AudioMixerChanged(
@@ -2801,6 +2891,7 @@ fn decode_durable_gap(fields: &mut Fields) -> Result<DurableGap, CodecError> {
     Ok(gap)
 }
 
+#[allow(clippy::too_many_lines)]
 fn decode_runtime_event(fields: &mut Fields) -> Result<RuntimeEventMessage, CodecError> {
     let server = decode_server_identity(fields)?;
     let revision = fields.parse_required("revision")?;
@@ -2868,6 +2959,10 @@ fn decode_runtime_event(fields: &mut Fields) -> Result<RuntimeEventMessage, Code
         "live_lan_status" => {
             RuntimeLifecycleEvent::LiveLanStatus(super::live_lan::decode_status(fields)?)
         }
+        "slideshow_page" => RuntimeLifecycleEvent::SlideshowPage {
+            input: fields.canonical_input("input")?,
+            status: Box::new(super::still::decode_page_status(fields)?),
+        },
         "system_audio_status" => {
             let (input, status) = super::system_audio::decode_status(fields)?;
             RuntimeLifecycleEvent::SystemAudioStatus {

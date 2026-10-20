@@ -263,6 +263,8 @@ impl<'p> SourceResolver<'p> {
                 | InputKind::Device { .. }
                 | InputKind::NetworkStream(_)
                 | InputKind::SystemAudio(_)
+                | InputKind::Image(_)
+                | InputKind::Slideshow(_)
                 | InputKind::Simulated(_) => return Ok(AudioRoute::Input(current)),
             };
         }
@@ -306,6 +308,8 @@ impl<'p> SourceResolver<'p> {
             | InputKind::Device { .. }
             | InputKind::NetworkStream(_)
             | InputKind::SystemAudio(_)
+            | InputKind::Image(_)
+            | InputKind::Slideshow(_)
             | InputKind::Simulated(_)
             | InputKind::MixFeed(_)
             | InputKind::Title(_)
@@ -391,6 +395,8 @@ impl<'f, F> FrameContext<'_, '_, 'f, F> {
             | InputKind::Device { .. }
             | InputKind::NetworkStream(_)
             | InputKind::SystemAudio(_)
+            | InputKind::Image(_)
+            | InputKind::Slideshow(_)
             | InputKind::Scene { .. }
             | InputKind::Simulated(_)
             | InputKind::MixFeed(_)
@@ -411,6 +417,8 @@ impl<'f, F> FrameContext<'_, '_, 'f, F> {
             | InputKind::Device { .. }
             | InputKind::NetworkStream(_)
             | InputKind::SystemAudio(_)
+            | InputKind::Image(_)
+            | InputKind::Slideshow(_)
             | InputKind::Simulated(_)
             | InputKind::Title(_) => (RenderSource::Input(concrete), false),
             InputKind::Alias { .. } => unreachable!("alias chains end at a non-alias input"),

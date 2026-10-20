@@ -208,10 +208,8 @@ impl ProjectStore {
         let uris = incoming
             .inputs()
             .iter()
-            .filter_map(|input| match &input.kind {
-                InputKind::Media { asset_uri, .. } => Some(asset_uri.clone()),
-                _ => None,
-            })
+            .flat_map(|input| input.kind.file_asset_uris())
+            .map(str::to_owned)
             // A media URI also used by a title was already placed verbatim.
             .filter(|uri| !title_uris.contains(uri))
             .collect::<BTreeSet<_>>();
@@ -568,13 +566,11 @@ fn append_inputs(
             });
         }
         let kind = match &input.kind {
-            InputKind::Media {
-                asset_uri: uri,
-                playback,
-            } => InputKind::Media {
-                asset_uri: maps.uris.get(uri).cloned().unwrap_or_else(|| uri.clone()),
-                playback: *playback,
-            },
+            InputKind::Media { .. } | InputKind::Image(_) | InputKind::Slideshow(_) => {
+                let mut kind = input.kind.clone();
+                kind.map_file_asset_uris(|uri| maps.uris.get(uri).cloned());
+                kind
+            }
             InputKind::Scene {
                 scene_id,
                 audio_source,

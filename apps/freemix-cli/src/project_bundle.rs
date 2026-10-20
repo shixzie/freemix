@@ -628,3 +628,63 @@ pub fn import_batch(path: &Path, first_input: u128, files: &[std::path::PathBuf]
     }
     Ok(())
 }
+
+/// The project asset for a picture or picture folder a command names: an
+/// `asset://` URI as given, an absolute host path copied into the
+/// project's assets first (IN-008, IN-009).
+fn project_picture(path: &Path, uri: String, folder: bool) -> AppResult<String> {
+    if uri.starts_with(fm_types::still::ASSET_URI_PREFIX) {
+        return Ok(uri);
+    }
+    let store = ProjectStore::new(path)?;
+    // Refuse to create an assets directory in something that is not a bundle.
+    load_stored_project(path)?;
+    let source = Path::new(&uri);
+    let imported = if folder {
+        store.import_picture_folder(source, fm_types::still::MAX_SLIDESHOW_SLIDES)
+    } else {
+        store.import_media_file(source)
+    }
+    .map_err(|error| bundle_failure("picture import", &error))?;
+    println!(
+        "project-import-picture: {} to {}",
+        source.display(),
+        imported.asset_uri
+    );
+    Ok(imported.asset_uri)
+}
+
+/// `input-add-image`: adds a still image input, importing a host picture.
+pub fn add_image_input(
+    path: &Path,
+    input: u128,
+    name: String,
+    mut config: fm_types::still::ImageInputConfig,
+) -> AppResult<()> {
+    let input = input_id(input)?;
+    config.asset_uri = project_picture(path, config.asset_uri, false)?;
+    add_input_with_kind(path, input, name, InputKind::Image(config))
+}
+
+/// `input-add-slideshow`: adds a slideshow input, importing host pictures
+/// and a host folder.
+pub fn add_slideshow_input(
+    path: &Path,
+    input: u128,
+    name: String,
+    mut config: fm_types::still::SlideshowConfig,
+) -> AppResult<()> {
+    let input = input_id(input)?;
+    match &mut config.source {
+        fm_types::still::SlideshowSource::Folder { asset_uri } => {
+            *asset_uri = project_picture(path, core::mem::take(asset_uri), true)?;
+        }
+        fm_types::still::SlideshowSource::List(items) => {
+            for item in items {
+                item.asset_uri =
+                    project_picture(path, core::mem::take(&mut item.asset_uri), false)?;
+            }
+        }
+    }
+    add_input_with_kind(path, input, name, InputKind::Slideshow(config))
+}

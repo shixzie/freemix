@@ -132,6 +132,10 @@ pub fn domain_action(action: &WireCueAction) -> CueAction {
                 WireCueMediaOperation::Restart => CueMediaOperation::Restart,
             },
         },
+        WireCueAction::Page { input, navigation } => CueAction::Page {
+            input: input.to_domain(),
+            navigation: *navigation,
+        },
         WireCueAction::Wait { frames } => CueAction::Wait { frames: *frames },
         WireCueAction::Delay { millis } => CueAction::Delay { millis: *millis },
         WireCueAction::RunScript { script } => CueAction::RunScript { script: *script },
@@ -225,6 +229,10 @@ pub fn wire_action(action: &CueAction) -> WireCueAction {
                 CueMediaOperation::Seek { frame } => WireCueMediaOperation::Seek { frame },
                 CueMediaOperation::Restart => WireCueMediaOperation::Restart,
             },
+        },
+        CueAction::Page { input, navigation } => WireCueAction::Page {
+            input: WireInputId::from_domain(*input),
+            navigation: *navigation,
         },
         CueAction::Wait { frames } => WireCueAction::Wait { frames: *frames },
         CueAction::Delay { millis } => WireCueAction::Delay { millis: *millis },

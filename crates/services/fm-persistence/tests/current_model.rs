@@ -2821,3 +2821,130 @@ fn system_audio_inputs_round_trip_exactly_and_reject_malformed_values() {
         );
     }
 }
+
+/// IN-008/IN-009 (schema 60): image and slideshow inputs round-trip every
+/// setting exactly, and a missing, unknown, or out-of-bounds value is
+/// refused.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn image_and_slideshow_inputs_round_trip_exactly_and_reject_malformed_values() {
+    use fm_types::OutputScaling;
+    use fm_types::still::{
+        ImageInputConfig, SlideOrder, SlideTransitionStyle, SlideshowConfig, SlideshowItem,
+        SlideshowSource,
+    };
+
+    let temp = TestDirectory::new("still-inputs");
+    let store = temp.store("show");
+    let mut project = rich_project();
+    let image_input = project.inputs()[0].id;
+    let list_input = project.inputs()[1].id;
+    let image = ImageInputConfig::new("asset://stills/logo.png", OutputScaling::OneToOne);
+    let list = SlideshowConfig {
+        slide_frames: 90,
+        transition: SlideTransitionStyle::Cut,
+        transition_frames: 12,
+        ken_burns: true,
+        order: SlideOrder::Random { seed: u64::MAX },
+        loop_show: false,
+        auto_advance: false,
+        fit: OutputScaling::Fill,
+        ..SlideshowConfig::new(SlideshowSource::List(vec![
+            SlideshowItem::new("asset://a.jpg").with_caption("Día \"uno\""),
+            SlideshowItem::new("asset://b.webp"),
+        ]))
+    };
+    project
+        .replace_input_source(image_input, InputKind::Image(image.clone()), Vec::new())
+        .unwrap();
+    project
+        .replace_input_source(list_input, InputKind::Slideshow(list.clone()), Vec::new())
+        .unwrap();
+    let stored = StoredProject::from_project(
+        project,
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    store.save(&stored).unwrap();
+    let loaded = store.load().unwrap();
+    let kind_of = |input| {
+        loaded
+            .project()
+            .inputs()
+            .iter()
+            .find(|candidate| candidate.id == input)
+            .unwrap()
+            .kind
+            .clone()
+    };
+    assert_eq!(kind_of(image_input), InputKind::Image(image));
+    assert_eq!(kind_of(list_input), InputKind::Slideshow(list));
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    let image_object =
+        "{\"type\": \"image\", \"asset_uri\": \"asset://stills/logo.png\", \"fit\": \"1:1\"}";
+    assert!(encoded.contains(image_object), "{encoded}");
+    assert!(encoded.contains("\"order\": {\"random\": 18446744073709551615}"));
+
+    // A folder source round-trips too.
+    let mut folder_project = loaded.project().clone();
+    let folder = SlideshowConfig::new(SlideshowSource::Folder {
+        asset_uri: "asset://photos".into(),
+    });
+    folder_project
+        .replace_input_source(list_input, InputKind::Slideshow(folder.clone()), Vec::new())
+        .unwrap();
+    let stored = StoredProject::from_project(
+        folder_project,
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    store.save(&stored).unwrap();
+    let reloaded = store.load().unwrap();
+    assert!(
+        reloaded
+            .project()
+            .inputs()
+            .iter()
+            .any(|input| input.kind == InputKind::Slideshow(folder.clone()))
+    );
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    assert!(encoded.contains("\"source\": {\"folder\": \"asset://photos\"}"));
+
+    for (from, to) in [
+        ("\"fit\": \"1:1\"", "\"fit\": \"zoom\""),
+        (
+            "\"asset_uri\": \"asset://stills/logo.png\"",
+            "\"asset_uri\": \"asset://stills/logo.mp4\"",
+        ),
+        (
+            "\"asset_uri\": \"asset://stills/logo.png\"",
+            "\"asset_uri\": \"/tmp/logo.png\"",
+        ),
+        (
+            "\"source\": {\"folder\": \"asset://photos\"}",
+            "\"source\": {\"folder\": \"asset://../photos\"}",
+        ),
+        (
+            "\"source\": {\"folder\": \"asset://photos\"}",
+            "\"source\": {\"items\": []}",
+        ),
+        ("\"slide_frames\": 150", "\"slide_frames\": 0"),
+        ("\"transition\": \"fade\"", "\"transition\": \"wipe\""),
+        ("\"transition_frames\": 30", "\"transition_frames\": 3601"),
+        ("\"order\": \"ordered\"", "\"order\": \"shuffled\""),
+        ("\"auto_advance\": true, ", ""),
+        ("\"loop\": true", "\"loop\": 1"),
+    ] {
+        let invalid = encoded.replacen(from, to, 1);
+        assert_ne!(invalid, encoded, "{from}");
+        fs::write(store.manifest_path(), invalid).unwrap();
+        assert!(
+            matches!(store.load(), Err(StoreError::MalformedManifest { .. })),
+            "{from} -> {to}"
+        );
+    }
+}

@@ -72,6 +72,7 @@ mod preferences;
 mod preset_files;
 mod scene_designer;
 mod scripts;
+mod still_input_ui;
 mod stinger_config;
 mod stream_control;
 mod stream_targets;
@@ -397,6 +398,16 @@ pub enum StudioIntent {
         input: InputId,
         operation: MediaOperation,
     },
+    /// Steps a slideshow input to another slide (IN-009): an operator
+    /// control like a media transport.
+    PageNavigate {
+        input: InputId,
+        navigation: fm_protocol::PagedNavigation,
+    },
+    /// Asks the server for a window of a slideshow's slide list, from
+    /// `offset` (IN-009); the reply fills
+    /// [`fm_ui_model::StillInputStatus::listing`].
+    RequestSlideshowSlides { input: InputId, offset: u32 },
     /// Sends one grade command from the Colour window: a target's grade,
     /// a library save, or a LUT import.
     Grade(GradeCommand),
@@ -3036,6 +3047,7 @@ mod tests {
             network_streams: Vec::new(),
             system_audio_inputs: Vec::new(),
             capture_inputs: Vec::new(),
+            still_inputs: std::collections::BTreeMap::new(),
             capture_inventory: None,
             system_audio_inventory: None,
             web_access: None,

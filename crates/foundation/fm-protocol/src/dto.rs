@@ -913,6 +913,11 @@ pub enum LiveInputSource {
     Capture(Box<crate::CaptureInputConfig>),
     /// A system audio capture source (Protocol 2.55, AU-011).
     SystemAudio(Box<crate::SystemAudioConfig>),
+    /// A picture file (IN-008): `kind=image` plus `uri` and `fit`.
+    Image(Box<crate::ImageInputConfig>),
+    /// A slideshow (IN-009): `kind=slideshow` plus `slideshow` (see
+    /// [`crate::SlideshowConfig`]).
+    Slideshow(Box<crate::SlideshowConfig>),
 }
 
 /// Most fields one title carries; equals the title domain bound.
@@ -1933,6 +1938,13 @@ pub enum CommandPayload {
         input: WireInputId,
         operation: crate::MediaOperation,
     },
+    /// Steps a paged input (a slideshow, IN-009): payload `page_navigate`
+    /// with `input`, `action`, and for `goto` `page`. A live operation
+    /// realized on its target frame.
+    PageNavigate {
+        input: WireInputId,
+        navigation: crate::PagedNavigation,
+    },
     /// An input lifecycle edit (Protocol 2.38, IN-026; see
     /// [`crate::InputLifecycleOperation`]). A project edit.
     InputLifecycle(crate::InputLifecycleOperation),
@@ -2434,6 +2446,10 @@ pub struct SnapshotMessage {
     /// snapshot (after its script states), one per shortcut in project
     /// order, at most [`crate::MAX_SHORTCUTS`] (Protocol 2.72).
     pub shortcut_states: u16,
+    /// How many [`crate::StillStateMessage`] records follow this snapshot
+    /// (after its shortcut states), one per image or slideshow input in
+    /// ascending input order, at most [`crate::MAX_STILL_STATES`].
+    pub still_states: u16,
     /// The project's input category list in display order (Protocol 2.38).
     pub input_categories: Vec<crate::InputCategoryStatus>,
     /// Strip labels and groups (Protocol 2.40).
@@ -2511,6 +2527,9 @@ pub enum EventPayload {
         /// The device of an added system audio input (Protocol 2.55);
         /// `None` for any other source.
         system_audio: Option<Box<crate::SystemAudioConfig>>,
+        /// The picture or slideshow of an added image or slideshow input
+        /// (IN-008, IN-009); `None` for any other source.
+        still: Option<Box<crate::WireStillSource>>,
     },
     /// An input left the show together with its Master strip and padlock.
     /// It was neither Program nor Preview nor otherwise on air; a settled-off
@@ -2696,6 +2715,13 @@ pub enum EventPayload {
         operation: crate::MediaOperation,
         status: Box<crate::MediaStatus>,
     },
+    /// A page navigation was accepted for `frame` (IN-009); the slide it
+    /// lands on follows as a `slideshow_page` runtime event.
+    PageNavigated {
+        input: WireInputId,
+        frame: u64,
+        navigation: crate::PagedNavigation,
+    },
     /// An input lifecycle edit was accepted (Protocol 2.38): the operation
     /// as executed (an undo or redo reports the edit it applied), the
     /// inputs it appended with their names, and the batch import items it
@@ -2808,6 +2834,12 @@ pub enum RuntimeLifecycleEvent {
     SystemAudioStatus {
         input: WireInputId,
         status: Box<crate::SystemAudioStatus>,
+    },
+    /// A slideshow shows another slide, holds another count of slides, or
+    /// listed its folder anew (IN-009).
+    SlideshowPage {
+        input: WireInputId,
+        status: Box<crate::SlideshowPageStatus>,
     },
     /// The capture devices the daemon can open changed (Protocol 2.47).
     CaptureDevices(crate::CaptureInventory),
@@ -3187,4 +3219,10 @@ pub enum WireMessage {
     WebAccessRequest(crate::WebAccessRequest),
     /// Answers a [`crate::WebAccessRequest`] (Protocol 2.71).
     WebAccess(crate::WebAccessMessage),
+    /// One image or slideshow input after a snapshot (IN-008, IN-009).
+    StillState(crate::StillStateMessage),
+    /// Asks for a window of a slideshow's listing (IN-009).
+    SlideshowSlidesRequest(crate::SlideshowSlidesRequest),
+    /// Answers a [`crate::SlideshowSlidesRequest`] (IN-009).
+    SlideshowSlides(crate::SlideshowSlidesMessage),
 }

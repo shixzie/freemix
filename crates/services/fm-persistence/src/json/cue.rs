@@ -195,6 +195,17 @@ pub(crate) fn write_action(output: &mut String, action: &CueAction) {
             "{{\"type\": \"stream\", \"target\": {target}, \"start\": {start}}}"
         ),
         CueAction::Media { input, operation } => write_media(output, *input, operation),
+        CueAction::Page { input, navigation } => match navigation {
+            fm_types::paged::PagedNavigation::Goto(page) => write!(
+                output,
+                "{{\"type\": \"page\", \"input\": {input}, \"action\": \"goto\", \"page\": {page}}}"
+            ),
+            other => write!(
+                output,
+                "{{\"type\": \"page\", \"input\": {input}, \"action\": \"{}\"}}",
+                other.token()
+            ),
+        },
         CueAction::Wait { frames } => {
             write!(output, "{{\"type\": \"wait\", \"frames\": {frames}}}")
         }
@@ -425,6 +436,20 @@ pub(crate) fn parse_action(value: Value) -> Result<CueAction, DecodeError> {
                 frame: object.u64("frame")?,
             },
         },
+        "page" => {
+            let input = input(&mut object)?;
+            let action = object.string("action")?;
+            let page = if action == "goto" {
+                Some(object.u32("page")?)
+            } else {
+                None
+            };
+            CueAction::Page {
+                input,
+                navigation: fm_types::paged::PagedNavigation::from_token(&action, page)
+                    .ok_or_else(|| super::unknown_enum("page action", &action))?,
+            }
+        }
         "wait" => CueAction::Wait {
             frames: object.u32("frames")?,
         },

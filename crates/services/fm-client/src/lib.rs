@@ -210,6 +210,12 @@ pub enum Intake {
     /// A `web_access` reply updated the replicated web access state
     /// (Protocol 2.71).
     WebAccessApplied,
+    /// A `still_state` completed one image or slideshow input the snapshot
+    /// announced (IN-008, IN-009).
+    StillStateApplied,
+    /// A `slideshow_slides` reply updated a replicated slideshow listing
+    /// (IN-009).
+    SlideshowSlidesApplied,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -645,6 +651,14 @@ impl Client {
                 self.apply_shortcut_state(state)?;
                 Ok(Intake::ShortcutStateApplied)
             }
+            WireMessage::StillState(state) => {
+                self.apply_still_state(state)?;
+                Ok(Intake::StillStateApplied)
+            }
+            WireMessage::SlideshowSlides(message) => {
+                self.model.apply_slideshow_slides(&message)?;
+                Ok(Intake::SlideshowSlidesApplied)
+            }
             WireMessage::DisplayInventory(message) => {
                 self.model.apply_display_inventory(message.inventory);
                 Ok(Intake::DisplayInventoryApplied)
@@ -665,6 +679,7 @@ impl Client {
             | WireMessage::CaptureDevicesRequest(_)
             | WireMessage::SystemAudioDevicesRequest(_)
             | WireMessage::WebAccessRequest(_)
+            | WireMessage::SlideshowSlidesRequest(_)
             | WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
             | WireMessage::DurableEventBatch(_)
@@ -1405,6 +1420,57 @@ impl Client {
         Ok(())
     }
 
+    /// Applies one `still_state` that completes the installed snapshot
+    /// (IN-008, IN-009); it follows every shortcut state.
+    ///
+    /// # Errors
+    ///
+    /// A record out of order or unannounced forces a fresh snapshot.
+    pub fn apply_still_state(
+        &mut self,
+        state: fm_protocol::StillStateMessage,
+    ) -> Result<(), ClientError> {
+        let ConnectionState::Synchronizing {
+            mode: SyncMode::Snapshot,
+            target_revision,
+        } = self.state
+        else {
+            let expected = self
+                .model
+                .reconnect_cursor()
+                .map_or(0, |cursor| cursor.revision.get());
+            return self.require_resync(expected, state.revision);
+        };
+        let received_revision = state.revision;
+        let earlier_complete = self.model.state().is_none_or(|state| {
+            state.titles_complete()
+                && state.playlist_complete()
+                && state.grading_complete()
+                && state.title_animations_complete()
+                && state.title_layouts_complete()
+                && state.scene_animations_complete()
+                && state.scene_layouts_complete()
+                && state.animation_presets_complete()
+                && state.media_complete()
+                && state.cue_lists_complete()
+                && state.scripts_complete()
+                && state.shortcuts_complete()
+        });
+        if self
+            .model
+            .reconnect_cursor()
+            .is_none_or(|cursor| cursor.revision.get() != target_revision)
+            || !earlier_complete
+            || self.model.apply_still_state(state).is_err()
+        {
+            return self.require_resync(target_revision, received_revision);
+        }
+        if self.snapshot_complete() {
+            self.finish_sync();
+        }
+        Ok(())
+    }
+
     fn titles_complete(&self) -> bool {
         self.model
             .state()
@@ -1428,6 +1494,7 @@ impl Client {
                 && state.cue_lists_complete()
                 && state.scripts_complete()
                 && state.shortcuts_complete()
+                && state.stills_complete()
         })
     }
 
@@ -1628,6 +1695,10 @@ impl Client {
                 self.model
                     .apply_runtime_system_audio_status(input.to_domain(), (**status).clone())?;
             }
+            RuntimeLifecycleEvent::SlideshowPage { input, status } => {
+                self.model
+                    .apply_runtime_slideshow_page(input.to_domain(), (**status).clone())?;
+            }
             RuntimeLifecycleEvent::NetworkStreamStatus { input, status } => {
                 self.model
                     .apply_runtime_network_stream_status(input.to_domain(), (**status).clone())?;
@@ -1702,6 +1773,7 @@ impl Client {
             | CommandPayload::Transition { .. }
             | CommandPayload::SetTransitionFavorite { .. }
             | CommandPayload::Media { .. }
+            | CommandPayload::PageNavigate { .. }
             | CommandPayload::InputLifecycle(_)
             | CommandPayload::SceneLayer(_)
             | CommandPayload::AudioMixer(_)

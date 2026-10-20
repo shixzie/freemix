@@ -17,7 +17,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use fm_model::InputKind;
 use fm_types::{InputId, ProjectId};
 
 use crate::{
@@ -170,13 +169,9 @@ fn export_bundle(
     let mut project = stored.project().clone();
     let mut rewritten_inputs = Vec::new();
     for input in stored.project().inputs() {
-        if let InputKind::Media { asset_uri: uri, .. } = &input.kind
-            && let Some(bundled) = mapping.get(uri.as_str())
-            && bundled != uri
-        {
-            project
-                .relink_media_input(input.id, bundled.clone())
-                .map_err(|_| BundleError::StalePlan { input: input.id })?;
+        // A media file, an image, and an explicit slideshow list's
+        // pictures all move to their portable keys.
+        if project.map_input_file_assets(input.id, |uri| mapping.get(uri).cloned()) {
             rewritten_inputs.push(input.id);
         }
     }
@@ -222,8 +217,8 @@ fn portable_mapping(
         .map(|uri| (uri.clone(), String::new()))
         .collect::<BTreeMap<_, _>>();
     for input in stored.project().inputs() {
-        if let InputKind::Media { asset_uri: uri, .. } = &input.kind {
-            uris.insert(uri.clone(), String::new());
+        for uri in input.kind.file_asset_uris() {
+            uris.insert(uri.to_owned(), String::new());
         }
     }
     let (titles, media): (Vec<_>, Vec<_>) = uris

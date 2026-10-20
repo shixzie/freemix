@@ -678,6 +678,7 @@ pub(super) fn run(
         playlist_clock: std::cell::RefCell::new(crate::playlist_clock::PlaylistClock::default()),
         cue_clock: std::cell::RefCell::new(crate::cue_clock::CueClock::default()),
         media_clock: std::cell::RefCell::new(crate::media_clock::MediaClock::default()),
+        slideshow_folders: std::cell::RefCell::new(crate::stills::SlideshowFolders::default()),
         end_triggers: std::cell::RefCell::new(crate::media_clock::EndTriggerFeed::default()),
         grade_cache: std::cell::RefCell::new(crate::grading::GradeCache::default()),
         thumbnail_refresh: std::cell::RefCell::new(false),
@@ -1008,6 +1009,18 @@ pub(super) fn run(
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }
+        // Folder slideshows follow their folders on either daemon (IN-009).
+        if let Some(assets) = runtime
+            .titles
+            .store()
+            .map(fm_persistence::ProjectStore::assets_root)
+        {
+            runtime.slideshow_folders.borrow_mut().poll(
+                &mut control.borrow_mut(),
+                &assets,
+                Instant::now(),
+            );
+        }
         if native.is_none()
             && let Err(error) = runtime.media_clock.borrow_mut().poll(
                 &mut control.borrow_mut(),
@@ -1193,6 +1206,7 @@ fn thumbnail_work(
             .into_iter()
             .map(|media| (media.input, media.position, media.playable_end))
             .collect(),
+        slideshows: crate::stills::SlidesShown::all(control),
         live,
     }
 }
@@ -1444,6 +1458,8 @@ struct Runtime<'a> {
     cue_clock: std::cell::RefCell<crate::cue_clock::CueClock>,
     /// Simulated runtime: plays media transports in wall time.
     media_clock: std::cell::RefCell<crate::media_clock::MediaClock>,
+    /// Follows every folder slideshow's folder (IN-009).
+    slideshow_folders: std::cell::RefCell<crate::stills::SlideshowFolders>,
     /// Feeds media end triggers to the playlist, retrying a refused one.
     end_triggers: std::cell::RefCell<crate::media_clock::EndTriggerFeed>,
     /// Compiled grades per engine revision for exact scene previews.
@@ -1779,6 +1795,12 @@ impl Runtime<'_> {
                 }))?;
                 Ok(())
             }
+            // One window of a slideshow's slide list (IN-009).
+            WireMessage::SlideshowSlidesRequest(request) => {
+                let slides = self.control.borrow().slideshow_slides(&request);
+                peer.reply(WireMessage::SlideshowSlides(slides))?;
+                Ok(())
+            }
             // The server's system audio devices (AU-011, Protocol 2.68) are
             // listed off this loop and sent on a later pass.
             WireMessage::SystemAudioDevicesRequest(request) => {
@@ -1975,6 +1997,12 @@ impl Runtime<'_> {
                     .shortcut_states()
                     .into_iter()
                     .map(WireMessage::ShortcutState),
+            );
+            peer.initial_sync.extend(
+                control
+                    .still_states()
+                    .into_iter()
+                    .map(WireMessage::StillState),
             );
         }
     }

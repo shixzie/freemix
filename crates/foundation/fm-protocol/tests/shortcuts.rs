@@ -444,6 +444,7 @@ fn snapshot(shortcut_states: u16) -> fm_protocol::SnapshotMessage {
         cue_list_states: 0,
         script_states: 0,
         shortcut_states,
+        still_states: 0,
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),

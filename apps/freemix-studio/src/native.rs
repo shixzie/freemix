@@ -1237,6 +1237,7 @@ fn run_worker(
                 | StudioIntent::RequestCaptureDevices
                 | StudioIntent::RequestSystemAudioDevices
                 | StudioIntent::WebAccess(_)
+                | StudioIntent::RequestSlideshowSlides { .. }
                 | StudioIntent::InputThumbnails { .. }),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
@@ -1268,7 +1269,8 @@ fn run_worker(
                     | SessionEvent::DisplayInventory { .. }
                     | SessionEvent::CaptureDevices { .. }
                     | SessionEvent::SystemAudioDevices { .. }
-                    | SessionEvent::WebAccess { .. },
+                    | SessionEvent::WebAccess { .. }
+                    | SessionEvent::SlideshowSlides { .. },
                 )) => true,
                 // Lossy monitor parts publish only once a frame completes.
                 Ok(Some(
@@ -1327,6 +1329,7 @@ fn run_worker(
                 | StudioIntent::RequestCaptureDevices
                 | StudioIntent::RequestSystemAudioDevices
                 | StudioIntent::WebAccess(_)
+                | StudioIntent::RequestSlideshowSlides { .. }
                 | StudioIntent::InputThumbnails { .. }),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
@@ -1417,6 +1420,14 @@ fn handle_preview_request(
         }
         return true;
     }
+    // A slideshow's slide list window (IN-009) is asked for when connected;
+    // the Media tab asks again for one that never arrives.
+    if let StudioIntent::RequestSlideshowSlides { input, offset } = request {
+        if !recovery.active() {
+            runtime.request_slideshow_slides(input, offset);
+        }
+        return true;
+    }
     // So are the system audio devices (AU-011, Protocol 2.68).
     if matches!(request, StudioIntent::RequestSystemAudioDevices) {
         if recovery.active() {
@@ -1462,6 +1473,7 @@ fn handle_worker_intent(
         | StudioIntent::RequestCaptureDevices
         | StudioIntent::RequestSystemAudioDevices
         | StudioIntent::WebAccess(_)
+        | StudioIntent::RequestSlideshowSlides { .. }
         | StudioIntent::InputThumbnails { .. }) => {
             return handle_preview_request(runtime, request, publisher, recovery);
         }
@@ -1766,7 +1778,8 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::DisplayInventory { .. }
                         | SessionEvent::CaptureDevices { .. }
                         | SessionEvent::SystemAudioDevices { .. }
-                        | SessionEvent::WebAccess { .. } => Some(true),
+                        | SessionEvent::WebAccess { .. }
+                        | SessionEvent::SlideshowSlides { .. } => Some(true),
                         SessionEvent::MonitorFrame { complete, .. }
                         | SessionEvent::TitlePreview { complete, .. }
                         | SessionEvent::ScenePreview { complete, .. } => Some(*complete),
@@ -2315,6 +2328,7 @@ fn receive_command_event(
                 | SessionEvent::CaptureDevices { .. }
                 | SessionEvent::SystemAudioDevices { .. }
                 | SessionEvent::WebAccess { .. }
+                | SessionEvent::SlideshowSlides { .. }
         ) {
             publication.update(runtime, *deferred_rejections)?;
             continue;
@@ -2807,6 +2821,20 @@ fn intent_payload(
         }
         StudioIntent::InputThumbnails { .. } => {
             return Err("An input thumbnail subscription is not a command".to_owned());
+        }
+        StudioIntent::RequestSlideshowSlides { .. } => {
+            return Err("A slideshow slides request is not a command".to_owned());
+        }
+        StudioIntent::PageNavigate { input, navigation } => {
+            if let Some(view) = view
+                && !view.inputs.contains(&input)
+            {
+                return Err("Input no longer exists".to_owned());
+            }
+            CommandPayload::PageNavigate {
+                input: WireInputId::from_domain(input),
+                navigation,
+            }
         }
         StudioIntent::SetDisplayOutput { slot, config } => {
             CommandPayload::SetDisplayOutput { slot, config }
@@ -3597,6 +3625,7 @@ mod tests {
             cue_list_states: 0,
             script_states: 0,
             shortcut_states: 0,
+            still_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             stream_targets: Vec::new(),
@@ -5238,6 +5267,7 @@ mod tests {
             cue_list_states: 0,
             script_states: 0,
             shortcut_states: 0,
+            still_states: 0,
             input_categories: Vec::new(),
             ..heartbeat_snapshot()
         }));
@@ -7625,6 +7655,7 @@ mod tests {
                 cue_list_states: 0,
                 script_states: 0,
                 shortcut_states: 0,
+                still_states: 0,
                 input_categories: Vec::new(),
                 transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
                 ..title_snapshot()

@@ -5796,7 +5796,7 @@ fn live_input_add_and_remove_round_trip_through_kill_and_recovery() {
     let added = durable_event_at(&mut admin, 1);
     assert!(matches!(
         added.payload,
-        EventPayload::InputAdded { input: id, ref name, network_stream: None, capture: None, system_audio: None } if id == input(3) && name == "Guest"
+        EventPayload::InputAdded { input: id, ref name, network_stream: None, capture: None, system_audio: None, still: None } if id == input(3) && name == "Guest"
     ));
     let with_guest = snapshot_of(&daemon, Role::Viewer);
     assert_eq!(input_ids(&with_guest), vec![input(1), input(2), input(3)]);

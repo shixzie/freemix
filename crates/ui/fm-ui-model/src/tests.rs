@@ -141,6 +141,7 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
         cue_list_states: 0,
         script_states: 0,
         shortcut_states: 0,
+        still_states: 0,
         input_lifecycle: vec![fm_protocol::InputLifecycleStatus::default(); 3],
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
@@ -1356,6 +1357,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 network_stream: None,
                 system_audio: None,
                 capture: None,
+                still: None,
             },
         ))
         .unwrap();
@@ -1407,6 +1409,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 network_stream: None,
                 system_audio: None,
                 capture: None,
+                still: None,
             },
             ModelError::DuplicateInput(input(2)),
         ),
@@ -1417,6 +1420,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 network_stream: None,
                 system_audio: None,
                 capture: None,
+                still: None,
             },
             ModelError::InvalidInputNames,
         ),
@@ -1427,6 +1431,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 network_stream: None,
                 system_audio: None,
                 capture: None,
+                still: None,
             },
             ModelError::InvalidInputNames,
         ),
@@ -1473,6 +1478,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
                 network_stream: None,
                 system_audio: None,
                 capture: None,
+                still: None,
             },
             edit_history: EditHistoryStatus::EMPTY,
         },
@@ -1485,6 +1491,7 @@ fn input_added_and_removed_reduce_into_the_catalogue_strips_and_locks() {
             network_stream: None,
             system_audio: None,
             capture: None,
+            still: None,
         }
     );
     model.apply_event(added).unwrap();
@@ -1678,6 +1685,7 @@ mod titles {
             cue_list_states: 0,
             script_states: 0,
             shortcut_states: 0,
+            still_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             stream_targets: Vec::new(),
@@ -3093,6 +3101,7 @@ fn a_batch_removal_forgets_the_removed_inputs_source_entries() {
         network_stream,
         system_audio,
         capture,
+        still: None,
     };
 
     // A system audio duplicate, undone by a batch removal.

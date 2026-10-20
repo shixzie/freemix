@@ -67,7 +67,12 @@ impl MediaClock {
         rate: FrameRate,
         now: Instant,
     ) -> AppResult<()> {
-        if !control.media_advancing() {
+        // A slideshow advances its slides and Ken Burns like a transport
+        // (IN-009).
+        let advancing = |control: &ControlService<Policy>| {
+            control.media_advancing() || control.slideshows_advancing()
+        };
+        if !advancing(control) {
             self.anchor = None;
             return Ok(());
         }
@@ -92,7 +97,7 @@ impl MediaClock {
         if let Some((_, due)) = control.cue_advance_frame() {
             target = target.min(due.saturating_sub(1));
         }
-        while control.frame_cursor() < target && control.media_advancing() {
+        while control.frame_cursor() < target && advancing(control) {
             control.tick(server)?;
         }
         Ok(())

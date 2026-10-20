@@ -64,6 +64,8 @@ pub(crate) struct Show {
     /// Each on-air overlay channel with its source.
     pub(crate) overlays: Vec<(u8, InputId)>,
     pub(crate) media: Vec<InputId>,
+    /// Every slideshow input (IN-009).
+    pub(crate) slideshows: Vec<InputId>,
     pub(crate) titles: Vec<ShowTitle>,
     /// Each audio strip: input, gain in millidecibels, muted.
     pub(crate) strips: Vec<(InputId, i32, bool)>,
@@ -111,6 +113,14 @@ impl Show {
                 .filter_map(|overlay| Some((overlay.channel, overlay.source?)))
                 .collect(),
             media: project.media().keys().copied().collect(),
+            slideshows: project
+                .still_inputs()
+                .iter()
+                .filter(|(_, still)| {
+                    matches!(still.source, fm_protocol::WireStillSource::Slideshow(_))
+                })
+                .map(|(input, _)| *input)
+                .collect(),
             titles: project
                 .titles()
                 .iter()
@@ -548,7 +558,8 @@ impl Walk<'_> {
             | WireCueAction::TitleOff { input }
             | WireCueAction::AudioGain { input, .. }
             | WireCueAction::AudioMute { input, .. }
-            | WireCueAction::Media { input, .. } => input.to_domain(),
+            | WireCueAction::Media { input, .. }
+            | WireCueAction::Page { input, .. } => input.to_domain(),
             _ => return None,
         };
         if !self.show.inputs.contains(&input) {
@@ -556,6 +567,9 @@ impl Walk<'_> {
         }
         if matches!(action, WireCueAction::Media { .. }) && !self.show.media.contains(&input) {
             return Some(self.refused(Msg::CuePvRefNotMedia.en()));
+        }
+        if matches!(action, WireCueAction::Page { .. }) && !self.show.slideshows.contains(&input) {
+            return Some(self.refused(Msg::CuePvRefNotSlideshow.en()));
         }
         let title = matches!(
             action,
@@ -943,6 +957,27 @@ impl Walk<'_> {
                 };
                 (LineKind::Action, text)
             }
+            WireCueAction::Page { input, navigation } => {
+                let input_arg = [("input", Arg::Str(&name(input)))];
+                let text = match navigation {
+                    fm_protocol::PagedNavigation::Next => l.format(Msg::CuePvSlideNext, &input_arg),
+                    fm_protocol::PagedNavigation::Previous => {
+                        l.format(Msg::CuePvSlidePrevious, &input_arg)
+                    }
+                    fm_protocol::PagedNavigation::First => {
+                        l.format(Msg::CuePvSlideFirst, &input_arg)
+                    }
+                    fm_protocol::PagedNavigation::Last => l.format(Msg::CuePvSlideLast, &input_arg),
+                    fm_protocol::PagedNavigation::Goto(page) => l.format(
+                        Msg::CuePvSlideGoto,
+                        &[
+                            ("input", Arg::Str(&name(input))),
+                            ("page", Arg::Plain(u64::from(*page) + 1)),
+                        ],
+                    ),
+                };
+                (LineKind::Action, text)
+            }
             WireCueAction::Wait { frames } => {
                 let time = frames_time(l, *frames, show.rate);
                 let text = l.format(
@@ -1249,6 +1284,7 @@ mod tests {
             fade_to_black: false,
             overlays: vec![(1, id(3))],
             media: vec![id(4)],
+            slideshows: Vec::new(),
             titles: vec![ShowTitle {
                 input: id(SCORE),
                 name: "Score".into(),

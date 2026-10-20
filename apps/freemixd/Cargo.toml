@@ -14,9 +14,7 @@ macos-program-surface = ["display-surface"]
 native-media = [
     "dep:fm-audio",
     "dep:fm-codec-ffmpeg",
-    "dep:fm-codec-image",
     "dep:fm-color",
-    "dep:fm-frame",
     "dep:fm-gpu",
     "dep:fm-io-linux",
     "dep:fm-io-macos",
@@ -34,13 +32,13 @@ fm-audio = { path = "../../crates/media/fm-audio", optional = true }
 fm-auth = { path = "../../crates/services/fm-auth" }
 fm-clock = { path = "../../crates/media/fm-clock" }
 fm-codec-ffmpeg = { path = "../../crates/io/fm-codec-ffmpeg", optional = true }
-fm-codec-image = { path = "../../crates/io/fm-codec-image", optional = true }
+fm-codec-image = { path = "../../crates/io/fm-codec-image" }
 fm-color = { path = "../../crates/gpu/fm-color", optional = true }
 fm-command = { path = "../../crates/foundation/fm-command" }
 fm-compositor = { path = "../../crates/gpu/fm-compositor" }
 fm-control = { path = "../../crates/services/fm-control" }
 fm-engine = { path = "../../crates/services/fm-engine" }
-fm-frame = { path = "../../crates/media/fm-frame", optional = true }
+fm-frame = { path = "../../crates/media/fm-frame" }
 fm-gpu = { path = "../../crates/gpu/fm-gpu", optional = true }
 fm-io-api = { path = "../../crates/io/fm-io-api" }
 fm-io-linux = { path = "../../crates/io/fm-io-linux", optional = true }

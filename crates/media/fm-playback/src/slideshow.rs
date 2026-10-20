@@ -35,6 +35,18 @@
 //! are on air (held, outgoing, or incoming) cannot be removed, so an edit can
 //! never disturb the displayed or transitioning slide.
 //!
+//! [`Slideshow::sync`] replaces the whole authored list at once (a rescanned
+//! folder): slides that left the list but are still on air stay until they
+//! go off air, then leave.
+//!
+//! # Navigation
+//!
+//! [`Slideshow::jump`] moves to any slide on the next tick through the
+//! configured transition, from a hold or from the middle of a transition:
+//! the slide shown so far becomes the outgoing slide and keeps its Ken
+//! Burns motion where it was. With `auto_advance` off a slide holds until
+//! the caller jumps.
+//!
 //! In random order each cycle is a seeded permutation of the authored list at
 //! the moment the cycle starts. Slides inserted mid-cycle are appended to the
 //! remaining cycle order unless already played this cycle; removed slides
@@ -316,6 +328,8 @@ pub struct SlideshowConfig {
     pub large_set_threshold: usize,
     /// Suppress thumbnails regardless of the slide count.
     pub suppress_thumbnails: bool,
+    /// Move on when a hold ends; off, a slide holds until [`Slideshow::jump`].
+    pub auto_advance: bool,
 }
 
 impl SlideshowConfig {
@@ -328,6 +342,7 @@ impl SlideshowConfig {
             loop_show: false,
             large_set_threshold: DEFAULT_LARGE_SET_THRESHOLD,
             suppress_thumbnails: false,
+            auto_advance: true,
         }
     }
 
@@ -501,6 +516,8 @@ enum Phase {
         outgoing: OnAir,
         incoming: OnAir,
         step: u64,
+        /// The outgoing slide's local frame at the first transition step.
+        outgoing_base: u64,
     },
 }
 
@@ -522,6 +539,9 @@ pub struct Slideshow {
     frame: u64,
     pending: VecDeque<SlideId>,
     played: BTreeSet<SlideId>,
+    /// Slides [`Self::sync`] dropped while they were on air; each leaves
+    /// the list once it is off air.
+    retiring: BTreeSet<SlideId>,
 }
 
 impl Slideshow {
@@ -575,7 +595,38 @@ impl Slideshow {
             frame: 0,
             pending,
             played,
+            retiring: BTreeSet::new(),
         })
+    }
+
+    /// Like [`Self::new`], but holds slide `first` from its first frame
+    /// (for example to keep the slide on air when the settings change). In
+    /// random order the rest of the first cycle is a seeded permutation of
+    /// the other slides.
+    ///
+    /// # Errors
+    ///
+    /// Returns every error of [`Self::new`], and
+    /// [`SlideshowError::Empty`] when `first` is not listed.
+    pub fn new_at(
+        slides: Vec<Slide>,
+        config: SlideshowConfig,
+        first: SlideId,
+    ) -> Result<Self, SlideshowError> {
+        let mut show = Self::new(slides, config)?;
+        let index = show.position(first).ok_or(SlideshowError::Empty)?;
+        show.phase = Phase::Hold {
+            slide: on_air(&show.slides[index], config),
+            elapsed: 0,
+        };
+        show.played.clear();
+        show.played.insert(first);
+        if let SlideOrder::Random { seed } = config.order {
+            let mut pending = random_cycle(&show.slides, seed, 0, None);
+            pending.retain(|id| *id != first);
+            show.pending = pending;
+        }
+        Ok(show)
     }
 
     #[must_use]
@@ -754,18 +805,19 @@ impl Slideshow {
                 outgoing: None,
                 incoming: view(slide, t + elapsed, t),
                 mix_basis_points: FULL_MIX_BASIS_POINTS,
-                at_end: *elapsed >= slide.duration,
+                at_end: self.config.auto_advance && *elapsed >= slide.duration,
             },
             Phase::Transition {
                 outgoing,
                 incoming,
                 step,
+                outgoing_base,
             } => {
                 let mix = (step + 1) * u64::from(FULL_MIX_BASIS_POINTS) / (t + 1);
                 SlideshowFrame {
                     frame: self.frame,
                     cycle: self.cycle,
-                    outgoing: Some(view(outgoing, t + outgoing.duration + step, t)),
+                    outgoing: Some(view(outgoing, outgoing_base + step, t)),
                     incoming: view(incoming, *step, t),
                     mix_basis_points: u16::try_from(mix).unwrap_or(FULL_MIX_BASIS_POINTS),
                     at_end: false,
@@ -781,6 +833,11 @@ impl Slideshow {
                 let elapsed = elapsed.saturating_add(1);
                 if elapsed < slide.duration {
                     Phase::Hold { slide, elapsed }
+                } else if !self.config.auto_advance {
+                    // Hold until told to move; clamp to avoid unbounded
+                    // growth.
+                    let elapsed = elapsed.min(slide.duration);
+                    Phase::Hold { slide, elapsed }
                 } else if let Some(plan) = self.plan_next(slide.id) {
                     let incoming = self.commit(plan);
                     if t == 0 {
@@ -789,10 +846,12 @@ impl Slideshow {
                             elapsed: 0,
                         }
                     } else {
+                        let outgoing_base = t + slide.duration;
                         Phase::Transition {
                             outgoing: slide,
                             incoming,
                             step: 0,
+                            outgoing_base,
                         }
                     }
                 } else {
@@ -805,6 +864,7 @@ impl Slideshow {
                 outgoing,
                 incoming,
                 step,
+                outgoing_base,
             } => {
                 let step = step + 1;
                 if step >= t {
@@ -817,11 +877,156 @@ impl Slideshow {
                         outgoing,
                         incoming,
                         step,
+                        outgoing_base,
                     }
                 }
             }
         };
         self.phase = phase;
+        self.retire_off_air();
+    }
+
+    /// Drops every retiring slide that is no longer on air.
+    fn retire_off_air(&mut self) {
+        if self.retiring.is_empty() {
+            return;
+        }
+        let on_air = self.on_air();
+        let gone: Vec<SlideId> = self
+            .retiring
+            .iter()
+            .copied()
+            .filter(|id| !on_air.contains(id))
+            .collect();
+        for id in gone {
+            self.retiring.remove(&id);
+            self.pending.retain(|pending| *pending != id);
+            if let Some(index) = self.position(id) {
+                self.slides.remove(index);
+            }
+        }
+    }
+
+    /// The slide on air, or the incoming one during a transition.
+    #[must_use]
+    pub const fn current(&self) -> SlideId {
+        match &self.phase {
+            Phase::Hold { slide, .. } => slide.id,
+            Phase::Transition { incoming, .. } => incoming.id,
+        }
+    }
+
+    /// The authored position of `id`, if it is listed.
+    #[must_use]
+    pub fn index_of(&self, id: SlideId) -> Option<usize> {
+        self.position(id)
+    }
+
+    /// Whether `id` left the list in a [`Self::sync`] and stays only
+    /// until it goes off air.
+    #[must_use]
+    pub fn is_retiring(&self, id: SlideId) -> bool {
+        self.retiring.contains(&id)
+    }
+
+    /// Moves to slide `id` from the next tick, through the configured
+    /// transition. The slide shown now (the incoming one, mid-transition)
+    /// becomes the outgoing slide and continues its motion from where it
+    /// is. Jumping to the slide already shown does nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SlideshowEditError::UnknownSlide`] for a slide that is
+    /// not listed.
+    pub fn jump(&mut self, id: SlideId) -> Result<(), SlideshowEditError> {
+        let index = self
+            .position(id)
+            .ok_or(SlideshowEditError::UnknownSlide(id))?;
+        let t = self.transition_frames();
+        let (shown, local) = match &self.phase {
+            Phase::Hold { slide, elapsed } => (slide.clone(), t + elapsed),
+            Phase::Transition { incoming, step, .. } => (incoming.clone(), *step),
+        };
+        if shown.id == id {
+            return Ok(());
+        }
+        self.played.insert(id);
+        self.pending.retain(|pending| *pending != id);
+        let incoming = on_air(&self.slides[index], self.config);
+        self.phase = if t == 0 {
+            Phase::Hold {
+                slide: incoming,
+                elapsed: 0,
+            }
+        } else {
+            Phase::Transition {
+                outgoing: shown,
+                incoming,
+                step: 0,
+                outgoing_base: local,
+            }
+        };
+        self.retire_off_air();
+        Ok(())
+    }
+
+    /// Makes `slides` the authored list. Slides absent from it that are on
+    /// air stay, at their previous position, until they go off air (see
+    /// [`Self::is_retiring`]); in random order slides new to the list join
+    /// the rest of the current cycle and slides that left it leave.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty or oversized list, a duplicate, or an
+    /// invalid slide; the list is unchanged then.
+    pub fn sync(&mut self, slides: Vec<Slide>) -> Result<(), SlideshowEditError> {
+        if slides.is_empty() {
+            return Err(SlideshowEditError::Invalid(SlideshowError::Empty));
+        }
+        if slides.len() > MAX_SLIDES {
+            return Err(SlideshowEditError::TooManySlides { max: MAX_SLIDES });
+        }
+        let mut seen = BTreeSet::new();
+        for slide in &slides {
+            if !seen.insert(slide.id) {
+                return Err(SlideshowEditError::DuplicateSlide(slide.id));
+            }
+            slide.validate().map_err(SlideshowEditError::Invalid)?;
+        }
+        let mut next = slides;
+        let mut retiring = BTreeSet::new();
+        for id in self.on_air() {
+            if seen.contains(&id) {
+                continue;
+            }
+            let Some(old_index) = self.position(id) else {
+                continue;
+            };
+            let slide = self.slides[old_index].clone();
+            let index = old_index.min(next.len());
+            next.insert(index, slide);
+            retiring.insert(id);
+        }
+        if next.len() > MAX_SLIDES {
+            return Err(SlideshowEditError::TooManySlides { max: MAX_SLIDES });
+        }
+        if matches!(self.config.order, SlideOrder::Random { .. }) {
+            self.pending
+                .retain(|id| seen.contains(id) && !retiring.contains(id));
+            for slide in &next {
+                if !self.played.contains(&slide.id)
+                    && !self.pending.contains(&slide.id)
+                    && !retiring.contains(&slide.id)
+                {
+                    self.pending.push_back(slide.id);
+                }
+            }
+        }
+        self.played
+            .retain(|id| seen.contains(id) || retiring.contains(id));
+        self.slides = next;
+        self.retiring = retiring;
+        Ok(())
     }
 
     fn commit(&mut self, plan: NextPlan) -> OnAir {
@@ -868,7 +1073,8 @@ impl Slideshow {
                     return None;
                 }
                 let next_cycle = self.cycle.saturating_add(1);
-                let mut pending = random_cycle(&self.slides, seed, next_cycle, Some(current));
+                let mut pending =
+                    random_cycle(&self.live_slides(), seed, next_cycle, Some(current));
                 let id = pending.pop_front()?;
                 Some(NextPlan {
                     id,
@@ -877,6 +1083,15 @@ impl Slideshow {
                 })
             }
         }
+    }
+
+    /// The authored slides without the retiring ones.
+    fn live_slides(&self) -> Vec<Slide> {
+        self.slides
+            .iter()
+            .filter(|slide| !self.retiring.contains(&slide.id))
+            .cloned()
+            .collect()
     }
 
     fn position(&self, id: SlideId) -> Option<usize> {

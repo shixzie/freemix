@@ -46,6 +46,10 @@ pub enum EngineInputSource {
     Capture(Box<fm_types::capture::CaptureInputConfig>),
     /// A system audio capture source (AU-011).
     SystemAudio(Box<fm_types::system_audio::SystemAudioConfig>),
+    /// A picture file (IN-008).
+    Image(Box<fm_types::still::ImageInputConfig>),
+    /// A slideshow (IN-009).
+    Slideshow(Box<fm_types::still::SlideshowConfig>),
 }
 
 impl EngineInputSource {
@@ -72,6 +76,10 @@ impl EngineInputSource {
             }
             Self::SystemAudio(config) => {
                 return fm_model::InputSourceSpec::SystemAudio((**config).clone());
+            }
+            Self::Image(config) => return fm_model::InputSourceSpec::Image((**config).clone()),
+            Self::Slideshow(config) => {
+                return fm_model::InputSourceSpec::Slideshow((**config).clone());
             }
         };
         fm_model::InputSourceSpec::Generator {

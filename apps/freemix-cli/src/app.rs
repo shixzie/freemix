@@ -1538,6 +1538,67 @@ pub fn run(command: Command) -> AppResult<()> {
                 },
             ));
         }
+        Command::ImageInputAdd {
+            path,
+            input,
+            name,
+            config,
+        } => project_bundle::add_image_input(&path, input, name, *config)?,
+        Command::SlideshowInputAdd {
+            path,
+            input,
+            name,
+            config,
+        } => project_bundle::add_slideshow_input(&path, input, name, *config)?,
+        Command::RemoteImageInputAdd {
+            address,
+            input,
+            name,
+            config,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::AddInput {
+                input: fm_protocol::WireInputId::from_domain(input_id(input)?),
+                name,
+                source: fm_protocol::LiveInputSource::Image(config),
+            },
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteSlideshowInputAdd {
+            address,
+            input,
+            name,
+            config,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::AddInput {
+                input: fm_protocol::WireInputId::from_domain(input_id(input)?),
+                name,
+                source: fm_protocol::LiveInputSource::Slideshow(config),
+            },
+            key,
+            expected_revision,
+        )?,
+        Command::RemotePageNavigate {
+            address,
+            input,
+            navigation,
+            key,
+            expected_revision,
+        } => remote::execute(
+            address,
+            fm_protocol::CommandPayload::PageNavigate {
+                input: fm_protocol::WireInputId::from_domain(input_id(input)?),
+                navigation,
+            },
+            key,
+            expected_revision,
+        )?,
         Command::RemoteSystemAudioStatus { address } => remote::system_audio_inputs(address)?,
         Command::RemoteSystemAudioDevices { address } => remote::system_audio_devices(address)?,
         Command::RemoteDisplayInventory { address } => remote::display_inventory(address)?,
@@ -5594,6 +5655,8 @@ const fn input_kind_name(kind: &InputKind) -> &'static str {
         InputKind::Device { .. } => "device",
         InputKind::NetworkStream(_) => "network-stream",
         InputKind::SystemAudio(_) => "system-audio",
+        InputKind::Image(_) => "image",
+        InputKind::Slideshow(_) => "slideshow",
         InputKind::Scene { .. } => "scene",
         InputKind::Simulated(_) => "simulated",
         InputKind::Alias { .. } => "alias",
@@ -5955,6 +6018,9 @@ Usage:
     capture options: [--format <W>x<H>@<num>/<den>:<yuyv|nv12|mjpeg>:<p|tff|bff>|auto] [--audio none|paired|alsa:<device>] [--loss hold|black]
   freemix-cli input-add-system-audio <show.freemix> <nonzero-input-id> <name> <pulse|alsa> <device: a PulseAudio source such as <sink>.monitor or @DEFAULT_MONITOR@, or an ALSA PCM such as hw:Loopback,1>
   freemix-cli input-system-audio-status <show.freemix>
+  freemix-cli input-add-image <show.freemix> <nonzero-input-id> <name> <asset://key|/absolute/picture> [--fit fit|fill|stretch|1:1]
+  freemix-cli input-add-slideshow <show.freemix> <nonzero-input-id> <name> <--folder <asset://folder|/absolute/folder> | --picture <asset://key|/absolute/picture>[|caption]...> [slideshow options]
+    slideshow options: [--fit fit|fill|stretch|1:1] [--slide-frames <1..=1000000>] [--fade-frames <1..=3600>|--cut] [--ken-burns] [--random <seed>] [--no-loop] [--manual]; host pictures and folders are copied into the project
   freemix-cli remote-status <127.0.0.1:port>
   freemix-cli remote-diagnostics <127.0.0.1:port>
   freemix-cli remote-audio-strip <127.0.0.1:port> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp>] [--key <key>] [--expect <revision>]
@@ -5972,6 +6038,9 @@ Usage:
   freemix-cli remote-input-add-system-audio <127.0.0.1:port> <input> <name> <pulse|alsa> <device> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-system-audio-status <127.0.0.1:port>
   freemix-cli remote-system-audio-devices <127.0.0.1:port>
+  freemix-cli remote-input-add-image <127.0.0.1:port> <input> <name> <asset://key|/absolute/picture on the server> [--fit fit|fill|stretch|1:1] [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-add-slideshow <127.0.0.1:port> <input> <name> <--folder <folder> | --picture <picture>[|caption]...> [slideshow options] [--key <key>] [--expect <revision>]
+  freemix-cli remote-page-navigate <127.0.0.1:port> <input> <next|previous|first|last|goto <page from 1>> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-remove <127.0.0.1:port> <input> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-duplicate <127.0.0.1:port> <source-input> <new-input> [<name>] [--key <key>] [--expect <revision>]
   freemix-cli remote-input-replace <127.0.0.1:port> <input> <solid:RRGGBBAA[:hz]|bars[:hz]|media:<file|asset://key>|device:<key>|network:<endpoint>|system-audio:<pulse|alsa>:<device>> [--key <key>] [--expect <revision>]

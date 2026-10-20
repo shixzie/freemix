@@ -12,6 +12,11 @@ use fm_types::network_stream::{
     AudioChannels, GiveUp, NetworkStreamConfig, NetworkStreamError, NetworkStreamSettings,
     RtspTransport, SecretEdit, SrtKeyLength, StallSlate, StreamMode, StreamUrl,
 };
+use fm_types::paged::PagedNavigation;
+use fm_types::still::{
+    ImageInputConfig, SlideOrder, SlideTransitionStyle, SlideshowConfig, SlideshowItem,
+    SlideshowSource, StillInputError,
+};
 use fm_types::system_audio::{SystemAudioBackend, SystemAudioConfig, SystemAudioError};
 
 /// How automatic Fade-to-Black moves ease (SW-004).
@@ -1233,6 +1238,49 @@ pub enum Command {
     RemoteSystemAudioStatus {
         address: SocketAddr,
     },
+    /// Adds a still image input to a project (IN-008); a host path is
+    /// copied into the project's assets first.
+    ImageInputAdd {
+        path: PathBuf,
+        input: u128,
+        name: String,
+        config: Box<ImageInputConfig>,
+    },
+    /// Adds a still image input to a running daemon (IN-008); the daemon
+    /// copies a host path into its project.
+    RemoteImageInputAdd {
+        address: SocketAddr,
+        input: u128,
+        name: String,
+        config: Box<ImageInputConfig>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Adds a slideshow input to a project (IN-009); host paths and a host
+    /// folder are copied into the project's assets first.
+    SlideshowInputAdd {
+        path: PathBuf,
+        input: u128,
+        name: String,
+        config: Box<SlideshowConfig>,
+    },
+    /// Adds a slideshow input to a running daemon (IN-009).
+    RemoteSlideshowInputAdd {
+        address: SocketAddr,
+        input: u128,
+        name: String,
+        config: Box<SlideshowConfig>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Steps a running daemon's paged input (a slideshow's slides).
+    RemotePageNavigate {
+        address: SocketAddr,
+        input: u128,
+        navigation: PagedNavigation,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     RemoteInputRemove {
         address: SocketAddr,
         input: u128,
@@ -1673,6 +1721,8 @@ pub enum ArgsError {
     InvalidCapture(CaptureError),
     /// A system audio device name is unusable (AU-011).
     InvalidSystemAudio(SystemAudioError),
+    /// An image or slideshow setting is unusable (IN-008, IN-009).
+    InvalidStill(StillInputError),
 }
 
 impl core::fmt::Display for ArgsError {
@@ -1716,6 +1766,7 @@ impl core::fmt::Display for ArgsError {
             Self::InvalidSystemAudio(error) => {
                 write!(formatter, "invalid system audio input: {error}")
             }
+            Self::InvalidStill(error) => write!(formatter, "invalid picture input: {error}"),
             Self::InvalidNumber { field, value } | Self::InvalidChoice { field, value } => {
                 write!(formatter, "invalid {field} value `{value}`")
             }
@@ -2061,6 +2112,11 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "input-system-audio-status"
         | "remote-input-system-audio-status"
         | "remote-system-audio-devices") => parse_system_audio(system_audio, arguments),
+        still @ ("input-add-image"
+        | "remote-input-add-image"
+        | "input-add-slideshow"
+        | "remote-input-add-slideshow") => parse_still_input_add(still, arguments),
+        "remote-page-navigate" => parse_remote_page_navigate(arguments),
         "remote-input-remove" => parse_remote_input_remove(arguments),
         "remote-preview" => parse_remote_preview(arguments),
         "remote-cut" => parse_remote_cut(arguments),
@@ -6000,6 +6056,169 @@ fn parse_system_audio(
         }
         (None, None) => unreachable!("a system audio command names a target"),
     }
+}
+
+/// Parses the picture input commands (IN-008, IN-009):
+/// `input-add-image <project> <input> <name> <picture> [--fit <fit>]`,
+/// `input-add-slideshow <project> <input> <name> (--folder <folder> |
+/// --picture <picture>[|<caption>]...) [slideshow options]`, and their
+/// `remote-` forms naming an address and taking `[--key <key>]
+/// [--expect <revision>]`. A picture or folder is an `asset://` URI or an
+/// absolute host path.
+#[allow(clippy::too_many_lines)]
+fn parse_still_input_add(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let (path, address) = if remote {
+        (
+            None,
+            Some(socket_address(&required(&mut arguments, "address")?)?),
+        )
+    } else {
+        (Some(required_path(&mut arguments, "project path")?), None)
+    };
+    let image = command.ends_with("-image");
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let name = nonblank(&mut arguments, "input name")?;
+    let picture = if image {
+        Some(nonblank(&mut arguments, "picture")?)
+    } else {
+        None
+    };
+    let mut fit = fm_types::OutputScaling::Fit;
+    let mut folder = None;
+    let mut items = Vec::new();
+    let mut slideshow = SlideshowConfig::new(SlideshowSource::List(Vec::new()));
+    let mut key = None;
+    let mut expected_revision = None;
+    while let Some(option) = arguments.next() {
+        match (option.as_str(), image, remote) {
+            ("--fit", _, _) => {
+                let value = required(&mut arguments, "fit")?;
+                fit = value.parse().map_err(|_| ArgsError::InvalidChoice {
+                    field: "fit (fit, fill, stretch, or 1:1)",
+                    value,
+                })?;
+            }
+            ("--folder", false, _) => folder = Some(nonblank(&mut arguments, "folder")?),
+            ("--picture", false, _) => {
+                let value = nonblank(&mut arguments, "picture")?;
+                items.push(match value.split_once('|') {
+                    Some((uri, caption)) => {
+                        SlideshowItem::new(uri.trim()).with_caption(caption.trim())
+                    }
+                    None => SlideshowItem::new(value),
+                });
+            }
+            ("--slide-frames", false, _) => {
+                slideshow.slide_frames =
+                    number(&required(&mut arguments, "slide frames")?, "slide frames")?;
+            }
+            ("--fade-frames", false, _) => {
+                slideshow.transition = SlideTransitionStyle::Fade;
+                slideshow.transition_frames =
+                    number(&required(&mut arguments, "fade frames")?, "fade frames")?;
+            }
+            ("--cut", false, _) => slideshow.transition = SlideTransitionStyle::Cut,
+            ("--ken-burns", false, _) => slideshow.ken_burns = true,
+            ("--random", false, _) => {
+                let seed = number(&required(&mut arguments, "random seed")?, "random seed")?;
+                slideshow.order = SlideOrder::Random { seed };
+            }
+            ("--no-loop", false, _) => slideshow.loop_show = false,
+            ("--manual", false, _) => slideshow.auto_advance = false,
+            ("--key", _, true) => key = Some(nonblank(&mut arguments, "idempotency key")?),
+            ("--expect", _, true) => {
+                expected_revision = Some(number(
+                    &required(&mut arguments, "expected revision")?,
+                    "expected revision",
+                )?);
+            }
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    if let Some(picture) = picture {
+        let config = Box::new(ImageInputConfig::new(picture, fit));
+        config.validate_request().map_err(ArgsError::InvalidStill)?;
+        return Ok(match (path, address) {
+            (Some(path), _) => Command::ImageInputAdd {
+                path,
+                input,
+                name,
+                config,
+            },
+            (None, Some(address)) => Command::RemoteImageInputAdd {
+                address,
+                input,
+                name,
+                config,
+                key,
+                expected_revision,
+            },
+            (None, None) => unreachable!("an image command names a target"),
+        });
+    }
+    slideshow.fit = fit;
+    slideshow.source = match (folder, items.is_empty()) {
+        (Some(folder), true) => SlideshowSource::Folder { asset_uri: folder },
+        (None, false) => SlideshowSource::List(items),
+        (Some(_), false) => return Err(ArgsError::UnknownOption("--picture with --folder".into())),
+        (None, true) => return Err(ArgsError::MissingValue("--folder or --picture")),
+    };
+    let config = Box::new(slideshow);
+    config.validate_request().map_err(ArgsError::InvalidStill)?;
+    Ok(match (path, address) {
+        (Some(path), _) => Command::SlideshowInputAdd {
+            path,
+            input,
+            name,
+            config,
+        },
+        (None, Some(address)) => Command::RemoteSlideshowInputAdd {
+            address,
+            input,
+            name,
+            config,
+            key,
+            expected_revision,
+        },
+        (None, None) => unreachable!("a slideshow command names a target"),
+    })
+}
+
+/// Parses `remote-page-navigate <address> <input>
+/// <next|previous|first|last|goto <page>> [--key <key>] [--expect <revision>]`;
+/// `goto` counts pages from 1.
+fn parse_remote_page_navigate(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let action = required(&mut arguments, "page action")?;
+    let page = if action == "goto" {
+        let page: u32 = number(&required(&mut arguments, "page")?, "page")?;
+        Some(page.checked_sub(1).ok_or(ArgsError::InvalidNumber {
+            field: "page (counted from 1)",
+            value: page.to_string(),
+        })?)
+    } else {
+        None
+    };
+    let navigation =
+        PagedNavigation::from_token(&action, page).ok_or(ArgsError::InvalidChoice {
+            field: "page action (next, previous, first, last, or goto <page>)",
+            value: action,
+        })?;
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(Command::RemotePageNavigate {
+        address,
+        input,
+        navigation,
+        key,
+        expected_revision,
+    })
 }
 
 /// Parses `remote-input-remove <address> <input> [--key <key>]

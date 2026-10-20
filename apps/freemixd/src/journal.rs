@@ -192,6 +192,13 @@ pub(crate) trait DurableStore {
         Ok(None)
     }
 
+    /// Copies the pictures of the folder at host path `path` into a new
+    /// folder of the bundle's assets and returns its `asset://` URI (a
+    /// folder slideshow, IN-009). Stores without a bundle import nothing.
+    fn import_picture_folder_path(&self, _path: &std::path::Path) -> AppResult<Option<String>> {
+        Ok(None)
+    }
+
     /// Removes the asset a [`Self::import_media_path`] copy wrote at
     /// `asset_uri`, when the command it was copied for did not keep it.
     fn discard_imported_media(&self, _asset_uri: &str) -> AppResult<()> {
@@ -360,6 +367,10 @@ enum Job {
     DiscardImport {
         asset_uri: String,
         reply: Reply<()>,
+    },
+    ImportFolder {
+        path: std::path::PathBuf,
+        reply: Reply<String>,
     },
     /// Answers once every job handed over before it has run.
     Flush {
@@ -586,6 +597,14 @@ impl Drop for DurableJournal {
 impl DurableStore for DurableJournal {
     fn import_media_path(&self, path: &std::path::Path) -> AppResult<Option<(String, bool)>> {
         self.call(|reply| Job::Import {
+            path: path.to_path_buf(),
+            reply,
+        })
+        .map(Some)
+    }
+
+    fn import_picture_folder_path(&self, path: &std::path::Path) -> AppResult<Option<String>> {
+        self.call(|reply| Job::ImportFolder {
             path: path.to_path_buf(),
             reply,
         })
@@ -828,6 +847,19 @@ impl Worker<'_> {
                 }
                 Job::Import { path, reply } => {
                     let _ = reply.send(self.import(&path));
+                }
+                Job::ImportFolder { path, reply } => {
+                    let result = self
+                        .writer
+                        .project_store()
+                        .import_picture_folder(&path, fm_types::still::MAX_SLIDESHOW_SLIDES)
+                        .map(|imported| imported.asset_uri)
+                        .map_err(|error| {
+                            WorkerError::Failure(format!(
+                                "picture folder cannot be imported: {error}"
+                            ))
+                        });
+                    let _ = reply.send(result);
                 }
                 Job::DiscardImport { asset_uri, reply } => {
                     let result = self

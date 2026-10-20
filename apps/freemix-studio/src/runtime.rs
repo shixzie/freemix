@@ -336,6 +336,33 @@ impl StudioRuntime {
                 .is_ok()
     }
 
+    /// Asks the server for one window of slideshow `input`'s slide list
+    /// from `offset` (IN-009); the reply fills the replicated listing.
+    /// Returns whether the request went out; the Media tab asks again for
+    /// a window that never arrives.
+    pub(crate) fn request_slideshow_slides(
+        &mut self,
+        input: fm_types::InputId,
+        offset: u32,
+    ) -> bool {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let request_id = format!(
+            "studio-slides-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.transport == ControlTransport::Tcp
+            && self.session.is_connected()
+            && self
+                .session
+                .send_slideshow_slides_request(fm_protocol::SlideshowSlidesRequest {
+                    request_id,
+                    input: fm_protocol::WireInputId::from_domain(input),
+                    offset,
+                    limit: fm_protocol::MAX_SLIDESHOW_SLIDES_PAGE,
+                })
+                .is_ok()
+    }
+
     /// Turns the live input thumbnail feed on or off (Protocol 2.59) and
     /// remembers the choice, so a (re)connect subscribes again while it is
     /// on. Returns whether the request went out; one that cannot be sent now

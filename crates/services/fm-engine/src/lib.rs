@@ -15,6 +15,7 @@ mod scene_animation;
 mod scene_layer;
 mod script;
 mod shortcut;
+mod slideshow;
 mod state;
 mod stream_target;
 mod title_animation;
@@ -65,6 +66,10 @@ pub use scene_layer::{
     EngineSceneLayerEdit, MAX_SCENE_LAYER_NAME_BYTES, MAX_SCENE_LAYERS, scene_inputs_showing,
 };
 pub use script::{EngineScriptDefinition, script_failure_kind};
+pub use slideshow::{
+    EngineSlide, EngineSlideCrop, EngineSlideView, EngineSlideshowError, EngineSlideshowFrame,
+    EngineSlideshowStatus, KEN_BURNS_SPACE,
+};
 pub use state::{
     EngineInputAudioStripState, EngineInputSource, EngineTitle, MAX_SHOW_INPUTS, ShowState,
 };

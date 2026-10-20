@@ -118,6 +118,8 @@ mod native_files;
 #[cfg(feature = "native-media")]
 mod native_live_lan;
 #[cfg(feature = "native-media")]
+mod native_slides;
+#[cfg(feature = "native-media")]
 mod native_streams;
 #[cfg(feature = "native-media")]
 mod native_sync;
@@ -151,6 +153,7 @@ mod scene_render;
 #[cfg(feature = "native-media")]
 mod source_wait;
 mod status_listener;
+mod stills;
 #[cfg(feature = "native-media")]
 mod stinger_mutation;
 #[cfg(feature = "native-media")]
@@ -174,7 +177,7 @@ use fm_codec_ffmpeg::{
     stream::{EncoderSettings, StreamDestination},
 };
 #[cfg(feature = "native-media")]
-use fm_codec_image::{StillDecodeLimits, decode_still, sniff_still_format};
+use fm_codec_image::{StillDecodeLimits, sniff_still_format};
 #[cfg(all(feature = "native-media", target_os = "macos"))]
 use fm_frame::CpuVideoFrame;
 #[cfg(feature = "native-media")]
@@ -773,6 +776,8 @@ struct NativeDaemon {
     catalogue: std::collections::BTreeMap<InputId, native_catalogue::NativeSourceKey>,
     /// Still images of inputs added live, decoding off the loop.
     stills: Vec<native_catalogue::PendingStill>,
+    /// Every slideshow source's uploaded slides (IN-009).
+    slides: native_slides::NativeSlides,
     /// The project's picture size, in pixels.
     picture_size: (u32, u32),
     #[cfg(target_os = "macos")]
@@ -5104,6 +5109,10 @@ impl NativeDaemon {
             captures,
             catalogue: native_catalogue::catalogue_keys(stored.project()),
             stills: Vec::new(),
+            slides: native_slides::NativeSlides::new(
+                store.assets_root(),
+                stored.project().settings().video.dimensions,
+            ),
             picture_size: {
                 let dimensions = stored.project().settings().video.dimensions;
                 (dimensions.width(), dimensions.height())
@@ -6929,6 +6938,37 @@ impl NativeDaemon {
     }
 
     #[allow(clippy::too_many_lines)]
+    /// Composes each slideshow source's slides for the frame about to be
+    /// realized (the projected frame), on the GPU (IN-009).
+    fn present_slideshows(&mut self, control: &ControlService<Policy>) -> AppResult<()> {
+        let Some(frame) = self.projected_frame.as_ref() else {
+            return Ok(());
+        };
+        if frame.slideshows.is_empty() {
+            return Ok(());
+        }
+        let mut frames = Vec::with_capacity(frame.slideshows.len());
+        let mut ahead = Vec::new();
+        for slideshow in &frame.slideshows {
+            let Some(status) = control.slideshow_status(slideshow.input) else {
+                continue;
+            };
+            let fit = status.config.fit;
+            let listing = control.slideshow_listing(slideshow.input);
+            if let Some(next) = usize::try_from(slideshow.page.index)
+                .ok()
+                .and_then(|index| listing.get((index + 1) % listing.len().max(1)))
+            {
+                ahead.push((std::sync::Arc::clone(&next.asset_uri), fit));
+            }
+            frames.push((slideshow.clone(), fit));
+        }
+        self.slides
+            .present(&self.runtime, &mut self.playback, &frames, &ahead)
+            .map_err(|error| AppFailure(format!("native slideshow cannot render: {error}")).into())
+    }
+
+    #[allow(clippy::too_many_lines)]
     fn realize_one(
         &mut self,
         control: &mut ControlService<Policy>,
@@ -6938,6 +6978,7 @@ impl NativeDaemon {
         // the frame is produced, so the first fed pair is the next real frame.
         self.start_pending_streams();
         self.refresh_grades(control)?;
+        self.present_slideshows(control)?;
         let shows_preview = self.display_shows_preview();
         self.project_plan
             .refresh_scene_models(|scene| control.scene_model(scene));
@@ -8487,6 +8528,32 @@ fn resolve_native_sources(
                     AppFailure(format!("native network input {} cannot be timed", input.id)).into()
                 })
             }
+            // A still image is decoded and placed with its fit here, then
+            // uploaded once (IN-008).
+            InputKind::Image(image) => {
+                resolve_native_image_source(store, input.id, image, settings.video.dimensions)
+            }
+            // A slideshow starts on a blank picture; its slides are composed
+            // into it on the GPU (IN-009).
+            InputKind::Slideshow(_) => {
+                let dimensions = settings.video.dimensions;
+                native_streams::startup_picture(
+                    (dimensions.width(), dimensions.height()),
+                    settings.frame_rate,
+                    native_clock_domain(),
+                )
+                .map(|frame| NativeResolvedSource::LiveFrame {
+                    input: input.id,
+                    frame,
+                })
+                .ok_or_else(|| {
+                    AppFailure(format!(
+                        "native slideshow input {} cannot be timed",
+                        input.id
+                    ))
+                    .into()
+                })
+            }
             // Model-only so far: refuse rather than play some other picture.
             InputKind::Alias { .. } | InputKind::MixFeed(_) => Err(AppFailure(format!(
                 "native alias or program/preview feed input {} is not yet realized",
@@ -8827,9 +8894,9 @@ fn resolve_native_media_source(
             error.kind()
         ))
     })?;
-    let mut prefix = Vec::with_capacity(8);
+    let mut prefix = Vec::with_capacity(fm_codec_image::STILL_SNIFF_BYTES);
     Read::by_ref(&mut file)
-        .take(8)
+        .take(fm_codec_image::STILL_SNIFF_BYTES as u64)
         .read_to_end(&mut prefix)
         .map_err(|error| {
             AppFailure(format!(
@@ -8841,7 +8908,9 @@ fn resolve_native_media_source(
         return Ok(NativeResolvedSource::LocalVideo { input, path });
     }
 
-    let limits = still_limits(output_dimensions)?;
+    // Any picture size is placed in the raster, so only the decoder's own
+    // bounds apply.
+    let limits = StillDecodeLimits::default();
     let mut encoded = prefix;
     let remaining = limits
         .max_encoded_bytes
@@ -8855,34 +8924,49 @@ fn resolve_native_media_source(
                 error.kind()
             ))
         })?;
-    let decoded =
-        decode_still(&encoded, retained_frame_timing(clock_domain)?, limits).map_err(|error| {
-            AppFailure(format!(
-                "native still decode failed for input {input}: {error}"
-            ))
-        })?;
+    // A still media file fills the raster as large as it fits whole.
+    let decoded = fm_codec_image::decode_still_for_output(
+        &encoded,
+        retained_frame_timing(clock_domain)?,
+        limits,
+        output_dimensions,
+        fm_types::OutputScaling::Fit,
+    )
+    .map_err(|error| {
+        AppFailure(format!(
+            "native still decode failed for input {input}: {error}"
+        ))
+    })?;
     Ok(NativeResolvedSource::RetainedFrame {
         input,
         frame: decoded.frame,
     })
 }
 
+/// Decodes image input `input`'s picture placed in the raster with its fit
+/// (IN-008). A missing or undecodable file stops startup, as a broken media
+/// still does.
 #[cfg(feature = "native-media")]
-fn still_limits(dimensions: fm_types::VideoDimensions) -> AppResult<StillDecodeLimits> {
-    let maximum_axis = dimensions.width().max(dimensions.height());
-    let decoded_bytes = usize::try_from(dimensions.width())
-        .ok()
-        .and_then(|width| width.checked_mul(4))
-        .and_then(|stride| {
-            stride.checked_mul(usize::try_from(dimensions.height()).unwrap_or(usize::MAX))
-        })
-        .ok_or_else(|| AppFailure("native still output dimensions overflow".into()))?;
-    Ok(StillDecodeLimits {
-        max_width: maximum_axis,
-        max_height: maximum_axis,
-        max_decoded_rgba_bytes: decoded_bytes,
-        ..StillDecodeLimits::default()
-    })
+fn resolve_native_image_source(
+    store: &ProjectStore,
+    input: InputId,
+    image: &fm_types::still::ImageInputConfig,
+    output_dimensions: fm_types::VideoDimensions,
+) -> AppResult<NativeResolvedSource> {
+    let path = store.resolve_asset_uri(&image.asset_uri).map_err(|error| {
+        AppFailure(format!(
+            "native image asset resolution failed for input {input}: {error}"
+        ))
+    })?;
+    let frame =
+        stills::decode_picture_file(&path, output_dimensions, image.fit, native_clock_domain())
+            .map_err(|fault| {
+                AppFailure(format!(
+                    "native image decode failed for input {input}: {}",
+                    fault.token()
+                ))
+            })?;
+    Ok(NativeResolvedSource::RetainedFrame { input, frame })
 }
 
 #[cfg(feature = "native-media")]
@@ -12441,6 +12525,9 @@ fn handle_client(
                     &WireMessage::ShortcutState(state),
                 )?;
             }
+            for state in control.borrow().still_states() {
+                write_session_message(&mut writer, &mut session, &WireMessage::StillState(state))?;
+            }
         }
         SyncPayload::Resume(events) => {
             for event in events {
@@ -12521,6 +12608,14 @@ fn handle_client(
                         &WireMessage::DiagnosticsResponse(diagnostics_response(control, request)?),
                     )?;
                 }
+            }
+            WireMessage::SlideshowSlidesRequest(request) => {
+                let slides = control.borrow().slideshow_slides(&request);
+                write_session_message(
+                    &mut writer,
+                    &mut session,
+                    &WireMessage::SlideshowSlides(slides),
+                )?;
             }
             _ => write_session_error(
                 &mut writer,
@@ -13390,8 +13485,13 @@ impl HostMediaImport {
     /// reported; it is an unreferenced file, never a broken project.
     fn discard_unused(&self, store: &dyn DurableStore, project: &fm_model::Project) {
         for uri in &self.copied {
-            let used = project.inputs().iter().any(|input| {
-                matches!(&input.kind, fm_model::InputKind::Media { asset_uri, .. } if asset_uri == uri)
+            let used = project.inputs().iter().any(|input| match &input.kind {
+                fm_model::InputKind::Media { asset_uri, .. }
+                | fm_model::InputKind::Slideshow(fm_types::still::SlideshowConfig {
+                    source: fm_types::still::SlideshowSource::Folder { asset_uri },
+                    ..
+                }) => asset_uri == uri,
+                kind => kind.file_asset_uris().contains(&uri.as_str()),
             });
             if !used && let Err(error) = store.discard_imported_media(uri) {
                 eprintln!("FREEMIXD_IMPORT\tv=1\tasset={uri}\terror={error}");
@@ -13401,27 +13501,68 @@ impl HostMediaImport {
 }
 
 /// The host path `uri` names when a batch import or a source replacement
-/// should bring it into the bundle: an absolute path to a regular media file.
+/// should bring it into the bundle: an absolute path to a regular media or
+/// picture file.
 fn importable_host_path(uri: &str) -> Option<&Path> {
     let path = Path::new(uri);
     (!uri.starts_with(fm_model::MEDIA_ASSET_URI_PREFIX)
         && path.is_absolute()
-        && fm_model::is_media_file_name(uri)
+        && (fm_model::is_media_file_name(uri) || fm_types::still::is_image_file_name(uri))
         && path.is_file())
     .then_some(path)
 }
 
-/// The media URIs of a batch import (every item) or a media source
-/// replacement (one), mutably.
-fn host_media_uris(payload: &mut CommandPayload) -> Vec<&mut String> {
+/// The host folder a folder slideshow names when it should be brought into
+/// the bundle: an absolute path to a folder (IN-009).
+fn importable_host_folder(uri: &str) -> Option<&Path> {
+    let path = Path::new(uri);
+    (!uri.starts_with(fm_model::MEDIA_ASSET_URI_PREFIX) && path.is_absolute() && path.is_dir())
+        .then_some(path)
+}
+
+/// The media URIs of a batch import (every item), a media, image, or
+/// slideshow source replacement, or an image or slideshow input addition,
+/// mutably, each with whether it names a folder.
+fn host_media_uris(payload: &mut CommandPayload) -> Vec<(&mut String, bool)> {
     match payload {
         CommandPayload::InputLifecycle(fm_protocol::InputLifecycleOperation::Import { items }) => {
-            items.iter_mut().map(|item| &mut item.uri).collect()
+            items
+                .iter_mut()
+                .map(|item| (&mut item.uri, false))
+                .collect()
         }
         CommandPayload::InputLifecycle(fm_protocol::InputLifecycleOperation::ReplaceSource {
             source: fm_protocol::WireInputSource::Media { uri },
             ..
-        }) => vec![uri],
+        }) => vec![(uri, false)],
+        CommandPayload::InputLifecycle(fm_protocol::InputLifecycleOperation::ReplaceSource {
+            source: fm_protocol::WireInputSource::Image(image),
+            ..
+        }) => vec![(&mut image.asset_uri, false)],
+        CommandPayload::InputLifecycle(fm_protocol::InputLifecycleOperation::ReplaceSource {
+            source: fm_protocol::WireInputSource::Slideshow(slideshow),
+            ..
+        }) => match &mut slideshow.source {
+            fm_types::still::SlideshowSource::Folder { asset_uri } => vec![(asset_uri, true)],
+            fm_types::still::SlideshowSource::List(items) => items
+                .iter_mut()
+                .map(|item| (&mut item.asset_uri, false))
+                .collect(),
+        },
+        CommandPayload::AddInput {
+            source: fm_protocol::LiveInputSource::Image(image),
+            ..
+        } => vec![(&mut image.asset_uri, false)],
+        CommandPayload::AddInput {
+            source: fm_protocol::LiveInputSource::Slideshow(slideshow),
+            ..
+        } => match &mut slideshow.source {
+            fm_types::still::SlideshowSource::Folder { asset_uri } => vec![(asset_uri, true)],
+            fm_types::still::SlideshowSource::List(items) => items
+                .iter_mut()
+                .map(|item| (&mut item.asset_uri, false))
+                .collect(),
+        },
         _ => Vec::new(),
     }
 }
@@ -13456,12 +13597,17 @@ fn import_host_media(
 ) -> HostMediaImport {
     let mut provisional = command.clone();
     let mut hosts = Vec::new();
-    for (index, uri) in host_media_uris(&mut provisional.payload)
+    for (index, (uri, folder)) in host_media_uris(&mut provisional.payload)
         .into_iter()
         .enumerate()
     {
-        if let Some(path) = importable_host_path(uri) {
-            hosts.push((index, path.to_path_buf()));
+        let path = if folder {
+            importable_host_folder(uri)
+        } else {
+            importable_host_path(uri)
+        };
+        if let Some(path) = path {
+            hosts.push((index, path.to_path_buf(), folder));
             *uri = fm_persistence::media_import_asset_uri(path);
         }
     }
@@ -13503,7 +13649,7 @@ fn import_host_media(
                 Some(
                     hosts
                         .iter()
-                        .map(|(index, _)| *index)
+                        .map(|(index, _, _)| *index)
                         .filter(|index| !refused.contains(index))
                         .collect(),
                 )
@@ -13513,12 +13659,24 @@ fn import_host_media(
     let mut rewritten = provisional;
     let mut copied = Vec::new();
     let mut uris = host_media_uris(&mut rewritten.payload);
-    for (index, path) in hosts {
+    for (index, path, folder) in hosts {
         if kept.as_ref().is_some_and(|kept| !kept.contains(&index)) {
             // Refused as prepared; the stand-in keeps its reason.
             continue;
         }
-        let uri = &mut *uris[index];
+        let uri = &mut *uris[index].0;
+        if folder {
+            // A folder is always copied anew, so the bundle folder it
+            // becomes is the slideshow's own to follow.
+            match store.import_picture_folder_path(&path) {
+                Ok(Some(asset)) => {
+                    copied.push(asset.clone());
+                    *uri = asset;
+                }
+                Ok(None) | Err(_) => path.to_str().unwrap_or_default().clone_into(uri),
+            }
+            continue;
+        }
         match store.import_media_path(&path) {
             Ok(Some((asset, wrote))) => {
                 if wrote {
@@ -14301,6 +14459,7 @@ fn command_base_ticks(
         | CommandPayload::RemoveStinger { .. }
         | CommandPayload::SetTransitionFavorite { .. }
         | CommandPayload::Media { .. }
+        | CommandPayload::PageNavigate { .. }
         | CommandPayload::InputLifecycle(_)
         | CommandPayload::SceneLayer(_)
         | CommandPayload::AudioMixer(_)
@@ -14722,6 +14881,32 @@ fn sync_project_inputs(
                         id: input,
                         name,
                         kind: fm_model::InputKind::SystemAudio(*config),
+                        required_capabilities: Vec::new(),
+                    })
+                    .map_err(|error| {
+                        AppFailure(format!("input {input} could not be added: {error}"))
+                    })?;
+                continue;
+            }
+            fm_protocol::LiveInputSource::Image(config) => {
+                project
+                    .add_input_checked(fm_model::Input {
+                        id: input,
+                        name,
+                        kind: fm_model::InputKind::Image(*config),
+                        required_capabilities: Vec::new(),
+                    })
+                    .map_err(|error| {
+                        AppFailure(format!("input {input} could not be added: {error}"))
+                    })?;
+                continue;
+            }
+            fm_protocol::LiveInputSource::Slideshow(config) => {
+                project
+                    .add_input_checked(fm_model::Input {
+                        id: input,
+                        name,
+                        kind: fm_model::InputKind::Slideshow(*config),
                         required_capabilities: Vec::new(),
                     })
                     .map_err(|error| {

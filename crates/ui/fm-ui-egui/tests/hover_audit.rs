@@ -3,7 +3,7 @@
 //! disabled, names its shortcut, and is translated, in every shipped language.
 
 use fm_ui_egui::hover_audit::{
-    check, check_capture, check_color_panel, check_system_audio, check_timeline,
+    check, check_capture, check_color_panel, check_stills, check_system_audio, check_timeline,
 };
 use fm_ui_model::i18n::Language;
 
@@ -61,4 +61,14 @@ fn every_system_audio_form_widget_explains_itself_in_english() {
 #[test]
 fn every_system_audio_form_widget_explains_itself_in_spanish() {
     check_system_audio(Language::Spanish);
+}
+
+#[test]
+fn every_image_and_slideshow_widget_explains_itself_in_english() {
+    check_stills(Language::English);
+}
+
+#[test]
+fn every_image_and_slideshow_widget_explains_itself_in_spanish() {
+    check_stills(Language::Spanish);
 }

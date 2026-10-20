@@ -196,6 +196,7 @@ fn durable_events_carry_the_config_and_settings() {
             stable_key: "v4l2:usb-1#Cam".into(),
             settings: settings(),
         })),
+        still: None,
     });
     let line = round_trip(&added);
     assert!(
@@ -215,6 +216,7 @@ fn durable_events_carry_the_config_and_settings() {
         ))),
         system_audio: None,
         capture: Some(Box::new(CaptureInputConfig::new("cam"))),
+        still: None,
     });
     assert!(encode_line(&both).is_err());
 }
@@ -608,6 +610,7 @@ fn snapshot(capture_inputs: Vec<CaptureInputEntry>) -> WireMessage {
         cue_list_states: 0,
         script_states: 0,
         shortcut_states: 0,
+        still_states: 0,
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),

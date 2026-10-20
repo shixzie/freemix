@@ -130,6 +130,7 @@ fn snapshot(audio_mixer: AudioMixerStatus, excluded: Vec<WireOutputId>) -> WireM
         cue_list_states: 0,
         script_states: 0,
         shortcut_states: 0,
+        still_states: 0,
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         audio_mixer,

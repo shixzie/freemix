@@ -201,6 +201,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         cue_list_states: 0,
         script_states: 0,
         shortcut_states: 0,
+        still_states: 0,
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         stream_targets: Vec::new(),
@@ -1615,6 +1616,7 @@ fn input_catalogue_events_reduce_into_inputs_strips_and_tally() {
                     network_stream: None,
                     system_audio: None,
                     capture: None,
+                    still: None,
                 },
             ),
         ),
@@ -2064,6 +2066,7 @@ mod playlists {
             cue_list_states: 0,
             script_states: 0,
             shortcut_states: 0,
+            still_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             ..snapshot(revision)
@@ -3589,6 +3592,7 @@ fn network_stream_inputs_and_status_replicate() {
                     network_stream: Some(Box::new(config.clone())),
                     system_audio: None,
                     capture: None,
+                    still: None,
                 },
             ))
             .unwrap(),
@@ -3692,6 +3696,7 @@ fn capture_inputs_status_and_inventory_replicate() {
                     network_stream: None,
                     system_audio: None,
                     capture: Some(Box::new(config.clone())),
+                    still: None,
                 },
             ))
             .unwrap(),
@@ -3854,6 +3859,7 @@ fn system_audio_inputs_and_their_status_replicate() {
                     name: "Loopback".into(),
                     network_stream: None,
                     capture: None,
+                    still: None,
                     system_audio: Some(Box::new(config.clone())),
                 },
             ))
@@ -4018,5 +4024,178 @@ mod scripts {
         resyncs(&mut synchronizing(1), script_state(3, 1));
         // Out of bounds.
         resyncs(&mut synchronizing(1), script_state(4, 0));
+    }
+}
+
+/// IN-008, IN-009: a snapshot announces one `still_state` per image and
+/// slideshow input, in input order, which complete it; `slideshow_page`
+/// runtime events move the slide on air, a new listing generation drops
+/// the fetched slides, and `slideshow_slides` replies fill the listing.
+mod stills {
+    use fm_protocol::{
+        ImageInputConfig, SlideshowConfig, SlideshowItem, SlideshowPage, SlideshowPageStatus,
+        SlideshowSlide, SlideshowSlidesMessage, SlideshowSource, StillStateMessage,
+        WireStillSource,
+    };
+
+    use super::*;
+
+    fn image() -> WireStillSource {
+        WireStillSource::Image(ImageInputConfig::new(
+            "asset://logo.png",
+            fm_types::OutputScaling::Fit,
+        ))
+    }
+
+    fn slideshow() -> WireStillSource {
+        WireStillSource::Slideshow(SlideshowConfig::new(SlideshowSource::List(vec![
+            SlideshowItem::new("asset://a.png"),
+            SlideshowItem::new("asset://b.png"),
+        ])))
+    }
+
+    fn status(index: u32, label: &str, generation: u64) -> SlideshowPageStatus {
+        SlideshowPageStatus {
+            page: SlideshowPage { index, count: 2 },
+            label: label.into(),
+            generation,
+        }
+    }
+
+    fn still_state(revision: u64, id: u128, source: WireStillSource) -> WireMessage {
+        WireMessage::StillState(StillStateMessage {
+            revision,
+            input: input(id),
+            source,
+            status: SlideshowPageStatus::default(),
+        })
+    }
+
+    fn synchronizing(still_states: u16) -> Client {
+        let mut client = Client::new(config(4)).unwrap();
+        client.start_connect().unwrap();
+        client.transport_connected().unwrap();
+        client.accept_handshake(handshake(4, None)).unwrap();
+        client
+            .intake(WireMessage::Snapshot(SnapshotMessage {
+                still_states,
+                ..snapshot(4)
+            }))
+            .unwrap();
+        client
+    }
+
+    fn resyncs(client: &mut Client, message: WireMessage) {
+        let error = client.intake(message).unwrap_err();
+        assert!(
+            matches!(error, ClientError::ResyncRequired { .. }),
+            "{error:?}"
+        );
+    }
+
+    fn slides(generation: u64, offset: u32, names: &[&str]) -> WireMessage {
+        WireMessage::SlideshowSlides(SlideshowSlidesMessage {
+            request_id: "r".into(),
+            input: input(2),
+            generation,
+            offset,
+            total: 2,
+            slides: names
+                .iter()
+                .map(|name| SlideshowSlide {
+                    asset_uri: format!("asset://{name}"),
+                    caption: None,
+                })
+                .collect(),
+        })
+    }
+
+    fn page(sequence: u64, id: u128, status: SlideshowPageStatus) -> RuntimeEventMessage {
+        runtime_event(
+            4,
+            1,
+            sequence,
+            RuntimeLifecycleEvent::SlideshowPage {
+                input: input(id),
+                status: Box::new(status),
+            },
+        )
+    }
+
+    #[test]
+    fn announced_still_states_complete_the_snapshot_and_pages_track_the_slide() {
+        let mut client = synchronizing(2);
+        assert_eq!(
+            client.intake(still_state(4, 1, image())).unwrap(),
+            Intake::StillStateApplied
+        );
+        assert!(matches!(
+            client.state(),
+            ConnectionState::Synchronizing { .. }
+        ));
+        client.intake(still_state(4, 2, slideshow())).unwrap();
+        assert_eq!(client.state(), &ConnectionState::Ready);
+
+        client
+            .apply_runtime_event(page(1, 2, status(1, "b.png", 0)))
+            .unwrap();
+        // An image has no pages: a stray status is ignored.
+        client
+            .apply_runtime_event(page(2, 1, status(1, "x", 0)))
+            .unwrap();
+        let view = client.model().view().unwrap();
+        assert_eq!(
+            view.still_input(input(2).to_domain()).unwrap().status,
+            status(1, "b.png", 0)
+        );
+        assert_eq!(
+            view.still_input(input(1).to_domain()).unwrap().status,
+            SlideshowPageStatus::default()
+        );
+
+        assert_eq!(
+            client.intake(slides(0, 0, &["a.png"])).unwrap(),
+            Intake::SlideshowSlidesApplied
+        );
+        client.intake(slides(0, 1, &["b.png"])).unwrap();
+        // A reply for another listing generation is ignored.
+        client.intake(slides(7, 0, &["z.png"])).unwrap();
+        let listing = |client: &Client| {
+            client
+                .model()
+                .view()
+                .unwrap()
+                .still_input(input(2).to_domain())
+                .unwrap()
+                .listing
+                .clone()
+        };
+        let fetched = listing(&client).unwrap();
+        assert_eq!(fetched.total, 2);
+        assert_eq!(fetched.slides[&0].asset_uri, "asset://a.png");
+        assert_eq!(fetched.slides[&1].asset_uri, "asset://b.png");
+        assert_eq!(fetched.next_missing(), None);
+
+        // A new listing generation drops the fetched slides.
+        client
+            .apply_runtime_event(page(3, 2, status(0, "a.png", 1)))
+            .unwrap();
+        assert_eq!(listing(&client), None);
+    }
+
+    #[test]
+    fn unannounced_or_misplaced_still_states_force_a_fresh_snapshot() {
+        // Beyond the announced count.
+        let mut client = synchronizing(1);
+        client.intake(still_state(4, 1, image())).unwrap();
+        resyncs(&mut client, still_state(4, 2, slideshow()));
+        // At another revision.
+        resyncs(&mut synchronizing(1), still_state(3, 1, image()));
+        // For an input the project does not have.
+        resyncs(&mut synchronizing(1), still_state(4, 9, image()));
+        // Out of input order.
+        let mut client = synchronizing(2);
+        client.intake(still_state(4, 2, slideshow())).unwrap();
+        resyncs(&mut client, still_state(4, 1, image()));
     }
 }

@@ -591,3 +591,125 @@ fn folder_listing_feeds_an_ordered_slideshow() {
         .collect();
     assert_eq!(names, ["b1.png", "b9.png", "b10.png"]);
 }
+
+#[test]
+fn auto_advance_off_holds_until_a_jump() {
+    let config = SlideshowConfig {
+        auto_advance: false,
+        loop_show: true,
+        ..SlideshowConfig::new(2)
+    };
+    let mut show = Slideshow::new(abc(), config).unwrap();
+    assert_eq!(ids(&mut show, 6), [A; 6]);
+    assert!(!show.tick().at_end);
+    show.jump(C).unwrap();
+    assert_eq!(show.current(), C);
+    assert_eq!(ids(&mut show, 4), [C; 4]);
+    assert_eq!(
+        show.jump(SlideId::new(99)),
+        Err(SlideshowEditError::UnknownSlide(SlideId::new(99)))
+    );
+}
+
+#[test]
+fn a_jump_fades_from_where_the_shown_slide_is() {
+    let config = SlideshowConfig {
+        transition: SlideTransition::Crossfade { frames: 2 },
+        ..SlideshowConfig::new(10)
+    };
+    let mut show = Slideshow::new(abc(), config).unwrap();
+    // Three hold frames of A: local frames 2, 3, 4.
+    for _ in 0..3 {
+        show.tick();
+    }
+    show.jump(C).unwrap();
+    let first = show.tick();
+    let outgoing = first.outgoing.unwrap();
+    assert_eq!((outgoing.id, outgoing.local_frame), (A, 5));
+    assert_eq!((first.incoming.id, first.incoming.local_frame), (C, 0));
+    assert_eq!(first.mix_basis_points, 3_333);
+    // A jump mid-fade makes the incoming slide the outgoing one.
+    show.jump(B).unwrap();
+    let second = show.tick();
+    let outgoing = second.outgoing.unwrap();
+    assert_eq!((outgoing.id, outgoing.local_frame), (C, 1));
+    assert_eq!(second.incoming.id, B);
+    let third = show.tick();
+    assert_eq!(third.incoming.id, B);
+    let hold = show.tick();
+    assert_eq!((hold.outgoing, hold.incoming.id), (None, B));
+    // Jumping to the slide on air changes nothing.
+    show.jump(B).unwrap();
+    assert!(show.tick().outgoing.is_none());
+}
+
+#[test]
+fn sync_replaces_the_list_but_keeps_the_slide_on_air_until_it_leaves() {
+    let config = SlideshowConfig {
+        loop_show: true,
+        ..SlideshowConfig::new(2)
+    };
+    let mut show = Slideshow::new(abc(), config).unwrap();
+    show.tick();
+    // A rescan dropped A (on air) and C, and found D.
+    show.sync(vec![slide(B), slide(D)]).unwrap();
+    assert!(show.is_retiring(A));
+    let names: Vec<_> = show.slides().iter().map(Slide::id).collect();
+    assert_eq!(names, [A, B, D]);
+    assert_eq!(ids(&mut show, 5), [A, B, B, D, D]);
+    assert!(!show.is_retiring(A));
+    assert_eq!(show.index_of(A), None);
+    assert_eq!(show.index_of(D), Some(1));
+    assert_eq!(ids(&mut show, 2), [B, B]);
+    assert!(matches!(
+        show.sync(Vec::new()),
+        Err(SlideshowEditError::Invalid(SlideshowError::Empty))
+    ));
+    assert_eq!(
+        show.sync(vec![slide(B), slide(B)]),
+        Err(SlideshowEditError::DuplicateSlide(B))
+    );
+}
+
+#[test]
+fn random_sync_adds_new_slides_to_the_current_cycle() {
+    let mut show = Slideshow::new(abc(), random_config(7)).unwrap();
+    let first = show.current();
+    show.sync(vec![slide(A), slide(B), slide(C), slide(D)])
+        .unwrap();
+    let mut seen = BTreeSet::new();
+    seen.insert(first);
+    let started = starts(&mut show, 8);
+    for id in started.iter().take(4) {
+        seen.insert(*id);
+    }
+    assert_eq!(
+        seen.len(),
+        4,
+        "every slide plays once per cycle: {started:?}"
+    );
+}
+
+#[test]
+fn new_at_starts_on_the_given_slide_and_continues_from_it() {
+    let config = SlideshowConfig {
+        loop_show: true,
+        ..SlideshowConfig::new(2)
+    };
+    let mut show = Slideshow::new_at(abc(), config, B).unwrap();
+    assert_eq!(show.current(), B);
+    assert_eq!(ids(&mut show, 6), [B, B, C, C, A, A]);
+    assert_eq!(
+        Slideshow::new_at(abc(), config, D).err(),
+        Some(SlideshowError::Empty)
+    );
+    let random = SlideshowConfig {
+        order: SlideOrder::Random { seed: 7 },
+        loop_show: false,
+        ..SlideshowConfig::new(1)
+    };
+    let mut show = Slideshow::new_at(many(6), random, SlideId::new(4)).unwrap();
+    let played = starts(&mut show, 6);
+    assert_eq!(played[0], SlideId::new(4));
+    assert_eq!(played.iter().collect::<BTreeSet<_>>().len(), 6);
+}

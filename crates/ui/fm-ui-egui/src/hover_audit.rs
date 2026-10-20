@@ -441,6 +441,7 @@ fn model(variant: Variant) -> ClientModel {
         cue_list_states: 2,
         script_states: 2,
         shortcut_states: 3,
+        still_states: 0,
         input_categories: vec![
             fm_protocol::InputCategoryStatus {
                 id: 1,
@@ -1423,6 +1424,132 @@ fn system_audio_scenes(locale: Locale) -> Vec<Scene> {
             ),
         ),
         Scene::console("dialog/replace-source-system-audio", replace, listed()),
+    ]
+}
+
+/// The audit's show plus slideshow input 9 ("Photos", three slides, the
+/// second on air, its whole list fetched) (IN-009).
+fn slideshow_model() -> ClientModel {
+    use fm_protocol::{SlideshowConfig, SlideshowItem, SlideshowSource, WireStillSource};
+    let mut model = model(Variant::default());
+    let mut config = SlideshowConfig::new(SlideshowSource::List(vec![
+        SlideshowItem::new("asset://photos/one.jpg"),
+        SlideshowItem::new("asset://photos/two.jpg").with_caption("Second"),
+        SlideshowItem::new("asset://photos/three.png"),
+    ]));
+    config.ken_burns = true;
+    apply_audit_change(
+        &mut model,
+        fm_ui_model::DurableChange::InputAdded {
+            input: input(9),
+            name: "Photos".into(),
+            network_stream: None,
+            capture: None,
+            system_audio: None,
+            still: Some(Box::new(WireStillSource::Slideshow(config))),
+        },
+    );
+    model
+        .apply_runtime_slideshow_page(
+            input(9),
+            fm_protocol::SlideshowPageStatus {
+                page: fm_protocol::SlideshowPage { index: 1, count: 3 },
+                label: "Second".into(),
+                generation: 1,
+            },
+        )
+        .unwrap();
+    model
+        .apply_slideshow_slides(&fm_protocol::SlideshowSlidesMessage {
+            request_id: "audit".into(),
+            input: wire(9),
+            generation: 1,
+            offset: 0,
+            total: 3,
+            slides: ["one.jpg", "two.jpg", "three.png"]
+                .into_iter()
+                .map(|name| fm_protocol::SlideshowSlide {
+                    asset_uri: format!("asset://photos/{name}"),
+                    caption: (name == "two.jpg").then(|| "Second".to_owned()),
+                })
+                .collect(),
+        })
+        .unwrap();
+    model
+}
+
+/// The Image and Slideshow forms of the Add input dialog (empty, filled,
+/// and refused), and the Media tab's slideshow panel for an operator and a
+/// viewer (IN-008, IN-009).
+fn still_scenes(locale: Locale) -> Vec<Scene> {
+    use crate::input_catalogue::{AddInputDraft, NewInputKind};
+    let operator = ready(true, Variant::default());
+    let shell = |configure: &dyn Fn(&mut AddInputDraft)| {
+        let mut shell = StudioShell::default();
+        shell.set_locale(locale);
+        shell.open_add_input(&operator);
+        if let Some(draft) = shell.add_input.as_mut() {
+            configure(draft);
+        }
+        shell
+    };
+    let media = || {
+        let mut shell = StudioShell::default();
+        shell.set_locale(locale);
+        shell.layout.dock.show(PanelId::Media);
+        shell
+    };
+    let slideshow = slideshow_model();
+    vec![
+        Scene::console(
+            "dialog/add-input-image-empty",
+            shell(&|draft| draft.kind = NewInputKind::Image),
+            operator.clone(),
+        ),
+        Scene::console(
+            "dialog/add-input-image-filled",
+            shell(&|draft| {
+                draft.kind = NewInputKind::Image;
+                draft.image.path = "/photos/logo.png".into();
+            }),
+            operator.clone(),
+        ),
+        Scene::console(
+            "dialog/add-input-image-refused",
+            shell(&|draft| {
+                draft.kind = NewInputKind::Image;
+                draft.image.path = "logo.txt".into();
+            }),
+            operator.clone(),
+        ),
+        Scene::console(
+            "dialog/add-input-slideshow-folder",
+            shell(&|draft| {
+                draft.kind = NewInputKind::Slideshow;
+                draft.slideshow.folder = "/photos/event".into();
+            }),
+            operator.clone(),
+        ),
+        Scene::console(
+            "dialog/add-input-slideshow-list",
+            shell(&|draft| {
+                draft.kind = NewInputKind::Slideshow;
+                draft.slideshow.folder_mode = false;
+                draft.slideshow.pictures = "/photos/one.jpg\nclip.mov".into();
+                draft.slideshow.fade = false;
+            }),
+            operator.clone(),
+        ),
+        Scene::console(
+            "operator/media-slideshow",
+            media(),
+            ready_over(&slideshow, true),
+        ),
+        Scene::console(
+            "viewer/media-slideshow",
+            media(),
+            ready_over(&slideshow, false),
+        ),
     ]
 }
 
@@ -2577,6 +2704,7 @@ fn scenes(language: Language) -> Vec<Scene> {
     scenes.extend(dock_scenes(locale));
     scenes.extend(capture_scenes(locale));
     scenes.extend(system_audio_scenes(locale));
+    scenes.extend(still_scenes(locale));
     scenes.push(Scene::console(
         "disconnected",
         shell(&|_| {}),
@@ -3743,6 +3871,63 @@ pub fn check_capture(language: Language) {
             .any(|tooltip| tooltip.contains(&text))
         {
             let _ = writeln!(failures, "no capture tooltip shows {text:?}");
+        }
+    }
+    assert!(failures.is_empty(), "{failures}");
+}
+
+/// Audits the Image and Slideshow forms of the Add input dialog and the
+/// Media tab's slideshow panel (IN-008, IN-009) in `language` under the
+/// console rules, and requires the help of every form key and field and of
+/// every slideshow key to have been shown.
+pub fn check_stills(language: Language) {
+    let locale = Locale::new(language);
+    let (findings, controls) = audit(language, still_scenes(locale));
+    dump("hover-stills", language, &controls);
+    println!("{}", report(language, &findings));
+    let mut failures = String::new();
+    if failed(&findings) {
+        failures.push_str(&report(language, &findings));
+    }
+    let mut required: Vec<String> = [
+        Msg::KindImageHover,
+        Msg::KindSlideshowHover,
+        Msg::StPictureHover,
+        Msg::StFitFitHover,
+        Msg::StFitFillHover,
+        Msg::StFitStretchHover,
+        Msg::StFitOneToOneHover,
+        Msg::StSourceFolderHover,
+        Msg::StSourceListHover,
+        Msg::StFolderHover,
+        Msg::StPicturesHover,
+        Msg::StSlideSecondsHover,
+        Msg::StCutHover,
+        Msg::StFadeHover,
+        Msg::StFadeSecondsHover,
+        Msg::StKenBurnsHover,
+        Msg::StRandomHover,
+        Msg::StLoopHover,
+        Msg::StAutoAdvanceHover,
+        Msg::StFirstHover,
+        Msg::StPreviousHover,
+        Msg::StNextHover,
+        Msg::StLastHover,
+    ]
+    .into_iter()
+    .map(|msg| locale.text(msg).to_owned())
+    .collect();
+    required.push(locale.format(
+        Msg::StSlideKeyHover,
+        &[("page", Arg::from(2_u64)), ("name", Arg::Str("Second"))],
+    ));
+    for text in required {
+        if !controls
+            .iter()
+            .filter_map(|control| control.tooltip.as_deref())
+            .any(|tooltip| tooltip.contains(&text))
+        {
+            let _ = writeln!(failures, "no still tooltip shows {text:?}");
         }
     }
     assert!(failures.is_empty(), "{failures}");

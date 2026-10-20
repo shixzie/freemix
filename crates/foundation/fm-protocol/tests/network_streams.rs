@@ -214,6 +214,7 @@ fn events_carry_the_redacted_config() {
         network_stream: Some(Box::new(config)),
         system_audio: None,
         capture: None,
+        still: None,
     });
     let line = round_trip(&added);
     assert!(line.contains("\tkind=network_stream\turl="), "{line}");
@@ -223,6 +224,7 @@ fn events_carry_the_redacted_config() {
         network_stream: None,
         system_audio: None,
         capture: None,
+        still: None,
     });
     assert!(!round_trip(&plain).contains("kind="));
 }
@@ -565,6 +567,7 @@ fn fm_protocol_test_snapshot(network_streams: Vec<NetworkStreamEntry>) -> WireMe
         cue_list_states: 0,
         script_states: 0,
         shortcut_states: 0,
+        still_states: 0,
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),

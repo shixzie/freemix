@@ -196,6 +196,12 @@ pub struct TitleAssets {
 }
 
 impl TitleAssets {
+    /// The project store image assets load from, if any.
+    #[must_use]
+    pub const fn store(&self) -> Option<&ProjectStore> {
+        self.store.as_ref()
+    }
+
     /// Loads each distinct template named by a title input of `project`,
     /// with its fonts and the names of every image asset its defaults and
     /// the inputs' persisted values reference.

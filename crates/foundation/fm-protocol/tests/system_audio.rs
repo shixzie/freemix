@@ -133,6 +133,7 @@ fn the_added_event_carries_one_kind() {
         name: "Desktop".into(),
         network_stream: None,
         capture: None,
+        still: None,
         system_audio: Some(Box::new(monitor())),
     });
     let line = round_trip(&added);
@@ -146,6 +147,7 @@ fn the_added_event_carries_one_kind() {
         name: "Desktop".into(),
         network_stream: None,
         capture: Some(Box::new(fm_protocol::CaptureInputConfig::new("cam"))),
+        still: None,
         system_audio: Some(Box::new(monitor())),
     });
     assert!(encode_line(&both).is_err());
@@ -358,6 +360,7 @@ fn snapshot(system_audio_inputs: Vec<SystemAudioEntry>) -> WireMessage {
         cue_list_states: 0,
         script_states: 0,
         shortcut_states: 0,
+        still_states: 0,
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         audio_mixer: fm_protocol::AudioMixerStatus::default(),

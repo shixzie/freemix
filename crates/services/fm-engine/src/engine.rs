@@ -440,6 +440,12 @@ pub enum EngineCommand {
     /// operations; settings changes are project edits (padlocked, without
     /// an undo entry). Realized on the target frame (see [`crate::media`]).
     Media(crate::EngineMediaCommand),
+    /// Moves a paged input (a slideshow, IN-009) to another page. A live
+    /// operation realized on the target frame (see [`crate::slideshow`]).
+    PageNavigate {
+        input: InputId,
+        navigation: fm_types::paged::PagedNavigation,
+    },
     /// Edits an input's lifecycle or the input catalogue (IN-026; see
     /// [`crate::EngineInputLifecycleEdit`]). A project edit.
     InputLifecycle(crate::EngineInputLifecycleEdit),
@@ -678,6 +684,13 @@ pub enum EngineEvent {
         input: InputId,
         frame: u64,
         operation: crate::EngineMediaOperation,
+    },
+    /// A page navigation was accepted for `frame` (IN-009); the page it
+    /// lands on is reported by that frame's [`FrameResult::slideshows`].
+    PageNavigated {
+        input: InputId,
+        frame: u64,
+        navigation: fm_types::paged::PagedNavigation,
     },
     /// An input lifecycle edit (or its undo or redo) was accepted
     /// (IN-026). `added` lists the inputs a duplicate or import appended,
@@ -964,6 +977,8 @@ pub struct FrameResult {
     /// Every media input with an open source, a realized command, or a
     /// fault this frame, ascending by input (IN-003).
     pub media: Vec<crate::EngineMediaFrame>,
+    /// Every slideshow input this frame, ascending by input (IN-009).
+    pub slideshows: Vec<crate::EngineSlideshowFrame>,
     pub revision: Revision,
     pub runtime_generation: RuntimeGeneration,
 }
@@ -1118,6 +1133,7 @@ pub struct Engine {
     /// Media-file transports by input (IN-003). Runtime state: never
     /// snapshotted, so a restored source is cued at its start frame.
     media: BTreeMap<InputId, crate::media::MediaRuntime>,
+    slideshows: BTreeMap<InputId, crate::slideshow::SlideshowRuntime>,
 }
 
 impl Engine {
@@ -1142,6 +1158,7 @@ impl Engine {
             scene_air: BTreeMap::new(),
             scene_clip_bound: None,
             media: BTreeMap::new(),
+            slideshows: BTreeMap::new(),
         }
     }
 
@@ -1266,6 +1283,96 @@ impl Engine {
             let lifecycle = show.input_lifecycle(*input);
             runtime.advancing(lifecycle.paused || lifecycle.closed)
         })
+    }
+
+    /// Whether any slideshow shows something new on the next frame absent
+    /// new commands: one is advancing on its own, in a transition or a Ken
+    /// Burns move, or has a navigation still to realize.
+    #[must_use]
+    pub fn slideshows_advancing(&self) -> bool {
+        let show = self.show();
+        // A slideshow not yet ticked starts on the next frame.
+        let unstarted = show.input_sources().iter().any(|(input, source)| {
+            matches!(source, fm_model::InputSourceSpec::Slideshow(_))
+                && !self.slideshows.contains_key(input)
+        });
+        unstarted
+            || self.slideshows.iter().any(|(input, runtime)| {
+                let lifecycle = show.input_lifecycle(*input);
+                runtime.advancing(lifecycle.paused || lifecycle.closed)
+            })
+    }
+
+    /// Installs the pictures the server found in a folder slideshow's
+    /// folder (IN-009). Runtime state, never journaled: the slide on air
+    /// stays until it leaves, new pictures join, and the listing
+    /// generation increases when anything changed.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an input that is not a folder slideshow.
+    pub fn set_slideshow_listing(
+        &mut self,
+        input: InputId,
+        listing: Vec<crate::EngineSlide>,
+    ) -> Result<(), crate::EngineSlideshowError> {
+        let show = self.commands.state();
+        let config = crate::slideshow::paged_config(show, input)
+            .map_err(|_| crate::EngineSlideshowError::NotSlideshowInput(input))?;
+        if !matches!(
+            config.source,
+            fm_types::still::SlideshowSource::Folder { .. }
+        ) {
+            return Err(crate::EngineSlideshowError::NotFolderSource(input));
+        }
+        let config = config.clone();
+        let runtime = self.slideshows.entry(input).or_default();
+        runtime.follow(&config);
+        runtime.set_listing(listing);
+        Ok(())
+    }
+
+    /// The pictures a slideshow input lists now, in listing order.
+    #[must_use]
+    pub fn slideshow_listing(&self, input: InputId) -> &[crate::EngineSlide] {
+        self.slideshows
+            .get(&input)
+            .map_or(&[], crate::slideshow::SlideshowRuntime::listing)
+    }
+
+    /// What slideshow input `input` showed on the last realized frame: its
+    /// incoming and outgoing slide views and the incoming mix in basis
+    /// points. `None` before its first frame or with nothing listed.
+    #[must_use]
+    pub fn slideshow_shown(
+        &self,
+        input: InputId,
+    ) -> Option<(
+        Option<crate::EngineSlideView>,
+        Option<crate::EngineSlideView>,
+        u16,
+    )> {
+        self.slideshows.get(&input)?.shown()
+    }
+
+    /// A slideshow input's settings, page, label, and listing generation.
+    #[must_use]
+    pub fn slideshow_status(&self, input: InputId) -> Option<crate::EngineSlideshowStatus> {
+        let config = crate::slideshow::paged_config(self.show(), input).ok()?;
+        Some(match self.slideshows.get(&input) {
+            Some(runtime) => runtime.status(input, config),
+            None => crate::slideshow::SlideshowRuntime::default().status(input, config),
+        })
+    }
+
+    /// Every slideshow input's status, ascending by input.
+    #[must_use]
+    pub fn slideshow_statuses(&self) -> Vec<crate::EngineSlideshowStatus> {
+        self.show()
+            .inputs()
+            .iter()
+            .filter_map(|input| self.slideshow_status(*input))
+            .collect()
     }
 
     /// Refuses every title animation edit (undo and redo included) whose
@@ -2059,6 +2166,19 @@ impl Engine {
                 .collect(),
             _ => Vec::new(),
         };
+        let cue_pages: Vec<(InputId, fm_types::paged::PagedNavigation)> = match &cue {
+            Some(Ok(plan)) => plan
+                .runtime
+                .iter()
+                .filter_map(|action| match action {
+                    EngineCommand::PageNavigate { input, navigation } => {
+                        Some((*input, *navigation))
+                    }
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         let staged_resolution = resolution.clone();
         let title_clip_bound = self.title_clip_bound;
         let scene_clip_bound = self.scene_clip_bound;
@@ -2155,6 +2275,15 @@ impl Engine {
                     .or_default()
                     .accept(media.operation);
             }
+            if let EngineCommand::PageNavigate { input, navigation } = &command {
+                self.slideshows
+                    .entry(*input)
+                    .or_default()
+                    .accept(*navigation);
+            }
+            for (input, navigation) in cue_pages {
+                self.slideshows.entry(input).or_default().accept(navigation);
+            }
             for media in cue_media {
                 self.media
                     .entry(media.input)
@@ -2238,6 +2367,35 @@ impl Engine {
             .collect()
     }
 
+    /// Advances every slideshow input one frame; `operations` counts the
+    /// page navigations realized on this frame per input.
+    fn tick_slideshows(
+        &mut self,
+        operations: &BTreeMap<InputId, usize>,
+    ) -> Vec<crate::EngineSlideshowFrame> {
+        let show = self.commands.state();
+        self.slideshows
+            .retain(|input, _| crate::slideshow::paged_config(show, *input).is_ok());
+        for input in show.inputs() {
+            if crate::slideshow::paged_config(show, *input).is_ok() {
+                self.slideshows.entry(*input).or_default();
+            }
+        }
+        self.slideshows
+            .iter_mut()
+            .filter_map(|(input, runtime)| {
+                let config = crate::slideshow::paged_config(show, *input).ok()?;
+                let lifecycle = show.input_lifecycle(*input);
+                Some(runtime.tick(
+                    *input,
+                    config,
+                    operations.get(input).copied().unwrap_or(0),
+                    lifecycle.paused || lifecycle.closed,
+                ))
+            })
+            .collect()
+    }
+
     /// Renders the next frame at its exact simulated deadline.
     ///
     /// # Errors
@@ -2271,6 +2429,7 @@ impl Engine {
         let mut input_audio_strip_updates = Vec::new();
         let mut audio_mixer_updates = Vec::new();
         let mut media_operations = BTreeMap::<InputId, usize>::new();
+        let mut page_operations = BTreeMap::<InputId, usize>::new();
         let frame = tick.deadline.frame.get();
         for scheduled in tick.actions {
             let mut realized = RealizedActions {
@@ -2278,6 +2437,7 @@ impl Engine {
                 input_audio_strip_updates: &mut input_audio_strip_updates,
                 audio_mixer_updates: &mut audio_mixer_updates,
                 media_operations: &mut media_operations,
+                page_operations: &mut page_operations,
             };
             self.realize_action(scheduled.action, frame, &mut realized)?;
             self.runtime_generation = self.runtime_generation.checked_next()?;
@@ -2353,6 +2513,7 @@ impl Engine {
             titles,
             scenes,
             media: self.tick_media(&media_operations),
+            slideshows: self.tick_slideshows(&page_operations),
             revision: self.commands.revision(),
             runtime_generation: self.runtime_generation,
         })
@@ -2382,6 +2543,9 @@ impl Engine {
         }
         let command_events = if let EngineCommand::Media(command) = action {
             *realized.media_operations.entry(command.input).or_default() += 1;
+            Vec::new()
+        } else if let EngineCommand::PageNavigate { input, .. } = action {
+            *realized.page_operations.entry(input).or_default() += 1;
             Vec::new()
         } else if let EngineCommand::RealizeTitle(cue) = action {
             realize_title(
@@ -2523,6 +2687,7 @@ impl Engine {
             scene_air: BTreeMap::new(),
             scene_clip_bound: None,
             media: BTreeMap::new(),
+            slideshows: BTreeMap::new(),
         })
     }
 }
@@ -2730,6 +2895,7 @@ struct RealizedActions<'a> {
     input_audio_strip_updates: &'a mut Vec<(InputId, EngineInputAudioStripState)>,
     audio_mixer_updates: &'a mut Vec<crate::EngineAudioMixerUpdate>,
     media_operations: &'a mut BTreeMap<InputId, usize>,
+    page_operations: &'a mut BTreeMap<InputId, usize>,
 }
 
 /// A planned cue command (see [`crate::cue`]): the show once every due
@@ -3178,6 +3344,17 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::PageNavigate { input, navigation } = self.command {
+            crate::slideshow::paged_config(state, input)?;
+            events.push(EngineEvent::PageNavigated {
+                input,
+                frame: self.target_frame.get(),
+                navigation,
+            });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::SetTransitionFavorite { slot, favorite } = self.command {
             state.set_transition_favorite(slot, favorite)?;
             events.push(EngineEvent::TransitionFavoriteChanged { slot });
@@ -3490,6 +3667,7 @@ impl EngineMutation {
             | EngineCommand::AnimationPreset(_)
             | EngineCommand::SetTransitionFavorite { .. }
             | EngineCommand::Media(_)
+            | EngineCommand::PageNavigate { .. }
             | EngineCommand::InputLifecycle(_) => {
                 unreachable!("grade and animation mutations return before switcher command mapping")
             }
@@ -3562,6 +3740,13 @@ fn apply_input_catalogue_mutation(
                 config.validate().map_err(system_audio_rejection)?;
                 check_system_audio_room(state)?;
             }
+            if let EngineInputSource::Image(config) = &source {
+                config.validate().map_err(still_rejection)?;
+            }
+            if let EngineInputSource::Slideshow(config) = &source {
+                config.validate().map_err(still_rejection)?;
+                check_slideshow_room(state)?;
+            }
             state
                 .add_input(input, name.clone())
                 .map_err(input_catalogue_rejection)?;
@@ -3612,6 +3797,38 @@ pub(crate) fn system_audio_rejection(error: fm_types::system_audio::SystemAudioE
         error.code(),
         message,
     ))
+}
+
+/// The refusal of unusable image or slideshow settings (IN-008, IN-009).
+pub(crate) fn still_rejection(error: fm_types::still::StillInputError) -> Rejection {
+    let message = error.to_string();
+    Rejection::new(RejectionCode::InvalidCommand, message.clone()).with_field(FieldIssue::new(
+        error.field(),
+        error.code(),
+        message,
+    ))
+}
+
+/// Refuses another slideshow input once the show holds
+/// [`fm_types::still::MAX_SLIDESHOW_INPUTS`] (IN-009).
+pub(crate) fn check_slideshow_room(state: &ShowState) -> Result<(), Rejection> {
+    let count = state
+        .input_sources()
+        .values()
+        .filter(|source| matches!(source, fm_model::InputSourceSpec::Slideshow(_)))
+        .count();
+    if count >= fm_types::still::MAX_SLIDESHOW_INPUTS {
+        let message =
+            format!("the show already has {count} slideshow inputs, the most it may hold");
+        return Err(
+            Rejection::new(RejectionCode::Conflict, message.clone()).with_field(FieldIssue::new(
+                "kind",
+                "too_many_slideshow_inputs",
+                message,
+            )),
+        );
+    }
+    Ok(())
 }
 
 /// Refuses another system audio input once the show holds
@@ -4009,6 +4226,7 @@ fn apply_runtime(
             | EngineCommand::AnimationPreset(_)
             | EngineCommand::SetTransitionFavorite { .. }
             | EngineCommand::Media(_)
+            | EngineCommand::PageNavigate { .. }
     ) {
         return Ok(Vec::new());
     }
@@ -4201,6 +4419,7 @@ fn apply_runtime(
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::Media(_)
+        | EngineCommand::PageNavigate { .. }
         | EngineCommand::InputLifecycle(_) => {
             unreachable!("grade and animation commands return before switcher command mapping")
         }
@@ -4396,6 +4615,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::AnimationPreset(_)
         | EngineCommand::SetTransitionFavorite { .. }
         | EngineCommand::Media(_)
+        | EngineCommand::PageNavigate { .. }
         | EngineCommand::InputLifecycle(_)
         | EngineCommand::SetCueList { .. }
         | EngineCommand::CueControl { .. }
@@ -4433,6 +4653,7 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::AnimationPreset(_))
         && !matches!(command, EngineCommand::SetTransitionFavorite { .. })
         && !matches!(command, EngineCommand::Media(_))
+        && !matches!(command, EngineCommand::PageNavigate { .. })
         && !matches!(
             command,
             EngineCommand::InputLifecycle(edit) if !matches!(

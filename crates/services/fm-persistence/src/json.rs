@@ -13,6 +13,7 @@ mod network_stream;
 mod scene_animation;
 mod script;
 mod shortcut;
+mod still;
 mod system_audio;
 mod transition_favorite;
 

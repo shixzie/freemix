@@ -458,6 +458,9 @@ pub struct ProjectSnapshot {
     /// How many `shortcut_state` records complete this snapshot (Protocol
     /// 2.70).
     pub shortcut_states: u16,
+    /// How many `still_state` records complete this snapshot (IN-008,
+    /// IN-009).
+    pub still_states: u16,
     /// Each input's lifecycle, parallel to `inputs` (Protocol 2.38).
     pub input_lifecycle: Vec<InputLifecycleStatus>,
     /// The project's input categories (Protocol 2.38).
@@ -578,6 +581,7 @@ impl ProjectSnapshot {
             cue_list_states: message.cue_list_states,
             script_states: message.script_states,
             shortcut_states: message.shortcut_states,
+            still_states: message.still_states,
             input_lifecycle,
             input_categories: message.input_categories,
             audio_mixer: message.audio_mixer,
@@ -627,6 +631,9 @@ pub enum DurableChange {
         capture: Option<Box<fm_protocol::CaptureInputConfig>>,
         /// The device of an added system audio input (Protocol 2.55).
         system_audio: Option<Box<fm_protocol::SystemAudioConfig>>,
+        /// The picture or slideshow of an added image or slideshow input
+        /// (IN-008, IN-009).
+        still: Option<Box<fm_protocol::WireStillSource>>,
     },
     /// An input removed with its strip and padlock.
     InputRemoved {
@@ -716,6 +723,11 @@ pub enum DurableChange {
     /// (Protocol 2.37).
     MediaChanged {
         status: Box<MediaStatus>,
+    },
+    /// A slideshow page navigation was accepted (IN-009); the slide it
+    /// lands on arrives as a `slideshow_page` runtime event.
+    PageNavigated {
+        input: InputId,
     },
     /// An accepted input lifecycle edit (Protocol 2.38): the operation and
     /// the inputs it appended, in order.
@@ -868,12 +880,14 @@ impl DurableProjectEvent {
                 network_stream,
                 capture,
                 system_audio,
+                still,
             } => DurableChange::InputAdded {
                 input: input.to_domain(),
                 name,
                 network_stream,
                 capture,
                 system_audio,
+                still,
             },
             EventPayload::CaptureSettingsChanged { input, settings } => {
                 DurableChange::CaptureSettingsChanged {
@@ -971,6 +985,9 @@ impl DurableProjectEvent {
                 DurableChange::TransitionFavoriteChanged { slot, favorite }
             }
             EventPayload::MediaChanged { status, .. } => DurableChange::MediaChanged { status },
+            EventPayload::PageNavigated { input, .. } => DurableChange::PageNavigated {
+                input: input.to_domain(),
+            },
             EventPayload::InputLifecycleChanged {
                 operation, added, ..
             } => DurableChange::InputLifecycleChanged {
@@ -1188,6 +1205,11 @@ pub struct ProjectState {
     capture_inputs: BTreeMap<InputId, fm_protocol::CaptureInputEntry>,
     /// Every system audio input's device and latest status (Protocol 2.55).
     system_audio_inputs: BTreeMap<InputId, fm_protocol::SystemAudioEntry>,
+    /// Every image and slideshow input's source and, for a slideshow, the
+    /// slide on air (IN-008, IN-009).
+    still_inputs: BTreeMap<InputId, StillInputStatus>,
+    /// `still_state` records the snapshot announced that have not arrived.
+    still_states_pending: u16,
     /// Every configured stream destination in authored order (Protocol
     /// 2.52).
     stream_targets: Vec<fm_protocol::StreamTargetEntry>,
@@ -1229,6 +1251,25 @@ impl ProjectState {
     #[must_use]
     pub fn system_audio_input(&self, input: InputId) -> Option<&fm_protocol::SystemAudioEntry> {
         self.system_audio_inputs.get(&input)
+    }
+
+    /// Image or slideshow input `input`'s source and slide on air (IN-008,
+    /// IN-009).
+    #[must_use]
+    pub fn still_input(&self, input: InputId) -> Option<&StillInputStatus> {
+        self.still_inputs.get(&input)
+    }
+
+    /// Every image and slideshow input, ascending by input.
+    #[must_use]
+    pub const fn still_inputs(&self) -> &BTreeMap<InputId, StillInputStatus> {
+        &self.still_inputs
+    }
+
+    /// Returns whether every `still_state` the snapshot announced arrived.
+    #[must_use]
+    pub const fn stills_complete(&self) -> bool {
+        self.still_states_pending == 0
     }
 
     /// Returns every configured display-output slot (Protocol 2.42).
@@ -1713,6 +1754,9 @@ pub struct ClientView {
     /// The web gateway's pairing and paired devices as the daemon last
     /// answered a `web_access_request` (Protocol 2.71); `None` until then.
     pub web_access: Option<fm_protocol::WebAccessMessage>,
+    /// Every image and slideshow input's source, slide on air, and fetched
+    /// listing, ascending by input (IN-008, IN-009).
+    pub still_inputs: BTreeMap<InputId, StillInputStatus>,
     /// Every configured stream destination in authored order, without its
     /// key (Protocol 2.52).
     pub stream_targets: Vec<fm_protocol::StreamTargetEntry>,
@@ -1750,8 +1794,15 @@ impl ClientView {
             .find(|entry| entry.input.to_domain() == input)
     }
 
-    /// System audio input `input`'s device and latest status, if it is a
-    /// system audio input (Protocol 2.55).
+    /// Image or slideshow input `input`'s source, slide on air, and fetched
+    /// listing (IN-008, IN-009).
+    #[must_use]
+    pub fn still_input(&self, input: InputId) -> Option<&StillInputStatus> {
+        self.still_inputs.get(&input)
+    }
+
+    /// System audio input `input`'s device and latest status (Protocol
+    /// 2.55).
     #[must_use]
     pub fn system_audio_input(&self, input: InputId) -> Option<&fm_protocol::SystemAudioEntry> {
         self.system_audio_inputs
@@ -2067,6 +2118,9 @@ pub enum ModelError {
     /// A `media_state` arrived that the applied snapshot did not announce,
     /// at another revision, out of input order, or for an unknown input.
     MediaStateMismatch,
+    /// A `still_state` arrived that the applied snapshot did not announce,
+    /// at another revision, out of input order, or for an unknown input.
+    StillStateMismatch,
     /// A media status (`media_changed` or a `media` runtime event) names an
     /// input outside the replicated project.
     InvalidMediaChange(InputId),
@@ -2219,6 +2273,7 @@ impl fmt::Display for ModelError {
             | Self::AnimationPresetStateMismatch
             | Self::InvalidAnimationPresetChange
             | Self::MediaStateMismatch
+            | Self::StillStateMismatch
             | Self::InvalidMediaChange(_)
             | Self::InvalidInputLifecycleChange
             | Self::InvalidTitleChange(_) => write_catalogue_message(self, formatter),
@@ -2311,6 +2366,9 @@ fn write_catalogue_message(error: &ModelError, formatter: &mut fmt::Formatter<'_
             .write_str("animation preset change does not match the replicated preset library"),
         ModelError::MediaStateMismatch => {
             formatter.write_str("media state does not match the snapshot it follows")
+        }
+        ModelError::StillStateMismatch => {
+            formatter.write_str("still state does not match the snapshot it follows")
         }
         ModelError::InvalidMediaChange(input) => {
             write!(formatter, "media status names unknown input {input}")
@@ -2511,6 +2569,56 @@ impl ClientModel {
         Ok(())
     }
 
+    /// Records the slide a slideshow shows from a `slideshow_page` runtime
+    /// event (IN-009). Runtime events never move the durable cursor; a
+    /// status for an input the model does not know as a slideshow is
+    /// ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot.
+    pub fn apply_runtime_slideshow_page(
+        &mut self,
+        input: InputId,
+        status: fm_protocol::SlideshowPageStatus,
+    ) -> Result<(), ModelError> {
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        if let Some(entry) = state.still_inputs.get_mut(&input)
+            && matches!(entry.source, fm_protocol::WireStillSource::Slideshow(_))
+        {
+            if entry.status.generation != status.generation {
+                entry.listing = None;
+            }
+            entry.status = status;
+        }
+        Ok(())
+    }
+
+    /// Records a window of a slideshow's listing from a `slideshow_slides`
+    /// reply (IN-009). A reply for another listing generation than the
+    /// slideshow's, or for an input that is no slideshow, is ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot.
+    pub fn apply_slideshow_slides(
+        &mut self,
+        message: &fm_protocol::SlideshowSlidesMessage,
+    ) -> Result<(), ModelError> {
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        let Some(entry) = state.still_inputs.get_mut(&message.input.to_domain()) else {
+            return Ok(());
+        };
+        if !matches!(entry.source, fm_protocol::WireStillSource::Slideshow(_))
+            || message.generation != entry.status.generation
+        {
+            return Ok(());
+        }
+        let listing = entry.listing.get_or_insert_with(SlideshowListing::default);
+        listing.apply(message);
+        Ok(())
+    }
+
     /// Records the connected displays from a `display_inventory` runtime
     /// event or reply (Protocol 2.42).
     pub fn apply_display_inventory(&mut self, inventory: fm_protocol::DisplayInventory) {
@@ -2660,6 +2768,12 @@ impl ClientModel {
                 .values()
                 .filter(|entry| state.inputs.contains(&entry.input.to_domain()))
                 .cloned()
+                .collect(),
+            still_inputs: state
+                .still_inputs
+                .iter()
+                .filter(|(input, _)| state.inputs.contains(input))
+                .map(|(input, entry)| (*input, entry.clone()))
                 .collect(),
             stream_targets: state.stream_targets.clone(),
             live_lan: state.live_lan,
@@ -2913,6 +3027,8 @@ impl ClientModel {
                 .into_iter()
                 .map(|entry| (entry.input.to_domain(), entry))
                 .collect(),
+            still_inputs: BTreeMap::new(),
+            still_states_pending: snapshot.still_states,
             stream_targets: snapshot.stream_targets,
             live_lan: snapshot.live_lan,
             live_lan_status: snapshot.live_lan_status,
@@ -3191,6 +3307,48 @@ impl ClientModel {
         }
         state.media.insert(input, message.status);
         state.media_states_pending -= 1;
+        Ok(())
+    }
+
+    /// Adds one of the `still_state` records the installed snapshot
+    /// announced (IN-008, IN-009), in ascending input order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::StillStateMismatch`] when the record is at another
+    /// revision, unannounced, out of input order, or for an unknown input;
+    /// the model is then unchanged and the caller must resynchronize.
+    pub fn apply_still_state(
+        &mut self,
+        message: fm_protocol::StillStateMessage,
+    ) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        let input = message.input.to_domain();
+        if Revision::new(message.revision) != revision
+            || state.still_states_pending == 0
+            || !state.inputs.contains(&input)
+            || state
+                .still_inputs
+                .last_key_value()
+                .is_some_and(|(last, _)| last.get() >= input.get())
+        {
+            return Err(ModelError::StillStateMismatch);
+        }
+        state.still_inputs.insert(
+            input,
+            StillInputStatus {
+                source: message.source,
+                status: message.status,
+                listing: None,
+            },
+        );
+        state.still_states_pending -= 1;
         Ok(())
     }
 
@@ -4386,6 +4544,13 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
             target: EditLockTarget::Project,
             ..
         } => return Ok(()),
+        DurableChange::PageNavigated { input } => {
+            return if state.inputs.contains(input) {
+                Ok(())
+            } else {
+                Err(ModelError::InvalidMediaChange(*input))
+            };
+        }
         DurableChange::MediaChanged { status } => {
             let input = status.input.to_domain();
             return if state.inputs.contains(&input) {
@@ -4536,6 +4701,7 @@ fn apply_input_removed(state: &mut ProjectState, input: InputId) {
     state.network_streams.remove(&input);
     state.capture_inputs.remove(&input);
     state.system_audio_inputs.remove(&input);
+    state.still_inputs.remove(&input);
     state
         .input_audio_strips
         .retain(|strip| strip.input != input);
@@ -4595,7 +4761,18 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             network_stream,
             capture,
             system_audio,
+            still,
         } => {
+            if let Some(source) = still {
+                state.still_inputs.insert(
+                    input,
+                    StillInputStatus {
+                        source: *source,
+                        status: fm_protocol::SlideshowPageStatus::default(),
+                        listing: None,
+                    },
+                );
+            }
             if let Some(config) = system_audio {
                 state.system_audio_inputs.insert(
                     input,
@@ -4683,6 +4860,35 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                         state.capture_inputs.remove(&input);
                     }
                 }
+                let still = match source {
+                    fm_protocol::WireInputSource::Image(config) => {
+                        Some(fm_protocol::WireStillSource::Image(config.clone()))
+                    }
+                    fm_protocol::WireInputSource::Slideshow(config) => {
+                        Some(fm_protocol::WireStillSource::Slideshow((**config).clone()))
+                    }
+                    _ => None,
+                };
+                match still {
+                    Some(source) => {
+                        // A replaced slideshow keeps reporting its slide
+                        // until the next `slideshow_page`.
+                        let entry =
+                            state
+                                .still_inputs
+                                .entry(input)
+                                .or_insert_with(|| StillInputStatus {
+                                    source: source.clone(),
+                                    status: fm_protocol::SlideshowPageStatus::default(),
+                                    listing: None,
+                                });
+                        entry.source = source;
+                        entry.listing = None;
+                    }
+                    None => {
+                        state.still_inputs.remove(&input);
+                    }
+                }
                 match source {
                     fm_protocol::WireInputSource::SystemAudio(config) => {
                         state.system_audio_inputs.insert(
@@ -4698,6 +4904,17 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                         state.system_audio_inputs.remove(&input);
                     }
                 }
+            }
+            if let fm_protocol::InputLifecycleOperation::Duplicate { source, input, .. } =
+                &operation
+                && let Some(original) = state.still_inputs.get(&source.to_domain())
+            {
+                let copy = StillInputStatus {
+                    source: original.source.clone(),
+                    status: fm_protocol::SlideshowPageStatus::default(),
+                    listing: None,
+                };
+                state.still_inputs.insert(input.to_domain(), copy);
             }
             if let fm_protocol::InputLifecycleOperation::Duplicate { source, input, .. } =
                 &operation
@@ -4916,6 +5133,7 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
         DurableChange::MediaChanged { status } => {
             state.media.insert(status.input.to_domain(), *status);
         }
+        DurableChange::PageNavigated { .. } => {}
         DurableChange::TitleAnimationChanged { inputs, animation } => {
             for title in &mut state.titles {
                 if inputs.contains(&title.input) {
@@ -5088,3 +5306,40 @@ fn validate_manual_transition(
 
 #[cfg(test)]
 mod tests;
+
+/// An image or slideshow input's replicated source and, for a slideshow,
+/// the slide on air and the part of its listing fetched so far (IN-008,
+/// IN-009).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StillInputStatus {
+    pub source: fm_protocol::WireStillSource,
+    pub status: fm_protocol::SlideshowPageStatus,
+    /// The listing windows fetched at the current generation; `None` until
+    /// a `slideshow_slides` reply for it arrives.
+    pub listing: Option<SlideshowListing>,
+}
+
+/// The fetched windows of a slideshow's listing at one generation.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SlideshowListing {
+    /// How many slides the listing holds.
+    pub total: u32,
+    /// The fetched slides by position.
+    pub slides: BTreeMap<u32, fm_protocol::SlideshowSlide>,
+}
+
+impl SlideshowListing {
+    fn apply(&mut self, message: &fm_protocol::SlideshowSlidesMessage) {
+        self.total = message.total;
+        self.slides.retain(|index, _| *index < message.total);
+        for (offset, slide) in (message.offset..).zip(&message.slides) {
+            self.slides.insert(offset, slide.clone());
+        }
+    }
+
+    /// The first position not fetched yet, if any.
+    #[must_use]
+    pub fn next_missing(&self) -> Option<u32> {
+        (0..self.total).find(|index| !self.slides.contains_key(index))
+    }
+}

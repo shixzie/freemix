@@ -137,7 +137,8 @@ pub const fn cue_action_class(action: &CueAction) -> Option<CommandClass> {
         | CueAction::PlaylistStop
         | CueAction::Record { .. }
         | CueAction::Stream { .. }
-        | CueAction::Media { .. } => CommandClass::Transition,
+        | CueAction::Media { .. }
+        | CueAction::Page { .. } => CommandClass::Transition,
         // Saving a title's field values (`title_fields_set`) edits project
         // content.
         CueAction::TitleText { .. } | CueAction::TitleNumber { .. } => CommandClass::EditProject,

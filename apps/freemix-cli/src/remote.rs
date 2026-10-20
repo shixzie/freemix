@@ -1737,6 +1737,9 @@ impl Remote {
                         EventPayload::MediaChanged { .. } => {
                             matches!(completion, CommandCompletion::Media { .. })
                         }
+                        EventPayload::PageNavigated { .. } => {
+                            completion == CommandCompletion::Switcher
+                        }
                         EventPayload::AudioMixerChanged(_) => matches!(
                             completion,
                             CommandCompletion::Mixer { .. } | CommandCompletion::History

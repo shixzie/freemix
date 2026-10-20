@@ -752,6 +752,10 @@ pub(crate) fn expand(
                 EngineCommand::StreamStop { target }
             }]
         }
+        CueAction::Page { input, navigation } => vec![EngineCommand::PageNavigate {
+            input: *input,
+            navigation: *navigation,
+        }],
         CueAction::Media { input, operation } => {
             let media = |operation| {
                 EngineCommand::Media(crate::EngineMediaCommand {

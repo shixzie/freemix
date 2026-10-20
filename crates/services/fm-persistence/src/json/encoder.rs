@@ -764,6 +764,8 @@ fn write_input_kind(output: &mut String, kind: &InputKind) {
         InputKind::SystemAudio(config) => {
             super::system_audio::write_system_audio_input(output, config);
         }
+        InputKind::Image(config) => super::still::write_image_input(output, config),
+        InputKind::Slideshow(config) => super::still::write_slideshow_input(output, config),
         InputKind::Scene {
             scene_id,
             audio_source,

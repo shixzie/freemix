@@ -169,6 +169,10 @@ pub enum WireInputSource {
     },
     /// A system audio capture source (Protocol 2.55, AU-011).
     SystemAudio(crate::SystemAudioConfig),
+    /// A picture file (IN-008): `image:<fit>:<uri>`.
+    Image(crate::ImageInputConfig),
+    /// A slideshow (IN-009): `slideshow:<settings>`.
+    Slideshow(Box<crate::SlideshowConfig>),
 }
 
 /// One requested item of a batch import.

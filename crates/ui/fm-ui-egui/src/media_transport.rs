@@ -7,6 +7,9 @@
 //! handles, the speed menu (0.25× to 4×), the end action, and the audio
 //! track are project edits (`can_edit_project`, padlocks honoured), saved
 //! with the project.
+//!
+//! Under the bars, a panel per slideshow input steps its slides (IN-009,
+//! see [`crate::still_input_ui`]), an operator control like the transport.
 
 use core::fmt::Write as _;
 
@@ -87,7 +90,8 @@ pub(crate) fn draw_media(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<S
         empty_state(ui, l.text(Msg::TabMedia), l.text(Msg::MediaNotSynced));
         return;
     };
-    if project.media().is_empty() {
+    let slideshows = crate::still_input_ui::slideshows(view);
+    if project.media().is_empty() && slideshows.is_empty() {
         empty_state(ui, l.text(Msg::MediaNone), l.text(Msg::MediaNoneDetail));
         return;
     }
@@ -108,6 +112,49 @@ pub(crate) fn draw_media(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<S
         });
         ui.add_space(6.0);
     }
+    if !slideshows.is_empty() {
+        ui.label(crate::theme::section_label(l.text(Msg::MediaSlideshows)));
+    }
+    let block = slideshow_block(state);
+    let now = ui.input(|input| input.time);
+    for (input, still) in slideshows {
+        let name = input_name(l, &view.inputs, &view.input_names, input);
+        card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            crate::still_input_ui::draw_slideshow_panel(
+                ui,
+                l,
+                (input, &name),
+                still,
+                block,
+                intents,
+            );
+        });
+        ui.add_space(6.0);
+        // The slide strip fills window by window; a window asked for is
+        // asked again only if no reply arrived within two seconds.
+        if let Some(offset) = crate::still_input_ui::missing_window(still) {
+            let id = Id::new(("studio-slideshow-request", input));
+            let key = (still.status.generation, offset);
+            let asked = ui
+                .ctx()
+                .data(|data| data.get_temp::<((u64, u32), f64)>(id))
+                .is_some_and(|(asked, at)| asked == key && now - at < 2.0);
+            if !asked {
+                ui.ctx().data_mut(|data| data.insert_temp(id, (key, now)));
+                intents.push(StudioIntent::RequestSlideshowSlides { input, offset });
+            }
+        }
+    }
+}
+
+/// Why slideshow slides cannot be stepped, if they cannot: the session
+/// gates of an operator control.
+fn slideshow_block(state: &StudioUiState) -> Option<&'static str> {
+    let ready = state.connection_status == StudioConnectionStatus::Ready
+        && state.view.is_some()
+        && state.can_transition;
+    (!ready).then(|| unavailable_reason(state, Capability::Transition))
 }
 
 fn state_chip(state: MediaTransportState) -> (Msg, Tone) {

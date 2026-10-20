@@ -99,6 +99,10 @@ pub enum NewInputKind {
     Capture,
     /// An audio-only input that hears the server's system audio (AU-011).
     SystemAudio,
+    /// One still picture (IN-008).
+    Image,
+    /// Pictures shown one after another (IN-009).
+    Slideshow,
 }
 
 impl NewInputKind {
@@ -115,6 +119,8 @@ impl NewInputKind {
             Self::Network => Msg::NameNetworkStream,
             Self::Capture => Msg::NameCapture,
             Self::SystemAudio => Msg::NameSystemAudio,
+            Self::Image => Msg::NameImage,
+            Self::Slideshow => Msg::NameSlideshow,
         }
     }
 
@@ -125,6 +131,8 @@ impl NewInputKind {
             Self::Network => Msg::KindNetworkKey,
             Self::Capture => Msg::KindCaptureKey,
             Self::SystemAudio => Msg::KindSystemAudioKey,
+            Self::Image => Msg::KindImageKey,
+            Self::Slideshow => Msg::KindSlideshowKey,
         }
     }
 
@@ -135,6 +143,8 @@ impl NewInputKind {
             Self::Network => Msg::KindNetworkHover,
             Self::Capture => Msg::KindCaptureHover,
             Self::SystemAudio => Msg::KindSystemAudioHover,
+            Self::Image => Msg::KindImageHover,
+            Self::Slideshow => Msg::KindSlideshowHover,
         }
     }
 }
@@ -447,6 +457,10 @@ pub(crate) struct AddInputDraft {
     pub(crate) capture: crate::capture_input_ui::CaptureDraft,
     /// The system audio form (AU-011).
     pub(crate) system_audio: crate::system_audio_ui::SystemAudioDraft,
+    /// The image form (IN-008).
+    pub(crate) image: crate::still_input_ui::ImageDraft,
+    /// The slideshow form (IN-009).
+    pub(crate) slideshow: crate::still_input_ui::SlideshowDraft,
     /// The name field takes keyboard focus once, when the dialog opens.
     focus_pending: bool,
     /// Language of the suggested name.
@@ -476,6 +490,18 @@ impl AddInputDraft {
             stream: crate::network_stream_ui::NetworkStreamDraft::default(),
             capture: crate::capture_input_ui::CaptureDraft::default(),
             system_audio: crate::system_audio_ui::SystemAudioDraft::default(),
+            image: crate::still_input_ui::ImageDraft::default(),
+            slideshow: crate::still_input_ui::SlideshowDraft::new(
+                state.project_state.as_ref().map_or_else(
+                    || fm_types::FrameRate::new(30, 1).expect("30 fps is a valid rate"),
+                    fm_ui_model::ProjectState::frame_rate,
+                ),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(1, |elapsed| {
+                        u64::try_from(elapsed.as_nanos() & u128::from(u64::MAX)).unwrap_or(1)
+                    }),
+            ),
             focus_pending: true,
             locale: tracker.locale,
         }
@@ -507,6 +533,10 @@ impl AddInputDraft {
             NewInputKind::SystemAudio => {
                 LiveInputSource::SystemAudio(Box::new(self.system_audio.config()?))
             }
+            NewInputKind::Image => LiveInputSource::Image(Box::new(self.image.config()?)),
+            NewInputKind::Slideshow => {
+                LiveInputSource::Slideshow(Box::new(self.slideshow.config()?))
+            }
         })
     }
 
@@ -525,6 +555,14 @@ impl AddInputDraft {
             }
             NewInputKind::SystemAudio => {
                 let problem = self.system_audio.checked().err()?;
+                (problem.field.label(), problem.reason, problem.prompt)
+            }
+            NewInputKind::Image => {
+                let problem = self.image.checked().err()?;
+                (problem.field.label(), problem.reason, problem.prompt)
+            }
+            NewInputKind::Slideshow => {
+                let problem = self.slideshow.checked().err()?;
                 (problem.field.label(), problem.reason, problem.prompt)
             }
         };
@@ -1087,6 +1125,8 @@ impl StudioShell {
                                 NewInputKind::Network,
                                 NewInputKind::Capture,
                                 NewInputKind::SystemAudio,
+                                NewInputKind::Image,
+                                NewInputKind::Slideshow,
                             ] {
                                 let selected = draft.kind == kind;
                                 let response = ui
@@ -1159,6 +1199,14 @@ impl StudioShell {
                             ) {
                                 intents.push(StudioIntent::RequestSystemAudioDevices);
                             }
+                        }
+                        if draft.kind == NewInputKind::Image {
+                            ui.add_space(6.0);
+                            crate::still_input_ui::draw_image_form(ui, l, &mut draft.image);
+                        }
+                        if draft.kind == NewInputKind::Slideshow {
+                            ui.add_space(6.0);
+                            crate::still_input_ui::draw_slideshow_form(ui, l, &mut draft.slideshow);
                         }
                         if draft.kind == NewInputKind::Capture {
                             ui.add_space(6.0);
@@ -1580,12 +1628,16 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
                 muted_color(),
             );
         }
-        // A system audio input has no picture of its own.
-        NewInputKind::SystemAudio => {
+        // A system audio input has no picture of its own; a picture shows
+        // once the server decoded it.
+        NewInputKind::SystemAudio | NewInputKind::Image | NewInputKind::Slideshow => {
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
-                l.text(Msg::ThumbAudioOnly),
+                l.text(match draft.kind {
+                    NewInputKind::SystemAudio => Msg::ThumbAudioOnly,
+                    _ => Msg::ThumbSlideshowEmpty,
+                }),
                 FontId::new(10.0, FontFamily::Proportional),
                 muted_color(),
             );
@@ -1727,6 +1779,7 @@ mod tests {
             cue_list_states: 0,
             script_states: 0,
             shortcut_states: 0,
+            still_states: 0,
             input_categories: Vec::new(),
             transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
             stream_targets: Vec::new(),

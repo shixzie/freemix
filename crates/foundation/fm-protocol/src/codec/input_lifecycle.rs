@@ -210,6 +210,12 @@ pub(super) fn encode_source(source: &WireInputSource) -> Result<String, CodecErr
             validate_locator("source", endpoint)?;
             format!("network:{}", escape_bounded(endpoint)?)
         }
+        WireInputSource::Image(config) => {
+            super::still::encode_source_token(&crate::WireStillSource::Image(config.clone()))?
+        }
+        WireInputSource::Slideshow(config) => super::still::encode_source_token(
+            &crate::WireStillSource::Slideshow((**config).clone()),
+        )?,
         WireInputSource::SystemAudio(config) => {
             config
                 .validate()
@@ -268,6 +274,13 @@ pub(super) fn decode_source(value: &str) -> Result<WireInputSource, CodecError> 
         },
         "network" => WireInputSource::Network {
             endpoint: locator(rest)?,
+        },
+        "image" | "slideshow" => match super::still::decode_source_token(value)? {
+            Some(crate::WireStillSource::Image(config)) => WireInputSource::Image(config),
+            Some(crate::WireStillSource::Slideshow(config)) => {
+                WireInputSource::Slideshow(Box::new(config))
+            }
+            None => return Err(invalid("source", value)),
         },
         "system_audio" => {
             let (backend, device) = rest

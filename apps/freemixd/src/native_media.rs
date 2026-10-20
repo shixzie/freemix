@@ -2413,6 +2413,11 @@ impl NativeLatestFrames {
         drop(previous);
     }
 
+    fn store_shared(&self, input: InputId, frame: Arc<CpuVideoFrame>) {
+        let previous = self.lock().insert(input, frame);
+        drop(previous);
+    }
+
     /// The newest frame of `input`, if its source produced one.
     #[must_use]
     pub fn get(&self, input: InputId) -> Option<Arc<CpuVideoFrame>> {
@@ -6806,6 +6811,33 @@ fn project_texture<'a>(
     }
 }
 
+/// One slide a slideshow source composes (IN-009): an uploaded picture,
+/// the part of it shown as `[x, y, width, height]` fractions (Ken Burns),
+/// and its opacity.
+pub struct NativeSlideLayer<'a> {
+    pub frame: &'a NativeWorkingFrame,
+    pub crop: [f64; 4],
+    pub opacity: u8,
+}
+
+/// The pixel crop `fractions` select of a `width`x`height` picture, at least
+/// one pixel and within it.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn slide_crop(fractions: [f64; 4], width: u32, height: u32) -> fm_compositor::CropRect {
+    let [x, y, crop_width, crop_height] = fractions;
+    let pixels =
+        |fraction: f64, extent: u32| (fraction.clamp(0.0, 1.0) * f64::from(extent)).round() as u32;
+    let left = pixels(x, width).min(width.saturating_sub(1));
+    let top = pixels(y, height).min(height.saturating_sub(1));
+    let crop_width = pixels(crop_width, width).clamp(1, width - left);
+    let crop_height = pixels(crop_height, height).clamp(1, height - top);
+    fm_compositor::CropRect::new(left, top, crop_width, crop_height)
+}
+
 /// One native context shared by import, scene, transition, and FTB executors.
 pub struct NativeMediaRuntime {
     context: NativeContext,
@@ -7677,6 +7709,94 @@ impl NativeMediaRuntime {
         frame: CpuVideoFrame,
     ) -> Result<(), NativeSourcePlaybackError> {
         block_on(self.ingest_live_video_frame(playback, input, frame))
+    }
+
+    /// Uploads one decoded still picture (a slide) to the GPU, once, as a
+    /// working frame (IN-009).
+    ///
+    /// # Errors
+    ///
+    /// Returns the typed import failure.
+    pub fn upload_still_blocking(
+        &self,
+        frame: &CpuVideoFrame,
+    ) -> Result<NativeWorkingFrame, NativeImportError> {
+        block_on(self.normalizer.normalize(&self.context, frame))
+    }
+
+    /// Composes a slideshow's `layers` (bottom first) on the GPU over
+    /// transparency and makes the result live source `input`'s picture, with
+    /// no CPU upload (IN-009). `picture`, when given, becomes the source's
+    /// newest CPU frame (the incoming slide, which thumbnails show).
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed missing-source, bound, or compositor failure.
+    pub fn present_slides_blocking(
+        &self,
+        playback: &mut NativeSourcePlayback,
+        input: InputId,
+        layers: &[NativeSlideLayer<'_>],
+        picture: Option<Arc<CpuVideoFrame>>,
+    ) -> Result<(), NativeSourceRenderError> {
+        block_on(self.present_slides(playback, input, layers, picture))
+    }
+
+    async fn present_slides(
+        &self,
+        playback: &mut NativeSourcePlayback,
+        input: InputId,
+        layers: &[NativeSlideLayer<'_>],
+        picture: Option<Arc<CpuVideoFrame>>,
+    ) -> Result<(), NativeSourceRenderError> {
+        let (width, height) = playback
+            .registry
+            .dimensions
+            .ok_or(NativeSourceRenderError::MissingSource { input })?;
+        let mut scene = CompositorScene::new(width, height, CompositorRgba8::new(0, 0, 0, 0))
+            .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
+        let full_frame = Transform::new(0, 0, width, height, CompositorRotation::Deg0);
+        let mut sources = Vec::with_capacity(layers.len());
+        for (index, layer) in layers.iter().enumerate() {
+            let source = SourceId::new(
+                u64::try_from(index + 1).map_err(|_| NativeSourceRenderError::ResourceBounds)?,
+            );
+            let z = i32::try_from(index).map_err(|_| NativeSourceRenderError::ResourceBounds)?;
+            let texture = layer.frame.texture();
+            let crop = slide_crop(layer.crop, texture.width(), texture.height());
+            scene.push_layer(
+                SourceLayer::new(source, z, full_frame)
+                    .with_crop(crop)
+                    .with_opacity(layer.opacity),
+            );
+            sources.push(NativeSourceFrame::new(source, texture));
+        }
+        let (composition, _) = compile_scene(&scene, OutputTarget::Program)
+            .map_err(|_| NativeSourceRenderError::ResourceBounds)?;
+        let texture = self
+            .composition_renderer
+            .render(&self.context, &composition, &sources)
+            .await
+            .map_err(NativeSourceRenderError::SceneCompositor)?;
+        let prefix = playback
+            .registry
+            .sources
+            .get_mut(&input)
+            .ok_or(NativeSourceRenderError::MissingSource { input })?;
+        if prefix.kind != NativeVideoSourceKind::Live {
+            return Err(NativeSourceRenderError::MissingSource { input });
+        }
+        let frame = prefix
+            .frames
+            .last()
+            .ok_or(NativeSourceRenderError::MissingSource { input })?
+            .with_texture(texture);
+        prefix.frames.clear();
+        prefix.frames.push(frame);
+        if let Some(picture) = picture {
+            playback.latest.store_shared(input, picture);
+        }
+        Ok(())
     }
 
     /// Registers `input` as a new live source seeded with `frame`, or
@@ -9484,6 +9604,7 @@ mod tests {
             input_audio_strip_updates: Vec::new(),
             titles: Vec::new(),
             scenes: Vec::new(),
+            slideshows: Vec::new(),
             media: Vec::new(),
             frame: FrameNumber::new(frame),
             deadline: ClockTime::ZERO,

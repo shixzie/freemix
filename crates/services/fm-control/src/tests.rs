@@ -2844,7 +2844,7 @@ fn input_add_and_remove_project_events_snapshots_history_and_journal() {
     assert!(matches!(
         added.output.events.as_slice(),
         [EventMessage {
-            payload: EventPayload::InputAdded { input: added, name, network_stream: None, capture: None, system_audio: None },
+            payload: EventPayload::InputAdded { input: added, name, network_stream: None, capture: None, system_audio: None, still: None },
             edit_history: EditHistoryStatus {
                 undo_depth: 1,
                 next_undo: Some(1),

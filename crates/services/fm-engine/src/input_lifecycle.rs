@@ -466,6 +466,9 @@ pub(crate) fn apply(
                 Some(InputSourceSpec::SystemAudio(_)) => {
                     crate::engine::check_system_audio_room(state)?;
                 }
+                Some(InputSourceSpec::Slideshow(_)) => {
+                    crate::engine::check_slideshow_room(state)?;
+                }
                 Some(InputSourceSpec::Network(config)) => {
                     crate::engine::check_network_stream_room(state)?;
                     crate::engine::check_listen_port(state, input, config)?;
@@ -546,6 +549,41 @@ pub(crate) fn apply(
                 && !matches!(current, InputSourceSpec::SystemAudio(_))
             {
                 crate::engine::check_system_audio_room(state)?;
+            }
+            if matches!(source, InputSourceSpec::Slideshow(_))
+                && !matches!(current, InputSourceSpec::Slideshow(_))
+            {
+                crate::engine::check_slideshow_room(state)?;
+            }
+            // A cue's page action needs its input to stay a slideshow.
+            if matches!(current, InputSourceSpec::Slideshow(_))
+                && !matches!(source, InputSourceSpec::Slideshow(_))
+                && let Some((list, cue)) = state.cue_lists().iter().find_map(|list| {
+                    list.cues
+                        .iter()
+                        .find(|cue| {
+                            cue.actions.iter().any(|action| {
+                                matches!(action, fm_model::CueAction::Page { input: named, .. } if named == input)
+                            })
+                        })
+                        .map(|cue| (list.id, cue.id))
+                })
+            {
+                let error = crate::InputCatalogueError::InCueList {
+                    input: *input,
+                    list,
+                    cue,
+                };
+                return Err(rejection(
+                    RejectionCode::Conflict,
+                    "source",
+                    "input_in_use",
+                    format!(
+                        "input {input} must stay a slideshow: cue {cue} of cue list {list} \
+                         steps its slides"
+                    ),
+                )
+                .with_reason(error.reason()));
             }
             match (current.is_media(), source.is_media()) {
                 (false, true) => {

@@ -36,13 +36,13 @@ state = "planned"
 [[tests]]
 id = "accept-in-008"
 state = "present"
-paths = ["crates/media/fm-video/tests/test_signals.rs"]
-commands = ["cargo test -p fm-video --test test_signals"]
+paths = ["crates/media/fm-video/tests/test_signals.rs", "crates/io/fm-codec-image/tests/decode.rs", "crates/io/fm-codec-image/tests/formats.rs", "crates/io/fm-codec-image/tests/fit.rs", "crates/services/fm-persistence/tests/current_model.rs", "crates/foundation/fm-protocol/tests/stills.rs", "crates/services/fm-client/tests/client.rs", "apps/freemixd/tests/stills.rs", "apps/freemixd/tests/native_stills.rs", "apps/freemix-cli/tests/e2e.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+commands = ["cargo test -p fm-video --test test_signals", "cargo test -p fm-codec-image --test decode", "cargo test -p fm-codec-image --test formats", "cargo test -p fm-codec-image --test fit", "cargo test -p fm-persistence --test current_model", "cargo test -p fm-protocol --test stills", "cargo test -p fm-client --test client", "cargo test -p freemixd --test stills", "cargo test -p freemixd --test native_stills", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-in-009"
 state = "present"
-paths = ["crates/media/fm-playback/tests/slideshow.rs"]
-commands = ["cargo test -p fm-playback --test slideshow"]
+paths = ["crates/media/fm-playback/tests/slideshow.rs", "crates/services/fm-engine/tests/slideshows.rs", "crates/services/fm-persistence/tests/current_model.rs", "crates/foundation/fm-protocol/tests/stills.rs", "crates/services/fm-client/tests/client.rs", "apps/freemixd/tests/stills.rs", "apps/freemixd/tests/native_stills.rs", "apps/freemix-cli/tests/e2e.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+commands = ["cargo test -p fm-playback --test slideshow", "cargo test -p fm-engine --test slideshows", "cargo test -p fm-persistence --test current_model", "cargo test -p fm-protocol --test stills", "cargo test -p fm-client --test client", "cargo test -p freemixd --test stills", "cargo test -p freemixd --test native_stills", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-in-010"
 state = "present"

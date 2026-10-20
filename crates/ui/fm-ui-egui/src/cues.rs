@@ -42,10 +42,10 @@ use std::time::{Duration, Instant};
 use fm_protocol::{
     AutoTransitionKind, CueFaultStatus, CueListSpec, CueListStatus, CueOperation, CueRunStatus,
     MAX_CUE_ACTIONS, MAX_CUE_ARM_MS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LISTS,
-    MAX_CUE_TITLE_NUMBER, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES, ScriptStatus,
-    TitleFieldStatus, TitleFieldValue, TransitionFavoriteEffect, WireCue, WireCueAction,
-    WireCueMediaOperation, WireInputId, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId,
-    WireStreamTargetId, WireTitleFieldId,
+    MAX_CUE_TITLE_NUMBER, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES,
+    PagedNavigation, ScriptStatus, TitleFieldStatus, TitleFieldValue, TransitionFavoriteEffect,
+    WireCue, WireCueAction, WireCueMediaOperation, WireInputId, WireOverlayChannelId,
+    WireRecorderSlot, WireStingerSlotId, WireStreamTargetId, WireTitleFieldId,
 };
 use fm_types::{FrameRate, InputId};
 use fm_ui_model::{ClientView, ProjectState, ScriptVerb, script_verbs};
@@ -556,13 +556,18 @@ pub enum ActionKind {
     MediaPause,
     MediaSeek,
     MediaRestart,
+    SlideNext,
+    SlidePrevious,
+    SlideFirst,
+    SlideLast,
+    SlideGoto,
     Wait,
     Delay,
     RunScript,
 }
 
 impl ActionKind {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 27] = [
         Self::Preview,
         Self::Take,
         Self::OverlayOn,
@@ -582,6 +587,11 @@ impl ActionKind {
         Self::MediaPause,
         Self::MediaSeek,
         Self::MediaRestart,
+        Self::SlideNext,
+        Self::SlidePrevious,
+        Self::SlideFirst,
+        Self::SlideLast,
+        Self::SlideGoto,
         Self::Wait,
         Self::Delay,
         Self::RunScript,
@@ -610,6 +620,13 @@ impl ActionKind {
                 WireCueMediaOperation::Pause => Self::MediaPause,
                 WireCueMediaOperation::Seek { .. } => Self::MediaSeek,
                 WireCueMediaOperation::Restart => Self::MediaRestart,
+            },
+            WireCueAction::Page { navigation, .. } => match navigation {
+                PagedNavigation::Next => Self::SlideNext,
+                PagedNavigation::Previous => Self::SlidePrevious,
+                PagedNavigation::First => Self::SlideFirst,
+                PagedNavigation::Last => Self::SlideLast,
+                PagedNavigation::Goto(_) => Self::SlideGoto,
             },
             WireCueAction::Wait { .. } => Self::Wait,
             WireCueAction::Delay { .. } => Self::Delay,
@@ -640,6 +657,11 @@ impl ActionKind {
             Self::MediaPause => Msg::CueActMediaPause.en(),
             Self::MediaSeek => Msg::CueActMediaSeek.en(),
             Self::MediaRestart => Msg::CueActMediaRestart.en(),
+            Self::SlideNext => Msg::CueActSlideNext.en(),
+            Self::SlidePrevious => Msg::CueActSlidePrevious.en(),
+            Self::SlideFirst => Msg::CueActSlideFirst.en(),
+            Self::SlideLast => Msg::CueActSlideLast.en(),
+            Self::SlideGoto => Msg::CueActSlideGoto.en(),
             Self::Wait => Msg::CueActWait.en(),
             Self::Delay => Msg::CueActDelay.en(),
             Self::RunScript => Msg::CueActRunScript.en(),
@@ -650,6 +672,7 @@ impl ActionKind {
     /// field, stream target, or script, or `None` when the show has none to
     /// name.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn default_action(
         self,
         view: &ClientView,
@@ -667,6 +690,15 @@ impl ActionKind {
             Some(WireCueAction::Media {
                 input: media()?,
                 operation,
+            })
+        };
+        let page = |navigation| {
+            Some(WireCueAction::Page {
+                input: slideshow_inputs(view)
+                    .first()
+                    .copied()
+                    .map(WireInputId::from_domain)?,
+                navigation,
             })
         };
         let channel = WireOverlayChannelId::new(1)?;
@@ -741,6 +773,11 @@ impl ActionKind {
             Self::MediaPause => transport(WireCueMediaOperation::Pause)?,
             Self::MediaSeek => transport(WireCueMediaOperation::Seek { frame: 0 })?,
             Self::MediaRestart => transport(WireCueMediaOperation::Restart)?,
+            Self::SlideNext => page(PagedNavigation::Next)?,
+            Self::SlidePrevious => page(PagedNavigation::Previous)?,
+            Self::SlideFirst => page(PagedNavigation::First)?,
+            Self::SlideLast => page(PagedNavigation::Last)?,
+            Self::SlideGoto => page(PagedNavigation::Goto(0))?,
             Self::Wait => WireCueAction::Wait { frames: 25 },
             Self::Delay => WireCueAction::Delay { millis: 1_000 },
             Self::RunScript => WireCueAction::RunScript {
@@ -767,6 +804,19 @@ const fn number_field(value: &TitleFieldValue) -> bool {
 }
 
 /// The show's media inputs, in input order: the media actions' choices.
+/// The show's slideshow inputs, in show order (IN-009).
+fn slideshow_inputs(view: &ClientView) -> Vec<InputId> {
+    view.inputs
+        .iter()
+        .copied()
+        .filter(|input| {
+            view.still_input(*input).is_some_and(|still| {
+                matches!(still.source, fm_protocol::WireStillSource::Slideshow(_))
+            })
+        })
+        .collect()
+}
+
 fn media_inputs(view: &ClientView, project: &ProjectState) -> Vec<InputId> {
     view.inputs
         .iter()
@@ -1967,10 +2017,10 @@ fn input_picker(
     edit: Option<&'static str>,
 ) -> bool {
     let l = names.l;
-    let hover = l.text(if salt == "media" {
-        Msg::CueParamMediaHover
-    } else {
-        Msg::CueParamInputHover
+    let hover = l.text(match salt {
+        "media" => Msg::CueParamMediaHover,
+        "slideshow" => Msg::CueParamSlideshowHover,
+        _ => Msg::CueParamInputHover,
     });
     let text = value.map_or_else(
         || l.text(Msg::CueParamPreview).to_owned(),
@@ -2424,6 +2474,37 @@ fn draw_params(
                     enabled,
                 )
                 .or(changed)
+            } else {
+                changed
+            }
+        }
+        WireCueAction::Page { input, navigation } => {
+            let slideshows = slideshow_inputs(names.view);
+            let mut value = Some(*input);
+            let changed = input_picker(
+                ui,
+                names,
+                "slideshow",
+                (&mut value, &slideshows),
+                false,
+                edit,
+            )
+            .then_some(Change::Commit);
+            if let Some(value) = value {
+                *input = value;
+            }
+            if let PagedNavigation::Goto(page) = navigation {
+                // Slides count from one for the operator.
+                let mut shown = page.saturating_add(1);
+                let change = number(
+                    ui,
+                    &mut shown,
+                    1..=u32::try_from(fm_protocol::MAX_SLIDESHOW_SLIDES).unwrap_or(u32::MAX),
+                    (l.text(Msg::CueParamSlideHover), ""),
+                    enabled,
+                );
+                *page = shown.saturating_sub(1);
+                change.or(changed)
             } else {
                 changed
             }

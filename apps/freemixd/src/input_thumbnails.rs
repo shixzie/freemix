@@ -67,6 +67,7 @@ use fm_types::InputId;
 use crate::monitor_tap::fit_within;
 use crate::scene_preview::LiveSourceFrames;
 use crate::scene_render::{self, SceneSources};
+use crate::stills::{SlidesShown, StillPictures};
 use crate::title_render::{self, TitleAssets, TitleTime};
 
 /// Shortest gap between two renders of one input (at most 2 fps).
@@ -100,6 +101,8 @@ pub(crate) struct ThumbnailWork {
     /// Each media input's playhead and the end of its playable range, as
     /// the engine holds them (a simulated daemon draws them).
     pub(crate) media: Vec<(InputId, u64, u64)>,
+    /// What every slideshow input shows (a simulated daemon draws it).
+    pub(crate) slideshows: Vec<(InputId, SlidesShown)>,
     /// A native daemon's newest source frames; `None` on a simulated one.
     pub(crate) live: Option<LiveSourceFrames>,
 }
@@ -122,6 +125,8 @@ pub(crate) struct ThumbnailRenderer {
     /// The simulated pipeline at the fitted thumbnail size, per revision.
     pipeline: Option<(u64, Option<SimulatedPipeline>)>,
     entries: BTreeMap<InputId, Entry>,
+    /// Decoded image and slide pictures at the thumbnail size.
+    stills: StillPictures,
     /// When each input was last tried, with or without a picture, so an
     /// input without one is not tried again on every worker step.
     tried: BTreeMap<InputId, Instant>,
@@ -139,6 +144,7 @@ impl ThumbnailRenderer {
             titles,
             pipeline: None,
             entries: BTreeMap::new(),
+            stills: StillPictures::default(),
             tried: BTreeMap::new(),
             sequence: 0,
             epoch,
@@ -266,7 +272,7 @@ impl ThumbnailRenderer {
     /// The picture of one input, graded with its input grade and shown over
     /// black (straight colour, opaque), or `None` when it has none on this
     /// daemon.
-    fn picture(&self, input: &Input, work: &ThumbnailWork, now: Instant) -> Option<ImageFrame> {
+    fn picture(&mut self, input: &Input, work: &ThumbnailWork, now: Instant) -> Option<ImageFrame> {
         let id = input.id;
         let pipeline = self
             .pipeline
@@ -344,6 +350,21 @@ impl ThumbnailRenderer {
                 }
                 InputKind::NetworkStream(_) | InputKind::Device { .. } => {
                     synthetic_picture(id, width, height, now.saturating_duration_since(self.epoch))?
+                }
+                InputKind::Image(image) => self.stills.image(
+                    self.titles.store()?,
+                    &image.asset_uri,
+                    image.fit,
+                    (width, height),
+                )?,
+                InputKind::Slideshow(_) => {
+                    let shown = work
+                        .slideshows
+                        .iter()
+                        .find(|(slideshow, _)| *slideshow == id)
+                        .map(|(_, shown)| shown)?;
+                    self.stills
+                        .slides(self.titles.store()?, shown, (width, height))?
                 }
                 InputKind::Media { .. } => {
                     synthetic_media_picture(id, width, height, media_playhead(work, id))?
@@ -937,6 +958,7 @@ mod tests {
             scenes: Vec::new(),
             titles: Vec::new(),
             media: Vec::new(),
+            slideshows: Vec::new(),
             live: None,
         }
     }
@@ -1178,6 +1200,7 @@ mod tests {
                 scenes: Vec::new(),
                 titles: Vec::new(),
                 media: Vec::new(),
+                slideshows: Vec::new(),
                 live: None,
             });
             thread::sleep(Duration::from_millis(5));
@@ -1551,6 +1574,7 @@ mod native_tests {
             scenes: Vec::new(),
             titles: Vec::new(),
             media: Vec::new(),
+            slideshows: Vec::new(),
             live: Some(LiveSourceFrames::from_frames(frames)),
         };
         let mut out = BTreeMap::new();

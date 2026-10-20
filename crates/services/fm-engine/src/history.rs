@@ -183,6 +183,7 @@ impl EngineCommand {
             Self::Undo { .. } | Self::Redo { .. } => EngineCommandKind::History,
             Self::SetEditLock { .. } => EngineCommandKind::EditLock,
             Self::SetInputAudioStrip { .. }
+            | Self::PageNavigate { .. }
             | Self::SelectPreview(_)
             | Self::Cut
             | Self::Fade { .. }

@@ -298,8 +298,8 @@ pub enum GeneratorVideo {
 }
 
 /// An input source that can be named on the wire and swapped live: a
-/// generator, a media file, a capture device, a network stream, or a
-/// system audio source.
+/// generator, a media file, a capture device, a network stream, a system
+/// audio source, a still picture, or a slideshow.
 ///
 /// Scene, alias, title, mix-feed, and plain colour inputs have no
 /// replaceable source.
@@ -318,6 +318,10 @@ pub enum InputSourceSpec {
     Network(fm_types::network_stream::NetworkStreamConfig),
     /// A system audio capture source (AU-011): its backend and device.
     SystemAudio(fm_types::system_audio::SystemAudioConfig),
+    /// A still picture (IN-008): its asset and placement.
+    Image(fm_types::still::ImageInputConfig),
+    /// A slideshow (IN-009): its pictures, timing, and placement.
+    Slideshow(fm_types::still::SlideshowConfig),
 }
 
 /// Why a source specification is unusable.
@@ -335,6 +339,8 @@ pub enum InputSourceError {
     InvalidNetworkStream,
     /// A system audio device name is unusable (AU-011).
     InvalidSystemAudio,
+    /// An image or slideshow configuration is unusable (IN-008, IN-009).
+    InvalidStill(fm_types::still::StillInputError),
 }
 
 impl InputSourceError {
@@ -348,6 +354,7 @@ impl InputSourceError {
             Self::InvalidTone => "invalid_tone",
             Self::InvalidNetworkStream => "invalid_network_stream",
             Self::InvalidSystemAudio => "invalid_system_audio",
+            Self::InvalidStill(error) => error.code(),
         }
     }
 }
@@ -363,6 +370,7 @@ impl fmt::Display for InputSourceError {
             Self::InvalidTone => "the tone frequency is outside the simulated range",
             Self::InvalidNetworkStream => "the network stream URL or settings are unusable",
             Self::InvalidSystemAudio => "the system audio device name is unusable",
+            Self::InvalidStill(error) => return error.fmt(formatter),
         })
     }
 }
@@ -513,6 +521,8 @@ impl InputSourceSpec {
             Self::SystemAudio(config) => config
                 .validate()
                 .map_err(|_| InputSourceError::InvalidSystemAudio),
+            Self::Image(config) => config.validate().map_err(InputSourceError::InvalidStill),
+            Self::Slideshow(config) => config.validate().map_err(InputSourceError::InvalidStill),
         }
     }
 
@@ -541,6 +551,8 @@ impl InputSourceSpec {
             }),
             InputKind::NetworkStream(config) => Some(Self::Network(config.clone())),
             InputKind::SystemAudio(config) => Some(Self::SystemAudio(config.clone())),
+            InputKind::Image(config) => Some(Self::Image(config.clone())),
+            InputKind::Slideshow(config) => Some(Self::Slideshow(config.clone())),
             InputKind::Color
             | InputKind::Scene { .. }
             | InputKind::Alias { .. }
@@ -576,6 +588,8 @@ impl InputSourceSpec {
             },
             Self::Network(config) => InputKind::NetworkStream(config.clone()),
             Self::SystemAudio(config) => InputKind::SystemAudio(config.clone()),
+            Self::Image(config) => InputKind::Image(config.clone()),
+            Self::Slideshow(config) => InputKind::Slideshow(config.clone()),
         }
     }
 
