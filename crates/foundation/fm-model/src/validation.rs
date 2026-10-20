@@ -133,21 +133,8 @@ fn validate_input_audio_strips(project: &Project, errors: &mut Vec<ValidationErr
                 kind: ValidationErrorKind::OutOfRange,
             });
         }
-        if strip.dsp.validate().is_err() {
-            errors.push(ValidationError {
-                entity: Some(EntityRef::Input(strip.input)),
-                field: "audio_strip.dsp",
-                kind: ValidationErrorKind::OutOfRange,
-            });
-        }
     }
-    if project.master_audio_dsp().validate().is_err() {
-        errors.push(ValidationError {
-            entity: None,
-            field: "master_audio_dsp",
-            kind: ValidationErrorKind::OutOfRange,
-        });
-    }
+    validate_audio_dsp(project, errors);
     for (_, group) in project.audio_groups().iter() {
         if crate::validate_audio_group_name(&group.name).is_err() {
             errors.push(ValidationError {
@@ -1618,6 +1605,26 @@ fn validate_capabilities<'a>(
 /// outputs, and no display claimed by both slots.
 /// The `LiveLAN` configuration (OR-017): a viewer limit in range and a source
 /// output the project holds.
+/// Every strip DSP chain and the Master chain are in range (AU-005).
+fn validate_audio_dsp(project: &Project, errors: &mut Vec<ValidationError>) {
+    for strip in project.input_audio_strips() {
+        if strip.dsp.validate().is_err() {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(strip.input)),
+                field: "audio_strip.dsp",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
+    }
+    if project.master_audio_dsp().validate().is_err() {
+        errors.push(ValidationError {
+            entity: None,
+            field: "master_audio_dsp",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+}
+
 fn validate_live_lan(project: &Project, errors: &mut Vec<ValidationError>) {
     let outputs = project
         .outputs()
