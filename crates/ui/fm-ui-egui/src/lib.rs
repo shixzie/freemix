@@ -2011,7 +2011,8 @@ impl StudioShell {
         state: &StudioUiState,
         intents: &mut Vec<StudioIntent>,
     ) {
-        let wanted = self.input_bank_drawn
+        // The layer designer's auto key samples them too (SW-008).
+        let wanted = (self.input_bank_drawn || self.designer.open)
             && state.connection_status == StudioConnectionStatus::Ready
             && state.view.is_some();
         if wanted != self.input_thumbnails_requested {

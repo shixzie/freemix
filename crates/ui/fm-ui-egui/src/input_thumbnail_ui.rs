@@ -176,6 +176,17 @@ impl ThumbnailTextures {
         })
     }
 
+    /// The uploaded texture of `input`'s current thumbnail, if any.
+    pub(crate) fn texture(
+        &self,
+        input: WireInputId,
+        images: &BTreeMap<WireInputId, (InputThumbnailImage, Instant)>,
+    ) -> Option<TextureId> {
+        let (pixels, handle) = self.slots.get(&input)?;
+        let (image, _) = images.get(&input)?;
+        Arc::ptr_eq(pixels, &image.rgba).then(|| handle.id())
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }

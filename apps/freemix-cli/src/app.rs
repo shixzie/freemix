@@ -489,6 +489,66 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         )?,
+        Command::SceneLayerAutoKey {
+            path,
+            scene,
+            index,
+            picture,
+            point,
+        } => {
+            let scene = scene_id(scene)?;
+            update_project(&path, |project| {
+                let picture = match &picture {
+                    Some(file) => crate::auto_key::read_ppm(file)?,
+                    None => crate::auto_key::layer_input_picture(project, scene, index)?,
+                };
+                let auto = picture.auto_key(crate::auto_key::sample(point))?;
+                let previous = project
+                    .scenes()
+                    .iter()
+                    .find(|candidate| candidate.id == scene)
+                    .and_then(|found| found.layers.get(index))
+                    .and_then(|layer| layer.key)
+                    .map(fm_control::wire_key);
+                println!("{}", crate::auto_key::describe(&auto));
+                project
+                    .set_scene_layer_key(
+                        scene,
+                        index,
+                        Some(fm_control::domain_key(auto.layer_key(previous))),
+                    )
+                    .map_err(Into::into)
+            })?;
+        }
+        Command::RemoteSceneLayerAutoKey {
+            address,
+            scene,
+            layer,
+            picture,
+            point,
+            refinement,
+            key,
+            expected_revision,
+        } => {
+            let auto =
+                crate::auto_key::read_ppm(&picture)?.auto_key(crate::auto_key::sample(point))?;
+            println!("{}", crate::auto_key::describe(&auto));
+            let previous =
+                fm_control::wire_key(fm_model::LayerKey::Chroma(fm_model::ChromaLayerKey {
+                    refinement,
+                    ..fm_model::ChromaLayerKey::GREEN
+                }));
+            remote::execute(
+                address,
+                remote_scene_layer_edit(
+                    scene,
+                    layer,
+                    fm_protocol::SceneLayerOperation::SetKey(Some(auto.layer_key(Some(previous)))),
+                )?,
+                key,
+                expected_revision,
+            )?;
+        }
         Command::RemoteSceneLayerEffects {
             address,
             scene,
@@ -5969,6 +6029,8 @@ Usage:
   freemix-cli scene-layer-effect-clear <show.freemix> <scene-id> <zero-based-layer-index>
   freemix-cli scene-layer-key <show.freemix> <scene-id> <zero-based-layer-index> none|chroma <red> <green> <blue> <similarity> <smoothness> <spill>|luma <low> <high> <softness> <invert:on|off>|fill <key-input-id> luma|alpha <low> <high> <softness> <invert:on|off> [--clip <black> <white>] [--choke <-8..8>] [--edge-softness <0..8>] [--despill green|blue <strength>]
   freemix-cli remote-scene-layer-key <127.0.0.1:port> <scene-id> <layer-id> <key spec as above> [--key <key>] [--expect <revision>]
+  freemix-cli scene-layer-auto-key <show.freemix> <scene-id> <zero-based-layer-index> [--picture <file.ppm>] [--point <x> <y>]
+  freemix-cli remote-scene-layer-auto-key <127.0.0.1:port> <scene-id> <layer-id> --picture <file.ppm> [--point <x> <y>] [--clip <black> <white>] [--choke <-8..8>] [--edge-softness <0..8>] [--key <key>] [--expect <revision>]
   freemix-cli remote-scene-layer-effects <127.0.0.1:port> <scene-id> <layer-id> none|<name>[:<i32>,...]... [--key <key>] [--expect <revision>]
   freemix-cli project-rename <show.freemix> <name>
   freemix-cli input-remove <show.freemix> <input-id>

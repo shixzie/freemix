@@ -32,10 +32,11 @@ use egui::{
     TextureOptions, Ui, Vec2, pos2, vec2,
 };
 use fm_protocol::{
-    TitlePreviewImage, WireInputId, WireKeyDespill, WireLayerKey, WireSceneLayerId,
-    WireSceneLayerSource,
+    InputThumbnailImage, TitlePreviewImage, WireInputId, WireKeyDespill, WireLayerKey,
+    WireSceneLayerId, WireSceneLayerSource,
 };
 use fm_types::{InputId, SceneId};
+use fm_ui_model::auto_key::{AutoKeyError, AutoKeyPicture, AutoKeySample, auto_key};
 use fm_ui_model::scene_designer::geometry::{Corner, Edge, Handle, HitTarget, Point};
 use fm_ui_model::scene_designer::gesture::{
     CanvasMetrics, GestureFeedback, GestureModifiers, Readout,
@@ -53,6 +54,7 @@ use fm_ui_model::title_animation::preview_size;
 use crate::dock::ToolWindow;
 use crate::edit_history::{INPUT_LOCKED_REASON, PROJECT_LOCKED_REASON, edit_history_availability};
 use crate::gating::{Capability, Hint, unavailable_reason};
+use crate::input_thumbnail_ui::ThumbnailTextures;
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::theme::{
     AMBER, KeyIcon, MONITOR_BLACK, Tone, accent_color, add_icon_button, border_strong_color,
@@ -129,6 +131,14 @@ pub(crate) struct DesignerWindow {
     pub(crate) list_rows: Vec<(WireSceneLayerId, Rect)>,
     /// When live edits were last sent.
     last_send: Option<Duration>,
+    /// Whether a click on the KEY section's input picture picks the key
+    /// colour (SW-008).
+    pub(crate) eyedropper: bool,
+    /// What the last auto key did, for the console's toasts.
+    notice: Option<(ToastKind, String)>,
+    /// Where the Auto key button and the input picture were laid out last
+    /// frame.
+    pub(crate) auto_key_rects: (Option<Rect>, Option<Rect>),
 }
 
 /// Clones what the console compares and the drafts; the picture and the
@@ -601,6 +611,7 @@ impl StudioShell {
         if let Some(geometry) = self.layout.tool_popped(ToolWindow::Designer) {
             let (id, builder) = self.tool_viewport(ToolWindow::Designer, geometry);
             let designer = &mut self.designer;
+            let thumbnails = &self.thumbnail_textures;
             let (outcome, close) = context.show_viewport_immediate(id, builder, |ui, class| {
                 workspace::tool_popout_frame(
                     ui,
@@ -610,7 +621,7 @@ impl StudioShell {
                     &close_hover,
                     |ui| {
                         ui.set_min_size(ui.available_size());
-                        copied = draw_contents(ui, l, designer, state, &mut history);
+                        copied = draw_contents(ui, l, designer, state, thumbnails, &mut history);
                     },
                 )
             });
@@ -637,7 +648,14 @@ impl StudioShell {
                         ToolWindow::Designer,
                         &close_hover,
                         |ui| {
-                            copied = draw_contents(ui, l, &mut self.designer, state, &mut history);
+                            copied = draw_contents(
+                                ui,
+                                l,
+                                &mut self.designer,
+                                state,
+                                &self.thumbnail_textures,
+                                &mut history,
+                            );
                         },
                     )
                     .0
@@ -650,6 +668,9 @@ impl StudioShell {
             }
         }
         intents.extend(history);
+        if let Some((kind, text)) = self.designer.notice.take() {
+            self.toasts.push(kind, text);
+        }
         if let Some(count) = copied {
             self.toasts.push(
                 ToastKind::Success,
@@ -696,6 +717,7 @@ fn draw_contents(
     l: Locale,
     window: &mut DesignerWindow,
     state: &StudioUiState,
+    thumbnails: &ThumbnailTextures,
     history: &mut Vec<StudioIntent>,
 ) -> Option<usize> {
     let scenes = scene_choices(l, state);
@@ -815,7 +837,14 @@ fn draw_contents(
                     .id_salt("studio-designer-inspector")
                     .show(ui, |ui| {
                         if let Some(document) = window.documents.get_mut(&scene) {
-                            inspector(ui, l, document, &key_inputs, lock);
+                            let mut sampler = KeySampler {
+                                state,
+                                thumbnails,
+                                eyedropper: &mut window.eyedropper,
+                                notice: &mut window.notice,
+                                rects: &mut window.auto_key_rects,
+                            };
+                            inspector(ui, l, document, &key_inputs, &mut sampler, lock);
                         }
                     });
             },
@@ -1682,6 +1711,7 @@ fn inspector(
     l: Locale,
     document: &mut SceneLayoutDocument,
     key_inputs: &[(InputId, String)],
+    sampler: &mut KeySampler<'_>,
     lock: Option<&'static str>,
 ) {
     ui.label(section_label(l.text(Msg::DesignInspector)))
@@ -1998,7 +2028,7 @@ fn inspector(
                 }
             }
         });
-    key_section(ui, l, document, id, key_inputs, lock);
+    key_section(ui, l, document, id, key_inputs, sampler, lock);
     effects_section(ui, l, document, id, lock);
     group(ui, Msg::DesignGroupStack);
     let position = document.index_of(id).map_or(0, |index| index + 1);
@@ -2108,12 +2138,14 @@ fn key_section(
     document: &mut SceneLayoutDocument,
     id: WireSceneLayerId,
     key_inputs: &[(InputId, String)],
+    sampler: &mut KeySampler<'_>,
     lock: Option<&'static str>,
 ) {
     ui.add_space(6.0);
     ui.label(section_label(l.text(Msg::DesignGroupKey)))
         .on_hover_text(l.text(Msg::DesignKeyHover));
     key_kind_picker(ui, l, document, id, key_inputs, lock);
+    auto_key_fields(ui, l, document, id, sampler, lock);
     match document.layer(id).and_then(|layer| layer.key) {
         None => return,
         Some(WireLayerKey::Chroma(chroma)) => {
@@ -2146,6 +2178,171 @@ fn key_section(
         }
     }
     refinement_fields(ui, l, document, id, lock);
+}
+
+/// What the KEY section's auto key reads (SW-008): the selected layer's
+/// input picture, the latest input thumbnail.
+struct KeySampler<'a> {
+    state: &'a StudioUiState,
+    thumbnails: &'a ThumbnailTextures,
+    eyedropper: &'a mut bool,
+    notice: &'a mut Option<(ToastKind, String)>,
+    rects: &'a mut (Option<Rect>, Option<Rect>),
+}
+
+/// The width the KEY section shows the input picture at.
+const KEY_PICTURE_WIDTH: f32 = INSPECTOR_WIDTH - 24.0;
+
+/// Auto key (SW-008): the Auto key button, the Pick colour eyedropper,
+/// and the layer input's picture to pick on. Either applies one chroma key
+/// derived from the picture as one step ([`EditLabel::AutoKey`]), sent as
+/// one `scene_layer_key_set` like any key edit: padlocked, undoable, and
+/// journaled on the server.
+fn auto_key_fields(
+    ui: &mut Ui,
+    l: Locale,
+    document: &mut SceneLayoutDocument,
+    id: WireSceneLayerId,
+    sampler: &mut KeySampler<'_>,
+    lock: Option<&'static str>,
+) {
+    let source = document.layer(id).map(|layer| layer.source);
+    let picture = match source {
+        Some(WireSceneLayerSource::Input(input)) => sampler
+            .state
+            .input_thumbnails
+            .get(&input)
+            .map(|(image, _)| image)
+            .zip(
+                sampler
+                    .thumbnails
+                    .texture(input, &sampler.state.input_thumbnails),
+            )
+            .ok_or(Msg::DesignReasonNoInputPicture.en()),
+        _ => Err(Msg::DesignReasonSceneSource.en()),
+    };
+    let reason = lock
+        .or_else(|| {
+            (document.selection().len() > 1).then_some(Msg::DesignReasonAutoKeyOneLayer.en())
+        })
+        .or_else(|| picture.as_ref().err().copied());
+    if reason.is_some() {
+        *sampler.eyedropper = false;
+    }
+    let mut request = None;
+    *sampler.rects = (None, None);
+    ui.horizontal(|ui| {
+        let button = ui
+            .add_enabled(reason.is_none(), small_button(l.text(Msg::DesignAutoKey)))
+            .hint(l.text(Msg::DesignAutoKeyHover), reason.unwrap_or(""));
+        sampler.rects.0 = Some(button.rect);
+        if button.clicked() {
+            request = Some(AutoKeySample::Dominant);
+        }
+        ui.add_enabled_ui(reason.is_none(), |ui| {
+            ui.toggle_value(sampler.eyedropper, l.text(Msg::DesignEyedropper))
+                .hint(l.text(Msg::DesignEyedropperHover), reason.unwrap_or(""));
+        });
+    });
+    let Ok((image, texture)) = picture else {
+        return;
+    };
+    let width = KEY_PICTURE_WIDTH;
+    let height = width * f32::from(image.height) / f32::from(image.width);
+    let picking = *sampler.eyedropper && reason.is_none();
+    let sense = if picking {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), sense);
+    sampler.rects.1 = Some(rect);
+    ui.painter().image(
+        texture,
+        rect,
+        Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+        Color32::WHITE,
+    );
+    let hover = if picking {
+        Msg::DesignKeyPicturePickHover
+    } else {
+        Msg::DesignKeyPictureHover
+    };
+    let response = response.on_hover_text(l.text(hover));
+    if picking {
+        ui.painter().rect_stroke(
+            rect,
+            0.0,
+            Stroke::new(1.5, accent_color()),
+            egui::StrokeKind::Inside,
+        );
+        let response = response.on_hover_cursor(CursorIcon::Crosshair);
+        if response.clicked()
+            && let Some(position) = response.interact_pointer_pos()
+        {
+            request = Some(picture_point(rect, position, image.width, image.height));
+        }
+    }
+    if let Some(sample) = request {
+        apply_auto_key(l, document, id, image, sample, sampler);
+    }
+}
+
+/// The picture pixel under `position` in `rect`, clamped to the picture.
+fn picture_point(rect: Rect, position: Pos2, width: u16, height: u16) -> AutoKeySample {
+    let along = |offset: f32, extent: f32, pixels: u16| {
+        let fraction = if extent > 0.0 { offset / extent } else { 0.0 };
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped below
+        let pixel = (fraction * f32::from(pixels)).floor().max(0.0) as u32;
+        pixel.min(u32::from(pixels).saturating_sub(1))
+    };
+    AutoKeySample::Point {
+        x: along(position.x - rect.min.x, rect.width(), width),
+        y: along(position.y - rect.min.y, rect.height(), height),
+    }
+}
+
+/// Runs the auto key on `image` and applies it to layer `id`, leaving a
+/// toast that says what it set or why it could not.
+fn apply_auto_key(
+    l: Locale,
+    document: &mut SceneLayoutDocument,
+    id: WireSceneLayerId,
+    image: &InputThumbnailImage,
+    sample: AutoKeySample,
+    sampler: &mut KeySampler<'_>,
+) {
+    let result = AutoKeyPicture::new(u32::from(image.width), u32::from(image.height), &image.rgba)
+        .and_then(|picture| auto_key(picture, sample));
+    *sampler.notice = Some(match result {
+        Ok(auto) => {
+            document.apply_auto_key(id, &auto);
+            *sampler.eyedropper = false;
+            let colour = format!("#{:02X}{:02X}{:02X}", auto.red, auto.green, auto.blue);
+            (
+                ToastKind::Success,
+                l.format(
+                    Msg::DesignAutoKeyApplied,
+                    &[
+                        ("colour", Arg::Str(&colour)),
+                        ("similarity", Arg::from(u32::from(auto.similarity))),
+                        ("smoothness", Arg::from(u32::from(auto.smoothness))),
+                    ],
+                ),
+            )
+        }
+        Err(AutoKeyError::NoBacking { .. }) => (
+            ToastKind::Error,
+            l.text(Msg::DesignAutoKeyNoBacking).to_owned(),
+        ),
+        Err(AutoKeyError::Unsaturated { .. }) => {
+            (ToastKind::Error, l.text(Msg::DesignAutoKeyGrey).to_owned())
+        }
+        Err(_) => (
+            ToastKind::Error,
+            l.text(Msg::DesignAutoKeyUnreadable).to_owned(),
+        ),
+    });
 }
 
 /// The key kind: none, chroma, luma, or key/fill (which needs an input

@@ -5718,6 +5718,60 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::DesignKeyColourHover,
         t("El color que quita la clave. Haga clic para elegirlo en una rueda de color"),
     ),
+    (Msg::DesignAutoKey, t("Clave automática")),
+    (
+        Msg::DesignAutoKeyHover,
+        t(
+            "Recortar la capa con un clic: buscar el fondo verde o azul principal en la imagen de su entrada y ajustar con él el color de clave, la similitud, la suavidad, el derrame y el desderrame. Un solo cambio que Deshacer revierte",
+        ),
+    ),
+    (Msg::DesignEyedropper, t("Elegir color")),
+    (
+        Msg::DesignEyedropperHover,
+        t(
+            "Después haga clic en el fondo en la imagen de la entrada de abajo: la clave toma ese color y ajusta el resto según el fondo parecido",
+        ),
+    ),
+    (
+        Msg::DesignKeyPictureHover,
+        t(
+            "La imagen actual de la entrada de la capa. Active Elegir color y haga clic en un punto del fondo para recortarlo",
+        ),
+    ),
+    (
+        Msg::DesignKeyPicturePickHover,
+        t("Haga clic en un punto del fondo para recortar su color"),
+    ),
+    (
+        Msg::DesignReasonNoInputPicture,
+        t("la imagen de la entrada aún no ha llegado"),
+    ),
+    (
+        Msg::DesignReasonSceneSource,
+        t("la capa muestra una escena, que no tiene una única imagen de entrada que muestrear"),
+    ),
+    (
+        Msg::DesignReasonAutoKeyOneLayer,
+        t("seleccione una sola capa: cada capa se recorta según su propia entrada"),
+    ),
+    (
+        Msg::DesignAutoKeyApplied,
+        t(
+            "Clave automática aplicada: color {colour}, similitud {similarity}, suavidad {smoothness}",
+        ),
+    ),
+    (
+        Msg::DesignAutoKeyNoBacking,
+        t("La clave automática no encontró un fondo verde ni azul: elija el color del fondo"),
+    ),
+    (
+        Msg::DesignAutoKeyGrey,
+        t("Ese punto es demasiado gris para recortarlo: elija un punto del fondo con color"),
+    ),
+    (
+        Msg::DesignAutoKeyUnreadable,
+        t("La clave automática no pudo leer la imagen de la entrada"),
+    ),
     (
         Msg::DesignKeyGreenHover,
         t("Quitar el verde puro, para una pantalla verde"),

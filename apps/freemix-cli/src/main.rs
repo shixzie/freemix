@@ -1,5 +1,6 @@
 mod app;
 mod args;
+mod auto_key;
 mod grading;
 mod presets;
 mod project_bundle;

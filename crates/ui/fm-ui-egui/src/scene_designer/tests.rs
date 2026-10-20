@@ -1,7 +1,7 @@
 use core::num::NonZeroU32;
 
 use egui::{Modifiers, PointerButton};
-use fm_protocol::{TitlePreviewImage, WireInputId};
+use fm_protocol::{SceneLayerOperation, TitlePreviewImage, WireInputId};
 use fm_ui_model::scene_designer::{EditLabel, LIVE_LAYER_EDITS};
 
 use super::*;
@@ -591,6 +591,105 @@ fn closing_cancels_a_running_gesture_and_a_new_layout_rebases_a_clean_draft() {
     let draft = shell.scene_layout_draft(scene).unwrap();
     assert!(draft.gesture_kind().is_none());
     assert!(!draft.is_dirty());
+}
+
+/// Clicks at `at` over four frames and returns every intent they sent.
+fn click_intents(
+    driver: &mut Driver,
+    shell: &mut StudioShell,
+    state: &StudioUiState,
+    at: Pos2,
+) -> Vec<StudioIntent> {
+    let mut intents = driver.frame(shell, state, vec![Event::PointerMoved(at)]);
+    intents.extend(driver.frame(shell, state, vec![press(at, true, Modifiers::NONE)]));
+    intents.extend(driver.frame(shell, state, vec![press(at, false, Modifiers::NONE)]));
+    intents.extend(driver.frame(shell, state, Vec::new()));
+    intents
+}
+
+/// SW-008: with the host layer's input picture in, Auto key sends one
+/// `scene_layer_key_set` with the green screen's exact colour and a green
+/// despill; the eyedropper keys the colour clicked on the picture (a red
+/// shirt: keyed, not despilled) and turns itself off.
+#[test]
+fn auto_key_and_the_eyedropper_send_one_key_edit_each() {
+    use fm_ui_model::auto_key::{AutoKeyPicture, AutoKeySample, auto_key};
+    let (mut state, scene) = designer_fixture(true, false);
+    state.input_thumbnails = crate::hover_audit::green_screen_thumbnail(1);
+    let mut shell = StudioShell::default();
+    shell.open_scene_designer(scene);
+    let mut driver = Driver::new();
+    driver.frame(&mut shell, &state, Vec::new());
+    shell
+        .scene_layout_draft_mut(scene)
+        .unwrap()
+        .select(layer(1), false);
+    driver.frame(&mut shell, &state, Vec::new());
+    driver.frame(&mut shell, &state, Vec::new());
+    let (button, picture) = shell.designer.auto_key_rects;
+    let button = button.expect("the Auto key button was drawn");
+    assert!(picture.is_some(), "the input picture was drawn");
+
+    let (image, _) = &state.input_thumbnails
+        [&WireInputId::from_domain(InputId::new(core::num::NonZeroU128::new(1).unwrap()))];
+    let expected = auto_key(
+        AutoKeyPicture::new(16, 9, &image.rgba).unwrap(),
+        AutoKeySample::Dominant,
+    )
+    .unwrap();
+    let intents = click_intents(&mut driver, &mut shell, &state, button.center());
+    let edits = layer_edits(&intents);
+    assert_eq!(edits.len(), 1, "{edits:?}");
+    assert_eq!(edits[0].layer, layer(1));
+    let SceneLayerOperation::SetKey(Some(WireLayerKey::Chroma(chroma))) = edits[0].operation else {
+        panic!("auto key sets a chroma key: {edits:?}");
+    };
+    assert_eq!((chroma.red, chroma.green, chroma.blue), (30, 190, 60));
+    assert_eq!(chroma.similarity, expected.similarity);
+    assert_eq!(chroma.refinement.despill, expected.despill);
+    assert!(matches!(expected.despill, WireKeyDespill::Green { .. }));
+    let document = shell.scene_layout_draft(scene).unwrap();
+    assert_eq!(document.undo_label(), Some(EditLabel::AutoKey));
+
+    // The eyedropper: a click on the subject's red shirt keys that colour.
+    // The picture sits low in the inspector: scroll it into view first.
+    shell.designer.eyedropper = true;
+    let over = button.center();
+    driver.frame(&mut shell, &state, vec![Event::PointerMoved(over)]);
+    driver.frame(
+        &mut shell,
+        &state,
+        vec![Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: Vec2::new(0.0, -400.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: Modifiers::NONE,
+        }],
+    );
+    for _ in 0..4 {
+        driver.frame(&mut shell, &state, Vec::new());
+    }
+    let picture = shell
+        .designer
+        .auto_key_rects
+        .1
+        .expect("the picture is drawn");
+    let shirt = pos2(
+        picture.min.x + picture.width() * 7.5 / 16.0,
+        picture.min.y + picture.height() * 7.5 / 9.0,
+    );
+    let intents = click_intents(&mut driver, &mut shell, &state, shirt);
+    let edits = layer_edits(&intents);
+    assert_eq!(edits.len(), 1, "{edits:?}");
+    let SceneLayerOperation::SetKey(Some(WireLayerKey::Chroma(chroma))) = edits[0].operation else {
+        panic!("the eyedropper sets a chroma key: {edits:?}");
+    };
+    assert_eq!((chroma.red, chroma.green, chroma.blue), (210, 60, 50));
+    assert_eq!(chroma.refinement.despill, WireKeyDespill::Off);
+    assert!(
+        !shell.designer.eyedropper,
+        "a pick turns the eyedropper off"
+    );
 }
 
 /// A stand-in for the server's composition of the fixture scene as stored:

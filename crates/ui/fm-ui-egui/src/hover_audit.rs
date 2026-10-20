@@ -3082,8 +3082,10 @@ pub(crate) fn designer_fixture(operator: bool, locked: bool) -> (StudioUiState, 
 /// a crop and an inverted mask in the draft (every field and the draft
 /// buttons enabled, a chroma key, and one effect of every kind), the luma
 /// keyed layer with a full effect list (Add effect refused), the same layer
-/// key/filled from another input with green despill (SW-008), two layers
-/// selected (their effects differ), the project padlock, and a viewer.
+/// key/filled from another input with green despill (SW-008), the host
+/// layer with its input's green-screen picture for auto key (SW-008),
+/// with the Pick colour eyedropper on, two layers selected (their effects
+/// differ), the project padlock, and a viewer.
 fn designer_scenes(locale: Locale) -> Vec<Scene> {
     use fm_ui_model::scene_designer::Field;
     let prepare = |state: &StudioUiState, configure: &dyn Fn(&mut StudioShell)| {
@@ -3124,6 +3126,20 @@ fn designer_scenes(locale: Locale) -> Vec<Scene> {
         document.select(scene_layer(1), false);
         document.select(scene_layer(2), true);
     };
+    let host = |shell: &mut StudioShell| {
+        let document = shell.scene_layout_draft_mut(scene_id()).unwrap();
+        document.select(scene_layer(1), false);
+    };
+    let picking = |shell: &mut StudioShell| {
+        host(shell);
+        shell.designer.eyedropper = true;
+    };
+    let pictured = || {
+        let mut state = ready(true, Variant::default());
+        state.title_previews = true;
+        state.input_thumbnails = green_screen_thumbnail(1);
+        state
+    };
     let operator = || {
         let mut state = ready(true, Variant::default());
         state.title_previews = true;
@@ -3141,6 +3157,8 @@ fn designer_scenes(locale: Locale) -> Vec<Scene> {
         ("operator/designer-edited", &edited, operator()),
         ("operator/designer-luma", &luma, operator()),
         ("operator/designer-fill", &fill, operator()),
+        ("operator/designer-autokey", &host, pictured()),
+        ("operator/designer-eyedropper", &picking, pictured()),
         ("operator/designer-multi", &both, operator()),
         ("operator/designer-locked", &edited, locked),
         ("viewer/designer", &both, ready(false, Variant::default())),
@@ -3149,6 +3167,32 @@ fn designer_scenes(locale: Locale) -> Vec<Scene> {
         .into_iter()
         .map(|(name, configure, state)| Scene::console(name, prepare(&state, configure), state))
         .collect()
+}
+
+/// A 16x9 green-screen thumbnail of input `input` with a subject, the
+/// picture the designer's auto key samples (SW-008).
+pub(crate) fn green_screen_thumbnail(
+    input: u128,
+) -> BTreeMap<WireInputId, (fm_protocol::InputThumbnailImage, std::time::Instant)> {
+    let mut rgba = Vec::new();
+    for index in 0..16 * 9 {
+        let pixel = if (6..10).contains(&(index % 16)) && index / 16 >= 3 {
+            [210, 60, 50, 255]
+        } else {
+            [30, 190, 60, 255]
+        };
+        rgba.extend_from_slice(&pixel);
+    }
+    let image = fm_protocol::InputThumbnailImage {
+        input: wire(input),
+        sequence: 1,
+        origin: fm_protocol::MonitorFrameOrigin::Simulated,
+        age_ms: 0,
+        width: 16,
+        height: 9,
+        rgba: rgba.into(),
+    };
+    BTreeMap::from([(wire(input), (image, std::time::Instant::now()))])
 }
 
 /// The right-click menus of the transition column and overlay channels,

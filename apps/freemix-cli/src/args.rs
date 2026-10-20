@@ -679,6 +679,30 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Sets one layer's whole chroma key from its input's picture (SW-008):
+    /// the dominant green or blue backing, or the colour at `point`.
+    SceneLayerAutoKey {
+        path: PathBuf,
+        scene: u128,
+        index: usize,
+        /// A binary PPM to sample instead of the layer's simulated input.
+        picture: Option<PathBuf>,
+        point: Option<(u32, u32)>,
+    },
+    /// Live-sets one layer's chroma key on a daemon from a saved picture
+    /// of its input (SW-008), as one `scene_layer_key_set` edit.
+    RemoteSceneLayerAutoKey {
+        address: SocketAddr,
+        scene: u128,
+        layer: u32,
+        picture: PathBuf,
+        point: Option<(u32, u32)>,
+        /// The key's clip, choke, and edge softness (the despill is the
+        /// auto key's).
+        refinement: fm_model::KeyRefinement,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     /// Live-replaces one layer's effect list on a daemon (IN-020, Protocol
     /// 2.43).
     RemoteSceneLayerEffects {
@@ -1913,6 +1937,8 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "scene-layer-effect-clear" => parse_scene_layer_effect_clear(arguments),
         "scene-layer-key" => parse_scene_layer_key(arguments),
         "remote-scene-layer-key" => parse_remote_scene_layer_key(arguments),
+        "scene-layer-auto-key" => parse_scene_layer_auto_key(arguments),
+        "remote-scene-layer-auto-key" => parse_remote_scene_layer_auto_key(arguments),
         "remote-scene-layer-effects" => parse_remote_scene_layer_effects(arguments),
         "input-remove" => parse_input_remove(arguments),
         "input-duplicate" => parse_input_duplicate(arguments),
@@ -4821,6 +4847,77 @@ fn parse_remote_scene_layer_key(
         scene,
         layer,
         layer_key,
+        key,
+        expected_revision,
+    })
+}
+
+/// An auto key's `--picture` and `--point`, then the other arguments.
+type AutoKeyOptions = (Option<PathBuf>, Option<(u32, u32)>, Vec<String>);
+
+/// The auto key options `--picture <file.ppm>` and `--point <x> <y>`;
+/// every other argument is returned in order.
+fn auto_key_options(arguments: impl Iterator<Item = String>) -> Result<AutoKeyOptions, ArgsError> {
+    let mut arguments = arguments;
+    let mut picture = None;
+    let mut point = None;
+    let mut rest = Vec::new();
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--picture" => picture = Some(required_path(&mut arguments, "picture path")?),
+            "--point" => {
+                let x = number(&required(&mut arguments, "point x")?, "point x")?;
+                let y = number(&required(&mut arguments, "point y")?, "point y")?;
+                point = Some((x, y));
+            }
+            _ => rest.push(argument),
+        }
+    }
+    Ok((picture, point, rest))
+}
+
+/// `scene-layer-auto-key <show> <scene> <layer-index> [--picture
+/// <file.ppm>] [--point <x> <y>]` (SW-008).
+fn parse_scene_layer_auto_key(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let scene = number(&required(&mut arguments, "scene")?, "scene")?;
+    let index = number(&required(&mut arguments, "layer index")?, "layer index")?;
+    let (picture, point, rest) = auto_key_options(arguments)?;
+    reject_extra(&mut rest.into_iter())?;
+    Ok(Command::SceneLayerAutoKey {
+        path,
+        scene,
+        index,
+        picture,
+        point,
+    })
+}
+
+/// `remote-scene-layer-auto-key <address> <scene> <layer-id> --picture
+/// <file.ppm> [--point <x> <y>] [--clip <black> <white>] [--choke <n>]
+/// [--edge-softness <n>] [--key <key>] [--expect <revision>]` (SW-008).
+fn parse_remote_scene_layer_auto_key(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let scene = number(&required(&mut arguments, "scene")?, "scene")?;
+    let layer = number(&required(&mut arguments, "layer id")?, "layer id")?;
+    let (picture, point, rest) = auto_key_options(arguments)?;
+    let picture = picture.ok_or(ArgsError::MissingValue("--picture <file.ppm>"))?;
+    let (refinement, rest) = key_refinement_options(&mut rest.into_iter())?;
+    if refinement.despill != fm_model::KeyDespill::Off {
+        return Err(ArgsError::UnknownOption("--despill".to_owned()));
+    }
+    let (key, expected_revision) = command_options(rest.into_iter())?;
+    Ok(Command::RemoteSceneLayerAutoKey {
+        address,
+        scene,
+        layer,
+        picture,
+        point,
+        refinement,
         key,
         expected_revision,
     })
