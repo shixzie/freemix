@@ -22,6 +22,7 @@ mod system_audio;
 mod title;
 mod transition;
 mod value;
+mod web_access;
 
 pub use animation::{motion_wire_bytes, scene_clip_wire_bytes, title_clip_wire_bytes};
 pub use cue::{cue_action_token, cue_name_is_valid, parse_cue_action_token};

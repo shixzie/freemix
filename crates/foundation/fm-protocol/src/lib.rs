@@ -19,6 +19,7 @@ mod script;
 mod stream_target;
 mod system_audio;
 mod version;
+mod web_access;
 
 pub use fm_types::{FadeToBlackCurve, MAX_FADE_TO_BLACK_DURATION_FRAMES};
 
@@ -192,3 +193,10 @@ pub use system_audio::{
     validate_system_audio_device,
 };
 pub use version::{CURRENT_PROTOCOL_VERSION, ProtocolVersion};
+pub use web_access::{
+    MAX_WEB_DEVICE_ID_BYTES, MAX_WEB_DEVICE_NAME_BYTES, MAX_WEB_DEVICES, MAX_WEB_LINK_CODE_BYTES,
+    MAX_WEB_URL_BYTES, MIN_WEB_LINK_CODE_BYTES, WEB_PAIRING_CODE_DIGITS, WEB_PAIRING_LIFETIME_MS,
+    WebAccessAction, WebAccessMessage, WebAccessRefusal, WebAccessRequest, WebDeviceEntry,
+    WebDeviceRole, WebGatewayStatus, WebPairing, valid_web_device_id, valid_web_device_name,
+    valid_web_fingerprint,
+};

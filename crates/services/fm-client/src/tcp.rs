@@ -398,6 +398,11 @@ pub enum SessionEvent {
     SystemAudioDevices {
         message: fm_protocol::SystemAudioDevicesMessage,
     },
+    /// The daemon answered a web access request (Protocol 2.70). The
+    /// answer is also in the replicated model.
+    WebAccess {
+        message: fm_protocol::WebAccessMessage,
+    },
     /// One valid input thumbnail arrived for `input` (Protocol 2.59); the
     /// decoded image is available from
     /// [`TcpSession::latest_input_thumbnails`].
@@ -838,6 +843,25 @@ impl TcpSession {
             return Err(TcpSessionError::NotConnected);
         }
         self.send_wire_wait(&WireMessage::SystemAudioDevicesRequest(request), None)?;
+        self.flush_wire_wait(None)
+    }
+
+    /// Manages the daemon's web gateway pairing and paired devices
+    /// (Protocol 2.70). The answer arrives later as
+    /// [`SessionEvent::WebAccess`] naming the same `request_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected or when encoding or writing the
+    /// request fails.
+    pub fn send_web_access_request(
+        &mut self,
+        request: fm_protocol::WebAccessRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        self.send_wire_wait(&WireMessage::WebAccessRequest(request), None)?;
         self.flush_wire_wait(None)
     }
 
@@ -1435,6 +1459,10 @@ impl TcpSession {
                 self.intake(WireMessage::SystemAudioDevices(message.clone()))?;
                 Ok(SessionEvent::SystemAudioDevices { message })
             }
+            WireMessage::WebAccess(message) => {
+                self.intake(WireMessage::WebAccess(message.clone()))?;
+                Ok(SessionEvent::WebAccess { message })
+            }
             // Title, playlist, grade, title animation, title layout, scene
             // animation, scene layout, and animation preset states complete a
             // snapshot while
@@ -1469,7 +1497,8 @@ impl TcpSession {
             | WireMessage::DiagnosticsResponse(_)
             | WireMessage::DisplayInventoryRequest(_)
             | WireMessage::CaptureDevicesRequest(_)
-            | WireMessage::SystemAudioDevicesRequest(_) => {
+            | WireMessage::SystemAudioDevicesRequest(_)
+            | WireMessage::WebAccessRequest(_) => {
                 self.transition_disconnect();
                 Err(TcpSessionError::UnexpectedMessage)
             }

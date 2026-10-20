@@ -3018,6 +3018,7 @@ mod tests {
             capture_inputs: Vec::new(),
             capture_inventory: None,
             system_audio_inventory: None,
+            web_access: None,
             cursor: ProjectCursor::from_resume_cursor(
                 fm_types::ProjectId::new(NonZeroU128::new(1).unwrap()),
                 fm_protocol::ResumeCursor {

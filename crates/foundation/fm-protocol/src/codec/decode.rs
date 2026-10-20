@@ -195,6 +195,34 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
                 inventory: super::system_audio::decode_inventory(&mut fields)?,
             })
         }
+        "web_access_request" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::WebAccessRequest(crate::WebAccessRequest {
+                request_id,
+                action: super::web_access::decode_action(&mut fields)?,
+            })
+        }
+        "web_access" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            let refusal = super::web_access::decode_refusal(fields.optional("refusal"))?;
+            let gateway = match fields.required("gateway")?.as_str() {
+                "0" => None,
+                "1" => Some(super::web_access::decode_gateway(&mut fields)?),
+                other => {
+                    return Err(CodecError::InvalidField {
+                        field: "gateway",
+                        value: other.to_owned(),
+                    });
+                }
+            };
+            WireMessage::WebAccess(crate::WebAccessMessage {
+                request_id,
+                refusal,
+                gateway,
+            })
+        }
         "display_inventory" => {
             let request_id = fields.required("request_id")?;
             validate_request_id(&request_id)?;

@@ -30,6 +30,11 @@ impl PairingCode {
         }
     }
 
+    /// The code itself, for the console that shows it to the operator.
+    pub(crate) fn reveal(&self) -> &str {
+        &self.0
+    }
+
     fn matches(&self, candidate: &Self) -> bool {
         let expected = self.0.as_bytes();
         let candidate = candidate.0.as_bytes();

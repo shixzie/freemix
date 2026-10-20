@@ -204,6 +204,9 @@ pub enum Intake {
     /// A `system_audio_devices` reply updated the replicated system audio
     /// device list (Protocol 2.68).
     SystemAudioDevicesApplied,
+    /// A `web_access` reply updated the replicated web access state
+    /// (Protocol 2.70).
+    WebAccessApplied,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -647,9 +650,14 @@ impl Client {
                 self.model.apply_system_audio_inventory(message.inventory);
                 Ok(Intake::SystemAudioDevicesApplied)
             }
+            WireMessage::WebAccess(message) => {
+                self.model.apply_web_access(message);
+                Ok(Intake::WebAccessApplied)
+            }
             WireMessage::DisplayInventoryRequest(_)
             | WireMessage::CaptureDevicesRequest(_)
             | WireMessage::SystemAudioDevicesRequest(_)
+            | WireMessage::WebAccessRequest(_)
             | WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
             | WireMessage::DurableEventBatch(_)

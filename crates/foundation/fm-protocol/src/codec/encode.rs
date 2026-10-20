@@ -169,6 +169,28 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
                 record.field_string(name, value)
             })?;
         }
+        WireMessage::WebAccessRequest(message) => {
+            record.kind("web_access_request");
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+            super::web_access::encode_action(&message.action, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        WireMessage::WebAccess(message) => {
+            record.kind("web_access");
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+            if let Some(refusal) = super::web_access::refusal_token(message.refusal) {
+                record.field_str("refusal", refusal)?;
+            }
+            record.field_str("gateway", if message.gateway.is_some() { "1" } else { "0" })?;
+            if let Some(gateway) = &message.gateway {
+                super::web_access::encode_gateway(gateway, &mut |name, value| {
+                    record.field_string(name, value)
+                })?;
+            }
+        }
         WireMessage::DisplayInventory(message) => {
             record.kind("display_inventory");
             validate_request_id(&message.request_id)?;

@@ -248,6 +248,31 @@ impl Session {
         Ok(())
     }
 
+    /// Authorizes and accounts for one web access request (Protocol 2.70).
+    ///
+    /// Pairing a device grants a new user and revoking one removes it, so
+    /// every web access request, even a status read that reveals the
+    /// outstanding pairing code, requires [`CommandClass::ManageUsers`]. It
+    /// counts against the inbound command rate.
+    ///
+    /// # Errors
+    ///
+    /// Returns a session, authorization, or rate error when the request
+    /// cannot be admitted.
+    pub fn admit_web_access(&mut self, now_ms: u64) -> Result<(), SessionError> {
+        self.ensure_connected()?;
+        self.policy
+            .authorize(&self.principal, CommandClass::ManageUsers)?;
+        if !self
+            .inbound_window
+            .has_capacity(now_ms, self.limits.inbound_commands)
+        {
+            return Err(SessionError::InboundRateLimited);
+        }
+        self.inbound_window.record();
+        Ok(())
+    }
+
     /// Authorizes and accounts for one exact title preview request.
     ///
     /// A preview renders a title template, which only someone who may edit

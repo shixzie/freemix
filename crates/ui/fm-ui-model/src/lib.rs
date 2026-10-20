@@ -1653,6 +1653,9 @@ pub struct ClientView {
     /// (Protocol 2.68); `None` until a `system_audio_devices` reply
     /// arrives.
     pub system_audio_inventory: Option<fm_protocol::SystemAudioInventory>,
+    /// The web gateway's pairing and paired devices as the daemon last
+    /// answered a `web_access_request` (Protocol 2.70); `None` until then.
+    pub web_access: Option<fm_protocol::WebAccessMessage>,
     /// Every configured stream destination in authored order, without its
     /// key (Protocol 2.52).
     pub stream_targets: Vec<fm_protocol::StreamTargetEntry>,
@@ -2336,6 +2339,9 @@ pub struct ClientModel {
     /// The system audio capture devices as last listed (Protocol 2.68).
     /// Runtime state that survives resynchronization.
     system_audio_inventory: Option<fm_protocol::SystemAudioInventory>,
+    /// The latest web access answer (Protocol 2.70). Runtime state that
+    /// survives resynchronization.
+    web_access: Option<fm_protocol::WebAccessMessage>,
 }
 
 impl ClientModel {
@@ -2356,7 +2362,19 @@ impl ClientModel {
             display_inventory: None,
             capture_inventory: None,
             system_audio_inventory: None,
+            web_access: None,
         }
+    }
+
+    /// Records the latest `web_access` answer (Protocol 2.70).
+    pub fn apply_web_access(&mut self, message: fm_protocol::WebAccessMessage) {
+        self.web_access = Some(message);
+    }
+
+    /// Returns the latest web access answer (Protocol 2.70).
+    #[must_use]
+    pub const fn web_access(&self) -> Option<&fm_protocol::WebAccessMessage> {
+        self.web_access.as_ref()
     }
 
     /// Records the system audio capture devices from a
@@ -2567,6 +2585,7 @@ impl ClientModel {
                 .collect(),
             capture_inventory: self.capture_inventory.clone(),
             system_audio_inventory: self.system_audio_inventory.clone(),
+            web_access: self.web_access.clone(),
             system_audio_inputs: state
                 .system_audio_inputs
                 .values()
