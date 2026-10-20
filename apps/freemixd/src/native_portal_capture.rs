@@ -21,15 +21,30 @@
 //! allows it. A new pick forgets the input's token first, so the dialog
 //! asks again.
 //!
+//! A capture's sound does not depend on how its picture is shared: it is
+//! keyed by the server's audio system, not by the window system. **System
+//! audio** is the `PulseAudio`/`PipeWire` default output's monitor, exactly
+//! as on X11, read by an audio-only receiver (`SystemSound`) that starts
+//! when the share first goes live and runs until the share is dropped
+//! (picked again, closed, or its kind or sound changed). Its sound feeds
+//! the input's own Master strip while the picture is live, with the
+//! receiver's own drift loop (AU-004); its state travels in the input's
+//! status as on X11. **Application audio** stays `unsupported`
+//! ([`NO_PORTAL_APP_AUDIO`]): a portal grant names neither the process nor
+//! the application of the window picked in its dialog, and its restore
+//! data is private to the desktop's portal backend, so no playback stream
+//! can be matched to it reliably.
+//!
 //! Statuses are reported like every other screen capture's: at once when
-//! the state, size, or restart count changes, a changed error at most once
-//! a second, and each state change logged as a `FREEMIXD_SCREEN_CAPTURE`
-//! record (`backend=portal`).
+//! the state, size, restart count, or audio state changes, a changed error
+//! at most once a second, and each state change logged as a
+//! `FREEMIXD_SCREEN_CAPTURE` record (`backend=portal`).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use fm_codec_ffmpeg::network_input::{NetworkInputConfig, NetworkReceiver, PulledFrame};
 use fm_io_linux::screen_capture::capture_rate;
 use fm_io_linux::wayland::{
     CaptureSettings, PortalBackend, PortalCapture, ShareRequest, SourceKind,
@@ -37,16 +52,21 @@ use fm_io_linux::wayland::{
 use fm_persistence::StoredProject;
 use fm_protocol::{
     ScreenCaptureAudio, ScreenCaptureAudioState, ScreenCaptureConfig, ScreenCaptureState,
-    ScreenCaptureStatus,
+    ScreenCaptureStatus, SystemAudioState, bound_screen_capture_error,
 };
 use fm_types::InputId;
 use fm_types::network_stream::StallSlate;
 
 use crate::native_files::{blank_picture, output_timing};
 use crate::native_streams::{Format, PulledStream};
+use crate::native_sync::{SourceKind as SyncKind, SyncLog, wire_sample};
 
 /// Starts one share of the desktop (the real portal, or a fake in tests).
 pub(crate) type PortalFactory = Arc<dyn Fn() -> Box<dyn PortalBackend> + Send + Sync>;
+
+/// The audio-only receiver of a capture's system audio in a format (the
+/// default output's monitor, or a test tone in tests).
+pub(crate) type SoundFactory = fn(&Format) -> NetworkInputConfig;
 
 /// Longest a changed error text waits before it is reported.
 const STATUS_INTERVAL: Duration = Duration::from_secs(1);
@@ -61,12 +81,97 @@ struct Source {
     showing: bool,
     /// A blank picture is due: the input closed.
     blank: bool,
+    /// The share's system audio, once the share went live.
+    sound: Option<SystemSound>,
     reported: Option<(ScreenCaptureStatus, Instant)>,
+}
+
+/// A share's system audio: an audio-only receiver of the default output's
+/// monitor.
+struct SystemSound {
+    receiver: Option<NetworkReceiver>,
+    /// Why the receiver could not start, if it could not.
+    start_error: Option<String>,
+    /// The reopen count of the receiver connection last seen live.
+    live_connection: Option<u32>,
+    /// When its clock drift was last logged (AU-004).
+    sync_log: SyncLog,
+}
+
+impl SystemSound {
+    fn start(input: InputId, config: NetworkInputConfig) -> Self {
+        let (receiver, start_error) = match NetworkReceiver::start(config) {
+            Ok(receiver) => (Some(receiver), None),
+            Err(error) => {
+                eprintln!(
+                    "FREEMIXD_SCREEN_CAPTURE_AUDIO\tv=1\tinput={input}\tstart_failed\t\
+                     backend=portal"
+                );
+                (None, Some(error.to_string()))
+            }
+        };
+        Self {
+            receiver,
+            start_error,
+            live_connection: None,
+            sync_log: SyncLog::default(),
+        }
+    }
+
+    /// The audio state and error the receiver is in.
+    fn state(&mut self) -> (ScreenCaptureAudioState, Option<String>) {
+        let bounded =
+            |text: &str| Some(bound_screen_capture_error(text)).filter(|text| !text.is_empty());
+        let Some(receiver) = &self.receiver else {
+            return (
+                ScreenCaptureAudioState::Failed,
+                self.start_error.as_deref().and_then(bounded),
+            );
+        };
+        let status = crate::native_system_audio::system_audio_status(
+            &receiver.status(),
+            &mut self.live_connection,
+        );
+        match status.state {
+            SystemAudioState::Live => (ScreenCaptureAudioState::Live, None),
+            SystemAudioState::Idle | SystemAudioState::Opening => {
+                (ScreenCaptureAudioState::Opening, None)
+            }
+            SystemAudioState::Reopening { .. } | SystemAudioState::Failed => (
+                ScreenCaptureAudioState::Failed,
+                bounded(
+                    status
+                        .last_error
+                        .as_deref()
+                        .unwrap_or(NO_SYSTEM_AUDIO_OPENED),
+                ),
+            ),
+        }
+    }
+}
+
+/// The default output's monitor of the `PulseAudio`/`PipeWire` server, as
+/// an audio-only receiver at the program rate.
+pub(crate) fn pulse_monitor(format: &Format) -> NetworkInputConfig {
+    let pulse = fm_io_linux::capture_audio::pulse_system_audio();
+    let mut config = NetworkInputConfig::audio_device(
+        pulse.format,
+        pulse.path,
+        crate::native_system_audio::settings(),
+        format.rate,
+    );
+    if let Some(device) = &mut config.device {
+        device.options = pulse.options;
+    }
+    config.sample_rate = format.sample_rate.hertz();
+    config.channels = 2;
+    config
 }
 
 /// The screen capture inputs of a daemon on a Wayland desktop.
 pub(crate) struct PortalSources {
     factory: PortalFactory,
+    sound: SoundFactory,
     format: Format,
     sources: BTreeMap<InputId, Source>,
     /// Each input's latest restore token.
@@ -74,9 +179,12 @@ pub(crate) struct PortalSources {
     tokens_changed: bool,
 }
 
-/// Why a desktop-portal capture carries no sound.
-const NO_PORTAL_AUDIO: &str =
-    "a Wayland desktop capture has no sound here yet; add a system audio input for it";
+/// Why a desktop-portal capture carries no application audio.
+pub(crate) const NO_PORTAL_APP_AUDIO: &str = "a Wayland sharing dialog does not say which \
+     application a window belongs to, so its sound cannot be told apart; use system audio";
+/// Why system audio failed without an error of its own.
+const NO_SYSTEM_AUDIO_OPENED: &str =
+    "the system audio did not open (is PulseAudio or PipeWire running?)";
 
 /// What a capture asks of the desktop for `config`.
 fn request(config: &ScreenCaptureConfig, token: Option<&String>) -> ShareRequest {
@@ -89,8 +197,15 @@ fn request(config: &ScreenCaptureConfig, token: Option<&String>) -> ShareRequest
 
 impl PortalSources {
     pub(crate) fn new(factory: PortalFactory, format: Format) -> Self {
+        Self::with_sound(factory, pulse_monitor, format)
+    }
+
+    /// Captures system audio through `sound` instead of the default
+    /// output's monitor.
+    pub(crate) fn with_sound(factory: PortalFactory, sound: SoundFactory, format: Format) -> Self {
         Self {
             factory,
+            sound,
             format,
             sources: BTreeMap::new(),
             tokens: BTreeMap::new(),
@@ -143,10 +258,14 @@ impl PortalSources {
                 restarts: 0,
                 showing: false,
                 blank: false,
+                sound: None,
                 reported: None,
             });
             if source.config != *config {
                 let old = &source.config;
+                if old.audio != config.audio {
+                    source.sound = None;
+                }
                 if SourceKind::of(&old.target) != SourceKind::of(&config.target) {
                     // A token restores a screen or a window, not the other.
                     self.tokens_changed |= self.tokens.remove(input).is_some();
@@ -163,6 +282,9 @@ impl PortalSources {
                 source.showing = false;
                 source.blank = true;
             }
+            if source.capture.is_none() {
+                source.sound = None;
+            }
             if !closed && source.closed {
                 source.blank = false;
             }
@@ -170,10 +292,20 @@ impl PortalSources {
         }
     }
 
-    /// Starts a share for every open input without one.
+    /// Starts a share for every open input without one, and the system
+    /// audio of every share that went live without it.
     fn follow(&mut self) {
         for (input, source) in &mut self.sources {
-            if source.closed || source.capture.is_some() {
+            if source.closed {
+                continue;
+            }
+            if let Some(capture) = &source.capture {
+                if source.config.audio == ScreenCaptureAudio::System
+                    && source.sound.is_none()
+                    && capture.status().state == ScreenCaptureState::Live
+                {
+                    source.sound = Some(SystemSound::start(*input, (self.sound)(&self.format)));
+                }
                 continue;
             }
             if source.reported.is_some() {
@@ -202,6 +334,7 @@ impl PortalSources {
         };
         self.tokens_changed |= self.tokens.remove(&input).is_some();
         source.capture = None;
+        source.sound = None;
         true
     }
 
@@ -211,6 +344,10 @@ impl PortalSources {
         let format = self.format;
         let mut pulled = Vec::with_capacity(self.sources.len());
         for (&input, source) in &mut self.sources {
+            let live = source
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.status().state == ScreenCaptureState::Live);
             let video = if std::mem::take(&mut source.blank) {
                 output_timing(frame, format.rate, format.clock_domain)
                     .and_then(|timing| blank_picture(format.dimensions, timing))
@@ -220,9 +357,7 @@ impl PortalSources {
                         source.showing = true;
                         return format.picture(frame, bytes);
                     }
-                    let lost = source.showing
-                        && capture.status().state != ScreenCaptureState::Live
-                        && source.config.slate == StallSlate::Black;
+                    let lost = source.showing && !live && source.config.slate == StallSlate::Black;
                     if lost {
                         source.showing = false;
                         format.black(frame)
@@ -234,10 +369,24 @@ impl PortalSources {
             if source.closed && video.is_none() {
                 continue;
             }
+            // The receiver is drained every frame; its sound is heard while
+            // the picture is live.
+            let sound = source
+                .sound
+                .as_ref()
+                .and_then(|sound| sound.receiver.as_ref())
+                .map(|receiver| {
+                    let PulledFrame { audio, .. } = receiver.pull();
+                    audio
+                });
+            let audio = match sound {
+                Some(planes) if live => format.audio(frame, planes),
+                _ => format.silence(frame),
+            };
             pulled.push(PulledStream {
                 input,
                 video,
-                audio: format.silence(frame),
+                audio,
             });
         }
         pulled
@@ -273,14 +422,23 @@ impl PortalSources {
         self.collect_tokens();
         let mut due = Vec::new();
         for (&input, source) in &mut self.sources {
+            if let Some(sound) = &mut source.sound {
+                sound.sync_log.report(
+                    SyncKind::ScreenCapture,
+                    input,
+                    sound
+                        .receiver
+                        .as_ref()
+                        .and_then(NetworkReceiver::sync_telemetry)
+                        .as_ref(),
+                    now,
+                );
+            }
             let status = match (&source.capture, source.closed) {
                 (Some(capture), false) => {
                     let mut status = capture.status();
                     status.reopens = status.reopens.saturating_add(source.restarts);
-                    if source.config.audio != ScreenCaptureAudio::None {
-                        status.audio = ScreenCaptureAudioState::Unsupported;
-                        status.audio_error = Some(NO_PORTAL_AUDIO.to_owned());
-                    }
+                    (status.audio, status.audio_error) = audio_status(source, status.state);
                     status
                 }
                 _ => ScreenCaptureStatus::default(),
@@ -292,7 +450,9 @@ impl PortalSources {
                     || reported.height != status.height
                     || reported.audio != status.audio
                     || (reported.last_error.is_none() && status.last_error.is_some())
-                    || (reported.last_error != status.last_error
+                    || (reported.audio_error.is_none() && status.audio_error.is_some())
+                    || ((reported.last_error != status.last_error
+                        || reported.audio_error != status.audio_error)
                         && now.saturating_duration_since(*at) >= STATUS_INTERVAL)
             });
             if !report {
@@ -313,10 +473,56 @@ impl PortalSources {
                     source.config.target.kind_token()
                 );
             }
+            if source
+                .reported
+                .as_ref()
+                .is_none_or(|(reported, _)| reported.audio != status.audio)
+                && status.audio != ScreenCaptureAudioState::Off
+            {
+                eprintln!(
+                    "FREEMIXD_SCREEN_CAPTURE_AUDIO\tv=1\tinput={input}\taudio={}\tstate={}\t\
+                     backend=portal",
+                    source.config.audio.token(),
+                    status.audio.token(),
+                );
+            }
             source.reported = Some((status.clone(), now));
             due.push((input, status));
         }
         due
+    }
+
+    /// Every open share's system audio drift loop as wire samples
+    /// (Protocol 2.76).
+    pub(crate) fn sync_samples(&self) -> Vec<fm_protocol::SourceSyncSample> {
+        self.sources
+            .iter()
+            .filter(|(_, source)| !source.closed)
+            .filter_map(|(&input, source)| {
+                let receiver = source.sound.as_ref()?.receiver.as_ref()?;
+                wire_sample(SyncKind::ScreenCapture, input, &receiver.sync_telemetry()?)
+            })
+            .collect()
+    }
+}
+
+/// The audio state of a share whose picture is in `picture`: system audio
+/// is off unless the picture is live; application audio is unsupported.
+fn audio_status(
+    source: &mut Source,
+    picture: ScreenCaptureState,
+) -> (ScreenCaptureAudioState, Option<String>) {
+    match source.config.audio {
+        ScreenCaptureAudio::None => (ScreenCaptureAudioState::Off, None),
+        ScreenCaptureAudio::Application => (
+            ScreenCaptureAudioState::Unsupported,
+            Some(NO_PORTAL_APP_AUDIO.to_owned()),
+        ),
+        ScreenCaptureAudio::System => match &mut source.sound {
+            Some(sound) if picture == ScreenCaptureState::Live => sound.state(),
+            None if picture == ScreenCaptureState::Live => (ScreenCaptureAudioState::Opening, None),
+            _ => (ScreenCaptureAudioState::Off, None),
+        },
     }
 }
 
@@ -421,6 +627,13 @@ mod tests {
     }
 
     fn sources(shares: Vec<Share>) -> (PortalSources, Arc<Mutex<Script>>) {
+        sources_with(shares, pulse_monitor)
+    }
+
+    fn sources_with(
+        shares: Vec<Share>,
+        sound: SoundFactory,
+    ) -> (PortalSources, Arc<Mutex<Script>>) {
         let script = Arc::new(Mutex::new(Script {
             shares: shares.into(),
             requests: Vec::new(),
@@ -434,7 +647,36 @@ mod tests {
             dimensions: (8, 8),
             sample_rate: SampleRate::new(48_000).unwrap(),
         };
-        (PortalSources::new(factory, format), script)
+        (PortalSources::with_sound(factory, sound, format), script)
+    }
+
+    /// A 440 Hz tone in real time, standing in for the default output's
+    /// monitor.
+    fn tone(format: &Format) -> NetworkInputConfig {
+        let mut config = NetworkInputConfig::audio_device(
+            "lavfi",
+            "sine=frequency=440:sample_rate=48000,arealtime",
+            crate::native_system_audio::settings(),
+            format.rate,
+        );
+        config.sample_rate = format.sample_rate.hertz();
+        config.channels = 2;
+        config
+    }
+
+    /// Whether `ffmpeg` runs; its absence fails under `FM_REQUIRE_FFMPEG=1`.
+    fn ffmpeg_available() -> bool {
+        let available = std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        assert!(
+            available || std::env::var("FM_REQUIRE_FFMPEG").as_deref() != Ok("1"),
+            "FM_REQUIRE_FFMPEG=1 but ffmpeg is unavailable"
+        );
+        available
     }
 
     fn window() -> ScreenCaptureConfig {
@@ -543,8 +785,7 @@ mod tests {
         assert_eq!(script.lock().unwrap().requests.len(), 1, "not asked again");
 
         // A screen instead of a window: the window's token is no use.
-        // Its system audio is reported unsupported (a portal capture is
-        // silent).
+        // Its system audio is off until the share is live.
         let screen = ScreenCaptureConfig {
             audio: ScreenCaptureAudio::System,
             ..ScreenCaptureConfig::new(ScreenCaptureTarget::Screen { index: 0 })
@@ -554,8 +795,8 @@ mod tests {
         let status = settle(&mut sources, input(1), |state| {
             state == ScreenCaptureState::AwaitingSelection
         });
-        assert_eq!(status.audio, ScreenCaptureAudioState::Unsupported);
-        assert_eq!(status.audio_error.as_deref(), Some(NO_PORTAL_AUDIO));
+        assert_eq!(status.audio, ScreenCaptureAudioState::Off);
+        assert_eq!(status.audio_error, None);
         let script = script.lock().unwrap();
         assert_eq!(script.requests[1].kind, SourceKind::Monitor);
         assert_eq!(script.requests[1].restore_token, None);
@@ -566,5 +807,81 @@ mod tests {
         sources.sync(&[], |_| false);
         assert_eq!(sources.take_restore_tokens(), Some(BTreeMap::new()));
         assert_eq!(sources.inputs(), Vec::<InputId>::new());
+    }
+
+    #[test]
+    fn a_live_share_hears_the_system_audio_and_not_an_application() {
+        if !ffmpeg_available() {
+            eprintln!("skipped: ffmpeg is unavailable");
+            return;
+        }
+        let (mut sources, _script) = sources_with(vec![Share::Wait, Share::Grant(None)], tone);
+        let system = ScreenCaptureConfig {
+            audio: ScreenCaptureAudio::System,
+            ..window()
+        };
+        sources.sync(&[(input(1), system.clone())], |_| false);
+        // Waiting for the pick: no sound yet.
+        let status = settle(&mut sources, input(1), |state| {
+            state == ScreenCaptureState::AwaitingSelection
+        });
+        assert_eq!(status.audio, ScreenCaptureAudioState::Off);
+        let pulled = sources.pull(1);
+        assert!(
+            pulled[0].audio.as_ref().is_some_and(|block| block
+                .planes()
+                .iter()
+                .flatten()
+                .all(|s| *s == 0.0))
+        );
+
+        // Granted: the tone plays on the input's strip once its receiver
+        // is live.
+        assert!(sources.pick(input(1)));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut frame = 2;
+        let mut heard = false;
+        let mut live = false;
+        while !(heard && live) {
+            for (reported, status) in sources.statuses(Instant::now()) {
+                if reported == input(1) {
+                    live = status.audio == ScreenCaptureAudioState::Live;
+                }
+            }
+            for stream in sources.pull(frame) {
+                heard |= stream.audio.as_ref().is_some_and(|block| {
+                    block.planes().len() == 2
+                        && block.planes().iter().flatten().any(|s| s.abs() > 0.01)
+                });
+            }
+            frame += 1;
+            assert!(
+                Instant::now() < deadline,
+                "heard {heard}, live {live}: {:?}",
+                sources.statuses(Instant::now())
+            );
+            std::thread::sleep(Duration::from_millis(33));
+        }
+
+        // Application audio is unsupported, with the reason; the tone stops.
+        let application = ScreenCaptureConfig {
+            audio: ScreenCaptureAudio::Application,
+            ..window()
+        };
+        sources.sync(&[(input(1), application)], |_| false);
+        let status = settle(&mut sources, input(1), |state| {
+            state == ScreenCaptureState::Live
+        });
+        assert_eq!(status.audio, ScreenCaptureAudioState::Unsupported);
+        assert_eq!(status.audio_error.as_deref(), Some(NO_PORTAL_APP_AUDIO));
+        assert_eq!(sources.sync_samples().len(), 0);
+        let pulled = sources.pull(frame);
+        assert!(
+            pulled[0].audio.as_ref().is_some_and(|block| block
+                .planes()
+                .iter()
+                .flatten()
+                .all(|s| *s == 0.0))
+        );
     }
 }

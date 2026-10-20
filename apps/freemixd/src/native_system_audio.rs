@@ -79,7 +79,7 @@ pub(crate) struct NativeSystemAudio {
 
 /// The receive settings of a system audio device: a short buffer, a
 /// two-second no-audio timeout, and reopening every 0.5 to 5 s for good.
-fn settings() -> NetworkStreamSettings {
+pub(crate) fn settings() -> NetworkStreamSettings {
     NetworkStreamSettings {
         jitter_buffer_ms: 120,
         reconnect: ReconnectPolicy {
@@ -334,7 +334,7 @@ fn attempt_of(state: SystemAudioState) -> (&'static str, u32) {
 /// ends the connection, which then reports reopening. `live_connection`
 /// remembers the reopen count of the connection seen live; a reopen (a
 /// higher count) opens again.
-fn system_audio_status(
+pub(crate) fn system_audio_status(
     status: &NetworkStreamStatus,
     live_connection: &mut Option<u32>,
 ) -> SystemAudioStatus {

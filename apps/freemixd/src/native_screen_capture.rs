@@ -39,9 +39,10 @@
 //!
 //! On a Wayland desktop the inputs are handed to
 //! [`crate::native_portal_capture`] instead: nothing is listed, and the
-//! desktop's own sharing dialog picks each input's screen or window. A
-//! portal capture has no sound yet: its audio is `unsupported` and its
-//! Master strip gets silence.
+//! desktop's own sharing dialog picks each input's screen or window. Its
+//! system audio is the same default output's monitor, read beside the
+//! shared picture; its application audio is `unsupported` (the sharing
+//! dialog does not say which application a window belongs to).
 //!
 //! A closed input (IN-026) stops its capture and shows a blank picture
 //! until it reopens.
@@ -533,6 +534,9 @@ impl NativeScreenCapture {
     /// Every open screen capture with sound's drift loop as wire samples
     /// (Protocol 2.76).
     pub(crate) fn sync_samples(&self) -> Vec<fm_protocol::SourceSyncSample> {
+        if let Some(portal) = &self.portal {
+            return portal.sync_samples();
+        }
         self.sources
             .iter()
             .filter(|(_, source)| !source.closed && source.audio.captures_sound())
