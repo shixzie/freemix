@@ -2160,7 +2160,8 @@ impl Project {
             .is_some_and(|input| input.kind.map_file_asset_uris(map))
     }
 
-    /// Points an existing media input at a new asset URI.
+    /// Points an existing media input at a new asset URI. For a media list
+    /// input, every item of the old file moves to the new one too.
     ///
     /// # Errors
     ///
@@ -2186,7 +2187,17 @@ impl Project {
         else {
             unreachable!("media input kind was validated above");
         };
-        *current = asset_uri;
+        let previous = std::mem::replace(current, asset_uri);
+        // A media list input plays its active item's file (IN-006): every
+        // item of the relinked file follows it.
+        if let Some(list) = self.media_lists.get_mut(&input) {
+            let relinked = current.as_str();
+            for item in &mut list.items {
+                if item.asset_uri == previous {
+                    relinked.clone_into(&mut item.asset_uri);
+                }
+            }
+        }
         Ok(())
     }
 

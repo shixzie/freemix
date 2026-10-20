@@ -142,6 +142,33 @@ fn a_project_list_input_plays_its_active_item() {
 }
 
 #[test]
+fn relinking_a_list_input_relinks_every_item_of_its_file() {
+    let list = MediaList::new(
+        vec![item(1, "a.mp4"), item(2, "b.mp4"), item(3, "a.mp4")],
+        MediaListOptions::default(),
+    )
+    .unwrap();
+    let mut project = project_with("asset://media/a.mp4", list);
+    project
+        .relink_media_input(input(1), "asset://media/found/a.mp4".into())
+        .unwrap();
+    assert_eq!(project.validate(), Ok(()));
+    let items: Vec<&str> = project.media_lists()[&input(1)]
+        .items
+        .iter()
+        .map(|item| item.asset_uri.as_str())
+        .collect();
+    assert_eq!(
+        items,
+        [
+            "asset://media/found/a.mp4",
+            "asset://media/b.mp4",
+            "asset://media/found/a.mp4"
+        ]
+    );
+}
+
+#[test]
 fn m3u_entries_resolve_relative_paths_and_take_extinf_titles() {
     let text = "\u{feff}#EXTM3U\r\n\
         #EXTINF:12,Opening Titles\r\n\
