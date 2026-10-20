@@ -42,6 +42,10 @@ use fm_types::{
 };
 use freemixd::ReadinessRecord;
 
+#[path = "support/heartbeat.rs"]
+mod heartbeat;
+use heartbeat::Heartbeat;
+
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 const EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Input 1's solid colour; input 2's is [`BLUE`].
@@ -194,6 +198,7 @@ struct Sample {
 struct Client {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
+    heartbeat: Heartbeat,
     assembler: MonitorFrameAssembler,
     samples: Vec<Sample>,
 }
@@ -210,6 +215,7 @@ impl Client {
         let mut client = Self {
             writer: stream.try_clone().unwrap(),
             reader: BufReader::new(stream),
+            heartbeat: Heartbeat::new(),
             assembler: MonitorFrameAssembler::new(),
             samples: Vec::new(),
         };
@@ -254,13 +260,21 @@ impl Client {
 
     /// Receives one message, recording any completed Program monitor frame.
     fn receive(&mut self) -> WireMessage {
-        let mut line = String::new();
-        assert_ne!(
-            self.reader.read_line(&mut line).unwrap(),
-            0,
-            "daemon closed"
-        );
-        let message = decode_line(&line).unwrap();
+        let message = loop {
+            if let Some(beat) = self.heartbeat.due() {
+                self.send(&beat);
+            }
+            let mut line = String::new();
+            assert_ne!(
+                self.reader.read_line(&mut line).unwrap(),
+                0,
+                "daemon closed"
+            );
+            let message = decode_line(&line).unwrap();
+            if !self.heartbeat.observe(&message) {
+                break message;
+            }
+        };
         // The native daemon also sends a Preview tap; only Program is checked.
         if let WireMessage::MonitorFrame(part) = &message
             && part.tap == MonitorTap::Program

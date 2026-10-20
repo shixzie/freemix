@@ -38,6 +38,10 @@ use fm_types::{
 };
 use freemixd::ReadinessRecord;
 
+#[path = "support/heartbeat.rs"]
+mod heartbeat;
+use heartbeat::Heartbeat;
+
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const WAIT: Duration = Duration::from_secs(40);
 
@@ -208,6 +212,7 @@ struct Program {
 struct Client {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
+    heartbeat: Heartbeat,
     assembler: MonitorFrameAssembler,
     commands: u64,
 }
@@ -222,6 +227,7 @@ impl Client {
         let mut client = Self {
             writer: stream.try_clone().unwrap(),
             reader: BufReader::new(stream),
+            heartbeat: Heartbeat::new(),
             assembler: MonitorFrameAssembler::new(),
             commands: 0,
         };
@@ -248,13 +254,21 @@ impl Client {
     }
 
     fn receive(&mut self) -> WireMessage {
-        let mut line = String::new();
-        assert_ne!(
-            self.reader.read_line(&mut line).unwrap(),
-            0,
-            "daemon closed"
-        );
-        decode_line(&line).unwrap()
+        loop {
+            if let Some(beat) = self.heartbeat.due() {
+                self.send(&beat);
+            }
+            let mut line = String::new();
+            assert_ne!(
+                self.reader.read_line(&mut line).unwrap(),
+                0,
+                "daemon closed"
+            );
+            let message = decode_line(&line).unwrap();
+            if !self.heartbeat.observe(&message) {
+                return message;
+            }
+        }
     }
 
     fn wait_for<T>(

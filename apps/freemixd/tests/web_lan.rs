@@ -34,6 +34,10 @@ use fm_types::{
 use freemixd::ReadinessRecord;
 use tungstenite::{Message, WebSocket, http::Request};
 
+#[path = "support/heartbeat.rs"]
+mod heartbeat;
+use heartbeat::Heartbeat;
+
 mod web_tls;
 
 const PROJECT_ID: u128 = 0x1a40_0000;
@@ -267,6 +271,7 @@ fn hello(role: Role, client_type: ClientType) -> WireMessage {
 struct Console {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
+    heartbeat: Heartbeat,
     next: u64,
 }
 
@@ -277,6 +282,7 @@ impl Console {
         let mut console = Self {
             writer: stream.try_clone().unwrap(),
             reader: BufReader::new(stream),
+            heartbeat: Heartbeat::new(),
             next: 0,
         };
         console.send(&hello(role, ClientType::Studio));
@@ -296,13 +302,21 @@ impl Console {
     }
 
     fn receive(&mut self) -> WireMessage {
-        let mut line = String::new();
-        assert_ne!(
-            self.reader.read_line(&mut line).unwrap(),
-            0,
-            "console closed"
-        );
-        decode_line(&line).unwrap()
+        loop {
+            if let Some(beat) = self.heartbeat.due() {
+                self.send(&beat);
+            }
+            let mut line = String::new();
+            assert_ne!(
+                self.reader.read_line(&mut line).unwrap(),
+                0,
+                "console closed"
+            );
+            let message = decode_line(&line).unwrap();
+            if !self.heartbeat.observe(&message) {
+                return message;
+            }
+        }
     }
 
     fn web_access(&mut self, action: WebAccessAction) -> WebAccessMessage {

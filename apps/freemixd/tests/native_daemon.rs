@@ -45,6 +45,12 @@ use fm_types::{
 #[cfg(target_os = "macos")]
 use freemixd::ReadinessRecord;
 
+#[cfg(target_os = "macos")]
+#[path = "support/heartbeat.rs"]
+mod heartbeat;
+#[cfg(target_os = "macos")]
+use heartbeat::Heartbeat;
+
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(20);
 #[cfg(target_os = "macos")]
 const RECORDING_PROCESS_TIMEOUT: Duration = Duration::from_secs(40);
@@ -4093,6 +4099,7 @@ struct CommandOutcome {
 struct StudioClient {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
+    heartbeat: Heartbeat,
 }
 
 #[cfg(target_os = "macos")]
@@ -4105,6 +4112,7 @@ impl StudioClient {
         Self {
             writer: stream.try_clone().unwrap(),
             reader: BufReader::new(stream),
+            heartbeat: Heartbeat::new(),
         }
     }
 
@@ -4251,24 +4259,34 @@ impl StudioClient {
         deadline: Instant,
         expected: &str,
     ) -> Result<WireMessage, String> {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(format!("timed out waiting for {expected}"));
-        }
-        self.reader
-            .get_mut()
-            .set_read_timeout(Some(remaining))
-            .map_err(|error| format!("cannot set timeout while waiting for {expected}: {error}"))?;
-        let mut line = String::new();
-        let read = self
-            .reader
-            .read_line(&mut line)
-            .map_err(|error| format!("timed out waiting for {expected}: {error}"))?;
-        if read == 0 {
-            return Err(format!("daemon closed while waiting for {expected}"));
-        }
-        let message =
-            decode_line(&line).map_err(|error| format!("invalid daemon message: {error}"))?;
+        let message = loop {
+            if let Some(beat) = self.heartbeat.due() {
+                self.send(&beat);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(format!("timed out waiting for {expected}"));
+            }
+            self.reader
+                .get_mut()
+                .set_read_timeout(Some(remaining))
+                .map_err(|error| {
+                    format!("cannot set timeout while waiting for {expected}: {error}")
+                })?;
+            let mut line = String::new();
+            let read = self
+                .reader
+                .read_line(&mut line)
+                .map_err(|error| format!("timed out waiting for {expected}: {error}"))?;
+            if read == 0 {
+                return Err(format!("daemon closed while waiting for {expected}"));
+            }
+            let message =
+                decode_line(&line).map_err(|error| format!("invalid daemon message: {error}"))?;
+            if !self.heartbeat.observe(&message) {
+                break message;
+            }
+        };
         if let WireMessage::Error(error) = &message {
             return Err(format!(
                 "daemon returned protocol error while waiting for {expected}: {}: {}",

@@ -38,6 +38,10 @@ use fm_types::{
 };
 use freemixd::ReadinessRecord;
 
+#[path = "support/heartbeat.rs"]
+mod heartbeat;
+use heartbeat::Heartbeat;
+
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(20);
 /// Monitor frames the daemon must publish while the start is still pending.
 /// `FFmpeg` cannot connect before the test opens the gate, so the daemon has
@@ -241,6 +245,7 @@ fn drain(mut reader: impl Read + Send + 'static) -> mpsc::Receiver<String> {
 struct StudioClient {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
+    heartbeat: Heartbeat,
 }
 
 impl StudioClient {
@@ -251,6 +256,7 @@ impl StudioClient {
         Self {
             writer: stream.try_clone().unwrap(),
             reader: BufReader::new(stream),
+            heartbeat: Heartbeat::new(),
         }
     }
 
@@ -261,13 +267,21 @@ impl StudioClient {
     }
 
     fn receive(&mut self) -> WireMessage {
-        let mut line = String::new();
-        assert_ne!(
-            self.reader.read_line(&mut line).unwrap(),
-            0,
-            "daemon closed the session"
-        );
-        decode_line(&line).unwrap()
+        loop {
+            if let Some(beat) = self.heartbeat.due() {
+                self.send(&beat);
+            }
+            let mut line = String::new();
+            assert_ne!(
+                self.reader.read_line(&mut line).unwrap(),
+                0,
+                "daemon closed the session"
+            );
+            let message = decode_line(&line).unwrap();
+            if !self.heartbeat.observe(&message) {
+                return message;
+            }
+        }
     }
 
     fn handshake(&mut self) {

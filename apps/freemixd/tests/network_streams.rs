@@ -44,6 +44,10 @@ use fm_types::{
 };
 use freemixd::ReadinessRecord;
 
+#[path = "support/heartbeat.rs"]
+mod heartbeat;
+use heartbeat::Heartbeat;
+
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const WAIT: Duration = Duration::from_secs(20);
 const SECRETS: [&str; 5] = [
@@ -186,6 +190,7 @@ impl Drop for Daemon {
 struct Client {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
+    heartbeat: Heartbeat,
     commands: u64,
 }
 
@@ -199,6 +204,7 @@ impl Client {
         let mut client = Self {
             writer: stream.try_clone().unwrap(),
             reader: BufReader::new(stream),
+            heartbeat: Heartbeat::new(),
             commands: 0,
         };
         client.send(&WireMessage::HandshakeRequest(HandshakeRequest {
@@ -227,16 +233,24 @@ impl Client {
 
     /// The next message; no line on the wire carries a URL secret.
     fn receive(&mut self) -> WireMessage {
-        let mut line = String::new();
-        assert_ne!(
-            self.reader.read_line(&mut line).unwrap(),
-            0,
-            "daemon closed"
-        );
-        for secret in SECRETS {
-            assert!(!line.contains(secret), "a URL secret leaked: {line}");
+        loop {
+            if let Some(beat) = self.heartbeat.due() {
+                self.send(&beat);
+            }
+            let mut line = String::new();
+            assert_ne!(
+                self.reader.read_line(&mut line).unwrap(),
+                0,
+                "daemon closed"
+            );
+            for secret in SECRETS {
+                assert!(!line.contains(secret), "a URL secret leaked: {line}");
+            }
+            let message = decode_line(&line).unwrap();
+            if !self.heartbeat.observe(&message) {
+                return message;
+            }
         }
-        decode_line(&line).unwrap()
     }
 
     /// Submits `payload` and returns its result and, for an accepted

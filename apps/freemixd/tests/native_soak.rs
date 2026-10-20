@@ -32,6 +32,10 @@ use fm_types::{
 };
 use freemixd::ReadinessRecord;
 
+#[path = "support/heartbeat.rs"]
+mod heartbeat;
+use heartbeat::Heartbeat;
+
 const DEFAULT_SOAK_SECONDS: u64 = 60;
 const MIN_SOAK_SECONDS: u64 = 3;
 const MAX_SOAK_SECONDS: u64 = 86_400;
@@ -238,6 +242,7 @@ impl NativeProcess {
 struct SoakClient {
     reader: BufReader<TcpStream>,
     writer: TcpStream,
+    heartbeat: Heartbeat,
 }
 
 impl SoakClient {
@@ -268,6 +273,7 @@ impl SoakClient {
                 .try_clone()
                 .map_err(|error| format!("cannot clone client socket: {error}"))?,
             reader: BufReader::new(stream),
+            heartbeat: Heartbeat::new(),
         })
     }
 
@@ -414,22 +420,31 @@ impl SoakClient {
     }
 
     fn receive_before(&mut self, deadline: Instant, expected: &str) -> Result<WireMessage, String> {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err(format!("timed out waiting for {expected}"));
+        loop {
+            if let Some(beat) = self.heartbeat.due() {
+                self.send(&beat)?;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(format!("timed out waiting for {expected}"));
+            }
+            self.reader
+                .get_mut()
+                .set_read_timeout(Some(remaining))
+                .map_err(|error| format!("cannot set client read timeout: {error}"))?;
+            let Some(line) = read_protocol_line(&mut self.reader)
+                .map_err(|error| format!("cannot read {expected}: {error}"))?
+            else {
+                return Err(format!(
+                    "daemon closed the connection while waiting for {expected}"
+                ));
+            };
+            let message =
+                decode_line(&line).map_err(|error| format!("cannot decode {expected}: {error}"))?;
+            if !self.heartbeat.observe(&message) {
+                return Ok(message);
+            }
         }
-        self.reader
-            .get_mut()
-            .set_read_timeout(Some(remaining))
-            .map_err(|error| format!("cannot set client read timeout: {error}"))?;
-        let Some(line) = read_protocol_line(&mut self.reader)
-            .map_err(|error| format!("cannot read {expected}: {error}"))?
-        else {
-            return Err(format!(
-                "daemon closed the connection while waiting for {expected}"
-            ));
-        };
-        decode_line(&line).map_err(|error| format!("cannot decode {expected}: {error}"))
     }
 }
 
