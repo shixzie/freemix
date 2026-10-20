@@ -1,4 +1,5 @@
-//! Phone tally and operator pages over the loopback web gateway: the served
+//! Phone tally and operator pages over the web gateway, served over TLS with
+//! a generated certificate the client pins by fingerprint: the served
 //! pages, browser-style subprotocol authentication, a viewer tally that
 //! follows an operator's cut, server-side role limits, edit padlocks,
 //! heartbeats, reconnect, the operator page's exact wire commands, several
@@ -6,7 +7,7 @@
 
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpStream},
     num::NonZeroU128,
     path::{Path, PathBuf},
@@ -36,6 +37,8 @@ use tungstenite::{
     HandshakeError, Message, WebSocket,
     http::{Request, StatusCode},
 };
+
+mod web_tls;
 
 const TOKEN: &str = "tally-token/+=0123456789abcdefghijkl";
 const PROJECT_ID: u128 = 0x7a11_0000;
@@ -71,26 +74,44 @@ struct Daemon {
 }
 
 impl Daemon {
+    /// Starts the daemon with the gateway on TLS: a self-signed certificate
+    /// generated in a web state directory next to the project, pinned by the
+    /// fingerprint the daemon prints.
     fn start(project: &Path) -> Self {
+        let state = project.with_extension("web-state");
         let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_freemixd"))
             .arg("serve")
             .arg(project)
             .args(["--listen", "127.0.0.1:0", "--web-listen", "127.0.0.1:0"])
+            .arg("--web-tls")
+            .arg("--web-state-dir")
+            .arg(&state)
             .env("FREEMIXD_WEB_TOKEN", TOKEN)
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
         let mut stdout = BufReader::new(child.stdout.take().unwrap());
-        let mut lines = [String::new(), String::new()];
+        let mut lines = [String::new(), String::new(), String::new()];
         for line in &mut lines {
             assert_ne!(stdout.read_line(line).unwrap(), 0, "daemon exited early");
         }
         let control = lines[0].parse::<ReadinessRecord>().unwrap().address;
-        let web = lines[1]
+        let web: SocketAddr = lines[1]
             .strip_prefix("FREEMIXD_WEB_READY\tv=1\taddress=")
             .and_then(|line| line.trim_end().parse().ok())
             .unwrap_or_else(|| panic!("invalid web readiness {:?}", lines[1]));
+        let fingerprint = lines[2]
+            .trim_end()
+            .rsplit_once("\tfingerprint=")
+            .map(|(_, fingerprint)| fingerprint.to_owned())
+            .unwrap_or_else(|| panic!("invalid TLS readiness {:?}", lines[2]));
+        assert!(
+            lines[2].starts_with(&format!("FREEMIXD_WEB_TLS\tv=1\turl=https://{web}\t")),
+            "{:?}",
+            lines[2]
+        );
+        web_tls::pin(web, &fingerprint);
         Self {
             child,
             control,
@@ -277,25 +298,7 @@ fn create_project_with(path: &Path, title: bool, stream: bool) {
 
 /// One HTTP/1.1 exchange; returns status line, lower-cased headers, and body.
 fn http(address: SocketAddr, request: &str) -> (String, Vec<(String, String)>, Vec<u8>) {
-    let mut stream = TcpStream::connect_timeout(&address, TIMEOUT).unwrap();
-    stream.set_read_timeout(Some(TIMEOUT)).unwrap();
-    stream.write_all(request.as_bytes()).unwrap();
-    let mut response = Vec::new();
-    stream.read_to_end(&mut response).unwrap();
-    let split = response
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .expect("complete response head");
-    let head = std::str::from_utf8(&response[..split]).unwrap();
-    let mut lines = head.split("\r\n");
-    let status = lines.next().unwrap().to_owned();
-    let headers = lines
-        .map(|line| {
-            let (name, value) = line.split_once(':').unwrap();
-            (name.trim().to_ascii_lowercase(), value.trim().to_owned())
-        })
-        .collect();
-    (status, headers, response[split + 4..].to_vec())
+    web_tls::https(address, request, TIMEOUT)
 }
 
 fn header<'a>(headers: &'a [(String, String)], name: &str) -> &'a str {
@@ -325,7 +328,7 @@ fn base64url(bytes: &[u8]) -> String {
 /// The exact upgrade a browser sends from the served page.
 fn browser_upgrade(address: SocketAddr, origin: &str, token: &str) -> Request<()> {
     Request::builder()
-        .uri(format!("ws://{address}/v1/control"))
+        .uri(format!("wss://{address}/v1/control"))
         .header("Host", address.to_string())
         .header("Origin", origin)
         .header("Connection", "Upgrade")
@@ -347,20 +350,18 @@ fn browser_upgrade(address: SocketAddr, origin: &str, token: &str) -> Request<()
 }
 
 fn upgrade_status(address: SocketAddr, origin: &str, token: &str) -> StatusCode {
-    let stream = TcpStream::connect_timeout(&address, TIMEOUT).unwrap();
-    stream.set_read_timeout(Some(TIMEOUT)).unwrap();
+    let stream = web_tls::connect(address, TIMEOUT).unwrap();
     match tungstenite::client::client(browser_upgrade(address, origin, token), stream) {
         Err(HandshakeError::Failure(tungstenite::Error::Http(response))) => response.status(),
         other => panic!("expected a refused upgrade, got {other:?}"),
     }
 }
 
-type Browser = WebSocket<TcpStream>;
+type Browser = WebSocket<web_tls::TlsStream>;
 
 fn browser_connect(address: SocketAddr) -> Option<Browser> {
-    let stream = TcpStream::connect_timeout(&address, TIMEOUT).ok()?;
-    stream.set_read_timeout(Some(TIMEOUT)).unwrap();
-    let origin = format!("http://{address}");
+    let stream = web_tls::connect(address, TIMEOUT).ok()?;
+    let origin = format!("https://{address}");
     let (socket, response) =
         tungstenite::client::client(browser_upgrade(address, &origin, TOKEN), stream).ok()?;
     assert_eq!(
@@ -576,7 +577,7 @@ fn tally_page_is_served_uncached_from_the_gateway_origin() {
     let policy = header(&headers, "content-security-policy");
     assert!(policy.starts_with("default-src 'none';"), "{policy}");
     assert!(
-        policy.contains(&format!("connect-src 'self' ws://{};", daemon.web)),
+        policy.contains(&format!("connect-src 'self' wss://{};", daemon.web)),
         "{policy}"
     );
     assert!(policy.contains("frame-ancestors 'none'"), "{policy}");
@@ -653,7 +654,10 @@ fn tally_page_is_served_uncached_from_the_gateway_origin() {
 
     let (status, headers, _) = http(
         daemon.web,
-        "POST /tally HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n",
+        &format!(
+            "POST /tally HTTP/1.1\r\nHost: {}\r\nContent-Length: 0\r\n\r\n",
+            daemon.web
+        ),
     );
     assert_eq!(status, "HTTP/1.1 405 Method Not Allowed");
     assert_eq!(header(&headers, "allow"), "GET, HEAD");
@@ -666,7 +670,7 @@ fn browser_tally_follows_realized_cuts_with_role_limits_and_reconnects() {
     let project = directory.0.join("show.freemix");
     create_project(&project);
     let daemon = Daemon::start(&project);
-    let origin = format!("http://{}", daemon.web);
+    let origin = format!("https://{}", daemon.web);
 
     // Browser credentials: wrong token, foreign origin, missing credential.
     assert_eq!(
@@ -675,6 +679,11 @@ fn browser_tally_follows_realized_cuts_with_role_limits_and_reconnects() {
     );
     assert_eq!(
         upgrade_status(daemon.web, "http://evil.example", TOKEN),
+        StatusCode::FORBIDDEN
+    );
+    // A plain-HTTP origin is another origin than the TLS page's.
+    assert_eq!(
+        upgrade_status(daemon.web, &format!("http://{}", daemon.web), TOKEN),
         StatusCode::FORBIDDEN
     );
 
@@ -1061,7 +1070,7 @@ fn operator_page_is_served_with_the_tally_security_model() {
     let policy = header(&headers, "content-security-policy");
     assert!(policy.starts_with("default-src 'none';"), "{policy}");
     assert!(
-        policy.contains(&format!("connect-src 'self' ws://{};", daemon.web)),
+        policy.contains(&format!("connect-src 'self' wss://{};", daemon.web)),
         "{policy}"
     );
     assert!(policy.contains("frame-ancestors 'none'"), "{policy}");
@@ -1516,7 +1525,7 @@ fn several_web_clients_hold_their_own_sessions_at_once() {
     // A client that handshakes and then never reads again, and a page
     // request whose head never completes.
     let (_stalled_client, _, _, _) = web_session(daemon.web, Role::Viewer);
-    let mut stalled_page = TcpStream::connect_timeout(&daemon.web, TIMEOUT).unwrap();
+    let mut stalled_page = web_tls::connect(daemon.web, TIMEOUT).unwrap();
     stalled_page
         .write_all(b"GET /tally HTTP/1.1\r\nHost: web\r\n")
         .unwrap();
@@ -1579,7 +1588,7 @@ fn several_web_clients_hold_their_own_sessions_at_once() {
     while viewers.len() < WEB_CLIENTS - 4 {
         viewers.push(web_session(daemon.web, Role::Viewer).0);
     }
-    let origin = format!("http://{}", daemon.web);
+    let origin = format!("https://{}", daemon.web);
     assert_eq!(
         upgrade_status(daemon.web, &origin, TOKEN),
         StatusCode::SERVICE_UNAVAILABLE
