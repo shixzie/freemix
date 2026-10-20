@@ -6410,17 +6410,14 @@ fn assert_title_state(
     color: (u8, u8, u8),
 ) {
     // The title rests on Preview (GX-001): once the engine has realized a
-    // frame, its timeline runs there from frame 0 and its bus pose holds
-    // (the template has no In phase); before that it is not yet shown.
-    let shown = fm_protocol::TitleTimelineStatus {
-        shown: fm_protocol::TitleShownOn::Preview,
-        since_frame: 0,
-    };
+    // frame, its timeline runs there from the frame it last returned to
+    // Preview and its bus pose holds (the template has no In phase); before
+    // that it is not yet shown.
     let (phase, timeline) = match state.timeline {
         None => (fm_protocol::TitlePhase::Idle, None),
         Some(timeline) => {
-            assert_eq!(timeline, shown);
-            (fm_protocol::TitlePhase::Hold, Some(shown))
+            assert_eq!(timeline.shown, fm_protocol::TitleShownOn::Preview);
+            (fm_protocol::TitlePhase::Hold, Some(timeline))
         }
     };
     assert_eq!(
