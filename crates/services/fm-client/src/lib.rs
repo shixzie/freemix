@@ -196,7 +196,7 @@ pub enum Intake {
     /// announced (Protocol 2.58).
     ScriptStateApplied,
     /// A `shortcut_state` completed one user shortcut the snapshot
-    /// announced (Protocol 2.70).
+    /// announced (Protocol 2.72).
     ShortcutStateApplied,
     /// A `display_inventory` reply updated the replicated display inventory
     /// (Protocol 2.42).
@@ -1353,7 +1353,7 @@ impl Client {
     }
 
     /// Adds one `shortcut_state` the installed snapshot announced
-    /// (Protocol 2.70). Shortcut states arrive only while synchronizing
+    /// (Protocol 2.72). Shortcut states arrive only while synchronizing
     /// from a snapshot, after its script states and before any event.
     ///
     /// # Errors

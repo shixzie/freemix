@@ -1,4 +1,4 @@
-//! User shortcuts (Protocol 2.70, RC-004).
+//! User shortcuts (Protocol 2.72, RC-004).
 //!
 //! A project holds up to [`MAX_SHORTCUTS`] named shortcuts. Each has an
 //! optional key (a key name and its modifiers), an optional OSC name (the

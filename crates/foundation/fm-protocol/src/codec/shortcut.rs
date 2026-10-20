@@ -1,4 +1,4 @@
-//! Shortcut codec (Protocol 2.70, RC-004).
+//! Shortcut codec (Protocol 2.72, RC-004).
 //!
 //! * `shortcut` is a nonzero canonical id; `name` the shortcut name
 //!   (validated by [`crate::shortcut_name_is_valid`]); `enabled` `0` or `1`.

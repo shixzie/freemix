@@ -938,7 +938,7 @@ tab-separated profile with a caller-supplied command codec round-trips every
 field exactly while rejecting malformed, duplicated, or oversized documents
 wholesale. That template layer remains library-only groundwork.
 
-User shortcuts themselves are project state (schema 61, Protocol 2.70). A
+User shortcuts themselves are project state (schema 62, Protocol 2.72). A
 project holds up to 64 shortcuts, each with an id, a name, an enabled flag, an
 optional key (a key name with Ctrl/Cmd, Shift, and Alt), an optional OSC name
 (`/freemix/user/<name>`), and one action: 1 to 16 cue actions run together on

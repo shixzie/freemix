@@ -1762,7 +1762,7 @@ pub enum CommandPayload {
     StopScript {
         run: Option<u64>,
     },
-    /// Creates or replaces user shortcut `shortcut` (Protocol 2.70,
+    /// Creates or replaces user shortcut `shortcut` (Protocol 2.72,
     /// RC-004): an undoable project edit. Wire payload `shortcut_set`.
     SetShortcut {
         shortcut: u64,
@@ -2432,7 +2432,7 @@ pub struct SnapshotMessage {
     pub script_states: u16,
     /// How many [`crate::ShortcutStateMessage`] records follow this
     /// snapshot (after its script states), one per shortcut in project
-    /// order, at most [`crate::MAX_SHORTCUTS`] (Protocol 2.70).
+    /// order, at most [`crate::MAX_SHORTCUTS`] (Protocol 2.72).
     pub shortcut_states: u16,
     /// The project's input category list in display order (Protocol 2.38).
     pub input_categories: Vec<crate::InputCategoryStatus>,
@@ -2597,13 +2597,13 @@ pub enum EventPayload {
         scripts: Vec<u64>,
     },
     /// A user shortcut was created or edited (or the edit undone or
-    /// redone): the whole shortcut afterwards (Protocol 2.70).
+    /// redone): the whole shortcut afterwards (Protocol 2.72).
     ShortcutChanged(Box<crate::ShortcutStatus>),
     /// A user shortcut was removed.
     ShortcutRemoved {
         shortcut: u64,
     },
-    /// A fired shortcut's cue actions were accepted (Protocol 2.70).
+    /// A fired shortcut's cue actions were accepted (Protocol 2.72).
     ShortcutFired(Box<crate::ShortcutFireChange>),
     /// A playlist command was accepted for `frame`: the complete playlist
     /// afterwards and the desired Program and Preview. When the command put
@@ -3165,7 +3165,7 @@ pub enum WireMessage {
     CueListState(crate::CueListStateMessage),
     /// One script after a snapshot (Protocol 2.58).
     ScriptState(crate::ScriptStateMessage),
-    /// One user shortcut after a snapshot (Protocol 2.70).
+    /// One user shortcut after a snapshot (Protocol 2.72).
     ShortcutState(crate::ShortcutStateMessage),
     /// Asks for the current display inventory (Protocol 2.42).
     DisplayInventoryRequest(crate::DisplayInventoryRequest),

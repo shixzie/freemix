@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.71 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.72 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -2557,6 +2557,50 @@ admin console list and revoke them (RC-007, RC-014).
   only, and with TLS prints `FREEMIXD_WEB_TLS\tv=1\turl=...\tfingerprint=...`
   after `FREEMIXD_WEB_READY`.
 - 2.70 is refused.
+
+Protocol 2.72 adds project user shortcuts (RC-004, schema 62): named keys and
+OSC addresses that run show actions.
+
+- `shortcut_set` (`shortcut` nonzero, `name`, `enabled` `0`/`1`, `key`,
+  `osc`, `action`) creates or replaces one shortcut and `shortcut_remove`
+  (`shortcut`) deletes it; both are padlocked, undoable project edits
+  (EditProject), published as `shortcut_changed` (the whole shortcut) and
+  `shortcut_removed`. A project holds at most 64 shortcuts; keys and OSC
+  names are unique within it (a clash is refused `conflict` with field
+  `key` / `key_in_use` or `osc` / `osc_in_use`).
+- `key` is `-` or `<key>.<command>.<shift>.<alt>`: a key name of 1 to 16
+  ASCII letters and digits (the console's names: `F9`, `J`, `9`, `PageUp`)
+  and `0`/`1` for Ctrl (Cmd on macOS), Shift, and Alt. `osc` is `-` or 1 to
+  32 lowercase ASCII letters, digits, `-`, and `_`; Studio's OSC listener
+  answers `/freemix/user/<osc>` (no arguments) with a fire.
+- `action` is `actions:<tokens>` (1 to 16 `/`-separated cue action tokens,
+  no `wait` or `delay`, Program taken at most once, at most 512 bytes of
+  title text), `cue:<list>:go:<cue|->`, `cue:<list>:<stop|back|skip|reset>`,
+  or `script:<script>`. Timed sequences are cues or scripts. References are
+  checked when the shortcut fires, not when it is saved.
+- `shortcut_fire` (`shortcut`) is a Transition-class operator control. A
+  cue list or script shortcut runs as that command (its own events and
+  refusals; a GO needs the classes of the chain it arms, a script every
+  verb's class). An actions shortcut needs every action's class and runs
+  them on one frame, all or nothing, published as `shortcut_fired`
+  (`shortcut`, `frame`, `actions`, and the desired state fields of
+  `cue_run_changed`); a refused action refuses the fire, naming the
+  shortcut and the action. An unknown shortcut is refused `not_found`
+  (`unknown_id:shortcut:<id>`); a disabled one `conflict` (field `shortcut`,
+  `disabled`).
+- A snapshot names `shortcut_states` (0 to 64); that many `shortcut_state`
+  records (`revision` and the whole shortcut) follow its script states, in
+  project order.
+- Durability (schema 62): required `"shortcuts": [{"id", "name", "enabled",
+  "key": null | {"key", "command", "shift", "alt"}, "osc": null | name,
+  "action": {"type": "actions", "actions": [...]} | {"type": "cue", "list",
+  "operation", "cue"?} | {"type": "script", "script"}}]` after
+  `"script_runs"`.
+- Studio's Edit, Shortcuts… window edits them with Set key capture and flags
+  console keys and clashes; keys fire under the console keys' gates and
+  repeats never re-fire. Keys are project state; Studio-local overrides,
+  Web operator buttons, and the CLI have no shortcut commands yet.
+- 2.71 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

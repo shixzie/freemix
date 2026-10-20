@@ -1,4 +1,4 @@
-//! Replicated user shortcuts (Protocol 2.70, RC-004).
+//! Replicated user shortcuts (Protocol 2.72, RC-004).
 //!
 //! The project's shortcuts arrive as `shortcut_state` records after a
 //! snapshot and change with `shortcut_changed` and `shortcut_removed`. A

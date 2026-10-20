@@ -1743,7 +1743,7 @@ impl<A: AuthorizationHook> ControlService<A> {
 
     /// Returns the `shortcut_state` records a session writes after
     /// [`Self::script_states`], one per user shortcut in project order
-    /// (Protocol 2.70).
+    /// (Protocol 2.72).
     #[must_use]
     pub fn shortcut_states(&self) -> Vec<fm_protocol::ShortcutStateMessage> {
         shortcut::shortcut_states(&self.engine)

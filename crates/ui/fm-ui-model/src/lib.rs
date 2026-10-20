@@ -787,7 +787,7 @@ pub enum DurableChange {
         frame: u64,
         scripts: Vec<u64>,
     },
-    /// A user shortcut after an edit, undo, or redo (Protocol 2.70).
+    /// A user shortcut after an edit, undo, or redo (Protocol 2.72).
     ShortcutChanged(Box<fm_protocol::ShortcutStatus>),
     /// A user shortcut was removed.
     ShortcutRemoved {
@@ -1154,7 +1154,7 @@ pub struct ProjectState {
     /// Every script whose run waits or faulted, with that state (Protocol
     /// 2.62; several since 2.69); every other script is idle.
     script_run_states: BTreeMap<u64, fm_protocol::ScriptRunStatus>,
-    /// Every user shortcut in project order (Protocol 2.70).
+    /// Every user shortcut in project order (Protocol 2.72).
     shortcuts: Vec<fm_protocol::ShortcutStatus>,
     /// `shortcut_state` records the snapshot announced that have not
     /// arrived.
@@ -2103,7 +2103,7 @@ pub enum ModelError {
     /// another revision (Protocol 2.58).
     ScriptStateMismatch,
     /// A `shortcut_state` arrived that the snapshot did not announce or at
-    /// another revision (Protocol 2.70).
+    /// another revision (Protocol 2.72).
     ShortcutStateMismatch,
     /// A shortcut change names an unknown shortcut or does not fit its
     /// bounds.
@@ -3283,7 +3283,7 @@ impl ClientModel {
     }
 
     /// Adds one of the `shortcut_state` records the installed snapshot
-    /// announced (Protocol 2.70), in project order.
+    /// announced (Protocol 2.72), in project order.
     ///
     /// # Errors
     ///

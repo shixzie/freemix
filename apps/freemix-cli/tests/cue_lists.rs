@@ -265,7 +265,7 @@ fn a_waitless_follow_into_a_second_take_is_refused() {
 
 /// A `.fmtitle` source document that needs no font (see `e2e.rs`).
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 61,
+  "schema_version": 62,
   "template": {
     "id": 7,
     "name": "Score bar",

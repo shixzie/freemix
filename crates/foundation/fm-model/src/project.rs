@@ -920,7 +920,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(61);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(62);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1472,7 +1472,7 @@ impl Project {
         self.script_run = script_run;
     }
 
-    /// The project's user shortcuts, in display order (RC-004, schema 61).
+    /// The project's user shortcuts, in display order (RC-004, schema 62).
     #[must_use]
     pub fn shortcuts(&self) -> &[crate::Shortcut] {
         &self.shortcuts

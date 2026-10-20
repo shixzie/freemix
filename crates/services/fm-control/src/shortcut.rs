@@ -1,5 +1,5 @@
 //! Wire mapping of the user shortcut commands, events, and snapshot
-//! records (Protocol 2.70, RC-004).
+//! records (Protocol 2.72, RC-004).
 
 use fm_engine::{Engine, EngineCommand};
 use fm_model::{Shortcut, ShortcutAction, ShortcutCueOperation, ShortcutKey};
