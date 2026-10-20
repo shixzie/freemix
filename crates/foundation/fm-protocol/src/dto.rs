@@ -2980,7 +2980,7 @@ pub struct AudioMetersMessage {
     /// The monitor bus, when the sender renders one (2.44).
     pub monitor: Option<AudioMonitorMeters>,
     /// Gain reduction of every chain with a running dynamics stage, Master
-    /// first and then ascending by input (2.70).
+    /// first and then ascending by input (2.75).
     pub dynamics: Vec<crate::AudioDynamicsMeter>,
 }
 
@@ -3216,7 +3216,7 @@ pub enum WireMessage {
     ScenePreviewRequest(ScenePreviewRequest),
     ScenePreviewFrame(ScenePreviewFrameMessage),
     AnimationPresetState(AnimationPresetStateMessage),
-    /// One input strip's DSP chain after a snapshot (Protocol 2.70).
+    /// One input strip's DSP chain after a snapshot (Protocol 2.75).
     AudioStripDspState(crate::AudioStripDspStateMessage),
     MediaState(crate::MediaStateMessage),
     /// One cue list after a snapshot (Protocol 2.50).

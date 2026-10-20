@@ -1,4 +1,4 @@
-//! Strip and Master DSP chains in `project.json` (schema 61, AU-005).
+//! Strip and Master DSP chains in `project.json` (schema 65, AU-005).
 //!
 //! Every entry of `input_audio_strips` carries `"dsp"`, and the project
 //! carries `"master_audio_dsp"`: `null` for the default chain (every stage

@@ -116,6 +116,7 @@ fn try_enqueue(
     })
 }
 
+#[allow(clippy::too_many_lines)] // one arm per coalescible intent
 fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> bool {
     match (tail, incoming) {
         (

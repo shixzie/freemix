@@ -1,4 +1,4 @@
-//! Strip and Master DSP editing (AU-005, Protocol 2.70).
+//! Strip and Master DSP editing (AU-005, Protocol 2.75).
 //!
 //! [`StripDspBinding`] binds the FX editor to one chain the authority
 //! owns. An operator edit becomes a draft the editor shows instead of the

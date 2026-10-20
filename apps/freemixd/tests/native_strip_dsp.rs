@@ -1,6 +1,6 @@
 #![cfg(all(feature = "native-media", unix))]
 
-//! Process-level strip and Master DSP (AU-005, Protocol 2.70): a running
+//! Process-level strip and Master DSP (AU-005, Protocol 2.75): a running
 //! native daemon applies a clip strip's EQ, gate, and compressor and the
 //! Master limiter to the rendered Program bus, reports their gain reduction
 //! in `audio_meters`, and hands a reconnecting client the chains in its

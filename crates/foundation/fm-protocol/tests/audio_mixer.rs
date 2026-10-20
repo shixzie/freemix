@@ -15,7 +15,7 @@ use fm_protocol::{
 };
 use fm_types::strip_dsp::{STRIP_DSP_CODE_LEN, StripDsp, StripDspPreset};
 
-const PREFIX: &str = "command\tprotocol=2.74\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.75\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -175,7 +175,7 @@ fn mixer() -> AudioMixerStatus {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 74));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 75));
 }
 
 #[test]
@@ -704,7 +704,7 @@ fn the_largest_snapshot_mixer_fits_one_line() {
     // A worst-case headphone device escapes every byte (2.53).
     snapshot.audio_mixer.monitor.device =
         Some("~".repeat(fm_protocol::MAX_AUDIO_MONITOR_DEVICE_BYTES));
-    // A Master chain and the most per-strip chain records (2.70): the strip
+    // A Master chain and the most per-strip chain records (2.75): the strip
     // chains follow as their own records, so only a count rides the line.
     snapshot.audio_mixer.master_dsp = StripDspPreset::Master.chain();
     snapshot.audio_mixer.strip_dsp_states = fm_protocol::MAX_AUDIO_STRIP_DSP_STATES;

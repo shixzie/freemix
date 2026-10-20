@@ -33,7 +33,7 @@
 //! | [`AudioMixerOperation::SetMonitorDevice`] | `audio_monitor_device` | `device` (empty for none) | project edit |
 //! | [`AudioMixerOperation::SetMonitorLevel`] | `audio_monitor_level` | `gain_millidb`, `muted` | live operation |
 //!
-//! Since 2.70 every input strip and the Master bus carry a native DSP chain
+//! Since 2.75 every input strip and the Master bus carry a native DSP chain
 //! (AU-005, [`fm_types::strip_dsp::StripDsp`]): high-pass, five EQ bands,
 //! gate, compressor, and limiter, each switchable, plus a chain bypass.
 //!
@@ -71,7 +71,7 @@ use crate::{WireInputId, WireOutputId};
 /// show input.
 pub const MAX_AUDIO_STRIP_DSP_STATES: u16 = 256;
 
-/// The chain a DSP edit or gain-reduction meter names (2.70).
+/// The chain a DSP edit or gain-reduction meter names (2.75).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum AudioDspTarget {
     /// The Master bus (`master`).
@@ -83,7 +83,7 @@ pub enum AudioDspTarget {
 /// Largest gain reduction a dynamics meter reports, in millidecibels.
 pub const MAX_DYNAMICS_REDUCTION_MILLIDB: u32 = 200_000;
 
-/// One chain's gain reduction over an `audio_meters` interval (2.70): the
+/// One chain's gain reduction over an `audio_meters` interval (2.75): the
 /// deepest gate attenuation, compressor reduction, and limiter reduction on
 /// any channel, in positive millidecibels, each `None` while that stage is
 /// off or the chain bypassed. Only chains with a running dynamics stage are
@@ -97,7 +97,7 @@ pub struct AudioDynamicsMeter {
 }
 
 /// One input strip's non-default DSP chain at a snapshot's `revision`
-/// (record `audio_strip_dsp_state`, 2.70).
+/// (record `audio_strip_dsp_state`, 2.75).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AudioStripDspStateMessage {
     pub revision: u64,
@@ -235,10 +235,10 @@ pub struct AudioMixerStatus {
     pub solo_mode: AudioSoloMode,
     /// Where the monitor bus is heard, and how loud (2.53).
     pub monitor: AudioMonitorStatus,
-    /// The Master bus DSP chain (2.70).
+    /// The Master bus DSP chain (2.75).
     pub master_dsp: StripDsp,
     /// How many [`AudioStripDspStateMessage`] records follow the snapshot
-    /// (2.70); not maintained by [`Self::apply`].
+    /// (2.75); not maintained by [`Self::apply`].
     pub strip_dsp_states: u16,
 }
 
@@ -387,7 +387,7 @@ pub enum AudioMixerOperation {
     SetMonitorDevice { device: Option<String> },
     /// Moves the monitor feed level or mute; Program is untouched (2.53).
     SetMonitorLevel { gain_millidb: i32, muted: bool },
-    /// Replaces a strip's or the Master's DSP chain (2.70); `gesture`
+    /// Replaces a strip's or the Master's DSP chain (2.75); `gesture`
     /// folds a knob drag into one undo step.
     SetStripDsp {
         target: AudioDspTarget,

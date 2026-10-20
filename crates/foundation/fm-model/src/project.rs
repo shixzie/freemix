@@ -920,7 +920,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(64);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(65);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1162,7 +1162,7 @@ impl Project {
         Ok(())
     }
 
-    /// The Master bus DSP chain (AU-005, schema 61).
+    /// The Master bus DSP chain (AU-005, schema 65).
     #[must_use]
     pub const fn master_audio_dsp(&self) -> &fm_types::strip_dsp::StripDsp {
         &self.master_audio_dsp
@@ -4258,7 +4258,7 @@ pub struct InputAudioStrip {
     pub label: String,
     /// The strip group the strip belongs to (schema 39).
     pub group: Option<crate::AudioGroupNumber>,
-    /// The strip's DSP chain (schema 61, AU-005).
+    /// The strip's DSP chain (schema 65, AU-005).
     pub dsp: fm_types::strip_dsp::StripDsp,
 }
 

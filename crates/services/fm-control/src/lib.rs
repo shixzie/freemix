@@ -1857,7 +1857,7 @@ impl<A: AuthorizationHook> ControlService<A> {
 
     /// The `audio_strip_dsp_state` records that complete a snapshot: one
     /// per input whose strip DSP chain is not the default, ascending
-    /// (Protocol 2.70).
+    /// (Protocol 2.75).
     #[must_use]
     pub fn strip_dsp_states(&self) -> Vec<fm_protocol::AudioStripDspStateMessage> {
         audio_mixer::strip_dsp_states(&self.engine)

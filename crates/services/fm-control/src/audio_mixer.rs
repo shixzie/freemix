@@ -1,7 +1,7 @@
 //! Mixer labels, strip groups, the solo mode, the monitor output, and the
 //! Fade-to-Black output selection between the engine and the wire
 //! (Protocols 2.40, 2.44, and 2.53, AU-001 and SW-004), and the strip and
-//! Master DSP chains (Protocol 2.70, AU-005).
+//! Master DSP chains (Protocol 2.75, AU-005).
 
 use fm_engine::{
     Engine, EngineAudioGroupState, EngineAudioMixerEdit, EngineCommand, EngineEvent, ShowState,
@@ -35,7 +35,7 @@ pub(super) const fn wire_dsp_target(target: StripDspTarget) -> AudioDspTarget {
 }
 
 /// One `audio_strip_dsp_state` per input whose chain is not the default,
-/// ascending, at the engine's revision (Protocol 2.70).
+/// ascending, at the engine's revision (Protocol 2.75).
 pub(super) fn strip_dsp_states(engine: &Engine) -> Vec<AudioStripDspStateMessage> {
     let revision = engine.revision().get();
     engine

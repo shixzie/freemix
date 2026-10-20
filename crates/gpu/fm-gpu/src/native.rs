@@ -2843,7 +2843,7 @@ mod tests {
             source_extent_policy: NativeSourceExtentPolicy::Independent,
             ..defaults
         };
-        assert_eq!(validate_pipeline_options(layer, 65_536).unwrap().get(), 64);
+        assert_eq!(validate_pipeline_options(layer, 65_536).unwrap().get(), 65);
         assert!(native_blend_state(layer.blend).is_some());
     }
 

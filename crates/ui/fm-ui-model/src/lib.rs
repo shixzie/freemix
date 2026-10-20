@@ -1215,7 +1215,7 @@ pub struct ProjectState {
     input_categories: Vec<InputCategoryStatus>,
     /// Strip labels and groups (Protocol 2.40).
     audio_mixer: fm_protocol::AudioMixerStatus,
-    /// Every input strip's non-default DSP chain (Protocol 2.70), kept
+    /// Every input strip's non-default DSP chain (Protocol 2.75), kept
     /// current by `audio_mixer_changed`.
     audio_strip_dsp: BTreeMap<InputId, fm_types::strip_dsp::StripDsp>,
     /// `audio_strip_dsp_state` records the snapshot announced that have not
@@ -1334,7 +1334,7 @@ impl ProjectState {
         &self.audio_mixer
     }
 
-    /// Returns input `input`'s strip DSP chain (Protocol 2.70); the default
+    /// Returns input `input`'s strip DSP chain (Protocol 2.75); the default
     /// chain for an input without one.
     #[must_use]
     pub fn input_audio_dsp(&self, input: InputId) -> fm_types::strip_dsp::StripDsp {
@@ -1344,13 +1344,13 @@ impl ProjectState {
             .unwrap_or(fm_types::strip_dsp::StripDsp::DEFAULT)
     }
 
-    /// Returns the Master bus DSP chain (Protocol 2.70).
+    /// Returns the Master bus DSP chain (Protocol 2.75).
     #[must_use]
     pub const fn master_audio_dsp(&self) -> &fm_types::strip_dsp::StripDsp {
         &self.audio_mixer.master_dsp
     }
 
-    /// Returns the DSP chain `target` names (Protocol 2.70).
+    /// Returns the DSP chain `target` names (Protocol 2.75).
     #[must_use]
     pub fn audio_dsp(
         &self,
@@ -2261,7 +2261,7 @@ pub enum ModelError {
     InvalidMediaListChange(InputId),
     /// An `audio_strip_dsp_state` arrived that the snapshot did not
     /// announce, at another revision, out of order, for an unknown input, or
-    /// with a default or invalid chain (Protocol 2.70).
+    /// with a default or invalid chain (Protocol 2.75).
     AudioStripDspStateMismatch,
 }
 
@@ -3616,7 +3616,7 @@ impl ClientModel {
     }
 
     /// Adds one of the `audio_strip_dsp_state` records the installed
-    /// snapshot announced (Protocol 2.70), in ascending input order.
+    /// snapshot announced (Protocol 2.75), in ascending input order.
     ///
     /// # Errors
     ///

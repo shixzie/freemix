@@ -203,7 +203,7 @@ pub enum Intake {
     MediaListStateApplied,
 
     /// An `audio_strip_dsp_state` completed one input strip's DSP chain the
-    /// snapshot announced (Protocol 2.70).
+    /// snapshot announced (Protocol 2.75).
     AudioStripDspStateApplied,
     /// A `display_inventory` reply updated the replicated display inventory
     /// (Protocol 2.42).
@@ -1542,7 +1542,7 @@ impl Client {
     }
 
     /// Completes one input strip's DSP chain the snapshot announced with
-    /// its `audio_strip_dsp_state` (Protocol 2.70).
+    /// its `audio_strip_dsp_state` (Protocol 2.75).
     ///
     /// Strip DSP states arrive only while synchronizing from a snapshot, in
     /// ascending input order after every other follow-on record and before
