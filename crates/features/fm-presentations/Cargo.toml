@@ -14,6 +14,10 @@ hayro = "0.8"
 quick-xml = "0.41"
 zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 
+[target.'cfg(unix)'.dependencies]
+# Stops a converter's whole process group (soffice starts soffice.bin).
+nix = { version = "0.27.1", default-features = false, features = ["signal"] }
+
 [dev-dependencies]
 tempfile = "3.20"
 

@@ -271,6 +271,75 @@ cp {pdf} "$outdir/presentation.pdf""#,
         assert_eq!(error.state(), DocumentState::Failed);
     }
 
+    /// Whether process `pid` still runs (not gone, not a zombie).
+    fn running(pid: &str) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit(") ")
+                .next()
+                .is_some_and(|rest| !rest.starts_with('Z'))
+        })
+    }
+
+    /// A converter that leaves `sleep` running in the background (as
+    /// `oosplash` leaves `soffice.bin`) and records its pid; `then` runs
+    /// after it.
+    fn converter_with_a_helper(directory: &Path, then: &str) -> (OfficeConverter, PathBuf) {
+        let pid_file = directory.join("helper.pid");
+        let program = fake_soffice(
+            directory,
+            &format!(
+                "sleep 60 &\necho $! > {pid}.tmp\nmv {pid}.tmp {pid}\n{then}",
+                pid = pid_file.display()
+            ),
+        );
+        (OfficeConverter::with_program(program), pid_file)
+    }
+
+    fn assert_helper_stopped(pid_file: &Path) {
+        let pid = std::fs::read_to_string(pid_file).unwrap();
+        let pid = pid.trim();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while running(pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let left = running(pid);
+        if left {
+            // Never leave the test's own helper behind.
+            let _ = std::process::Command::new("kill")
+                .args(["-KILL", pid])
+                .status();
+        }
+        assert!(
+            !left,
+            "the converter's helper process {pid} was left running"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_timed_out_converter_stops_every_process_it_started() {
+        let directory = tempfile::tempdir().unwrap();
+        let (converter, pid_file) = converter_with_a_helper(directory.path(), "sleep 60");
+        let error = converter
+            .convert(DocumentFormat::Odp, b"x", Duration::from_millis(500))
+            .unwrap_err();
+        assert_eq!(error, DocumentError::ConversionTimedOut);
+        assert_helper_stopped(&pid_file);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_finished_converter_leaves_no_process_behind() {
+        let directory = tempfile::tempdir().unwrap();
+        let (converter, pid_file) = converter_with_a_helper(directory.path(), "exit 1");
+        assert!(
+            converter
+                .convert(DocumentFormat::Odp, b"x", Duration::from_secs(20))
+                .is_err()
+        );
+        assert_helper_stopped(&pid_file);
+    }
+
     #[test]
     fn a_failing_converter_reports_its_first_diagnostic_line() {
         let directory = tempfile::tempdir().unwrap();

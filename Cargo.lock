@@ -1627,6 +1627,7 @@ version = "0.1.0"
 dependencies = [
  "fm-types",
  "hayro",
+ "nix 0.27.1",
  "quick-xml",
  "tempfile",
  "zip",

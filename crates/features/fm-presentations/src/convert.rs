@@ -14,7 +14,10 @@
 //! (`-env:UserInstallation`) so it never touches or locks the operator's
 //! profile and never shows a recovery dialog, its environment is cleared
 //! except `PATH` (and `HOME`/`TMPDIR` point into the sandbox), and it is
-//! killed when it runs past the timeout. Conversion runs on the caller's
+//! killed when it runs past the timeout. On Unix it leads its own process
+//! group, and every process it started is killed when it finishes or
+//! times out (killing `soffice` alone would orphan `soffice.bin`).
+//! Conversion runs on the caller's
 //! thread; callers run it on a worker, never on a frame loop.
 
 use std::ffi::OsString;
@@ -167,26 +170,18 @@ impl OfficeConverter {
                 command.env(name, value);
             }
         }
-        let mut child = command
+        // The converter leads its own process group, so everything it
+        // starts (`soffice` runs `oosplash`, which runs `soffice.bin`) is
+        // stopped with it.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let child = command
             .spawn()
             .map_err(|error| DocumentError::ConversionFailed(format!("cannot start: {error}")))?;
-        let started = Instant::now();
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) if started.elapsed() >= timeout => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(DocumentError::ConversionTimedOut);
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(25)),
-                Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(failed(error));
-                }
-            }
-        };
+        let status = finish(child, timeout)?;
         let pdf = output.join("presentation.pdf");
         if !status.success() || !pdf.is_file() {
             let mut detail = String::new();
@@ -215,6 +210,53 @@ impl OfficeConverter {
         }
         Ok(converted)
     }
+}
+
+/// Waits for the converter `child` for at most `timeout`, then stops it
+/// and everything it started.
+fn finish(
+    mut child: std::process::Child,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus, DocumentError> {
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                // A helper the converter left behind is stopped too.
+                stop_group(&child);
+                return Ok(status);
+            }
+            Ok(None) if started.elapsed() >= timeout => {
+                stop_group(&child);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(DocumentError::ConversionTimedOut);
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+            Err(error) => {
+                stop_group(&child);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(failed(error));
+            }
+        }
+    }
+}
+
+/// Kills every process of the converter's process group (on Unix; on
+/// other platforms only the converter itself is stopped).
+fn stop_group(child: &std::process::Child) {
+    #[cfg(unix)]
+    if let Ok(id) = i32::try_from(child.id())
+        && id > 0
+    {
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(id),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+    }
+    #[cfg(not(unix))]
+    let _ = child;
 }
 
 fn failed(error: impl std::fmt::Display) -> DocumentError {
