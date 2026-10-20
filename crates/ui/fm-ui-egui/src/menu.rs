@@ -1553,9 +1553,13 @@ impl StudioShell {
                                 SHORTCUT_COLUMN_SPLIT
                             };
                             let (first, second) = ShortcutGroup::ALL.split_at(split);
+                            // The project's shortcuts go under the shorter
+                            // column, not below both, so many of them do
+                            // not make a 1280x720 reference scroll.
+                            let project = project_column(first, second);
                             ui.horizontal_top(|ui| {
                                 ui.spacing_mut().item_spacing.x = SHORTCUT_COLUMN_GAP;
-                                for groups in [first, second] {
+                                for (index, groups) in [first, second].into_iter().enumerate() {
                                     if groups.is_empty() {
                                         continue;
                                     }
@@ -1564,10 +1568,12 @@ impl StudioShell {
                                         for group in groups {
                                             shortcut_group(ui, l, *group, column);
                                         }
+                                        if index == project {
+                                            user_shortcut_group(ui, l, state, column);
+                                        }
                                     });
                                 }
                             });
-                            user_shortcut_group(ui, l, state, column);
                         });
                     ui.add_space(10.0);
                     ui.separator();
@@ -1750,12 +1756,31 @@ fn shortcut_group(ui: &mut Ui, l: Locale, group: ShortcutGroup, column: f32) {
         });
 }
 
-/// The project's own shortcuts (RC-004) below the console's: each key (or
+/// The column (0 or 1) the project's shortcuts go under: the one whose
+/// console groups take fewer rows (a group's title counting as two), the
+/// first when `second` is empty or they tie.
+fn project_column(first: &[ShortcutGroup], second: &[ShortcutGroup]) -> usize {
+    let rows = |groups: &[ShortcutGroup]| {
+        groups
+            .iter()
+            .map(|group| {
+                2 + STUDIO_SHORTCUTS
+                    .iter()
+                    .filter(|entry| entry.group == *group)
+                    .count()
+            })
+            .sum::<usize>()
+    };
+    usize::from(!second.is_empty() && rows(second) < rows(first))
+}
+
+/// The project's own shortcuts (RC-004) under the console's: each key (or
 /// "OSC only") beside its shortcut's name, else where to add them.
 fn user_shortcut_group(ui: &mut Ui, l: Locale, state: &StudioUiState, column: f32) {
     ui.add_space(10.0);
     ui.label(section_label(l.text(Msg::UserShortcutsGroup)));
     ui.add_space(2.0);
+    let action_width = (SHORTCUT_COLUMN_WIDTH - column - 16.0).max(120.0);
     let rows = crate::user_shortcuts::reference_rows(l, state);
     if rows.is_empty() {
         ui.label(RichText::new(l.text(Msg::UserShortcutsReferenceEmpty)).color(muted_color()));
@@ -1767,7 +1792,10 @@ fn user_shortcut_group(ui: &mut Ui, l: Locale, state: &StudioUiState, column: f3
         .show(ui, |ui| {
             for (keys, action) in rows {
                 key_cap(ui, &keys, column);
-                ui.add(egui::Label::new(RichText::new(action).color(text_color())).wrap());
+                ui.scope(|ui| {
+                    ui.set_max_width(action_width);
+                    ui.add(egui::Label::new(RichText::new(action).color(text_color())).wrap());
+                });
                 ui.end_row();
             }
         });
@@ -2012,6 +2040,27 @@ mod tests {
             ShortcutGroup::ALL[SHORTCUT_COLUMN_SPLIT],
             ShortcutGroup::Cues
         );
+    }
+
+    #[test]
+    fn project_shortcuts_go_under_the_shorter_column() {
+        let (first, second) = ShortcutGroup::ALL.split_at(SHORTCUT_COLUMN_SPLIT);
+        let rows = |groups: &[ShortcutGroup]| {
+            groups
+                .iter()
+                .map(|group| {
+                    2 + STUDIO_SHORTCUTS
+                        .iter()
+                        .filter(|entry| entry.group == *group)
+                        .count()
+                })
+                .sum::<usize>()
+        };
+        let shorter = usize::from(rows(second) < rows(first));
+        assert_eq!(project_column(first, second), shorter);
+        assert_eq!(project_column(second, first), 1 - shorter);
+        // One column: under it.
+        assert_eq!(project_column(&ShortcutGroup::ALL, &[]), 0);
     }
 
     #[test]
