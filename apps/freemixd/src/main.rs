@@ -6769,8 +6769,9 @@ impl NativeDaemon {
     }
 
     /// Realizes the frame due at `deadline`, started at `started`, and
-    /// traces it when the pacing trace is on; `command` says a command's
-    /// frame (after its journal append) rather than an idle one.
+    /// traces it, with its CPU use, when the pacing trace is on; `command`
+    /// says a command's frame (after its journal append) rather than an idle
+    /// one.
     fn realize_traced(
         &mut self,
         control: &mut ControlService<Policy>,
@@ -6779,9 +6780,23 @@ impl NativeDaemon {
         started: Instant,
         command: bool,
     ) -> AppResult<Vec<RuntimeEventMessage>> {
+        // The counters are read outside the realization they bracket.
+        let before = self
+            .pacing_trace
+            .as_ref()
+            .and_then(|_| pacing_trace::CpuCounters::read());
+        let realize_started = Instant::now();
         let events = self.realize_one(control, server)?;
         if let Some(trace) = &mut self.pacing_trace {
-            trace.frame(deadline, started, Instant::now(), command);
+            let finished = Instant::now();
+            let counters = before.zip(pacing_trace::CpuCounters::read());
+            trace.frame(
+                deadline,
+                started,
+                (realize_started, finished),
+                counters,
+                command,
+            );
         }
         Ok(events)
     }
@@ -7492,7 +7507,12 @@ impl NativeDaemon {
     /// Starts the pacer's clock at the first frame the loop asks for (see
     /// [`Self::pacing_origin`]); later calls keep it.
     fn anchor_pacing(&mut self) {
-        self.pacing_origin.get_or_insert_with(Instant::now);
+        if self.pacing_origin.is_none() {
+            self.pacing_origin = Some(Instant::now());
+            if let Some(trace) = &mut self.pacing_trace {
+                trace.start();
+            }
+        }
     }
 
     /// Whether a client command dispatched now leaves its frame on time.

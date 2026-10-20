@@ -528,6 +528,13 @@ struct FrameSample {
     lateness: f64,
     /// How long realizing it took.
     realize: f64,
+    /// How long the frame loop's thread ran on a CPU while realizing it,
+    /// where the host reports it.
+    loop_cpu: Option<f64>,
+    /// How long the daemon's threads, summed, waited for a CPU since the
+    /// frame before it was realized (for the first frame, since the pacer
+    /// started), where the host reports it.
+    queued: Option<f64>,
     /// Whether a command was realized on it.
     command: bool,
 }
@@ -547,12 +554,19 @@ fn traced_samples(stderr: &str) -> Vec<FrameSample> {
         .filter(|sample| !sample.is_empty())
         .map(|sample| {
             let mut fields = sample.split(':');
-            let mut milliseconds = || fields.next().unwrap().parse::<f64>().unwrap() / 1_000.0;
-            let lateness = milliseconds();
-            let realize = milliseconds();
+            let mut milliseconds = || match fields.next().unwrap() {
+                "-" => None,
+                micros => Some(micros.parse::<f64>().unwrap() / 1_000.0),
+            };
+            let lateness = milliseconds().unwrap();
+            let realize = milliseconds().unwrap();
+            let loop_cpu = milliseconds();
+            let queued = milliseconds();
             FrameSample {
                 lateness,
                 realize,
+                loop_cpu,
+                queued,
                 command: fields.next() == Some("c"),
             }
         })
@@ -625,9 +639,21 @@ fn recorder_and_stream_startup_never_make_program_frames_late() {
         "too few frames traced: {frames:?}"
     );
     let (first, steady) = frames.split_at(FIRST_FRAMES);
+    // A host whose cores are all busy makes frames late and stretches their
+    // realization, the startup ones most, while the encoders start
+    // alongside them, by far more than the bounds below (hundreds of
+    // milliseconds) without the daemon doing anything more. The daemon's
+    // trace tells those frames apart where the host reports scheduling
+    // statistics: its threads waited a frame interval or more for a CPU
+    // since the frame before. Such a frame is not held to the wall-clock
+    // bounds on its start and realization; every startup frame is held to a
+    // bound on the frame loop's own CPU time, which a busy host does not
+    // stretch, so work the loop does at startup is still caught however
+    // loaded the host is.
+    let contended = |frame: &FrameSample| frame.queued.is_some_and(|queued| queued >= frame_ms);
     // The pacer's clock starts at the first frame it realizes.
     assert!(
-        first[0].lateness < frame_ms / 2.0,
+        contended(&first[0]) || first[0].lateness < frame_ms / 2.0,
         "the first Program frame started {} ms late: {first:?}",
         first[0].lateness
     );
@@ -656,10 +682,10 @@ fn recorder_and_stream_startup_never_make_program_frames_late() {
     // longer than a frame interval, or than four times what the frames after
     // startup take on this host. The first realization also warms the GPU up
     // (pipelines, buffers): two to three times a later frame on an idle
-    // host, and more on one whose cores are all busy, where that one-off
-    // CPU work competes with everything else. So the first frame alone gets
-    // twice the bound, which still catches an encoder or segment start
-    // inside it (a process spawn, tens to hundreds of milliseconds).
+    // host. So the first frame alone gets twice the bound, which still
+    // catches an encoder or segment start inside it (a process spawn, tens
+    // to hundreds of milliseconds). A contended frame (see above) is held to
+    // the same bound on the loop's CPU time instead.
     let mut realize: Vec<f64> = steady.iter().map(|frame| frame.realize).collect();
     realize.sort_by(f64::total_cmp);
     let typical = realize[realize.len() / 2];
@@ -667,15 +693,18 @@ fn recorder_and_stream_startup_never_make_program_frames_late() {
     let cold_bound = 2.0 * bound;
     let slow: Vec<(usize, f64)> = first
         .iter()
-        .map(|frame| frame.realize)
         .enumerate()
-        .filter(|&(index, realize)| realize >= if index == 0 { cold_bound } else { bound })
+        .filter(|&(index, frame)| {
+            !contended(frame) && frame.realize >= if index == 0 { cold_bound } else { bound }
+        })
+        .map(|(index, frame)| (index, frame.realize))
         .collect();
     assert!(
         slow.is_empty(),
         "startup frames took {bound:.2} ms ({cold_bound:.2} ms for the first) or more to \
          realize (frame, ms) while later frames took {typical:.2} ms: {slow:?}; {first:?}"
     );
+    assert_startup_loop_cpu(first, steady);
     // On a host that keeps pace with the show (the frames after startup
     // realize in under half an interval), no startup frame is a frame late.
     let keeps_pace = percentile(&realize, 95) < frame_ms / 2.0;
@@ -701,6 +730,34 @@ fn recorder_and_stream_startup_never_make_program_frames_late() {
         "{} frames were realized: {report}",
         lateness.len()
     );
+}
+
+/// Holds every startup frame's frame-loop CPU time, where the trace reports
+/// it, to four times that of the frames after startup (twice that for the
+/// first frame, which warms the GPU up), or an eighth of a frame interval.
+fn assert_startup_loop_cpu(first: &[FrameSample], steady: &[FrameSample]) {
+    let frame_ms = 1_000.0 / f64::from(FRAME_RATE);
+    let loop_cpu: Option<Vec<f64>> = steady.iter().map(|frame| frame.loop_cpu).collect();
+    if let Some(mut loop_cpu) = loop_cpu {
+        loop_cpu.sort_by(f64::total_cmp);
+        let typical = loop_cpu[loop_cpu.len() / 2];
+        // A floor keeps a loop that does almost nothing per frame from
+        // failing on scheduler noise.
+        let bound = (frame_ms / 8.0).max(4.0 * typical);
+        let cold_bound = 2.0 * bound;
+        let busy: Vec<(usize, f64)> = first
+            .iter()
+            .enumerate()
+            .filter_map(|(index, frame)| Some((index, frame.loop_cpu?)))
+            .filter(|&(index, cpu)| cpu >= if index == 0 { cold_bound } else { bound })
+            .collect();
+        assert!(
+            busy.is_empty(),
+            "the frame loop spent {bound:.2} ms ({cold_bound:.2} ms for the first) or more \
+             on a CPU realizing startup frames (frame, ms) while later frames took \
+             {typical:.2} ms: {busy:?}; {first:?}"
+        );
+    }
 }
 
 /// Measurement, not a gate: 25 s of a recording, two HLS streams, and about
