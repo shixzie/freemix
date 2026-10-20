@@ -33,9 +33,9 @@ use fm_model::{
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
-    HandshakeRequest, ImportItemSpec, InputLifecycleOperation, LiveInputSource, MediaOperation,
-    MonitorFrameAssembler, MonitorTap, Role, RuntimeLifecycleEvent, WireGeneratorVideo,
-    WireInputId, WireInputSource, WireMessage, decode_line, encode_line,
+    HandshakeRequest, HeartbeatMessage, ImportItemSpec, InputLifecycleOperation, LiveInputSource,
+    MediaOperation, MonitorFrameAssembler, MonitorTap, Role, RuntimeLifecycleEvent, ServerIdentity,
+    WireGeneratorVideo, WireInputId, WireInputSource, WireMessage, decode_line, encode_line,
 };
 use fm_types::network_stream::{NetworkStreamConfig, NetworkStreamState};
 use fm_types::{
@@ -46,6 +46,9 @@ use freemixd::ReadinessRecord;
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const WAIT: Duration = Duration::from_secs(40);
+/// How often the client heartbeats: well inside the daemon's 15 s session
+/// heartbeat timeout, so a run slowed by a loaded host keeps its session.
+const HEARTBEAT_EVERY: Duration = Duration::from_secs(1);
 
 fn input(value: u128) -> InputId {
     InputId::new(NonZeroU128::new(value).unwrap())
@@ -274,6 +277,9 @@ struct Client {
     writer: TcpStream,
     assembler: MonitorFrameAssembler,
     commands: u64,
+    server: Option<ServerIdentity>,
+    heartbeats: u64,
+    last_heartbeat: Instant,
 }
 
 type Pixel = [u8; 4];
@@ -290,6 +296,9 @@ impl Client {
             reader: BufReader::new(stream),
             assembler: MonitorFrameAssembler::new(),
             commands: 0,
+            server: None,
+            heartbeats: 0,
+            last_heartbeat: Instant::now(),
         };
         client.send(&WireMessage::HandshakeRequest(HandshakeRequest {
             protocol: CURRENT_PROTOCOL_VERSION,
@@ -298,10 +307,10 @@ impl Client {
             desired_role: Role::Admin,
             resume_cursor: None,
         }));
-        assert!(matches!(
-            client.receive(),
-            WireMessage::HandshakeResponse(_)
-        ));
+        let WireMessage::HandshakeResponse(response) = client.receive() else {
+            panic!("expected a handshake response");
+        };
+        client.server = Some(response.server);
         assert!(matches!(client.receive(), WireMessage::Snapshot(_)));
         client
     }
@@ -313,7 +322,28 @@ impl Client {
         self.writer.flush().unwrap();
     }
 
+    /// Keeps the session alive like a real client: the daemon closes a
+    /// session that has not heartbeat within its timeout, however busy the
+    /// connection is otherwise.
+    fn heartbeat_if_due(&mut self) {
+        let Some(server) = self.server.clone() else {
+            return;
+        };
+        if self.last_heartbeat.elapsed() < HEARTBEAT_EVERY {
+            return;
+        }
+        self.heartbeats += 1;
+        self.send(&WireMessage::Heartbeat(HeartbeatMessage {
+            server,
+            sequence: self.heartbeats,
+            sent_at_ms: self.heartbeats,
+            last_applied: None,
+        }));
+        self.last_heartbeat = Instant::now();
+    }
+
     fn receive(&mut self) -> WireMessage {
+        self.heartbeat_if_due();
         let mut line = String::new();
         assert_ne!(
             self.reader.read_line(&mut line).unwrap(),
