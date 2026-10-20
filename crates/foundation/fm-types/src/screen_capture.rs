@@ -944,18 +944,21 @@ mod tests {
 
     #[test]
     fn a_window_deep_in_the_stack_is_found_while_the_wire_list_stays_bounded() {
-        let listing: String = (1..=200)
-            .map(|id| format!("W\t{id}\t0\t0\t0\t640\t480\tApp\tWindow {id}\n"))
-            .collect();
+        let windows = |count: usize| {
+            (1..=count).fold(String::new(), |mut listing, id| {
+                use std::fmt::Write as _;
+                let _ = writeln!(listing, "W\t{id}\t0\t0\t0\t640\t480\tApp\tWindow {id}");
+                listing
+            })
+        };
+        let listing = windows(200);
         let inventory = ScreenCaptureInventory::from_records(&listing, "gdigrab");
         let deep = WindowRule::exact("App", "Window 150", Some(150));
         assert_eq!(inventory.resolve_window(&deep).map(|w| w.id), Some(150));
         let renamed = WindowRule::exact("App", "Window 150", Some(9_999));
         assert_eq!(inventory.resolve_window(&renamed).map(|w| w.id), Some(150));
         assert_eq!(inventory.fitted().windows.len(), MAX_SCREEN_CAPTURE_WINDOWS);
-        let huge: String = (1..=(MAX_SCREEN_CAPTURE_MATCHED_WINDOWS + 10))
-            .map(|id| format!("W\t{id}\t0\t0\t0\t640\t480\tApp\tWindow {id}\n"))
-            .collect();
+        let huge = windows(MAX_SCREEN_CAPTURE_MATCHED_WINDOWS + 10);
         assert_eq!(
             ScreenCaptureInventory::from_records(&huge, "gdigrab")
                 .windows

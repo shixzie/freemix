@@ -2023,28 +2023,42 @@ mod tests {
         let mut renderer = ThumbnailRenderer::new(server(), start, titles)
             .with_item_pictures(Some(pictures.clone()));
         let listed = work(listed, 1);
-        assert!(items_of(&step_all(&mut renderer, &listed, start, false)).is_empty());
+        assert_eq!(
+            items_of(&step_all(&mut renderer, &listed, start, false)),
+            Vec::<u32>::new()
+        );
         // Not before the first retry time.
-        let soon = MIN_ITEM_RETRY - Duration::from_millis(1);
-        assert!(items_of(&step_all(&mut renderer, &listed, at(soon), false)).is_empty());
+        let soon = MIN_ITEM_RETRY
+            .checked_sub(Duration::from_millis(1))
+            .unwrap();
+        assert_eq!(
+            items_of(&step_all(&mut renderer, &listed, at(soon), false)),
+            Vec::<u32>::new()
+        );
         assert_eq!(pictures.0.load(std::sync::atomic::Ordering::Relaxed), 1);
         // The first retry fails too; the next waits twice as long.
-        assert!(items_of(&step_all(&mut renderer, &listed, at(MIN_ITEM_RETRY), false)).is_empty());
+        assert_eq!(
+            items_of(&step_all(&mut renderer, &listed, at(MIN_ITEM_RETRY), false)),
+            Vec::<u32>::new()
+        );
         assert_eq!(pictures.0.load(std::sync::atomic::Ordering::Relaxed), 0);
         let second = MIN_ITEM_RETRY + MIN_ITEM_RETRY * 2;
-        assert!(
+        assert_eq!(
             items_of(&step_all(
                 &mut renderer,
                 &listed,
-                at(second - Duration::from_millis(1)),
+                at(second.checked_sub(Duration::from_millis(1)).unwrap()),
                 false
-            ))
-            .is_empty()
+            )),
+            Vec::<u32>::new()
         );
         let decoded = step_all(&mut renderer, &listed, at(second), false);
         assert_eq!(items_of(&decoded), [1]);
         // Decoded: never tried again.
-        assert!(items_of(&step_all(&mut renderer, &listed, at(second * 10), false)).is_empty());
+        assert_eq!(
+            items_of(&step_all(&mut renderer, &listed, at(second * 10), false)),
+            Vec::<u32>::new()
+        );
         assert_eq!(item_retry_delay(30), MAX_ITEM_RETRY);
     }
 

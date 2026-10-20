@@ -145,14 +145,12 @@ fn render_within(
         .wait_timeout_while(lock(&job.0), budget, |job| job.result.is_none())
         .unwrap_or_else(PoisonError::into_inner);
     let mut state = state;
-    match state.result.take() {
-        Some(result) => result.map_err(RenderFailure::Failed),
-        None => {
-            state.abandoned = true;
-            pdf.abandoned.fetch_add(1, Ordering::AcqRel);
-            Err(RenderFailure::OverBudget)
-        }
+    if let Some(result) = state.result.take() {
+        return result.map_err(RenderFailure::Failed);
     }
+    state.abandoned = true;
+    pdf.abandoned.fetch_add(1, Ordering::AcqRel);
+    Err(RenderFailure::OverBudget)
 }
 
 /// A page that failed to render, and when it may be tried again.

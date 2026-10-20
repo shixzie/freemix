@@ -658,16 +658,10 @@ impl NativeDaemon {
     /// catalogue records the new file, so [`Self::sync_input_catalogue`]
     /// does not open it again. The switch frame then presents the new
     /// item's in mark instead of holding the item before while the file
-    /// opens. A standby still opening leaves the switch to the catalogue.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the new worker cannot start or the engine refuses the
-    /// source.
-    pub(crate) fn adopt_prefetched_media(
-        &mut self,
-        control: &mut ControlService<Policy>,
-    ) -> AppResult<()> {
+    /// opens. A standby still opening leaves the switch to the catalogue,
+    /// as does a worker that cannot start; a source the engine refuses
+    /// faults the input. Never fails.
+    pub(crate) fn adopt_prefetched_media(&mut self, control: &mut ControlService<Policy>) {
         let candidates = self.files.prefetched_inputs();
         for input in candidates {
             let Some(asset_uri) = control.media_asset(input).map(str::to_owned) else {
@@ -709,7 +703,6 @@ impl NativeDaemon {
             self.invalidate_projection();
             eprintln!("FREEMIXD_MEDIA\tv=1\tinput={input}\tprefetched=1");
         }
-        Ok(())
     }
 
     /// The bundle path of media asset `asset_uri`, if it names one.

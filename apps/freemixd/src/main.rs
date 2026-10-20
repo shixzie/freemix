@@ -13656,7 +13656,7 @@ fn execute_native_authority_command(
                 // A media list stepped to the item its standby opened
                 // switches on this very frame (IN-006).
                 #[cfg(feature = "native-media")]
-                native.adopt_prefetched_media(control)?;
+                native.adopt_prefetched_media(control);
                 native
                     .wait_and_tick(control, server, process_shutdown)?
                     .map_or_else(|| Ok(control.tick_for_shutdown(server)?.runtime_events), Ok)
