@@ -1168,7 +1168,8 @@ composed per channel by a preallocated `StripDsp` that processes planar
 formats or non-finite samples before mutating state.
 
 Current implementation boundary for item 3 strip DSP on the live mix
-(`AU-005`): every input strip and the Master bus carry an ordered chain
+(`AU-005`; polarity, the expander, and loudness since Protocol 2.82 and
+schema 69): every input strip and the Master bus carry an ordered chain
 (`fm_types::strip_dsp::StripDsp`): a polarity invert, high-pass (12
 dB/octave), a five-band parametric EQ (each band low shelf, peak, or high
 shelf), a downward gate (threshold, range, attack, hold, release), a

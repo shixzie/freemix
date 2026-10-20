@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.81 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.82 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -3038,6 +3038,45 @@ editor (GX-001, GX-006, schema 68):
   titles with `title_take` and `title_off_air`, each refused by the server
   outside the session's role.
 - 2.80 is refused.
+
+Protocol 2.82 completes the strip DSP chain and adds loudness metering
+(AU-005, schema 69).
+
+- The chain code gains a polarity invert and a downward expander after
+  the gate: 103 bytes, exactly 138 characters of unpadded base64url. Flag
+  bit 11 inverts polarity and bit 12 enables the expander, whose
+  threshold (-80000..=0 millidB), ratio (1000..=20000 thousandths),
+  attack and release (100 us..=1 s, release up to 5 s), and range
+  (0..=80000 millidB) follow the gate's fields. Every `audio_strip_dsp`
+  command, event, snapshot field, and record carries the new code; a
+  114-character code is refused.
+- `audio_meters` `dynamics` entries become
+  `<target>~<gate>~<expander>~<compressor>~<limiter>`.
+- `audio_meters` appends required `loudness`: comma-separated
+  `<target>~<momentary>~<short_term>~<integrated>~<true_peak>~<max_true_peak>`
+  entries, Master first then ascending inputs, each with at least one
+  value. Loudness values are ITU-R BS.1770-4 / EBU R128 LUFS and true
+  peaks dBTP (4x oversampled), all in canonical signed thousandths within
+  -100000..=30000 (higher values clamp), or `-` while not measured (a window
+  not yet filled, only silence heard, nothing past the integrated gates, or a
+  value under the floor). The true peak is the
+  interval's; the maximum, integrated loudness, and the windows run from
+  when the server began metering that target. A strip is metered on its
+  post-fader contribution to Program (silence while it is not audible),
+  and Master on Program as it leaves, after Fade to Black. The field is
+  empty when nothing is metered (the simulated daemon).
+- Native `freemixd` mixes stinger clip-local audio into the Program bus
+  ahead of the Master chain, so the Master chain, clipping, the Master
+  meters, and loudness include it.
+- Durability (schema 69): a chain object gains required
+  `"invert_polarity"` (after `bypass`) and `"expander"`
+  `{enabled, threshold_milli_db, ratio_milli, attack_us, release_us,
+  range_milli_db}` (after `gate`).
+- Studio's FX window adds the polarity key, the expander row, and the
+  chain's momentary, short-term, integrated, and true-peak readings; each
+  mixer strip shows its short-term loudness and Master its integrated
+  loudness under the keys.
+- 2.81 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
