@@ -32,8 +32,8 @@ use fm_ui_model::strip_dsp::{DRAG_SEND_INTERVAL, StripDspBinding, response_db};
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::theme::{
-    AMBER, MONITOR_BLACK, PROGRAM, accent_color, border_color, muted_color, text_color,
-    text_dim_color,
+    AMBER, MONITOR_BLACK, PROGRAM, accent_color, border_color, muted_color, small_button,
+    text_color, text_dim_color,
 };
 use crate::{StudioIntent, StudioShell, StudioUiState};
 
@@ -228,21 +228,24 @@ impl StudioShell {
             .default_pos(pos2(area.right() - 8.0, area.bottom() - 8.0))
             .frame(crate::workspace::tool_window_frame())
             .show(context, |ui| {
-                ui.set_width(FX_WIDTH);
-                header = draw_header(
+                let (close, ()) = crate::workspace::floating_window_frame(
                     ui,
+                    l,
+                    "strip-fx",
                     &title,
-                    &mut chain,
-                    (enabled, reason),
-                    pending,
-                    clipboard,
+                    l.text(Msg::FxCloseHover),
+                    |ui| {
+                        ui.set_width(FX_WIDTH);
+                        header = draw_header(ui, &mut chain, (enabled, reason), pending, clipboard);
+                        ui.add_space(4.0);
+                        draw_curve(ui, &mut chain, (enabled, reason));
+                        ui.add_space(6.0);
+                        draw_bands(ui, &mut chain, (enabled, reason));
+                        ui.separator();
+                        draw_dynamics(ui, &mut chain, (enabled, reason), gr);
+                    },
                 );
-                ui.separator();
-                draw_curve(ui, &mut chain, (enabled, reason));
-                ui.add_space(4.0);
-                draw_bands(ui, &mut chain, (enabled, reason));
-                ui.separator();
-                draw_dynamics(ui, &mut chain, (enabled, reason), gr);
+                header.close |= close;
             });
         if header.copy {
             self.strip_fx.copy(shown);
@@ -267,10 +270,10 @@ impl StudioShell {
     }
 }
 
-/// The title row and the chain keys: bypass, preset, copy, paste, reset.
+/// The chain keys: bypass, preset, copy, paste, reset, and the pending
+/// mark while an edit is on its way.
 fn draw_header(
     ui: &mut Ui,
-    title: &str,
     chain: &mut StripDsp,
     (enabled, reason): (bool, &str),
     pending: bool,
@@ -278,23 +281,6 @@ fn draw_header(
 ) -> HeaderOutcome {
     let l = l10n::locale(ui.ctx());
     let mut outcome = HeaderOutcome::default();
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(title).size(15.0).strong().color(text_color()));
-        if pending {
-            ui.label(
-                RichText::new(l.text(Msg::Pending))
-                    .size(crate::theme::legible(10.0))
-                    .color(AMBER),
-            )
-            .on_hover_text(l.text(Msg::FxPendingHover));
-        }
-        ui.with_layout(l10n::trailing_layout(l), |ui| {
-            outcome.close = ui
-                .add(crate::theme::close_key(14.0))
-                .on_hover_text(l.text(Msg::FxCloseHover))
-                .clicked();
-        });
-    });
     ui.horizontal(|ui| {
         let mut bypass = chain.bypass;
         if crate::mixer::led_key(ui, enabled, &mut bypass, l.text(Msg::FxBypass), AMBER, 72.0)
@@ -325,7 +311,7 @@ fn draw_header(
                 .hint(l.text(Msg::FxPresetHover), reason);
         });
         outcome.copy = ui
-            .button(l.text(Msg::FxCopy))
+            .add(small_button(l.text(Msg::FxCopy)))
             .on_hover_text(l.text(Msg::FxCopyHover))
             .clicked();
         let paste_reason = if enabled {
@@ -336,7 +322,7 @@ fn draw_header(
         if ui
             .add_enabled(
                 enabled && clipboard.is_some(),
-                egui::Button::new(l.text(Msg::FxPaste)),
+                small_button(l.text(Msg::FxPaste)),
             )
             .hint(l.text(Msg::FxPasteHover), paste_reason)
             .clicked()
@@ -345,11 +331,19 @@ fn draw_header(
             *chain = copied;
         }
         if ui
-            .add_enabled(enabled, egui::Button::new(l.text(Msg::FxReset)))
+            .add_enabled(enabled, small_button(l.text(Msg::FxReset)))
             .hint(l.text(Msg::FxResetHover), reason)
             .clicked()
         {
             *chain = StripDsp::DEFAULT;
+        }
+        if pending {
+            ui.label(
+                RichText::new(l.text(Msg::Pending))
+                    .size(crate::theme::legible(10.0))
+                    .color(AMBER),
+            )
+            .on_hover_text(l.text(Msg::FxPendingHover));
         }
     });
     outcome
@@ -434,7 +428,11 @@ fn draw_curve(ui: &mut Ui, chain: &mut StripDsp, (enabled, reason): (bool, &str)
         painter.text(
             pos2(rect.left() + 2.0, y - 1.0),
             Align2::LEFT_BOTTOM,
-            format!("{db:+}"),
+            if db == 0.0 {
+                "0".to_owned()
+            } else {
+                format!("{db:+}")
+            },
             label_font.clone(),
             text_dim_color(),
         );
@@ -588,7 +586,13 @@ fn scaled_entry<T: egui::emath::Numeric>(
             .range(range)
             .speed(speed)
             .custom_formatter(move |value, _| {
-                format!("{prefix}{} {unit}", l.decimal(value / scale, places))
+                let number = l.decimal(value / scale, places);
+                // A ratio reads 3.0:1, a measure 3.0 dB.
+                if unit.starts_with(':') {
+                    format!("{prefix}{number}{unit}")
+                } else {
+                    format!("{prefix}{number} {unit}")
+                }
             })
             .custom_parser(move |text| {
                 l.parse_decimal(
@@ -668,13 +672,16 @@ fn draw_bands(ui: &mut Ui, chain: &mut StripDsp, (enabled, reason): (bool, &str)
             ("", "Hz"),
             (enabled, l.text(Msg::FxHighPassHover), reason),
         );
-        ui.add_space(12.0);
-        stage_key(ui, &mut chain.eq.enabled, Msg::FxStageEq, (enabled, reason));
     });
+    ui.add_space(4.0);
+    stage_key(ui, &mut chain.eq.enabled, Msg::FxStageEq, (enabled, reason));
     egui::Grid::new("strip-fx-bands")
         .num_columns(5)
         .spacing(Vec2::new(6.0, 3.0))
         .show(ui, |ui| {
+            // Equal entry widths keep the frequency, gain, and Q columns
+            // straight whatever their values.
+            ui.spacing_mut().interact_size.x = 84.0;
             for (index, color) in BAND_COLORS.iter().copied().enumerate() {
                 let band_name = (index + 1).to_string();
                 let band = &mut chain.eq.bands[index];
@@ -691,7 +698,7 @@ fn draw_bands(ui: &mut Ui, chain: &mut StripDsp, (enabled, reason): (bool, &str)
                 ui.add_enabled_ui(enabled, |ui| {
                     egui::ComboBox::from_id_salt(("strip-fx-kind", index))
                         .selected_text(kind_name(l, band.kind))
-                        .width(104.0)
+                        .width(124.0)
                         .show_ui(ui, |ui| {
                             for kind in [
                                 EqBandKind::LowShelf,
@@ -753,9 +760,16 @@ fn stage_key(ui: &mut Ui, on: &mut bool, stage: Msg, (enabled, reason): (bool, &
         &[("stage", Arg::Str(name))],
     );
     let mut value = *on;
-    if crate::mixer::led_key(ui, enabled, &mut value, name, accent_color(), 96.0)
-        .hint(&hover, reason)
-        .changed()
+    if crate::mixer::led_key(
+        ui,
+        enabled,
+        &mut value,
+        &name.to_uppercase(),
+        accent_color(),
+        96.0,
+    )
+    .hint(&hover, reason)
+    .changed()
     {
         *on = value;
     }
@@ -773,6 +787,14 @@ fn gr_meter(ui: &mut Ui, stage: Msg, reduction_millidb: Option<u32>) {
         CornerRadius::same(2),
         Stroke::new(1.0, border_color()),
         StrokeKind::Inside,
+    );
+    // The legend names the meter, so an idle one is not a bare box.
+    painter.text(
+        rect.left_center() + Vec2::new(5.0, 0.0),
+        Align2::LEFT_CENTER,
+        "GR",
+        FontId::new(8.5, FontFamily::Proportional),
+        muted_color(),
     );
     let stage_name = l.text(stage);
     match reduction_millidb {
@@ -887,7 +909,7 @@ fn draw_dynamics(
             &mut chain.compressor.ratio_milli,
             MIN_COMPRESSOR_RATIO_MILLI..=MAX_COMPRESSOR_RATIO_MILLI,
             (1_000.0, 1, 50.0),
-            ("", ":1"),
+            ("RATIO ", ":1"),
             gate(Msg::FxRatioHover),
         );
         time_entry(

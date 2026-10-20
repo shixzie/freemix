@@ -2089,17 +2089,56 @@ pub(crate) fn floating_tool_frame<R>(
     let inner = add_contents(ui);
     let width = (ui.min_rect().right() - top.x).max(4.0 * ICON_SIZE + GRIP_WIDTH);
     let header = Rect::from_min_size(top, vec2(width, TOOL_HEADER_HEIGHT));
-    (tool_header(ui, l, tool, header, close_hover), inner)
+    let title = l.text(tool.title());
+    let spec = HeaderSpec {
+        key: tool.key(),
+        title,
+        title_hover: Some(l.text(tool.hover())),
+        pop_out: Some(l.format(Msg::DockPopOutNamed, &[("panel", Arg::Str(title))])),
+        close_hover,
+    };
+    (tool_header(ui, l, &spec, header), inner)
+}
+
+/// Draws a floating window that cannot pop out (such as a strip's FX)
+/// with the same header strip as a tool window: a grip, `title`, and
+/// Close aligned right. Returns whether Close was clicked.
+pub(crate) fn floating_window_frame<R>(
+    ui: &mut Ui,
+    l: Locale,
+    key: &str,
+    title: &str,
+    close_hover: &str,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> (bool, R) {
+    let top = ui.cursor().min;
+    ui.allocate_exact_size(vec2(0.0, TOOL_HEADER_HEIGHT + 6.0), Sense::hover());
+    let inner = add_contents(ui);
+    let width = (ui.min_rect().right() - top.x).max(3.0 * ICON_SIZE + GRIP_WIDTH);
+    let header = Rect::from_min_size(top, vec2(width, TOOL_HEADER_HEIGHT));
+    let spec = HeaderSpec {
+        key,
+        title,
+        title_hover: None,
+        pop_out: None,
+        close_hover,
+    };
+    (tool_header(ui, l, &spec, header).close, inner)
+}
+
+/// What a floating window's header strip shows.
+struct HeaderSpec<'a> {
+    /// The window's stable key, for the header's widget ids.
+    key: &'a str,
+    title: &'a str,
+    title_hover: Option<&'a str>,
+    /// The Pop out key's hover, when the window can pop out.
+    pop_out: Option<String>,
+    close_hover: &'a str,
 }
 
 /// Paints the header strip of a floating tool window in `rect`.
-fn tool_header(
-    ui: &mut Ui,
-    l: Locale,
-    tool: ToolWindow,
-    rect: Rect,
-    close_hover: &str,
-) -> ToolHeader {
+fn tool_header(ui: &mut Ui, l: Locale, spec: &HeaderSpec<'_>, rect: Rect) -> ToolHeader {
     let mut asked = ToolHeader::default();
     let painter = ui.painter();
     painter.line_segment(
@@ -2111,49 +2150,55 @@ fn tool_header(
         vec2(GRIP_WIDTH, TOOL_HEADER_HEIGHT - 10.0),
     );
     paint_grip(painter, grip_rect, text_dim_color());
-    let title = l.text(tool.title());
     let close_rect = Rect::from_center_size(
         pos2(rect.right() - ICON_SIZE / 2.0, rect.center().y),
         Vec2::splat(ICON_SIZE),
     );
     let pop_rect = close_rect.translate(vec2(-(ICON_SIZE + 2.0), 0.0));
+    let title_end = if spec.pop_out.is_some() {
+        pop_rect.left()
+    } else {
+        close_rect.left()
+    };
     let title_rect = Rect::from_min_max(
         pos2(grip_rect.right() + 6.0, rect.top()),
-        pos2(pop_rect.left() - 6.0, rect.bottom()),
+        pos2(title_end - 6.0, rect.bottom()),
     );
     let mut title_ui = ui.new_child(
         UiBuilder::new()
-            .id_salt(("studio-tool-title", tool.key()))
+            .id_salt(("studio-tool-title", spec.key))
             .max_rect(title_rect)
             .layout(Layout::left_to_right(Align::Center)),
     );
     title_ui.set_clip_rect(title_rect.intersect(ui.clip_rect()));
-    title_ui
-        .add(
-            egui::Label::new(crate::theme::section_label(title).color(text_color()))
-                .selectable(false)
-                .truncate(),
+    let title = title_ui.add(
+        egui::Label::new(crate::theme::section_label(spec.title).color(text_color()))
+            .selectable(false)
+            .truncate(),
+    );
+    if let Some(hover) = spec.title_hover {
+        title.on_hover_text(hover);
+    }
+    if let Some(hover) = &spec.pop_out
+        && icon_key(
+            ui,
+            Id::new("studio-tool-popout").with(spec.key),
+            pop_rect,
+            Icon::PopOut,
+            l.text(Msg::DockPopOut),
+            hover,
         )
-        .on_hover_text(l.text(tool.hover()));
-    if icon_key(
-        ui,
-        Id::new("studio-tool-popout").with(tool.key()),
-        pop_rect,
-        Icon::PopOut,
-        l.text(Msg::DockPopOut),
-        &l.format(Msg::DockPopOutNamed, &[("panel", Arg::Str(title))]),
-    )
-    .clicked()
+        .clicked()
     {
         asked.pop_out = true;
     }
     if icon_key(
         ui,
-        Id::new("studio-tool-close").with(tool.key()),
+        Id::new("studio-tool-close").with(spec.key),
         close_rect,
         Icon::Close,
         l.text(Msg::DockClosePanel),
-        close_hover,
+        spec.close_hover,
     )
     .clicked()
     {
