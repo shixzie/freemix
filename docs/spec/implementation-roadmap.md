@@ -58,8 +58,8 @@ highest-value remaining items, ranked:
    Windows/macOS live paths do not exist yet.
 8. **Windows and macOS ports of the Linux-only live paths (`IN-001`, `AU-011`,
    `AU-001`, `IN-011`).** Live capture hot-plug, system audio inputs, and device
-   listing are Linux-only, and screen/window capture runs only on Linux X11
-   (its Windows `gdigrab` and macOS ScreenCaptureKit backends are
+   listing are Linux-only, and screen/window capture runs only on Linux (X11,
+   and Wayland through its portal in `PipeWire` builds) (its Windows `gdigrab` and macOS ScreenCaptureKit backends are
    compile-checked, never run); the roadmap requires the vertical slice on all Tier-1 OSes
    before more breadth.
 9. **Finish titles that start at the take and the browser title editor
@@ -2097,10 +2097,36 @@ picture.
   with a stale id, a whole-screen capture, an unreachable display, and a
   native daemon process showing a window on Program, losing it to the black
   slate, and following a new window.
-- **Linux Wayland:** detected and reported `unsupported` with the advice to
-  use an X11 session (under XWayland only X11 windows are listed). Wayland
-  allows capture only through the interactive xdg-desktop-portal
-  ScreenCast, which a headless server cannot answer.
+- **Linux Wayland** (Protocol 2.85, schema 72; working and tested against
+  a headless desktop, in builds with `RUSTFLAGS="--cfg freemix_pipewire"`,
+  which need `libpipewire-0.3`): the xdg-desktop-portal `ScreenCast`
+  interface over D-Bus in pure Rust (`zbus`): `CreateSession`,
+  `SelectSources` (a monitor for a screen target, a window for a window
+  target, the embedded cursor mode or hidden, `persist_mode` 2 with the
+  input's restore token), `Start`, and `OpenPipeWireRemote`, whose stream is
+  read with the `pipewire` crate as shared-memory `BGRx`/`RGBx`/`xRGB`/`xBGR`
+  pictures (DMA-BUF is not offered), cropped after capture and letterboxed
+  into the program picture at the capture rate. Nothing is listed (backend
+  `portal`): the desktop's own dialog picks the screen or window, so a
+  window target is the picked rule (no application, no title, any title),
+  and the input is `awaiting_selection` while the dialog waits on the
+  server's screen. A cancelled or refused dialog, or sharing stopped on the
+  desktop, is `denied` and is not asked again until a
+  `screen_capture_pick_request` (Studio's tile menu: Pick target again),
+  which forgets the restore token and asks anew; a shared window that
+  closes is `target_gone` and asked for again with the token. Each grant's
+  restore token is kept beside its input in `project.json`
+  (`screen_capture_restore_tokens`, never on the wire), so a reopened
+  project shares the same target without the dialog where the desktop
+  allows it. Tests: the capture worker and conversion with a scripted
+  portal; the D-Bus conversation against a fake portal on a private
+  `dbus-daemon` (options, the dialog wait, a cancel, a missing source type,
+  a dismissed dialog, the session's `Closed` signal); and, with
+  `FM_WAYLAND_E2E=1`, a real share of a headless sway desktop through
+  xdg-desktop-portal-wlr and PipeWire (the picture's pixels, the crop, and
+  a second share restored by its token). Builds without `PipeWire` (and the
+  CI matrix) report a Wayland session `unsupported` with the build advice;
+  under XWayland they list X11 windows as before.
 - **Windows** (compile-checked for `x86_64-pc-windows-msvc`, not run): a
   long-lived PowerShell child lists `Screen.AllScreens` and visible,
   non-minimized top-level windows (`EnumWindows`, process name, title,
@@ -2161,8 +2187,11 @@ A simulated daemon answers a fixed simulated desktop and shows a synthetic
 picture. Studio's Add input dialog has a Window / screen capture kind with a
 refreshable picker grouped as Screens and Application windows (application
 and title), the follow rule, crop, pointer, rate cap, and stall slate, with
-English and Spanish help in the hover audit; the tile shows OPENING / LIVE /
-TARGET GONE / REOPENING n / UNSUPPORTED / FAILED with its details. The CLI
+English and Spanish help in the hover audit; on a Wayland server it offers
+A screen or A window instead of the picker. The tile shows OPENING / PICK ON
+SERVER / LIVE / TARGET GONE / REOPENING n / DENIED / UNSUPPORTED / FAILED
+with its details, and its menu's Pick target again sends a
+`screen_capture_pick_request`. The CLI
 adds `input-add-screen-capture`, `input-screen-capture-status`, their
 `remote-` forms, and `remote-screen-capture-targets`.
 
@@ -2172,7 +2201,13 @@ Remaining gaps:
   about 30–60 ms to application audio against the picture (the strip's
   delay can compensate), and the tap absorbs a stream clock's drift by
   dropping or padding at its buffer bounds rather than resampling;
-- Wayland capture through xdg-desktop-portal/PipeWire is not implemented;
+- Wayland: no DMA-BUF import (the compositor copies into shared memory),
+  the cursor metadata mode is not drawn (a desktop without the embedded
+  mode captures without the pointer, and says so), only one stream per
+  input, no capture audio on a portal capture, and the headless test shares a screen through
+  xdg-desktop-portal-wlr only (it cannot share windows); GNOME and KDE
+  portals and window sharing are untested, and the default build needs
+  `--cfg freemix_pipewire` to capture at all;
 - Windows and macOS paths are compile-checked only; no run on either OS, no
   Windows Graphics Capture (covered windows), and no signed macOS helper;
 - X11 captures only on-screen pixels, so a covered window shows what covers

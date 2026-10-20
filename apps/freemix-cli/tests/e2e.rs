@@ -13971,6 +13971,14 @@ fn local_screen_capture_inputs_persist_and_list_idle() {
         full.extend(arguments);
         assert_failure_contains(&invoke_bounded(&full), message);
     }
+    // The window a Wayland server's sharing dialog picks (Protocol 2.85).
+    assert_success(&invoke_bounded(&[
+        "input-add-screen-capture",
+        context.project_path(),
+        "44",
+        "Shared",
+        "picked-window",
+    ]));
     let listed = invoke_bounded(&["input-screen-capture-status", context.project_path()]);
     assert_success(&listed);
     let text = stdout(&listed);
@@ -13984,6 +13992,9 @@ fn local_screen_capture_inputs_persist_and_list_idle() {
         "ScreenCaptureInput(input=43, target=screen:0, crop=0,0,0,0, cursor=on, fps=30, \
          stall=freeze, audio=system, state=idle, size=0x0, reopens=0, last_error=none, \
          audio_state=off, audio_error=none)",
+        "ScreenCaptureInput(input=44, target=window(app=\"\", title=\"\", match=any, \
+         id=none), crop=0,0,0,0, cursor=on, fps=30, stall=freeze, audio=none, state=idle, \
+         size=0x0, reopens=0, last_error=none, audio_state=off, audio_error=none)",
     ] {
         assert!(
             text.lines().any(|candidate| candidate == line),
@@ -14004,7 +14015,7 @@ fn local_screen_capture_inputs_persist_and_list_idle() {
         .iter()
         .filter(|input| matches!(input.kind, InputKind::ScreenCapture(_)))
         .count();
-    assert_eq!(kinds, 3);
+    assert_eq!(kinds, 4);
     let slides_audio = stored
         .project()
         .inputs()
@@ -14181,6 +14192,82 @@ fn remote_screen_capture_commands_send_exact_payloads() {
     assert_failure_contains(
         &invoke_bounded(&["remote-screen-capture-targets", "127.0.0.1:9", "extra"]),
         "extra",
+    );
+}
+
+/// IN-011, Protocol 2.85: `remote-screen-capture-pick` sends the exact pick
+/// request with graphics (project edit) authority, then a target list request that marks where
+/// a refusal would have arrived; a refusal fails the command.
+#[test]
+fn remote_screen_capture_pick_sends_the_request_and_reports_a_refusal() {
+    let engine = EngineIdentity {
+        engine_id: "screen-capture-engine".into(),
+        state_epoch: 1,
+        log_id: "screen-capture-log".into(),
+    };
+    for refuse in [false, true] {
+        let engine = engine.clone();
+        let server = FakeRemoteServer::start_test_peer(move |stream| {
+            stream.set_read_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
+            stream.set_write_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = BufReader::new(stream);
+            assert_handshake_request_role(read_message(&mut reader), Role::Graphics);
+            write_handshake_role(&mut writer, &engine, 0, Role::Graphics);
+            let WireMessage::ScreenCapturePickRequest(pick) = read_message(&mut reader) else {
+                panic!("expected a screen capture pick request");
+            };
+            assert!(pick.request_id.starts_with("cli-screen-capture-pick-"));
+            assert_eq!(pick.input, input(7));
+            let WireMessage::ScreenCaptureTargetsRequest(marker) = read_message(&mut reader) else {
+                panic!("expected the marker request");
+            };
+            if refuse {
+                write_message(
+                    &mut writer,
+                    &WireMessage::Error(fm_protocol::ErrorMessage {
+                        request_id: Some(pick.request_id),
+                        current_revision: None,
+                        error: fm_protocol::StructuredError {
+                            code: "not_screen_capture".into(),
+                            message: "input 7 is not a screen capture input".into(),
+                            fields: Vec::new(),
+                            retryable: false,
+                        },
+                    }),
+                );
+                return;
+            }
+            write_message(
+                &mut writer,
+                &WireMessage::ScreenCaptureTargets(fm_protocol::ScreenCaptureTargetsMessage {
+                    request_id: marker.request_id,
+                    inventory: fm_protocol::ScreenCaptureInventory {
+                        supported: true,
+                        backend: fm_protocol::PORTAL_BACKEND.into(),
+                        ..fm_protocol::ScreenCaptureInventory::default()
+                    },
+                }),
+            );
+        });
+        let output = invoke(&["remote-screen-capture-pick", &server.address(), "7"]);
+        if refuse {
+            assert_failure_contains(&output, "not a screen capture input");
+        } else {
+            assert_success(&output);
+            assert!(
+                stdout(&output)
+                    .lines()
+                    .any(|line| line == "ScreenCapturePick(input=7)"),
+                "{}",
+                stdout(&output)
+            );
+        }
+        server.finish();
+    }
+    assert_failure_contains(
+        &invoke_bounded(&["remote-screen-capture-pick", "127.0.0.1:9"]),
+        "input",
     );
 }
 

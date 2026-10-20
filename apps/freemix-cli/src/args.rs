@@ -1290,6 +1290,12 @@ pub enum Command {
     RemoteScreenCaptureTargets {
         address: SocketAddr,
     },
+    /// Asks a running daemon's desktop to pick a screen capture input's
+    /// screen or window again (IN-011, Protocol 2.85).
+    RemoteScreenCapturePick {
+        address: SocketAddr,
+        input: u128,
+    },
     /// Adds a system audio input to a project (AU-011).
     SystemAudioInputAdd {
         path: PathBuf,
@@ -2228,7 +2234,8 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-input-add-screen-capture"
         | "input-screen-capture-status"
         | "remote-input-screen-capture-status"
-        | "remote-screen-capture-targets") => parse_screen_capture(screen_capture, arguments),
+        | "remote-screen-capture-targets"
+        | "remote-screen-capture-pick") => parse_screen_capture(screen_capture, arguments),
         "remote-input-remove" => parse_remote_input_remove(arguments),
         "remote-preview" => parse_remote_preview(arguments),
         "remote-cut" => parse_remote_cut(arguments),
@@ -6448,10 +6455,13 @@ fn parse_remote_page_navigate(
 /// `remote-input-add-screen-capture <address> <input> <name> <target>
 /// [options] [--key <key>] [--expect <revision>]`,
 /// `input-screen-capture-status <project>` /
-/// `remote-input-screen-capture-status <address>`, and
-/// `remote-screen-capture-targets <address>`.
+/// `remote-input-screen-capture-status <address>`,
+/// `remote-screen-capture-targets <address>`, and
+/// `remote-screen-capture-pick <address> <input>`.
 ///
-/// The target is `screen <index>` or `window <app> <title>`; the options
+/// The target is `screen <index>`, `window <app> <title>`, or
+/// `picked-window` (the window a Wayland server's sharing dialog picks); the
+/// options
 /// are `--match exact|contains|any`, `--window-id <id>`,
 /// `--crop <left>,<top>,<right>,<bottom>`, `--cursor on|off`,
 /// `--fps <1-60>`, `--stall freeze|black`, and `--audio none|system|app`
@@ -6476,6 +6486,12 @@ fn parse_screen_capture(
         reject_extra(&mut arguments)?;
         let address = address.expect("only the remote form lists targets");
         return Ok(Command::RemoteScreenCaptureTargets { address });
+    }
+    if action == "screen-capture-pick" {
+        let address = address.expect("only the remote form picks");
+        let input = number(&required(&mut arguments, "input")?, "input")?;
+        reject_extra(&mut arguments)?;
+        return Ok(Command::RemoteScreenCapturePick { address, input });
     }
     if action == "input-screen-capture-status" {
         reject_extra(&mut arguments)?;
@@ -6563,8 +6579,12 @@ fn parse_screen_capture(
 fn screen_capture_target(
     arguments: &mut impl Iterator<Item = String>,
 ) -> Result<ScreenCaptureTarget, ArgsError> {
-    let kind = required(arguments, "capture target (screen or window)")?;
+    let kind = required(
+        arguments,
+        "capture target (screen, window, or picked-window)",
+    )?;
     match kind.as_str() {
+        "picked-window" => Ok(ScreenCaptureTarget::Window(WindowRule::picked())),
         "screen" => Ok(ScreenCaptureTarget::Screen {
             index: number(&required(arguments, "screen index")?, "screen index")?,
         }),
@@ -6574,7 +6594,7 @@ fn screen_capture_target(
             None,
         ))),
         _ => Err(ArgsError::InvalidChoice {
-            field: "capture target (screen or window)",
+            field: "capture target (screen, window, or picked-window)",
             value: kind,
         }),
     }

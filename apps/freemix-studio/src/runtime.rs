@@ -401,6 +401,26 @@ impl StudioRuntime {
                 .is_ok()
     }
 
+    /// Asks the server's desktop to pick screen capture input `input`'s
+    /// screen or window again (IN-011, Protocol 2.85). Returns whether the
+    /// request went out; one that cannot be sent is dropped.
+    pub(crate) fn pick_screen_capture(&mut self, input: fm_types::InputId) -> bool {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let request_id = format!(
+            "studio-screen-capture-pick-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.transport == ControlTransport::Tcp
+            && self.session.is_connected()
+            && self
+                .session
+                .send_screen_capture_pick_request(fm_protocol::ScreenCapturePickRequest {
+                    request_id,
+                    input: fm_protocol::WireInputId::from_domain(input),
+                })
+                .is_ok()
+    }
+
     /// Turns the live input thumbnail feed on or off (Protocol 2.59) and
     /// remembers the choice, so a (re)connect subscribes again while it is
     /// on. Returns whether the request went out; one that cannot be sent now

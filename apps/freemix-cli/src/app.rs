@@ -1633,6 +1633,9 @@ pub fn run(command: Command) -> AppResult<()> {
         Command::RemoteScreenCaptureTargets { address } => {
             remote::screen_capture_targets(address)?;
         }
+        Command::RemoteScreenCapturePick { address, input } => {
+            remote::screen_capture_pick(address, input_id(input)?)?;
+        }
         Command::SystemAudioInputAdd {
             path,
             input,
@@ -6281,9 +6284,10 @@ Usage:
   freemix-cli remote-input-add-image <127.0.0.1:port> <input> <name> <asset://key|/absolute/picture on the server> [--fit fit|fill|stretch|1:1] [--key <key>] [--expect <revision>]
   freemix-cli remote-input-add-slideshow <127.0.0.1:port> <input> <name> <--folder <folder> | --picture <picture>[|caption]...> [slideshow options] [--key <key>] [--expect <revision>]
   freemix-cli remote-page-navigate <127.0.0.1:port> <input> <next|previous|first|last|goto <page from 1>> [--key <key>] [--expect <revision>]
-  freemix-cli remote-input-add-screen-capture <127.0.0.1:port> <input> <name> <screen <index>|window <app> <title>> [capture options] [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-add-screen-capture <127.0.0.1:port> <input> <name> <screen <index>|window <app> <title>|picked-window> [capture options] [--key <key>] [--expect <revision>]
   freemix-cli remote-input-screen-capture-status <127.0.0.1:port>
   freemix-cli remote-screen-capture-targets <127.0.0.1:port>
+  freemix-cli remote-screen-capture-pick <127.0.0.1:port> <input>
   freemix-cli remote-input-remove <127.0.0.1:port> <input> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-duplicate <127.0.0.1:port> <source-input> <new-input> [<name>] [--key <key>] [--expect <revision>]
   freemix-cli remote-input-replace <127.0.0.1:port> <input> <solid:RRGGBBAA[:hz]|bars[:hz]|media:<file|asset://key>|device:<key>|network:<endpoint>|system-audio:<pulse|alsa>:<device>> [--key <key>] [--expect <revision>]

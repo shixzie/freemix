@@ -1270,6 +1270,7 @@ fn run_worker(
                 | StudioIntent::RequestSlideshowSlides { .. }
                 | StudioIntent::PagedPage(_)
                 | StudioIntent::RequestScreenCaptureTargets
+                | StudioIntent::PickScreenCapture { .. }
                 | StudioIntent::InputThumbnails { .. }),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
@@ -1367,6 +1368,7 @@ fn run_worker(
                 | StudioIntent::RequestSlideshowSlides { .. }
                 | StudioIntent::PagedPage(_)
                 | StudioIntent::RequestScreenCaptureTargets
+                | StudioIntent::PickScreenCapture { .. }
                 | StudioIntent::InputThumbnails { .. }),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
@@ -1483,6 +1485,14 @@ fn handle_preview_request(
         }
         return true;
     }
+    // A new pick of a screen capture input's target (IN-011, Protocol
+    // 2.85) is not repeated after a reconnect: the operator asks again.
+    if let StudioIntent::PickScreenCapture { input } = request {
+        if !recovery.active() {
+            runtime.pick_screen_capture(input);
+        }
+        return true;
+    }
     // And the screens and windows the server can capture (IN-011).
     if matches!(request, StudioIntent::RequestScreenCaptureTargets) {
         if recovery.active() {
@@ -1531,6 +1541,7 @@ fn handle_worker_intent(
         | StudioIntent::RequestSlideshowSlides { .. }
         | StudioIntent::PagedPage(_)
         | StudioIntent::RequestScreenCaptureTargets
+        | StudioIntent::PickScreenCapture { .. }
         | StudioIntent::InputThumbnails { .. }) => {
             return handle_preview_request(runtime, request, publisher, recovery);
         }
@@ -2905,6 +2916,9 @@ fn intent_payload(
         }
         StudioIntent::RequestScreenCaptureTargets => {
             return Err("A screen capture targets request is not a command".to_owned());
+        }
+        StudioIntent::PickScreenCapture { .. } => {
+            return Err("A screen capture pick request is not a command".to_owned());
         }
         StudioIntent::InputThumbnails { .. } => {
             return Err("An input thumbnail subscription is not a command".to_owned());
@@ -6524,6 +6538,15 @@ mod tests {
             StudioIntent::WebAccess(fm_protocol::WebAccessAction::CancelPairing)
         ));
         assert!(intent_payload(StudioIntent::RequestScreenCaptureTargets, None).is_err());
+        assert!(
+            intent_payload(
+                StudioIntent::PickScreenCapture {
+                    input: fm_types::InputId::new(std::num::NonZeroU128::new(4).unwrap())
+                },
+                None
+            )
+            .is_err()
+        );
         let mut targets = StudioIntent::RequestScreenCaptureTargets;
         assert!(coalesce_adjacent_intent(
             &mut targets,

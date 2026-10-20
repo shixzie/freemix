@@ -9339,6 +9339,49 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::ScReasonFps, t("use de 1 a 60 imágenes por segundo")),
     (Msg::ScBadgeGone, t("SIN DESTINO")),
     (Msg::ScBadgeUnsupported, t("NO ADMITIDO")),
+    (Msg::ScBadgePick, t("ELEGIR EN SERVIDOR")),
+    (Msg::ScBadgeDenied, t("DENEGADO")),
+    (
+        Msg::ScDetailPick,
+        t(
+            "el diálogo para compartir espera en el escritorio del servidor: elija allí la pantalla o la ventana",
+        ),
+    ),
+    (
+        Msg::ScPortalNote,
+        t(
+            "Este servidor usa un escritorio Wayland: su propio diálogo para compartir elige la pantalla o la ventana en la pantalla del servidor al empezar la captura",
+        ),
+    ),
+    (
+        Msg::ScPortalLimit,
+        t("El escritorio del servidor: {reason}"),
+    ),
+    (Msg::ScPortalScreen, t("Una pantalla")),
+    (
+        Msg::ScPortalScreenHover,
+        t(
+            "Comparte una pantalla entera; el diálogo para compartir del servidor pregunta cuál al empezar la captura, y la elección se recuerda donde el escritorio lo permite",
+        ),
+    ),
+    (Msg::ScPortalWindow, t("Una ventana")),
+    (
+        Msg::ScPortalWindowHover,
+        t(
+            "Comparte una ventana de aplicación; el diálogo para compartir del servidor pregunta cuál al empezar la captura, y la elección se recuerda donde el escritorio lo permite",
+        ),
+    ),
+    (
+        Msg::ScTargetPickedWindow,
+        t("la ventana elegida en el servidor"),
+    ),
+    (Msg::ScPickAgain, t("Volver a elegir destino")),
+    (
+        Msg::ScPickAgainHover,
+        t(
+            "Pide al escritorio del servidor otra vez la pantalla o la ventana de esta captura: un escritorio Wayland muestra su diálogo para compartir en la pantalla del servidor y olvida la elección recordada; los demás escritorios vuelven a capturar",
+        ),
+    ),
     (Msg::ScDetail, t("Captura de {target}: {state}")),
     (Msg::ScDetailSize, t("capturando {size}")),
     (Msg::ScTargetScreen, t("la pantalla {number}")),

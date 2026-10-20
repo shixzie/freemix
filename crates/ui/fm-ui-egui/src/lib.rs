@@ -254,6 +254,10 @@ pub enum StudioIntent {
     /// (IN-011); the reply updates
     /// [`fm_ui_model::ClientView::screen_capture_inventory`].
     RequestScreenCaptureTargets,
+    /// Asks the server's desktop to pick screen capture input `input`'s
+    /// screen or window again (IN-011, Protocol 2.85); a Wayland desktop
+    /// shows its sharing dialog on the server's screen.
+    PickScreenCapture { input: InputId },
     /// Turns the live input thumbnail feed on while the input bank is
     /// shown and off when it is not (Protocol 2.59); the thumbnails arrive
     /// in [`StudioUiState::input_thumbnails`].

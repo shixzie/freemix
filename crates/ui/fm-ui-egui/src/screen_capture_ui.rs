@@ -12,12 +12,16 @@
 //! and the Audio captured with the picture complete the form: None, System
 //! audio (everything the server plays), or Application audio (only the
 //! sound of the application owning the window, offered for a window
-//! target). Captured sound feeds the input's own mixer strip. The tile
-//! badge reads the input's latest `screen_capture_status` (OPENING, LIVE,
-//! TARGET GONE, REOPENING n, UNSUPPORTED, FAILED); the tile's tooltip
-//! carries the target, the captured size, the reopen count, the last error,
-//! and the audio state (starting, live, no audio stream yet, unsupported
-//! here, failed) with its reason.
+//! target). Captured sound feeds the input's own mixer strip. On a Wayland
+//! server (backend `portal`) nothing is listed: the form offers A screen or
+//! A window, and the server's own sharing dialog picks which when the
+//! capture starts. The tile badge reads the input's latest
+//! `screen_capture_status` (OPENING, PICK ON SERVER, LIVE, TARGET GONE,
+//! REOPENING n, DENIED, UNSUPPORTED, FAILED); the tile's tooltip carries
+//! the target, the captured size, the reopen count, the last error, and the
+//! audio state (starting, live, no audio stream yet, unsupported here,
+//! failed) with its reason, and the tile menu's Pick target again asks the
+//! server's desktop anew.
 
 use egui::{Color32, RichText, Ui};
 use fm_protocol::{
@@ -96,12 +100,28 @@ impl ScreenCaptureDraft {
         });
     }
 
-    /// The window rule, when a window is captured.
+    /// The window rule, when a window is captured by its rule (not picked
+    /// on the server's desktop).
     pub(crate) fn rule_mut(&mut self) -> Option<&mut WindowRule> {
         match &mut self.config.target {
-            ScreenCaptureTarget::Window(rule) => Some(rule),
-            ScreenCaptureTarget::Screen { .. } => None,
+            ScreenCaptureTarget::Window(rule) if !rule.is_picked() => Some(rule),
+            ScreenCaptureTarget::Window(_) | ScreenCaptureTarget::Screen { .. } => None,
         }
+    }
+
+    /// Asks the server's desktop for a screen (`window` false) or a window
+    /// when the capture starts.
+    pub(crate) fn pick_on_server(&mut self, window: bool) {
+        self.config.target = if window {
+            ScreenCaptureTarget::Window(WindowRule::picked())
+        } else {
+            ScreenCaptureTarget::Screen { index: 0 }
+        };
+    }
+
+    /// Whether the server's desktop picks a window.
+    fn picks_window(&self) -> bool {
+        matches!(&self.config.target, ScreenCaptureTarget::Window(_))
     }
 
     /// Whether `screen` is the one captured.
@@ -225,6 +245,9 @@ pub(crate) fn target_text(l: Locale, config: &ScreenCaptureConfig) -> String {
             Msg::ScTargetScreen,
             &[("number", Arg::from(u64::from(*index) + 1))],
         ),
+        ScreenCaptureTarget::Window(rule) if rule.is_picked() => {
+            l.text(Msg::ScTargetPickedWindow).to_owned()
+        }
         ScreenCaptureTarget::Window(rule) => {
             let app = if rule.app.is_empty() {
                 "?"
@@ -358,6 +381,52 @@ fn draw_target_picker(
     picked_window
 }
 
+/// The choice on a Wayland server, whose own sharing dialog picks the
+/// target: A screen or A window, and what the desktop cannot share.
+fn draw_portal_choice(
+    ui: &mut Ui,
+    l: Locale,
+    inventory: &ScreenCaptureInventory,
+    draft: &mut ScreenCaptureDraft,
+) {
+    ui.label(
+        RichText::new(l.text(Msg::ScPortalNote))
+            .size(crate::theme::legible(10.5))
+            .color(muted_color()),
+    );
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        for (window, label, hover) in [
+            (false, Msg::ScPortalScreen, Msg::ScPortalScreenHover),
+            (true, Msg::ScPortalWindow, Msg::ScPortalWindowHover),
+        ] {
+            let selected = draft.picks_window() == window;
+            if ui
+                .add(kind_key(l.text(label), selected))
+                .on_hover_text(l.text(hover))
+                .clicked()
+                && !selected
+            {
+                draft.pick_on_server(window);
+            }
+        }
+    });
+    // A window the operator picked from an X11 listing earlier is asked
+    // for as any window.
+    if let ScreenCaptureTarget::Window(rule) = &draft.config.target
+        && !rule.is_picked()
+    {
+        draft.pick_on_server(true);
+    }
+    if let Some(reason) = &inventory.error {
+        ui.label(
+            RichText::new(l.format(Msg::ScPortalLimit, &[("reason", Arg::Str(reason))]))
+                .size(crate::theme::legible(10.5))
+                .color(AMBER),
+        );
+    }
+}
+
 /// Whether the configured target is in the listing.
 fn listed(draft: &ScreenCaptureDraft, inventory: &ScreenCaptureInventory) -> bool {
     match &draft.config.target {
@@ -408,13 +477,19 @@ pub(crate) fn draw_screen_capture_form(
             outcome.rescan = true;
         }
     });
-    let (line, problem) = list_line(l, inventory);
-    ui.label(
-        RichText::new(line)
-            .size(crate::theme::legible(10.5))
-            .color(if problem { AMBER } else { muted_color() }),
-    );
-    if let Some(inventory) = inventory.filter(|inventory| inventory.supported) {
+    if let Some(inventory) = inventory.filter(|inventory| inventory.picks_on_desktop()) {
+        draw_portal_choice(ui, l, inventory, draft);
+    } else {
+        let (line, problem) = list_line(l, inventory);
+        ui.label(
+            RichText::new(line)
+                .size(crate::theme::legible(10.5))
+                .color(if problem { AMBER } else { muted_color() }),
+        );
+    }
+    if let Some(inventory) =
+        inventory.filter(|inventory| inventory.supported && !inventory.picks_on_desktop())
+    {
         outcome.picked = draw_target_picker(ui, l, inventory, id, draft);
         if !listed(draft, inventory) {
             ui.label(
@@ -623,6 +698,7 @@ pub(crate) fn screen_capture_badge(
     Some(match status.state {
         ScreenCaptureState::Idle => return None,
         ScreenCaptureState::Opening => (l.text(Msg::SaBadgeOpening).to_owned(), muted_color()),
+        ScreenCaptureState::AwaitingSelection => (l.text(Msg::ScBadgePick).to_owned(), AMBER),
         ScreenCaptureState::Live => (l.text(Msg::Live).to_owned(), Color32::from_rgb(30, 150, 70)),
         ScreenCaptureState::TargetGone => (l.text(Msg::ScBadgeGone).to_owned(), AMBER),
         ScreenCaptureState::Reopening { attempt, .. } => (
@@ -632,6 +708,7 @@ pub(crate) fn screen_capture_badge(
             ),
             AMBER,
         ),
+        ScreenCaptureState::Denied => (l.text(Msg::ScBadgeDenied).to_owned(), ERROR),
         ScreenCaptureState::Unsupported => (l.text(Msg::ScBadgeUnsupported).to_owned(), ERROR),
         ScreenCaptureState::Failed => (l.text(Msg::ConnFailed).to_owned(), ERROR),
     })
@@ -673,6 +750,9 @@ pub(crate) fn screen_capture_details(l: Locale, entry: &ScreenCaptureEntry) -> S
             Msg::SaDetailReopens,
             &[("count", Arg::from(u64::from(status.reopens)))],
         ));
+    }
+    if status.state == ScreenCaptureState::AwaitingSelection {
+        lines.push(l.text(Msg::ScDetailPick).to_owned());
     }
     if let ScreenCaptureState::Reopening { next_in_ms, .. } = status.state {
         lines.push(l.format(

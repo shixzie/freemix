@@ -3147,6 +3147,53 @@ owning the captured window. Schema 71.
   `--audio`.
 - 2.83 is refused.
 
+Protocol 2.85 captures a Wayland desktop's screens and windows through its
+xdg-desktop-portal (IN-011, schema 72).
+
+- `screen_capture_targets` may name `backend=portal` with `supported=1`
+  and no screens or windows: the server's desktop shows its own sharing
+  dialog and picks the screen or window when a capture starts. An optional
+  `error` then says what that desktop cannot share (single windows, for
+  example). A screen target asks for a screen (its index is not used); a
+  window target asks for a window, and the window rule with no `app`, no
+  `title`, `title_match=any`, and no `window_id` (the picked rule) is now
+  valid, on every server, for that.
+- `screen_capture_status` gains `state=awaiting_selection` (the dialog waits
+  on the server's desktop) and `state=denied` (the dialog was cancelled or
+  refused, or sharing was stopped on the desktop; `last_error` says which).
+  A denied input is not asked again on its own. A shared window that closes
+  is `target_gone` and is asked for again.
+- A client sends `screen_capture_pick_request` with `request_id` and
+  `input`: the server forgets the input's restore token and starts its
+  capture again, which opens the desktop's dialog anew (a listed desktop
+  captures again). It needs `edit_project`; a refusal is an `error` naming
+  the `request_id` (`permission_denied`, `resource_exhausted`, or
+  `not_screen_capture` for an input that is not a screen capture input).
+  An accepted request has no reply; the input's next
+  `screen_capture_status` events show it.
+- Native `freemixd` built with `RUSTFLAGS="--cfg freemix_pipewire"` (needs
+  `libpipewire-0.3`) captures a Wayland session (`WAYLAND_DISPLAY` or
+  `XDG_SESSION_TYPE=wayland`) this way: `CreateSession`, `SelectSources`
+  (`types` 1 or 2, `multiple` false, `cursor_mode` 2 when the pointer is
+  drawn and offered, else 1, and `persist_mode` 2 with the input's restore
+  token from interface version 4), `Start`, and `OpenPipeWireRemote`; the
+  `PipeWire` stream is read as shared-memory `BGRx`, `RGBx`, `xRGB`, or
+  `xBGR` pictures (DMA-BUF is not offered), cropped after capture,
+  letterboxed into the program picture, and capped at the capture rate. A
+  desktop without the embedded pointer captures without it and says so in
+  `last_error`. Other builds report a Wayland session without XWayland
+  `unsupported` with that advice.
+- Durability (schema 72): the project gains required
+  `"screen_capture_restore_tokens"` after `"title_timelines"`: a list,
+  strictly ascending by input, of `{"input", "token"}` (1 to 256 printable
+  ASCII bytes) naming screen capture inputs, which the server keeps up to
+  date from each grant (not an edit, never on the wire). A token goes with
+  its input, and with a source replaced by another kind of target.
+- Studio's screen capture form offers A screen or A window on a Wayland
+  server; the tile shows PICK ON SERVER and DENIED, and its menu's Pick
+  target again sends the pick request.
+- 2.84 is refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision

@@ -51,8 +51,8 @@ commands = ["cargo test -p fm-playback --test image_sequence", "cargo test -p fm
 [[tests]]
 id = "accept-in-011"
 state = "present"
-paths = ["crates/foundation/fm-protocol/tests/screen_capture.rs", "crates/services/fm-persistence/tests/current_model.rs", "crates/io/fm-io-linux/tests/x11_screen_capture.rs", "crates/io/fm-io-linux/tests/pulse_app_audio.rs", "crates/foundation/fm-model/tests/screen_capture_audio.rs", "apps/freemixd/tests/native_screen_capture.rs", "apps/freemixd/tests/process.rs", "apps/freemix-cli/tests/e2e.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
-commands = ["cargo test -p fm-protocol --test screen_capture", "cargo test -p fm-persistence --test current_model", "cargo test -p fm-io-linux --test x11_screen_capture", "cargo test -p fm-io-linux --test pulse_app_audio", "cargo test -p fm-model --test screen_capture_audio", "cargo test -p freemixd --test native_screen_capture", "cargo test -p freemixd --test process", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-ui-egui --test hover_audit"]
+paths = ["crates/foundation/fm-protocol/tests/screen_capture.rs", "crates/services/fm-persistence/tests/current_model.rs", "crates/io/fm-io-linux/tests/x11_screen_capture.rs", "crates/io/fm-io-linux/tests/pulse_app_audio.rs", "crates/io/fm-io-linux/tests/wayland_portal.rs", "crates/foundation/fm-model/tests/screen_capture_audio.rs", "apps/freemixd/tests/native_screen_capture.rs", "apps/freemixd/tests/process.rs", "apps/freemix-cli/tests/e2e.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+commands = ["cargo test -p fm-protocol --test screen_capture", "cargo test -p fm-persistence --test current_model", "cargo test -p fm-io-linux --test x11_screen_capture", "cargo test -p fm-io-linux --test pulse_app_audio", "cargo test -p fm-io-linux --test wayland_portal", "cargo test -p fm-model --test screen_capture_audio", "cargo test -p freemixd --test native_screen_capture", "cargo test -p freemixd --test process", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-in-012"
 state = "planned"

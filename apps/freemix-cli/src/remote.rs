@@ -983,6 +983,48 @@ pub fn screen_capture_targets(address: SocketAddr) -> RemoteResult<()> {
     Ok(())
 }
 
+/// Asks the daemon's desktop to pick screen capture input `input`'s screen
+/// or window again (IN-011, Protocol 2.85) and prints
+/// `ScreenCapturePick(input=<id>)` once the daemon took it: nothing answers
+/// an accepted pick, so a target list request sent after it marks the
+/// point where a refusal would have arrived.
+pub fn screen_capture_pick(address: SocketAddr, input: fm_types::InputId) -> RemoteResult<()> {
+    // A pick needs project-edit authority, which Graphics holds.
+    let mut remote = Remote::connect(address, Role::Graphics)?;
+    let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
+    let unique = unique_client_id()?;
+    let request_id = format!("cli-screen-capture-pick-{unique}");
+    let marker = format!("cli-screen-capture-pick-marker-{unique}");
+    remote.write(&WireMessage::ScreenCapturePickRequest(
+        fm_protocol::ScreenCapturePickRequest {
+            request_id: request_id.clone(),
+            input: fm_protocol::WireInputId::from_domain(input),
+        },
+    ))?;
+    remote.write(&WireMessage::ScreenCaptureTargetsRequest(
+        fm_protocol::ScreenCaptureTargetsRequest {
+            request_id: marker.clone(),
+        },
+    ))?;
+    loop {
+        match remote.read_until(deadline)? {
+            WireMessage::ScreenCaptureTargets(reply) if reply.request_id == marker => break,
+            message @ (WireMessage::Event(_) | WireMessage::RuntimeEvent(_)) => {
+                remote.client.intake(message)?;
+            }
+            WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
+            _ => {
+                return Err(RemoteFailure(
+                    "expected screen_capture_targets from daemon after the pick".into(),
+                )
+                .into());
+            }
+        }
+    }
+    println!("ScreenCapturePick(input={input})");
+    Ok(())
+}
+
 /// Prints a `ScreenCaptureTargets(...)` header, then a `Screen(...)` line
 /// per screen and a `Window(...)` line per window.
 fn print_screen_capture_targets(inventory: &fm_protocol::ScreenCaptureInventory) {

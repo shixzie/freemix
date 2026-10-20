@@ -1684,7 +1684,8 @@ fn with_screen_capture_inventory(
 /// The screen capture form (IN-011) with the server's targets: a screen,
 /// a picked window followed by its exact title, by a title text, and by
 /// its application; a target that is not open; a listing not yet known;
-/// and a server that cannot capture its desktop.
+/// a server that cannot capture its desktop; and a Wayland server whose own
+/// dialog picks a screen or a window (one that cannot share windows).
 fn screen_capture_scenes(locale: Locale) -> Vec<Scene> {
     use crate::input_catalogue::{AddInputDraft, NewInputKind};
     use fm_protocol::TitleMatch;
@@ -1779,7 +1780,35 @@ fn screen_capture_scenes(locale: Locale) -> Vec<Scene> {
                 )),
             ),
         ),
+        Scene::console(
+            "dialog/add-input-screen-capture-portal-screen",
+            shell(&|_| {}),
+            with_screen_capture_inventory(operator.clone(), Some(portal_inventory(None))),
+        ),
+        Scene::console(
+            "dialog/add-input-screen-capture-portal-window",
+            shell(&|draft| draft.screen_capture.pick_on_server(true)),
+            with_screen_capture_inventory(
+                operator.clone(),
+                Some(portal_inventory(Some(
+                    "this desktop's sharing dialog cannot share single windows; capture a \
+                     screen instead",
+                ))),
+            ),
+        ),
     ]
+}
+
+/// What a Wayland server (IN-011, Protocol 2.85) can capture: nothing
+/// listed, its own sharing dialog picks; `limit` is what it cannot share.
+fn portal_inventory(limit: Option<&str>) -> fm_protocol::ScreenCaptureInventory {
+    fm_protocol::ScreenCaptureInventory {
+        supported: true,
+        backend: fm_protocol::PORTAL_BACKEND.into(),
+        screens: Vec::new(),
+        windows: Vec::new(),
+        error: limit.map(str::to_owned),
+    }
 }
 
 /// `state` with the daemon's display inventory: two displays, or a daemon
@@ -4515,9 +4544,9 @@ pub fn check_system_audio(language: Language) {
 /// (IN-011) in `language` under the console rules, and requires the help
 /// of the kind key, Refresh targets, every listed screen and window, the
 /// three ways to follow a window, the title field, the crop, the pointer,
-/// the rate cap, both stall slates, and the three audio choices (with the
-/// reason Application audio is unavailable for a screen) to have been
-/// shown.
+/// the rate cap, both stall slates, the three audio choices (with the
+/// reason Application audio is unavailable for a screen), and a Wayland
+/// server's screen and window choices to have been shown.
 pub fn check_screen_capture(language: Language) {
     let locale = Locale::new(language);
     let (findings, controls) = audit(language, screen_capture_scenes(locale));
@@ -4542,6 +4571,8 @@ pub fn check_screen_capture(language: Language) {
         Msg::ScAudioNoneHover,
         Msg::ScAudioSystemHover,
         Msg::ScAudioAppHover,
+        Msg::ScPortalScreenHover,
+        Msg::ScPortalWindowHover,
     ]
     .into_iter()
     .map(|msg| locale.text(msg).to_owned())

@@ -754,6 +754,24 @@ impl StudioShell {
         {
             self.open_designer(Some(scene));
         }
+        // A screen capture input: its target picked again on the server's
+        // desktop (IN-011).
+        let capture = state
+            .view
+            .as_ref()
+            .is_some_and(|view| view.screen_capture_input(input).is_some());
+        if capture
+            && item(
+                ui,
+                state.connection_status.controls_enabled() && state.can_edit_project,
+                l.text(Msg::ScPickAgain),
+                "",
+                l.text(Msg::ScPickAgainHover),
+                unavailable_reason(state, Capability::EditProject),
+            )
+        {
+            intents.push(StudioIntent::PickScreenCapture { input });
+        }
         ui.separator();
         self.draw_lifecycle_menu(
             ui,
