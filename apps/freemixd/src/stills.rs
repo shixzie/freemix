@@ -472,7 +472,10 @@ mod tests {
             Err(EngineMediaFault::SourceMissing)
         );
         // A folder that leads out of the bundle lists nothing.
-        assert!(list_folder(&assets, "asset://elsewhere").is_empty());
+        assert!(matches!(
+            list_folder(&assets, "asset://elsewhere").as_slice(),
+            []
+        ));
     }
 
     #[test]
