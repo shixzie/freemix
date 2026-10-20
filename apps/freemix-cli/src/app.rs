@@ -2663,7 +2663,12 @@ fn cue(
     expected_revision: Option<u64>,
 ) -> AppResult<()> {
     let mut project = load_engine(path)?;
-    let command = fm_control::cue_engine_command(payload);
+    // A shortcut fire (RC-004) travels as a cue command does.
+    let command = if matches!(payload, fm_protocol::CommandPayload::FireShortcut { .. }) {
+        fm_control::shortcut_engine_command(payload)
+    } else {
+        fm_control::cue_engine_command(payload)
+    };
     let mut result = execute(&mut project.engine, command, 1, key, expected_revision)?;
     if result.replayed {
         if let Some(rejection) = result.rejection {
@@ -6088,6 +6093,12 @@ Usage:
   freemix-cli remote-shortcut-export <127.0.0.1:port> <file.fmshortcuts> [--name <set name>]
   freemix-cli shortcut-import <show.freemix> <file.fmshortcuts>
   freemix-cli remote-shortcut-import <127.0.0.1:port> <file.fmshortcuts>
+  freemix-cli shortcut-fire <show.freemix> <shortcut> [--selected <input>] [--key <key>] [--expect <revision>]
+  freemix-cli remote-shortcut-fire <127.0.0.1:port> <shortcut> [--selected <input>] [--key <key>] [--expect <revision>]
+      Fires project shortcut <shortcut> (its id, as `shortcuts` lists it)
+      as the command it stands for. --selected names the input its actions
+      on the selected input act on (RC-004); without it such a fire is
+      refused.
       Lists, exports, or imports the project's shortcut set (RC-004). An
       import redefines shortcuts it names by an existing name and adds the
       rest; it imports nothing when a key or OSC name would clash.
@@ -6311,14 +6322,18 @@ Usage:
     actions: preview.<input> take.<input|->.<cut|fade|...>.<frames> overlay_on.<channel>.<input> overlay_off.<channel> title_on.<input>.<channel> title_text.<input>.<field>.<text> title_number.<input>.<field>.<set|add>.<value> title_off.<input> fade_to_black.<0|1>.<frames> playlist_start playlist_stop audio_gain.<input>.<millidB> audio_mute.<input>.<0|1> record.<1|2>.<0|1> stream.<target>.<0|1> wait.<frames> delay.<millis> run_script.<script>
   freemix-cli cue-list-remove <project.freemix> <list> [--key <key>] [--expect <revision>]
   freemix-cli remote-cue-list-remove <127.0.0.1:port> <list> [--key <key>] [--expect <revision>]
-  freemix-cli go <project.freemix> <list> [cue] [--key <key>] [--expect <revision>]
-  freemix-cli remote-go <127.0.0.1:port> <list> [cue] [--key <key>] [--expect <revision>]
+  freemix-cli go <project.freemix> <list> [cue] [--selected <input>] [--key <key>] [--expect <revision>]
+  freemix-cli remote-go <127.0.0.1:port> <list> [cue] [--selected <input>] [--key <key>] [--expect <revision>]
   freemix-cli cue-standby <project.freemix> <list> <cue> [--key <key>] [--expect <revision>]
   freemix-cli remote-cue-standby <127.0.0.1:port> <list> <cue> [--key <key>] [--expect <revision>]
   freemix-cli <cue-back|cue-skip|cue-stop|cue-reset> <project.freemix> <list> [--key <key>] [--expect <revision>]
   freemix-cli <remote-cue-back|remote-cue-skip|remote-cue-stop|remote-cue-reset> <127.0.0.1:port> <list> [--key <key>] [--expect <revision>]
-  freemix-cli cue-arm <project.freemix> <list> <milliseconds> [cue] [--key <key>] [--expect <revision>]
-  freemix-cli remote-cue-arm <127.0.0.1:port> <list> <milliseconds> [cue] [--key <key>] [--expect <revision>]
+  freemix-cli cue-arm <project.freemix> <list> <milliseconds> [cue] [--selected <input>] [--key <key>] [--expect <revision>]
+  freemix-cli remote-cue-arm <127.0.0.1:port> <list> <milliseconds> [cue] [--selected <input>] [--key <key>] [--expect <revision>]
+      An action's input may be a role resolved when the cue fires: preview,
+      program, or selected (RC-004). --selected names the input the
+      selected role means; the CLI has no selection of its own, so without it a
+      GO or arm of a cue acting on the selected input is refused.
   freemix-cli cue-disarm <project.freemix> <list> [--key <key>] [--expect <revision>]
   freemix-cli remote-cue-disarm <127.0.0.1:port> <list> [--key <key>] [--expect <revision>]
   freemix-cli scripts <project.freemix>

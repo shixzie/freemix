@@ -209,3 +209,26 @@ fn a_clashing_set_or_a_locked_project_imports_nothing() {
     fail(&["shortcut-import", &project, &open], "project is locked");
     assert_eq!(succeed(&["shortcuts", &project]), before);
 }
+
+/// RC-004: `shortcut-fire` fires a project shortcut locally. A shortcut
+/// acting on the selected input is refused without `--selected`, and acts on
+/// the input it names with it.
+#[test]
+fn a_shortcut_fires_locally_on_the_selected_input() {
+    let root = Root::new("fire");
+    let project = root.project("show.freemix");
+    let take = "{\"name\": \"Take selected\", \"enabled\": true, \"key\": null, \
+         \"osc\": null, \"action\": \"actions:take.selected.cut.0\"}";
+    let desk = root.file("desk.fmshortcuts", &set(take));
+    succeed(&["shortcut-import", &project, &desk]);
+    fail(&["shortcut-fire", &project, "1"], "selected");
+    let status = succeed(&["shortcut-fire", &project, "1", "--selected", "2"]);
+    assert!(
+        status.contains("Program(desired=2, realized=2)"),
+        "{status}"
+    );
+    fail(
+        &["shortcut-fire", &project, "9", "--selected", "2"],
+        "shortcut",
+    );
+}

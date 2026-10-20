@@ -1386,14 +1386,16 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
-    /// A cue list edit or cue control applied to a local project (RC-017).
+    /// A cue list edit or cue control applied to a local project (RC-017),
+    /// or a project shortcut fire (RC-004).
     Cue {
         path: PathBuf,
         payload: fm_protocol::CommandPayload,
         key: Option<String>,
         expected_revision: Option<u64>,
     },
-    /// A cue list edit or cue control sent to a running daemon (RC-017).
+    /// A cue list edit or cue control sent to a running daemon (RC-017), or
+    /// a project shortcut fire (RC-004).
     RemoteCue {
         address: SocketAddr,
         payload: fm_protocol::CommandPayload,
@@ -2268,6 +2270,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-shortcut-export"
         | "shortcut-import"
         | "remote-shortcut-import") => parse_shortcut_set(shortcut, arguments),
+        fire @ ("shortcut-fire" | "remote-shortcut-fire") => parse_shortcut_fire(fire, arguments),
         script @ ("scripts"
         | "remote-scripts"
         | "script-set"
@@ -6773,6 +6776,10 @@ fn parse_remote_playlist(
 ///   `cue-skip`, `cue-stop`, or `cue-reset <list>`;
 /// * `cue-arm <list> <milliseconds> [<cue>]` and `cue-disarm <list>`
 ///   (Protocol 2.64).
+///
+/// `go` and `cue-arm` take `--selected <input>`, the input a cue action on
+/// the selected input acts on (RC-004); without it such a GO or arm is
+/// refused.
 fn parse_cue(command: &str, arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
     use fm_protocol::{CommandPayload, CueListSpec, CueOperation};
 
@@ -6800,7 +6807,7 @@ fn parse_cue(command: &str, arguments: impl Iterator<Item = String>) -> Result<C
     }
     let list = number(&required(&mut arguments, "cue list")?, "cue list")?;
     let control = |operation| CommandPayload::CueControl { list, operation };
-    let payload = match base {
+    let mut payload = match base {
         "cue-list-set" => {
             let name = required(&mut arguments, "cue list name")?;
             let cues = cue_specs(&required(&mut arguments, "cues")?)?;
@@ -6851,7 +6858,15 @@ fn parse_cue(command: &str, arguments: impl Iterator<Item = String>) -> Result<C
         "cue-disarm" => control(CueOperation::Disarm),
         other => return Err(ArgsError::UnknownCommand(other.to_owned())),
     };
-    let (key, expected_revision) = command_options(arguments)?;
+    let (selected, key, expected_revision) =
+        fire_options(arguments, matches!(base, "go" | "cue-arm"))?;
+    if let CommandPayload::CueControl {
+        operation: CueOperation::Go { targets, .. } | CueOperation::Arm { targets, .. },
+        ..
+    } = &mut payload
+    {
+        targets.selected = selected;
+    }
     Ok(match (path, address) {
         (Some(path), _) => Command::Cue {
             path,
@@ -6951,6 +6966,50 @@ fn parse_shortcut_set(
         (Some(path), _) => Command::Shortcuts { path, command },
         (None, Some(address)) => Command::RemoteShortcuts { address, command },
         (None, None) => unreachable!("a shortcut command names a project or an address"),
+    })
+}
+
+/// Parses `shortcut-fire <project> <shortcut>` and `remote-shortcut-fire
+/// <address> <shortcut>` (RC-004): fires project shortcut `<shortcut>` as
+/// the command it stands for, with `--selected <input>` the input its
+/// actions on the selected input act on. The fire travels like a cue
+/// command: a local fire restores, runs, and saves the project.
+fn parse_shortcut_fire(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let (path, address) = if remote {
+        (
+            None,
+            Some(socket_address(&required(&mut arguments, "address")?)?),
+        )
+    } else {
+        (Some(required_path(&mut arguments, "project path")?), None)
+    };
+    let shortcut = number(&required(&mut arguments, "shortcut")?, "shortcut")?;
+    let (selected, key, expected_revision) = fire_options(arguments, true)?;
+    let payload = fm_protocol::CommandPayload::FireShortcut {
+        shortcut,
+        targets: fm_protocol::WireTargetBindings {
+            selected,
+            ..fm_protocol::WireTargetBindings::NONE
+        },
+    };
+    Ok(match (path, address) {
+        (Some(path), _) => Command::Cue {
+            path,
+            payload,
+            key,
+            expected_revision,
+        },
+        (None, Some(address)) => Command::RemoteCue {
+            address,
+            payload,
+            key,
+            expected_revision,
+        },
+        (None, None) => unreachable!("a shortcut fire names a project or an address"),
     })
 }
 
@@ -7638,6 +7697,47 @@ fn input_source(value: &str) -> Result<fm_protocol::WireInputSource, ArgsError> 
         }
         _ => Err(invalid()),
     }
+}
+
+/// Reads a fire's options: `--selected <input>` (RC-004) when `selectable`,
+/// then [`command_options`]. The selected input is the one a shortcut or
+/// cue action on the selected input acts on; the CLI has no console
+/// selection of its own, so without the option nothing is selected and
+/// such an action is refused.
+fn fire_options(
+    mut arguments: impl Iterator<Item = String>,
+    selectable: bool,
+) -> Result<
+    (
+        Option<fm_protocol::WireInputId>,
+        Option<String>,
+        Option<u64>,
+    ),
+    ArgsError,
+> {
+    let mut selected = None;
+    let mut rest = Vec::new();
+    while let Some(argument) = arguments.next() {
+        if selectable && argument == "--selected" {
+            if selected.is_some() {
+                return Err(ArgsError::UnexpectedArgument(argument));
+            }
+            let value = required(&mut arguments, "selected input")?;
+            selected = Some(
+                value
+                    .parse::<core::num::NonZeroU128>()
+                    .map(fm_protocol::WireInputId::new)
+                    .map_err(|_| ArgsError::InvalidNumber {
+                        field: "selected input",
+                        value,
+                    })?,
+            );
+        } else {
+            rest.push(argument);
+        }
+    }
+    let (key, expected_revision) = command_options(rest.into_iter())?;
+    Ok((selected, key, expected_revision))
 }
 
 fn command_options(
@@ -9398,6 +9498,165 @@ mod tests {
                 expected_revision: None,
             })
         );
+    }
+
+    /// RC-004: `--selected <input>` names the input a fire's actions on
+    /// the selected input act on, for `go`, `cue-arm`, and `shortcut-fire`,
+    /// before or after `--key` and `--expect`; no other cue command takes
+    /// it.
+    #[allow(clippy::too_many_lines)] // one case per fire command
+    #[test]
+    fn parses_a_fires_selected_input() {
+        use fm_protocol::{CommandPayload, CueOperation, WireInputId, WireTargetBindings};
+
+        let address: SocketAddr = "127.0.0.1:9123".parse().unwrap();
+        let selected = |input: u128| WireTargetBindings {
+            selected: Some(WireInputId::new(
+                core::num::NonZeroU128::new(input).unwrap(),
+            )),
+            ..WireTargetBindings::NONE
+        };
+        let control = |operation| CommandPayload::CueControl { list: 3, operation };
+        assert_eq!(
+            parse(strings(&[
+                "remote-go",
+                "127.0.0.1:9123",
+                "3",
+                "--selected",
+                "7",
+                "--expect",
+                "4"
+            ])),
+            Ok(Command::RemoteCue {
+                address,
+                payload: control(CueOperation::Go {
+                    cue: None,
+                    targets: selected(7),
+                }),
+                key: None,
+                expected_revision: Some(4),
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "go",
+                "show.freemix",
+                "3",
+                "20",
+                "--key",
+                "k",
+                "--selected",
+                "2"
+            ])),
+            Ok(Command::Cue {
+                path: PathBuf::from("show.freemix"),
+                payload: control(CueOperation::Go {
+                    cue: Some(20),
+                    targets: selected(2),
+                }),
+                key: Some("k".into()),
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "cue-arm",
+                "show.freemix",
+                "3",
+                "1500",
+                "20",
+                "--selected",
+                "5"
+            ])),
+            Ok(Command::Cue {
+                path: PathBuf::from("show.freemix"),
+                payload: control(CueOperation::Arm {
+                    cue: Some(20),
+                    in_ms: 1_500,
+                    targets: selected(5),
+                }),
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "shortcut-fire",
+                "show.freemix",
+                "9",
+                "--selected",
+                "7"
+            ])),
+            Ok(Command::Cue {
+                path: PathBuf::from("show.freemix"),
+                payload: CommandPayload::FireShortcut {
+                    shortcut: 9,
+                    targets: selected(7),
+                },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-shortcut-fire",
+                "127.0.0.1:9123",
+                "9",
+                "--key",
+                "fire-1"
+            ])),
+            Ok(Command::RemoteCue {
+                address,
+                payload: CommandPayload::FireShortcut {
+                    shortcut: 9,
+                    targets: WireTargetBindings::NONE,
+                },
+                key: Some("fire-1".into()),
+                expected_revision: None,
+            })
+        );
+        for bad in ["0", "07", "camera", "-1"] {
+            assert!(
+                matches!(
+                    parse(strings(&["go", "show.freemix", "3", "--selected", bad])),
+                    Err(ArgsError::InvalidNumber {
+                        field: "selected input",
+                        ..
+                    })
+                ),
+                "{bad}"
+            );
+        }
+        assert!(matches!(
+            parse(strings(&["go", "show.freemix", "3", "--selected"])),
+            Err(ArgsError::MissingValue("selected input"))
+        ));
+        assert!(matches!(
+            parse(strings(&[
+                "shortcut-fire",
+                "show.freemix",
+                "9",
+                "--selected",
+                "1",
+                "--selected",
+                "2"
+            ])),
+            Err(ArgsError::UnexpectedArgument(_))
+        ));
+        assert!(matches!(
+            parse(strings(&[
+                "cue-stop",
+                "show.freemix",
+                "3",
+                "--selected",
+                "1"
+            ])),
+            Err(ArgsError::UnknownOption(_))
+        ));
+        assert!(matches!(
+            parse(strings(&["shortcut-fire", "show.freemix"])),
+            Err(ArgsError::MissingValue("shortcut"))
+        ));
     }
 
     #[allow(clippy::too_many_lines)] // one case per cue command

@@ -440,3 +440,30 @@ fn a_saved_waiting_cue_restores_and_one_out_of_reach_is_refused() {
         "{lists}"
     );
 }
+
+/// RC-004: `go --selected <input>` binds the selected input for the run;
+/// without it a cue acting on the selected input is refused, and the list
+/// reports the inputs its run bound (Protocol 2.89).
+#[test]
+fn go_binds_the_selected_input_and_the_list_reports_it() {
+    let root = Root::new("selected");
+    let project = root.project();
+    succeed(&[
+        "cue-list-set",
+        &project,
+        "7",
+        "Show",
+        "10:Take:0:take.selected.cut.0",
+    ]);
+    fail(&["go", &project, "7"], "selected");
+    let lists = succeed(&["cue-lists", &project]);
+    assert!(!lists.contains("bound="), "{lists}");
+    let status = succeed(&["go", &project, "7", "--selected", "2"]);
+    assert!(
+        status.contains("Program(desired=2, realized=2)"),
+        "{status}"
+    );
+    let lists = succeed(&["cue-lists", &project]);
+    assert!(lists.contains(",selected:2)\n"), "{lists}");
+    assert!(lists.contains(", bound=preview:"), "{lists}");
+}
