@@ -21,9 +21,12 @@ highest-value remaining items, ranked:
 3. **Strip DSP on the live mix (`AU-005`).** The tested `fm-audio` EQ, gate,
    compressor, and limiter chain is not wired to persisted strips, the engine,
    or the daemon; this is a P0 row.
-4. **User shortcuts that persist and dispatch (`RC-004`).** Studio's key map is
-   fixed; the `fm-automation` template layer has no project state, editor, wire
-   payload, or runtime dispatch, and this is a P0 row.
+4. **Finish user shortcuts (`RC-004`).** Project shortcuts now persist, travel
+   on the wire, fire on the authority under per-action permissions, and are
+   edited and dispatched in Studio (keys and OSC); still missing are Studio-local
+   key overrides, Web operator buttons, scoped/chorded keys, dynamic targets,
+   mouse bindings, and import/export of a shortcut set (see the RC-004
+   boundary below). This is a P0 row.
 5. **Wire the tested library-only crates: Media List and slideshow (`IN-006`,
    `IN-009`, `OR-015`).** `ListPlayer` and the slideshow are covered by tests
    but used by no app; wiring them is cheap breadth for real shows.
@@ -933,11 +936,34 @@ registry reuses the exact/prefix conflict and local-over-global resolution rules
 press results are deterministic and never mutate the registry, and a versioned
 tab-separated profile with a caller-supplied command codec round-trips every
 field exactly while rejecting malformed, duplicated, or oversized documents
-wholesale. This is model and import/export groundwork only: no durable shortcut
-state, binding editor, shortcut wire payload, runtime dispatch of templates,
-or resolved engine binding exists (Studio's key map above is fixed, not an
-`fm-automation` template) in the project schema, protocol, engine,
-Studio, or Web, so RC-004 remains planned.
+wholesale. That template layer remains library-only groundwork.
+
+User shortcuts themselves are project state (schema 61, Protocol 2.70). A
+project holds up to 64 shortcuts, each with an id, a name, an enabled flag, an
+optional key (a key name with Ctrl/Cmd, Shift, and Alt), an optional OSC name
+(`/freemix/user/<name>`), and one action: 1 to 16 cue actions run together on
+one frame without waits (Program taken at most once, at most 512 bytes of
+text), a cue list operation (GO of the standby or a named cue, Stop, Back,
+Skip, Reset), or a project script run. Timed sequences are cues or scripts,
+so shortcuts add no third clock. Keys and OSC names are unique within the
+project; references to inputs, lists, and scripts are checked when fired, not
+held against the project. `shortcut_set`/`shortcut_remove` are padlocked,
+undoable project edits; `shortcut_fire` is a Transition-class operator control
+whose authority also requires the class of every action it performs (for a GO,
+the chain it arms; for a script, every verb), all or nothing, and a disabled or
+unknown shortcut is refused with a typed reason. Studio's Edit ▸ Shortcuts…
+window lists and edits them with "Set key" capture, flags a key the console
+already uses (a table a unit test keeps equal to the key map) or another
+shortcut's key or OSC name, and lists them in the keyboard reference. A key
+fires under the console keys' gates (no dialog, menu, keyboard-owning panel,
+or text field; key repeat never re-fires), Studio's loopback OSC listener
+answers `/freemix/user/<name>`, and a fire the session cannot send is
+announced in a toast like a server refusal. Keys are stored in the project, so
+a show carries its keys to every console. Still missing, so RC-004 remains
+planned: Studio-local per-operator key overrides, Web operator page buttons,
+local/global scopes and multi-key chords, dynamic input/value targets
+(the `fm-automation` templates are not wired), mouse bindings, and import or
+export of a shortcut set apart from the project.
 
 Current implementation boundary for item 8: `fm-scopes` now provides a bounded
 reference color-monitoring session on top of its scope math: an exact

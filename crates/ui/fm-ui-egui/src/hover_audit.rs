@@ -440,7 +440,7 @@ fn model(variant: Variant) -> ClientModel {
         media_states: 2,
         cue_list_states: 2,
         script_states: 2,
-        shortcut_states: 0,
+        shortcut_states: 3,
         input_categories: vec![
             fm_protocol::InputCategoryStatus {
                 id: 1,
@@ -684,7 +684,89 @@ fn model(variant: Variant) -> ClientModel {
             })
             .unwrap();
     }
+    for shortcut in audit_shortcuts() {
+        model
+            .apply_shortcut_state(fm_protocol::ShortcutStateMessage {
+                revision: 10,
+                shortcut,
+            })
+            .unwrap();
+    }
     model
+}
+
+/// Edits the Shortcuts window's draft, when there is one.
+fn edit_shortcut_draft(shell: &mut StudioShell, edit: &dyn Fn(&mut fm_protocol::ShortcutSpec)) {
+    if let Some(draft) = shell.user_shortcuts.draft.as_mut() {
+        edit(draft);
+    }
+}
+
+/// A ready session over the audit project with its shortcuts (RC-004);
+/// `operator` grants every permission.
+#[cfg(test)]
+pub(crate) fn shortcuts_fixture(operator: bool) -> StudioUiState {
+    ready(operator, Variant::default())
+}
+
+/// RC-004: the project's shortcuts. Shortcut 1 runs cue actions from F9
+/// and OSC; shortcut 2 fires a GO of cue list 1 from OSC only; shortcut 3, disabled,
+/// runs script 1 from Alt+J.
+pub(crate) fn audit_shortcuts() -> Vec<fm_protocol::ShortcutStatus> {
+    use fm_protocol::{
+        ShortcutSpec, ShortcutStatus, WireCueAction, WireShortcutAction, WireShortcutCueOperation,
+        WireShortcutKey,
+    };
+    let key = |key: &str, alt: bool| WireShortcutKey {
+        key: key.into(),
+        command: false,
+        shift: false,
+        alt,
+    };
+    vec![
+        ShortcutStatus {
+            id: 1,
+            spec: ShortcutSpec {
+                name: "Lower third".into(),
+                enabled: true,
+                key: Some(key("F9", false)),
+                osc: Some("lower-third".into()),
+                action: WireShortcutAction::Actions(vec![
+                    WireCueAction::OverlayOn {
+                        channel: WireOverlayChannelId::new(2).unwrap(),
+                        input: wire(2),
+                    },
+                    WireCueAction::AudioMute {
+                        input: wire(3),
+                        muted: true,
+                    },
+                ]),
+            },
+        },
+        ShortcutStatus {
+            id: 2,
+            spec: ShortcutSpec {
+                name: "Open show".into(),
+                enabled: true,
+                key: None,
+                osc: Some("open".into()),
+                action: WireShortcutAction::Cue {
+                    list: 1,
+                    operation: WireShortcutCueOperation::Go { cue: None },
+                },
+            },
+        },
+        ShortcutStatus {
+            id: 3,
+            spec: ShortcutSpec {
+                name: "Scores".into(),
+                enabled: false,
+                key: Some(key("J", true)),
+                osc: None,
+                action: WireShortcutAction::Script { script: 1 },
+            },
+        },
+    ]
 }
 
 /// RC-011: the project's scripts. Script 1 is valid; script 2 has a
@@ -2394,6 +2476,99 @@ fn scenes(language: Language) -> Vec<Scene> {
         ),
     ];
     for (name, open, state) in scripts {
+        scenes.push(Scene::console(name, shell(open), state));
+    }
+    // RC-004: the Shortcuts window on each kind of action, capturing a
+    // key, with a key and an OSC name that clash, for a viewer, and locked.
+    let user_shortcuts: Vec<(&str, Configure, StudioUiState)> = vec![
+        (
+            "dialog/user-shortcuts",
+            &|shell| {
+                shell.user_shortcuts.open = true;
+                shell.user_shortcuts.select(&audit_shortcuts(), Some(1));
+            },
+            ready(true, Variant::default()),
+        ),
+        (
+            "dialog/user-shortcuts-cue",
+            &|shell| {
+                shell.user_shortcuts.open = true;
+                shell.user_shortcuts.select(&audit_shortcuts(), Some(2));
+                edit_shortcut_draft(shell, &|draft| {
+                    draft.action = fm_protocol::WireShortcutAction::Cue {
+                        list: 1,
+                        operation: fm_protocol::WireShortcutCueOperation::Go { cue: Some(20) },
+                    };
+                });
+            },
+            ready(true, Variant::default()),
+        ),
+        (
+            "dialog/user-shortcuts-script",
+            &|shell| {
+                shell.user_shortcuts.open = true;
+                shell.user_shortcuts.select(&audit_shortcuts(), Some(3));
+            },
+            ready(true, Variant::default()),
+        ),
+        (
+            "dialog/user-shortcuts-capturing",
+            &|shell| {
+                shell.user_shortcuts.open = true;
+                shell.user_shortcuts.select(&audit_shortcuts(), Some(1));
+                shell.user_shortcuts.capturing = true;
+            },
+            ready(true, Variant::default()),
+        ),
+        (
+            "dialog/user-shortcuts-clash",
+            &|shell| {
+                shell.user_shortcuts.open = true;
+                shell.user_shortcuts.select(&audit_shortcuts(), Some(1));
+                edit_shortcut_draft(shell, &|draft| {
+                    draft.key = Some(fm_protocol::WireShortcutKey {
+                        key: "B".into(),
+                        command: false,
+                        shift: false,
+                        alt: false,
+                    });
+                    draft.osc = Some("open".into());
+                });
+            },
+            ready(true, Variant::default()),
+        ),
+        (
+            "dialog/user-shortcuts-new",
+            &|shell| {
+                shell.user_shortcuts.open = true;
+                shell.user_shortcuts.new_draft(&audit_shortcuts());
+            },
+            ready(true, Variant::default()),
+        ),
+        (
+            "viewer/user-shortcuts",
+            &|shell| {
+                shell.user_shortcuts.open = true;
+                shell.user_shortcuts.select(&audit_shortcuts(), Some(1));
+            },
+            ready(false, Variant::default()),
+        ),
+        (
+            "operator/user-shortcuts-locked",
+            &|shell| {
+                shell.user_shortcuts.open = true;
+                shell.user_shortcuts.select(&audit_shortcuts(), Some(2));
+            },
+            ready(
+                true,
+                Variant {
+                    locked: true,
+                    ..Variant::default()
+                },
+            ),
+        ),
+    ];
+    for (name, open, state) in user_shortcuts {
         scenes.push(Scene::console(name, shell(open), state));
     }
     scenes.extend(animation_scenes(locale));

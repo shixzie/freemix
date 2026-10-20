@@ -8043,4 +8043,255 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::WebAccessExpires,
         plural("Caduca en {count} segundo", "Caduca en {count} segundos"),
     ),
+    (Msg::MenuUserShortcuts, t("Atajos del proyecto…")),
+    (
+        Msg::MenuUserShortcutsHover,
+        t(
+            "Abre los atajos del proyecto: teclas y direcciones OSC que ejecutan acciones de cue, una lista de cues o un guion",
+        ),
+    ),
+    (Msg::UserShortcutsTitle, t("Atajos del proyecto")),
+    (
+        Msg::UserShortcutsIntro,
+        t(
+            "Un atajo ejecuta acciones de cue juntas en un mismo fotograma, maneja una lista de cues o ejecuta un guion, desde una tecla de esta consola o un mensaje OSC a /freemix/user/<nombre>. Los atajos se guardan con el proyecto, así que todas las consolas los comparten. Las teclas solo actúan cuando ningún diálogo ni campo de texto tiene el teclado.",
+        ),
+    ),
+    (Msg::UserShortcutsEmpty, t("Aún no hay atajos")),
+    (
+        Msg::UserShortcutsGroup,
+        t("Atajos del proyecto (menú Editar)"),
+    ),
+    (
+        Msg::UserShortcutsReferenceEmpty,
+        t(
+            "Este proyecto no tiene atajos con tecla ni nombre OSC; añádalos en Editar, Atajos del proyecto…",
+        ),
+    ),
+    (Msg::UserShortcutListOff, t("{name} (desactivado)")),
+    (Msg::UserShortcutListHover, t("Editar el atajo {name}")),
+    (Msg::UserShortcutNew, t("Nuevo atajo")),
+    (
+        Msg::UserShortcutNewHover,
+        t("Empieza un atajo nuevo; se une al proyecto al guardarlo"),
+    ),
+    (Msg::UserShortcutNameLabel, t("Nombre del atajo")),
+    (
+        Msg::UserShortcutNameHover,
+        t(
+            "El nombre que muestran esta lista, la referencia de teclado y los rechazos (de 1 a 64 bytes)",
+        ),
+    ),
+    (Msg::UserShortcutEnabled, t("Activado")),
+    (
+        Msg::UserShortcutEnabledHover,
+        t(
+            "Un atajo desactivado conserva su tecla y su nombre OSC, pero no hace nada al pulsarlo o enviarlo",
+        ),
+    ),
+    (Msg::UserShortcutKeyLabel, t("Tecla del atajo")),
+    (Msg::UserShortcutKeyNone, t("Sin tecla")),
+    (
+        Msg::UserShortcutKeyCapturing,
+        t("Pulse la tecla ahora (Esc conserva la anterior)"),
+    ),
+    (
+        Msg::UserShortcutKeyHover,
+        t(
+            "La tecla que dispara este atajo en esta consola, con Ctrl (Cmd en macOS), Mayús y Alt tal como se pulsaron",
+        ),
+    ),
+    (Msg::UserShortcutSetKey, t("Asignar tecla")),
+    (
+        Msg::UserShortcutSetKeyHover,
+        t("Captura la siguiente tecla que pulse, con sus modificadores, como tecla de este atajo"),
+    ),
+    (Msg::UserShortcutClearKey, t("Quitar tecla")),
+    (
+        Msg::UserShortcutClearKeyHover,
+        t("Quita la tecla; el atajo sigue respondiendo a su nombre OSC"),
+    ),
+    (
+        Msg::UserShortcutKeyReserved,
+        t("La consola ya usa {keys} para una de sus órdenes; elija otra tecla"),
+    ),
+    (
+        Msg::UserShortcutKeyTaken,
+        t("El atajo {name} ya usa esta tecla"),
+    ),
+    (
+        Msg::UserShortcutKeyUnsupported,
+        t(
+            "Esa tecla no puede ser tecla de atajo (Control en macOS o una tecla del portapapeles); pulse otra",
+        ),
+    ),
+    (Msg::UserShortcutOscLabel, t("Nombre OSC")),
+    (
+        Msg::UserShortcutOscHover,
+        t(
+            "Un mensaje OSC sin argumentos a /freemix/user/ y este nombre dispara el atajo mediante la escucha OSC de Studio (minúsculas, dígitos, - y _; hasta 32)",
+        ),
+    ),
+    (
+        Msg::UserShortcutOscAddressHover,
+        t("La dirección OSC que dispara este atajo"),
+    ),
+    (
+        Msg::UserShortcutOscTaken,
+        t("El atajo {name} ya responde a este nombre OSC"),
+    ),
+    (Msg::UserShortcutOscOnly, t("Solo OSC")),
+    (Msg::UserShortcutActionLabel, t("Ejecuta")),
+    (
+        Msg::UserShortcutKindActions,
+        t("Acciones de cue en un fotograma"),
+    ),
+    (
+        Msg::UserShortcutKindCue,
+        t("Una operación de lista de cues"),
+    ),
+    (Msg::UserShortcutKindScript, t("Un guion del proyecto")),
+    (
+        Msg::UserShortcutKindHover,
+        t(
+            "Elija qué ejecuta el atajo: acciones de cue juntas, el GO, Detener, Atrás, Saltar o Reiniciar de una lista de cues, o un guion",
+        ),
+    ),
+    (
+        Msg::UserShortcutActionsNote,
+        t(
+            "Hasta 16 acciones se ejecutan juntas en un fotograma, o ninguna. Un atajo no puede esperar: ponga los pasos temporizados en un cue y haga que el atajo le dé GO.",
+        ),
+    ),
+    (Msg::UserShortcutNoneChosen, t("(ninguno elegido)")),
+    (
+        Msg::UserShortcutListPickHover,
+        t("La lista de cues que maneja el atajo"),
+    ),
+    (
+        Msg::UserShortcutOperationHover,
+        t("Qué hace el atajo con la lista de cues"),
+    ),
+    (
+        Msg::UserShortcutCuePickHover,
+        t("El cue que dispara el atajo, esté donde esté la espera de la lista"),
+    ),
+    (
+        Msg::UserShortcutScriptPickHover,
+        t("El guion del proyecto que ejecuta el atajo"),
+    ),
+    (Msg::UserShortcutOpGo, t("GO del cue en espera")),
+    (Msg::UserShortcutOpGoCue, t("GO de un cue elegido")),
+    (Msg::UserShortcutOpStop, t("Detener la lista")),
+    (Msg::UserShortcutOpBack, t("Espera un cue atrás")),
+    (Msg::UserShortcutOpSkip, t("Espera un cue adelante")),
+    (Msg::UserShortcutOpReset, t("Reiniciar la lista")),
+    (Msg::UserShortcutSave, t("Guardar atajo")),
+    (
+        Msg::UserShortcutSaveHover,
+        t("Guarda el atajo en el proyecto como una edición que se puede deshacer"),
+    ),
+    (Msg::UserShortcutRevert, t("Descartar cambios del atajo")),
+    (
+        Msg::UserShortcutRevertHover,
+        t("Vuelve al atajo tal como está guardado en el proyecto"),
+    ),
+    (Msg::UserShortcutFire, t("Disparar ahora")),
+    (
+        Msg::UserShortcutFireHover,
+        t("Ejecuta ahora en el servidor el atajo guardado, como lo haría su tecla"),
+    ),
+    (Msg::UserShortcutRemove, t("Eliminar atajo")),
+    (
+        Msg::UserShortcutRemoveHover,
+        t("Quita el atajo del proyecto como una edición que se puede deshacer"),
+    ),
+    (
+        Msg::UserShortcutLastFireHover,
+        t(
+            "La última vez que se ejecutaron las acciones de cue de este atajo, desde cualquier consola",
+        ),
+    ),
+    (
+        Msg::UserShortcutNotFired,
+        t("El atajo {name} no se disparó: {reason}"),
+    ),
+    (
+        Msg::UserShortcutReasonDisabled,
+        t("el atajo está desactivado"),
+    ),
+    (
+        Msg::UserShortcutReasonNoList,
+        t("la lista de cues del atajo no está en el proyecto"),
+    ),
+    (
+        Msg::UserShortcutReasonNoScript,
+        t("el guion del atajo no está en el proyecto"),
+    ),
+    (
+        Msg::UserShortcutReasonNoActions,
+        t("añada al menos una acción"),
+    ),
+    (
+        Msg::UserShortcutReasonTooManyActions,
+        t("un atajo ejecuta como mucho 16 acciones"),
+    ),
+    (
+        Msg::UserShortcutReasonWaits,
+        t("un atajo no puede esperar; ponga los pasos temporizados en un cue"),
+    ),
+    (
+        Msg::UserShortcutReasonUnchanged,
+        t("el atajo no ha cambiado"),
+    ),
+    (
+        Msg::UserShortcutReasonReserved,
+        t("la tecla es una de las teclas propias de la consola"),
+    ),
+    (
+        Msg::UserShortcutReasonKeyTaken,
+        t("otro atajo usa esta tecla"),
+    ),
+    (
+        Msg::UserShortcutReasonOsc,
+        t("un nombre OSC tiene de 1 a 32 minúsculas, dígitos, - o _"),
+    ),
+    (
+        Msg::UserShortcutReasonOscTaken,
+        t("otro atajo responde a este nombre OSC"),
+    ),
+    (
+        Msg::UserShortcutReasonInvalid,
+        t("las acciones toman Programa dos veces o llevan más de 512 bytes de texto"),
+    ),
+    (
+        Msg::UserShortcutReasonLimit,
+        t("el proyecto ya tiene 64 atajos"),
+    ),
+    (
+        Msg::UserShortcutReasonCapturing,
+        t("pulse primero la tecla que quiere asignar"),
+    ),
+    (Msg::UserShortcutReasonNoKey, t("el atajo no tiene tecla")),
+    (
+        Msg::UserShortcutReasonNotSaved,
+        t("el atajo aún no está en el proyecto"),
+    ),
+    (Msg::UserShortcutReasonUnsaved, t("guarde primero el atajo")),
+    (
+        Msg::UserShortcutReasonNoLists,
+        t("el proyecto no tiene listas de cues"),
+    ),
+    (
+        Msg::UserShortcutReasonNoScripts,
+        t("el proyecto no tiene guiones"),
+    ),
+    (Msg::UserShortcutReasonNoCues, t("la lista no tiene cues")),
+    (
+        Msg::UserShortcutLastFire,
+        plural(
+            "Último disparo en el fotograma {frame}: {count} acción",
+            "Último disparo en el fotograma {frame}: {count} acciones",
+        ),
+    ),
 ];

@@ -45,6 +45,8 @@ pub const MAX_SHORTCUT_TEXT_BYTES: usize = 512;
 pub const MAX_SHORTCUT_KEY_BYTES: usize = 16;
 /// Longest OSC name, in bytes.
 pub const MAX_SHORTCUT_OSC_BYTES: usize = 32;
+/// The OSC address prefix a shortcut's OSC name follows.
+pub const SHORTCUT_OSC_PREFIX: &str = "/freemix/user/";
 
 /// A key and the modifiers held with it; `command` is Ctrl (Cmd on macOS).
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

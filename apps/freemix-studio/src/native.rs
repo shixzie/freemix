@@ -530,6 +530,19 @@ impl StudioApp {
                     }
                     continue;
                 }
+                // A project shortcut fires under its key's gates (RC-004);
+                // one this session cannot fire is announced.
+                OscAction::User(name) => {
+                    if let Some(intent) = self
+                        .shell
+                        .user_shortcut_osc_intent(&self.state, name.as_str())
+                    {
+                        self.enqueue_intent(intent);
+                    } else {
+                        self.osc_rejected = self.osc_rejected.saturating_add(1);
+                    }
+                    continue;
+                }
                 OscAction::SelectPreview(number) => ExternalStudioAction::SelectPreview(number),
                 OscAction::Cut => ExternalStudioAction::Cut,
                 OscAction::Fade => ExternalStudioAction::Fade,
@@ -2760,6 +2773,7 @@ fn intent_payload(
         StudioIntent::Playlist(intent) => playlist_payload(intent),
         StudioIntent::Cue(intent) => cue_payload(intent),
         StudioIntent::Script(intent) => script_payload(intent),
+        StudioIntent::Shortcut(intent) => shortcut_payload(intent),
         StudioIntent::Media { input, operation } => {
             if let Some(view) = view
                 && !view.inputs.contains(&input)
@@ -2879,6 +2893,20 @@ fn script_payload(intent: fm_ui_egui::ScriptIntent) -> CommandPayload {
         fm_ui_egui::ScriptIntent::Remove { script } => CommandPayload::RemoveScript { script },
         fm_ui_egui::ScriptIntent::Run { script } => CommandPayload::RunScript { script },
         fm_ui_egui::ScriptIntent::Stop { run } => CommandPayload::StopScript { run },
+    }
+}
+
+/// The protocol command for one Shortcuts window action or user shortcut
+/// fire (RC-004).
+fn shortcut_payload(intent: fm_ui_egui::ShortcutIntent) -> CommandPayload {
+    match intent {
+        fm_ui_egui::ShortcutIntent::Set { shortcut, spec } => {
+            CommandPayload::SetShortcut { shortcut, spec }
+        }
+        fm_ui_egui::ShortcutIntent::Remove { shortcut } => {
+            CommandPayload::RemoveShortcut { shortcut }
+        }
+        fm_ui_egui::ShortcutIntent::Fire { shortcut } => CommandPayload::FireShortcut { shortcut },
     }
 }
 

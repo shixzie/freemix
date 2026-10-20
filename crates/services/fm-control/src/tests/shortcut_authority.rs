@@ -167,7 +167,7 @@ fn editing_a_shortcut_is_a_project_edit() {
         CommandPayload::RemoveShortcut { shortcut: 1 },
     );
     assert_denied(&refused, "EditProject");
-    assert!(control.engine.show().shortcuts().is_empty());
+    assert_eq!(control.engine.show().shortcuts(), []);
 
     let set = submit(
         &mut control,

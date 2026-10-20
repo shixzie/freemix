@@ -82,6 +82,7 @@ mod theme;
 mod titles;
 mod toasts;
 mod transitions;
+mod user_shortcuts;
 mod web_access;
 mod workspace;
 
@@ -141,6 +142,9 @@ pub use titles::TitleUpdate;
 pub use transitions::{
     T_BAR_KEY_STEP_BASIS_POINTS, TBarGesture, manual_kind_for, next_overlay_transition,
     t_bar_intents, t_bar_key_gesture,
+};
+pub use user_shortcuts::{
+    ShortcutIntent, fire_block as user_shortcut_fire_block, key_text as user_shortcut_key_text,
 };
 pub use web_access::{web_access_block_reason, web_access_intent};
 
@@ -385,6 +389,8 @@ pub enum StudioIntent {
     Cue(CueIntent),
     /// Sends one project script command: an edit or a run (RC-011).
     Script(ScriptIntent),
+    /// Sends one user shortcut command: an edit or a fire (RC-004).
+    Shortcut(ShortcutIntent),
     /// Drives one media-file input's transport (operator control) or edits
     /// its persisted playback settings (project edit) (Protocol 2.37).
     Media {
@@ -1580,6 +1586,7 @@ pub struct StudioShell {
     live_lan: live_lan::LiveLanWindow,
     web_access: web_access::WebAccessWindow,
     scripts: scripts::ScriptsWindow,
+    user_shortcuts: user_shortcuts::ShortcutsWindow,
     /// The Add / Edit destination dialog and Remove confirmation (OR-006).
     stream_targets: stream_targets::StreamTargetsUi,
     /// Tab drags, native window placement, and the layout name dialog.
@@ -1889,6 +1896,8 @@ impl StudioShell {
         );
         self.toggle_windows_on_keys(ui, state);
         let mut intents = self.keyboard_intents(ui, state, manual_transition_controls);
+        // The project's own keys come after the console's (RC-004).
+        self.fire_user_shortcut_keys(ui, state, &mut intents);
         self.restore_tiles_on_escape(ui);
         // Studio repaints on timers, so egui's `stable_dt` stays at its 1/60 s
         // prediction however long a frame gap really is; toasts and meter
@@ -1953,6 +1962,7 @@ impl StudioShell {
         self.draw_live_lan_window(ui.ctx(), state, &mut intents);
         self.draw_web_access_window(ui.ctx(), state, &mut intents);
         self.draw_scripts_window(ui.ctx(), state, &mut intents);
+        self.draw_user_shortcuts_window(ui.ctx(), state, &mut intents);
         self.draw_catalogue_dialogs(ui.ctx(), state, &mut intents);
         self.draw_stream_target_dialogs(ui.ctx(), state, &mut intents);
         self.draw_lifecycle_dialogs(ui.ctx(), state, &mut intents);
@@ -2102,6 +2112,7 @@ impl Default for StudioShell {
             live_lan: live_lan::LiveLanWindow::default(),
             web_access: web_access::WebAccessWindow::default(),
             scripts: scripts::ScriptsWindow::default(),
+            user_shortcuts: user_shortcuts::ShortcutsWindow::default(),
             stream_targets: stream_targets::StreamTargetsUi::default(),
             dock_ui: workspace::DockUi::default(),
         }

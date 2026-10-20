@@ -207,7 +207,8 @@ fn take_chords(ui: &mut Ui, wanted: impl Fn(Chord) -> bool) -> Vec<Chord> {
 impl StudioShell {
     /// Whether a modal dialog other than the keyboard reference and
     /// Preferences (whose own keys close them) is open: About, Add or
-    /// Remove input, an input-lifecycle dialog, or the layout-name dialog.
+    /// Remove input, an input-lifecycle dialog, the layout-name dialog, or
+    /// the Shortcuts window (whose "Set key" takes the next key press).
     /// No console key or chord acts behind one.
     pub(crate) const fn modal_dialog_open(&self) -> bool {
         self.show_about
@@ -215,6 +216,7 @@ impl StudioShell {
             || self.remove_input.is_some()
             || self.lifecycle.dialog_open()
             || self.layout_dialog_open()
+            || self.user_shortcuts.open
     }
 
     /// Whether any dialog blocks the window keys (Ctrl+G, Ctrl+Shift+A/L/S/N):
@@ -1039,5 +1041,31 @@ mod tests {
         let intents = run_keys(&mut shell, &state, &chord_presses(), false);
         assert_eq!(intents.len(), 2);
         assert!(shell.scripts.open && shell.live_lan.open);
+    }
+
+    /// RC-004: the keys no user shortcut may take mirror, in order, every
+    /// key the console reads in every context and while no panel owns the
+    /// keyboard, so a new console key is reserved too.
+    #[test]
+    fn user_shortcuts_reserve_every_console_key() {
+        let mirrored =
+            &crate::user_shortcuts::RESERVED_KEYS[..crate::user_shortcuts::MIRRORED_KEYS];
+        let reserved: Vec<_> = mirrored
+            .iter()
+            .map(|key| (key.key, key.modifiers, key.logical, key.keys))
+            .collect();
+        let console: Vec<_> = BINDINGS
+            .iter()
+            .filter(|binding| matches!(binding.scope, Global | Console))
+            .map(|binding| {
+                (
+                    binding.key,
+                    binding.modifiers,
+                    binding.matching == Logical,
+                    binding.keys,
+                )
+            })
+            .collect();
+        assert_eq!(reserved, console);
     }
 }

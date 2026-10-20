@@ -1908,6 +1908,36 @@ fn draw_actions(
     change
 }
 
+/// A user shortcut's action list (RC-004) in the cue action editor: each
+/// action's kind picker, parameters, and move and remove keys, then Add
+/// action. Returns whether the list changed this frame.
+pub(crate) fn draw_action_list(
+    ui: &mut Ui,
+    view: &ClientView,
+    project: &ProjectState,
+    actions: &mut Vec<WireCueAction>,
+    edit: Option<&'static str>,
+) -> bool {
+    let names = Names {
+        l: l10n::locale(ui.ctx()),
+        view,
+        project,
+        scripts_full: false,
+        show: None,
+        count_width: COUNT_KEY_WIDTH,
+    };
+    let mut cue = WireCue {
+        id: 1,
+        name: String::new(),
+        auto_follow: false,
+        actions: std::mem::take(actions),
+    };
+    let before = cue.actions.clone();
+    draw_actions(ui, &names, &mut cue, edit);
+    *actions = cue.actions;
+    *actions != before
+}
+
 /// The narrowest an action's picker or text field shrinks before it wraps
 /// to the next line.
 const MIN_FIELD_WIDTH: f32 = 56.0;

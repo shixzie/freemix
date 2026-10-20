@@ -578,6 +578,17 @@ impl StudioShell {
             self.open_scripts(state);
             ui.close();
         }
+        if item(
+            ui,
+            true,
+            self.locale.text(Msg::MenuUserShortcuts),
+            None,
+            self.locale.text(Msg::MenuUserShortcutsHover),
+            "",
+        ) {
+            self.open_user_shortcuts(state);
+            ui.close();
+        }
     }
 
     #[allow(clippy::too_many_lines)] // one menu group, one immediate-mode region
@@ -1556,6 +1567,7 @@ impl StudioShell {
                                     });
                                 }
                             });
+                            user_shortcut_group(ui, l, state, column);
                         });
                     ui.add_space(10.0);
                     ui.separator();
@@ -1733,6 +1745,29 @@ fn shortcut_group(ui: &mut Ui, l: Locale, group: ShortcutGroup, column: f32) {
                             .wrap(),
                     );
                 });
+                ui.end_row();
+            }
+        });
+}
+
+/// The project's own shortcuts (RC-004) below the console's: each key (or
+/// "OSC only") beside its shortcut's name, else where to add them.
+fn user_shortcut_group(ui: &mut Ui, l: Locale, state: &StudioUiState, column: f32) {
+    ui.add_space(10.0);
+    ui.label(section_label(l.text(Msg::UserShortcutsGroup)));
+    ui.add_space(2.0);
+    let rows = crate::user_shortcuts::reference_rows(l, state);
+    if rows.is_empty() {
+        ui.label(RichText::new(l.text(Msg::UserShortcutsReferenceEmpty)).color(muted_color()));
+        return;
+    }
+    egui::Grid::new("studio-shortcuts-project")
+        .num_columns(2)
+        .spacing(Vec2::new(16.0, 6.0))
+        .show(ui, |ui| {
+            for (keys, action) in rows {
+                key_cap(ui, &keys, column);
+                ui.add(egui::Label::new(RichText::new(action).color(text_color())).wrap());
                 ui.end_row();
             }
         });

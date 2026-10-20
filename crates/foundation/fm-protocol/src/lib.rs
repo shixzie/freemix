@@ -176,9 +176,9 @@ pub use script::{
 };
 pub use shortcut::{
     MAX_SHORTCUT_ACTIONS, MAX_SHORTCUT_KEY_BYTES, MAX_SHORTCUT_NAME_BYTES, MAX_SHORTCUT_OSC_BYTES,
-    MAX_SHORTCUT_TEXT_BYTES, MAX_SHORTCUTS, ShortcutFireChange, ShortcutSpec, ShortcutStateMessage,
-    ShortcutStatus, WireShortcutAction, WireShortcutCueOperation, WireShortcutKey,
-    shortcut_key_is_valid, shortcut_name_is_valid, shortcut_osc_is_valid,
+    MAX_SHORTCUT_TEXT_BYTES, MAX_SHORTCUTS, SHORTCUT_OSC_PREFIX, ShortcutFireChange, ShortcutSpec,
+    ShortcutStateMessage, ShortcutStatus, WireShortcutAction, WireShortcutCueOperation,
+    WireShortcutKey, shortcut_key_is_valid, shortcut_name_is_valid, shortcut_osc_is_valid,
 };
 pub use stream_target::{
     DEFAULT_STREAM_TARGET_SRT_LATENCY_MS, MAX_STREAM_RECONNECT_ATTEMPTS,

@@ -46,6 +46,37 @@ pub(crate) enum OscAction {
     /// the Cues panel's shown list (RC-017). `/freemix/cue/arm` uses the
     /// panel's "Fire in" delay, or its one `i` argument in milliseconds.
     Cue(fm_ui_egui::CueKey),
+    /// `/freemix/user/<name>`: the project shortcut with OSC name `name`
+    /// (RC-004).
+    User(OscName),
+}
+
+/// A user shortcut's OSC name, held inline so [`OscAction`] stays `Copy`:
+/// 1 to [`fm_protocol::MAX_SHORTCUT_OSC_BYTES`] lowercase ASCII letters,
+/// digits, `-`, and `_`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct OscName {
+    bytes: [u8; fm_protocol::MAX_SHORTCUT_OSC_BYTES],
+    len: u8,
+}
+
+impl OscName {
+    fn new(name: &str) -> Option<Self> {
+        if !fm_protocol::shortcut_osc_is_valid(name) {
+            return None;
+        }
+        let mut bytes = [0; fm_protocol::MAX_SHORTCUT_OSC_BYTES];
+        bytes[..name.len()].copy_from_slice(name.as_bytes());
+        Some(Self {
+            bytes,
+            len: u8::try_from(name.len()).ok()?,
+        })
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        // Only ASCII is ever stored.
+        str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -288,6 +319,9 @@ fn decode(datagram: &[u8]) -> Result<OscAction, ()> {
             Some(effect) => Ok(OscAction::StartManualTransition(effect)),
         };
     }
+    if let Some(name) = address.strip_prefix(fm_protocol::SHORTCUT_OSC_PREFIX) {
+        return OscName::new(name).map(OscAction::User).ok_or(());
+    }
     if let Some(input) = address.strip_prefix("/freemix/switcher/preview/") {
         return match input.as_bytes() {
             [number @ b'1'..=b'8'] => Ok(OscAction::SelectPreview(number - b'0')),
@@ -512,6 +546,31 @@ mod tests {
         ];
         for (address, action) in cases {
             assert_eq!(decode(&message(address)), Ok(action));
+        }
+    }
+
+    /// RC-004: `/freemix/user/<name>` names a project shortcut by its OSC
+    /// name, with no arguments.
+    #[test]
+    fn osc_decoder_accepts_user_shortcut_names() {
+        let longest = "a".repeat(fm_protocol::MAX_SHORTCUT_OSC_BYTES);
+        for name in ["lower-third", "s_1", "9", longest.as_str()] {
+            let Ok(OscAction::User(decoded)) = decode(&message(&format!("/freemix/user/{name}")))
+            else {
+                panic!("{name} was not decoded");
+            };
+            assert_eq!(decoded.as_str(), name);
+        }
+        let too_long = format!("/freemix/user/{longest}a");
+        for datagram in [
+            message("/freemix/user/"),
+            message("/freemix/user/Intro"),
+            message("/freemix/user/in/tro"),
+            message("/freemix/user/in tro"),
+            message(&too_long),
+            with_types("/freemix/user/intro", ",i", &[0, 0, 0, 1]),
+        ] {
+            assert_eq!(decode(&datagram), Err(()));
         }
     }
 

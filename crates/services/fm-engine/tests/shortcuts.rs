@@ -356,7 +356,7 @@ fn edits_are_undoable_padlocked_and_keep_keys_unique() {
             definition: None,
         },
     ));
-    assert!(engine.show().shortcuts().is_empty());
+    assert_eq!(engine.show().shortcuts(), []);
     accepted(&submit(
         &mut engine,
         "undo-remove",

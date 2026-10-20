@@ -18,7 +18,27 @@ const _: () = {
     assert!(fm_protocol::MAX_SHORTCUT_TEXT_BYTES == fm_model::MAX_SHORTCUT_TEXT_BYTES);
     assert!(fm_protocol::MAX_SHORTCUT_KEY_BYTES == fm_model::MAX_SHORTCUT_KEY_BYTES);
     assert!(fm_protocol::MAX_SHORTCUT_OSC_BYTES == fm_model::MAX_SHORTCUT_OSC_BYTES);
+    assert!(same_text(
+        fm_protocol::SHORTCUT_OSC_PREFIX,
+        fm_model::SHORTCUT_OSC_PREFIX
+    ));
 };
+
+/// `a == b`, at compile time.
+const fn same_text(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < a.len() {
+        if a[index] != b[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
 
 /// The wire form of a shortcut's key.
 #[must_use]
