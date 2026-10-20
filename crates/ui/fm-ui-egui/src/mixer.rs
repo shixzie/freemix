@@ -745,9 +745,12 @@ pub(crate) fn draw_mixer(
                                 let key = MeterKey::Input(status.input);
                                 let holds = ballistics.update(key, channels, dt_ms).to_vec();
                                 let target = StripDspTarget::Input(status.input);
-                                let sync = sync_row.then(|| {
+                                let sync = if sync_row {
                                     crate::source_sync_ui::sample_for(state, status.input)
-                                });
+                                        .map_or(SyncRow::Blank, SyncRow::Key)
+                                } else {
+                                    SyncRow::Absent
+                                };
                                 if draw_input_strip(
                                     ui,
                                     (view, fx_active(state, target), &mut *fx),
@@ -921,6 +924,17 @@ fn stale_badge(ui: &mut Ui, text: &str) {
     ui.painter()
         .galley(rect.center() - galley.size() / 2.0, galley, Color32::BLACK);
     response.on_hover_text(l10n::locale(ui.ctx()).text(Msg::MetersStaleHover));
+}
+
+/// An input strip's live source clock row (AU-004).
+#[derive(Clone, Copy)]
+enum SyncRow<'a> {
+    /// No strip shows a clock row.
+    Absent,
+    /// Other strips show one; this input has no loop.
+    Blank,
+    /// This input's loop.
+    Key(&'a SourceSyncSample),
 }
 
 /// Whether strip controls are enabled, and why not.
@@ -1731,13 +1745,12 @@ fn peak_box(ui: &mut Ui, holds: &[ChannelBallistics], has_sample: bool, stale: b
 }
 
 /// Draws one input strip; returns `true` when the operator cleared its clip.
-/// `sync` is `Some` when the strips carry a live source clock row (AU-004),
-/// with this input's loop if it has one.
+/// `sync` is its live source clock row (AU-004).
 #[allow(clippy::too_many_lines)] // one immediate-mode region
 fn draw_input_strip(
     ui: &mut Ui,
     (view, fx_on, fx): (&ClientView, bool, &mut Option<StripDspTarget>),
-    (status, sync): (&InputAudioStripStatus, Option<Option<&SourceSyncSample>>),
+    (status, sync): (&InputAudioStripStatus, SyncRow<'_>),
     feed: MeterFeed<'_>,
     gate: StripGate,
     layout: StripLayout,
@@ -1907,16 +1920,16 @@ fn draw_input_strip(
             }
         });
         match sync {
-            Some(Some(sample)) => {
-                crate::source_sync_ui::strip_badge(ui, sample, &input_name, layout.inner_width())
+            SyncRow::Key(sample) => {
+                crate::source_sync_ui::strip_badge(ui, sample, &input_name, layout.inner_width());
             }
-            Some(None) => {
+            SyncRow::Blank => {
                 ui.allocate_space(Vec2::new(
                     layout.inner_width(),
                     crate::source_sync_ui::SYNC_ROW_HEIGHT - 4.0,
                 ));
             }
-            None => {}
+            SyncRow::Absent => {}
         }
     });
     let update = InputAudioStripUpdate {
