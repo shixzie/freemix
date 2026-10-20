@@ -510,6 +510,26 @@ pub(crate) fn inverse(
     }
 }
 
+/// Whether `a` and `b` are `Set`s of the same input's items and options,
+/// whatever item each leaves active.
+pub(crate) fn same_edit(a: &EngineMediaListCommand, b: &EngineMediaListCommand) -> bool {
+    match (&a.operation, &b.operation) {
+        (
+            EngineMediaListOperation::Set {
+                items: a_items,
+                options: a_options,
+                ..
+            },
+            EngineMediaListOperation::Set {
+                items: b_items,
+                options: b_options,
+                ..
+            },
+        ) => a.input == b.input && a_items == b_items && a_options == b_options,
+        _ => false,
+    }
+}
+
 /// A media list input's replicated state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineMediaListStatus {

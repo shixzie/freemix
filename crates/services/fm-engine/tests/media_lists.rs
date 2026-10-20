@@ -842,3 +842,61 @@ fn a_set_may_name_the_active_item() {
     );
     assert_eq!(active(&engine), 3);
 }
+
+/// Navigating after an edit (by hand, or Auto Next while it plays) does not
+/// block undoing the edit, and the undo leaves the item navigated to active
+/// when the restored items keep it; redo after another navigation likewise.
+#[test]
+fn navigating_after_a_set_keeps_it_undoable_and_keeps_the_navigated_item() {
+    let mut engine = engine();
+    create(&mut engine, MediaListOptions::default());
+    let retrimmed = vec![
+        item(1, "a.mp4", (11, Some(15))),
+        item(2, "b.mov", (20, Some(25))),
+        item(3, "c.wav", (0, Some(5))),
+    ];
+    accept(
+        &mut engine,
+        "retrim",
+        EngineMediaListOperation::Set {
+            items: retrimmed.clone(),
+            options: MediaListOptions::default(),
+            active: None,
+        },
+    );
+    assert_eq!(active(&engine), 1);
+    navigate(&mut engine, "next", EngineMediaListNavigation::Next);
+    assert_eq!(active(&engine), 2);
+    let outcome = execute(&mut engine, "undo", undo());
+    assert!(
+        outcome.receipt.accepted().is_some(),
+        "{:?}",
+        outcome.receipt
+    );
+    assert_eq!(
+        engine.show().media_list(input(LIST)).unwrap().items,
+        items()
+    );
+    assert_eq!(active(&engine), 2, "the undo keeps the navigated item");
+    assert_eq!(asset(&engine), "asset://media/b.mov");
+    navigate(&mut engine, "next-again", EngineMediaListNavigation::Next);
+    assert_eq!(active(&engine), 3);
+    let outcome = execute(&mut engine, "redo", redo());
+    assert!(
+        outcome.receipt.accepted().is_some(),
+        "{:?}",
+        outcome.receipt
+    );
+    assert_eq!(
+        engine.show().media_list(input(LIST)).unwrap().items,
+        retrimmed
+    );
+    assert_eq!(active(&engine), 3, "the redo keeps the navigated item");
+    assert!(
+        execute(&mut engine, "undo-again", undo())
+            .receipt
+            .accepted()
+            .is_some()
+    );
+    assert_eq!(active(&engine), 3);
+}

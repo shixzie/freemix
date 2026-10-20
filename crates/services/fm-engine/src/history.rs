@@ -542,7 +542,7 @@ impl EditHistory {
             return Err(EditRejection::HistoryDrift { edit: entry.edit }.into_rejection());
         }
         Ok(ResolvedCommand {
-            command: apply.clone(),
+            command: list_step(state, apply, recorded),
             step: if undo {
                 HistoryStep::Undo
             } else {
@@ -800,8 +800,64 @@ fn reverses(state: &ShowState, apply: &EngineCommand, recorded: &EngineCommand) 
                     .get(id)
                     .is_some_and(|lut| lut.source() == source)
         }
+        // A media list's active item is live state (navigation and Auto
+        // Next move it without an edit), so only the edited items and
+        // options must match; `list_step` decides the active item.
+        (
+            EngineCommand::MediaList(
+                apply @ crate::EngineMediaListCommand {
+                    operation: crate::EngineMediaListOperation::Set { .. },
+                    ..
+                },
+            ),
+            EngineCommand::MediaList(recorded),
+        ) => crate::media_list::inverse(state, apply).is_some_and(|inverse| {
+            matches!(inverse, EngineCommand::MediaList(inverse)
+                if crate::media_list::same_edit(&inverse, recorded))
+        }),
         _ => inverse_for(state, apply).as_ref() == Some(recorded),
     }
+}
+
+/// The command an undo or redo step applies: `apply` itself, except that a
+/// media list `Set` restores its recorded active item only while the list
+/// still sits on the item the step leaves (`recorded`'s): after a
+/// navigation the operator's newer choice stays active when kept.
+fn list_step(state: &ShowState, apply: &EngineCommand, recorded: &EngineCommand) -> EngineCommand {
+    if let (
+        EngineCommand::MediaList(
+            command @ crate::EngineMediaListCommand {
+                operation:
+                    crate::EngineMediaListOperation::Set {
+                        items,
+                        options,
+                        active: Some(_),
+                    },
+                ..
+            },
+        ),
+        EngineCommand::MediaList(crate::EngineMediaListCommand {
+            operation:
+                crate::EngineMediaListOperation::Set {
+                    active: Some(left), ..
+                },
+            ..
+        }),
+    ) = (apply, recorded)
+        && state
+            .media_list(command.input)
+            .is_some_and(|list| list.active != *left)
+    {
+        return EngineCommand::MediaList(crate::EngineMediaListCommand {
+            input: command.input,
+            operation: crate::EngineMediaListOperation::Set {
+                items: items.clone(),
+                options: *options,
+                active: None,
+            },
+        });
+    }
+    apply.clone()
 }
 
 /// Returns `command` with every implicit position made explicit against
