@@ -31,10 +31,11 @@ highest-value remaining items, ranked:
 3. **Strip DSP on the live mix (`AU-005`), remaining parts.** Every input
    strip and Master now carry a persisted, undoable polarity / high-pass /
    five-band EQ / gate / expander / compressor / limiter chain that the
-   native daemon applies and meters, with BS.1770 / EBU R128 loudness and
-   true peak per strip and on Master (see the item 3 boundary below); a
-   loudness reset, delay as a DSP stage, Web controls, the simulated
-   daemon's audio path, and hardware acceptance remain.
+   native daemon applies and meters, with BS.1770 / EBU R128 loudness, the
+   EBU Tech 3342 loudness range, and true peak per strip and on Master, and
+   an operator reset per bus (Protocol 2.92; see the item 3 boundary
+   below); delay as a DSP stage, Web controls, the simulated daemon's audio
+   path, and hardware acceptance remain.
 4. **Finish user shortcuts (`RC-004`).** Project shortcuts now persist, travel
    on the wire, fire on the authority under per-action permissions, and are
    edited and dispatched in Studio (keys and OSC), with `.fmshortcuts`
@@ -1255,10 +1256,17 @@ the Master meters; the transactional mixer pair copies DSP state without
 allocating. `fm-audio`'s `LoudnessMeter` is an ITU-R BS.1770-4 / EBU R128
 meter (K-weighting derived for any rate, surround weights, the LFE
 excluded): momentary (400 ms), short-term (3 s), gated integrated loudness
-kept in a fixed 0.05 LU histogram, and a 4x-oversampled true peak per
-interval and since metering began, all without allocating after
-construction; `tests/loudness.rs` synthesizes EBU Tech 3341 cases 1 to 5,
-a surround-weight case, and inter-sample true peaks. The mixer feeds one
+kept in a fixed 0.05 LU histogram, the EBU Tech 3342 loudness range (3 s
+short-term values every 100 ms, the -70 LUFS absolute and -20 LU relative
+gates, the 10th to 95th percentiles) in a second such histogram, and a
+4x-oversampled true peak per interval and since metering began or was
+reset, all without allocating after construction. An operator reset
+(`reset_measurement`, Protocol 2.92) restarts integrated loudness, the
+range, and the maximum true peak while momentary and short-term loudness
+keep running; only gating blocks and short-term windows that begin after
+the reset count. `tests/loudness.rs` synthesizes EBU Tech 3341 cases 1 to
+5, a surround-weight case, inter-sample true peaks, EBU Tech 3342 cases 1
+to 4, and the reset. The mixer feeds one
 meter per strip with the strip's post-fader contribution (silence while it
 is not audible) and the daemon a Master meter with Program as it leaves,
 after Fade to Black. Stinger clip-local audio now joins Program as a
@@ -1267,23 +1275,29 @@ and metered with the strips. `freemixd --native-media` restores the chains, appl
 realized `audio_strip_dsp` edit to its ordinary and clip-local stinger mixers
 (the Master chain to the Program bus only), saves them, and reports
 gate/expander/compressor/limiter gain reduction in `audio_meters`
-`dynamics` and loudness in `audio_meters` `loudness`
-(`apps/freemixd/tests/native_strip_dsp.rs` proves an EQ boost, a
-compressor, a gate, the Master limiter, bypass, reconnect, and undo on a
-running daemon). Studio's `FX` key on each strip and on Master opens a
+`dynamics` and loudness (with the loudness range since Protocol 2.92) in
+`audio_meters` `loudness`. `audio_loudness_reset` (Protocol 2.92) is a
+live, journaled audio command that changes no show state: the engine
+validates the target and hands the native media plane a
+`LoudnessReset` on the command's frame, and a journal replay accepts it at
+the same revision (`apps/freemixd/tests/native_strip_dsp.rs` proves an EQ
+boost, a compressor, a gate, the Master limiter, bypass, reconnect, undo,
+and a per-bus loudness reset on a running daemon; `tests/process.rs` and
+`fm-control`'s `loudness_reset_journal` prove the replay). Studio's `FX` key on each strip and on Master opens a
 floating FX window with the EQ response curve (draggable band points and
 high-pass corner, wheel for Q), the polarity invert, per-band and per-stage
 controls, live gain-reduction meters, the chain's momentary, short-term,
-integrated, and true-peak readings, presets (flat, voice, podcast, music, master glue),
+integrated, loudness-range, and true-peak readings with a `Reset meter`
+key (Protocol 2.92), presets (flat, voice, podcast, music, master glue),
 and copy/paste between strips; drags send at most every 80 ms under one
 gesture token and the worker coalesces queued sets of one drag. The CLI has
-`audio-strip-dsp` / `remote-audio-strip-dsp` with presets or a chain code.
+`audio-strip-dsp` / `remote-audio-strip-dsp` with presets or a chain code,
+and `audio-loudness-reset` / `remote-audio-loudness-reset`.
 Each mixer strip and Master
 show a loudness readout under their keys (short-term per strip, integrated
 on Master; amber past -1 dBTP) whose hover lists every value.
-Remaining for `AU-005`: an operator reset of integrated loudness and the
-maximum true peak (they run from when the daemon starts metering a strip),
-loudness range (LRA), delay as a DSP stage, Web controls, an audio render
+Remaining for `AU-005`: delay as a DSP stage, Web controls (the Web page
+shows no loudness yet), an audio render
 path in the simulated daemon (its chains are state, persistence, and
 events only), an allocation-counting real-time test (the workspace forbids the `unsafe` a
 counting allocator needs; the no-allocation property rests on preallocated

@@ -3507,6 +3507,43 @@ schema change: lengths are runtime knowledge, never journaled or saved.
   header (`At least` while some lengths are unknown), with hover help.
 - 2.90 is refused.
 
+Protocol 2.92 completes loudness metering with the loudness range and an
+operator reset (AU-005). The project schema is unchanged.
+
+- Each `audio_meters` `loudness` entry gains a seventh value:
+  `<target>~<momentary>~<short_term>~<integrated>~<true_peak>~<max_true_peak>~<range>`.
+  `range` is the EBU Tech 3342 loudness range in canonical milli-LU within
+  0..=80000 (higher values clamp), or `-` while not measured. The server
+  takes the 3 s short-term loudness every 100 ms, drops values under the
+  absolute -70 LUFS gate and then those more than 20 LU under the mean
+  (power average) of the rest, and reports the spread between the 10th and
+  95th percentiles of what remains. An entry is sent while any of its seven
+  values is present; a six-value entry is refused.
+- Command `payload=audio_loudness_reset` with `target` (`master` or a
+  canonical input id) restarts that bus's integrated loudness, loudness
+  range, and maximum true peak; momentary and short-term loudness keep
+  running. Afterwards integrated loudness counts only 400 ms gating blocks,
+  and the loudness range only 3 s short-term windows, that begin after the
+  reset. It is a live audio operation (the audio-control permission, like
+  a fader): never blocked by a padlock, never recorded for undo, and
+  refused `not_found` for an input outside the show. It changes no show
+  state, so a snapshot carries nothing for it; it is announced by
+  `event=audio_mixer_changed` with `operation=audio_loudness_reset` and
+  `target`, journaled like every accepted command, and a journal replay
+  accepts it at the same revision. The native daemon realizes it on the
+  command's frame; the simulated daemon meters nothing and only accepts
+  and announces it.
+- The integrated loudness, loudness range, and maximum true peak run from
+  when the server began metering a target or from its latest reset; a
+  restarted daemon begins metering afresh.
+- Studio's FX window shows the loudness range (`LRA`, LU) beside
+  momentary, short-term, and integrated loudness and the true peaks, with a
+  `Reset meter` key that resets the open bus (Master or a strip); the
+  mixer strip loudness hovers list the range. The CLI adds
+  `audio-loudness-reset` and `remote-audio-loudness-reset`
+  `<input|master>`. The Web page shows no loudness.
+- 2.91 is refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision
