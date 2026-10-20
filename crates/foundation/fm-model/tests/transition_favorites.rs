@@ -38,7 +38,7 @@ fn project() -> Project {
 
 #[test]
 fn a_new_project_has_four_default_favourites() {
-    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 62);
+    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 63);
     let project = project();
     let favorites = project.transition_favorites();
     assert_eq!(TRANSITION_FAVORITE_COUNT, 4);

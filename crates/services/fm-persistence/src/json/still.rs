@@ -1,4 +1,4 @@
-//! Image and slideshow inputs in `project.json` (schema 60, IN-008,
+//! Image and slideshow inputs in `project.json` (schema 63, IN-008,
 //! IN-009).
 //!
 //! ```text

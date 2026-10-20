@@ -920,7 +920,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(62);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(63);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1472,7 +1472,7 @@ impl Project {
         self.script_run = script_run;
     }
 
-    /// The project's user shortcuts, in display order (RC-004, schema 62).
+    /// The project's user shortcuts, in display order (RC-004, schema 63).
     #[must_use]
     pub fn shortcuts(&self) -> &[crate::Shortcut] {
         &self.shortcuts
@@ -4236,10 +4236,10 @@ pub enum InputKind {
     /// device, named by the operator. Audio-only: it has no picture.
     SystemAudio(fm_types::system_audio::SystemAudioConfig),
     /// A still picture from the project's assets placed by a fit policy
-    /// (schema 60, IN-008). Silent.
+    /// (schema 63, IN-008). Silent.
     Image(fm_types::still::ImageInputConfig),
     /// A slideshow of the pictures in an asset folder or an explicit list
-    /// (schema 60, IN-009): a paged input. Silent.
+    /// (schema 63, IN-009): a paged input. Silent.
     Slideshow(fm_types::still::SlideshowConfig),
     Scene {
         scene_id: SceneId,

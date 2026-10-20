@@ -1,4 +1,4 @@
-//! The project's user shortcuts in `project.json` (RC-004, schema 62).
+//! The project's user shortcuts in `project.json` (RC-004, schema 63).
 //!
 //! ```text
 //! "shortcuts": [
