@@ -690,13 +690,18 @@ impl NativeDaemon {
                 continue;
             };
             let source = prefetched.source.clone();
-            self.files
-                .adopt(input, path.clone(), prefetched)
-                .map_err(AppFailure)?;
+            // A takeover that fails never stops the daemon: a worker that
+            // cannot start leaves the switch to the catalogue (which opens
+            // the file the slow way), and a source the engine refuses
+            // faults the input there, as a file that does not open does.
+            if let Err(error) = self.files.adopt(input, path.clone(), prefetched) {
+                eprintln!("FREEMIXD_MEDIA\tv=1\tinput={input}\tprefetch_adopt_failed\t{error}");
+                continue;
+            }
             self.stills.retain(|still| still.input != input);
-            control
-                .set_media_source(input, Some(source))
-                .map_err(|error| AppFailure(format!("media input {input} cannot open: {error}")))?;
+            if let Err(error) = control.set_media_source(input, Some(source)) {
+                eprintln!("FREEMIXD_MEDIA\tv=1\tinput={input}\tprefetch_refused\t{error}");
+            }
             let mut resolved = self.resolved_sources.as_ref().clone();
             resolved.retain(|source| source.input() != input);
             resolved.push(NativeResolvedSource::LocalVideo { input, path });

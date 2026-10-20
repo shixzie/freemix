@@ -6807,13 +6807,17 @@ impl NativeDaemon {
                 }
                 // A file that reopened opens the transport of an input that
                 // had no source at startup (closed or offline then); one
-                // with a startup source reopened it already.
+                // with a startup source reopened it already. A source the
+                // engine refuses faults the input there; it never stops the
+                // daemon.
                 native_files::FileReport::Opened(source) => {
-                    if control.input_lifecycle(input).closed || control.media_source_open(input) {
-                        Ok(())
-                    } else {
-                        control.set_media_source(input, Some(source))
+                    if !control.input_lifecycle(input).closed
+                        && !control.media_source_open(input)
+                        && let Err(error) = control.set_media_source(input, Some(source))
+                    {
+                        eprintln!("FREEMIXD_MEDIA\tv=1\tinput={input}\topen_refused\t{error}");
                     }
+                    Ok(())
                 }
             };
             applied.map_err(|error| {
