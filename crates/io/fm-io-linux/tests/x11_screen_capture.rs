@@ -55,8 +55,12 @@ struct Xvfb {
 
 impl Xvfb {
     fn start(width: u32, height: u32) -> Self {
+        // Tests of this binary run in parallel: each display they start
+        // gets its own number.
+        static STARTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let start = STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) * 293;
         for attempt in 0..40_u32 {
-            let number = 200 + (std::process::id() + attempt * 7) % 600;
+            let number = 200 + (std::process::id() + start + attempt * 7) % 600;
             if Path::new(&format!("/tmp/.X11-unix/X{number}")).exists() {
                 continue;
             }
@@ -405,6 +409,67 @@ fn x11_windows_are_listed_captured_followed_and_lost() {
     );
     drop(receiver);
     blue.close();
+}
+
+/// Windows opening and closing while the desktop is listed never fail the
+/// listing: a window that closes mid-listing is left out, and every other
+/// window (and the screen) is still listed.
+#[test]
+fn windows_closing_while_listed_never_fail_the_listing() {
+    if !tools_available() {
+        eprintln!("skipping: Xvfb or ffmpeg unavailable");
+        return;
+    }
+    let xvfb = Xvfb::start(320, 240);
+    let steady = TestWindow::open(
+        &xvfb.display,
+        "FreemixTest",
+        "steady",
+        0x00ff_0000,
+        (0, 0, 64, 48),
+    );
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let churn = {
+        let display = xvfb.display.clone();
+        let stop = std::sync::Arc::clone(&stop);
+        std::thread::spawn(move || {
+            let mut opened = 0_u32;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                TestWindow::open(&display, "Churn", "brief", 0x0000_00ff, (8, 8, 32, 32)).close();
+                opened += 1;
+            }
+            opened
+        })
+    };
+    let mut lister = X11Lister::new(xvfb.display.clone(), false);
+    let deadline = Instant::now() + Duration::from_secs(4);
+    let mut failures = Vec::new();
+    let mut listings = 0;
+    while Instant::now() < deadline {
+        let listing = lister.list();
+        listings += 1;
+        let steady_listed = listing
+            .inventory
+            .windows
+            .iter()
+            .any(|window| window.title == "steady");
+        if listing.inventory.error.is_some()
+            || !steady_listed
+            || listing.inventory.screens.is_empty()
+        {
+            failures.push(listing);
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let opened = churn.join().unwrap();
+    steady.close();
+    assert!(opened > 10, "the churn opened {opened} windows");
+    assert!(
+        failures.is_empty(),
+        "{} of {listings} listings failed while {opened} windows came and went; first: {:?}",
+        failures.len(),
+        failures[0]
+    );
 }
 
 #[test]

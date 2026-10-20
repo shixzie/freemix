@@ -329,6 +329,7 @@ mod x11 {
         WindowInfo,
     };
     use x11rb::connection::Connection;
+    use x11rb::errors::ReplyError;
     use x11rb::protocol::randr::ConnectionExt as _;
     use x11rb::protocol::xproto::{Atom, AtomEnum, ConnectionExt as _, MapState, Window};
     use x11rb::rust_connection::RustConnection;
@@ -558,7 +559,10 @@ mod x11 {
         let tree = connection.query_tree(connected.root)?.reply()?;
         let mut found = Vec::new();
         for &child in tree.children.iter().rev().take(MAX_EXAMINED) {
-            let attributes = connection.get_window_attributes(child)?.reply()?;
+            // Each window may close while it is examined: it is skipped.
+            let Some(attributes) = alive(connection.get_window_attributes(child)?.reply())? else {
+                continue;
+            };
             if attributes.override_redirect || attributes.map_state != MapState::VIEWABLE {
                 continue;
             }
@@ -567,7 +571,9 @@ mod x11 {
                 continue;
             }
             // A frame of a reparenting window manager holds the client.
-            let inner = connection.query_tree(child)?.reply()?;
+            let Some(inner) = alive(connection.query_tree(child)?.reply())? else {
+                continue;
+            };
             for &grandchild in inner.children.iter().rev() {
                 if has_class(connected, grandchild)? {
                     found.push(grandchild);
@@ -578,21 +584,38 @@ mod x11 {
         Ok(found)
     }
 
+    /// A reply about one window, or `None` when the server refused the
+    /// request (the window closed meanwhile); only a broken connection
+    /// fails the listing.
+    fn alive<T>(reply: Result<T, ReplyError>) -> Result<Option<T>, Failure> {
+        match reply {
+            Ok(reply) => Ok(Some(reply)),
+            Err(ReplyError::X11Error(_)) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// A window's property, or `None` when the window closed meanwhile.
     fn property(
         connected: &Connected,
         window: Window,
         atom: impl Into<Atom>,
         kind: impl Into<Atom>,
-    ) -> Result<Vec<u8>, Failure> {
-        Ok(connected
-            .connection
-            .get_property(false, window, atom, kind, 0, PROPERTY_UNITS)?
-            .reply()?
-            .value)
+    ) -> Result<Option<Vec<u8>>, Failure> {
+        Ok(alive(
+            connected
+                .connection
+                .get_property(false, window, atom, kind, 0, PROPERTY_UNITS)?
+                .reply(),
+        )?
+        .map(|reply| reply.value))
     }
 
     fn has_class(connected: &Connected, window: Window) -> Result<bool, Failure> {
-        Ok(!property(connected, window, AtomEnum::WM_CLASS, AtomEnum::STRING)?.is_empty())
+        Ok(
+            property(connected, window, AtomEnum::WM_CLASS, AtomEnum::STRING)?
+                .is_some_and(|class| !class.is_empty()),
+        )
     }
 
     /// A Latin-1 property text as UTF-8.
@@ -618,38 +641,47 @@ mod x11 {
         else {
             return Ok(None);
         };
-        let class = property(connected, window, AtomEnum::WM_CLASS, AtomEnum::STRING)?;
+        // From here on each property is `None` once the window closed.
+        let Some(class) = property(connected, window, AtomEnum::WM_CLASS, AtomEnum::STRING)? else {
+            return Ok(None);
+        };
         // `WM_CLASS` is the instance and the class, each NUL-terminated.
         let mut parts = class
             .split(|byte| *byte == 0)
             .filter(|part| !part.is_empty());
         let instance = parts.next().map(latin1).unwrap_or_default();
         let app = parts.next().map_or(instance, latin1);
-        let utf8_title = property(
+        let Some(utf8_title) = property(
             connected,
             window,
             connected.atoms.net_wm_name,
             connected.atoms.utf8_string,
-        )?;
+        )?
+        else {
+            return Ok(None);
+        };
         let title = if utf8_title.is_empty() {
-            latin1(&property(
-                connected,
-                window,
-                AtomEnum::WM_NAME,
-                AtomEnum::STRING,
-            )?)
+            let Some(name) = property(connected, window, AtomEnum::WM_NAME, AtomEnum::STRING)?
+            else {
+                return Ok(None);
+            };
+            latin1(&name)
         } else {
             String::from_utf8_lossy(&utf8_title).into_owned()
         };
-        let pid = property(
+        let Some(pid) = property(
             connected,
             window,
             connected.atoms.net_wm_pid,
             AtomEnum::CARDINAL,
         )?
-        .get(..4)
-        .map(|bytes| u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        .filter(|pid| *pid != 0);
+        else {
+            return Ok(None);
+        };
+        let pid = pid
+            .get(..4)
+            .map(|bytes| u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            .filter(|pid| *pid != 0);
         Ok(Some(WindowInfo {
             id: u64::from(window),
             app,
