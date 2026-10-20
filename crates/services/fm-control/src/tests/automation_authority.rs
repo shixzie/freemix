@@ -155,13 +155,16 @@ fn set_list(cues: Vec<WireCue>) -> CommandPayload {
 fn go(cue: Option<u64>) -> CommandPayload {
     CommandPayload::CueControl {
         list: 7,
-        operation: CueOperation::Go { cue },
+        operation: CueOperation::Go {
+            cue,
+            targets: fm_protocol::WireTargetBindings::default(),
+        },
     }
 }
 
 fn cut(value: u128) -> WireCueAction {
     WireCueAction::Take {
-        input: Some(wire(value)),
+        input: Some(fm_types::InputTarget::Fixed(wire(value))),
         effect: TransitionFavoriteEffect::Cut,
         duration_frames: 0,
     }
@@ -169,7 +172,7 @@ fn cut(value: u128) -> WireCueAction {
 
 fn mute(value: u128) -> WireCueAction {
     WireCueAction::AudioMute {
-        input: wire(value),
+        input: fm_types::InputTarget::Fixed(wire(value)),
         muted: true,
     }
 }
@@ -341,7 +344,7 @@ fn each_cue_action_needs_the_class_of_its_direct_command() {
     ];
     for (action, direct) in cases {
         assert_eq!(
-            cue_action_class(&action),
+            cue_action_class(&CueAction::from(action.clone())),
             Some(command_class(&direct)),
             "{action:?}"
         );
@@ -437,14 +440,16 @@ fn scripts_and_cues_need_the_class_of_every_action_category() {
         ("cut 3", cut(3), None),
         (
             "preview 3",
-            WireCueAction::Preview { input: wire(3) },
+            WireCueAction::Preview {
+                input: fm_types::InputTarget::Fixed(wire(3)),
+            },
             Some(CommandClass::SelectPreview),
         ),
         (
             "overlay 1, 3",
             WireCueAction::OverlayOn {
                 channel: WireOverlayChannelId::new(1).unwrap(),
-                input: wire(3),
+                input: fm_types::InputTarget::Fixed(wire(3)),
             },
             None,
         ),
@@ -468,7 +473,7 @@ fn scripts_and_cues_need_the_class_of_every_action_category() {
         (
             "gain 3, -6000",
             WireCueAction::AudioGain {
-                input: wire(3),
+                input: fm_types::InputTarget::Fixed(wire(3)),
                 gain_millidb: -6_000,
             },
             Some(CommandClass::ControlAudio),
@@ -659,7 +664,11 @@ fn an_edit_to_an_armed_chain_needs_what_it_adds() {
 fn an_armed_go_needs_what_a_go_needs_and_fires_on_the_clock() {
     let arm = |cue| CommandPayload::CueControl {
         list: 7,
-        operation: CueOperation::Arm { cue, in_ms: 100 },
+        operation: CueOperation::Arm {
+            cue,
+            in_ms: 100,
+            targets: fm_protocol::WireTargetBindings::default(),
+        },
     };
     let cues = |last: Vec<WireCueAction>| {
         set_list(vec![
@@ -841,7 +850,12 @@ fn a_failing_script_fails_its_cue_step_with_a_typed_reason() {
             cue(
                 10,
                 false,
-                vec![WireCueAction::Preview { input: wire(3) }, run_step(1)],
+                vec![
+                    WireCueAction::Preview {
+                        input: fm_types::InputTarget::Fixed(wire(3)),
+                    },
+                    run_step(1),
+                ],
             ),
             cue(
                 20,
@@ -849,7 +863,9 @@ fn a_failing_script_fails_its_cue_step_with_a_typed_reason() {
                 vec![
                     cut(2),
                     wait(2),
-                    WireCueAction::Preview { input: wire(1) },
+                    WireCueAction::Preview {
+                        input: fm_types::InputTarget::Fixed(wire(1)),
+                    },
                     run_step(1),
                 ],
             ),

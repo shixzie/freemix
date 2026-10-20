@@ -66,34 +66,38 @@ pub const MAX_CUE_TRANSITION_FRAMES: u32 = 3_600;
 pub const MAX_CUE_TITLE_NUMBER: i64 = 999_999_999_999;
 
 /// One step of a cue.
+///
+/// Since Protocol 2.88 (RC-004) an action names its input with a
+/// [`WireInputTarget`]: an input id, or `preview`, `program`, or `selected`,
+/// resolved when the action is fired.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WireCueAction {
     /// Puts `input` on Preview.
     Preview {
-        input: WireInputId,
+        input: WireInputTarget,
     },
     /// Takes `input` (or the current Preview with `None`) to Program: a cut
     /// (zero frames), a mix, or a Stinger slot over `duration_frames`.
     Take {
-        input: Option<WireInputId>,
+        input: Option<WireInputTarget>,
         effect: TransitionFavoriteEffect,
         duration_frames: u32,
     },
     OverlayOn {
         channel: WireOverlayChannelId,
-        input: WireInputId,
+        input: WireInputTarget,
     },
     OverlayOff {
         channel: WireOverlayChannelId,
     },
     /// Takes title `input` onto overlay `channel`.
     TitleOn {
-        input: WireInputId,
+        input: WireInputTarget,
         channel: WireOverlayChannelId,
     },
     /// Sets one text field of title `input`.
     TitleText {
-        input: WireInputId,
+        input: WireInputTarget,
         field: WireTitleFieldId,
         text: String,
     },
@@ -102,13 +106,13 @@ pub enum WireCueAction {
     /// decimal integer (Protocol 2.65): `value` at most
     /// [`MAX_CUE_TITLE_NUMBER`] in magnitude.
     TitleNumber {
-        input: WireInputId,
+        input: WireInputTarget,
         field: WireTitleFieldId,
         add: bool,
         value: i64,
     },
     TitleOff {
-        input: WireInputId,
+        input: WireInputTarget,
     },
     FadeToBlack {
         active: bool,
@@ -117,11 +121,11 @@ pub enum WireCueAction {
     PlaylistStart,
     PlaylistStop,
     AudioGain {
-        input: WireInputId,
+        input: WireInputTarget,
         gain_millidb: i32,
     },
     AudioMute {
-        input: WireInputId,
+        input: WireInputTarget,
         muted: bool,
     },
     Record {
@@ -134,14 +138,14 @@ pub enum WireCueAction {
     },
     /// Runs `operation` on media input `input`'s transport (Protocol 2.51).
     Media {
-        input: WireInputId,
+        input: WireInputTarget,
         operation: WireCueMediaOperation,
     },
     /// Steps paged input `input` (a slideshow, IN-009): token
     /// `page.<input>.<next|previous|first|last>` or
     /// `page.<input>.goto.<page>`.
     Page {
-        input: WireInputId,
+        input: WireInputTarget,
         navigation: crate::PagedNavigation,
     },
     /// Defers the cue's remaining actions by `frames` (at least one).
@@ -159,6 +163,70 @@ pub enum WireCueAction {
     RunScript {
         script: u64,
     },
+}
+
+/// The input a cue or shortcut action acts on (Protocol 2.88, RC-004): a
+/// fixed input or a role resolved when the action is fired. Its token is
+/// the input id or `preview`, `program`, or `selected`.
+pub type WireInputTarget = fm_types::InputTarget<WireInputId>;
+
+/// The inputs the dynamic targets of one fire resolve to (Protocol 2.88,
+/// RC-004). A client sends `selected`, the input selected on its console;
+/// the authority binds `preview` and `program` and journals all three, so
+/// a replay acts on the same inputs. Encoded as the optional command fields
+/// `selected`, `bound_preview`, and `bound_program`.
+pub type WireTargetBindings = fm_types::TargetBindings<WireInputId>;
+
+impl WireCueAction {
+    /// The action naming `target` in place of its input; an action naming
+    /// no input (and a take of the current Preview) is unchanged.
+    #[must_use]
+    pub fn with_target(mut self, target: WireInputTarget) -> Self {
+        match &mut self {
+            Self::Preview { input }
+            | Self::OverlayOn { input, .. }
+            | Self::TitleOn { input, .. }
+            | Self::TitleText { input, .. }
+            | Self::TitleNumber { input, .. }
+            | Self::TitleOff { input }
+            | Self::AudioGain { input, .. }
+            | Self::AudioMute { input, .. }
+            | Self::Media { input, .. }
+            | Self::Page { input, .. }
+            | Self::Take {
+                input: Some(input), ..
+            } => *input = target,
+            _ => {}
+        }
+        self
+    }
+
+    /// The input the action names, as it names it.
+    #[must_use]
+    pub const fn target(&self) -> Option<WireInputTarget> {
+        match self {
+            Self::Preview { input }
+            | Self::OverlayOn { input, .. }
+            | Self::TitleOn { input, .. }
+            | Self::TitleText { input, .. }
+            | Self::TitleNumber { input, .. }
+            | Self::TitleOff { input }
+            | Self::AudioGain { input, .. }
+            | Self::AudioMute { input, .. }
+            | Self::Media { input, .. }
+            | Self::Page { input, .. } => Some(*input),
+            Self::Take { input, .. } => *input,
+            Self::OverlayOff { .. }
+            | Self::FadeToBlack { .. }
+            | Self::PlaylistStart
+            | Self::PlaylistStop
+            | Self::Record { .. }
+            | Self::Stream { .. }
+            | Self::Wait { .. }
+            | Self::Delay { .. }
+            | Self::RunScript { .. } => None,
+        }
+    }
 }
 
 /// A media transport operation a cue runs (Protocol 2.51).
@@ -245,8 +313,12 @@ pub struct CueListStatus {
 /// A live cue list operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CueOperation {
-    /// Fires `cue`, or the standby cue with `None`.
-    Go { cue: Option<u64> },
+    /// Fires `cue`, or the standby cue with `None`; its dynamic targets
+    /// resolve under `targets` (Protocol 2.88).
+    Go {
+        cue: Option<u64>,
+        targets: WireTargetBindings,
+    },
     /// Puts `cue` on standby (jump).
     Standby { cue: u64 },
     /// Moves standby to the previous cue.
@@ -259,8 +331,13 @@ pub enum CueOperation {
     Reset,
     /// Arms a GO of `cue`, or of the standby cue with `None`, to fire
     /// `in_ms` (`1..=`[`MAX_CUE_ARM_MS`]) milliseconds after the command's
-    /// frame (Protocol 2.64), replacing a GO armed before.
-    Arm { cue: Option<u64>, in_ms: u32 },
+    /// frame (Protocol 2.64), replacing a GO armed before. Its dynamic
+    /// targets resolve under `targets`, bound when armed (Protocol 2.88).
+    Arm {
+        cue: Option<u64>,
+        in_ms: u32,
+        targets: WireTargetBindings,
+    },
     /// Drops the armed GO (Protocol 2.64).
     Disarm,
 }

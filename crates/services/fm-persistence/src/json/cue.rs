@@ -16,8 +16,14 @@
 //! A fault is `{"cue", "action", "reason", "message"}`: the action refused
 //! when its wait ended, and (schema 57) what it was refused with, as a
 //! script run's fault says it (see [`super::script`]). `armed` (schema 58)
-//! is `null` or `{"cue", "due_frame"}`: a GO armed to fire on that engine
-//! frame.
+//! is `null` or `{"cue", "due_frame", "targets"}`: a GO armed to fire on
+//! that engine frame.
+//!
+//! Schema 73 (RC-004): an action's `input` is an input id or one of the
+//! dynamic targets `"preview"`, `"program"`, and `"selected"`, resolved when
+//! the action is fired. A run state's `targets` (and an armed GO's) is
+//! `null` or `{"preview", "program", "selected"}`, the inputs (each an id or
+//! `null`) the GO that started the run bound its dynamic targets to.
 //!
 //! Action types: `preview` (`input`), `take` (`input` or `null` for the
 //! current Preview, `effect` a [`fm_model::TransitionEffect`] token or
@@ -40,7 +46,7 @@ use fm_model::{
     Cue, CueAction, CueArmed, CueFault, CueList, CueMediaOperation, CueNumberUpdate, CuePending,
     CueRunState, RecorderSlot, StingerSlotNumber, StreamTargetId, TitleFieldId, TransitionEffect,
 };
-use fm_types::InputId;
+use fm_types::{InputId, InputTarget, TargetBindings};
 
 use super::{DecodeError, Object, Value, escape_string, parse_array, parse_optional, syntax};
 
@@ -96,9 +102,26 @@ fn write_cue(output: &mut String, cue: &Cue) {
     output.push_str("]}");
 }
 
+/// An action's target as JSON (schema 73): a fixed input's id, or the
+/// string `"preview"`, `"program"`, or `"selected"`.
+#[derive(Clone, Copy)]
+struct JsonTarget(InputTarget);
+
+impl core::fmt::Display for JsonTarget {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.0 {
+            InputTarget::Fixed(input) => write!(formatter, "{input}"),
+            role => write!(formatter, "\"{role}\""),
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines)] // one arm per action type
 pub(crate) fn write_action(output: &mut String, action: &CueAction) {
-    let result = match action {
+    let action = action
+        .try_map_input(|target| Ok::<_, core::convert::Infallible>(JsonTarget(target)))
+        .unwrap_or_else(|never| match never {});
+    let result = match &action {
         CueAction::Preview { input } => {
             write!(output, "{{\"type\": \"preview\", \"input\": {input}}}")
         }
@@ -221,7 +244,7 @@ pub(crate) fn write_action(output: &mut String, action: &CueAction) {
 
 fn write_media(
     output: &mut String,
-    input: InputId,
+    input: JsonTarget,
     operation: &CueMediaOperation,
 ) -> core::fmt::Result {
     match operation {
@@ -283,14 +306,61 @@ fn write_state(output: &mut String, state: &CueRunState) {
     output.push_str(", \"armed\": ");
     match state.armed {
         None => output.push_str("null"),
-        Some(armed) => write!(
-            output,
-            "{{\"cue\": {}, \"due_frame\": {}}}",
-            armed.cue, armed.due_frame
-        )
-        .expect("writing to a string cannot fail"),
+        Some(armed) => {
+            write!(
+                output,
+                "{{\"cue\": {}, \"due_frame\": {}, \"targets\": ",
+                armed.cue, armed.due_frame
+            )
+            .expect("writing to a string cannot fail");
+            write_targets(output, armed.targets.as_ref());
+            output.push('}');
+        }
     }
+    output.push_str(", \"targets\": ");
+    write_targets(output, state.targets.as_ref());
     output.push('}');
+}
+
+/// Writes a run's bound targets (schema 73): `null`, or
+/// `{"preview", "program", "selected"}`, each an input id or `null`.
+fn write_targets(output: &mut String, targets: Option<&TargetBindings>) {
+    let Some(targets) = targets else {
+        output.push_str("null");
+        return;
+    };
+    let id = |input: Option<InputId>| input.map_or_else(|| "null".to_owned(), |id| id.to_string());
+    write!(
+        output,
+        "{{\"preview\": {}, \"program\": {}, \"selected\": {}}}",
+        id(targets.preview),
+        id(targets.program),
+        id(targets.selected)
+    )
+    .expect("writing to a string cannot fail");
+}
+
+fn parse_targets(value: Value) -> Result<Option<TargetBindings>, DecodeError> {
+    parse_optional(value, |value| {
+        let mut object = Object::new(value, "cue targets")?;
+        let mut id = |field: &str| {
+            parse_optional(object.take(field)?, |value| {
+                let Value::Number(value) = value else {
+                    return Err(syntax("cue target must be an input id or null"));
+                };
+                core::num::NonZeroU128::new(value)
+                    .map(InputId::new)
+                    .ok_or_else(|| syntax("cue target must be nonzero"))
+            })
+        };
+        let targets = TargetBindings {
+            preview: id("preview")?,
+            program: id("program")?,
+            selected: id("selected")?,
+        };
+        object.finish()?;
+        Ok(targets)
+    })
 }
 
 /// Parses `"cue_lists"` from the project object.
@@ -328,8 +398,23 @@ fn parse_cue(value: Value) -> Result<Cue, DecodeError> {
     })
 }
 
-fn input(object: &mut Object) -> Result<InputId, DecodeError> {
-    Ok(InputId::new(object.nonzero_u128("input")?))
+/// Parses an action's target (schema 73): an input id, or `"preview"`,
+/// `"program"`, or `"selected"`.
+fn target(value: Value) -> Result<InputTarget, DecodeError> {
+    match value {
+        Value::Number(value) => core::num::NonZeroU128::new(value)
+            .map(|id| InputTarget::Fixed(InputId::new(id)))
+            .ok_or_else(|| syntax("cue action input must be nonzero")),
+        Value::String(role) => InputTarget::from_role_token(&role)
+            .ok_or_else(|| super::unknown_enum("cue action input", &role)),
+        _ => Err(syntax(
+            "cue action input must be an input id, \"preview\", \"program\", or \"selected\"",
+        )),
+    }
+}
+
+fn input(object: &mut Object) -> Result<InputTarget, DecodeError> {
+    target(object.take("input")?)
 }
 
 #[allow(clippy::too_many_lines)] // one arm per action type
@@ -340,14 +425,7 @@ pub(crate) fn parse_action(value: Value) -> Result<CueAction, DecodeError> {
             input: input(&mut object)?,
         },
         "take" => {
-            let input = parse_optional(object.take("input")?, |value| {
-                let Value::Number(value) = value else {
-                    return Err(syntax("cue take input must be an input id or null"));
-                };
-                core::num::NonZeroU128::new(value)
-                    .map(InputId::new)
-                    .ok_or_else(|| syntax("cue take input must be nonzero"))
-            })?;
+            let input = parse_optional(object.take("input")?, target)?;
             let effect = match object.string("effect")?.as_str() {
                 "stinger" => TransitionEffect::Stinger(
                     StingerSlotNumber::new(object.u8("slot")?)
@@ -513,10 +591,12 @@ fn parse_state(value: Value) -> Result<CueRunState, DecodeError> {
         let parsed = CueArmed {
             cue: armed.u64("cue")?,
             due_frame: armed.u64("due_frame")?,
+            targets: parse_targets(armed.take("targets")?)?,
         };
         armed.finish()?;
         Ok(parsed)
     })?;
+    let targets = parse_targets(object.take("targets")?)?;
     object.finish()?;
     Ok(CueRunState {
         standby,
@@ -525,5 +605,6 @@ fn parse_state(value: Value) -> Result<CueRunState, DecodeError> {
         played,
         fault,
         armed,
+        targets,
     })
 }

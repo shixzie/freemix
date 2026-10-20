@@ -240,7 +240,7 @@ pub fn action_classes(engine: &Engine, payload: &CommandPayload) -> ClassSet {
         }
         CommandPayload::CueControl {
             list,
-            operation: CueOperation::Go { cue } | CueOperation::Arm { cue, .. },
+            operation: CueOperation::Go { cue, .. } | CueOperation::Arm { cue, .. },
         } => engine
             .show()
             .cue_list(*list)
@@ -260,7 +260,7 @@ pub fn action_classes(engine: &Engine, payload: &CommandPayload) -> ClassSet {
             classes(engine, armed_actions(found, &edited)).without(armed)
         }
         // A fire needs what the command it stands for needs (RC-004).
-        CommandPayload::FireShortcut { shortcut } => match engine.shortcut_command(*shortcut) {
+        CommandPayload::FireShortcut { shortcut, .. } => match engine.shortcut_command(*shortcut) {
             Ok(fm_engine::EngineCommand::FireShortcut { .. }) => {
                 match engine.show().shortcut(*shortcut).map(|found| &found.action) {
                     Some(fm_model::ShortcutAction::Actions(actions)) => classes(engine, actions),
@@ -272,12 +272,15 @@ pub fn action_classes(engine: &Engine, payload: &CommandPayload) -> ClassSet {
             }
             Ok(fm_engine::EngineCommand::CueControl {
                 list,
-                operation: fm_engine::EngineCueOperation::Go { cue },
+                operation: fm_engine::EngineCueOperation::Go { cue, .. },
             }) => action_classes(
                 engine,
                 &CommandPayload::CueControl {
                     list,
-                    operation: CueOperation::Go { cue },
+                    operation: CueOperation::Go {
+                        cue,
+                        targets: fm_protocol::WireTargetBindings::default(),
+                    },
                 },
             ),
             _ => ClassSet::default(),

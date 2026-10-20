@@ -707,6 +707,7 @@ fn decode_command_payload(
         },
         "shortcut_fire" => CommandPayload::FireShortcut {
             shortcut: super::shortcut::decode_shortcut_id(fields)?,
+            targets: super::cue::decode_targets(fields)?,
         },
         "script_stop" => CommandPayload::StopScript {
             run: super::script::decode_optional_run_id(fields)?,

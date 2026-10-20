@@ -7369,6 +7369,38 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::CueMillisUnit, t("ms")),
     (Msg::CueParamPreview, t("(Previo)")),
     (Msg::CueParamInputHover, t("La entrada que usa esta acción")),
+    (Msg::CueTargetPreview, t("Entrada en Previo")),
+    (Msg::CueTargetProgram, t("Entrada en Programa")),
+    (Msg::CueTargetSelected, t("Entrada seleccionada")),
+    (
+        Msg::CueTargetPreviewHover,
+        t(
+            "Actúa sobre la entrada que esté en Previo cuando se dispara la acción (en una cue, cuando se da su GO), no sobre una entrada fija",
+        ),
+    ),
+    (
+        Msg::CueTargetProgramHover,
+        t(
+            "Actúa sobre la entrada que esté en Programa cuando se dispara la acción (en una cue, cuando se da su GO), no sobre una entrada fija",
+        ),
+    ),
+    (
+        Msg::CueTargetSelectedHover,
+        t(
+            "Actúa sobre la entrada seleccionada en la consola que la dispara: el último mosaico de entrada pulsado allí. Se rechaza si esa consola no tiene ninguna entrada seleccionada",
+        ),
+    ),
+    (Msg::CuePvUnboundTarget, t("{action}: {target}")),
+    (
+        Msg::CuePvRefNoSelection,
+        t("no hay ninguna entrada seleccionada en esta consola"),
+    ),
+    (
+        Msg::TileSelectedNote,
+        t(
+            "Seleccionada: los atajos y las cues dirigidos a la entrada seleccionada actúan sobre esta entrada",
+        ),
+    ),
     (
         Msg::CueParamEffectHover,
         t("Efecto de transición: Corte pasa al instante"),

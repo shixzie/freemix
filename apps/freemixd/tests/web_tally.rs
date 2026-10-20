@@ -883,7 +883,7 @@ fn web_tally_go_needs_the_permissions_of_the_chain_it_fires() {
     assert!(!permissions.iter().any(|granted| granted == "edit_project"));
 
     let cut = |value: u128| WireCueAction::Take {
-        input: Some(input(value)),
+        input: Some(fm_types::InputTarget::Fixed(input(value))),
         effect: fm_protocol::TransitionFavoriteEffect::Cut,
         duration_frames: 0,
     };
@@ -906,7 +906,7 @@ fn web_tally_go_needs_the_permissions_of_the_chain_it_fires() {
                         20,
                         false,
                         vec![WireCueAction::TitleText {
-                            input: input(4),
+                            input: fm_types::InputTarget::Fixed(input(4)),
                             field: WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
                             text: "Live".into(),
                         }],
@@ -922,7 +922,10 @@ fn web_tally_go_needs_the_permissions_of_the_chain_it_fires() {
     // The tally's GO, exactly as the page sends it.
     let go = |cue: Option<u64>| CommandPayload::CueControl {
         list: 7,
-        operation: CueOperation::Go { cue },
+        operation: CueOperation::Go {
+            cue,
+            targets: fm_protocol::WireTargetBindings::default(),
+        },
     };
     send(&mut tally, &command("tally-go", go(None)));
     match web_result(&mut tally, "tally-go") {
@@ -984,7 +987,7 @@ fn web_tally_arms_and_disarms_a_timed_go_within_its_role() {
                     cue(
                         10,
                         vec![WireCueAction::Take {
-                            input: Some(input(2)),
+                            input: Some(fm_types::InputTarget::Fixed(input(2))),
                             effect: fm_protocol::TransitionFavoriteEffect::Cut,
                             duration_frames: 0,
                         }],
@@ -992,7 +995,7 @@ fn web_tally_arms_and_disarms_a_timed_go_within_its_role() {
                     cue(
                         20,
                         vec![WireCueAction::TitleNumber {
-                            input: input(4),
+                            input: fm_types::InputTarget::Fixed(input(4)),
                             field: WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
                             add: true,
                             value: 1,
@@ -2133,10 +2136,10 @@ fn operator_page_fires_project_shortcuts_within_the_session_role() {
     };
     let overlay = WireCueAction::OverlayOn {
         channel: WireOverlayChannelId::new(1).unwrap(),
-        input: input(3),
+        input: fm_types::InputTarget::Fixed(input(3)),
     };
     let score = WireCueAction::TitleNumber {
-        input: input(4),
+        input: fm_types::InputTarget::Fixed(input(4)),
         field: WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
         add: true,
         value: 1,

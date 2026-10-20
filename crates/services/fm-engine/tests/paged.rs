@@ -318,7 +318,7 @@ fn a_cue_page_action_steps_a_document() {
         id,
         name: format!("Cue {id}"),
         actions: vec![fm_model::CueAction::Page {
-            input: input(DECK),
+            input: fm_types::InputTarget::Fixed(input(DECK)),
             navigation,
         }],
         auto_follow: false,
@@ -346,7 +346,10 @@ fn a_cue_page_action_steps_a_document() {
             key,
             EngineCommand::CueControl {
                 list: 1,
-                operation: fm_engine::EngineCueOperation::Go { cue: None },
+                operation: fm_engine::EngineCueOperation::Go {
+                    cue: None,
+                    targets: fm_types::TargetBindings::default(),
+                },
             },
         );
         assert!(

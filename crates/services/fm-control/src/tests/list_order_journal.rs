@@ -80,7 +80,9 @@ const CUE_LISTS: Kind = Kind {
                 name: "Cut".to_owned(),
                 auto_follow: false,
                 actions: vec![fm_protocol::WireCueAction::Take {
-                    input: Some(WireInputId::from_domain(input(3))),
+                    input: Some(fm_types::InputTarget::Fixed(WireInputId::from_domain(
+                        input(3),
+                    ))),
                     effect: fm_protocol::TransitionFavoriteEffect::Cut,
                     duration_frames: 0,
                 }],

@@ -80,10 +80,10 @@ fn actions() -> WireShortcutAction {
     WireShortcutAction::Actions(vec![
         WireCueAction::OverlayOn {
             channel: WireOverlayChannelId::new(1).unwrap(),
-            input: input(4),
+            input: fm_types::InputTarget::Fixed(input(4)),
         },
         WireCueAction::Take {
-            input: Some(input(3)),
+            input: Some(fm_types::InputTarget::Fixed(input(3))),
             effect: TransitionFavoriteEffect::Cut,
             duration_frames: 0,
         },
@@ -174,7 +174,10 @@ fn shortcut_commands_round_trip_exactly() {
         format!("{prefix}\tpayload=shortcut_remove\tshortcut=4\n")
     );
     assert_eq!(
-        round_trip(&command(CommandPayload::FireShortcut { shortcut: 9 })),
+        round_trip(&command(CommandPayload::FireShortcut {
+            shortcut: 9,
+            targets: fm_protocol::WireTargetBindings::default()
+        })),
         format!("{prefix}\tpayload=shortcut_fire\tshortcut=9\n")
     );
 }
@@ -255,7 +258,13 @@ fn shortcut_commands_are_strict() {
         }))
         .is_err()
     );
-    assert!(encode_line(&command(CommandPayload::FireShortcut { shortcut: 0 })).is_err());
+    assert!(
+        encode_line(&command(CommandPayload::FireShortcut {
+            shortcut: 0,
+            targets: fm_protocol::WireTargetBindings::default()
+        }))
+        .is_err()
+    );
     assert!(decode_line(&format!("{prefix}\tpayload=shortcut_fire\n")).is_err());
 }
 
@@ -574,4 +583,161 @@ fn chorded_and_scoped_keys_round_trip_exactly_and_strictly() {
     assert!(!chord("1", None).clashes(&chord("2", None)));
     assert!(!chord("1", Some("mixer")).clashes(&chord("1", Some("cues"))));
     assert!(!alone.clashes(&key("K", true, true, false)));
+}
+
+/// Protocol 2.88 (RC-004): an action names an input id or the role
+/// `preview`, `program`, or `selected`; `shortcut_fire`, `cue_go`, and
+/// `cue_arm` carry the fire's optional bindings `selected`,
+/// `bound_preview`, and `bound_program` — exactly, and strictly.
+#[test]
+#[allow(clippy::too_many_lines)] // one exhaustive scenario per command
+fn dynamic_targets_and_fire_bindings_round_trip_exactly_and_strictly() {
+    use fm_protocol::{CueOperation, WireInputTarget, WireTargetBindings};
+    let prefix = prefix();
+    let dynamic = WireShortcutAction::Actions(vec![
+        WireCueAction::Preview {
+            input: WireInputTarget::Selected,
+        },
+        WireCueAction::Take {
+            input: Some(WireInputTarget::Selected),
+            effect: TransitionFavoriteEffect::Cut,
+            duration_frames: 0,
+        },
+        WireCueAction::AudioMute {
+            input: WireInputTarget::Program,
+            muted: true,
+        },
+        WireCueAction::OverlayOn {
+            channel: WireOverlayChannelId::new(2).unwrap(),
+            input: WireInputTarget::Preview,
+        },
+        WireCueAction::AudioGain {
+            input: WireInputTarget::Fixed(input(4)),
+            gain_millidb: -3_000,
+        },
+    ]);
+    let mut set = spec(dynamic);
+    set.key = None;
+    set.osc = None;
+    let line = round_trip(&command(CommandPayload::SetShortcut {
+        shortcut: 2,
+        spec: Box::new(set),
+        position: None,
+    }));
+    assert!(
+        line.ends_with(
+            "\taction=actions%3Apreview.selected%2Ftake.selected.cut.0%2F\
+             audio_mute.program.1%2Foverlay_on.2.preview%2Faudio_gain.4.-3000\n"
+        ),
+        "{line}"
+    );
+
+    // A client sends its console's selection; the authority's journal
+    // adds the Preview and Program it bound.
+    let journaled = WireTargetBindings {
+        selected: Some(input(7)),
+        preview: Some(input(3)),
+        program: Some(input(1)),
+    };
+    assert_eq!(
+        round_trip(&command(CommandPayload::FireShortcut {
+            shortcut: 9,
+            targets: WireTargetBindings {
+                selected: Some(input(7)),
+                ..WireTargetBindings::default()
+            },
+        })),
+        format!("{prefix}\tpayload=shortcut_fire\tshortcut=9\tselected=7\n")
+    );
+    assert_eq!(
+        round_trip(&command(CommandPayload::FireShortcut {
+            shortcut: 9,
+            targets: journaled,
+        })),
+        format!(
+            "{prefix}\tpayload=shortcut_fire\tshortcut=9\tselected=7\tbound_preview=3\t\
+             bound_program=1\n"
+        )
+    );
+    assert_eq!(
+        round_trip(&command(CommandPayload::CueControl {
+            list: 2,
+            operation: CueOperation::Go {
+                cue: Some(4),
+                targets: journaled,
+            },
+        })),
+        format!(
+            "{prefix}\tpayload=cue_go\tlist=2\tcue=4\tselected=7\tbound_preview=3\t\
+             bound_program=1\n"
+        )
+    );
+    assert_eq!(
+        round_trip(&command(CommandPayload::CueControl {
+            list: 2,
+            operation: CueOperation::Go {
+                cue: None,
+                targets: WireTargetBindings {
+                    program: Some(input(1)),
+                    ..WireTargetBindings::default()
+                },
+            },
+        })),
+        format!("{prefix}\tpayload=cue_go\tlist=2\tbound_program=1\n")
+    );
+    assert_eq!(
+        round_trip(&command(CommandPayload::CueControl {
+            list: 2,
+            operation: CueOperation::Arm {
+                cue: None,
+                in_ms: 1_000,
+                targets: WireTargetBindings {
+                    selected: Some(input(7)),
+                    ..WireTargetBindings::default()
+                },
+            },
+        })),
+        format!("{prefix}\tpayload=cue_arm\tlist=2\tin_ms=1000\tselected=7\n")
+    );
+
+    let good = format!("{prefix}\tpayload=shortcut_fire\tshortcut=9\tselected=7\n");
+    assert!(decode_line(&good).is_ok());
+    for (from, to) in [
+        ("selected=7", "selected=0"),
+        ("selected=7", "selected=07"),
+        ("selected=7", "selected=preview"),
+        ("selected=7", "selected="),
+        ("selected=7", "selected=7\tbound_preview=-"),
+        ("selected=7", "selected=7\tbound_program=x"),
+        ("selected=7", "selected=7\tbound_selected=7"),
+    ] {
+        let broken = good.replacen(from, to, 1);
+        assert!(decode_line(&broken).is_err(), "{from} -> {to}");
+    }
+    let good = format!(
+        "{prefix}\tpayload=shortcut_set\tshortcut=4\tname=A\tenabled=1\tkey=-\tosc=-\t\
+         action=actions%3Apreview.selected\n"
+    );
+    assert!(decode_line(&good).is_ok());
+    for role in ["Selected", "sel", "pvw", "-", "0", "preview.1"] {
+        let broken = good.replacen("preview.selected", &format!("preview.{role}"), 1);
+        assert!(decode_line(&broken).is_err(), "{role}");
+    }
+    // A take's `-` stays the current Preview, distinct from `preview`.
+    let take = good.replacen("preview.selected", "take.preview.cut.0", 1);
+    let WireMessage::Command(CommandMessage {
+        payload: CommandPayload::SetShortcut { spec, .. },
+        ..
+    }) = decode_line(&take).unwrap()
+    else {
+        panic!("a shortcut_set");
+    };
+    assert_eq!(
+        spec.action,
+        WireShortcutAction::Actions(vec![WireCueAction::Take {
+            input: Some(WireInputTarget::Preview),
+            effect: TransitionFavoriteEffect::Cut,
+            duration_frames: 0,
+        }])
+    );
 }

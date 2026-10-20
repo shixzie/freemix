@@ -558,7 +558,7 @@ fn shortcut_buttons_need_the_permission_of_every_action_they_run() {
         true,
         WireShortcutAction::Actions(vec![WireCueAction::OverlayOn {
             channel: WireOverlayChannelId::new(1).unwrap(),
-            input: wire(CAMERA),
+            input: fm_types::InputTarget::Fixed(wire(CAMERA)),
         }]),
     );
     let mute = shortcut(
@@ -566,10 +566,10 @@ fn shortcut_buttons_need_the_permission_of_every_action_they_run() {
         true,
         WireShortcutAction::Actions(vec![
             WireCueAction::Preview {
-                input: wire(SLIDES),
+                input: fm_types::InputTarget::Fixed(wire(SLIDES)),
             },
             WireCueAction::AudioMute {
-                input: wire(GUEST),
+                input: fm_types::InputTarget::Fixed(wire(GUEST)),
                 muted: true,
             },
         ]),
@@ -578,7 +578,7 @@ fn shortcut_buttons_need_the_permission_of_every_action_they_run() {
         3,
         true,
         WireShortcutAction::Actions(vec![WireCueAction::TitleNumber {
-            input: wire(SLIDES),
+            input: fm_types::InputTarget::Fixed(wire(SLIDES)),
             field: fm_protocol::WireTitleFieldId::new(target(1)),
             add: true,
             value: 1,
@@ -601,7 +601,10 @@ fn shortcut_buttons_need_the_permission_of_every_action_they_run() {
     assert_eq!(surface.shortcut_gate(&overlay), Ok(()));
     assert_eq!(
         surface.shortcut_command(&overlay),
-        Some(CommandPayload::FireShortcut { shortcut: 1 })
+        Some(CommandPayload::FireShortcut {
+            shortcut: 1,
+            targets: fm_protocol::WireTargetBindings::default()
+        })
     );
     assert_eq!(surface.shortcut_gate(&mute), Ok(()));
     assert_eq!(surface.shortcut_gate(&go), Ok(()));

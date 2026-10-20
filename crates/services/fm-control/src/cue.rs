@@ -4,17 +4,18 @@
 use fm_engine::{Engine, EngineCommand, EngineCueListDefinition, EngineCueOperation};
 use fm_model::{
     Cue, CueAction, CueList, CueMediaOperation, CueNumberUpdate, CueRunState, RecorderSlot,
-    StreamTargetId, TitleFieldId,
+    StreamTargetId, TargetBindings, TitleFieldId,
 };
 use fm_protocol::{
     CommandPayload, CueArmedStatus, CueFaultStatus, CueListSpec, CueListStateMessage,
     CueListStatus, CueMediaTransport, CueOperation, CuePendingStatus, CueRunChange, CueRunStatus,
     CueTitleText, CueTitleValue, EventPayload, RecordingStatus, WireCue, WireCueAction,
-    WireCueMediaOperation, WireInputId, WireOverlayChannelId, WireRecorderSlot, WireStreamTargetId,
-    WireTitleFieldId,
+    WireCueMediaOperation, WireInputId, WireInputTarget, WireOverlayChannelId, WireRecorderSlot,
+    WireStreamTargetId, WireTargetBindings, WireTitleFieldId,
 };
 use fm_titles::FieldId;
 use fm_types::InputId;
+use fm_types::InputTarget;
 
 // The wire and the model agree on every cue list bound.
 const _: () = {
@@ -45,14 +46,14 @@ fn wire_channel(channel: u8) -> WireOverlayChannelId {
 pub fn domain_action(action: &WireCueAction) -> CueAction {
     match action {
         WireCueAction::Preview { input } => CueAction::Preview {
-            input: input.to_domain(),
+            input: domain_target(*input),
         },
         WireCueAction::Take {
             input,
             effect,
             duration_frames,
         } => CueAction::Take {
-            input: input.map(WireInputId::to_domain),
+            input: input.map(domain_target),
             effect: crate::transition::domain_effect(*effect),
             duration_frames: *duration_frames,
         },
@@ -61,7 +62,7 @@ pub fn domain_action(action: &WireCueAction) -> CueAction {
             input,
         } => CueAction::OverlayOn {
             channel: channel(*number),
-            input: input.to_domain(),
+            input: domain_target(*input),
         },
         WireCueAction::OverlayOff { channel: number } => CueAction::OverlayOff {
             channel: channel(*number),
@@ -70,11 +71,11 @@ pub fn domain_action(action: &WireCueAction) -> CueAction {
             input,
             channel: number,
         } => CueAction::TitleOn {
-            input: input.to_domain(),
+            input: domain_target(*input),
             channel: channel(*number),
         },
         WireCueAction::TitleText { input, field, text } => CueAction::TitleText {
-            input: input.to_domain(),
+            input: domain_target(*input),
             field: TitleFieldId::new(field.get()),
             text: text.clone(),
         },
@@ -84,7 +85,7 @@ pub fn domain_action(action: &WireCueAction) -> CueAction {
             add,
             value,
         } => CueAction::TitleNumber {
-            input: input.to_domain(),
+            input: domain_target(*input),
             field: TitleFieldId::new(field.get()),
             update: if *add {
                 CueNumberUpdate::Add(*value)
@@ -93,7 +94,7 @@ pub fn domain_action(action: &WireCueAction) -> CueAction {
             },
         },
         WireCueAction::TitleOff { input } => CueAction::TitleOff {
-            input: input.to_domain(),
+            input: domain_target(*input),
         },
         WireCueAction::FadeToBlack {
             active,
@@ -108,11 +109,11 @@ pub fn domain_action(action: &WireCueAction) -> CueAction {
             input,
             gain_millidb,
         } => CueAction::AudioGain {
-            input: input.to_domain(),
+            input: domain_target(*input),
             gain_millidb: *gain_millidb,
         },
         WireCueAction::AudioMute { input, muted } => CueAction::AudioMute {
-            input: input.to_domain(),
+            input: domain_target(*input),
             muted: *muted,
         },
         WireCueAction::Record { recorder, start } => CueAction::Record {
@@ -124,7 +125,7 @@ pub fn domain_action(action: &WireCueAction) -> CueAction {
             start: *start,
         },
         WireCueAction::Media { input, operation } => CueAction::Media {
-            input: input.to_domain(),
+            input: domain_target(*input),
             operation: match *operation {
                 WireCueMediaOperation::Play => CueMediaOperation::Play,
                 WireCueMediaOperation::Pause => CueMediaOperation::Pause,
@@ -133,7 +134,7 @@ pub fn domain_action(action: &WireCueAction) -> CueAction {
             },
         },
         WireCueAction::Page { input, navigation } => CueAction::Page {
-            input: input.to_domain(),
+            input: domain_target(*input),
             navigation: *navigation,
         },
         WireCueAction::Wait { frames } => CueAction::Wait { frames: *frames },
@@ -147,30 +148,30 @@ pub fn domain_action(action: &WireCueAction) -> CueAction {
 pub fn wire_action(action: &CueAction) -> WireCueAction {
     match action {
         CueAction::Preview { input } => WireCueAction::Preview {
-            input: WireInputId::from_domain(*input),
+            input: wire_target(*input),
         },
         CueAction::Take {
             input,
             effect,
             duration_frames,
         } => WireCueAction::Take {
-            input: input.map(WireInputId::from_domain),
+            input: input.map(wire_target),
             effect: crate::transition::wire_effect(*effect),
             duration_frames: *duration_frames,
         },
         CueAction::OverlayOn { channel, input } => WireCueAction::OverlayOn {
             channel: wire_channel(*channel),
-            input: WireInputId::from_domain(*input),
+            input: wire_target(*input),
         },
         CueAction::OverlayOff { channel } => WireCueAction::OverlayOff {
             channel: wire_channel(*channel),
         },
         CueAction::TitleOn { input, channel } => WireCueAction::TitleOn {
-            input: WireInputId::from_domain(*input),
+            input: wire_target(*input),
             channel: wire_channel(*channel),
         },
         CueAction::TitleText { input, field, text } => WireCueAction::TitleText {
-            input: WireInputId::from_domain(*input),
+            input: wire_target(*input),
             field: WireTitleFieldId::new(field.get()),
             text: text.clone(),
         },
@@ -184,14 +185,14 @@ pub fn wire_action(action: &CueAction) -> WireCueAction {
                 CueNumberUpdate::Add(delta) => (true, delta),
             };
             WireCueAction::TitleNumber {
-                input: WireInputId::from_domain(*input),
+                input: wire_target(*input),
                 field: WireTitleFieldId::new(field.get()),
                 add,
                 value,
             }
         }
         CueAction::TitleOff { input } => WireCueAction::TitleOff {
-            input: WireInputId::from_domain(*input),
+            input: wire_target(*input),
         },
         CueAction::FadeToBlack {
             active,
@@ -206,11 +207,11 @@ pub fn wire_action(action: &CueAction) -> WireCueAction {
             input,
             gain_millidb,
         } => WireCueAction::AudioGain {
-            input: WireInputId::from_domain(*input),
+            input: wire_target(*input),
             gain_millidb: *gain_millidb,
         },
         CueAction::AudioMute { input, muted } => WireCueAction::AudioMute {
-            input: WireInputId::from_domain(*input),
+            input: wire_target(*input),
             muted: *muted,
         },
         CueAction::Record { recorder, start } => WireCueAction::Record {
@@ -222,7 +223,7 @@ pub fn wire_action(action: &CueAction) -> WireCueAction {
             start: *start,
         },
         CueAction::Media { input, operation } => WireCueAction::Media {
-            input: WireInputId::from_domain(*input),
+            input: wire_target(*input),
             operation: match *operation {
                 CueMediaOperation::Play => WireCueMediaOperation::Play,
                 CueMediaOperation::Pause => WireCueMediaOperation::Pause,
@@ -231,7 +232,7 @@ pub fn wire_action(action: &CueAction) -> WireCueAction {
             },
         },
         CueAction::Page { input, navigation } => WireCueAction::Page {
-            input: WireInputId::from_domain(*input),
+            input: wire_target(*input),
             navigation: *navigation,
         },
         CueAction::Wait { frames } => WireCueAction::Wait { frames: *frames },
@@ -309,17 +310,120 @@ pub fn wire_list(list: &CueList) -> CueListStatus {
     }
 }
 
-const fn domain_operation(operation: CueOperation) -> EngineCueOperation {
+/// The project form of a wire action's target (RC-004).
+#[must_use]
+pub fn domain_target(target: WireInputTarget) -> InputTarget {
+    target.map(WireInputId::to_domain)
+}
+
+/// The wire form of an action's target (RC-004).
+#[must_use]
+pub fn wire_target(target: InputTarget) -> WireInputTarget {
+    target.map(WireInputId::from_domain)
+}
+
+/// The engine form of a fire's target bindings (RC-004).
+#[must_use]
+pub fn domain_targets(targets: WireTargetBindings) -> TargetBindings {
+    targets.map(WireInputId::to_domain)
+}
+
+/// `payload` with the dynamic targets of the fire it asks for bound on
+/// `engine`'s current show (RC-004), or `None` when it fires nothing
+/// naming a dynamic target: a `shortcut_fire` whose actions (or the cue
+/// list its GO fires) name one, and a `cue_go` or `cue_arm` of a list
+/// naming one. Preview and Program are bound to the show's, unless the
+/// payload (a journal replay) carries them; the console's selected input
+/// is the payload's own. The authority executes and journals the bound
+/// payload, so a replay acts on the same inputs.
+#[must_use]
+pub fn bind_fire_targets(engine: &Engine, payload: &CommandPayload) -> Option<CommandPayload> {
+    let show = engine.show();
+    let list_is_dynamic = |list: u64| {
+        show.cue_list(list).is_some_and(|found| {
+            found
+                .cues
+                .iter()
+                .flat_map(|cue| &cue.actions)
+                .any(CueAction::is_dynamic)
+        })
+    };
+    let switcher = show.desired_switcher();
+    let bind = |targets: WireTargetBindings| WireTargetBindings {
+        preview: targets
+            .preview
+            .or_else(|| Some(WireInputId::from_domain(switcher.preview()))),
+        program: targets
+            .program
+            .or_else(|| Some(WireInputId::from_domain(switcher.program()))),
+        selected: targets.selected,
+    };
+    match payload {
+        CommandPayload::FireShortcut { shortcut, targets } => {
+            let dynamic = match show.shortcut(*shortcut).map(|found| &found.action) {
+                Some(fm_model::ShortcutAction::Actions(actions)) => {
+                    actions.iter().any(CueAction::is_dynamic)
+                }
+                Some(fm_model::ShortcutAction::Cue {
+                    list,
+                    operation: fm_model::ShortcutCueOperation::Go { .. },
+                }) => list_is_dynamic(*list),
+                _ => false,
+            };
+            dynamic.then(|| CommandPayload::FireShortcut {
+                shortcut: *shortcut,
+                targets: bind(*targets),
+            })
+        }
+        CommandPayload::CueControl {
+            list,
+            operation: CueOperation::Go { cue, targets },
+        } if list_is_dynamic(*list) => Some(CommandPayload::CueControl {
+            list: *list,
+            operation: CueOperation::Go {
+                cue: *cue,
+                targets: bind(*targets),
+            },
+        }),
+        CommandPayload::CueControl {
+            list,
+            operation:
+                CueOperation::Arm {
+                    cue,
+                    in_ms,
+                    targets,
+                },
+        } if list_is_dynamic(*list) => Some(CommandPayload::CueControl {
+            list: *list,
+            operation: CueOperation::Arm {
+                cue: *cue,
+                in_ms: *in_ms,
+                targets: bind(*targets),
+            },
+        }),
+        _ => None,
+    }
+}
+
+fn domain_operation(operation: CueOperation) -> EngineCueOperation {
     match operation {
-        CueOperation::Go { cue } => EngineCueOperation::Go { cue },
+        CueOperation::Go { cue, targets } => EngineCueOperation::Go {
+            cue,
+            targets: domain_targets(targets),
+        },
         CueOperation::Standby { cue } => EngineCueOperation::Standby { cue },
         CueOperation::Back => EngineCueOperation::Back,
         CueOperation::Skip => EngineCueOperation::Skip,
         CueOperation::Stop => EngineCueOperation::Stop,
         CueOperation::Reset => EngineCueOperation::Reset,
-        CueOperation::Arm { cue, in_ms } => EngineCueOperation::Arm {
+        CueOperation::Arm {
+            cue,
+            in_ms,
+            targets,
+        } => EngineCueOperation::Arm {
             cue,
             in_millis: in_ms,
+            targets: domain_targets(targets),
         },
         CueOperation::Disarm => EngineCueOperation::Disarm,
     }

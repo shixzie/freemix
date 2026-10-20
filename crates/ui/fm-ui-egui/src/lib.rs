@@ -75,6 +75,7 @@ mod preset_files;
 mod scene_designer;
 mod screen_capture_ui;
 mod scripts;
+mod selection;
 mod shortcut_keys;
 mod source_sync_ui;
 mod still_input_ui;
@@ -1585,6 +1586,10 @@ pub struct StudioShell {
     /// The kind the T-bar starts when dragged idle or on `T` (SW-004);
     /// local to this console.
     t_bar_kind: ManualTransitionKind,
+    /// The input selected on this console (RC-004): the input tile last
+    /// clicked, right-clicked, or reached with the keyboard. Shortcuts and
+    /// cues aimed at the selected input act on it.
+    selected_input: Option<InputId>,
     rename_draft: Option<RenameDraft>,
     stinger_editor: stinger_config::StingerEditor,
     layout: ConsoleLayout,
@@ -1916,6 +1921,15 @@ impl StudioShell {
 
     /// Reconciles console-local drafts and dialogs with the latest state.
     fn reconcile_local_state(&mut self, state: &StudioUiState) {
+        // A selected input the show no longer holds is no selection.
+        if self.selected_input.is_some_and(|input| {
+            state
+                .view
+                .as_ref()
+                .is_none_or(|view| !view.inputs.contains(&input))
+        }) {
+            self.selected_input = None;
+        }
         self.reconcile_rename_draft(state);
         self.reconcile_catalogue_dialogs(state);
         self.reconcile_lifecycle(state);
@@ -1962,6 +1976,7 @@ impl StudioShell {
         self.set_fade_to_black_duration_frames(self.fade_to_black_duration_frames);
 
         self.reconcile_local_state(state);
+        selection::publish(ui.ctx(), self.selected_input);
         self.input_bank_drawn = false;
         let manual_transition_controls = manual_transition_availability(
             ManualTransitionGate::from_state(state),
@@ -2050,7 +2065,15 @@ impl StudioShell {
         self.track_catalogue_intents(ui.ctx(), state, &intents);
         self.follow_input_bank_visibility(ui.ctx(), state, &mut intents);
         theme::paint_focus_ring(ui.ctx());
+        // Every fire carries this console's selected input (RC-004).
+        selection::bind(self.selected_input, &mut intents);
         intents
+    }
+
+    /// The input selected on this console (RC-004), if any.
+    #[must_use]
+    pub const fn selected_input(&self) -> Option<InputId> {
+        self.selected_input
     }
 
     /// Keeps the live input thumbnail feed on exactly while the input bank
@@ -2164,6 +2187,7 @@ impl Default for StudioShell {
             transition_duration_frames: Self::DEFAULT_TRANSITION_DURATION_FRAMES,
             fade_to_black_duration_frames: Self::DEFAULT_TRANSITION_DURATION_FRAMES,
             t_bar_kind: ManualTransitionKind::Fade,
+            selected_input: None,
             rename_draft: None,
             stinger_editor: stinger_config::StingerEditor::default(),
             layout: ConsoleLayout::default(),

@@ -59,7 +59,10 @@ fn set(definition: Shortcut) -> EngineCommand {
 }
 
 fn fire(shortcut: u64) -> EngineCommand {
-    EngineCommand::FireShortcut { shortcut }
+    EngineCommand::FireShortcut {
+        shortcut,
+        targets: fm_types::TargetBindings::default(),
+    }
 }
 
 fn submit(engine: &mut Engine, key: &str, command: EngineCommand) -> EngineCommandOutcome {
@@ -107,13 +110,15 @@ fn a_fire_runs_every_action_on_one_frame() {
         set(shortcut(
             1,
             actions(vec![
-                CueAction::Preview { input: input(12) },
+                CueAction::Preview {
+                    input: fm_types::InputTarget::Fixed(input(12)),
+                },
                 CueAction::OverlayOn {
                     channel: 2,
-                    input: input(13),
+                    input: fm_types::InputTarget::Fixed(input(13)),
                 },
                 CueAction::AudioMute {
-                    input: input(14),
+                    input: fm_types::InputTarget::Fixed(input(14)),
                     muted: true,
                 },
             ]),
@@ -155,11 +160,13 @@ fn one_refused_action_refuses_the_whole_fire() {
         set(shortcut(
             1,
             actions(vec![
-                CueAction::Preview { input: input(12) },
+                CueAction::Preview {
+                    input: fm_types::InputTarget::Fixed(input(12)),
+                },
                 // Input 99 is not in the show.
                 CueAction::OverlayOn {
                     channel: 1,
-                    input: input(99),
+                    input: fm_types::InputTarget::Fixed(input(99)),
                 },
             ]),
         )),
@@ -181,7 +188,12 @@ fn one_refused_action_refuses_the_whole_fire() {
 #[test]
 fn a_disabled_or_unknown_shortcut_is_refused() {
     let mut engine = engine();
-    let mut disabled = shortcut(1, actions(vec![CueAction::Preview { input: input(12) }]));
+    let mut disabled = shortcut(
+        1,
+        actions(vec![CueAction::Preview {
+            input: fm_types::InputTarget::Fixed(input(12)),
+        }]),
+    );
     disabled.enabled = false;
     accepted(&submit(&mut engine, "set", set(disabled)));
     let (code, _, message) = refusal(&submit(&mut engine, "fire", fire(1)));
@@ -215,7 +227,9 @@ fn a_cue_or_script_shortcut_fires_as_that_command() {
                         id: 1,
                         name: "Open".to_owned(),
                         actions: vec![
-                            CueAction::Preview { input: input(13) },
+                            CueAction::Preview {
+                                input: fm_types::InputTarget::Fixed(input(13)),
+                            },
                             CueAction::Delay { millis: 400 },
                             CueAction::Take {
                                 input: None,
@@ -228,7 +242,9 @@ fn a_cue_or_script_shortcut_fires_as_that_command() {
                     Cue {
                         id: 2,
                         name: "Close".to_owned(),
-                        actions: vec![CueAction::Preview { input: input(12) }],
+                        actions: vec![CueAction::Preview {
+                            input: fm_types::InputTarget::Fixed(input(12)),
+                        }],
                         auto_follow: false,
                     },
                 ],
@@ -301,7 +317,12 @@ fn a_cue_or_script_shortcut_fires_as_that_command() {
 #[test]
 fn edits_are_undoable_padlocked_and_keep_keys_unique() {
     let mut engine = engine();
-    let first = shortcut(1, actions(vec![CueAction::Preview { input: input(12) }]));
+    let first = shortcut(
+        1,
+        actions(vec![CueAction::Preview {
+            input: fm_types::InputTarget::Fixed(input(12)),
+        }]),
+    );
     accepted(&submit(&mut engine, "set", set(first.clone())));
     let mut renamed = first.clone();
     renamed.name = "Renamed".to_owned();
@@ -325,7 +346,12 @@ fn edits_are_undoable_padlocked_and_keep_keys_unique() {
     assert_eq!(engine.show().shortcut(1), Some(&renamed));
 
     // Another shortcut may not take the same key or OSC name.
-    let mut clash = shortcut(2, actions(vec![CueAction::Preview { input: input(13) }]));
+    let mut clash = shortcut(
+        2,
+        actions(vec![CueAction::Preview {
+            input: fm_types::InputTarget::Fixed(input(13)),
+        }]),
+    );
     clash.key = first.key.clone();
     let (code, _, message) = refusal(&submit(&mut engine, "clash-key", set(clash.clone())));
     assert_eq!(code, RejectionCode::Conflict);
@@ -343,7 +369,9 @@ fn edits_are_undoable_padlocked_and_keep_keys_unique() {
         set(shortcut(
             3,
             actions(vec![
-                CueAction::Preview { input: input(13) },
+                CueAction::Preview {
+                    input: fm_types::InputTarget::Fixed(input(13)),
+                },
                 CueAction::Delay { millis: 200 },
             ]),
         )),
@@ -440,4 +468,121 @@ fn a_shortcut_running_a_waiting_script_is_refused_when_saved() {
     let refused = submit(&mut engine, "add-wait", script("wait 5\ncut 2"));
     assert!(script_waits(&refused), "{:?}", refused.receipt);
     assert_eq!(engine.show().script(5).unwrap().source, "cut 2");
+}
+
+fn fire_with(shortcut: u64, targets: fm_model::TargetBindings) -> EngineCommand {
+    EngineCommand::FireShortcut { shortcut, targets }
+}
+
+/// RC-004: an action on the input on Preview, on Program, or selected on
+/// the firing console resolves when the shortcut fires — to Preview and
+/// Program as they stand before the fire's actions, and to the console's
+/// selection — and a fire whose role is unbound is refused whole.
+#[test]
+fn dynamic_targets_resolve_when_the_shortcut_fires() {
+    use fm_model::{InputTarget, TargetBindings};
+    let mut engine = engine();
+    accepted(&submit(
+        &mut engine,
+        "set",
+        set(shortcut(
+            1,
+            actions(vec![
+                CueAction::OverlayOn {
+                    channel: 2,
+                    input: InputTarget::Preview,
+                },
+                CueAction::AudioMute {
+                    input: InputTarget::Program,
+                    muted: true,
+                },
+                // Runs after the Preview binding: the overlay keeps 14.
+                CueAction::Preview {
+                    input: InputTarget::Selected,
+                },
+            ]),
+        )),
+    ));
+
+    // No input selected: refused, and nothing of the fire applied.
+    let (code, _, message) = refusal(&submit(&mut engine, "unbound", fire(1)));
+    assert_eq!(code, RejectionCode::InvalidCommand);
+    assert!(message.contains("shortcut 1"), "{message}");
+    assert!(message.contains("selected"), "{message}");
+    assert_eq!(engine.show().desired_switcher().preview(), input(14));
+    assert!(!engine.show().input_audio_strip(input(11)).unwrap().muted);
+
+    // A selection that names no input of the show is refused too.
+    let (code, ..) = refusal(&submit(
+        &mut engine,
+        "unknown",
+        fire_with(
+            1,
+            TargetBindings {
+                selected: Some(input(99)),
+                ..TargetBindings::NONE
+            },
+        ),
+    ));
+    assert_eq!(code, RejectionCode::NotFound);
+
+    accepted(&submit(
+        &mut engine,
+        "fire",
+        fire_with(
+            1,
+            TargetBindings {
+                selected: Some(input(12)),
+                ..TargetBindings::NONE
+            },
+        ),
+    ));
+    let switcher = engine.show().desired_switcher();
+    assert_eq!(
+        switcher.overlay(OverlayChannelId::new(2).unwrap()).source(),
+        Some(input(14))
+    );
+    assert!(engine.show().input_audio_strip(input(11)).unwrap().muted);
+    assert!(!engine.show().input_audio_strip(input(14)).unwrap().muted);
+    assert_eq!(switcher.preview(), input(12));
+}
+
+/// RC-004: bindings the fire carries win over the live switcher — the
+/// journal records the Preview and Program the authority bound, so a
+/// replay acts on the same inputs whatever the show's switcher is then.
+#[test]
+fn a_fire_carrying_bound_targets_replays_on_the_same_inputs() {
+    use fm_model::{InputTarget, TargetBindings};
+    let definition = shortcut(
+        1,
+        actions(vec![
+            CueAction::AudioMute {
+                input: InputTarget::Preview,
+                muted: true,
+            },
+            CueAction::AudioMute {
+                input: InputTarget::Program,
+                muted: true,
+            },
+        ]),
+    );
+    let journaled = TargetBindings {
+        preview: Some(input(12)),
+        program: Some(input(13)),
+        selected: None,
+    };
+    let mut first = engine();
+    let mut replay = engine();
+    for engine in [&mut first, &mut replay] {
+        accepted(&submit(engine, "set", set(definition.clone())));
+        accepted(&submit(engine, "fire", fire_with(1, journaled)));
+        for (value, muted) in [(11, false), (12, true), (13, true), (14, false)] {
+            assert_eq!(
+                engine.show().input_audio_strip(input(value)).unwrap().muted,
+                muted,
+                "input {value}"
+            );
+        }
+    }
+    assert_eq!(first.show(), replay.show());
 }

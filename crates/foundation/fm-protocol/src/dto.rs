@@ -1817,9 +1817,13 @@ pub enum CommandPayload {
         shortcut: u64,
     },
     /// Fires user shortcut `shortcut` on the authority, as the command it
-    /// stands for. Wire payload `shortcut_fire`.
+    /// stands for. Wire payload `shortcut_fire`. Its dynamic targets
+    /// resolve under `targets` (Protocol 2.88, RC-004): the client sends
+    /// its console's selected input, the authority binds Preview and
+    /// Program and journals them.
     FireShortcut {
         shortcut: u64,
+        targets: crate::WireTargetBindings,
     },
     /// Sets (`Some`) or clears (`None`) one input's grade (Protocol 2.28).
     /// Wire payloads `grade_input_set` and `grade_input_clear`.

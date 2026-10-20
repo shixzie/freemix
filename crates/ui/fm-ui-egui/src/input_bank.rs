@@ -469,6 +469,7 @@ impl StudioShell {
                     focused: response.has_focus(),
                     pressed: response.is_pointer_button_down_on(),
                     status_badge,
+                    selected: self.selected_input == Some(input),
                 },
             );
         }
@@ -555,11 +556,20 @@ impl StudioShell {
             status.push_str(" · ");
             status.push_str(&crate::screen_capture_ui::screen_capture_details(l, entry));
         }
-        let hover = format!(
+        let mut hover = format!(
             "{status}\n{}\n{source}\n{}",
             tally.operator_label(l),
             l.format(Msg::TileGestures, &[("shortcut", Arg::Str(&shortcut))])
         );
+        if self.selected_input == Some(input) {
+            hover.push('\n');
+            hover.push_str(l.text(Msg::TileSelectedNote));
+        }
+        // Clicking, right-clicking, or tabbing to a tile selects its input
+        // on this console (RC-004).
+        if response.clicked() || response.secondary_clicked() || response.gained_focus() {
+            self.selected_input = Some(input);
+        }
         let response = if enabled {
             response.on_hover_text(hover)
         } else {
@@ -1290,6 +1300,8 @@ struct TilePaint<'a> {
     pressed: bool,
     /// A stream or capture status badge covers the caption line.
     status_badge: bool,
+    /// The console's selected input (RC-004).
+    selected: bool,
 }
 
 #[allow(clippy::too_many_lines)] // one painter pass per tile region
@@ -1308,6 +1320,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
         focused,
         pressed,
         status_badge,
+        selected,
     } = paint;
     let painter = ui.painter_at(rect.expand(4.0));
     let radius = CornerRadius::same(4);
@@ -1542,6 +1555,17 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
     );
     if pressed && enabled {
         painter.rect_filled(rect, radius, Color32::from_white_alpha(10));
+    }
+    if selected {
+        // The selected input: an accent bar along the name's foot.
+        painter.rect_filled(
+            Rect::from_min_max(
+                pos2(rect.min.x + 4.0, rect.max.y - 3.0),
+                pos2(rect.max.x - 4.0, rect.max.y - 1.0),
+            ),
+            CornerRadius::same(1),
+            accent_color(),
+        );
     }
     if focused {
         // Keyboard focus ring outside the tally border.

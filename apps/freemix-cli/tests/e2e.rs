@@ -14386,18 +14386,18 @@ fn remote_cue_list_set_sends_the_exact_definition() {
                 auto_follow: true,
                 actions: vec![
                     fm_protocol::WireCueAction::Take {
-                        input: Some(input(2)),
+                        input: Some(fm_types::InputTarget::Fixed(input(2))),
                         effect: fm_protocol::TransitionFavoriteEffect::from_token("fade").unwrap(),
                         duration_frames: 25,
                     },
                     fm_protocol::WireCueAction::Wait { frames: 50 },
                     fm_protocol::WireCueAction::Delay { millis: 1_500 },
                     fm_protocol::WireCueAction::Media {
-                        input: input(2),
+                        input: fm_types::InputTarget::Fixed(input(2)),
                         operation: fm_protocol::WireCueMediaOperation::Restart,
                     },
                     fm_protocol::WireCueAction::TitleText {
-                        input: input(2),
+                        input: fm_types::InputTarget::Fixed(input(2)),
                         field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
                         text: "Hello. world, again; 1:2 \\ done".into(),
                     },

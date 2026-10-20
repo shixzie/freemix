@@ -471,8 +471,8 @@ impl EditHistory {
                 Self::resolve_step(state, entry, *expected_edit, false)
             }
             // A fire resolves into the command it stands for (RC-004).
-            EngineCommand::FireShortcut { shortcut } => Ok(ResolvedCommand {
-                command: crate::shortcut::resolve(state, *shortcut)?,
+            EngineCommand::FireShortcut { shortcut, targets } => Ok(ResolvedCommand {
+                command: crate::shortcut::resolve(state, *shortcut, *targets)?,
                 step: HistoryStep::None,
             }),
             EngineCommand::RemoveInput { input } => Ok(ResolvedCommand {

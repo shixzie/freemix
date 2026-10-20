@@ -90,10 +90,10 @@ fn sample() -> ShortcutSetFile {
                 action: WireShortcutAction::Actions(vec![
                     WireCueAction::OverlayOn {
                         channel: WireOverlayChannelId::new(1).unwrap(),
-                        input: input(4),
+                        input: fm_types::InputTarget::Fixed(input(4)),
                     },
                     WireCueAction::Take {
-                        input: Some(input(3)),
+                        input: Some(fm_types::InputTarget::Fixed(input(3))),
                         effect: TransitionFavoriteEffect::Cut,
                         duration_frames: 0,
                     },

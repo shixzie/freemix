@@ -2322,7 +2322,11 @@ impl<A: AuthorizationHook> ControlService<A> {
             }));
         }
 
-        let command = match &message.payload {
+        // A fire's dynamic targets are bound here, on the show it is
+        // prepared on, and the bound payload is what executes and what the
+        // journal records (RC-004).
+        let bound = cue::bind_fire_targets(&self.engine, &message.payload);
+        let command = match bound.as_ref().unwrap_or(&message.payload) {
             CommandPayload::SetNetworkStream {
                 input,
                 url,
@@ -2351,6 +2355,7 @@ impl<A: AuthorizationHook> ControlService<A> {
         let replay_payload = history_target
             .as_ref()
             .and_then(wire_edit_payload)
+            .or(bound)
             .map(Box::new);
         let executed = history_target.unwrap_or_else(|| command.clone());
         match self

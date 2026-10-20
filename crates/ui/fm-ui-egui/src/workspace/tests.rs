@@ -1770,3 +1770,59 @@ fn render_the_web_access_window_for_review() {
     )
     .unwrap();
 }
+
+/// Where `wanted` is painted, every time.
+fn find_all_text(output: &egui::FullOutput, wanted: &str) -> Vec<Pos2> {
+    fn find(shape: &egui::Shape, wanted: &str, out: &mut Vec<Pos2>) {
+        match shape {
+            egui::Shape::Text(text) if text.galley.text() == wanted => out.push(text.pos),
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    find(shape, wanted, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for clipped in &output.shapes {
+        find(&clipped.shape, wanted, &mut out);
+    }
+    out
+}
+
+/// RC-004: clicking an input tile selects its input on this console (a
+/// click elsewhere that paints the name does not), and the selection goes
+/// when the input does.
+#[test]
+fn clicking_an_input_tile_selects_its_input() {
+    let context = egui::Context::default();
+    let mut state = crate::hover_audit::bank_fixture();
+    let mut shell = StudioShell::default();
+    let output = frame(&context, &mut shell, &state, Vec::new());
+    assert_eq!(shell.selected_input(), None);
+    let view = state.view.as_ref().unwrap();
+    let (input, name) = (view.inputs[1], view.input_names[1].clone());
+    let spots = find_all_text(&output, &name);
+    assert!(!spots.is_empty(), "{name} is painted");
+    // Only the tile selects: try each place the name is painted.
+    for at in spots {
+        let at = at + vec2(4.0, 4.0);
+        frame(&context, &mut shell, &state, press(at));
+        frame(&context, &mut shell, &state, release(at));
+        // Past any double-click window.
+        frame(&context, &mut shell, &state, vec![Event::PointerGone]);
+        if shell.selected_input().is_some() {
+            break;
+        }
+    }
+    assert_eq!(shell.selected_input(), Some(input));
+    assert_eq!(crate::selection::selected_input(&context), Some(input));
+
+    // The show drops the input: the selection goes with it.
+    let view = state.view.as_mut().unwrap();
+    view.inputs.remove(1);
+    view.input_names.remove(1);
+    frame(&context, &mut shell, &state, Vec::new());
+    assert_eq!(shell.selected_input(), None);
+}

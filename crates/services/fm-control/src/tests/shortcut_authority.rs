@@ -98,7 +98,7 @@ fn wire(value: u128) -> WireInputId {
 
 fn cut(value: u128) -> WireCueAction {
     WireCueAction::Take {
-        input: Some(wire(value)),
+        input: Some(fm_types::InputTarget::Fixed(wire(value))),
         effect: TransitionFavoriteEffect::Cut,
         duration_frames: 0,
     }
@@ -106,7 +106,7 @@ fn cut(value: u128) -> WireCueAction {
 
 fn mute(value: u128) -> WireCueAction {
     WireCueAction::AudioMute {
-        input: wire(value),
+        input: fm_types::InputTarget::Fixed(wire(value)),
         muted: true,
     }
 }
@@ -137,7 +137,10 @@ fn set_shortcut(shortcut: u64, action: WireShortcutAction) -> CommandPayload {
 }
 
 fn fire(shortcut: u64) -> CommandPayload {
-    CommandPayload::FireShortcut { shortcut }
+    CommandPayload::FireShortcut {
+        shortcut,
+        targets: fm_protocol::WireTargetBindings::default(),
+    }
 }
 
 fn muted(control: &ControlService<Grants>, value: u128) -> bool {
@@ -349,4 +352,100 @@ fn an_unknown_or_disabled_fire_is_refused_with_its_reason() {
     assert_eq!(code, "conflict");
     assert!(message.contains("disabled"), "{message}");
     assert_eq!(program(&control), input(1));
+}
+
+/// RC-004: the authority binds a dynamic fire's Preview and Program into
+/// the journaled command, beside the console's selection, so a replay on a
+/// restored authority acts on the same inputs; a fire with fixed targets
+/// only is journaled as sent.
+#[test]
+fn a_dynamic_fire_is_journaled_with_the_inputs_it_bound() {
+    use fm_protocol::{WireInputTarget, WireTargetBindings};
+    let dynamic = WireShortcutAction::Actions(vec![
+        WireCueAction::AudioMute {
+            input: WireInputTarget::Preview,
+            muted: true,
+        },
+        WireCueAction::Take {
+            input: Some(WireInputTarget::Selected),
+            effect: TransitionFavoriteEffect::Cut,
+            duration_frames: 0,
+        },
+    ]);
+    let setup = |control: &mut ControlService<Grants>| {
+        submit(control, &admin(), "set-1", set_shortcut(1, dynamic.clone()));
+        let fixed = WireShortcutAction::Actions(vec![mute(3)]);
+        submit(control, &admin(), "set-2", set_shortcut(2, fixed));
+    };
+    let mut control = granted(&[]);
+    setup(&mut control);
+
+    let sent = WireTargetBindings {
+        selected: Some(wire(3)),
+        ..WireTargetBindings::default()
+    };
+    let message = command(
+        "fire-1",
+        "fire-1",
+        CommandPayload::FireShortcut {
+            shortcut: 1,
+            targets: sent,
+        },
+    );
+    let staged = prepared(
+        control
+            .prepare_submit(&admin(), message.clone(), 0)
+            .unwrap(),
+    );
+    let journaled = staged.replay_command(&message);
+    let bound = WireTargetBindings {
+        selected: Some(wire(3)),
+        preview: Some(wire(2)),
+        program: Some(wire(1)),
+    };
+    assert_eq!(
+        journaled.payload,
+        CommandPayload::FireShortcut {
+            shortcut: 1,
+            targets: bound,
+        }
+    );
+    assert!(staged.commit().unwrap().is_accepted());
+    control.tick(&server_identity()).unwrap();
+    assert!(muted(&control, 2));
+    assert_eq!(program(&control), input(3));
+
+    // A fixed fire is journaled exactly as sent.
+    let fixed = command("fire-2", "fire-2", fire(2));
+    let staged = prepared(control.prepare_submit(&admin(), fixed.clone(), 0).unwrap());
+    assert_eq!(staged.replay_command(&fixed).payload, fixed.payload);
+    drop(staged);
+
+    // Replayed on an authority whose Preview differs, the journaled fire
+    // still mutes 2, the input it bound.
+    let mut replayed = granted(&[]);
+    setup(&mut replayed);
+    let to_preview = WireShortcutAction::Actions(vec![WireCueAction::Preview {
+        input: WireInputTarget::Fixed(wire(3)),
+    }]);
+    submit(
+        &mut replayed,
+        &admin(),
+        "set-3",
+        set_shortcut(3, to_preview),
+    );
+    submit(&mut replayed, &admin(), "fire-3", fire(3));
+    assert_eq!(
+        replayed.engine.show().desired_switcher().preview(),
+        input(3)
+    );
+    let line = fm_protocol::encode_line(&WireMessage::Command(journaled)).unwrap();
+    let WireMessage::Command(decoded) = fm_protocol::decode_line(&line).unwrap() else {
+        panic!("a journal line is a command");
+    };
+    let submission = submit(&mut replayed, &admin(), "replay-1", decoded.payload);
+    assert!(submission.is_accepted(), "{:?}", submission.output);
+    assert!(muted(&replayed, 2));
+    assert!(!muted(&replayed, 3));
+    assert_eq!(program(&replayed), input(3));
 }

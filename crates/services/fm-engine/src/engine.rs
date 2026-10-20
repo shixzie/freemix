@@ -18,7 +18,7 @@ use fm_switcher::{
 };
 use fm_titles::fm_animation::Phase;
 use fm_titles::{FieldId, FieldValue, TitleAir, TitleAirFrame, TitleAirPhase, TitleAirTiming};
-use fm_types::{FrameRate, InputId, InputOrderError, OutputId, RenameInputError};
+use fm_types::{FrameRate, InputId, InputOrderError, OutputId, RenameInputError, TargetBindings};
 
 use crate::history::{EditHistory, HistoryStep, ResolvedCommand, check_edit_locks};
 use crate::playlist::{
@@ -579,9 +579,12 @@ pub enum EngineCommand {
     /// Fires user shortcut `shortcut` on the command's target frame
     /// (RC-004): resolved into the cue list operation or script run it
     /// stands for, or, for cue actions, planned and realized like a cue
-    /// GO's first frame. A live operation.
+    /// GO's first frame. A live operation. Its dynamic targets resolve
+    /// under `targets`; a role left unbound there is read from the show
+    /// (Preview and Program) when the fire is planned.
     FireShortcut {
         shortcut: u64,
+        targets: fm_model::TargetBindings,
     },
 }
 
@@ -1782,7 +1785,7 @@ impl Engine {
     ///
     /// Refuses an unknown or disabled shortcut, as a fire would.
     pub fn shortcut_command(&self, shortcut: u64) -> Result<EngineCommand, Rejection> {
-        crate::shortcut::resolve(self.show(), shortcut)
+        crate::shortcut::resolve(self.show(), shortcut, TargetBindings::default())
     }
 
     /// Whether script `script`'s source holds a `wait`, so a run of it may
@@ -1856,7 +1859,7 @@ impl Engine {
         };
         let firing = match operation {
             None => stack.advance(&state, frame).map_err(refused)?,
-            Some(crate::EngineCueOperation::Go { cue }) => {
+            Some(crate::EngineCueOperation::Go { cue, .. }) => {
                 stack.go(&state, cue, frame).map_err(refused)?
             }
             Some(crate::EngineCueOperation::Standby { cue }) => {
@@ -1865,7 +1868,7 @@ impl Engine {
             Some(crate::EngineCueOperation::Back) => quiet(stack.back(&state)),
             Some(crate::EngineCueOperation::Skip) => quiet(stack.skip(&state)),
             Some(crate::EngineCueOperation::Stop) => quiet(stack.stop(&state)),
-            Some(crate::EngineCueOperation::Arm { cue, in_millis }) => {
+            Some(crate::EngineCueOperation::Arm { cue, in_millis, .. }) => {
                 if in_millis == 0 || in_millis > fm_model::MAX_CUE_ARM_MS {
                     return Err(crate::cue::arm_delay_out_of_range());
                 }
@@ -1891,6 +1894,8 @@ impl Engine {
     ) -> Result<CuePlan, Rejection> {
         let frame = target_frame.get();
         let (list_id, firing) = self.cue_firing(command, frame)?;
+        let targets = self.cue_targets(command, list_id);
+        self.check_cue_selection(command, list_id, &firing, targets)?;
         let mut show = self.show().clone();
         let mut runtime = Vec::new();
         let mut transition = None;
@@ -1906,6 +1911,7 @@ impl Engine {
                 title_texts: &mut title_texts,
                 scripts: Some(&mut scripts),
                 takes: 0,
+                targets: targets.frame,
             },
         );
         let mut fault = None;
@@ -1951,6 +1957,10 @@ impl Engine {
         if fault.is_some() {
             state.fault = fault;
         }
+        state.targets = targets.run;
+        if let Some(armed) = &mut state.armed {
+            armed.targets = targets.armed;
+        }
         show.cue_lists_mut()[index].state = state;
         Ok(CuePlan {
             show: Box::new(show),
@@ -1969,6 +1979,119 @@ impl Engine {
         })
     }
 
+    /// Binds the roles `targets` leaves open to the show's Preview and
+    /// Program (RC-004): a fire's dynamic targets resolve against the
+    /// show the fire is planned on, unless the command (a journal replay)
+    /// carries them.
+    pub(crate) fn bind_targets(&self, targets: TargetBindings) -> TargetBindings {
+        let switcher = self.show().desired_switcher();
+        TargetBindings {
+            preview: targets.preview.or(Some(switcher.preview())),
+            program: targets.program.or(Some(switcher.program())),
+            selected: targets.selected,
+        }
+    }
+
+    /// The targets a cue command's actions resolve under on this frame,
+    /// and the targets the list's run and armed GO keep after it (RC-004,
+    /// schema 73): a GO binds its run's targets, an arm binds its armed
+    /// GO's, and an advance runs under the targets of the run it resumes
+    /// or of the armed GO it fires. A list naming no dynamic target keeps
+    /// none.
+    /// Refuses a GO or arm whose cue run needs a selection the fire lacks
+    /// (RC-004, see [`crate::cue::check_selection`]).
+    fn check_cue_selection(
+        &self,
+        command: &EngineCommand,
+        list_id: u64,
+        firing: &fm_automation::CueFiring<fm_model::CueAction>,
+        targets: CueTargets,
+    ) -> Result<(), Rejection> {
+        let start = match command {
+            EngineCommand::CueControl {
+                operation: crate::EngineCueOperation::Go { .. },
+                ..
+            } => firing.fired.first().map(|cue| (*cue, targets.frame)),
+            EngineCommand::CueControl {
+                operation: crate::EngineCueOperation::Arm { .. },
+                ..
+            } => firing
+                .state
+                .armed
+                .map(|armed| (armed.cue, targets.armed.unwrap_or_default())),
+            _ => None,
+        };
+        match (start, self.show().cue_list(list_id)) {
+            (Some((cue, bound)), Some(list)) => crate::cue::check_selection(list, cue, &bound),
+            _ => Ok(()),
+        }
+    }
+
+    fn cue_targets(&self, command: &EngineCommand, list_id: u64) -> CueTargets {
+        let Some(list) = self.show().cue_list(list_id) else {
+            return CueTargets::default();
+        };
+        if !list
+            .cues
+            .iter()
+            .flat_map(|cue| &cue.actions)
+            .any(fm_model::CueAction::is_dynamic)
+        {
+            return CueTargets::default();
+        }
+        let run = list.state.targets;
+        let armed = list.state.armed.and_then(|armed| armed.targets);
+        match command {
+            EngineCommand::CueControl {
+                operation: crate::EngineCueOperation::Go { targets, .. },
+                ..
+            } => {
+                let bound = self.bind_targets(*targets);
+                CueTargets {
+                    frame: bound,
+                    run: Some(bound),
+                    armed,
+                }
+            }
+            EngineCommand::CueControl {
+                operation: crate::EngineCueOperation::Arm { targets, .. },
+                ..
+            } => CueTargets {
+                frame: TargetBindings::default(),
+                run,
+                armed: Some(self.bind_targets(*targets)),
+            },
+            EngineCommand::CueControl {
+                operation: crate::EngineCueOperation::Reset,
+                ..
+            } => CueTargets::default(),
+            EngineCommand::CueAdvance { .. } => {
+                let due = fm_automation::CueStack::<fm_model::CueAction>::due(
+                    &crate::cue::stack_state(&list.state),
+                )
+                .map(|(_, due)| due);
+                if due == Some(fm_automation::CueDue::Armed) {
+                    CueTargets {
+                        frame: armed.unwrap_or_default(),
+                        run: armed,
+                        armed: None,
+                    }
+                } else {
+                    CueTargets {
+                        frame: run.unwrap_or_default(),
+                        run,
+                        armed,
+                    }
+                }
+            }
+            _ => CueTargets {
+                frame: TargetBindings::default(),
+                run,
+                armed,
+            },
+        }
+    }
+
     /// Runs a cue's script step on `show` (schema 55), collecting what its
     /// actions realize and what it did into `frame`; its own actions come
     /// back through [`Self::apply_cue_actions`], never another script.
@@ -1985,6 +2108,7 @@ impl Engine {
             title_texts: &mut *frame.title_texts,
             scripts: None,
             takes: frame.takes,
+            targets: frame.targets,
         };
         let outcome = crate::script::run_on(
             self,
@@ -2014,6 +2138,7 @@ impl Engine {
     /// set into `frame`. Returns the first refused action as
     /// `(cue, step, refusal)`.
     #[allow(clippy::result_large_err)] // a refusal carries the failing cue and action
+    #[allow(clippy::too_many_lines)] // one pass over the fired actions
     pub(crate) fn apply_cue_actions(
         &self,
         show: &mut ShowState,
@@ -2027,6 +2152,7 @@ impl Engine {
             title_texts,
             scripts,
             takes,
+            targets,
         } = frame;
         for fired in actions {
             let refuse = |rejection: Rejection| (fired.cue, fired.step, rejection);
@@ -2039,18 +2165,23 @@ impl Engine {
                     title_texts,
                     scripts: scripts.as_deref_mut(),
                     takes: *takes,
+                    targets: *targets,
                 };
                 self.run_script_step(*script, target_frame, show, &mut step)
                     .map_err(refuse)?;
                 *takes = step.takes;
                 continue;
             }
+            // A dynamic target resolves under the fire's targets (RC-004)
+            // and is then checked like a fixed one at definition time.
+            let action =
+                crate::cue::resolve_action(show, &fired.action, targets).map_err(refuse)?;
             let realized = &self.realized_switcher;
-            let commands = crate::cue::expand(show, &fired.action, |input| {
+            let commands = crate::cue::expand(show, &action, |input| {
                 realized.on_air_usage(input).is_some()
             })
             .map_err(refuse)?;
-            record_title_values(title_texts, &fired.action, &commands).map_err(refuse)?;
+            record_title_values(title_texts, &action, &commands).map_err(refuse)?;
             for sub in commands {
                 if let Some(kind) = self.transition_in_flight.or(**transition)
                     && refused_during_transition(&sub)
@@ -2269,27 +2400,28 @@ impl Engine {
         // A cue GO or advance is planned once, here, like a playlist step:
         // every due action is applied to a copy of the show, which the
         // mutation installs, and realized by one runtime action.
-        let cue = match resolution.as_ref().map(|resolved| &resolved.command) {
-            // The cue clock's list 0 resumes the waiting script run.
-            Ok(EngineCommand::CueAdvance { list: 0, frame }) => {
-                Some(crate::script::plan_resume(self, *frame, target_frame))
-            }
-            Ok(command @ (EngineCommand::CueControl { .. } | EngineCommand::CueAdvance { .. })) => {
-                Some(self.cue_plan(command, target_frame))
-            }
-            // A script run is planned the same way (RC-011).
-            Ok(EngineCommand::RunScript { script }) => {
-                Some(crate::script::plan(self, *script, target_frame))
-            }
-            Ok(EngineCommand::StopScript { run }) => {
-                Some(crate::script::plan_stop(self, *run, target_frame))
-            }
-            // A shortcut's cue actions are planned the same way (RC-004).
-            Ok(EngineCommand::FireShortcut { shortcut }) => {
-                Some(crate::shortcut::plan(self, *shortcut, target_frame))
-            }
-            _ => None,
-        };
+        let cue =
+            match resolution.as_ref().map(|resolved| &resolved.command) {
+                // The cue clock's list 0 resumes the waiting script run.
+                Ok(EngineCommand::CueAdvance { list: 0, frame }) => {
+                    Some(crate::script::plan_resume(self, *frame, target_frame))
+                }
+                Ok(
+                    command @ (EngineCommand::CueControl { .. } | EngineCommand::CueAdvance { .. }),
+                ) => Some(self.cue_plan(command, target_frame)),
+                // A script run is planned the same way (RC-011).
+                Ok(EngineCommand::RunScript { script }) => {
+                    Some(crate::script::plan(self, *script, target_frame))
+                }
+                Ok(EngineCommand::StopScript { run }) => {
+                    Some(crate::script::plan_stop(self, *run, target_frame))
+                }
+                // A shortcut's cue actions are planned the same way (RC-004).
+                Ok(EngineCommand::FireShortcut { shortcut, targets }) => Some(
+                    crate::shortcut::plan(self, *shortcut, *targets, target_frame),
+                ),
+                _ => None,
+            };
         let cue_transition = match &cue {
             Some(Ok(plan)) => plan.transition,
             _ => None,
@@ -3204,7 +3336,7 @@ pub(crate) const MAX_FRAME_TITLE_TEXT_BYTES: usize =
 /// of [`check_frame_title_texts`].
 fn record_title_values(
     title_texts: &mut Vec<(InputId, FieldId, FieldValue)>,
-    action: &fm_model::CueAction,
+    action: &fm_model::ResolvedCueAction,
     commands: &[EngineCommand],
 ) -> Result<(), Rejection> {
     if !matches!(
@@ -3287,6 +3419,18 @@ pub(crate) struct CueFrame<'a> {
     /// whose actions never run a script.
     pub(crate) scripts: Option<&'a mut Vec<CueScriptRun>>,
     pub(crate) takes: usize,
+    /// The inputs the frame's dynamic targets resolve to (RC-004).
+    pub(crate) targets: TargetBindings,
+}
+
+/// The targets of one cue command (see `Engine::cue_targets`): what its
+/// frame's actions resolve under, and what the list's run and armed GO
+/// keep after it.
+#[derive(Clone, Copy, Debug, Default)]
+struct CueTargets {
+    frame: TargetBindings,
+    run: Option<TargetBindings>,
+    armed: Option<TargetBindings>,
 }
 
 impl Mutation<ShowState, EngineEvent, EngineAcceptance> for EngineMutation {

@@ -770,7 +770,9 @@ fn no_cue_list_takes_the_script_runs_list_zero() {
                     name: "One".to_owned(),
                     actions: vec![
                         fm_model::CueAction::Wait { frames: 3 },
-                        fm_model::CueAction::Preview { input: input(12) },
+                        fm_model::CueAction::Preview {
+                            input: fm_types::InputTarget::Fixed(input(12)),
+                        },
                     ],
                     auto_follow: false,
                 }],
@@ -1196,7 +1198,7 @@ fn runs_due_with_a_cue_join_its_held_frame() {
                     actions: vec![
                         fm_model::CueAction::Wait { frames: 5 },
                         fm_model::CueAction::AudioMute {
-                            input: input(12),
+                            input: fm_types::InputTarget::Fixed(input(12)),
                             muted: true,
                         },
                     ],
@@ -1211,7 +1213,10 @@ fn runs_due_with_a_cue_join_its_held_frame() {
         "go",
         EngineCommand::CueControl {
             list: 1,
-            operation: fm_engine::EngineCueOperation::Go { cue: Some(1) },
+            operation: fm_engine::EngineCueOperation::Go {
+                cue: Some(1),
+                targets: fm_types::TargetBindings::default(),
+            },
         },
     ));
     assert_eq!(accepted(&submit(&mut engine, "run-1", run(1))), start);

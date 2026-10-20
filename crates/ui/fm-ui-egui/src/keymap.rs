@@ -786,6 +786,7 @@ mod tests {
                 CueOperation::Arm {
                     cue: None,
                     in_ms: 60_000,
+                    targets: fm_protocol::WireTargetBindings::default()
                 },
                 CueOperation::Disarm,
                 CueOperation::Stop,
@@ -799,6 +800,7 @@ mod tests {
                 operation: CueOperation::Arm {
                     cue: None,
                     in_ms: 5_000,
+                    targets: fm_protocol::WireTargetBindings::default()
                 },
             }))
         );
@@ -875,7 +877,10 @@ mod tests {
         assert_eq!(
             operations,
             [
-                fm_protocol::CueOperation::Go { cue: None },
+                fm_protocol::CueOperation::Go {
+                    cue: None,
+                    targets: fm_protocol::WireTargetBindings::default()
+                },
                 fm_protocol::CueOperation::Back,
                 fm_protocol::CueOperation::Skip,
                 fm_protocol::CueOperation::Stop,

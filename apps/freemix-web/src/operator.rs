@@ -409,6 +409,9 @@ impl<'a> OperatorSurface<'a> {
         self.shortcut_gate(shortcut).ok()?;
         Some(CommandPayload::FireShortcut {
             shortcut: shortcut.id,
+            // The browser page selects no input: an action on the selected
+            // input is refused (RC-004).
+            targets: fm_protocol::WireTargetBindings::default(),
         })
     }
 

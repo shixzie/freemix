@@ -528,17 +528,18 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
                 &mut |name, value| record.field_string(name, value),
             )?;
         }
-        CommandPayload::RemoveShortcut { shortcut } | CommandPayload::FireShortcut { shortcut } => {
-            record.field(
-                "payload",
-                if matches!(&message.payload, CommandPayload::FireShortcut { .. }) {
-                    "shortcut_fire"
-                } else {
-                    "shortcut_remove"
-                },
-            )?;
+        CommandPayload::RemoveShortcut { shortcut } => {
+            record.field("payload", "shortcut_remove")?;
             super::shortcut::validate_shortcut_id(*shortcut)?;
             record.field("shortcut", shortcut)?;
+        }
+        CommandPayload::FireShortcut { shortcut, targets } => {
+            record.field("payload", "shortcut_fire")?;
+            super::shortcut::validate_shortcut_id(*shortcut)?;
+            record.field("shortcut", shortcut)?;
+            super::cue::encode_targets(targets, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
         }
         CommandPayload::StopScript { run } => {
             record.field("payload", "script_stop")?;

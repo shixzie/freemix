@@ -462,7 +462,10 @@ fn go(client: &mut Client, id: &str) -> CueRunChange {
         id,
         CommandPayload::CueControl {
             list: 1,
-            operation: CueOperation::Go { cue: None },
+            operation: CueOperation::Go {
+                cue: None,
+                targets: fm_protocol::WireTargetBindings::default(),
+            },
         },
     );
     client.cue_run()
@@ -544,7 +547,7 @@ fn recorder(start: bool) -> WireCueAction {
 
 fn cut(value: u128) -> WireCueAction {
     WireCueAction::Take {
-        input: Some(wire(value)),
+        input: Some(fm_types::InputTarget::Fixed(wire(value))),
         effect: TransitionFavoriteEffect::Cut,
         duration_frames: 0,
     }

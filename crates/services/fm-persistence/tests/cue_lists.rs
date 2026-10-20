@@ -144,22 +144,24 @@ fn lists() -> Vec<CueList> {
                     id: 1,
                     name: "Open".into(),
                     actions: vec![
-                        CueAction::Preview { input: input(10) },
+                        CueAction::Preview {
+                            input: fm_types::InputTarget::Fixed(input(10)),
+                        },
                         CueAction::Take {
-                            input: Some(input(11)),
+                            input: Some(fm_types::InputTarget::Fixed(input(11))),
                             effect: TransitionEffect::Fade,
                             duration_frames: 25,
                         },
                         CueAction::OverlayOn {
                             channel: 2,
-                            input: input(10),
+                            input: fm_types::InputTarget::Fixed(input(10)),
                         },
                         CueAction::AudioGain {
-                            input: input(10),
+                            input: fm_types::InputTarget::Fixed(input(10)),
                             gain_millidb: -6_000,
                         },
                         CueAction::AudioMute {
-                            input: input(11),
+                            input: fm_types::InputTarget::Fixed(input(11)),
                             muted: true,
                         },
                         CueAction::Record {
@@ -192,7 +194,7 @@ fn lists() -> Vec<CueList> {
                         CueAction::Wait { frames: 2 },
                         CueAction::PlaylistStop,
                         CueAction::Take {
-                            input: Some(input(10)),
+                            input: Some(fm_types::InputTarget::Fixed(input(10))),
                             effect: TransitionEffect::Cut,
                             duration_frames: 0,
                         },
@@ -214,7 +216,9 @@ fn lists() -> Vec<CueList> {
                 armed: Some(CueArmed {
                     cue: 4,
                     due_frame: 300,
+                    targets: None,
                 }),
+                targets: None,
             },
         },
         CueList {
@@ -224,7 +228,65 @@ fn lists() -> Vec<CueList> {
             state: CueRunState::default(),
         },
         clips_list(),
+        roles_list(),
     ]
+}
+
+/// RC-004 (schema 73): actions on the inputs on Preview, on Program, and
+/// selected on the firing console, a run whose GO bound them, and a GO
+/// armed with its own bindings.
+fn roles_list() -> CueList {
+    use fm_types::{InputTarget, TargetBindings};
+    CueList {
+        id: 13,
+        name: "Roles".into(),
+        cues: vec![Cue {
+            id: 1,
+            name: "Follow".into(),
+            actions: vec![
+                CueAction::AudioMute {
+                    input: InputTarget::Preview,
+                    muted: false,
+                },
+                CueAction::Wait { frames: 10 },
+                CueAction::Take {
+                    input: Some(InputTarget::Selected),
+                    effect: TransitionEffect::Cut,
+                    duration_frames: 0,
+                },
+                CueAction::AudioGain {
+                    input: InputTarget::Program,
+                    gain_millidb: -3_000,
+                },
+            ],
+            auto_follow: false,
+        }],
+        state: CueRunState {
+            standby: Some(1),
+            live: Some(1),
+            pending: Some(CuePending {
+                cue: 1,
+                action: 2,
+                due_frame: 60,
+            }),
+            played: vec![1],
+            fault: None,
+            armed: Some(CueArmed {
+                cue: 1,
+                due_frame: 400,
+                targets: Some(TargetBindings {
+                    preview: Some(input(12)),
+                    program: Some(input(10)),
+                    selected: None,
+                }),
+            }),
+            targets: Some(TargetBindings {
+                preview: Some(input(10)),
+                program: Some(input(12)),
+                selected: Some(input(10)),
+            }),
+        },
+    }
 }
 
 /// A list of media transport actions and a millisecond delay, mid-wait.
@@ -237,20 +299,20 @@ fn clips_list() -> CueList {
             name: "Roll".into(),
             actions: vec![
                 CueAction::Media {
-                    input: input(12),
+                    input: fm_types::InputTarget::Fixed(input(12)),
                     operation: CueMediaOperation::Restart,
                 },
                 CueAction::Delay { millis: 1_500 },
                 CueAction::Media {
-                    input: input(12),
+                    input: fm_types::InputTarget::Fixed(input(12)),
                     operation: CueMediaOperation::Seek { frame: 250 },
                 },
                 CueAction::Media {
-                    input: input(12),
+                    input: fm_types::InputTarget::Fixed(input(12)),
                     operation: CueMediaOperation::Pause,
                 },
                 CueAction::Media {
-                    input: input(12),
+                    input: fm_types::InputTarget::Fixed(input(12)),
                     operation: CueMediaOperation::Play,
                 },
                 CueAction::RunScript { script: 5 },
@@ -268,6 +330,7 @@ fn clips_list() -> CueList {
             played: vec![1],
             fault: None,
             armed: None,
+            targets: None,
         },
     }
 }
@@ -305,8 +368,14 @@ fn cue_lists_round_trip_exactly_and_strictly() {
         "{\"type\": \"media_play\", \"input\": 12}",
         "{\"type\": \"run_script\", \"script\": 5}",
         "\"pending\": {\"cue\": 1, \"action\": 2, \"due_frame\": 45}",
-        "\"armed\": {\"cue\": 4, \"due_frame\": 300}}",
-        "\"fault\": null, \"armed\": null}",
+        "\"armed\": {\"cue\": 4, \"due_frame\": 300, \"targets\": null}, \"targets\": null}",
+        "\"fault\": null, \"armed\": null, \"targets\": null}",
+        // Schema 73 (RC-004): dynamic targets and bound runs.
+        "{\"type\": \"audio_mute\", \"input\": \"preview\", \"muted\": false}",
+        "{\"type\": \"take\", \"input\": \"selected\", \"effect\": \"cut\", \"duration_frames\": 0}",
+        "{\"type\": \"audio_gain\", \"input\": \"program\", \"gain_milli_db\": -3000}",
+        "\"armed\": {\"cue\": 1, \"due_frame\": 400, \"targets\": {\"preview\": 12, \"program\": 10, \"selected\": null}}",
+        "\"targets\": {\"preview\": 10, \"program\": 12, \"selected\": 10}}",
     ] {
         assert!(text.contains(token), "{token}: {text}");
     }
@@ -353,14 +422,47 @@ fn cue_lists_round_trip_exactly_and_strictly() {
         ),
         (",\n    \"cue_lists\": [", ",\n    \"cue_list\": ["),
         (
-            "\"armed\": {\"cue\": 4, \"due_frame\": 300}",
+            "\"armed\": {\"cue\": 4, \"due_frame\": 300, \"targets\": null}",
             "\"armed\": {\"cue\": 4}",
         ),
         (
-            "\"armed\": {\"cue\": 4, \"due_frame\": 300}",
+            "\"armed\": {\"cue\": 4, \"due_frame\": 300, \"targets\": null}",
             "\"armed\": 4",
         ),
-        ("\"fault\": null, \"armed\": null}", "\"fault\": null}"),
+        (
+            "\"armed\": {\"cue\": 4, \"due_frame\": 300, \"targets\": null}",
+            "\"armed\": {\"cue\": 4, \"due_frame\": 300}",
+        ),
+        (
+            "\"fault\": null, \"armed\": null, \"targets\": null}",
+            "\"fault\": null, \"armed\": null}",
+        ),
+        // Schema 73: a role is one of three lowercase words, and a run's
+        // targets carry all three roles.
+        (
+            "\"input\": \"preview\", \"muted\"",
+            "\"input\": \"Preview\", \"muted\"",
+        ),
+        (
+            "\"input\": \"selected\", \"effect\"",
+            "\"input\": \"selection\", \"effect\"",
+        ),
+        (
+            "\"input\": \"program\", \"gain_milli_db\"",
+            "\"input\": true, \"gain_milli_db\"",
+        ),
+        (
+            "\"targets\": {\"preview\": 10, \"program\": 12, \"selected\": 10}",
+            "\"targets\": {\"preview\": 10, \"program\": 12}",
+        ),
+        (
+            "\"targets\": {\"preview\": 10, \"program\": 12, \"selected\": 10}",
+            "\"targets\": {\"preview\": 0, \"program\": 12, \"selected\": 10}",
+        ),
+        (
+            "\"due_frame\": 400, \"targets\": {",
+            "\"due_frame\": 400, \"bound\": {",
+        ),
     ] {
         let malformed = text.replacen(from, to, 1);
         assert_ne!(malformed, text, "{from}");
@@ -424,7 +526,9 @@ fn cue_lists_round_trip_exactly_and_strictly() {
 fn a_project_whose_cue_names_a_missing_input_is_refused() {
     let mut project = project();
     let mut lists = lists();
-    lists[0].cues[0].actions[0] = CueAction::Preview { input: input(77) };
+    lists[0].cues[0].actions[0] = CueAction::Preview {
+        input: fm_types::InputTarget::Fixed(input(77)),
+    };
     project.set_cue_lists(lists);
     assert!(
         StoredProject::from_project(

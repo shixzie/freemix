@@ -60,29 +60,33 @@ fn round_trip(message: &WireMessage) -> String {
 
 fn every_action() -> Vec<WireCueAction> {
     vec![
-        WireCueAction::Preview { input: input(3) },
+        WireCueAction::Preview {
+            input: fm_types::InputTarget::Fixed(input(3)),
+        },
         WireCueAction::Take {
-            input: Some(input(3)),
+            input: Some(fm_types::InputTarget::Fixed(input(3))),
             effect: TransitionFavoriteEffect::Mix(AutoTransitionKind::Fade),
             duration_frames: 25,
         },
         WireCueAction::OverlayOn {
             channel: channel(2),
-            input: input(4),
+            input: fm_types::InputTarget::Fixed(input(4)),
         },
         WireCueAction::OverlayOff {
             channel: channel(2),
         },
         WireCueAction::TitleOn {
-            input: input(5),
+            input: fm_types::InputTarget::Fixed(input(5)),
             channel: channel(8),
         },
         WireCueAction::TitleText {
-            input: input(5),
+            input: fm_types::InputTarget::Fixed(input(5)),
             field: WireTitleFieldId::new(NonZeroU128::new(2).unwrap()),
             text: "Señor, 1/2: ok~".to_owned(),
         },
-        WireCueAction::TitleOff { input: input(5) },
+        WireCueAction::TitleOff {
+            input: fm_types::InputTarget::Fixed(input(5)),
+        },
         WireCueAction::FadeToBlack {
             active: true,
             duration_frames: 30,
@@ -90,11 +94,11 @@ fn every_action() -> Vec<WireCueAction> {
         WireCueAction::PlaylistStart,
         WireCueAction::PlaylistStop,
         WireCueAction::AudioGain {
-            input: input(3),
+            input: fm_types::InputTarget::Fixed(input(3)),
             gain_millidb: -12_500,
         },
         WireCueAction::AudioMute {
-            input: input(4),
+            input: fm_types::InputTarget::Fixed(input(4)),
             muted: true,
         },
         WireCueAction::Record {
@@ -136,31 +140,31 @@ fn spec() -> CueListSpec {
                 auto_follow: false,
                 actions: vec![
                     WireCueAction::Media {
-                        input: input(6),
+                        input: fm_types::InputTarget::Fixed(input(6)),
                         operation: WireCueMediaOperation::Restart,
                     },
                     WireCueAction::Delay { millis: 1_500 },
                     WireCueAction::Media {
-                        input: input(6),
+                        input: fm_types::InputTarget::Fixed(input(6)),
                         operation: WireCueMediaOperation::Seek { frame: 0 },
                     },
                     WireCueAction::Media {
-                        input: input(6),
+                        input: fm_types::InputTarget::Fixed(input(6)),
                         operation: WireCueMediaOperation::Play,
                     },
                     WireCueAction::Media {
-                        input: input(6),
+                        input: fm_types::InputTarget::Fixed(input(6)),
                         operation: WireCueMediaOperation::Pause,
                     },
                     WireCueAction::RunScript { script: 4 },
                     WireCueAction::TitleNumber {
-                        input: input(5),
+                        input: fm_types::InputTarget::Fixed(input(5)),
                         field: WireTitleFieldId::new(NonZeroU128::new(3).unwrap()),
                         add: true,
                         value: -2,
                     },
                     WireCueAction::TitleNumber {
-                        input: input(5),
+                        input: fm_types::InputTarget::Fixed(input(5)),
                         field: WireTitleFieldId::new(NonZeroU128::new(3).unwrap()),
                         add: false,
                         value: MAX_CUE_TITLE_NUMBER,
@@ -240,9 +244,18 @@ fn cue_commands_round_trip_exactly() {
     );
 
     for (operation, wire) in [
-        (CueOperation::Go { cue: None }, "payload=cue_go\tlist=3\n"),
         (
-            CueOperation::Go { cue: Some(7) },
+            CueOperation::Go {
+                cue: None,
+                targets: fm_protocol::WireTargetBindings::default(),
+            },
+            "payload=cue_go\tlist=3\n",
+        ),
+        (
+            CueOperation::Go {
+                cue: Some(7),
+                targets: fm_protocol::WireTargetBindings::default(),
+            },
             "payload=cue_go\tlist=3\tcue=7\n",
         ),
         (
@@ -258,6 +271,7 @@ fn cue_commands_round_trip_exactly() {
             CueOperation::Arm {
                 cue: None,
                 in_ms: 1,
+                targets: fm_protocol::WireTargetBindings::default(),
             },
             "payload=cue_arm\tlist=3\tin_ms=1\n",
         ),
@@ -265,6 +279,7 @@ fn cue_commands_round_trip_exactly() {
             CueOperation::Arm {
                 cue: Some(7),
                 in_ms: MAX_CUE_ARM_MS,
+                targets: fm_protocol::WireTargetBindings::default(),
             },
             "payload=cue_arm\tlist=3\tcue=7\tin_ms=86400000\n",
         ),
@@ -361,7 +376,11 @@ fn cue_commands_are_strict() {
         assert!(
             encode_line(&command(CommandPayload::CueControl {
                 list: 3,
-                operation: CueOperation::Arm { cue: None, in_ms },
+                operation: CueOperation::Arm {
+                    cue: None,
+                    in_ms,
+                    targets: fm_protocol::WireTargetBindings::default()
+                },
             }))
             .is_err(),
             "{in_ms}"

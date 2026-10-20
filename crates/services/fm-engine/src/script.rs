@@ -357,7 +357,7 @@ fn nonzero(value: u64, what: &str) -> Result<core::num::NonZeroU128, String> {
 /// The cue action a script action performs on `state`.
 #[allow(clippy::too_many_lines)] // one arm per action
 fn cue_action(state: &ShowState, action: &ScriptAction) -> Result<CueAction, String> {
-    let input = |reference: &InputRef| resolve(state, reference);
+    let input = |reference: &InputRef| resolve(state, reference).map(fm_model::InputTarget::Fixed);
     Ok(match action {
         ScriptAction::Preview(reference) => CueAction::Preview {
             input: input(reference)?,
@@ -539,6 +539,7 @@ impl ScriptHost for Host<'_, '_> {
             title_texts: &mut *self.frame.title_texts,
             scripts: None,
             takes: self.frame.takes,
+            targets: self.frame.targets,
         };
         let applied =
             self.engine
@@ -623,6 +624,7 @@ pub(crate) fn run_on(
             title_texts: &mut *frame.title_texts,
             scripts: None,
             takes: frame.takes,
+            targets: frame.targets,
         },
         step: 0,
         refused: None,
@@ -665,6 +667,7 @@ fn run_alone(
             title_texts: &mut title_texts,
             scripts: None,
             takes: 0,
+            targets: fm_model::TargetBindings::default(),
         },
     )?;
     // The part's actions applied; the runs now hold this one if it waits

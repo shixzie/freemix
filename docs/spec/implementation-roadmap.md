@@ -40,8 +40,10 @@ highest-value remaining items, ranked:
    edited and dispatched in Studio (keys and OSC), with `.fmshortcuts`
    import/export from Studio and the CLI, Studio-local per-console key
    overrides, Web operator page buttons, and panel-scoped and chorded keys
-   (Protocol 2.83, schema 70); still missing are dynamic targets and mouse
-   bindings (see the RC-004 boundary below). This is a P0 row.
+   (Protocol 2.83, schema 70), and dynamic input targets (the input on
+   Preview, on Program, or selected on the firing console; Protocol 2.88,
+   schema 73); still missing are mouse bindings and dynamic value targets
+   (see the RC-004 boundary below). This is a P0 row.
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
    a real input end to end (engine, protocol, persistence, both daemons,
    Studio), and the native daemon prefetches each list's next item so Auto
@@ -1008,11 +1010,27 @@ authority's check. Protocol 2.83 / schema 70 add chords (a second stroke
 after the first, Ctrl+K then 1, which may be a key the console uses alone)
 and keys scoped to one console panel (answering only while that panel,
 the last clicked, has the focus); keys clash only where strokes and scopes
-overlap. Still missing, so RC-004 remains planned: dynamic input/value
-targets ("the input on Preview", "the selected input"; the `fm-automation`
-templates are not wired, though a Take with no input already takes the
-current Preview), scoping a key to a pop-out window apart from its panel,
-chorded or scoped console key overrides, and mouse bindings.
+overlap. Protocol 2.88 / schema 73 add dynamic input targets: a shortcut or
+cue action names a fixed input or the role `preview`, `program`, or
+`selected` (`fm_types::InputTarget`). The role resolves on the authority when
+fired: a shortcut fire binds Preview and Program as they stand before its
+actions; a cue GO binds once for its whole run (kept in the list's run state,
+so a step after a wait or an auto-follow acts on the inputs bound at GO), and
+an arm binds when armed. "Selected" is the input selected on the firing
+console (the input tile last clicked, right-clicked, or reached by keyboard in
+Studio, marked by an accent bar and named in the tile's hover), sent as the
+fire's `selected` binding; a fire whose cue needs a selection it lacks is
+refused whole. The authority journals the Preview and Program it bound
+(`bound_preview`, `bound_program`) beside the selection, so a replay acts on
+the same inputs. Studio's shortcut and cue action editors offer the roles in
+their input pickers (only "selected" for a take, none for title field edits,
+whose field list needs a fixed title), with English and Spanish hover help,
+and the standby preview reads a role as the input a GO would bind. Still
+missing, so RC-004 remains planned: dynamic value targets, a run's bound
+targets in the wire cue status, a selection from the Web page, OSC, or the
+CLI (their fires of a "selected" action are refused), scoping a key to a
+pop-out window apart from its panel, chorded or scoped console key
+overrides, and mouse bindings.
 
 Current implementation boundary for item 8: `fm-scopes` now provides a bounded
 reference color-monitoring session on top of its scope math: an exact

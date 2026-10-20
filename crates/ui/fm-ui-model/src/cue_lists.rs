@@ -10,7 +10,7 @@
 
 use fm_protocol::{
     CueListStatus, CueMediaTransport, CueRunChange, CueRunStatus, CueScriptRun, CueTitleText,
-    FadeToBlackState, PlaylistRunState, RecordingStatus, TitleFieldValue, WireCueAction,
+    FadeToBlackState, PlaylistRunState, RecordingStatus, TitleFieldValue,
 };
 use fm_types::InputId;
 
@@ -65,25 +65,15 @@ impl CueRunUpdate {
     }
 }
 
-/// Every input a list's actions name.
+/// Every fixed input a list's actions name (a dynamic target names none
+/// until it is fired, RC-004).
 pub fn list_inputs(list: &CueListStatus) -> impl Iterator<Item = InputId> + '_ {
     list.spec
         .cues
         .iter()
         .flat_map(|cue| cue.actions.iter())
-        .filter_map(|action| match action {
-            WireCueAction::Preview { input }
-            | WireCueAction::OverlayOn { input, .. }
-            | WireCueAction::TitleOn { input, .. }
-            | WireCueAction::TitleText { input, .. }
-            | WireCueAction::TitleNumber { input, .. }
-            | WireCueAction::TitleOff { input }
-            | WireCueAction::AudioGain { input, .. }
-            | WireCueAction::AudioMute { input, .. }
-            | WireCueAction::Media { input, .. } => Some(input.to_domain()),
-            WireCueAction::Take { input, .. } => input.map(fm_protocol::WireInputId::to_domain),
-            _ => None,
-        })
+        .filter_map(|action| action.target()?.fixed())
+        .map(fm_protocol::WireInputId::to_domain)
 }
 
 fn state_is_valid(list: &CueListStatus, state: &CueRunStatus) -> bool {

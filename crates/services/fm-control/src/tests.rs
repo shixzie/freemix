@@ -3735,7 +3735,7 @@ mod cues {
 
     fn cut(value: u128) -> WireCueAction {
         WireCueAction::Take {
-            input: Some(wire(value)),
+            input: Some(fm_types::InputTarget::Fixed(wire(value))),
             effect: TransitionFavoriteEffect::Cut,
             duration_frames: 0,
         }
@@ -3772,7 +3772,10 @@ mod cues {
     fn go() -> CommandPayload {
         CommandPayload::CueControl {
             list: 7,
-            operation: CueOperation::Go { cue: None },
+            operation: CueOperation::Go {
+                cue: None,
+                targets: fm_protocol::WireTargetBindings::default(),
+            },
         }
     }
 
@@ -8068,7 +8071,10 @@ mod scripts {
             "go",
             CommandPayload::CueControl {
                 list: 4,
-                operation: fm_protocol::CueOperation::Go { cue: None },
+                operation: fm_protocol::CueOperation::Go {
+                    cue: None,
+                    targets: fm_protocol::WireTargetBindings::default(),
+                },
             },
         );
         let EventPayload::CueRunChanged(change) = &go.output.events[0].payload else {
@@ -8252,7 +8258,7 @@ fn paged_inputs_step_against_the_reported_page_count() {
                 name: "Last page".into(),
                 auto_follow: false,
                 actions: vec![fm_protocol::WireCueAction::Page {
-                    input: deck,
+                    input: fm_types::InputTarget::Fixed(deck),
                     navigation: PagedNavigation::Last,
                 }],
             }],
@@ -8276,7 +8282,10 @@ fn paged_inputs_step_against_the_reported_page_count() {
                 "go",
                 CommandPayload::CueControl {
                     list: 2,
-                    operation: fm_protocol::CueOperation::Go { cue: None },
+                    operation: fm_protocol::CueOperation::Go {
+                        cue: None,
+                        targets: fm_protocol::WireTargetBindings::default(),
+                    },
                 },
             ),
             0,

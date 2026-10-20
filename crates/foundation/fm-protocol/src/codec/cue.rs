@@ -16,6 +16,12 @@
 //!   `media_restart.<input>`, `media_seek.<input>.<frame>`, `wait.<frames>`,
 //!   `delay.<millis>` (the media and delay tokens since Protocol 2.51),
 //!   `run_script.<script>` (Protocol 2.60, a nonzero project script id).
+//!   Since Protocol 2.88 (RC-004) every `<input>` of an action is an input
+//!   id or a role resolved when the action is fired: `preview`, `program`,
+//!   or `selected` (see [`crate::WireInputTarget`]).
+//! * `cue_go` and `cue_arm` (and `shortcut_fire`) carry the optional
+//!   target bindings `selected`, `bound_preview`, and `bound_program`
+//!   (Protocol 2.88, see [`crate::WireTargetBindings`]).
 //! * `state` is `<standby>:<live>:<pending>:<played>:<fault>:<armed>`, each of
 //!   `standby` and `live` a cue id or `-`, `pending`
 //!   `<cue>.<action>.<due frame>` or `-`, `played` `.`-separated ascending
@@ -47,8 +53,8 @@ use crate::{
     MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS, MAX_CUE_NAME_BYTES,
     MAX_CUE_TEXT_BYTES, MAX_CUE_TITLE_NUMBER, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES,
     MAX_CUES, MediaTime, MediaTransportState, TransitionFavoriteEffect, WireCue, WireCueAction,
-    WireCueMediaOperation, WireOverlayChannelId, WireRecorderSlot, WireStreamTargetId,
-    WireTitleFieldId,
+    WireCueMediaOperation, WireInputTarget, WireOverlayChannelId, WireRecorderSlot,
+    WireStreamTargetId, WireTargetBindings, WireTitleFieldId,
 };
 
 use super::media::{FieldSource, Push};
@@ -283,7 +289,7 @@ fn parse_channel(value: &str) -> Option<WireOverlayChannelId> {
 #[must_use]
 pub fn parse_cue_action_token(value: &str) -> Option<WireCueAction> {
     let parts: Vec<&str> = value.split('.').collect();
-    let input = |value: &str| parse_canonical_input(value);
+    let input = parse_target;
     Some(match parts.as_slice() {
         ["preview", id] => WireCueAction::Preview { input: input(id)? },
         ["take", id, effect, frames] => WireCueAction::Take {
@@ -615,25 +621,78 @@ pub(super) fn encode_operation(
     validate_list_id(list)?;
     push("list", list.to_string())?;
     match operation {
-        CueOperation::Go { cue: Some(cue) } | CueOperation::Standby { cue } => {
-            push("cue", cue.to_string())
+        CueOperation::Go { cue, targets } => {
+            if let Some(cue) = cue {
+                push("cue", cue.to_string())?;
+            }
+            encode_targets(&targets, push)
         }
-        CueOperation::Arm { cue, in_ms } => {
+        CueOperation::Standby { cue } => push("cue", cue.to_string()),
+        CueOperation::Arm {
+            cue,
+            in_ms,
+            targets,
+        } => {
             if !(1..=MAX_CUE_ARM_MS).contains(&in_ms) {
                 return Err(invalid("in_ms", in_ms.to_string()));
             }
             if let Some(cue) = cue {
                 push("cue", cue.to_string())?;
             }
-            push("in_ms", in_ms.to_string())
+            push("in_ms", in_ms.to_string())?;
+            encode_targets(&targets, push)
         }
-        CueOperation::Go { cue: None }
-        | CueOperation::Back
+        CueOperation::Back
         | CueOperation::Skip
         | CueOperation::Stop
         | CueOperation::Reset
         | CueOperation::Disarm => Ok(()),
     }
+}
+
+/// The optional command fields of a fire's target bindings (Protocol 2.88,
+/// RC-004), each a canonical input id.
+const TARGET_FIELDS: [&str; 3] = ["selected", "bound_preview", "bound_program"];
+
+/// Encodes a fire's target bindings as the optional fields `selected`,
+/// `bound_preview`, and `bound_program`, each written only when bound.
+pub(super) fn encode_targets(
+    targets: &WireTargetBindings,
+    push: &mut Push<'_>,
+) -> Result<(), CodecError> {
+    for (name, input) in
+        TARGET_FIELDS
+            .into_iter()
+            .zip([targets.selected, targets.preview, targets.program])
+    {
+        if let Some(input) = input {
+            push(name, input.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Decodes a fire's target bindings (see [`encode_targets`]).
+pub(super) fn decode_targets(
+    fields: &mut dyn FieldSource,
+) -> Result<WireTargetBindings, CodecError> {
+    let mut input = |name: &'static str| match fields.optional(name) {
+        None => Ok(None),
+        Some(value) => parse_canonical_input(&value)
+            .map(Some)
+            .ok_or_else(|| invalid(name, value)),
+    };
+    Ok(WireTargetBindings {
+        selected: input(TARGET_FIELDS[0])?,
+        preview: input(TARGET_FIELDS[1])?,
+        program: input(TARGET_FIELDS[2])?,
+    })
+}
+
+/// Parses an action's target: a canonical input id or a role token.
+fn parse_target(value: &str) -> Option<WireInputTarget> {
+    WireInputTarget::from_role_token(value)
+        .or_else(|| parse_canonical_input(value).map(WireInputTarget::Fixed))
 }
 
 /// Decodes a live operation named by `payload`, or `None` for another
@@ -655,7 +714,8 @@ pub(super) fn decode_operation(
                 }
                 None => None,
             };
-            return Ok(Some((list, CueOperation::Go { cue })));
+            let targets = decode_targets(fields)?;
+            return Ok(Some((list, CueOperation::Go { cue, targets })));
         }
         "cue_arm" => {
             let list = decode_list_id(fields)?;
@@ -670,7 +730,15 @@ pub(super) fn decode_operation(
                 .and_then(|millis| u32::try_from(millis).ok())
                 .filter(|millis| (1..=MAX_CUE_ARM_MS).contains(millis))
                 .ok_or_else(|| invalid("in_ms", value))?;
-            return Ok(Some((list, CueOperation::Arm { cue, in_ms })));
+            let targets = decode_targets(fields)?;
+            return Ok(Some((
+                list,
+                CueOperation::Arm {
+                    cue,
+                    in_ms,
+                    targets,
+                },
+            )));
         }
         "cue_disarm" => CueOperation::Disarm,
         "cue_standby" => {

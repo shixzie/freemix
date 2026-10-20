@@ -32,7 +32,7 @@ use egui::{RichText, Ui};
 use fm_protocol::{
     MAX_CUE_TITLE_NUMBER, ScriptStatus, StingerReadiness, TitleFieldStatus, TitleFieldValue,
     TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation, WireInputId,
-    WireTitleFieldId,
+    WireInputTarget, WireTargetBindings, WireTitleFieldId,
 };
 use fm_types::{FrameRate, InputId};
 use fm_ui_model::{check_script_syntax, script_verbs, script_waits};
@@ -43,6 +43,14 @@ use crate::gating::Capability;
 use crate::l10n::{Arg, Locale, Msg};
 use crate::monitors::input_name;
 use crate::theme::{AMBER, ERROR, caption, ellipsize, legible, muted_color, text_dim_color};
+
+/// The fixed input of an action the walk resolved (see `Walk::action`).
+fn resolved(target: WireInputTarget) -> InputId {
+    match target.fixed() {
+        Some(input) => input.to_domain(),
+        None => unreachable!("the walk resolves a dynamic target before it reads it"),
+    }
+}
 
 /// One title as the preview needs it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -80,6 +88,9 @@ pub(crate) struct Show {
     /// An operator's T-bar transition is in flight.
     pub(crate) manual_in_flight: bool,
     pub(crate) permissions: Permissions,
+    /// The input selected on this console, which an action on the
+    /// selected input acts on (RC-004).
+    pub(crate) selected: Option<InputId>,
 }
 
 /// The session permissions a step may need beyond `transition`.
@@ -156,6 +167,7 @@ impl Show {
                 control_audio: state.can_control_audio,
                 edit_project: state.can_edit_project,
             },
+            selected: None,
         })
     }
 
@@ -561,7 +573,7 @@ impl Walk<'_> {
             | WireCueAction::AudioGain { input, .. }
             | WireCueAction::AudioMute { input, .. }
             | WireCueAction::Media { input, .. }
-            | WireCueAction::Page { input, .. } => input.to_domain(),
+            | WireCueAction::Page { input, .. } => resolved(*input),
             _ => return None,
         };
         if !self.show.inputs.contains(&input) {
@@ -617,8 +629,41 @@ impl Walk<'_> {
         self.sim.takes = 0;
     }
 
-    #[allow(clippy::too_many_lines)] // one arm per action kind
+    /// Walks one action, its dynamic target (RC-004) bound as a GO binds
+    /// it: to the show's Preview and Program when the GO fires, and to the
+    /// input selected on this console.
     fn action(&mut self, action: &WireCueAction) {
+        let Some(target) = action.target().filter(|target| target.is_dynamic()) else {
+            self.fixed_action(action);
+            return;
+        };
+        let bindings = WireTargetBindings {
+            preview: Some(WireInputId::from_domain(self.show.preview)),
+            program: Some(WireInputId::from_domain(self.show.program)),
+            selected: self.show.selected.map(WireInputId::from_domain),
+        };
+        if let Some(input) = target.resolve(&bindings) {
+            let resolved = action.clone().with_target(WireInputTarget::Fixed(input));
+            self.fixed_action(&resolved);
+        } else {
+            let kind = self.l.tr(crate::cues::ActionKind::of(action).label());
+            let text = self.l.format(
+                Msg::CuePvUnboundTarget,
+                &[
+                    ("action", Arg::Str(kind)),
+                    (
+                        "target",
+                        Arg::Str(&crate::cues::target_name(self.l, target)),
+                    ),
+                ],
+            );
+            let issue = self.refused(Msg::CuePvRefNoSelection.en());
+            self.push(LineKind::Action, text, vec![issue]);
+        }
+    }
+
+    #[allow(clippy::too_many_lines)] // one arm per action kind
+    fn fixed_action(&mut self, action: &WireCueAction) {
         let l = self.l;
         let show = self.show;
         let mut issues = Vec::new();
@@ -629,10 +674,10 @@ impl Walk<'_> {
         if let Some(issue) = self.denied(action) {
             issues.push(issue);
         }
-        let name = |input: &WireInputId| show.input(l, input.to_domain());
+        let name = |input: &WireInputTarget| show.input(l, resolved(*input));
         let (kind, text) = match action {
             WireCueAction::Preview { input } => {
-                let target = input.to_domain();
+                let target = resolved(*input);
                 let text = l.format(Msg::CuePvPreview, &[("input", Arg::Str(&name(input)))]);
                 let now = self.sim.preview.map(|now| show.input(l, now));
                 if !bad_reference {
@@ -656,7 +701,7 @@ impl Walk<'_> {
                 duration_frames,
             } => {
                 let target = match input {
-                    Some(input) => Some(input.to_domain()),
+                    Some(input) => Some(resolved(*input)),
                     None => self.sim.preview,
                 };
                 let target_name = target.map_or_else(
@@ -727,7 +772,7 @@ impl Walk<'_> {
                     ],
                 );
                 let now = self.overlay_now(number);
-                let target = input.to_domain();
+                let target = resolved(*input);
                 if !bad_reference && self.overlay_source(number) == Some(Some(target)) {
                     issues.push(self.no_change(Msg::CuePvAlreadyState));
                 }
@@ -753,26 +798,26 @@ impl Walk<'_> {
                     Msg::CuePvTitleOn,
                     &[
                         ("channel", Arg::from(u32::from(number))),
-                        ("title", Arg::Str(&show.title_name(l, input.to_domain()))),
+                        ("title", Arg::Str(&show.title_name(l, resolved(*input)))),
                     ],
                 );
                 let now = self.overlay_now(number);
-                self.set_overlay(number, Some(input.to_domain()));
+                self.set_overlay(number, Some(resolved(*input)));
                 (LineKind::Action, self.with_now(text, now))
             }
             WireCueAction::TitleOff { input } => {
                 let text = l.format(
                     Msg::CuePvTitleOff,
-                    &[("title", Arg::Str(&show.title_name(l, input.to_domain())))],
+                    &[("title", Arg::Str(&show.title_name(l, resolved(*input))))],
                 );
-                let target = input.to_domain();
+                let target = resolved(*input);
                 if let Some(overlays) = &mut self.sim.overlays {
                     overlays.retain(|(_, source)| *source != target);
                 }
                 (LineKind::Action, text)
             }
             WireCueAction::TitleText { input, field, text } => {
-                let target = input.to_domain();
+                let target = resolved(*input);
                 let line = self.title_line(
                     target,
                     *field,
@@ -800,7 +845,7 @@ impl Walk<'_> {
                 add,
                 value,
             } => {
-                let target = input.to_domain();
+                let target = resolved(*input);
                 let (line, now) =
                     self.title_number(target, *field, *add, *value, bad_reference, &mut issues);
                 (LineKind::Action, self.with_now(line, now))
@@ -838,7 +883,7 @@ impl Walk<'_> {
                 input,
                 gain_millidb,
             } => {
-                let target = input.to_domain();
+                let target = resolved(*input);
                 let gain = |millidb: i32| l.decibels(f64::from(millidb) / 1_000.0, -1_000.0);
                 let text = l.format(
                     Msg::CuePvGain,
@@ -869,7 +914,7 @@ impl Walk<'_> {
                 (LineKind::Action, self.with_now(text, now))
             }
             WireCueAction::AudioMute { input, muted } => {
-                let target = input.to_domain();
+                let target = resolved(*input);
                 let msg = if *muted {
                     Msg::CuePvMute
                 } else {
@@ -1325,6 +1370,7 @@ mod tests {
                 control_audio: true,
                 edit_project: true,
             },
+            selected: None,
         }
     }
 
@@ -1349,7 +1395,7 @@ mod tests {
 
     fn cut(input: u128) -> WireCueAction {
         WireCueAction::Take {
-            input: Some(wire(input)),
+            input: Some(fm_types::InputTarget::Fixed(wire(input))),
             effect: TransitionFavoriteEffect::Cut,
             duration_frames: 0,
         }
@@ -1357,7 +1403,7 @@ mod tests {
 
     fn number(field_id: u128, add: bool, value: i64) -> WireCueAction {
         WireCueAction::TitleNumber {
-            input: wire(SCORE),
+            input: fm_types::InputTarget::Fixed(wire(SCORE)),
             field: field(field_id),
             add,
             value,
@@ -1450,7 +1496,7 @@ mod tests {
                 2,
                 false,
                 vec![WireCueAction::Take {
-                    input: Some(wire(3)),
+                    input: Some(fm_types::InputTarget::Fixed(wire(3))),
                     effect: TransitionFavoriteEffect::Mix(AutoTransitionKind::Fade),
                     duration_frames: 25,
                 }],
@@ -1566,12 +1612,16 @@ mod tests {
             1,
             false,
             vec![
-                WireCueAction::Preview { input: wire(9) },
+                WireCueAction::Preview {
+                    input: fm_types::InputTarget::Fixed(wire(9)),
+                },
                 WireCueAction::Media {
-                    input: wire(1),
+                    input: fm_types::InputTarget::Fixed(wire(1)),
                     operation: WireCueMediaOperation::Play,
                 },
-                WireCueAction::TitleOff { input: wire(2) },
+                WireCueAction::TitleOff {
+                    input: fm_types::InputTarget::Fixed(wire(2)),
+                },
                 WireCueAction::Stream {
                     target: WireStreamTargetId::new(NonZeroU128::new(8).unwrap()),
                     start: true,
@@ -1620,7 +1670,7 @@ mod tests {
     #[test]
     fn switcher_steps_follow_the_buses_and_running_transitions() {
         let fade = |input: u128, frames: u32| WireCueAction::Take {
-            input: Some(wire(input)),
+            input: Some(fm_types::InputTarget::Fixed(wire(input))),
             effect: TransitionFavoriteEffect::Mix(AutoTransitionKind::Fade),
             duration_frames: frames,
         };
@@ -1631,8 +1681,12 @@ mod tests {
                 // Program is Camera 1: a take of it does nothing, and
                 // Preview may not show it.
                 cut(1),
-                WireCueAction::Preview { input: wire(1) },
-                WireCueAction::Preview { input: wire(2) },
+                WireCueAction::Preview {
+                    input: fm_types::InputTarget::Fixed(wire(1)),
+                },
+                WireCueAction::Preview {
+                    input: fm_types::InputTarget::Fixed(wire(2)),
+                },
                 fade(3, 25),
                 // A second take on the frame.
                 WireCueAction::PlaylistStart,
@@ -1734,21 +1788,21 @@ mod tests {
                 stinger(2),
                 WireCueAction::OverlayOn {
                     channel: channel(1),
-                    input: wire(3),
+                    input: fm_types::InputTarget::Fixed(wire(3)),
                 },
                 WireCueAction::OverlayOff {
                     channel: channel(2),
                 },
                 WireCueAction::AudioGain {
-                    input: wire(1),
+                    input: fm_types::InputTarget::Fixed(wire(1)),
                     gain_millidb: -6_000,
                 },
                 WireCueAction::AudioGain {
-                    input: wire(3),
+                    input: fm_types::InputTarget::Fixed(wire(3)),
                     gain_millidb: 0,
                 },
                 WireCueAction::AudioMute {
-                    input: wire(2),
+                    input: fm_types::InputTarget::Fixed(wire(2)),
                     muted: false,
                 },
                 WireCueAction::Record {
@@ -1809,7 +1863,9 @@ mod tests {
             1,
             false,
             vec![
-                WireCueAction::Preview { input: wire(3) },
+                WireCueAction::Preview {
+                    input: fm_types::InputTarget::Fixed(wire(3)),
+                },
                 number(1, true, 1),
                 cut(3),
             ],
@@ -1854,5 +1910,47 @@ mod tests {
         assert_eq!(preview.lines[0].text, "Corte a Camera 2 (ahora Camera 1)");
         assert_eq!(preview.lines[1].text, "Poner Score Home a 3 (ahora 2)");
         assert_eq!(preview.lines[2].text, "Esperar 500 ms y después:");
+    }
+
+    /// RC-004: a dynamic target reads as the input a GO from this console
+    /// would bind — Preview and Program as they stand at GO, and this
+    /// console's selection — and with nothing selected, an action on the
+    /// selected input would be refused.
+    #[test]
+    fn dynamic_targets_read_as_the_inputs_a_go_binds() {
+        let cues = [cue(
+            1,
+            false,
+            vec![
+                WireCueAction::Preview {
+                    input: WireInputTarget::Program,
+                },
+                WireCueAction::Take {
+                    input: Some(WireInputTarget::Selected),
+                    effect: TransitionFavoriteEffect::Cut,
+                    duration_frames: 0,
+                },
+                WireCueAction::OverlayOn {
+                    channel: WireOverlayChannelId::new(2).unwrap(),
+                    input: WireInputTarget::Preview,
+                },
+            ],
+        )];
+        let mut show = show();
+        let unbound = run(&show, &cues);
+        assert_eq!(unbound.lines[1].text, "Take: Selected input");
+        assert_eq!(
+            unbound.lines[1].issues,
+            [refused("no input is selected on this console")]
+        );
+        show.selected = Some(id(3));
+        let bound = run(&show, &cues);
+        let texts = texts(&bound);
+        assert_eq!(texts[1], "Cut to Camera 3 (now Camera 1)", "{texts:?}");
+        assert!(bound.lines[1].issues.is_empty(), "{:?}", bound.lines[1]);
+        // Preview binds at GO: Camera 2, not Camera 1 that the first
+        // action put there.
+        assert!(texts[0].contains("Camera 1"), "{texts:?}");
+        assert!(texts[2].contains("Camera 2"), "{texts:?}");
     }
 }

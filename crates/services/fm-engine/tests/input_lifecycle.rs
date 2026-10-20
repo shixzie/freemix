@@ -797,7 +797,7 @@ fn a_media_input_a_cue_addresses_keeps_a_media_source() {
                     id: 7,
                     name: "Roll".into(),
                     actions: vec![fm_model::CueAction::Media {
-                        input: input(CLIP),
+                        input: fm_types::InputTarget::Fixed(input(CLIP)),
                         operation: fm_model::CueMediaOperation::Play,
                     }],
                     auto_follow: false,

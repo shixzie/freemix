@@ -79,7 +79,10 @@ fn run_frame_on(
 }
 
 fn fire(shortcut: u64) -> StudioIntent {
-    StudioIntent::Shortcut(ShortcutIntent::Fire { shortcut })
+    StudioIntent::Shortcut(ShortcutIntent::Fire {
+        shortcut,
+        targets: fm_protocol::WireTargetBindings::default(),
+    })
 }
 
 fn toasts(shell: &StudioShell) -> Vec<String> {
@@ -351,8 +354,8 @@ fn save_is_held_for_clashes_waits_and_bad_names() {
             with(&|spec| {
                 spec.action = WireShortcutAction::Actions(vec![
                     WireCueAction::Preview {
-                        input: fm_protocol::WireInputId::from_domain(fm_types::InputId::new(
-                            core::num::NonZeroU128::new(2).unwrap(),
+                        input: fm_types::InputTarget::Fixed(fm_protocol::WireInputId::from_domain(
+                            fm_types::InputId::new(core::num::NonZeroU128::new(2).unwrap(),)
                         ))
                     };
                     MAX_SHORTCUT_ACTIONS + 1

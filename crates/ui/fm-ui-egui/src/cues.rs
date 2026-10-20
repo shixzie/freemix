@@ -44,8 +44,9 @@ use fm_protocol::{
     MAX_CUE_ACTIONS, MAX_CUE_ARM_MS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LISTS,
     MAX_CUE_TITLE_NUMBER, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES,
     PagedNavigation, ScriptStatus, TitleFieldStatus, TitleFieldValue, TransitionFavoriteEffect,
-    WireCue, WireCueAction, WireCueMediaOperation, WireInputId, WireOverlayChannelId,
-    WireRecorderSlot, WireStingerSlotId, WireStreamTargetId, WireTitleFieldId,
+    WireCue, WireCueAction, WireCueMediaOperation, WireInputId, WireInputTarget,
+    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    WireTargetBindings, WireTitleFieldId,
 };
 use fm_types::{FrameRate, InputId};
 use fm_ui_model::{ClientView, ProjectState, ScriptVerb, script_verbs};
@@ -344,7 +345,10 @@ pub fn go_intent(
     }
     Ok(CueIntent::Control {
         list: list.id,
-        operation: CueOperation::Go { cue: None },
+        operation: CueOperation::Go {
+            cue: None,
+            targets: WireTargetBindings::default(),
+        },
     })
 }
 
@@ -406,7 +410,10 @@ pub fn key_intent(
     }
     let can_go = || go_key_list(state, scripts, list).is_some();
     let operation = match key {
-        CueKey::Go => can_go().then_some(CueOperation::Go { cue: None })?,
+        CueKey::Go => can_go().then_some(CueOperation::Go {
+            cue: None,
+            targets: WireTargetBindings::default(),
+        })?,
         CueKey::Previous => CueOperation::Back,
         CueKey::Next => CueOperation::Skip,
         CueKey::Stop => CueOperation::Stop,
@@ -414,10 +421,12 @@ pub fn key_intent(
         CueKey::Arm => CueOperation::Arm {
             cue: None,
             in_ms: parse_arm_delay(typed_delay).filter(|_| can_go())?,
+            targets: WireTargetBindings::default(),
         },
         CueKey::ArmIn(in_ms) => CueOperation::Arm {
             cue: None,
             in_ms: Some(in_ms).filter(|in_ms| (1..=MAX_CUE_ARM_MS).contains(in_ms) && can_go())?,
+            targets: WireTargetBindings::default(),
         },
         CueKey::Disarm => list.state.armed.map(|_| CueOperation::Disarm)?,
     };
@@ -678,14 +687,10 @@ impl ActionKind {
         view: &ClientView,
         project: &ProjectState,
     ) -> Option<WireCueAction> {
-        let input = || view.inputs.first().copied().map(WireInputId::from_domain);
+        let fixed = |input: InputId| WireInputTarget::Fixed(WireInputId::from_domain(input));
+        let input = || view.inputs.first().copied().map(fixed);
         let title = || project.titles().first();
-        let media = || {
-            media_inputs(view, project)
-                .first()
-                .copied()
-                .map(WireInputId::from_domain)
-        };
+        let media = || media_inputs(view, project).first().copied().map(fixed);
         let transport = |operation| {
             Some(WireCueAction::Media {
                 input: media()?,
@@ -694,10 +699,7 @@ impl ActionKind {
         };
         let page = |navigation| {
             Some(WireCueAction::Page {
-                input: paged_inputs(view, project)
-                    .first()
-                    .copied()
-                    .map(WireInputId::from_domain)?,
+                input: paged_inputs(view, project).first().copied().map(fixed)?,
                 navigation,
             })
         };
@@ -715,13 +717,13 @@ impl ActionKind {
             },
             Self::OverlayOff => WireCueAction::OverlayOff { channel },
             Self::TitleOn => WireCueAction::TitleOn {
-                input: WireInputId::from_domain(title()?.input),
+                input: fixed(title()?.input),
                 channel,
             },
             Self::TitleText => {
                 let title = title()?;
                 WireCueAction::TitleText {
-                    input: WireInputId::from_domain(title.input),
+                    input: fixed(title.input),
                     field: title.fields.first()?.field,
                     text: String::new(),
                 }
@@ -738,14 +740,14 @@ impl ActionKind {
                     Some((title.input, field.field))
                 })?;
                 WireCueAction::TitleNumber {
-                    input: WireInputId::from_domain(input),
+                    input: fixed(input),
                     field,
                     add: true,
                     value: 1,
                 }
             }
             Self::TitleOff => WireCueAction::TitleOff {
-                input: WireInputId::from_domain(title()?.input),
+                input: fixed(title()?.input),
             },
             Self::FadeToBlack => WireCueAction::FadeToBlack {
                 active: true,
@@ -967,7 +969,11 @@ impl CuePanel {
             {
                 intents.push(StudioIntent::Cue(CueIntent::Control {
                     list: list.id,
-                    operation: CueOperation::Arm { cue: None, in_ms },
+                    operation: CueOperation::Arm {
+                        cue: None,
+                        in_ms,
+                        targets: WireTargetBindings::default(),
+                    },
                 }));
             }
             let disarm = control.or_else(|| {
@@ -1223,7 +1229,10 @@ impl CuePanel {
                 .on_hover_text(l.format(Msg::CueArmedHover, &[("frame", Arg::Str(&frame))]));
             ui.ctx().request_repaint_after(Duration::from_millis(200));
         }
-        let show = Show::of(state);
+        let show = Show::of(state).map(|mut show| {
+            show.selected = crate::selection::selected_input(ui.ctx());
+            show
+        });
         if let (Some(show), Some(standby)) = (&show, list.state.standby) {
             draw_standby_preview(ui, state, show, &list, standby, intents);
         }
@@ -1446,6 +1455,77 @@ impl Names<'_> {
             &self.view.input_names,
             input.to_domain(),
         )
+    }
+
+    /// A target's name: the input's, or the role's (RC-004).
+    fn target(&self, target: WireInputTarget) -> String {
+        match target {
+            WireInputTarget::Fixed(input) => self.input(input),
+            role => target_name(self.l, role),
+        }
+    }
+}
+
+/// The dynamic targets an input picker offers (RC-004).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Roles {
+    preview: bool,
+    program: bool,
+    selected: bool,
+}
+
+impl Roles {
+    /// Every role: an action on any input.
+    pub(crate) const ALL: Self = Self {
+        preview: true,
+        program: true,
+        selected: true,
+    };
+    /// None: an action whose other parameters depend on the input (a
+    /// title's field).
+    pub(crate) const NONE: Self = Self {
+        preview: false,
+        program: false,
+        selected: false,
+    };
+    /// A take: its "current Preview" choice already takes Preview, and
+    /// taking Program changes nothing, so only the selected input.
+    pub(crate) const TAKE: Self = Self {
+        preview: false,
+        program: false,
+        selected: true,
+    };
+
+    fn targets(self) -> impl Iterator<Item = WireInputTarget> {
+        [
+            (self.preview, WireInputTarget::Preview),
+            (self.program, WireInputTarget::Program),
+            (self.selected, WireInputTarget::Selected),
+        ]
+        .into_iter()
+        .filter_map(|(offered, target)| offered.then_some(target))
+    }
+}
+
+/// A dynamic target's name (RC-004): the input on Preview, on Program,
+/// or selected on this console.
+#[must_use]
+pub(crate) fn target_name(l: Locale, target: WireInputTarget) -> String {
+    match target {
+        WireInputTarget::Preview => l.text(Msg::CueTargetPreview).to_owned(),
+        WireInputTarget::Program => l.text(Msg::CueTargetProgram).to_owned(),
+        WireInputTarget::Selected => l.text(Msg::CueTargetSelected).to_owned(),
+        WireInputTarget::Fixed(input) => input.to_string(),
+    }
+}
+
+/// The hover help of a dynamic target's choice (RC-004).
+const fn target_hover(target: WireInputTarget) -> Option<Msg> {
+    match target {
+        WireInputTarget::Preview => Some(Msg::CueTargetPreviewHover),
+        WireInputTarget::Program => Some(Msg::CueTargetProgramHover),
+        WireInputTarget::Selected => Some(Msg::CueTargetSelectedHover),
+        WireInputTarget::Fixed(_) => None,
     }
 }
 
@@ -1763,7 +1843,10 @@ fn row_controls(
     {
         intents.push(StudioIntent::Cue(CueIntent::Control {
             list,
-            operation: CueOperation::Go { cue: Some(id) },
+            operation: CueOperation::Go {
+                cue: Some(id),
+                targets: WireTargetBindings::default(),
+            },
         }));
     }
     let moves = [
@@ -2009,14 +2092,14 @@ fn fit_width(ui: &mut Ui, preferred: f32) -> f32 {
     preferred.min(room(ui)).max(MIN_FIELD_WIDTH)
 }
 
-/// An input picker over `choices`; `allow_preview` adds the Preview choice
-/// (`None`).
+/// An input picker over `roles` (the dynamic targets it offers, RC-004)
+/// and `choices`; `allow_preview` adds the current-Preview choice (`None`).
 fn input_picker(
     ui: &mut Ui,
     names: &Names<'_>,
     salt: &str,
-    (value, choices): (&mut Option<WireInputId>, &[InputId]),
-    allow_preview: bool,
+    (value, choices): (&mut Option<WireInputTarget>, &[InputId]),
+    (allow_preview, roles): (bool, Roles),
     edit: Option<&'static str>,
 ) -> bool {
     let l = names.l;
@@ -2025,10 +2108,18 @@ fn input_picker(
         "slideshow" => Msg::CueParamSlideshowHover,
         _ => Msg::CueParamInputHover,
     });
-    let text = value.map_or_else(
-        || l.text(Msg::CueParamPreview).to_owned(),
-        |input| names.input(input),
-    );
+    let label = |option: Option<WireInputTarget>| {
+        option.map_or_else(
+            || l.text(Msg::CueParamPreview).to_owned(),
+            |target| names.target(target),
+        )
+    };
+    let text = label(*value);
+    // A dynamic target says when it resolves; so does its picker.
+    let picked_hover = match value.and_then(target_hover) {
+        Some(role) => format!("{hover}\n{}", l.text(role)),
+        None => hover.to_owned(),
+    };
     let mut changed = false;
     let width = fit_width(ui, 110.0);
     ui.add_enabled_ui(edit.is_none(), |ui| {
@@ -2037,19 +2128,20 @@ fn input_picker(
             .truncate()
             .selected_text(RichText::new(text).size(legible(11.0)))
             .show_ui(ui, |ui| {
-                let options = allow_preview.then_some(None).into_iter().chain(
-                    choices
-                        .iter()
-                        .map(|input| Some(WireInputId::from_domain(*input))),
-                );
+                let options = allow_preview
+                    .then_some(None)
+                    .into_iter()
+                    .chain(roles.targets().map(Some))
+                    .chain(choices.iter().map(|input| {
+                        Some(WireInputTarget::Fixed(WireInputId::from_domain(*input)))
+                    }));
                 for option in options {
-                    let label = option.map_or_else(
-                        || l.text(Msg::CueParamPreview).to_owned(),
-                        |input| names.input(input),
-                    );
+                    let option_hover = option
+                        .and_then(target_hover)
+                        .map_or(hover, |role| l.text(role));
                     if ui
-                        .selectable_label(*value == option, label)
-                        .on_hover_text(hover)
+                        .selectable_label(*value == option, label(option))
+                        .on_hover_text(option_hover)
                         .clicked()
                         && *value != option
                     {
@@ -2059,7 +2151,7 @@ fn input_picker(
                 }
             })
             .response
-            .hint(hover, edit.unwrap_or(""));
+            .hint(&picked_hover, edit.unwrap_or(""));
     });
     changed
 }
@@ -2186,23 +2278,40 @@ fn draw_params(
         .iter()
         .map(|title| title.input)
         .collect();
-    let pick = |ui: &mut Ui, salt: &str, input: &mut WireInputId, choices: &[InputId]| {
+    let pick = |ui: &mut Ui,
+                salt: &str,
+                input: &mut WireInputTarget,
+                (choices, roles): (&[InputId], Roles)| {
         let mut value = Some(*input);
-        let changed = input_picker(ui, names, salt, (&mut value, choices), false, edit);
+        let changed = input_picker(ui, names, salt, (&mut value, choices), (false, roles), edit);
         if let Some(value) = value {
             *input = value;
         }
         changed.then_some(Change::Commit)
     };
+    // A title's field and a number field are the picked title's own, so
+    // those pickers offer fixed titles only.
+    let title_fields = |input: &WireInputTarget| {
+        input
+            .fixed()
+            .and_then(|input| names.project.title(input.to_domain()))
+    };
     match action {
-        WireCueAction::Preview { input } => pick(ui, "input", input, inputs),
+        WireCueAction::Preview { input } => pick(ui, "input", input, (inputs, Roles::ALL)),
         WireCueAction::Take {
             input,
             effect,
             duration_frames,
         } => {
-            let mut change = input_picker(ui, names, "input", (input, inputs), true, edit)
-                .then_some(Change::Commit);
+            let mut change = input_picker(
+                ui,
+                names,
+                "input",
+                (input, inputs),
+                (true, Roles::TAKE),
+                edit,
+            )
+            .then_some(Change::Commit);
             let stingers: Vec<_> = names
                 .view
                 .stingers
@@ -2269,20 +2378,20 @@ fn draw_params(
             input,
         } => {
             let change = channel(ui, slot, l, edit);
-            pick(ui, "input", input, inputs).or(change)
+            pick(ui, "input", input, (inputs, Roles::ALL)).or(change)
         }
         WireCueAction::OverlayOff { channel: slot } => channel(ui, slot, l, edit),
         WireCueAction::TitleOn {
             input,
             channel: slot,
         } => {
-            let change = pick(ui, "title", input, &titles);
+            let change = pick(ui, "title", input, (&titles, Roles::ALL));
             channel(ui, slot, l, edit).or(change)
         }
         WireCueAction::TitleText { input, field, text } => {
             let before = *input;
-            let mut change = pick(ui, "title", input, &titles);
-            let title = names.project.title(input.to_domain());
+            let mut change = pick(ui, "title", input, (&titles, Roles::NONE));
+            let title = title_fields(input);
             if *input != before
                 && let Some(first) = title.and_then(|title| title.fields.first())
             {
@@ -2313,10 +2422,8 @@ fn draw_params(
             value,
         } => {
             let before = *input;
-            let mut change = pick(ui, "title", input, &titles);
-            let fields: Vec<_> = names
-                .project
-                .title(input.to_domain())
+            let mut change = pick(ui, "title", input, (&titles, Roles::NONE));
+            let fields: Vec<_> = title_fields(input)
                 .map(|title| {
                     title
                         .fields
@@ -2372,7 +2479,7 @@ fn draw_params(
             settle_step(*add, value, response.has_focus() || response.dragged());
             number_change(&response).or(change)
         }
-        WireCueAction::TitleOff { input } => pick(ui, "title", input, &titles),
+        WireCueAction::TitleOff { input } => pick(ui, "title", input, (&titles, Roles::ALL)),
         WireCueAction::FadeToBlack {
             active,
             duration_frames,
@@ -2392,7 +2499,7 @@ fn draw_params(
             input,
             gain_millidb,
         } => {
-            let change = pick(ui, "input", input, inputs);
+            let change = pick(ui, "input", input, (inputs, Roles::ALL));
             let mut decibels = f64::from(*gain_millidb) / 1000.0;
             let gain = number(
                 ui,
@@ -2411,7 +2518,7 @@ fn draw_params(
             gain.or(change)
         }
         WireCueAction::AudioMute { input, muted } => {
-            let change = pick(ui, "input", input, inputs);
+            let change = pick(ui, "input", input, (inputs, Roles::ALL));
             flag(ui, muted, l.text(Msg::CueParamMuteHover), edit).or(change)
         }
         WireCueAction::Record { recorder, start } => {
@@ -2463,8 +2570,15 @@ fn draw_params(
         WireCueAction::Media { input, operation } => {
             let media = media_inputs(names.view, names.project);
             let mut value = Some(*input);
-            let changed = input_picker(ui, names, "media", (&mut value, &media), false, edit)
-                .then_some(Change::Commit);
+            let changed = input_picker(
+                ui,
+                names,
+                "media",
+                (&mut value, &media),
+                (false, Roles::ALL),
+                edit,
+            )
+            .then_some(Change::Commit);
             if let Some(value) = value {
                 *input = value;
             }
@@ -2489,7 +2603,7 @@ fn draw_params(
                 names,
                 "slideshow",
                 (&mut value, &slideshows),
-                false,
+                (false, Roles::ALL),
                 edit,
             )
             .then_some(Change::Commit);
@@ -2921,7 +3035,10 @@ mod tests {
             go_intent(&ready, None),
             Ok(CueIntent::Control {
                 list: 7,
-                operation: CueOperation::Go { cue: None },
+                operation: CueOperation::Go {
+                    cue: None,
+                    targets: WireTargetBindings::default(),
+                },
             })
         );
         assert_eq!(go_intent(&ready, Some("blocked")), Err("blocked"));
@@ -2941,18 +3058,20 @@ mod tests {
         let mut status = list(7, CueRunStatus::default());
         status.spec.cues[0].auto_follow = true;
         status.spec.cues[0].actions = vec![WireCueAction::Take {
-            input: Some(wire(2)),
+            input: Some(fm_types::InputTarget::Fixed(wire(2))),
             effect: fm_protocol::TransitionFavoriteEffect::Cut,
             duration_frames: 0,
         }];
         status.spec.cues[1].actions = vec![WireCueAction::AudioMute {
-            input: wire(2),
+            input: fm_types::InputTarget::Fixed(wire(2)),
             muted: true,
         }];
         status.spec.cues[2].actions = vec![
-            WireCueAction::Preview { input: wire(1) },
+            WireCueAction::Preview {
+                input: fm_types::InputTarget::Fixed(wire(1)),
+            },
             WireCueAction::TitleText {
-                input: wire(3),
+                input: fm_types::InputTarget::Fixed(wire(3)),
                 field: fm_protocol::WireTitleFieldId::new(core::num::NonZeroU128::MIN),
                 text: "x".into(),
             },
@@ -2986,7 +3105,7 @@ mod tests {
         assert_eq!(chain_block(&admin, &[], &status, 30), None);
         // A data update (Protocol 2.65) needs edit_project like title text.
         status.spec.cues[2].actions = vec![WireCueAction::TitleNumber {
-            input: wire(3),
+            input: fm_types::InputTarget::Fixed(wire(3)),
             field: fm_protocol::WireTitleFieldId::new(core::num::NonZeroU128::MIN),
             add: true,
             value: 1,
@@ -3106,7 +3225,13 @@ mod tests {
             key_intent(state, &[], status, typed, key)
         };
         for (key, operation) in [
-            (CueKey::Go, CueOperation::Go { cue: None }),
+            (
+                CueKey::Go,
+                CueOperation::Go {
+                    cue: None,
+                    targets: fm_protocol::WireTargetBindings::default(),
+                },
+            ),
             (CueKey::Previous, CueOperation::Back),
             (CueKey::Next, CueOperation::Skip),
             (CueKey::Stop, CueOperation::Stop),
@@ -3116,6 +3241,7 @@ mod tests {
                 CueOperation::Arm {
                     cue: None,
                     in_ms: 90_000,
+                    targets: fm_protocol::WireTargetBindings::default(),
                 },
             ),
             (
@@ -3123,6 +3249,7 @@ mod tests {
                 CueOperation::Arm {
                     cue: None,
                     in_ms: 1,
+                    targets: fm_protocol::WireTargetBindings::default(),
                 },
             ),
         ] {
@@ -3274,11 +3401,59 @@ mod tests {
         ] {
             assert_eq!(
                 ActionKind::of(&WireCueAction::Media {
-                    input: clip,
+                    input: fm_types::InputTarget::Fixed(clip),
                     operation
                 }),
                 kind
             );
         }
+    }
+
+    /// RC-004: a picker offers the roles its action can take — every role,
+    /// only the selected input for a take (its "current Preview" choice
+    /// already takes Preview), none for a title field edit — and each role
+    /// is named and explained in English and Spanish.
+    #[test]
+    fn pickers_offer_the_roles_their_action_takes_with_help() {
+        let roles = |roles: Roles| roles.targets().collect::<Vec<_>>();
+        assert_eq!(
+            roles(Roles::ALL),
+            [
+                WireInputTarget::Preview,
+                WireInputTarget::Program,
+                WireInputTarget::Selected
+            ]
+        );
+        assert_eq!(roles(Roles::TAKE), [WireInputTarget::Selected]);
+        assert_eq!(roles(Roles::NONE), []);
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        let names = |l: Locale| {
+            roles(Roles::ALL)
+                .into_iter()
+                .map(|target| target_name(l, target))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(Locale::ENGLISH),
+            ["Input on Preview", "Input on Program", "Selected input"]
+        );
+        assert_eq!(
+            names(spanish),
+            [
+                "Entrada en Previo",
+                "Entrada en Programa",
+                "Entrada seleccionada"
+            ]
+        );
+        for target in roles(Roles::ALL) {
+            let hover = target_hover(target).expect("a role has hover help");
+            assert_ne!(Locale::ENGLISH.text(hover), spanish.text(hover));
+        }
+        assert_eq!(
+            target_hover(WireInputTarget::Fixed(WireInputId::from_domain(
+                InputId::new(core::num::NonZeroU128::new(1).unwrap())
+            ))),
+            None
+        );
     }
 }

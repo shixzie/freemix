@@ -21815,7 +21815,7 @@ mod tests {
                 id: 1,
                 name: "Roll".into(),
                 actions: vec![fm_model::CueAction::Media {
-                    input: test_input_id(2),
+                    input: fm_types::InputTarget::Fixed(test_input_id(2)),
                     operation: fm_model::CueMediaOperation::Play,
                 }],
                 auto_follow: false,
@@ -24319,7 +24319,9 @@ mod tests {
                 actions: vec![
                     WireCueAction::Wait { frames: wait },
                     WireCueAction::Take {
-                        input: Some(fm_protocol::WireInputId::from_domain(test_input_id(1))),
+                        input: Some(fm_types::InputTarget::Fixed(
+                            fm_protocol::WireInputId::from_domain(test_input_id(1)),
+                        )),
                         effect: TransitionFavoriteEffect::Cut,
                         duration_frames: 0,
                     },
@@ -24341,7 +24343,10 @@ mod tests {
                 "go-key",
                 CommandPayload::CueControl {
                     list: 7,
-                    operation: CueOperation::Go { cue: None },
+                    operation: CueOperation::Go {
+                        cue: None,
+                        targets: fm_protocol::WireTargetBindings::default(),
+                    },
                 },
             ),
         ]
@@ -24424,12 +24429,16 @@ mod tests {
                 auto_follow: false,
                 actions: vec![
                     WireCueAction::Media {
-                        input: fm_protocol::WireInputId::from_domain(test_input_id(3)),
+                        input: fm_types::InputTarget::Fixed(fm_protocol::WireInputId::from_domain(
+                            test_input_id(3),
+                        )),
                         operation: WireCueMediaOperation::Play,
                     },
                     WireCueAction::Wait { frames: 10 },
                     WireCueAction::Take {
-                        input: Some(fm_protocol::WireInputId::from_domain(test_input_id(2))),
+                        input: Some(fm_types::InputTarget::Fixed(
+                            fm_protocol::WireInputId::from_domain(test_input_id(2)),
+                        )),
                         effect: TransitionFavoriteEffect::Cut,
                         duration_frames: 0,
                     },
@@ -24451,7 +24460,10 @@ mod tests {
                 "go-key",
                 CommandPayload::CueControl {
                     list: 7,
-                    operation: CueOperation::Go { cue: None },
+                    operation: CueOperation::Go {
+                        cue: None,
+                        targets: fm_protocol::WireTargetBindings::default(),
+                    },
                 },
             ),
         ] {

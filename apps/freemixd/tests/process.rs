@@ -8166,16 +8166,16 @@ fn cue_clock_runs_waits_on_their_frames_and_survives_restart() {
                 name: "Open".into(),
                 auto_follow: false,
                 actions: vec![
-                    cut(input(2)),
+                    cut(fm_types::InputTarget::Fixed(input(2))),
                     WireCueAction::Wait { frames: 10 },
-                    cut(input(1)),
+                    cut(fm_types::InputTarget::Fixed(input(1))),
                 ],
             },
             WireCue {
                 id: 20,
                 name: "Close".into(),
                 auto_follow: false,
-                actions: vec![cut(input(2))],
+                actions: vec![cut(fm_types::InputTarget::Fixed(input(2)))],
             },
         ],
     };
@@ -8214,7 +8214,10 @@ fn cue_clock_runs_waits_on_their_frames_and_survives_restart() {
         "go-key",
         CommandPayload::CueControl {
             list: 7,
-            operation: CueOperation::Go { cue: None },
+            operation: CueOperation::Go {
+                cue: None,
+                targets: fm_protocol::WireTargetBindings::default(),
+            },
         },
     ));
     assert_eq!(accepted_revision(&mut admin, "go"), 2);
@@ -8327,13 +8330,13 @@ fn an_armed_go_fires_on_the_clock_and_survives_restart() {
                 id: 10,
                 name: "Open".into(),
                 auto_follow: false,
-                actions: vec![cut(input(2))],
+                actions: vec![cut(fm_types::InputTarget::Fixed(input(2)))],
             },
             WireCue {
                 id: 20,
                 name: "Close".into(),
                 auto_follow: false,
-                actions: vec![cut(input(1))],
+                actions: vec![cut(fm_types::InputTarget::Fixed(input(1)))],
             },
         ],
     };
@@ -8355,6 +8358,7 @@ fn an_armed_go_fires_on_the_clock_and_survives_restart() {
         CueOperation::Arm {
             cue: None,
             in_ms: 400,
+            targets: fm_protocol::WireTargetBindings::default(),
         },
     ));
     assert_eq!(accepted_revision(&mut admin, "arm"), 2);
@@ -8386,6 +8390,7 @@ fn an_armed_go_fires_on_the_clock_and_survives_restart() {
         CueOperation::Arm {
             cue: Some(20),
             in_ms: 60_000,
+            targets: fm_protocol::WireTargetBindings::default(),
         },
     ));
     assert_eq!(accepted_revision(&mut admin, "arm-later"), 4);
@@ -8472,16 +8477,16 @@ fn simulated_cue_controls_catch_up_to_wall_clock_time() {
                         auto_follow: false,
                         // 20 s at 25 fps: far longer than this test waits.
                         actions: vec![
-                            cut(input(2)),
+                            cut(fm_types::InputTarget::Fixed(input(2))),
                             WireCueAction::Wait { frames: 500 },
-                            cut(input(1)),
+                            cut(fm_types::InputTarget::Fixed(input(1))),
                         ],
                     },
                     WireCue {
                         id: 20,
                         name: "Close".into(),
                         auto_follow: false,
-                        actions: vec![cut(input(1))],
+                        actions: vec![cut(fm_types::InputTarget::Fixed(input(1)))],
                     },
                 ],
             }),
@@ -8493,7 +8498,10 @@ fn simulated_cue_controls_catch_up_to_wall_clock_time() {
     admin.send(&command(
         "go",
         "go-key",
-        control(CueOperation::Go { cue: None }),
+        control(CueOperation::Go {
+            cue: None,
+            targets: fm_protocol::WireTargetBindings::default(),
+        }),
     ));
     assert_eq!(accepted_revision(&mut admin, "go"), 2);
     let go = run_event(&mut admin, 2);
@@ -8525,7 +8533,10 @@ fn simulated_cue_controls_catch_up_to_wall_clock_time() {
     admin.send(&command(
         "go-close",
         "go-close-key",
-        control(CueOperation::Go { cue: None }),
+        control(CueOperation::Go {
+            cue: None,
+            targets: fm_protocol::WireTargetBindings::default(),
+        }),
     ));
     assert_eq!(accepted_revision(&mut admin, "go-close"), 4);
     let close = run_event(&mut admin, 4);
@@ -9274,7 +9285,10 @@ fn cue_runs_report_the_scripts_they_ran_through_the_daemon() {
         "go-key",
         CommandPayload::CueControl {
             list: 7,
-            operation: CueOperation::Go { cue: None },
+            operation: CueOperation::Go {
+                cue: None,
+                targets: fm_protocol::WireTargetBindings::default(),
+            },
         },
     ));
     assert_eq!(accepted_revision(&mut admin, "go"), 4);

@@ -36,9 +36,10 @@ use fm_model::{
     Cue, CueAction, CueArmed, CueFault, CueList, CueMediaOperation, CuePending, CueRunState,
     TransitionEffect,
 };
+use fm_model::{ResolvedCueAction, TargetBindings};
 use fm_switcher::{OverlayChannelId, RecorderSlot, StingerSlotId, StreamTargetId, TransitionKind};
 use fm_titles::{FieldId, FieldType, FieldValue};
-use fm_types::FrameRate;
+use fm_types::{FrameRate, InputTarget};
 
 use crate::{
     EngineCommand, EngineMediaOperation, EngineMediaSeek, EnginePlaylistOperation,
@@ -55,8 +56,13 @@ pub struct EngineCueListDefinition {
 /// A live cue list operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EngineCueOperation {
-    /// Fires `cue`, or the standby cue with `None`.
-    Go { cue: Option<u64> },
+    /// Fires `cue`, or the standby cue with `None`. The list's dynamic
+    /// targets bind under `targets` (roles left open read the show's
+    /// Preview and Program) for the whole run the GO starts (RC-004).
+    Go {
+        cue: Option<u64>,
+        targets: TargetBindings,
+    },
     /// Puts `cue` on standby (jump).
     Standby { cue: u64 },
     /// Moves standby to the previous cue.
@@ -68,8 +74,13 @@ pub enum EngineCueOperation {
     /// Arms a GO of `cue`, or of the standby cue with `None`, to fire
     /// `in_millis` milliseconds (`1..=`[`fm_model::MAX_CUE_ARM_MS`]) after
     /// the command's frame, converted to whole frames at the show rate and
-    /// rounded up (schema 58). Replaces a GO armed before.
-    Arm { cue: Option<u64>, in_millis: u32 },
+    /// rounded up (schema 58). Replaces a GO armed before. The armed GO's
+    /// dynamic targets bind under `targets` when it is armed (RC-004).
+    Arm {
+        cue: Option<u64>,
+        in_millis: u32,
+        targets: TargetBindings,
+    },
     /// Drops the armed GO.
     Disarm,
     /// Returns the list to its initial state: nothing played, the first
@@ -186,8 +197,86 @@ pub(crate) fn run_state(state: CueStackState, previous: &CueRunState) -> CueRunS
         armed: state.armed.map(|armed| CueArmed {
             cue: armed.cue,
             due_frame: armed.due_frame,
+            targets: previous
+                .armed
+                .filter(|kept| kept.cue == armed.cue && kept.due_frame == armed.due_frame)
+                .and_then(|kept| kept.targets),
         }),
+        targets: previous.targets,
     }
+}
+
+/// The refusal of a dynamic target whose role is unbound (RC-004): no
+/// input was selected on the console that fired it.
+fn unbound(target: InputTarget) -> Rejection {
+    Rejection::new(
+        RejectionCode::InvalidCommand,
+        format!("the action targets the {target} input, but none is bound"),
+    )
+    .with_field(FieldIssue::new(
+        "selected",
+        "unbound",
+        format!("select an input on the console before firing an action on the {target} input"),
+    ))
+}
+
+/// `action` with its target resolved under `targets` (RC-004). A dynamic
+/// target is checked against `show` like a fixed one at definition time
+/// (the input exists and is a title, media, or paged input as the action
+/// needs); a fixed one was checked when it was defined.
+///
+/// # Errors
+///
+/// Refuses an unbound role and a resolved input the action cannot act on.
+pub(crate) fn resolve_action(
+    show: &ShowState,
+    action: &CueAction,
+    targets: &TargetBindings,
+) -> Result<ResolvedCueAction, Rejection> {
+    let resolved = action.resolve(targets).map_err(unbound)?;
+    if action.is_dynamic() {
+        check_resolved_references(show, &resolved, "the action")?;
+    }
+    Ok(resolved)
+}
+
+/// Refuses a GO or arm from `start` when an action of that cue, or of a
+/// cue it auto-follows into, targets the selected input and the fire
+/// carries no selection (RC-004): such a step after a wait would otherwise
+/// fault the run later instead of refusing the fire now. Preview and
+/// Program are always bound, so only the selection can be missing.
+///
+/// # Errors
+///
+/// The [`unbound`] refusal, naming the cue and action.
+pub(crate) fn check_selection(
+    list: &CueList,
+    start: u64,
+    targets: &TargetBindings,
+) -> Result<(), Rejection> {
+    if targets.selected.is_some() {
+        return Ok(());
+    }
+    let Some(first) = list.cues.iter().position(|cue| cue.id == start) else {
+        return Ok(());
+    };
+    for cue in &list.cues[first..] {
+        if let Some(step) = cue
+            .actions
+            .iter()
+            .position(|action| action.target() == Some(InputTarget::Selected))
+        {
+            let rejection = unbound(InputTarget::Selected);
+            return Err(Rejection {
+                message: format!("cue {} action {}: {}", cue.id, step + 1, rejection.message),
+                ..rejection
+            });
+        }
+        if !cue.auto_follow {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// The fault of action `action` of cue `cue`, refused with `rejection`
@@ -216,7 +305,8 @@ pub(crate) fn check_references(state: &ShowState, cues: &[Cue]) -> Result<(), Re
 }
 
 /// Refuses one action naming an input, title, or stream target outside
-/// `state`; `owner` names what holds the action in the message.
+/// `state`; `owner` names what holds the action in the message. A dynamic
+/// target is checked when it is fired (see [`resolve_action`]).
 ///
 /// # Errors
 ///
@@ -224,6 +314,22 @@ pub(crate) fn check_references(state: &ShowState, cues: &[Cue]) -> Result<(), Re
 pub(crate) fn check_action_references(
     state: &ShowState,
     action: &CueAction,
+    owner: &str,
+) -> Result<(), Rejection> {
+    match action.as_fixed() {
+        Some(fixed) => check_resolved_references(state, &fixed, owner),
+        None => Ok(()),
+    }
+}
+
+/// [`check_action_references`] of an action naming fixed inputs.
+///
+/// # Errors
+///
+/// Returns the refusal for the first unknown reference.
+pub(crate) fn check_resolved_references(
+    state: &ShowState,
+    action: &ResolvedCueAction,
     owner: &str,
 ) -> Result<(), Rejection> {
     if let Some(input) = action.input() {
@@ -617,7 +723,7 @@ const fn switcher_kind(effect: TransitionEffect) -> Option<TransitionKind> {
 #[allow(clippy::too_many_lines)] // one arm per action kind
 pub(crate) fn expand(
     state: &ShowState,
-    action: &CueAction,
+    action: &ResolvedCueAction,
     on_air: impl Fn(fm_types::InputId) -> bool,
 ) -> Result<Vec<EngineCommand>, Rejection> {
     let channel = |number: u8| OverlayChannelId::new(number).expect("validated overlay channel");

@@ -23,7 +23,7 @@
 
 use fm_automation::FiredCueAction;
 use fm_command::{FieldIssue, IdKind, RefusalReason, Rejection, RejectionCode};
-use fm_model::{Shortcut, ShortcutAction, ShortcutCueOperation, ShortcutError};
+use fm_model::{Shortcut, ShortcutAction, ShortcutCueOperation, ShortcutError, TargetBindings};
 use fm_scheduler::FrameNumber;
 
 use crate::engine::{CueFrame, CuePlan};
@@ -140,7 +140,11 @@ pub(crate) fn definition(state: &ShowState, shortcut: u64) -> Option<Box<Shortcu
 /// # Errors
 ///
 /// Refuses an unknown or disabled shortcut.
-pub(crate) fn resolve(state: &ShowState, shortcut: u64) -> Result<EngineCommand, Rejection> {
+pub(crate) fn resolve(
+    state: &ShowState,
+    shortcut: u64,
+    targets: TargetBindings,
+) -> Result<EngineCommand, Rejection> {
     let found = state
         .shortcut(shortcut)
         .ok_or_else(|| unknown_shortcut(shortcut))?;
@@ -156,11 +160,11 @@ pub(crate) fn resolve(state: &ShowState, shortcut: u64) -> Result<EngineCommand,
         )));
     }
     Ok(match &found.action {
-        ShortcutAction::Actions(_) => EngineCommand::FireShortcut { shortcut },
+        ShortcutAction::Actions(_) => EngineCommand::FireShortcut { shortcut, targets },
         ShortcutAction::Cue { list, operation } => EngineCommand::CueControl {
             list: *list,
             operation: match operation {
-                ShortcutCueOperation::Go { cue } => EngineCueOperation::Go { cue: *cue },
+                ShortcutCueOperation::Go { cue } => EngineCueOperation::Go { cue: *cue, targets },
                 ShortcutCueOperation::Stop => EngineCueOperation::Stop,
                 ShortcutCueOperation::Back => EngineCueOperation::Back,
                 ShortcutCueOperation::Skip => EngineCueOperation::Skip,
@@ -181,6 +185,7 @@ pub(crate) fn resolve(state: &ShowState, shortcut: u64) -> Result<EngineCommand,
 pub(crate) fn plan(
     engine: &Engine,
     shortcut: u64,
+    targets: TargetBindings,
     target_frame: FrameNumber,
 ) -> Result<CuePlan, Rejection> {
     let state = engine.show();
@@ -194,11 +199,20 @@ pub(crate) fn plan(
         ));
     };
     if !found.enabled {
-        return Err(resolve(state, shortcut).expect_err("a disabled shortcut is refused"));
+        return Err(resolve(state, shortcut, targets).expect_err("a disabled shortcut is refused"));
     }
     let owner = format!("shortcut {shortcut}");
-    for action in actions {
-        crate::cue::check_action_references(state, action, &owner)?;
+    // Dynamic targets bind to the show the fire is planned on (RC-004).
+    let targets = engine.bind_targets(targets);
+    for (step, action) in actions.iter().enumerate() {
+        if action.is_dynamic() {
+            crate::cue::resolve_action(state, action, &targets).map_err(|rejection| Rejection {
+                message: format!("{owner} action {}: {}", step + 1, rejection.message),
+                ..rejection
+            })?;
+        } else {
+            crate::cue::check_action_references(state, action, &owner)?;
+        }
     }
     let fired: Vec<FiredCueAction<fm_model::CueAction>> = actions
         .iter()
@@ -225,6 +239,7 @@ pub(crate) fn plan(
                 title_texts: &mut title_texts,
                 scripts: Some(&mut scripts),
                 takes: 0,
+                targets,
             },
         )
         .map_err(|(_, step, rejection)| Rejection {

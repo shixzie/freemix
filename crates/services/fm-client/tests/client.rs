@@ -3173,7 +3173,7 @@ mod cue_lists {
                     name: "Open".into(),
                     auto_follow: false,
                     actions: vec![WireCueAction::Take {
-                        input: Some(input(input_id)),
+                        input: Some(fm_types::InputTarget::Fixed(input(input_id))),
                         effect: TransitionFavoriteEffect::Cut,
                         duration_frames: 0,
                     }],

@@ -1550,7 +1550,10 @@ mod tests {
         // another script: nothing is marked.
         let go = CommandPayload::CueControl {
             list: 7,
-            operation: CueOperation::Go { cue: None },
+            operation: CueOperation::Go {
+                cue: None,
+                targets: fm_protocol::WireTargetBindings::default(),
+            },
         };
         state.command_refusals = vec![refused("go", &go)];
         window.observe_refusals(&state);

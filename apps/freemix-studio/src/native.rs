@@ -3039,7 +3039,9 @@ fn shortcut_payload(intent: fm_ui_egui::ShortcutIntent) -> CommandPayload {
         fm_ui_egui::ShortcutIntent::Remove { shortcut } => {
             CommandPayload::RemoveShortcut { shortcut }
         }
-        fm_ui_egui::ShortcutIntent::Fire { shortcut } => CommandPayload::FireShortcut { shortcut },
+        fm_ui_egui::ShortcutIntent::Fire { shortcut, targets } => {
+            CommandPayload::FireShortcut { shortcut, targets }
+        }
     }
 }
 
@@ -6251,13 +6253,19 @@ mod tests {
             intent_payload(
                 StudioIntent::Cue(CueIntent::Control {
                     list: 3,
-                    operation: CueOperation::Go { cue: Some(20) },
+                    operation: CueOperation::Go {
+                        cue: Some(20),
+                        targets: fm_protocol::WireTargetBindings::default()
+                    },
                 }),
                 None
             ),
             Ok(CommandPayload::CueControl {
                 list: 3,
-                operation: CueOperation::Go { cue: Some(20) },
+                operation: CueOperation::Go {
+                    cue: Some(20),
+                    targets: fm_protocol::WireTargetBindings::default()
+                },
             })
         );
     }

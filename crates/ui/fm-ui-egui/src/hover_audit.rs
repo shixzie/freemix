@@ -130,6 +130,11 @@ fn wire(value: u128) -> WireInputId {
     WireInputId::from_domain(input(value))
 }
 
+/// An action's fixed target (RC-004).
+fn target(value: u128) -> fm_protocol::WireInputTarget {
+    fm_protocol::WireInputTarget::Fixed(wire(value))
+}
+
 /// The scene the Scene input shows (Protocol 2.35 addresses layouts and
 /// layer grades by scene).
 const SCENE: u128 = 30;
@@ -805,11 +810,16 @@ pub(crate) fn audit_shortcuts() -> Vec<fm_protocol::ShortcutStatus> {
                 action: WireShortcutAction::Actions(vec![
                     WireCueAction::OverlayOn {
                         channel: WireOverlayChannelId::new(2).unwrap(),
-                        input: wire(2),
+                        input: target(2),
                     },
                     WireCueAction::AudioMute {
-                        input: wire(3),
+                        input: target(3),
                         muted: true,
+                    },
+                    // RC-004: an action on the console's selected input.
+                    WireCueAction::AudioMute {
+                        input: fm_protocol::WireInputTarget::Selected,
+                        muted: false,
                     },
                 ]),
             },
@@ -871,7 +881,7 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
     };
     let channel = WireOverlayChannelId::new(2).unwrap();
     let every_kind = vec![
-        WireCueAction::Preview { input: wire(2) },
+        WireCueAction::Preview { input: target(2) },
         WireCueAction::Take {
             input: None,
             effect: fm_protocol::TransitionFavoriteEffect::Mix(
@@ -881,26 +891,26 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
         },
         WireCueAction::OverlayOn {
             channel,
-            input: wire(3),
+            input: target(3),
         },
         WireCueAction::OverlayOff { channel },
         WireCueAction::TitleOn {
-            input: wire(TITLE_INPUT),
+            input: target(TITLE_INPUT),
             channel,
         },
         WireCueAction::TitleText {
-            input: wire(TITLE_INPUT),
+            input: target(TITLE_INPUT),
             field: WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
             text: "Ana Ruiz".into(),
         },
         WireCueAction::TitleNumber {
-            input: wire(TITLE_INPUT),
+            input: target(TITLE_INPUT),
             field: WireTitleFieldId::new(NonZeroU128::new(2).unwrap()),
             add: true,
             value: 1,
         },
         WireCueAction::TitleOff {
-            input: wire(TITLE_INPUT),
+            input: target(TITLE_INPUT),
         },
         WireCueAction::FadeToBlack {
             active: true,
@@ -909,11 +919,11 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
         WireCueAction::PlaylistStart,
         WireCueAction::PlaylistStop,
         WireCueAction::AudioGain {
-            input: wire(1),
+            input: target(1),
             gain_millidb: -6_000,
         },
         WireCueAction::AudioMute {
-            input: wire(2),
+            input: target(2),
             muted: true,
         },
         WireCueAction::Record {
@@ -923,6 +933,16 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
         WireCueAction::Stream {
             target: WireStreamTargetId::new(NonZeroU128::new(1).unwrap()),
             start: false,
+        },
+        // RC-004: actions on the inputs on Program and Preview when the
+        // GO fires.
+        WireCueAction::AudioGain {
+            input: fm_protocol::WireInputTarget::Program,
+            gain_millidb: 0,
+        },
+        WireCueAction::Media {
+            input: fm_protocol::WireInputTarget::Preview,
+            operation: WireCueMediaOperation::Play,
         },
         WireCueAction::Wait { frames: 50 },
     ];
@@ -944,7 +964,7 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
                         "Guest",
                         true,
                         vec![WireCueAction::Take {
-                            input: Some(wire(4)),
+                            input: Some(target(4)),
                             effect: fm_protocol::TransitionFavoriteEffect::Cut,
                             duration_frames: 0,
                         }],
@@ -957,20 +977,20 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
                         false,
                         vec![
                             WireCueAction::Media {
-                                input: wire(4),
+                                input: target(4),
                                 operation: WireCueMediaOperation::Restart,
                             },
                             WireCueAction::Delay { millis: 1_500 },
                             WireCueAction::Media {
-                                input: wire(4),
+                                input: target(4),
                                 operation: WireCueMediaOperation::Seek { frame: 250 },
                             },
                             WireCueAction::Media {
-                                input: wire(4),
+                                input: target(4),
                                 operation: WireCueMediaOperation::Play,
                             },
                             WireCueAction::Media {
-                                input: wire(4),
+                                input: target(4),
                                 operation: WireCueMediaOperation::Pause,
                             },
                             WireCueAction::RunScript { script: 1 },
@@ -1008,7 +1028,7 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
                     false,
                     vec![
                         WireCueAction::Wait { frames: 500 },
-                        WireCueAction::Preview { input: wire(1) },
+                        WireCueAction::Preview { input: target(1) },
                     ],
                 )],
             },

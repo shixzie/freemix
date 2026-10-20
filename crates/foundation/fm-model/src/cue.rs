@@ -33,7 +33,7 @@
 
 use core::fmt;
 
-use fm_types::InputId;
+use fm_types::{InputId, InputTarget, TargetBindings};
 
 use crate::{RecorderSlot, StreamTargetId, TitleFieldId, TransitionEffect};
 
@@ -70,27 +70,32 @@ pub const MAX_CUE_TRANSITION_FRAMES: u32 = 3_600;
 pub const CUE_OVERLAY_CHANNELS: u8 = 8;
 
 /// One step of a cue.
+///
+/// An action names its input with an [`InputTarget`] (RC-004, schema 73):
+/// a fixed input, or the input on Preview, on Program, or selected on the
+/// firing console, resolved when the action is fired
+/// ([`CueAction::resolve`]) into a [`ResolvedCueAction`].
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CueAction {
+pub enum CueAction<I = InputTarget> {
     /// Puts `input` on Preview.
-    Preview { input: InputId },
+    Preview { input: I },
     /// Takes `input` (or, with `None`, the current Preview) to Program with
     /// `effect`: a cut (zero frames), a mix, or a Stinger slot over
     /// `duration_frames`.
     Take {
-        input: Option<InputId>,
+        input: Option<I>,
         effect: TransitionEffect,
         duration_frames: u32,
     },
     /// Takes `input` onto overlay `channel` (`1..=8`).
-    OverlayOn { channel: u8, input: InputId },
+    OverlayOn { channel: u8, input: I },
     /// Takes overlay `channel` off.
     OverlayOff { channel: u8 },
     /// Takes title `input` onto overlay `channel`, playing its In phase.
-    TitleOn { input: InputId, channel: u8 },
+    TitleOn { input: I, channel: u8 },
     /// Sets one text field of title `input`, on or off air.
     TitleText {
-        input: InputId,
+        input: I,
         field: TitleFieldId,
         text: String,
     },
@@ -99,12 +104,12 @@ pub enum CueAction {
     /// decimal text; stepping it needs it to hold a plain decimal integer
     /// (or nothing, read as zero; see [`title_text_number`]).
     TitleNumber {
-        input: InputId,
+        input: I,
         field: TitleFieldId,
         update: CueNumberUpdate,
     },
     /// Takes title `input` off the overlay channel that shows it.
-    TitleOff { input: InputId },
+    TitleOff { input: I },
     /// Fades Program to black (`active`) or back over `duration_frames`.
     FadeToBlack { active: bool, duration_frames: u32 },
     /// Starts the project playlist now, from its first entry.
@@ -112,22 +117,22 @@ pub enum CueAction {
     /// Stops the project playlist.
     PlaylistStop,
     /// Sets `input`'s mixer strip gain.
-    AudioGain { input: InputId, gain_millidb: i32 },
+    AudioGain { input: I, gain_millidb: i32 },
     /// Mutes or unmutes `input`'s mixer strip.
-    AudioMute { input: InputId, muted: bool },
+    AudioMute { input: I, muted: bool },
     /// Starts or stops recorder `recorder`.
     Record { recorder: RecorderSlot, start: bool },
     /// Starts or stops stream target `target`.
     Stream { target: StreamTargetId, start: bool },
     /// Runs `operation` on media input `input`'s transport.
     Media {
-        input: InputId,
+        input: I,
         operation: CueMediaOperation,
     },
     /// Steps paged input `input` (a slideshow) by `navigation` (IN-009,
     /// schema 60).
     Page {
-        input: InputId,
+        input: I,
         navigation: fm_types::paged::PagedNavigation,
     },
     /// Defers the cue's remaining actions by `frames` (`1..=`
@@ -139,6 +144,9 @@ pub enum CueAction {
     /// Runs project script `script` (nonzero) as one step (schema 55).
     RunScript { script: u64 },
 }
+
+/// A cue action whose targets are resolved to fixed inputs.
+pub type ResolvedCueAction = CueAction<InputId>;
 
 /// How a [`CueAction::TitleNumber`] changes its field (schema 59).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -224,10 +232,10 @@ pub fn delay_frames(millis: u32, rate: fm_types::FrameRate) -> u32 {
         .max(1)
 }
 
-impl CueAction {
-    /// Every input the action names.
+impl<I: Copy> CueAction<I> {
+    /// The input the action names, as it names it.
     #[must_use]
-    pub const fn input(&self) -> Option<InputId> {
+    pub const fn target(&self) -> Option<I> {
         match self {
             Self::Preview { input }
             | Self::OverlayOn { input, .. }
@@ -252,6 +260,96 @@ impl CueAction {
         }
     }
 
+    /// The same action with its input mapped by `map`, or `map`'s error.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error `map` returns.
+    pub fn try_map_input<J, E>(
+        &self,
+        mut map: impl FnMut(I) -> Result<J, E>,
+    ) -> Result<CueAction<J>, E> {
+        Ok(match self {
+            Self::Preview { input } => CueAction::Preview {
+                input: map(*input)?,
+            },
+            Self::Take {
+                input,
+                effect,
+                duration_frames,
+            } => CueAction::Take {
+                input: input.map(&mut map).transpose()?,
+                effect: *effect,
+                duration_frames: *duration_frames,
+            },
+            Self::OverlayOn { channel, input } => CueAction::OverlayOn {
+                channel: *channel,
+                input: map(*input)?,
+            },
+            Self::OverlayOff { channel } => CueAction::OverlayOff { channel: *channel },
+            Self::TitleOn { input, channel } => CueAction::TitleOn {
+                input: map(*input)?,
+                channel: *channel,
+            },
+            Self::TitleText { input, field, text } => CueAction::TitleText {
+                input: map(*input)?,
+                field: *field,
+                text: text.clone(),
+            },
+            Self::TitleNumber {
+                input,
+                field,
+                update,
+            } => CueAction::TitleNumber {
+                input: map(*input)?,
+                field: *field,
+                update: *update,
+            },
+            Self::TitleOff { input } => CueAction::TitleOff {
+                input: map(*input)?,
+            },
+            Self::FadeToBlack {
+                active,
+                duration_frames,
+            } => CueAction::FadeToBlack {
+                active: *active,
+                duration_frames: *duration_frames,
+            },
+            Self::PlaylistStart => CueAction::PlaylistStart,
+            Self::PlaylistStop => CueAction::PlaylistStop,
+            Self::AudioGain {
+                input,
+                gain_millidb,
+            } => CueAction::AudioGain {
+                input: map(*input)?,
+                gain_millidb: *gain_millidb,
+            },
+            Self::AudioMute { input, muted } => CueAction::AudioMute {
+                input: map(*input)?,
+                muted: *muted,
+            },
+            Self::Record { recorder, start } => CueAction::Record {
+                recorder: *recorder,
+                start: *start,
+            },
+            Self::Stream { target, start } => CueAction::Stream {
+                target: *target,
+                start: *start,
+            },
+            Self::Media { input, operation } => CueAction::Media {
+                input: map(*input)?,
+                operation: *operation,
+            },
+            Self::Page { input, navigation } => CueAction::Page {
+                input: map(*input)?,
+                navigation: *navigation,
+            },
+            Self::Wait { frames } => CueAction::Wait { frames: *frames },
+            Self::Delay { millis } => CueAction::Delay { millis: *millis },
+            Self::RunScript { script } => CueAction::RunScript { script: *script },
+        })
+    }
+
     /// The project script the action runs.
     #[must_use]
     pub const fn script(&self) -> Option<u64> {
@@ -272,6 +370,53 @@ impl CueAction {
     #[must_use]
     pub const fn takes_program(&self) -> bool {
         matches!(self, Self::Take { .. } | Self::PlaylistStart)
+    }
+}
+
+impl CueAction {
+    /// The fixed input the action names; `None` for an action naming no
+    /// input or a dynamic target (see [`Self::target`]).
+    #[must_use]
+    pub fn input(&self) -> Option<InputId> {
+        self.target().and_then(InputTarget::fixed)
+    }
+
+    /// Whether the action names a dynamic target, resolved when fired.
+    #[must_use]
+    pub fn is_dynamic(&self) -> bool {
+        self.target().is_some_and(InputTarget::is_dynamic)
+    }
+
+    /// The action with its target resolved under `bindings` (RC-004).
+    ///
+    /// # Errors
+    ///
+    /// Returns the dynamic target whose role is unbound (no input selected
+    /// on the firing console).
+    pub fn resolve(&self, bindings: &TargetBindings) -> Result<ResolvedCueAction, InputTarget> {
+        self.try_map_input(|target| target.resolve(bindings).ok_or(target))
+    }
+
+    /// The action with a fixed target, `None` when it names a dynamic one.
+    #[must_use]
+    pub fn as_fixed(&self) -> Option<ResolvedCueAction> {
+        self.try_map_input(|target| target.fixed().ok_or(())).ok()
+    }
+}
+
+impl ResolvedCueAction {
+    /// Every input the action names.
+    #[must_use]
+    pub const fn input(&self) -> Option<InputId> {
+        self.target()
+    }
+}
+
+impl From<ResolvedCueAction> for CueAction {
+    fn from(action: ResolvedCueAction) -> Self {
+        action
+            .try_map_input(|input| Ok::<_, core::convert::Infallible>(InputTarget::Fixed(input)))
+            .unwrap_or_else(|never| match never {})
     }
 }
 
@@ -311,6 +456,10 @@ pub struct CueFault {
 pub struct CueArmed {
     pub cue: u64,
     pub due_frame: u64,
+    /// The inputs the armed GO's dynamic targets resolve to, bound when
+    /// it was armed (RC-004, schema 73); `None` for a list naming no
+    /// dynamic target.
+    pub targets: Option<TargetBindings>,
 }
 
 /// The persisted run state of one cue list.
@@ -328,6 +477,11 @@ pub struct CueRunState {
     pub fault: Option<CueFault>,
     /// The GO armed for a later frame (schema 58).
     pub armed: Option<CueArmed>,
+    /// The inputs the dynamic targets of the run in progress resolve to,
+    /// bound by the GO (or armed GO) that started it, so its deferred
+    /// actions and followed cues act on the inputs the GO saw (RC-004,
+    /// schema 73); `None` for a list naming no dynamic target.
+    pub targets: Option<TargetBindings>,
 }
 
 /// One cue list: its definition and run state.

@@ -76,7 +76,9 @@ fn shortcut(id: u64) -> EngineCommand {
             enabled: true,
             key: None,
             osc: None,
-            action: ShortcutAction::Actions(vec![CueAction::Preview { input: input(13) }]),
+            action: ShortcutAction::Actions(vec![CueAction::Preview {
+                input: fm_types::InputTarget::Fixed(input(13)),
+            }]),
         })),
         position: None,
     }
@@ -103,7 +105,7 @@ fn cue_list(id: u64) -> EngineCommand {
                 name: "Cut".to_owned(),
                 auto_follow: false,
                 actions: vec![CueAction::Take {
-                    input: Some(input(13)),
+                    input: Some(fm_types::InputTarget::Fixed(input(13))),
                     effect: TransitionEffect::Cut,
                     duration_frames: 0,
                 }],

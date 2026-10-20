@@ -2216,8 +2216,8 @@ fn title_number_cue_actions_round_trip_exactly_at_the_current_schema() {
             id: 1,
             name: "Goal".into(),
             actions: vec![
-                number(CueNumberUpdate::Add(1)),
-                number(CueNumberUpdate::Set(-999_999_999_999)),
+                number(CueNumberUpdate::Add(1)).into(),
+                number(CueNumberUpdate::Set(-999_999_999_999)).into(),
             ],
             auto_follow: false,
         }],

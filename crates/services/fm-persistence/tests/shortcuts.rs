@@ -100,10 +100,10 @@ fn shortcuts() -> Vec<Shortcut> {
             action: ShortcutAction::Actions(vec![
                 CueAction::OverlayOn {
                     channel: 1,
-                    input: input(4),
+                    input: fm_types::InputTarget::Fixed(input(4)),
                 },
                 CueAction::AudioMute {
-                    input: input(2),
+                    input: fm_types::InputTarget::Fixed(input(2)),
                     muted: true,
                 },
             ]),

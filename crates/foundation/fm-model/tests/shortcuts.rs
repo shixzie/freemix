@@ -21,7 +21,9 @@ fn shortcut(id: u64) -> Shortcut {
         enabled: true,
         key: Some(ShortcutKey::plain(format!("F{id}"))),
         osc: Some(format!("s-{id}")),
-        action: ShortcutAction::Actions(vec![CueAction::Preview { input: input(3) }]),
+        action: ShortcutAction::Actions(vec![CueAction::Preview {
+            input: fm_types::InputTarget::Fixed(input(3)),
+        }]),
     }
 }
 
@@ -101,7 +103,9 @@ fn actions_run_on_one_frame_without_waits() {
     );
     assert_eq!(
         validate_shortcut_definition(&with_action(ShortcutAction::Actions(vec![
-            preview.clone();
+            preview
+                .clone()
+                .into();
             MAX_SHORTCUT_ACTIONS
                 + 1
         ]))),
@@ -109,7 +113,7 @@ fn actions_run_on_one_frame_without_waits() {
     );
     assert_eq!(
         validate_shortcut_definition(&with_action(ShortcutAction::Actions(vec![
-            preview.clone();
+            preview.clone().into();
             MAX_SHORTCUT_ACTIONS
         ]))),
         Ok(())
@@ -120,7 +124,7 @@ fn actions_run_on_one_frame_without_waits() {
     ] {
         assert_eq!(
             validate_shortcut_definition(&with_action(ShortcutAction::Actions(vec![
-                preview.clone(),
+                preview.clone().into(),
                 wait
             ]))),
             Err(ShortcutError::InvalidAction { action: 1 })
@@ -139,13 +143,13 @@ fn actions_run_on_one_frame_without_waits() {
     );
     assert_eq!(
         validate_shortcut_definition(&with_action(ShortcutAction::Actions(vec![
-            take.clone(),
+            take.clone().into(),
             CueAction::PlaylistStart
         ]))),
         Err(ShortcutError::ConflictingTakes)
     );
     let text = |bytes: usize| CueAction::TitleText {
-        input: input(5),
+        input: fm_types::InputTarget::Fixed(input(5)),
         field: TitleFieldId::new(NonZeroU128::new(1).unwrap()),
         text: "x".repeat(bytes),
     };

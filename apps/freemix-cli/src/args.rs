@@ -6816,7 +6816,10 @@ fn parse_cue(command: &str, arguments: impl Iterator<Item = String>) -> Result<C
                 Some(cue) => Some(number(&cue, "cue")?),
                 None => None,
             };
-            control(CueOperation::Go { cue })
+            control(CueOperation::Go {
+                cue,
+                targets: fm_protocol::WireTargetBindings::default(),
+            })
         }
         "cue-standby" => control(CueOperation::Standby {
             cue: number(&required(&mut arguments, "cue")?, "cue")?,
@@ -6839,7 +6842,11 @@ fn parse_cue(command: &str, arguments: impl Iterator<Item = String>) -> Result<C
                 Some(cue) => Some(number(&cue, "cue")?),
                 None => None,
             };
-            control(CueOperation::Arm { cue, in_ms })
+            control(CueOperation::Arm {
+                cue,
+                in_ms,
+                targets: fm_protocol::WireTargetBindings::default(),
+            })
         }
         "cue-disarm" => control(CueOperation::Disarm),
         other => return Err(ArgsError::UnknownCommand(other.to_owned())),
@@ -7948,7 +7955,9 @@ mod tests {
             cues[0].actions,
             vec![
                 fm_protocol::WireCueAction::TitleText {
-                    input: fm_protocol::WireInputId::new(core::num::NonZeroU128::new(2).unwrap()),
+                    input: fm_types::InputTarget::Fixed(fm_protocol::WireInputId::new(
+                        core::num::NonZeroU128::new(2).unwrap()
+                    )),
                     field: fm_protocol::WireTitleFieldId::new(
                         core::num::NonZeroU128::new(1).unwrap()
                     ),
@@ -9343,7 +9352,8 @@ mod tests {
                 address,
                 payload: control(CueOperation::Arm {
                     cue: None,
-                    in_ms: 1_500
+                    in_ms: 1_500,
+                    targets: fm_protocol::WireTargetBindings::default()
                 }),
                 key: None,
                 expected_revision: None,
@@ -9363,7 +9373,8 @@ mod tests {
                 path: PathBuf::from("show.freemix"),
                 payload: control(CueOperation::Arm {
                     cue: Some(20),
-                    in_ms: 86_400_000
+                    in_ms: 86_400_000,
+                    targets: fm_protocol::WireTargetBindings::default()
                 }),
                 key: None,
                 expected_revision: Some(4),
@@ -9406,7 +9417,13 @@ mod tests {
         let control = |operation| CommandPayload::CueControl { list: 3, operation };
         assert_eq!(
             parse(strings(&["remote-go", "127.0.0.1:9123", "3"])),
-            remote(control(CueOperation::Go { cue: None }), None)
+            remote(
+                control(CueOperation::Go {
+                    cue: None,
+                    targets: fm_protocol::WireTargetBindings::default()
+                }),
+                None
+            )
         );
         assert_eq!(
             parse(strings(&[
@@ -9417,7 +9434,13 @@ mod tests {
                 "--expect",
                 "4"
             ])),
-            remote(control(CueOperation::Go { cue: Some(20) }), Some(4))
+            remote(
+                control(CueOperation::Go {
+                    cue: Some(20),
+                    targets: fm_protocol::WireTargetBindings::default()
+                }),
+                Some(4)
+            )
         );
         assert_eq!(
             parse(strings(&[
@@ -9427,7 +9450,13 @@ mod tests {
                 "--expect",
                 "4"
             ])),
-            remote(control(CueOperation::Go { cue: None }), Some(4))
+            remote(
+                control(CueOperation::Go {
+                    cue: None,
+                    targets: fm_protocol::WireTargetBindings::default()
+                }),
+                Some(4)
+            )
         );
         assert_eq!(
             parse(strings(&[

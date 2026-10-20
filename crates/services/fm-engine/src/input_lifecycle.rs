@@ -603,7 +603,7 @@ pub(crate) fn apply(
                         .iter()
                         .find(|cue| {
                             cue.actions.iter().any(|action| {
-                                matches!(action, fm_model::CueAction::Page { input: named, .. } if named == input)
+                                matches!(action, fm_model::CueAction::Page { input: named, .. } if *named == fm_model::InputTarget::Fixed(*input))
                             })
                         })
                         .map(|cue| (list.id, cue.id))
@@ -647,7 +647,7 @@ pub(crate) fn apply(
                             .iter()
                             .find(|cue| {
                                 cue.actions.iter().any(|action| {
-                                    matches!(action, fm_model::CueAction::Media { input: named, .. } if named == input)
+                                    matches!(action, fm_model::CueAction::Media { input: named, .. } if *named == fm_model::InputTarget::Fixed(*input))
                                 })
                             })
                             .map(|cue| (list.id, cue.id))

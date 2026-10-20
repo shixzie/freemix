@@ -222,11 +222,11 @@ fn page_navigation_command_event_and_cue_action_encode_exactly() {
                 auto_follow: false,
                 actions: vec![
                     WireCueAction::Page {
-                        input: input(6),
+                        input: fm_types::InputTarget::Fixed(input(6)),
                         navigation: PagedNavigation::Next,
                     },
                     WireCueAction::Page {
-                        input: input(6),
+                        input: fm_types::InputTarget::Fixed(input(6)),
                         navigation: PagedNavigation::Goto(4),
                     },
                 ],

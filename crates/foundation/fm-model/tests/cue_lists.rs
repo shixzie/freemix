@@ -17,7 +17,7 @@ fn input(value: u128) -> InputId {
 
 fn cut(value: u128) -> CueAction {
     CueAction::Take {
-        input: Some(input(value)),
+        input: Some(fm_types::InputTarget::Fixed(input(value))),
         effect: TransitionEffect::Cut,
         duration_frames: 0,
     }
@@ -121,7 +121,7 @@ fn definitions_enforce_names_bounds_and_one_take_per_frame() {
         ),
     ] {
         assert_eq!(
-            validate_cue_list_definition("Show", &[cue(6, vec![action.clone()])]),
+            validate_cue_list_definition("Show", &[cue(6, vec![action.clone().into()])]),
             Err(CueListError::InvalidAction {
                 cue: 6,
                 action: index
@@ -144,7 +144,7 @@ fn delays_separate_frames_and_media_actions_validate() {
                     CueAction::Delay { millis: 500 },
                     cut(2),
                     CueAction::Media {
-                        input: input(3),
+                        input: fm_types::InputTarget::Fixed(input(3)),
                         operation: CueMediaOperation::Seek { frame: 9 },
                     },
                 ]
@@ -173,6 +173,7 @@ fn run_states_name_only_held_cues_and_resume_after_a_wait() {
         played: vec![1],
         fault: None,
         armed: None,
+        targets: None,
     };
     assert_eq!(validate_cue_list(&list(1, cues(), waiting.clone())), Ok(()));
     // A fault keeps the refusal that stopped its cue (schema 57).
@@ -388,7 +389,7 @@ fn project() -> fm_model::Project {
 /// what the script takes is known only when it runs.
 #[test]
 fn a_cue_runs_a_script_the_project_holds() {
-    let runs = CueAction::RunScript { script: 7 };
+    let runs: CueAction = CueAction::RunScript { script: 7 };
     assert_eq!(runs.script(), Some(7));
     assert_eq!(runs.input(), None);
     assert!(!runs.takes_program() && !runs.is_wait());
@@ -437,4 +438,105 @@ fn a_cue_runs_a_script_the_project_holds() {
         source: "cut 1\n".into(),
     }]);
     assert_eq!(project.validate(), Ok(()));
+}
+
+/// RC-004 (schema 73): an action names a fixed input or the input on
+/// Preview, on Program, or selected on the firing console. A dynamic
+/// target names no input until it is fired, so the project holds no
+/// reference for it; it resolves under the fire's bindings, and an unbound
+/// role (no selected input) is reported.
+#[test]
+fn dynamic_targets_resolve_when_fired_and_name_no_input_before() {
+    use fm_model::{InputTarget, TargetBindings};
+    let preview: CueAction = CueAction::AudioMute {
+        input: InputTarget::Preview,
+        muted: true,
+    };
+    let selected: CueAction = CueAction::TitleOn {
+        input: InputTarget::Selected,
+        channel: 1,
+    };
+    let take_program: CueAction = CueAction::Take {
+        input: Some(InputTarget::Program),
+        effect: TransitionEffect::Cut,
+        duration_frames: 0,
+    };
+    assert!(preview.is_dynamic() && selected.is_dynamic() && take_program.is_dynamic());
+    assert!(!cut(1).is_dynamic());
+    assert_eq!(preview.input(), None, "a dynamic target names no input");
+    assert_eq!(preview.target(), Some(InputTarget::Preview));
+    assert_eq!(preview.as_fixed(), None);
+    assert_eq!(
+        cut(1).as_fixed(),
+        Some(CueAction::Take {
+            input: Some(input(1)),
+            effect: TransitionEffect::Cut,
+            duration_frames: 0,
+        })
+    );
+
+    let bindings = TargetBindings {
+        preview: Some(input(2)),
+        program: Some(input(3)),
+        selected: None,
+    };
+    assert_eq!(
+        preview.resolve(&bindings),
+        Ok(CueAction::AudioMute {
+            input: input(2),
+            muted: true,
+        })
+    );
+    assert_eq!(
+        take_program.resolve(&bindings),
+        Ok(CueAction::Take {
+            input: Some(input(3)),
+            effect: TransitionEffect::Cut,
+            duration_frames: 0,
+        })
+    );
+    assert_eq!(selected.resolve(&bindings), Err(InputTarget::Selected));
+    let bound = TargetBindings {
+        selected: Some(input(5)),
+        ..bindings
+    };
+    assert_eq!(
+        selected.resolve(&bound),
+        Ok(CueAction::TitleOn {
+            input: input(5),
+            channel: 1,
+        })
+    );
+    // A resolved action converts back to fixed targets.
+    assert_eq!(
+        CueAction::from(selected.resolve(&bound).unwrap()),
+        CueAction::TitleOn {
+            input: InputTarget::Fixed(input(5)),
+            channel: 1,
+        }
+    );
+
+    // A list of dynamic actions validates, and a project need not hold
+    // any input for them; the run keeps the targets its GO bound.
+    assert_eq!(
+        validate_cue_list_definition("Show", &[cue(1, vec![preview, selected, take_program])]),
+        Ok(())
+    );
+    let mut project = project();
+    project.set_cue_lists(vec![list(
+        1,
+        vec![cue(
+            1,
+            vec![CueAction::Preview {
+                input: InputTarget::Selected,
+            }],
+        )],
+        CueRunState {
+            standby: Some(1),
+            targets: Some(bound),
+            ..CueRunState::default()
+        },
+    )]);
+    assert_eq!(project.validate(), Ok(()));
+    assert_eq!(project.input_reference(input(5)), None);
 }

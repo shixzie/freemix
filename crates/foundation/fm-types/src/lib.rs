@@ -16,6 +16,7 @@ pub mod screen_capture;
 pub mod still;
 pub mod strip_dsp;
 pub mod system_audio;
+mod target;
 mod time;
 mod video;
 
@@ -28,6 +29,7 @@ pub use fade_to_black::{FadeToBlackCurve, MAX_FADE_TO_BLACK_DURATION_FRAMES};
 pub use id::{BusId, InputId, OutputId, ProjectId, SceneId};
 pub use memory::MemoryDomain;
 pub use scaling::{OutputScaling, ParseOutputScalingError, ScaledViewport};
+pub use target::{InputTarget, TargetBindings};
 pub use time::{
     FrameRate, MediaDuration, MediaTimestamp, RateError, TimeBase, Timecode, TimecodeError,
 };

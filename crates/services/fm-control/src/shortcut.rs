@@ -154,8 +154,9 @@ pub fn shortcut_engine_command(payload: &CommandPayload) -> EngineCommand {
             definition: None,
             position: None,
         },
-        CommandPayload::FireShortcut { shortcut } => EngineCommand::FireShortcut {
+        CommandPayload::FireShortcut { shortcut, targets } => EngineCommand::FireShortcut {
             shortcut: *shortcut,
+            targets: crate::cue::domain_targets(*targets),
         },
         _ => unreachable!("only shortcut commands are delegated"),
     }

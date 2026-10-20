@@ -40,7 +40,7 @@ fn engine() -> Engine {
 
 fn cut(value: u128) -> CueAction {
     CueAction::Take {
-        input: Some(input(value)),
+        input: Some(fm_types::InputTarget::Fixed(input(value))),
         effect: TransitionEffect::Cut,
         duration_frames: 0,
     }
@@ -70,7 +70,10 @@ fn control(list: u64, operation: EngineCueOperation) -> EngineCommand {
     EngineCommand::CueControl { list, operation }
 }
 
-const GO: EngineCueOperation = EngineCueOperation::Go { cue: None };
+const GO: EngineCueOperation = EngineCueOperation::Go {
+    cue: None,
+    targets: fm_types::TargetBindings::NONE,
+};
 
 fn submit(engine: &mut Engine, key: &str, command: EngineCommand) -> EngineCommandOutcome {
     engine
@@ -160,7 +163,7 @@ fn go_runs_cues_on_exact_frames_with_waits_and_auto_follow() {
                         cut(2),
                         CueAction::OverlayOn {
                             channel: 1,
-                            input: input(4),
+                            input: fm_types::InputTarget::Fixed(input(4)),
                         },
                         CueAction::Wait { frames: 5 },
                         cut(3),
@@ -272,10 +275,10 @@ fn a_go_with_a_refused_action_changes_nothing() {
                 vec![
                     CueAction::OverlayOn {
                         channel: 2,
-                        input: input(3),
+                        input: fm_types::InputTarget::Fixed(input(3)),
                     },
                     CueAction::Take {
-                        input: Some(input(2)),
+                        input: Some(fm_types::InputTarget::Fixed(input(2))),
                         effect: TransitionEffect::Stinger(StingerSlotNumber::new(1).unwrap()),
                         duration_frames: 25,
                     },
@@ -460,7 +463,7 @@ fn media_engine(rate: FrameRate) -> Engine {
 
 fn media(operation: CueMediaOperation) -> CueAction {
     CueAction::Media {
-        input: input(2),
+        input: fm_types::InputTarget::Fixed(input(2)),
         operation,
     }
 }
@@ -584,7 +587,7 @@ fn media_actions_on_other_inputs_are_refused() {
             vec![cue(
                 10,
                 vec![CueAction::Media {
-                    input: input(1),
+                    input: fm_types::InputTarget::Fixed(input(1)),
                     operation: CueMediaOperation::Play,
                 }],
                 false,
@@ -861,7 +864,11 @@ fn a_cue_frame_sets_at_most_one_runs_worth_of_title_text() {
             1,
             vec![
                 cue(1, vec![CueAction::RunScript { script: 5 }], false),
-                cue(2, vec![one, CueAction::RunScript { script: 5 }], false),
+                cue(
+                    2,
+                    vec![one.into(), CueAction::RunScript { script: 5 }],
+                    false,
+                ),
             ],
         ),
     ));
@@ -1138,7 +1145,11 @@ fn a_restored_cue_due_beyond_its_wait_is_refused() {
 }
 
 fn arm(cue: Option<u64>, in_millis: u32) -> EngineCueOperation {
-    EngineCueOperation::Arm { cue, in_millis }
+    EngineCueOperation::Arm {
+        cue,
+        in_millis,
+        targets: fm_types::TargetBindings::default(),
+    }
 }
 
 /// Protocol 2.64, schema 58: a GO armed for later fires on exactly its due
@@ -1176,7 +1187,8 @@ fn an_armed_go_fires_on_its_frame_and_keeps_through_edits() {
         state.armed,
         Some(fm_model::CueArmed {
             cue: 10,
-            due_frame: due
+            due_frame: due,
+            targets: None
         })
     );
     assert_eq!(state.live, None, "arming fires nothing");
@@ -1242,7 +1254,7 @@ fn a_refused_armed_go_faults_and_keeps_the_waiting_cue() {
     let cues = vec![
         cue(
             30,
-            vec![fade, CueAction::Wait { frames: 60 }, cut(3)],
+            vec![fade.into(), CueAction::Wait { frames: 60 }, cut(3)],
             false,
         ),
         cue(40, vec![cut(4)], false),
@@ -1381,7 +1393,7 @@ fn score_show() -> ShowState {
 
 fn number(field: u128, update: fm_model::CueNumberUpdate) -> CueAction {
     CueAction::TitleNumber {
-        input: input(3),
+        input: fm_types::InputTarget::Fixed(input(3)),
         field: fm_model::TitleFieldId::new(NonZeroU128::new(field).unwrap()),
         update,
     }
@@ -1502,7 +1514,13 @@ fn title_number_actions_refuse_unsuitable_fields_and_out_of_range_results() {
     let refused = submit(
         &mut engine,
         "go-max",
-        control(1, EngineCueOperation::Go { cue: Some(2) }),
+        control(
+            1,
+            EngineCueOperation::Go {
+                cue: Some(2),
+                targets: fm_types::TargetBindings::default(),
+            },
+        ),
     );
     assert_eq!(
         refusal(&refused),
@@ -1516,4 +1534,140 @@ fn title_number_actions_refuse_unsuitable_fields_and_out_of_range_results() {
     );
     assert_eq!(engine.revision(), revision);
     assert_eq!(field_value(&engine, 2), fm_titles::FieldValue::Number(0));
+}
+
+/// RC-004: a GO binds its run's dynamic targets once — Preview and Program
+/// as they stand before the cue's actions, and the firing console's
+/// selection — so a step after a wait acts on the input bound at GO even
+/// though Preview changed since; an arm binds when armed; and a GO carrying
+/// the journaled bindings replays on the same inputs.
+#[test]
+#[allow(clippy::too_many_lines)] // one run: GO, arm, and replay
+fn a_go_binds_dynamic_targets_for_its_whole_run() {
+    use fm_model::{InputTarget, TargetBindings};
+    let list = || {
+        set(
+            1,
+            vec![
+                cue(
+                    10,
+                    vec![
+                        CueAction::Preview {
+                            input: InputTarget::Fixed(input(2)),
+                        },
+                        CueAction::Wait { frames: 5 },
+                        CueAction::OverlayOn {
+                            channel: 1,
+                            input: InputTarget::Preview,
+                        },
+                        CueAction::Take {
+                            input: Some(InputTarget::Selected),
+                            effect: TransitionEffect::Cut,
+                            duration_frames: 0,
+                        },
+                    ],
+                    false,
+                ),
+                cue(
+                    20,
+                    vec![CueAction::Take {
+                        input: Some(InputTarget::Selected),
+                        effect: TransitionEffect::Cut,
+                        duration_frames: 0,
+                    }],
+                    false,
+                ),
+            ],
+        )
+    };
+    let selected = |value| TargetBindings {
+        selected: Some(input(value)),
+        ..TargetBindings::NONE
+    };
+    let bound = TargetBindings {
+        preview: Some(input(4)),
+        program: Some(input(1)),
+        selected: Some(input(3)),
+    };
+
+    let mut live = engine();
+    accepted(&submit(&mut live, "set", list()));
+    live.tick().unwrap();
+    // Without a selection, the GO is refused whole.
+    assert_eq!(
+        refusal(&submit(&mut live, "unbound", control(1, GO))).0,
+        RejectionCode::InvalidCommand
+    );
+    assert_eq!(live.show().cue_list(1).unwrap().state.live, None);
+
+    let go = EngineCueOperation::Go {
+        cue: None,
+        targets: selected(3),
+    };
+    let fired = accepted(&submit(&mut live, "go", control(1, go)));
+    let state = &live.show().cue_list(1).unwrap().state;
+    assert_eq!(state.targets, Some(bound));
+    let ahead = fired + 8 - live.frame_cursor().get();
+    let frames = drive(&mut live, ahead);
+    // The overlay shows 4, Preview at GO, not 2, Preview since.
+    assert_eq!(overlay_on(&live, 1), Some(input(4)));
+    assert_eq!(program_changes(&frames), vec![(fired + 5, input(3))]);
+
+    // An arm binds Preview, Program, and the selection when armed; the cut
+    // put the old Program, 1, on Preview.
+    let armed_at = accepted(&submit(
+        &mut live,
+        "arm",
+        control(
+            1,
+            EngineCueOperation::Arm {
+                cue: None,
+                in_millis: 200,
+                targets: selected(4),
+            },
+        ),
+    ));
+    let armed = live.show().cue_list(1).unwrap().state.armed.unwrap();
+    assert_eq!(
+        armed.targets,
+        Some(TargetBindings {
+            preview: Some(input(1)),
+            program: Some(input(3)),
+            selected: Some(input(4)),
+        })
+    );
+    let ahead = armed_at + 8 - live.frame_cursor().get();
+    let frames = drive(&mut live, ahead);
+    assert_eq!(program_changes(&frames), vec![(armed_at + 5, input(4))]);
+
+    // A replay GO carries what the authority bound: Preview is 2 on this
+    // engine before the GO, yet the overlay shows the journaled 4.
+    let mut replay = engine();
+    let preset = || {
+        set(
+            2,
+            vec![cue(
+                1,
+                vec![CueAction::Preview {
+                    input: InputTarget::Fixed(input(2)),
+                }],
+                false,
+            )],
+        )
+    };
+    accepted(&submit(&mut replay, "preset", preset()));
+    accepted(&submit(&mut replay, "set", list()));
+    replay.tick().unwrap();
+    accepted(&submit(&mut replay, "preview", control(2, GO)));
+    replay.tick().unwrap();
+    assert_eq!(replay.show().desired_switcher().preview(), input(2));
+    let go = EngineCueOperation::Go {
+        cue: None,
+        targets: bound,
+    };
+    let fired = accepted(&submit(&mut replay, "go", control(1, go)));
+    let ahead = fired + 8 - replay.frame_cursor().get();
+    let frames = drive(&mut replay, ahead);
+    assert_eq!(overlay_on(&replay, 1), Some(input(4)));
+    assert_eq!(program_changes(&frames), vec![(fired + 5, input(3))]);
 }

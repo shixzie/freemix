@@ -76,8 +76,12 @@ pub enum ShortcutIntent {
     },
     /// Deletes one shortcut (`shortcut_remove`): an undoable project edit.
     Remove { shortcut: u64 },
-    /// Fires one shortcut (`shortcut_fire`): an operator control.
-    Fire { shortcut: u64 },
+    /// Fires one shortcut (`shortcut_fire`): an operator control. The
+    /// console's selected input rides along in `targets` (RC-004).
+    Fire {
+        shortcut: u64,
+        targets: fm_protocol::WireTargetBindings,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -1079,7 +1083,10 @@ impl StudioShell {
             .iter()
             .find(|found| found.id == shortcut)?;
         match fire_block(state, found) {
-            None => Some(StudioIntent::Shortcut(ShortcutIntent::Fire { shortcut })),
+            None => Some(StudioIntent::Shortcut(ShortcutIntent::Fire {
+                shortcut,
+                targets: fm_protocol::WireTargetBindings::default(),
+            })),
             Some(reason) => {
                 let l = self.locale;
                 let message = l.format(
@@ -1908,7 +1915,10 @@ fn draw_editor(
             .hint(l.text(Msg::UserShortcutFireHover), fire.unwrap_or(""))
             .clicked()
         {
-            intents.push(StudioIntent::Shortcut(ShortcutIntent::Fire { shortcut }));
+            intents.push(StudioIntent::Shortcut(ShortcutIntent::Fire {
+                shortcut,
+                targets: fm_protocol::WireTargetBindings::default(),
+            }));
         }
         let remove = edit.or_else(|| (!saved).then_some(Msg::UserShortcutReasonNotSaved.en()));
         if ui
