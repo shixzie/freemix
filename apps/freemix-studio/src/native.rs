@@ -2872,6 +2872,15 @@ fn intent_payload(
         }
         StudioIntent::Title(command) => title_payload(&command)
             .map_err(|error| format!("Cannot send title command: {error}"))?,
+        StudioIntent::SetTitleFieldExposure {
+            input,
+            field,
+            exposed,
+        } => CommandPayload::SetTitleFieldExposure {
+            input: WireInputId::from_domain(input),
+            field,
+            exposed,
+        },
         StudioIntent::Playlist(intent) => playlist_payload(intent),
         StudioIntent::Cue(intent) => cue_payload(intent),
         StudioIntent::Script(intent) => script_payload(intent),
@@ -7611,6 +7620,22 @@ mod tests {
             assert!(refused.contains("overlay channel 0"), "{refused}");
             assert_eq!(StudioIntent::Title(take(9, 1)).title_request(), Some(9));
             assert_eq!(StudioIntent::Cut.title_request(), None);
+            // GX-006: the Web checkbox of a template field.
+            assert_eq!(
+                intent_payload(
+                    StudioIntent::SetTitleFieldExposure {
+                        input: wire.to_domain(),
+                        field: title_field(),
+                        exposed: false,
+                    },
+                    None
+                ),
+                Ok(CommandPayload::SetTitleFieldExposure {
+                    input: wire,
+                    field: title_field(),
+                    exposed: false,
+                })
+            );
         }
 
         #[test]

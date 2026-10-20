@@ -528,7 +528,8 @@ fn model(variant: Variant) -> ClientModel {
                     value: TitleFieldValue::Image {
                         asset_uri: "asset://logo.png".into(),
                     },
-                    exposed: true,
+                    // Hidden from the browser title editor (GX-006).
+                    exposed: false,
                 },
             ],
         })
@@ -2331,6 +2332,20 @@ fn ready_over(model: &ClientModel, operator: bool) -> StudioUiState {
     state.stream_status = Some(stream_status());
     state.audio_meters = Some(meters());
     state.source_sync = Some(source_sync());
+    // GX-006: the lower third plays its In phase on air.
+    state.title_phases = Some(fm_protocol::TitlePhasesMessage {
+        frame: 900,
+        titles: vec![fm_protocol::TitlePhaseStatus {
+            input: wire(TITLE_INPUT),
+            phase: fm_protocol::TitlePhase::In,
+            phase_frame: 5,
+            phase_frames: 20,
+            timeline: Some(fm_protocol::TitleTimelineStatus {
+                shown: fm_protocol::TitleShownOn::Air,
+                since_frame: 895,
+            }),
+        }],
+    });
     // IN-014: the document card's notes and two of its thumbnails arrived.
     let page = |page: u32, thumbnail: bool| fm_protocol::PagedPageKey {
         input: wire(6),

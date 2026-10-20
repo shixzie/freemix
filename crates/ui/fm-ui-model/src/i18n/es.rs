@@ -3132,6 +3132,22 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::TitleFieldChanged,
         t("Cambió en el servidor desde que empezó a editar"),
     ),
+    (Msg::TitleFieldWeb, t("En la web")),
+    (
+        Msg::TitleFieldWebHover,
+        t(
+            "Mostrar este campo en el editor de títulos del navegador, en todos los títulos de esta plantilla. Un campo sin marcar nunca se envía a las páginas web.",
+        ),
+    ),
+    (
+        Msg::TitleTimelineHover,
+        t(
+            "Las fases de entrada, en aire y salida del título; el cursor sigue al servidor. Solo lectura: edite las fases en la ventana Animación.",
+        ),
+    ),
+    (Msg::TitleTimelineAir, t("Al aire {seconds} s")),
+    (Msg::TitleTimelinePreview, t("En Previo {seconds} s")),
+    (Msg::TitleTimelineIdle, t("Sin mostrar")),
     (Msg::TitleColorHint, t("#RRGGBB o #RRGGBBAA")),
     (Msg::TitleColorPickHover, t("Elegir un color")),
     (Msg::TitleImageHint, t("URI del recurso")),

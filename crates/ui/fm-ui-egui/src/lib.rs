@@ -404,6 +404,14 @@ pub enum StudioIntent {
     /// The editor already marked the title pending; the worker answers with
     /// a [`TitleUpdate`] for `command.request`.
     Title(TitleCommand),
+    /// Shows one template field in the browser title editor, or hides it
+    /// from web pages (GX-006, Protocol 2.90): every title naming the
+    /// template follows.
+    SetTitleFieldExposure {
+        input: InputId,
+        field: fm_protocol::WireTitleFieldId,
+        exposed: bool,
+    },
     /// Sends one playlist command: a list edit or transport.
     Playlist(PlaylistIntent),
     /// Sends one cue list command: a list edit or a cue control (RC-017).

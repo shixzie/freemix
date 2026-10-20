@@ -72,7 +72,17 @@ pub(crate) struct TitlesPanel {
     focus_field: bool,
     /// The title whose `Animate…` key or menu item was chosen this frame.
     animate: Option<InputId>,
+    /// The engine frame of the newest `title_phases` record and the egui
+    /// time it was first drawn, so the timeline playhead runs on between
+    /// records (Protocol 2.90).
+    phases_seen: Option<(u64, OrderedTime)>,
 }
+
+/// An egui time in seconds, compared bit for bit (the panel is `Eq`).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct OrderedTime(f64);
+
+impl Eq for OrderedTime {}
 
 /// The text field of `field` in `title`'s editor.
 fn field_edit_id(title: InputId, field: WireTitleFieldId) -> egui::Id {
@@ -263,14 +273,34 @@ impl TitlesPanel {
                 ui.set_width(ui.available_width());
                 ui.spacing_mut().item_spacing = Vec2::new(6.0, 5.0);
                 draw_editor_header(ui, l, presentation, badge, view);
+                self.draw_timeline(ui, l, state, title);
                 if presentation.stale || presentation.notice == Some(TitleNotice::Conflict) {
                     self.draw_conflict_banner(ui, l, presentation);
                 } else if let Some(TitleNotice::Rejected(reason)) = presentation.notice {
                     banner(ui, ERROR, &rejected_text(l, reason));
                 }
                 ui.add_space(2.0);
+                // Which fields the template shows browsers (GX-006).
+                let exposure: Vec<(WireTitleFieldId, bool)> = state
+                    .project_state
+                    .as_ref()
+                    .and_then(|project| {
+                        project.titles().iter().find(|status| status.input == title)
+                    })
+                    .map(|status| {
+                        status
+                            .fields
+                            .iter()
+                            .map(|field| (field.field, field.exposed))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 for field in &presentation.fields {
-                    self.draw_field(ui, l, presentation, field);
+                    let web = exposure
+                        .iter()
+                        .find(|(id, _)| *id == field.id)
+                        .map(|(_, exposed)| *exposed);
+                    self.draw_field(ui, l, presentation, field, web, intents);
                 }
                 if presentation.previewed
                     && let Some(preview) = self.preview.as_ref().filter(|p| p.title == title)
@@ -344,6 +374,8 @@ impl TitlesPanel {
         l: Locale,
         presentation: &TitleEditorPresentation,
         field: &FieldPresentation,
+        web: Option<bool>,
+        intents: &mut Vec<StudioIntent>,
     ) {
         let title = presentation.title;
         let can_edit = presentation.can_edit;
@@ -368,6 +400,32 @@ impl TitlesPanel {
                     .extra_letter_spacing(0.8)
                     .color(muted_color()),
             );
+            // The template's browser exposure: a project edit every title
+            // naming the template follows.
+            if let Some(exposed) = web {
+                let mut checked = exposed;
+                let response = ui
+                    .add_enabled(
+                        can_edit,
+                        egui::Checkbox::new(
+                            &mut checked,
+                            RichText::new(l.text(Msg::TitleFieldWeb))
+                                .size(crate::theme::legible(10.0))
+                                .color(text_dim_color()),
+                        ),
+                    )
+                    .hint(
+                        l.text(Msg::TitleFieldWebHover),
+                        Msg::ReasonNoEditProject.en(),
+                    );
+                if response.changed() {
+                    intents.push(StudioIntent::SetTitleFieldExposure {
+                        input: title,
+                        field: field.id,
+                        exposed: checked,
+                    });
+                }
+            }
             if field.changed_upstream && !field.dirty {
                 ui.label(
                     RichText::new("•")
@@ -442,6 +500,193 @@ impl TitlesPanel {
                 });
         }
         ui.add_space(3.0);
+    }
+
+    /// The read-only In / Hold / Out strip of the selected title, with a
+    /// playhead from the newest `title_phases` record run on at the show's
+    /// frame rate (GX-006). Drawn once the template's animation is known.
+    fn draw_timeline(&mut self, ui: &mut Ui, l: Locale, state: &StudioUiState, title: InputId) {
+        let Some(project) = state.project_state.as_ref() else {
+            return;
+        };
+        let Some(status) = project.titles().iter().find(|status| status.input == title) else {
+            return;
+        };
+        let Some(animation) = status.animation.as_ref() else {
+            return;
+        };
+        let now = ui.input(|input| input.time);
+        let phases = state.title_phases.as_ref();
+        if let Some(phases) = phases
+            && self
+                .phases_seen
+                .is_none_or(|(frame, _)| frame != phases.frame)
+        {
+            self.phases_seen = Some((phases.frame, OrderedTime(now)));
+        }
+        let wire = fm_protocol::WireInputId::from_domain(title);
+        let live = phases.and_then(|phases| {
+            phases
+                .titles
+                .iter()
+                .find(|item| item.input == wire)
+                .map(|item| (phases.frame, item))
+        });
+        let fps = f64::from(project.frame_rate().numerator())
+            / f64::from(project.frame_rate().denominator().max(1));
+        // Engine frames since the record, while the record is the newest.
+        let elapsed = match (live, self.phases_seen) {
+            (Some((frame, _)), Some((seen, OrderedTime(at)))) if seen == frame => {
+                ((now - at).max(0.0) * fps).floor()
+            }
+            _ => 0.0,
+        };
+        let (phase, phase_frame, phase_frames, timeline, frame) = live.map_or(
+            (
+                status.phase,
+                status.phase_frame,
+                status.phase_frames,
+                None,
+                None,
+            ),
+            |(frame, item)| {
+                (
+                    item.phase,
+                    item.phase_frame,
+                    item.phase_frames,
+                    item.timeline,
+                    Some(frame),
+                )
+            },
+        );
+        let rate = animation.clip.timebase().rate();
+        let seconds = |frames: u32| {
+            f64::from(frames) * f64::from(rate.denominator()) / f64::from(rate.numerator().max(1))
+        };
+        let (in_s, out_s) = (
+            seconds(animation.clip.in_frames()),
+            seconds(animation.clip.out_frames()),
+        );
+        let width = ui.available_width().max(120.0);
+        let (rect, response) = ui.allocate_exact_size(Vec2::new(width, 18.0), Sense::hover());
+        let painter = ui.painter_at(rect);
+        let ends = width * 0.55;
+        let total = in_s + out_s;
+        let (in_w, out_w) = if total > 0.0 {
+            let share = |part: f64| (f64::from(ends) * part / total) as f32;
+            (
+                if in_s > 0.0 {
+                    share(in_s).max(18.0)
+                } else {
+                    0.0
+                },
+                if out_s > 0.0 {
+                    share(out_s).max(18.0)
+                } else {
+                    0.0
+                },
+            )
+        } else {
+            (0.0, 0.0)
+        };
+        let hold_w = (width - in_w - out_w).max(24.0);
+        let shown = timeline.map(|timeline| timeline.shown);
+        let tone = match shown {
+            Some(fm_protocol::TitleShownOn::Preview) => crate::theme::PREVIEW,
+            _ => PROGRAM,
+        };
+        let active = phase != fm_protocol::TitlePhase::Idle || shown.is_some();
+        let segments = [
+            (rect.min.x, in_w, Msg::AnimPhaseIn),
+            (rect.min.x + in_w, hold_w, Msg::AnimPhaseHold),
+            (rect.min.x + in_w + hold_w, out_w, Msg::AnimPhaseOut),
+        ];
+        for (index, (x, w, label)) in segments.into_iter().enumerate() {
+            if w <= 0.0 {
+                continue;
+            }
+            let segment = egui::Rect::from_min_size(pos2(x, rect.min.y), Vec2::new(w - 1.0, 18.0));
+            let current = active
+                && matches!(
+                    (index, phase),
+                    (0, fm_protocol::TitlePhase::In)
+                        | (
+                            1,
+                            fm_protocol::TitlePhase::Hold | fm_protocol::TitlePhase::Idle
+                        )
+                        | (2, fm_protocol::TitlePhase::Out)
+                );
+            painter.rect_filled(
+                segment,
+                CornerRadius::same(2),
+                if current {
+                    tone.gamma_multiply(0.35)
+                } else {
+                    graphite_color()
+                },
+            );
+            if w >= 26.0 {
+                painter.text(
+                    segment.center(),
+                    egui::Align2::CENTER_CENTER,
+                    l.text(label),
+                    FontId::proportional(crate::theme::legible(9.0)),
+                    if current { text_color() } else { muted_color() },
+                );
+            }
+        }
+        // The playhead: through In or Out by phase progress, mid-Hold while
+        // the title holds or shows without a take.
+        if active {
+            let progress = |w: f32| {
+                if phase_frames == 0 {
+                    w
+                } else {
+                    let at = (phase_frame as f64 + elapsed).min(phase_frames as f64);
+                    w * (at / phase_frames as f64) as f32
+                }
+            };
+            let x = match phase {
+                fm_protocol::TitlePhase::In => rect.min.x + progress(in_w),
+                fm_protocol::TitlePhase::Out => rect.min.x + in_w + hold_w + progress(out_w),
+                fm_protocol::TitlePhase::Hold | fm_protocol::TitlePhase::Idle => {
+                    rect.min.x + in_w + hold_w / 2.0
+                }
+            };
+            painter.line_segment(
+                [pos2(x, rect.min.y - 1.0), pos2(x, rect.max.y + 1.0)],
+                Stroke::new(2.0, tone),
+            );
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        response.on_hover_text(l.text(Msg::TitleTimelineHover));
+        // How long it has been shown, from the timeline's start frame.
+        let caption_text = match (timeline, frame) {
+            (Some(timeline), Some(frame)) => {
+                let shown_frames = (frame as f64 + elapsed - timeline.since_frame as f64).max(0.0);
+                let tenths = (shown_frames / fps.max(1.0) * 10.0).floor() as u64;
+                let seconds = format!("{}.{}", tenths / 10, tenths % 10);
+                l.format(
+                    if timeline.shown == fm_protocol::TitleShownOn::Preview {
+                        Msg::TitleTimelinePreview
+                    } else {
+                        Msg::TitleTimelineAir
+                    },
+                    &[("seconds", Arg::Str(&seconds))],
+                )
+            }
+            _ => l.text(Msg::TitleTimelineIdle).to_owned(),
+        };
+        ui.label(
+            RichText::new(caption_text)
+                .size(crate::theme::legible(10.0))
+                .color(if active {
+                    text_dim_color()
+                } else {
+                    muted_color()
+                }),
+        );
     }
 
     /// The field's input row: a colour picker for colours, then the text edit.
@@ -2086,6 +2331,89 @@ mod tests {
                 "missing {expected:?} in {spanish:?}"
             );
         }
+    }
+
+    /// Draws the Titles tab alone into a 900x1200 pass at egui time `time`
+    /// and returns the painted text and the intents it asked for.
+    fn draw_panel(
+        context: &egui::Context,
+        panel: &mut TitlesPanel,
+        state: &StudioUiState,
+        time: f64,
+    ) -> (Vec<String>, Vec<StudioIntent>) {
+        context.begin_pass(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(900.0, 1200.0),
+            )),
+            time: Some(time),
+            ..egui::RawInput::default()
+        });
+        let mut ui = Ui::new(
+            context.clone(),
+            egui::Id::new("fm-ui-egui-titles-panel-test"),
+            egui::UiBuilder::new()
+                .layer_id(egui::LayerId::background())
+                .max_rect(context.viewport_rect()),
+        );
+        let mut intents = Vec::new();
+        panel.sync(state);
+        panel.draw(&mut ui, state, &mut intents);
+        (painted_text(&context.end_pass()), intents)
+    }
+
+    /// GX-006: each field shows its browser exposure, and the selected
+    /// title's In / Hold / Out strip follows `title_phases`, its shown time
+    /// running on from the record at the show's frame rate.
+    #[test]
+    fn fields_show_web_exposure_and_the_strip_follows_title_phases() {
+        let mut model = model(keyed(TITLE, true, 255), keyed(TITLE, true, 255));
+        let clip = fm_protocol::WireTitleClip::from_tracks(
+            fm_animation::Timebase::new(fm_types::FrameRate::new(30, 1).unwrap()),
+            15,
+            9,
+            Vec::new(),
+        )
+        .unwrap();
+        model
+            .apply_title_animation_state(fm_protocol::TitleAnimationStateMessage {
+                revision: 10,
+                input: WireInputId::from_domain(input(TITLE)),
+                animation_revision: 1,
+                clip: Box::new(clip),
+            })
+            .unwrap();
+        let mut state = ready_state(&model, true, true);
+        let context = egui::Context::default();
+        let mut panel = TitlesPanel::default();
+        let (idle, intents) = draw_panel(&context, &mut panel, &state, 1.0);
+        assert!(intents.is_empty(), "{intents:?}");
+        for expected in ["Web", "IN", "HOLD", "OUT", "Not shown"] {
+            assert!(
+                idle.iter().any(|text| text == expected),
+                "{expected:?} in {idle:?}"
+            );
+        }
+        assert_eq!(idle.iter().filter(|text| *text == "Web").count(), 4);
+
+        // Taken 30 frames ago on air; one second later it reads 2.0 s.
+        state.title_phases = Some(fm_protocol::TitlePhasesMessage {
+            frame: 130,
+            titles: vec![fm_protocol::TitlePhaseStatus {
+                input: WireInputId::from_domain(input(TITLE)),
+                phase: fm_protocol::TitlePhase::Hold,
+                phase_frame: 0,
+                phase_frames: 0,
+                timeline: Some(fm_protocol::TitleTimelineStatus {
+                    shown: fm_protocol::TitleShownOn::Air,
+                    since_frame: 100,
+                }),
+            }],
+        });
+        let (taken, _) = draw_panel(&context, &mut panel, &state, 2.0);
+        assert!(taken.iter().any(|text| text == "On air 1.0 s"), "{taken:?}");
+        let (later, _) = draw_panel(&context, &mut panel, &state, 3.0);
+        assert!(later.iter().any(|text| text == "On air 2.0 s"), "{later:?}");
     }
 
     /// Protocol 2.59: the shell turns the input thumbnail feed on once the
