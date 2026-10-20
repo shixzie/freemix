@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.80 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.81 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -2508,7 +2508,7 @@ admin console list and revoke them (RC-007, RC-014).
 
 - A console sends `web_access_request` with `request_id` and `action`:
   `status`, `pair` with `role` (`viewer`, `audio`, `operator`, or
-  `graphics`; Protocol 2.80),
+  `graphics`; Protocol 2.81),
   `cancel_pairing`, or `revoke` with `device` (`[a-z][a-z0-9-]{0,31}`). It
   receives `web_access` with the same `request_id`, an optional `refusal`
   (`permission_denied`, `web_session`, `unavailable`, `unknown_device`,

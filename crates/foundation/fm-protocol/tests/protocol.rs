@@ -2825,7 +2825,7 @@ fn edit_history_and_padlock_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.80\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.81\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2834,7 +2834,7 @@ fn edit_history_and_padlock_commands_are_exact() {
 
 #[test]
 fn edit_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.80\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.81\tid=a\tidempotency_key=k";
     for (tail, expected) in [
         (
             "\tpayload=undo\texpected_edit=0",
@@ -3159,7 +3159,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.80\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.81\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -3169,7 +3169,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn input_catalogue_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.80\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.81\tid=a\tidempotency_key=k";
     let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
         field,
         value: value.to_owned(),
@@ -3357,7 +3357,7 @@ mod titles {
         WireTitleFieldId,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.80\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.81\tid=a\tidempotency_key=k";
 
     fn field(value: u128) -> WireTitleFieldId {
         WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
@@ -3405,7 +3405,7 @@ mod titles {
 
     #[test]
     fn protocol_2_24_title_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 80));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 81));
         let cases = [
             (
                 CommandPayload::SetTitleFields {
@@ -3459,7 +3459,7 @@ mod titles {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.80\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.81\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -4005,7 +4005,7 @@ mod titles {
             "title_state\trevision=9\tinput=2\tname=Lower%20third\tfield_revision=4\tphase=in\tphase_frame=3\tphase_frames=20\tshown=none\tsince_frame=0\tfields=1%3At%3A3%3AAna%2C2%3An%3A3\tfield_names=11%3AName%2C%20first%2C5%3AScore\n"
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
-        // Protocol 2.80: where the title is shown and the frame its
+        // Protocol 2.81: where the title is shown and the frame its
         // timeline started on (GX-001).
         for (shown, token) in [
             (fm_protocol::TitleShownOn::Air, "air"),
@@ -4286,7 +4286,7 @@ mod playlists {
         PlaylistRunState, PlaylistStart, PlaylistStateMessage, PlaylistTransitionKind,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.80\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.81\tid=a\tidempotency_key=k";
     const EVENT: &str = "event\tengine_id=engine-a\tstate_epoch=7\tlog_id=log-a\trevision=1842";
     const HISTORY: &str = "\tundo_depth=0\tredo_depth=0\n";
 
@@ -4326,7 +4326,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_25_playlist_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 80));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 81));
         let cases = [
             (
                 CommandPayload::SetPlaylist {
@@ -4398,7 +4398,7 @@ mod playlists {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.80\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.81\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -4697,7 +4697,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_26_playlist_state_is_exact_and_strict() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 80));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 81));
         let message = playlist_state(
             sample_entries(),
             PlaylistRunState::Playing {

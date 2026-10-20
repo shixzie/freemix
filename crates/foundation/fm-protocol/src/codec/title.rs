@@ -190,7 +190,7 @@ pub(super) const fn encode_title_phase(phase: TitlePhase) -> &'static str {
     }
 }
 
-/// The wire token of where a title is shown (Protocol 2.80).
+/// The wire token of where a title is shown (Protocol 2.81).
 pub(super) const fn encode_title_shown(timeline: Option<TitleTimelineStatus>) -> &'static str {
     match timeline {
         None => "none",
