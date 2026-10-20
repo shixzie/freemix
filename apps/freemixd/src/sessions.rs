@@ -1144,6 +1144,15 @@ pub(super) fn run(
             return Err(error);
         }
         if let Some(native) = native.as_deref_mut() {
+            // A Wayland desktop's new screen capture grants (IN-011) are
+            // kept in the project and folded at once.
+            #[cfg(feature = "native-media")]
+            if let Some(tokens) = native.take_screen_capture_restore_tokens()
+                && crate::native_portal_capture::keep_restore_tokens(durable, tokens)
+                && let Some(progress) = progress.as_mut()
+            {
+                progress.request_fold();
+            }
             if let Some(progress) = progress.as_mut() {
                 progress.poll(control, store, durable);
             }
@@ -1898,6 +1907,48 @@ impl Runtime<'_> {
             WireMessage::ScreenCaptureTargetsRequest(request) => {
                 self.screen_capture_targets
                     .submit(peer.id, request.request_id);
+                Ok(())
+            }
+            // A new pick of a screen capture input's target (IN-011,
+            // Protocol 2.85).
+            WireMessage::ScreenCapturePickRequest(request) => {
+                let session = peer.session.as_mut().expect("active peers have sessions");
+                if let Err(error) = session.admit_screen_capture_pick(now_millis().map_err(|_| ())?)
+                {
+                    let current_revision =
+                        Some(self.control.borrow().diagnostics().current_revision);
+                    peer.reply(WireMessage::Error(ErrorMessage {
+                        request_id: Some(request.request_id),
+                        current_revision,
+                        error: structured_session_error(&error),
+                    }))?;
+                    return Ok(());
+                }
+                let input = request.input.to_domain();
+                let capture = self
+                    .control
+                    .borrow()
+                    .screen_capture_inputs()
+                    .iter()
+                    .any(|(candidate, _)| *candidate == input);
+                if !capture {
+                    peer.reply(WireMessage::Error(ErrorMessage {
+                        request_id: Some(request.request_id),
+                        current_revision: None,
+                        error: StructuredError {
+                            code: "not_screen_capture".into(),
+                            message: format!("input {input} is not a screen capture input"),
+                            fields: Vec::new(),
+                            retryable: false,
+                        },
+                    }))?;
+                    return Ok(());
+                }
+                // A simulated daemon captures nothing, so there is nothing
+                // to pick again.
+                if let Some(native) = native {
+                    native.pick_screen_capture(input);
+                }
                 Ok(())
             }
             WireMessage::SystemAudioDevicesRequest(request) => {

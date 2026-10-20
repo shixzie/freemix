@@ -48,9 +48,8 @@ use fm_types::screen_capture::ScreenCaptureTarget;
 pub const PIPEWIRE_BUILT: bool = cfg!(all(target_os = "linux", freemix_pipewire));
 
 /// Why a Wayland session cannot be captured by a build without `PipeWire`.
-pub const NO_PIPEWIRE: &str = "Wayland session: this server was built without PipeWire, so it \
-     cannot receive the desktop's screen sharing; build it with RUSTFLAGS=\"--cfg \
-     freemix_pipewire\" (needs libpipewire-0.3), or run it in an X11 session";
+pub const NO_PIPEWIRE: &str = "Wayland session: this server was built without PipeWire; \
+     rebuild it with RUSTFLAGS=\"--cfg freemix_pipewire\" or run it in an X11 session";
 /// The operator dismissed the desktop's sharing dialog.
 pub const DENIED_CANCELLED: &str = "sharing was cancelled in the sharing dialog on the server's \
      desktop; pick again to ask once more";
@@ -191,6 +190,24 @@ mod tests {
         assert_eq!(cursor_mode(Some(5), true), (Some(1), false));
         assert_eq!(cursor_mode(Some(2), false), (None, false));
         assert_eq!(cursor_mode(None, true), (None, true));
+    }
+
+    #[test]
+    fn every_reason_fits_a_status() {
+        for reason in [
+            NO_PIPEWIRE,
+            DENIED_CANCELLED,
+            DENIED_REFUSED,
+            STOPPED_ON_DESKTOP,
+            NO_WINDOW_SHARING,
+            NO_SCREEN_SHARING,
+            NO_EMBEDDED_CURSOR,
+        ] {
+            assert!(
+                reason.len() <= fm_types::screen_capture::MAX_SCREEN_CAPTURE_ERROR_BYTES,
+                "{reason}"
+            );
+        }
     }
 
     #[test]

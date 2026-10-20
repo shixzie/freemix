@@ -125,6 +125,8 @@ mod native_files;
 #[cfg(feature = "native-media")]
 mod native_live_lan;
 #[cfg(feature = "native-media")]
+mod native_portal_capture;
+#[cfg(feature = "native-media")]
 mod native_screen_capture;
 #[cfg(feature = "native-media")]
 mod native_slides;
@@ -6108,6 +6110,20 @@ impl NativeDaemon {
         self.pending_stream_status.take()
     }
 
+    /// Asks the desktop to pick screen capture input `input`'s target again
+    /// (IN-011); `false` when it is not a screen capture input.
+    fn pick_screen_capture(&mut self, input: InputId) -> bool {
+        self.screen_capture.pick(input)
+    }
+
+    /// Every screen capture input's restore token, when a Wayland desktop
+    /// granted or dropped one since the last call (IN-011).
+    fn take_screen_capture_restore_tokens(
+        &mut self,
+    ) -> Option<std::collections::BTreeMap<InputId, String>> {
+        self.screen_capture.take_restore_tokens()
+    }
+
     /// The realized recorder slots (Protocol 2.66), at most every
     /// [`recorder_status::RECORDER_STATUS_INTERVAL`].
     fn take_recorder_status(&mut self, server: &ServerIdentity) -> Option<RecorderStatusMessage> {
@@ -7855,14 +7871,17 @@ fn start_native_screen_capture(
         })
         .collect();
     let dimensions = settings.video.dimensions;
-    native_screen_capture::NativeScreenCapture::start(
+    let mut capture = native_screen_capture::NativeScreenCapture::start(
         desktop_capture::DesktopBackend::platform(),
         inputs,
         settings.frame_rate,
         native_clock_domain(),
         (dimensions.width(), dimensions.height()),
         settings.audio.sample_rate,
-    )
+    );
+    // A Wayland desktop shares the targets it granted before again.
+    capture.set_restore_tokens(project.screen_capture_restore_tokens().clone());
+    capture
 }
 
 /// Starts the media-file inputs of `stored` that play through their engine
@@ -8516,6 +8535,18 @@ impl NativeDaemon {
 
     #[allow(clippy::unused_self)]
     fn take_stream_status(&mut self) -> Option<StreamStatusMessage> {
+        None
+    }
+
+    #[allow(clippy::unused_self)]
+    fn pick_screen_capture(&mut self, _input: InputId) -> bool {
+        false
+    }
+
+    #[allow(clippy::unused_self)]
+    fn take_screen_capture_restore_tokens(
+        &mut self,
+    ) -> Option<std::collections::BTreeMap<InputId, String>> {
         None
     }
 
@@ -11519,6 +11550,9 @@ fn checkpoint_native(
 pub(crate) struct NativeProgress {
     cadence: journal::ProgressCadence,
     failing: bool,
+    /// The durable project changed outside a command (screen capture
+    /// restore tokens, IN-011): the next pass folds it.
+    fold_requested: bool,
 }
 
 impl NativeProgress {
@@ -11529,7 +11563,14 @@ impl NativeProgress {
                 durable.position().frames_rendered,
             ),
             failing: false,
+            fold_requested: false,
         }
+    }
+
+    /// Folds the durable project on the next pass that can, whatever the
+    /// cadence says.
+    pub(crate) fn request_fold(&mut self) {
+        self.fold_requested = true;
     }
 
     pub(crate) fn poll(
@@ -11540,7 +11581,10 @@ impl NativeProgress {
     ) {
         let control = control.borrow();
         let cursor = control.frame_cursor();
-        let due = self.cadence.due(cursor, durable.position().frames_rendered);
+        let mut due = self.cadence.due(cursor, durable.position().frames_rendered);
+        if self.fold_requested {
+            due = journal::ProgressDue::Fold;
+        }
         // One background write at a time: a marker or fold due while the
         // previous one (or a checkpoint) is still being written waits for a
         // later pass instead of queueing behind it.
@@ -11552,6 +11596,7 @@ impl NativeProgress {
         };
         drop(control);
         let result = if due == journal::ProgressDue::Fold {
+            self.fold_requested = false;
             self.cadence.folded(cursor);
             // The idle snapshot moves the runtime position without moving
             // the revision, exactly as the shutdown checkpoint does.

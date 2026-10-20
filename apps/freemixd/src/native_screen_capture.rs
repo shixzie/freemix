@@ -36,6 +36,13 @@
 //! `no_stream`, `unsupported`, `failed`) travels in the input's status
 //! beside the picture's. A tap outlives capture restarts of the same
 //! window (a resize reconnects the capture child to the same tap).
+//!
+//! On a Wayland desktop the inputs are handed to
+//! [`crate::native_portal_capture`] instead: nothing is listed, and the
+//! desktop's own sharing dialog picks each input's screen or window. A
+//! portal capture has no sound yet: its audio is `unsupported` and its
+//! Master strip gets silence.
+//!
 //! A closed input (IN-026) stops its capture and shows a blank picture
 //! until it reopens.
 //!
@@ -238,6 +245,8 @@ pub(crate) struct NativeScreenCapture {
     interval: Duration,
     /// The engine frame last pulled for.
     last_frame: Option<u64>,
+    /// A Wayland desktop's portal captures, which replace the listing.
+    portal: Option<crate::native_portal_capture::PortalSources>,
 }
 
 impl NativeScreenCapture {
@@ -250,18 +259,39 @@ impl NativeScreenCapture {
         dimensions: (u32, u32),
         sample_rate: SampleRate,
     ) -> Self {
+        let format = Format {
+            rate,
+            clock_domain,
+            dimensions,
+            sample_rate,
+        };
+        if let Some(factory) = backend.portal() {
+            let mut portal = crate::native_portal_capture::PortalSources::new(factory, format);
+            let configs: Vec<_> = inputs
+                .iter()
+                .map(|input| (input.input, input.config.clone()))
+                .collect();
+            portal.sync(&configs, |id| {
+                inputs.iter().any(|input| input.input == id && input.closed)
+            });
+            return Self {
+                backend,
+                sources: BTreeMap::new(),
+                format,
+                watch: None,
+                interval: LIST_INTERVAL,
+                last_frame: None,
+                portal: Some(portal),
+            };
+        }
         let mut capture = Self {
             backend,
             sources: BTreeMap::new(),
-            format: Format {
-                rate,
-                clock_domain,
-                dimensions,
-                sample_rate,
-            },
+            format,
             watch: None,
             interval: LIST_INTERVAL,
             last_frame: None,
+            portal: None,
         };
         for ScreenCaptureInput {
             input,
@@ -286,7 +316,41 @@ impl NativeScreenCapture {
 
     /// Every screen capture input, in input order.
     pub(crate) fn inputs(&self) -> Vec<InputId> {
+        if let Some(portal) = &self.portal {
+            return portal.inputs();
+        }
         self.sources.keys().copied().collect()
+    }
+
+    /// Takes the project's restore tokens of a Wayland desktop's grants
+    /// (unused elsewhere), before any capture starts.
+    pub(crate) fn set_restore_tokens(&mut self, tokens: BTreeMap<InputId, String>) {
+        if let Some(portal) = &mut self.portal {
+            portal.set_restore_tokens(tokens);
+        }
+    }
+
+    /// Every input's restore token, when a Wayland desktop granted or
+    /// dropped one since the last call.
+    pub(crate) fn take_restore_tokens(&mut self) -> Option<BTreeMap<InputId, String>> {
+        self.portal
+            .as_mut()
+            .and_then(crate::native_portal_capture::PortalSources::take_restore_tokens)
+    }
+
+    /// Picks `input`'s target again: a Wayland desktop's dialog asks anew
+    /// (its restore token forgotten); a listed desktop captures again.
+    /// Returns whether `input` is a screen capture input here.
+    pub(crate) fn pick(&mut self, input: InputId) -> bool {
+        if let Some(portal) = &mut self.portal {
+            return portal.pick(input);
+        }
+        let Some(source) = self.sources.get_mut(&input) else {
+            return false;
+        };
+        source.receiver = None;
+        source.resolved = None;
+        true
     }
 
     /// Follows the project: closes, reopens, adds, removes, and
@@ -297,6 +361,10 @@ impl NativeScreenCapture {
         configs: &[(InputId, ScreenCaptureConfig)],
         closed: impl Fn(InputId) -> bool,
     ) {
+        if let Some(portal) = &mut self.portal {
+            portal.sync(configs, closed);
+            return;
+        }
         self.sources
             .retain(|input, _| configs.iter().any(|(candidate, _)| candidate == input));
         for (input, config) in configs {
@@ -412,6 +480,13 @@ impl NativeScreenCapture {
     /// Pulls every input's picture for engine frame `frame`, once per
     /// frame. Never blocks on the desktop.
     pub(crate) fn pull(&mut self, frame: u64) -> Vec<PulledStream> {
+        if let Some(portal) = &mut self.portal {
+            if self.last_frame.is_some_and(|last| frame <= last) {
+                return Vec::new();
+            }
+            self.last_frame = Some(frame);
+            return portal.pull(frame);
+        }
         if self.last_frame.is_some_and(|last| frame <= last) || self.sources.is_empty() {
             return Vec::new();
         }
@@ -472,6 +547,9 @@ impl NativeScreenCapture {
     /// window, attempt, restart count, or audio state at once, a changed
     /// error at most once a second.
     pub(crate) fn statuses(&mut self, now: Instant) -> Vec<(InputId, ScreenCaptureStatus)> {
+        if let Some(portal) = &mut self.portal {
+            return portal.statuses(now);
+        }
         self.follow_targets();
         let mut due = Vec::new();
         for (&input, source) in &mut self.sources {
@@ -823,6 +901,7 @@ mod tests {
             watch: None,
             interval: Duration::from_millis(10),
             last_frame: None,
+            portal: None,
         };
         capture.sync(&[(input(), window_config())], |_| closed);
         capture

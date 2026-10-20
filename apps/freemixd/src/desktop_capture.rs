@@ -4,11 +4,13 @@
 //!
 //! - **Linux:** the X11 display of `DISPLAY`, listed through `x11rb`
 //!   ([`fm_io_linux::screen_capture::X11Lister`]) and captured through
-//!   `ffmpeg -f x11grab`. Inside a Wayland session with `XWayland` only X11
-//!   windows are offered; a Wayland session without `XWayland`, or no
-//!   `DISPLAY` at all, is unsupported (Wayland only allows capture through
-//!   the interactive xdg-desktop-portal, which a headless daemon cannot
-//!   answer).
+//!   `ffmpeg -f x11grab`. A Wayland session is captured through its
+//!   xdg-desktop-portal and `PipeWire` in builds with `PipeWire`
+//!   ([`DesktopBackend::Portal`], see [`crate::native_portal_capture`]):
+//!   nothing is listed, and the desktop's own dialog picks the screen or
+//!   window. In other builds a Wayland session with `XWayland` offers only
+//!   X11 windows, and one without it, or no `DISPLAY` at all, is
+//!   unsupported.
 //! - **Windows:** the interactive desktop, listed through PowerShell and
 //!   captured through `ffmpeg -f gdigrab` (see [`crate::desktop_windows`]).
 //! - **macOS:** `ScreenCaptureKit`, through the `fm-io-macos` screen
@@ -73,6 +75,10 @@ pub(crate) enum DesktopBackend {
     /// An X11 display (Linux).
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     X11 { display: String, wayland: bool },
+    /// A Wayland desktop's xdg-desktop-portal (Linux builds with
+    /// `PipeWire`).
+    #[cfg(target_os = "linux")]
+    Portal,
     /// The Windows desktop (`gdigrab`).
     #[cfg(windows)]
     Windows,
@@ -96,6 +102,7 @@ impl DesktopBackend {
                 fm_io_linux::screen_capture::Session::X11 { display, wayland } => {
                     Self::X11 { display, wayland }
                 }
+                fm_io_linux::screen_capture::Session::Portal => Self::Portal,
                 fm_io_linux::screen_capture::Session::Unsupported(reason) => {
                     Self::Unsupported(reason.to_owned())
                 }
@@ -130,6 +137,8 @@ impl DesktopBackend {
     pub(crate) fn token(&self) -> &'static str {
         match self {
             Self::X11 { .. } => fm_io_linux::screen_capture::X11_BACKEND,
+            #[cfg(target_os = "linux")]
+            Self::Portal => fm_protocol::PORTAL_BACKEND,
             #[cfg(windows)]
             Self::Windows => crate::desktop_windows::BACKEND,
             #[cfg(target_os = "macos")]
@@ -137,6 +146,20 @@ impl DesktopBackend {
             Self::Unsupported(_) => "none",
             #[cfg(test)]
             Self::Fake(_) => "fake",
+        }
+    }
+
+    /// What starts a share of the desktop, when this backend is a Wayland
+    /// desktop's portal: its captures run through
+    /// [`crate::native_portal_capture`] instead of a listing.
+    pub(crate) fn portal(&self) -> Option<crate::native_portal_capture::PortalFactory> {
+        match self {
+            #[cfg(target_os = "linux")]
+            Self::Portal => Some(std::sync::Arc::new(|| {
+                Box::new(fm_io_linux::wayland::DesktopPortal::new())
+                    as Box<dyn fm_io_linux::wayland::PortalBackend>
+            })),
+            _ => None,
         }
     }
 
@@ -160,6 +183,11 @@ impl DesktopBackend {
                     fm_io_linux::screen_capture::X11Lister::new(display.clone(), *wayland);
                 Box::new(move || lister.list())
             }
+            #[cfg(target_os = "linux")]
+            Self::Portal => Box::new(|| DesktopListing {
+                inventory: fm_io_linux::wayland::inventory(None),
+                desktop: None,
+            }),
             #[cfg(not(target_os = "linux"))]
             Self::X11 { .. } => Box::new(|| DesktopListing {
                 inventory: ScreenCaptureInventory::unsupported(NO_BACKEND),
@@ -215,6 +243,12 @@ impl DesktopBackend {
             Self::Windows => crate::desktop_windows::gdigrab_device(region, config, program),
             #[cfg(target_os = "macos")]
             Self::Macos { helper } => macos_device(helper, region, config, program),
+            // A portal capture reads its stream itself (see
+            // `crate::native_portal_capture`).
+            #[cfg(target_os = "linux")]
+            Self::Portal => {
+                Self::Unsupported(String::new()).capture_device(region, config, program)
+            }
             // Never resolved to a region; an empty format refuses to start.
             Self::Unsupported(_) => DeviceInput {
                 format: String::new(),

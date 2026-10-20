@@ -3063,6 +3063,7 @@ fn screen_capture_inputs_round_trip_exactly_and_reject_malformed_values() {
 /// or when the input stops capturing that kind of target, and a token of
 /// another input or an unusable token is refused.
 #[test]
+#[allow(clippy::too_many_lines)] // one section's exact form, then each strictness rule
 fn screen_capture_restore_tokens_round_trip_exactly_and_strictly() {
     use std::collections::BTreeMap;
 

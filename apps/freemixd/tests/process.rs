@@ -2174,6 +2174,85 @@ fn a_simulated_daemon_lists_simulated_capture_targets_and_adds_a_window_capture(
     assert_eq!(entry.status.audio, ScreenCaptureAudioState::Off);
 }
 
+/// IN-011, Protocol 2.85: a screen capture pick request needs
+/// `edit_project` and a screen capture input; an accepted one has no reply
+/// (on a simulated daemon nothing captures, so nothing restarts).
+#[test]
+fn screen_capture_pick_requests_are_authorized_and_checked() {
+    use fm_protocol::{ScreenCaptureConfig, ScreenCapturePickRequest, ScreenCaptureTarget};
+
+    let directory = TestDirectory::new("screen-capture-pick");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut admin = daemon.connect();
+    admin.handshake_as(Role::Admin, None);
+    admin.receive_snapshot();
+    admin.send(&command(
+        "add-screen",
+        "add-screen-key",
+        CommandPayload::AddInput {
+            input: input(7),
+            name: "Screen".into(),
+            source: fm_protocol::LiveInputSource::ScreenCapture(Box::new(
+                ScreenCaptureConfig::new(ScreenCaptureTarget::Screen { index: 0 }),
+            )),
+        },
+    ));
+    loop {
+        if let WireMessage::CommandResult(result) = admin.receive() {
+            assert!(
+                matches!(result, CommandResult::Accepted { .. }),
+                "{result:?}"
+            );
+            break;
+        }
+    }
+    let pick = |request_id: &str, id: u128| {
+        WireMessage::ScreenCapturePickRequest(ScreenCapturePickRequest {
+            request_id: request_id.into(),
+            input: input(id),
+        })
+    };
+    // Accepted: no reply, so the next answer is the list that follows.
+    admin.send(&pick("pick-1", 7));
+    admin.send(&WireMessage::ScreenCaptureTargetsRequest(
+        fm_protocol::ScreenCaptureTargetsRequest {
+            request_id: "after-pick".into(),
+        },
+    ));
+    loop {
+        match admin.receive() {
+            WireMessage::ScreenCaptureTargets(answer) => {
+                assert_eq!(answer.request_id, "after-pick");
+                break;
+            }
+            WireMessage::Error(error) => panic!("{error:?}"),
+            _ => {}
+        }
+    }
+    admin.send(&pick("pick-2", 99));
+    let refused = loop {
+        if let WireMessage::Error(error) = admin.receive() {
+            break error;
+        }
+    };
+    assert_eq!(refused.request_id.as_deref(), Some("pick-2"));
+    assert_eq!(refused.error.code, "not_screen_capture");
+
+    let mut viewer = daemon.connect();
+    viewer.handshake_as(Role::Viewer, None);
+    viewer.receive_snapshot();
+    viewer.send(&pick("pick-3", 7));
+    let refused = loop {
+        if let WireMessage::Error(error) = viewer.receive() {
+            break error;
+        }
+    };
+    assert_eq!(refused.request_id.as_deref(), Some("pick-3"));
+    assert_eq!(refused.error.code, "permission_denied");
+}
+
 /// OR-011, Protocol 2.42: a daemon without a display presenter keeps
 /// display-output slots as replicated, validated project configuration;
 /// every configured slot waits with `no-presenter`, the inventory says

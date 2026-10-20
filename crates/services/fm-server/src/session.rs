@@ -273,6 +273,32 @@ impl Session {
         Ok(())
     }
 
+    /// Authorizes and accounts for one screen capture pick request
+    /// (IN-011, Protocol 2.85).
+    ///
+    /// A pick restarts an input's capture and may open the sharing dialog
+    /// on the server's desktop, so it requires
+    /// [`CommandClass::EditProject`]. It counts against the inbound command
+    /// rate.
+    ///
+    /// # Errors
+    ///
+    /// Returns a session, authorization, or rate error when the request
+    /// cannot be admitted.
+    pub fn admit_screen_capture_pick(&mut self, now_ms: u64) -> Result<(), SessionError> {
+        self.ensure_connected()?;
+        self.policy
+            .authorize(&self.principal, CommandClass::EditProject)?;
+        if !self
+            .inbound_window
+            .has_capacity(now_ms, self.limits.inbound_commands)
+        {
+            return Err(SessionError::InboundRateLimited);
+        }
+        self.inbound_window.record();
+        Ok(())
+    }
+
     /// Authorizes and accounts for one exact title preview request.
     ///
     /// A preview renders a title template, which only someone who may edit
