@@ -448,13 +448,13 @@ commands = ["cargo test -p fm-automation --test control_surfaces"]
 [[tests]]
 id = "accept-rc-007"
 state = "present"
-paths = ["apps/freemix-web/tests/tally.rs", "apps/freemix-web/tests/operator.rs", "apps/freemix-web/tests/manual_transition.rs", "apps/freemix-web/tests/title_editor.rs", "apps/freemix-web/tests/title_bridge.rs", "apps/freemixd/tests/web_tally.rs"]
-commands = ["cargo test -p freemix-web --test tally", "cargo test -p freemix-web --test operator", "cargo test -p freemix-web --test manual_transition", "cargo test -p freemix-web --test title_editor", "cargo test -p freemix-web --test title_bridge", "cargo test -p freemixd --test web_tally"]
+paths = ["apps/freemix-web/tests/tally.rs", "apps/freemix-web/tests/operator.rs", "apps/freemix-web/tests/manual_transition.rs", "apps/freemix-web/tests/title_editor.rs", "apps/freemix-web/tests/title_bridge.rs", "apps/freemixd/tests/web_tally.rs", "apps/freemixd/tests/web_lan.rs"]
+commands = ["cargo test -p freemix-web --test tally", "cargo test -p freemix-web --test operator", "cargo test -p freemix-web --test manual_transition", "cargo test -p freemix-web --test title_editor", "cargo test -p freemix-web --test title_bridge", "cargo test -p freemixd --test web_tally", "cargo test -p freemixd --test web_lan"]
 [[tests]]
 id = "accept-rc-008"
 state = "present"
-paths = ["apps/freemixd/tests/process.rs", "apps/freemixd/tests/native_sessions.rs", "crates/services/fm-server/tests/server.rs", "crates/foundation/fm-protocol/tests/protocol.rs", "crates/services/fm-client/tests/client.rs", "crates/services/fm-auth/tests/auth.rs"]
-commands = ["cargo test -p freemixd --test process", "cargo test -p freemixd --test native_sessions", "cargo test -p fm-server --test server", "cargo test -p fm-protocol --test protocol", "cargo test -p fm-client --test client", "cargo test -p fm-auth --test auth"]
+paths = ["apps/freemixd/tests/process.rs", "apps/freemixd/tests/native_sessions.rs", "crates/services/fm-server/tests/server.rs", "crates/foundation/fm-protocol/tests/protocol.rs", "crates/services/fm-client/tests/client.rs", "crates/services/fm-auth/tests/auth.rs", "crates/services/fm-auth/tests/devices.rs", "crates/foundation/fm-protocol/tests/web_access.rs"]
+commands = ["cargo test -p freemixd --test process", "cargo test -p freemixd --test native_sessions", "cargo test -p fm-server --test server", "cargo test -p fm-protocol --test protocol", "cargo test -p fm-client --test client", "cargo test -p fm-auth --test auth", "cargo test -p fm-auth --test devices", "cargo test -p fm-protocol --test web_access"]
 [[tests]]
 id = "accept-rc-009"
 state = "present"
@@ -483,8 +483,8 @@ commands = ["cargo test -p fm-persistence --test settings_import_export"]
 [[tests]]
 id = "accept-rc-014"
 state = "present"
-paths = ["apps/freemix-web/tests/tally.rs", "apps/freemix-web/tests/operator.rs", "apps/freemixd/tests/web_tally.rs", "apps/freemixd/tests/native_sessions.rs", "crates/foundation/fm-protocol/tests/recorder_status.rs", "crates/services/fm-client/tests/tcp.rs"]
-commands = ["cargo test -p freemix-web --test tally", "cargo test -p freemix-web --test operator", "cargo test -p freemixd --test web_tally", "cargo test -p freemixd --test native_sessions", "cargo test -p fm-protocol --test recorder_status", "cargo test -p fm-client --test tcp"]
+paths = ["apps/freemix-web/tests/tally.rs", "apps/freemix-web/tests/operator.rs", "apps/freemixd/tests/web_tally.rs", "apps/freemixd/tests/native_sessions.rs", "crates/foundation/fm-protocol/tests/recorder_status.rs", "crates/services/fm-client/tests/tcp.rs", "apps/freemixd/tests/web_lan.rs", "crates/foundation/fm-protocol/tests/web_access.rs"]
+commands = ["cargo test -p freemix-web --test tally", "cargo test -p freemix-web --test operator", "cargo test -p freemixd --test web_tally", "cargo test -p freemixd --test native_sessions", "cargo test -p fm-protocol --test recorder_status", "cargo test -p fm-client --test tcp", "cargo test -p freemixd --test web_lan", "cargo test -p fm-protocol --test web_access"]
 [[tests]]
 id = "accept-rc-015"
 state = "present"

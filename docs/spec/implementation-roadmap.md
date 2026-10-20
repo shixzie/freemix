@@ -5,12 +5,15 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19). Every parity row is still `planned` (or `blocked`); these are the
+(2026-10-19); item 1 updated 2026-10-20. Every parity row is still `planned` (or `blocked`); these are the
 highest-value remaining items, ranked:
 
-1. **Web gateway on the LAN with pairing and TLS (`RC-007`, `RC-014`, `RC-008`).**
-   The phone/tablet operator and tally pages exist but `--web-listen` is
-   loopback-only, so no real phone can reach them yet.
+1. **Web gateway on the LAN: trust and reach (`RC-007`, `RC-014`, `RC-008`).**
+   `freemixd serve` now serves the pages over TLS on LAN addresses with
+   Studio-driven device pairing (Protocol 2.70), but trust is a
+   self-signed certificate checked by fingerprint, the windowed program
+   daemon still does not serve the gateway, and the pairing flow is proven
+   in headless Chromium, not on real phones.
 2. ~~**Native Preview monitor tap (`SW-001`, `SW-002`).**~~ Landed: the native
    daemon publishes a Preview `monitor_frame` tap (the incoming source during a
    transition) through nonblocking readbacks, and Studio shows it with a
@@ -162,8 +165,9 @@ Native-media acceptance is not proven on this Mac. This is
 prerequisite transport infrastructure only; AU-001 daemon and Studio meter
 transport remain planned. It is not HTTP/WebSocket/service/media readiness or
 RC-008 completion. Expired raw TCP sessions are reclaimed. Phase 1 also
-contains an optional loopback-only WebSocket control listener at `/v1/control`,
-gated by `FREEMIXD_WEB_TOKEN`; it relays exact-current wire records through the
+contains an optional WebSocket control listener at `/v1/control` (plain
+HTTP on loopback only; LAN addresses require TLS, see the item 10 web tally
+boundary), gated by `FREEMIXD_WEB_TOKEN` or paired device tokens; it relays exact-current wire records through the
 same bounded scheduler and admits at most 16 Web peers at once, each its own
 control session (see the item 10 web tally boundary). This is transport
 groundwork only (Protocol 2.66 later gives Web pages a bounded Master-meter and
@@ -3907,8 +3911,34 @@ frame-denial headers. Because browsers cannot set `Authorization`, the page
 presents the same `FREEMIXD_WEB_TOKEN` as a `freemix.bearer.<base64url>`
 WebSocket subprotocol, accepted only from the serving origin, compared in
 constant time, and never echoed; roles still come from the handshake.
-Remaining gaps: the gateway is loopback-only, not served by the windowed
-program daemon, and without TLS, pairing, or per-device tokens; Web peers
+The gateway reaches phones on the LAN (Protocol 2.70): plain HTTP stays
+loopback-only and any other `--web-listen` address requires TLS, either
+`--web-tls-cert`/`--web-tls-key` or `--web-tls`, a self-signed ECDSA P-256
+certificate (rustls with the `ring` provider, rcgen) kept with mode 0600 in
+the web state directory, whose SHA-256 fingerprint the daemon prints and
+Studio shows. An Admin console starts a pairing for a Viewer, Audio, or
+Operator device; Studio's Web access panel shows the URL, a QR code
+carrying the one-time link code and fingerprint in the URL fragment, a
+six-digit code to type, the paired devices, and Revoke. Codes live 120 s,
+are single-use, and die after 5 wrong tries; `POST /v1/pair` is limited
+per client address and globally and checks `Origin`. The page stores the
+returned `fmd1_` device token in `localStorage` (no cookie, so no ambient
+credential for CSRF or cross-site WebSocket hijacking) and reconnects with
+it; the daemon keeps only SHA-256 digests in `web-devices.txt`, limits each
+device to its pairing's roles, and ends a revoked device's sessions within
+250 ms. Every request must name an IP literal, `localhost`, or a
+`--web-host` name in `Host` (DNS-rebinding defence), and pages carry a CSP
+whose `connect-src` is the serving origin only. Process tests cover the TLS
+handshake against the generated certificate, refusal of plain HTTP on
+`0.0.0.0`, pairing, role limits, revocation, cross-origin and foreign-Host
+refusal, and that no token or code reaches the logs; the tally tests run
+over TLS; screenshots show headless Chromium pairing over `wss` in
+`docs/progress/`.
+Remaining gaps: trust is trust-on-first-use of a self-signed certificate
+(the operator compares the fingerprint; no HSTS on IP origins), the
+certificate is not reissued when the LAN address changes, the gateway is not
+served by the windowed program daemon, pairing expiry is tested with an
+injected clock, and no real phone or tablet has been tried; Web peers
 receive no monitor frames, so there is no low-latency web preview; the page's
 JavaScript duplicates the Rust model and is checked by page-source, wire, and
 `node --check` tests and screenshots, not an automated browser test; and FTB, audio

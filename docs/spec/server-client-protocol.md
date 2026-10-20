@@ -42,13 +42,21 @@ does not acknowledge an invalid heartbeat. This exchange gives bidirectional
 control-plane peer liveness only. It is not service readiness, production
 authentication, media health, or the planned HTTP/WebSocket transport.
 
-The optional loopback WebSocket gateway at `/v1/control` relays the same
-records. It accepts `FREEMIXD_WEB_TOKEN` either as an `Authorization: Bearer`
-header or, for browsers that cannot set that header, as a second
-`Sec-WebSocket-Protocol` value `freemix.bearer.<base64url(token)>` offered
-alongside `freemix.control.v1`. The subprotocol credential is accepted only
-when the `Origin` matches the gateway's own host, is compared in constant time,
-and is never echoed; the server selects only `freemix.control.v1`. A present
+The optional WebSocket gateway at `/v1/control` relays the same records. It
+serves plain HTTP only on loopback addresses; any other address (a LAN
+address, `0.0.0.0`, `[::]`) requires TLS (`--web-tls` for a self-signed
+certificate kept in the web state directory, or `--web-tls-cert` with
+`--web-tls-key`), so browsers use `https://` and `wss://`. It accepts a token
+(the operator's optional `FREEMIXD_WEB_TOKEN`, or a paired device's token, see
+Protocol 2.71) either as an `Authorization: Bearer` header or, for browsers
+that cannot set that header, as a second `Sec-WebSocket-Protocol` value
+`freemix.bearer.<base64url(token)>` offered alongside `freemix.control.v1`.
+The subprotocol credential is accepted only when the `Origin` is exactly
+`https://<Host>` (`http://<Host>` without TLS), is compared in constant time
+(the static token) or by SHA-256 digest (device tokens), and is never echoed;
+the server selects only `freemix.control.v1`. Every request (pages, pairing,
+upgrades) must name an IP literal, `localhost`, or a `--web-host` name in
+`Host`, or it is refused `421 Misdirected Request` (DNS-rebinding defence). A present
 but wrong Bearer header is rejected even if the subprotocol credential is
 correct. The same listener serves the self-contained `/tally` and `/operator`
 pages for `GET` and `HEAD`; roles and permissions still come from the protocol
@@ -2495,6 +2503,60 @@ Protocol 2.70 adds key/fill keys and matte refinements to scene layers
   `--choke <n>`, `--edge-softness <n>`, and `--despill green|blue
   <strength>`.
 - 2.69 is refused.
+
+Protocol 2.71 pairs phones and tablets with the web gateway and lets an
+admin console list and revoke them (RC-007, RC-014).
+
+- A console sends `web_access_request` with `request_id` and `action`:
+  `status`, `pair` with `role` (`viewer`, `audio`, or `operator`),
+  `cancel_pairing`, or `revoke` with `device` (`[a-z][a-z0-9-]{0,31}`). It
+  receives `web_access` with the same `request_id`, an optional `refusal`
+  (`permission_denied`, `web_session`, `unavailable`, `unknown_device`,
+  `too_many_devices`, `storage_failed`), and `gateway` (`0|1`).
+- Only a raw control session whose role holds `manage_users` (Admin) may
+  manage web access: any other role is refused `permission_denied`, a
+  session relayed by the gateway itself `web_session`, and a daemon without
+  `--web-listen` `unavailable`; these answers carry `gateway=0`. Requests
+  count against the inbound command rate.
+- With `gateway=1` the answer carries `url` (the origin phones open:
+  `https://<lan address or first --web-host>:<port>`), `tls` (`0|1`),
+  `fingerprint` (exactly with TLS: the certificate's SHA-256 as 32
+  colon-separated uppercase hex pairs), an optional `pairing`
+  (`<code>~<link code>~<role>~<expires_in_ms>`: six ASCII digits, a 16 to 64
+  character base64url link code, and at most 120000 ms), and `devices`: a
+  comma-separated list, strictly ascending by id, of at most 32
+  `<id>~<role>~<paired_at_ms>~<last_seen_ms|->~<name length>:<name>` (names
+  1 to 48 bytes, trimmed, no control characters, written raw after their
+  byte length).
+- `pair` replaces any outstanding pairing; the codes expire after 120 s, are
+  spent by one successful redemption, and die after 5 wrong codes (both
+  codes share that budget). The QR link a console shows is
+  `<url><page>#pair=<link code>&fp=<fingerprint without colons>`, with
+  `/tally` for a Viewer pairing and `/operator` otherwise; browsers never
+  send the fragment to the server, and the page removes it at once.
+- The page redeems a code with `POST /v1/pair`
+  (`application/x-www-form-urlencoded` `code` and `name`). The request must
+  carry `Origin: <scheme>://<Host>`; each client address may try 5 times and
+  everyone together 20 times per minute. Answers are JSON with
+  `Cache-Control: no-store`: `200` `{"token","role","device","name"}`, `400`
+  `bad_request`, `401` `invalid`, `403` `forbidden`, `410` `expired` (nothing
+  outstanding, spent, or exhausted), `429` `rate_limited` with
+  `retry_after_s` and `Retry-After`, `503` `unavailable`.
+- A device token is `fmd1_` plus 32 random bytes in base64url. The daemon
+  keeps only its SHA-256, with the device's id, name, role, and pairing and
+  last-seen times, in `web-devices.txt` (mode 0600) in the web state
+  directory. A device session may ask only for its pairing's roles (an
+  Operator device also Audio and Viewer); the static token keeps every
+  role. `GET /v1/whoami` with `Authorization: Bearer <token>` answers
+  `{"kind":"device",...}`, `{"kind":"token","role":"admin"}`, or `401`, so a
+  page can tell a revoked device from a full gateway.
+- `revoke` removes the device at once: its live sessions end within 250 ms
+  and its token is refused from then on, also after a restart. Neither
+  tokens nor codes are ever printed; the daemon logs
+  `FREEMIXD_WEB_PAIRED` / `FREEMIXD_WEB_REVOKED` with the device id and role
+  only, and with TLS prints `FREEMIXD_WEB_TLS\tv=1\turl=...\tfingerprint=...`
+  after `FREEMIXD_WEB_READY`.
+- 2.70 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
