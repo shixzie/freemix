@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread;
 
 use fm_auth::Policy;
@@ -129,7 +129,10 @@ struct PageKey {
 
 #[derive(Default)]
 struct Inner {
-    sources: BTreeMap<String, Arc<Source>>,
+    /// Each asset's source, loaded once: concurrent first uses of one
+    /// asset share its cell, so one reads and probes it (and starts one
+    /// conversion) while the others wait for it.
+    sources: BTreeMap<String, Arc<OnceLock<Arc<Source>>>>,
     /// Most recently used last.
     cache: VecDeque<(PageKey, Arc<RenderedPage>)>,
     cache_bytes: usize,
@@ -252,18 +255,12 @@ impl DocumentPages {
         inner.cache_bytes -= freed;
     }
 
-    /// The source of `uri`, reading and probing it on first use.
+    /// The source of `uri`, reading and probing it on first use. A
+    /// presentation another thread is loading is waited for, never loaded
+    /// (and converted) a second time.
     fn source(&self, uri: &str) -> Arc<Source> {
-        if let Some(source) = lock(&self.inner).sources.get(uri) {
-            return Arc::clone(source);
-        }
-        let loaded = Arc::new(self.load(uri));
-        Arc::clone(
-            lock(&self.inner)
-                .sources
-                .entry(uri.to_owned())
-                .or_insert(loaded),
-        )
+        let cell = Arc::clone(lock(&self.inner).sources.entry(uri.to_owned()).or_default());
+        Arc::clone(cell.get_or_init(|| Arc::new(self.load(uri))))
     }
 
     fn load(&self, uri: &str) -> Source {
@@ -669,6 +666,66 @@ mod tests {
         }
         assert_eq!(pages.report("asset://talk.odp").state, DocumentState::Ready);
         assert!(pages.render("asset://talk.odp", 0, 64, 36).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_opens_of_one_presentation_convert_it_once() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let slides = [SampleSlide {
+            notes: None,
+            hidden: false,
+        }];
+        let root = bundle(&[
+            (
+                "talk.odp",
+                fm_presentations::sample::odp(Some("Talk"), &slides),
+            ),
+            ("converted.pdf", deck()),
+        ]);
+        let runs = root.path().join("runs");
+        let script = root.path().join("soffice");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\necho run >> '{}'\nwhile [ \"$1\" != \"--outdir\" ]; do shift; done\ncp '{}' \"$2/presentation.pdf\"\n",
+                runs.display(),
+                root.path().join("converted.pdf").display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        for _ in 0..4 {
+            let pages = Arc::new(DocumentPages::new(
+                root.path(),
+                Some(OfficeConverter::with_program(&script)),
+            ));
+            let _ = fs::remove_file(&runs);
+            let start = Arc::new(std::sync::Barrier::new(8));
+            let openers: Vec<_> = (0..8)
+                .map(|_| {
+                    let pages = Arc::clone(&pages);
+                    let start = Arc::clone(&start);
+                    thread::spawn(move || {
+                        start.wait();
+                        pages.report("asset://talk.odp").count
+                    })
+                })
+                .collect();
+            for opener in openers {
+                assert_eq!(opener.join().unwrap(), Some(1));
+            }
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while pages.report("asset://talk.odp").state != DocumentState::Ready {
+                assert!(Instant::now() < deadline, "the conversion never finished");
+                thread::sleep(Duration::from_millis(10));
+            }
+            // Any duplicate conversion has started by now.
+            thread::sleep(Duration::from_millis(200));
+            let started = fs::read_to_string(&runs).unwrap();
+            assert_eq!(started.lines().count(), 1, "one conversion per document");
+        }
     }
 
     #[test]
