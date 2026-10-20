@@ -32,9 +32,9 @@ use fm_model::{
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
 use fm_protocol::{
     AutoTransitionKind, CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload,
-    CommandResult, HandshakeOutcome, HandshakeRequest, HeartbeatMessage, MonitorFrameAssembler,
-    MonitorFrameOrigin, MonitorImage, MonitorTap, Role, ServerIdentity, WireInputId, WireMessage,
-    decode_line, encode_line,
+    CommandResult, HandshakeOutcome, HandshakeRequest, HeartbeatMessage, ManualTransitionKind,
+    ManualTransitionPosition, MonitorFrameAssembler, MonitorFrameOrigin, MonitorImage, MonitorTap,
+    Role, ServerIdentity, WireInputId, WireMessage, decode_line, encode_line,
 };
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
@@ -52,6 +52,10 @@ const BLUE: [u8; 3] = [24, 80, 160];
 const GREEN: [u8; 3] = [30, 200, 60];
 /// Frames of the timed transition the test takes.
 const TRANSITION_FRAMES: u32 = 125;
+/// Where the test holds its T-bar transition, in basis points: halfway.
+const HELD_POSITION: u16 = 5_000;
+/// Preview frames the held transition must show.
+const HELD_PREVIEW_FRAMES: usize = 3;
 
 fn input(value: u128) -> InputId {
     InputId::new(NonZeroU128::new(value).unwrap())
@@ -428,6 +432,13 @@ fn telemetry_field(stderr: &str, field: &str) -> f64 {
 /// many monitor parts reached it.
 fn serve_baseline(mut cli: Session, stop: &mpsc::Receiver<()>) -> usize {
     let _ = cli.command(CommandPayload::SelectPreview { input: wire(3) });
+    let _ = cli.command(CommandPayload::StartManualTransition {
+        kind: ManualTransitionKind::Fade,
+    });
+    let _ = cli.command(CommandPayload::SetManualTransitionPosition {
+        position: ManualTransitionPosition::new(HELD_POSITION).unwrap(),
+    });
+    let _ = cli.command(CommandPayload::CommitManualTransition);
     let _ = cli.command(CommandPayload::Transition {
         kind: AutoTransitionKind::Fade,
         duration_frames: TRANSITION_FRAMES,
@@ -442,9 +453,9 @@ fn serve_baseline(mut cli: Session, stop: &mpsc::Receiver<()>) -> usize {
 /// peer, one with only a CLI session.
 ///
 /// The Studio peer sees Preview's own pixels, Preview following a change,
-/// the incoming source on Preview throughout a transition, and the swapped
-/// Preview after it. The baseline
-/// daemon composes and reads back no monitor frame of either tap. Under the
+/// the incoming source on Preview while a T-bar transition is held (and on
+/// any frame of a timed one that reaches it), and the swapped Preview after
+/// each take. The baseline daemon composes and reads back no monitor frame of either tap. Under the
 /// same host load, the tapped show's Program frames are no later than the
 /// baseline's.
 #[test]
@@ -491,21 +502,27 @@ fn native_preview_tap_shows_and_follows_preview_only_when_subscribed_without_lat
     assert_eq!(changed.input, wire(3));
     assert!(solid(&changed, GREEN), "Preview is {:?}", center(&changed));
 
-    // During a transition Preview shows the incoming source.
-    let start = studio.command(CommandPayload::Transition {
-        kind: AutoTransitionKind::Fade,
-        duration_frames: TRANSITION_FRAMES,
+    // During a transition Preview shows the incoming source. A native
+    // command realizes every frame of a timed transition before the session
+    // loop serves peers again, so only the monitor frames finished when it
+    // returns reach a client, and which those are depends on how far the
+    // nonblocking readbacks got. A T-bar held halfway is a transition the
+    // daemon keeps realizing between commands: Preview frames stream through
+    // it however loaded the host is.
+    let _ = studio.command(CommandPayload::StartManualTransition {
+        kind: ManualTransitionKind::Fade,
     });
-    let end = start + u64::from(TRANSITION_FRAMES);
+    let held = studio.command(CommandPayload::SetManualTransitionPosition {
+        position: ManualTransitionPosition::new(HELD_POSITION).unwrap(),
+    });
     let mut during = 0;
-    let after = studio.image_until("the Preview after the transition", |image| {
-        if image.frame < start {
+    let mut mixed = false;
+    studio.image_until("Preview frames during the held transition", |image| {
+        if image.frame < held {
             return None;
         }
         match image.tap {
-            // The last transition frame completes the take and swaps the
-            // buses, so it is left out.
-            MonitorTap::Preview if image.frame + 1 < end => {
+            MonitorTap::Preview => {
                 assert_eq!(image.input, wire(3), "frame {}", image.frame);
                 assert!(
                     solid(image, GREEN),
@@ -514,15 +531,58 @@ fn native_preview_tap_shows_and_follows_preview_only_when_subscribed_without_lat
                     center(image)
                 );
                 during += 1;
+            }
+            // Program shows the mix, neither source alone.
+            MonitorTap::Program => {
+                assert!(
+                    !solid(image, RED) && !solid(image, GREEN),
+                    "Program at frame {} is {:?} halfway through the transition",
+                    image.frame,
+                    center(image)
+                );
+                mixed = true;
+            }
+        }
+        (during >= HELD_PREVIEW_FRAMES && mixed).then_some(())
+    });
+    // Completing the take swaps the buses: Preview shows the old Program.
+    let committed = studio.command(CommandPayload::CommitManualTransition);
+    let swapped = studio.image_until("the Preview after the T-bar take", |image| {
+        (image.tap == MonitorTap::Preview && image.frame > committed).then(|| image.clone())
+    });
+    assert_eq!(swapped.input, wire(1));
+    assert!(solid(&swapped, RED), "Preview is {:?}", center(&swapped));
+
+    // A timed transition: any Preview frame of it that reaches the client
+    // shows the incoming source, and Preview follows the swap after it.
+    let start = studio.command(CommandPayload::Transition {
+        kind: AutoTransitionKind::Fade,
+        duration_frames: TRANSITION_FRAMES,
+    });
+    let end = start + u64::from(TRANSITION_FRAMES);
+    let after = studio.image_until("the Preview after the transition", |image| {
+        if image.frame < start {
+            return None;
+        }
+        match image.tap {
+            // The last transition frame completes the take and swaps the
+            // buses, so it is left out.
+            MonitorTap::Preview if image.frame + 1 < end => {
+                assert_eq!(image.input, wire(1), "frame {}", image.frame);
+                assert!(
+                    solid(image, RED),
+                    "Preview at frame {} is {:?} during the transition",
+                    image.frame,
+                    center(image)
+                );
                 None
             }
             MonitorTap::Preview if image.frame > end => Some(image.clone()),
             _ => None,
         }
     });
-    assert!(during > 0, "no Preview frame arrived during the transition");
-    assert_eq!(after.input, wire(1));
-    assert!(solid(&after, RED), "Preview is {:?}", center(&after));
+    assert_eq!(after.input, wire(3));
+    assert!(solid(&after, GREEN), "Preview is {:?}", center(&after));
     drop(studio);
     stop_baseline.send(()).unwrap();
     let baseline_parts = baseline_session.join().unwrap();
