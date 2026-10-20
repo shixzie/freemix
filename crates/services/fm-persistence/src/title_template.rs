@@ -24,6 +24,11 @@
 //! unknown enum values, and any `schema_version` other than the current one
 //! are refused, and documents are capped at [`MAX_TITLE_TEMPLATE_BYTES`].
 //!
+//! A field definition (`{"id", "name", "default"}`) is exposed to the
+//! browser title editor unless it also says `"exposed": false` (schema 74,
+//! GX-006); the key is written only for a hidden field and any other value
+//! is refused, so every document has one canonical form.
+//!
 //! The template `animation` is its [`fm_titles::TitleAnimation`]: the clip
 //! timebase as a lowest-terms `"numerator/denominator"`, the edit revision,
 //! both phase lengths in frames, and the tracks in clip order (element, then

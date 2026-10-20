@@ -80,9 +80,13 @@ highest-value remaining items, ranked:
    (`GX-001`, `GX-006`).** Title timelines now start on the frame a title is
    taken to Program, an overlay, or Preview, replay deterministically, and
    persist (schema 68); `/titles` edits, takes, updates, and clears titles
-   from a browser paired as Graphics. Still missing: per-field exposure
-   flags, rendered previews in the browser, a Studio view of the timeline,
-   and live `title_state` updates between snapshots.
+   from a browser paired as Graphics. Protocol 2.90 (schema 74) adds
+   per-field browser exposure (set in Studio's TITLES tab), server-rendered
+   draft previews and an image picker with uploads in the page, live
+   `title_phases`, and a read-only In / Hold / Out strip in Studio. Still
+   missing: per-field revisions, a live `title_state` resync of newly
+   exposed values without a reconnect, and the native-daemon checks of the
+   browser flow.
 
 Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
 since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
@@ -3284,7 +3288,11 @@ grapheme shaping or bidi, no template designer persistence, titles cannot be
 stinger media, runtime-added title inputs are not rendered in simulated
 mode, tickers and scene clocks still start at frame zero rather than at the
 take (keyframe animation plays from the take frame), and template field names are not localized, so
-`GX-001` remains planned.
+`GX-001` remains planned. Studio's TITLES tab shows the selected title's
+read-only In / Hold / Out strip from its template animation, with a playhead
+that follows the lossy `title_phases` record (Protocol 2.90) and runs on at
+the project frame rate between records, and how long the title has been on
+air or on Preview from its timeline start frame.
 
 Current implementation boundary for item 1 scoreboards and tickers
 (`GX-003`): `fm-titles` provides a deterministic ticker crawl (horizontal
@@ -3815,11 +3823,25 @@ and clears; the static token's producer role does both. Commands
 unanswered after eight seconds reconnect, and every reconnect resynchronizes
 from the snapshot while keeping drafts; a stale draft shows the server's
 value and needs Keep my edits or Discard. English and Spanish strings follow
-Studio's catalog. Remaining gaps: templates have no per-field exposure flag,
-revisions are per title rather than per field, previews render no image,
-`title_state` is sent only with snapshots (field values follow
-`title_changed`, phases do not), and the page has no image asset picker.
-`GX-006` remains planned.
+Studio's catalog. Protocol 2.90 (schema 74) closes most of the remaining
+gaps. Each template field carries a browser exposure flag (stored as
+`"exposed": false` only when hidden), edited with a Web checkbox per field in
+Studio's TITLES tab (a non-undoable project edit staged beside the template
+like an animation edit). A Web session never receives a hidden field (not in
+`title_state`, `title_changed`, or `title_exposure_changed`) and may not name
+one or change exposure. The page shows the server's 320x180 render of the
+title with its unsaved edits (`title_preview_request` with draft `fields`,
+one request in flight, QOI decoded in the page); image fields get a picker
+that lists the bundle's PNG and JPEG images and uploads new ones over
+authenticated HTTPS endpoints (`/v1/assets/images`), which sniff the type,
+cap the size at 8 MiB, decode-check the image, sanitize the name, and store it
+inside the bundle under `assets/uploads/`; and lossy `title_phases` records
+drive an In / Hold / Out line with an extrapolated progress bar. Remaining
+gaps: revisions are per title rather than per field; the rendered preview
+draws hidden fields as on air; a newly exposed field reaches an open page
+only through a resynchronizing reconnect; the browser flow is checked
+against the simulated daemon (and headless Chromium) only. `GX-006` remains
+planned.
 
 
 Current implementation boundary for item 3: `fm-browser-input` provides a

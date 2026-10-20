@@ -3406,6 +3406,74 @@ already persists the bound targets.
   carries Studio's own selection, like its keys.
 - 2.88 is refused.
 
+Protocol 2.90 completes the browser title editor (GX-006): per-field browser
+exposure, draft previews, and live title phases. Schema 74 stores exposure in
+the title template.
+
+- A title template field is exposed to browsers unless its `.fmtitle`
+  definition says `"exposed": false` (written only when hidden; absent means
+  exposed). `title_state` gains a trailing required `field_exposed`: one
+  `1` or `0` per field, in `fields` order, so an empty title writes it
+  empty. Studio and raw sessions see every field and its flag.
+- Command `payload=title_field_exposure` with `input`, `field`, and
+  `exposed=0|1` shows or hides one field of the input's template for every
+  title naming it. It needs `edit_project`, is a project edit outside the
+  undo history, and refuses an input without a template or a field the
+  template lacks (`not_found`, the latter with field issue
+  `unknown_field`); setting the flag it already has is accepted. Its event `title_exposure_changed` carries
+  `inputs` (every title input naming the template, ascending) and `fields`
+  (`<field>:<0|1>`, comma separated, ascending, possibly empty). The
+  template edit is staged beside the template like an animation edit and
+  committed at the checkpoint that covers it; the staged copy carries both
+  the animation and the hidden fields.
+- A Web session (anything the gateway relays) never receives a hidden
+  field: its `title_state` records leave hidden fields out entirely (value,
+  name, and flag), its `title_changed` events carry only exposed values,
+  and its `title_exposure_changed` events list only the exposed fields of
+  the template (a page drops fields no longer listed and resynchronizes to
+  learn newly listed ones). Its `title_fields` and `title_take` naming a
+  hidden field are refused `not_found` as if the field did not exist, and
+  it may not send `title_field_exposure` (`permission_denied`).
+- `title_preview_request` gains an optional trailing `fields` (the
+  `title_fields` list form, never empty when present): draft values that
+  replace the persisted ones for this render only. Each must name a field
+  of the template, of its type (`invalid_request` otherwise), and the
+  drafted title must stay within the title bounds; nothing is saved. A
+  `title_preview_frame` has `draft=1` when the request carried a clip or
+  fields. Web sessions may now send title previews (scene previews stay
+  raw-only): at most 320x180, naming only exposed fields (`not_found`
+  otherwise), answered through the session's paced feed one record per
+  part, ahead of status records, a newer answer replacing one not yet
+  started. The image draws every field, hidden ones included, as on air;
+  the session's `title_previews` rate and `edit_project` still apply.
+- Lossy record `title_phases` with `frame` (the engine frame) and `titles`
+  (`<input>:<phase>:<phase_frame>:<phase_frames>:<shown>:<since_frame>`,
+  comma separated, ascending by input, the `title_state` phase and timeline
+  forms) is sent, latest-wins, to Web sessions with `view_status` (paced at
+  most four a second) and to raw Studio sessions (their own lossy slot)
+  when a phase, a phase length, or a timeline changes, and about once a
+  second while any title is taken or shown. A client runs `phase_frame`
+  and the shown time on at the project frame rate between records.
+- The gateway serves the bundle's images to the title editor over HTTPS
+  with the session's credential (`Authorization: Bearer`), for static
+  tokens and paired devices whose role may edit the project (`403`
+  otherwise, `401` without a valid credential): `GET /v1/assets/images`
+  lists PNG and JPEG assets (`{"images":[{"uri","bytes"}],"max_bytes",
+  "max_count","uploaded","types"}`, symbolic links not followed, at most
+  512 listed), `GET /v1/assets/image?uri=` returns one by its sniffed type
+  (`nosniff`, `default-src 'none'`), and `POST /v1/assets/images?name=`
+  stores a raw PNG or JPEG body of at most 8 MiB whose declared
+  `Content-Type` matches its magic bytes and that decodes within
+  8192x8192 and 64 megapixels, as
+  `assets/uploads/<sanitized name>-<16 hex of its SHA-256>.<png|jpg>`
+  inside the bundle (`201` new, `200` the same bytes again; `411`, `413`,
+  `415`, `422` for a missing length, an oversized, mistyped, or
+  undecodable body; `409` `limit` past 256 uploads or `exists` for a
+  different image under that name; `503` `busy` past two concurrent
+  uploads).
+- Journal records written by earlier protocol versions are refused as
+  before; earlier protocol versions are refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision
