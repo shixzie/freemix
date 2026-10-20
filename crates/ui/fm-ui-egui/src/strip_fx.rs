@@ -594,8 +594,14 @@ fn scaled_entry<T: egui::emath::Numeric>(
             .speed(speed)
             .custom_formatter(move |value, _| {
                 let number = l.decimal(value / scale, places);
-                // A ratio reads 3.0:1, a measure 3.0 dB.
-                if unit.starts_with(':') {
+                // The prefix is the setting's abbreviation, when it has one.
+                let prefix = if prefix.is_empty() {
+                    String::new()
+                } else {
+                    format!("{prefix} ")
+                };
+                // A ratio reads 3.0:1, a measure 3.0 dB, a width Q 0.71.
+                if unit.is_empty() || unit.starts_with(':') {
                     format!("{prefix}{number}{unit}")
                 } else {
                     format!("{prefix}{number} {unit}")
@@ -604,7 +610,7 @@ fn scaled_entry<T: egui::emath::Numeric>(
             .custom_parser(move |text| {
                 l.parse_decimal(
                     text.trim()
-                        .trim_start_matches(prefix.trim())
+                        .trim_start_matches(prefix)
                         .trim()
                         .trim_end_matches(unit)
                         .trim(),
@@ -748,7 +754,7 @@ fn draw_bands(ui: &mut Ui, chain: &mut StripDsp, (enabled, reason): (bool, &str)
                     &mut band.q_milli,
                     MIN_EQ_Q_MILLI..=MAX_EQ_Q_MILLI,
                     (1_000.0, 2, 10.0),
-                    ("Q ", ""),
+                    ("Q", ""),
                     (enabled, l.text(Msg::FxQHover), reason),
                 );
                 ui.end_row();
@@ -842,7 +848,7 @@ fn gr_meter(ui: &mut Ui, stage: Msg, reduction_millidb: Option<u32>) {
     painter.text(
         rect.left_center() + Vec2::new(5.0, 0.0),
         Align2::LEFT_CENTER,
-        "GR",
+        l.text(Msg::FxAbbrGainReduction),
         FontId::new(8.5, FontFamily::Proportional),
         muted_color(),
     );
@@ -905,21 +911,21 @@ fn draw_dynamics(
             ui,
             &mut chain.gate.threshold_millidb,
             MIN_GATE_THRESHOLD_MILLIDB..=0,
-            "THR ",
+            l.text(Msg::FxAbbrThreshold),
             gate(Msg::FxGateThresholdHover),
         );
         millidb_amount_entry(
             ui,
             &mut chain.gate.range_millidb,
             MAX_GATE_RANGE_MILLIDB,
-            "RNG ",
+            l.text(Msg::FxAbbrRange),
             gate(Msg::FxGateRangeHover),
         );
         time_entry(
             ui,
             &mut chain.gate.attack_us,
             MAX_TIME_US,
-            "ATK ",
+            l.text(Msg::FxAbbrAttack),
             gate(Msg::FxAttackHover),
         );
         scaled_entry(
@@ -927,14 +933,14 @@ fn draw_dynamics(
             &mut chain.gate.hold_us,
             0..=MAX_GATE_HOLD_US,
             (1_000.0, 0, 100.0),
-            ("HOLD ", "ms"),
+            (l.text(Msg::FxAbbrHold), "ms"),
             gate(Msg::FxHoldHover),
         );
         time_entry(
             ui,
             &mut chain.gate.release_us,
             MAX_GATE_RELEASE_US,
-            "REL ",
+            l.text(Msg::FxAbbrRelease),
             gate(Msg::FxReleaseHover),
         );
     });
@@ -953,7 +959,7 @@ fn draw_dynamics(
             ui,
             &mut chain.expander.threshold_millidb,
             MIN_EXPANDER_THRESHOLD_MILLIDB..=0,
-            "THR ",
+            l.text(Msg::FxAbbrThreshold),
             gate(Msg::FxExpThresholdHover),
         );
         scaled_entry(
@@ -961,28 +967,28 @@ fn draw_dynamics(
             &mut chain.expander.ratio_milli,
             MIN_EXPANDER_RATIO_MILLI..=MAX_EXPANDER_RATIO_MILLI,
             (1_000.0, 1, 50.0),
-            ("RATIO ", ":1"),
+            (l.text(Msg::FxAbbrRatio), ":1"),
             gate(Msg::FxExpRatioHover),
         );
         time_entry(
             ui,
             &mut chain.expander.attack_us,
             MAX_TIME_US,
-            "ATK ",
+            l.text(Msg::FxAbbrAttack),
             gate(Msg::FxAttackHover),
         );
         time_entry(
             ui,
             &mut chain.expander.release_us,
             MAX_GATE_RELEASE_US,
-            "REL ",
+            l.text(Msg::FxAbbrRelease),
             gate(Msg::FxReleaseHover),
         );
         millidb_amount_entry(
             ui,
             &mut chain.expander.range_millidb,
             MAX_EXPANDER_RANGE_MILLIDB,
-            "RNG ",
+            l.text(Msg::FxAbbrRange),
             gate(Msg::FxExpRangeHover),
         );
     });
@@ -1001,7 +1007,7 @@ fn draw_dynamics(
             ui,
             &mut chain.compressor.threshold_millidb,
             MIN_COMPRESSOR_THRESHOLD_MILLIDB..=0,
-            "THR ",
+            l.text(Msg::FxAbbrThreshold),
             gate(Msg::FxCompThresholdHover),
         );
         scaled_entry(
@@ -1009,35 +1015,35 @@ fn draw_dynamics(
             &mut chain.compressor.ratio_milli,
             MIN_COMPRESSOR_RATIO_MILLI..=MAX_COMPRESSOR_RATIO_MILLI,
             (1_000.0, 1, 50.0),
-            ("RATIO ", ":1"),
+            (l.text(Msg::FxAbbrRatio), ":1"),
             gate(Msg::FxRatioHover),
         );
         time_entry(
             ui,
             &mut chain.compressor.attack_us,
             MAX_TIME_US,
-            "ATK ",
+            l.text(Msg::FxAbbrAttack),
             gate(Msg::FxAttackHover),
         );
         time_entry(
             ui,
             &mut chain.compressor.release_us,
             MAX_TIME_US,
-            "REL ",
+            l.text(Msg::FxAbbrRelease),
             gate(Msg::FxReleaseHover),
         );
         millidb_amount_entry(
             ui,
             &mut chain.compressor.knee_millidb,
             MAX_COMPRESSOR_KNEE_MILLIDB,
-            "KNEE ",
+            l.text(Msg::FxAbbrKnee),
             gate(Msg::FxKneeHover),
         );
         millidb_amount_entry(
             ui,
             &mut chain.compressor.makeup_millidb,
             MAX_COMPRESSOR_MAKEUP_MILLIDB,
-            "MAKEUP ",
+            l.text(Msg::FxAbbrMakeup),
             gate(Msg::FxMakeupHover),
         );
     });
@@ -1054,14 +1060,14 @@ fn draw_dynamics(
             ui,
             &mut chain.limiter.ceiling_millidb,
             MIN_LIMITER_CEILING_MILLIDB..=0,
-            "CEIL ",
+            l.text(Msg::FxAbbrCeiling),
             gate(Msg::FxCeilingHover),
         );
         time_entry(
             ui,
             &mut chain.limiter.release_us,
             MAX_TIME_US,
-            "REL ",
+            l.text(Msg::FxAbbrRelease),
             gate(Msg::FxReleaseHover),
         );
     });
