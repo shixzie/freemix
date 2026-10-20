@@ -900,3 +900,77 @@ fn navigating_after_a_set_keeps_it_undoable_and_keeps_the_navigated_item() {
     );
     assert_eq!(active(&engine), 3);
 }
+
+/// Undoing a Set while the list plays an item the undo drops keeps playing
+/// the current file when the restored list still has an item of it: that
+/// item becomes active in place (its marks apply), the transport keeps
+/// playing, and the file is not reopened.
+#[test]
+fn an_undo_dropping_the_playing_item_keeps_playing_its_file() {
+    let mut engine = engine();
+    create(&mut engine, MediaListOptions::default());
+    let mut extended = items();
+    extended.push(item(4, "c.wav", (2, Some(5))));
+    accept(
+        &mut engine,
+        "second-cut",
+        EngineMediaListOperation::Set {
+            items: extended,
+            options: MediaListOptions::default(),
+            active: None,
+        },
+    );
+    navigate(&mut engine, "to-cut", EngineMediaListNavigation::Item(4));
+    play(&mut engine, "play");
+    step(&mut engine);
+    assert_eq!(asset(&engine), "asset://media/c.wav");
+    let outcome = execute(&mut engine, "undo", undo());
+    assert!(
+        outcome.receipt.accepted().is_some(),
+        "{:?}",
+        outcome.receipt
+    );
+    assert_eq!(
+        engine.show().media_list(input(LIST)).unwrap().items,
+        items()
+    );
+    assert_eq!(active(&engine), 3, "the restored item of the same file");
+    assert_eq!(asset(&engine), "asset://media/c.wav");
+    assert!(engine.media_source_open(input(LIST)));
+    step(&mut engine);
+    assert_eq!(
+        engine.media_status(input(LIST)).unwrap().state,
+        MediaState::Playing
+    );
+}
+
+/// Undoing a Set while the list plays an item the undo drops, with no item
+/// of its file left, restores the item the edit left (not the first item).
+#[test]
+fn an_undo_dropping_the_playing_file_restores_the_edited_item() {
+    let mut engine = engine();
+    create(&mut engine, MediaListOptions::default());
+    navigate(&mut engine, "to-b", EngineMediaListNavigation::Item(2));
+    let mut extended = items();
+    extended.push(item(4, "d.mp4", (0, Some(5))));
+    accept(
+        &mut engine,
+        "add-d",
+        EngineMediaListOperation::Set {
+            items: extended,
+            options: MediaListOptions::default(),
+            active: None,
+        },
+    );
+    navigate(&mut engine, "to-d", EngineMediaListNavigation::Item(4));
+    play(&mut engine, "play");
+    step(&mut engine);
+    let outcome = execute(&mut engine, "undo", undo());
+    assert!(
+        outcome.receipt.accepted().is_some(),
+        "{:?}",
+        outcome.receipt
+    );
+    assert_eq!(active(&engine), 2);
+    assert_eq!(asset(&engine), "asset://media/b.mov");
+}

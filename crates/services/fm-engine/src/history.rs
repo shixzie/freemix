@@ -822,7 +822,10 @@ fn reverses(state: &ShowState, apply: &EngineCommand, recorded: &EngineCommand) 
 /// The command an undo or redo step applies: `apply` itself, except that a
 /// media list `Set` restores its recorded active item only while the list
 /// still sits on the item the step leaves (`recorded`'s): after a
-/// navigation the operator's newer choice stays active when kept.
+/// navigation the operator's newer choice stays active when kept, and when
+/// the step drops it, an item of the file it plays keeps that file playing
+/// (see [`crate::EngineMediaListOperation::Set`]). Only when the step drops
+/// that file too is the recorded item restored.
 fn list_step(state: &ShowState, apply: &EngineCommand, recorded: &EngineCommand) -> EngineCommand {
     if let (
         EngineCommand::MediaList(
@@ -844,9 +847,15 @@ fn list_step(state: &ShowState, apply: &EngineCommand, recorded: &EngineCommand)
             ..
         }),
     ) = (apply, recorded)
-        && state
-            .media_list(command.input)
-            .is_some_and(|list| list.active != *left)
+        && state.media_list(command.input).is_some_and(|list| {
+            list.active != *left
+                && items.iter().any(|item| {
+                    item.id == list.active
+                        || list
+                            .active_item()
+                            .is_some_and(|playing| playing.asset_uri == item.asset_uri)
+                })
+        })
     {
         return EngineCommand::MediaList(crate::EngineMediaListCommand {
             input: command.input,

@@ -63,7 +63,9 @@ pub enum EngineMediaListOperation {
     /// items, becomes the active item (an undo restores the item a `Set`
     /// dropped); with `None` the active item stays active when it is kept
     /// (its new marks apply at once), otherwise the first item in play order
-    /// is cued. A newly active item is cued, stopped.
+    /// of the file it plays takes its place (the transport keeps playing,
+    /// at that item's marks), otherwise the first item in play order is
+    /// cued. A newly active item is cued, stopped.
     Set {
         items: Vec<MediaListItem>,
         options: MediaListOptions,
@@ -268,12 +270,26 @@ pub(crate) fn plan(
                 }
                 list.active = active;
             }
+            // The active item dropped: an item of the file it plays takes
+            // its place, so the transport keeps playing that file.
+            let mut same_file = false;
+            if active.is_none()
+                && list.item(list.active).is_none()
+                && let Some(playing) = current.active_item()
+                && let Some(id) = list.play_order().into_iter().find(|id| {
+                    list.item(*id)
+                        .is_some_and(|item| item.asset_uri == playing.asset_uri)
+                })
+            {
+                list.active = id;
+                same_file = true;
+            }
             if let Some(item) = list.item(list.active).cloned() {
                 // A newly named active item is activated (cued in place
                 // when the input already plays its file).
                 let before = current
                     .active_item()
-                    .filter(|before| before.id == list.active);
+                    .filter(|before| before.id == list.active || same_file);
                 let retrim = before.is_none_or(|before| {
                     before.mark_in != item.mark_in || before.mark_out != item.mark_out
                 });
