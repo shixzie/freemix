@@ -226,7 +226,7 @@ fn animation_presets_travel_between_projects_and_apply_to_scene_layers() {
         ],
         "animation preset 9 does not exist",
     );
-    for (schema, expected) in [("47", "schema"), ("59", "schema"), ("61", "schema")] {
+    for (schema, expected) in [("47", "schema"), ("60", "schema"), ("62", "schema")] {
         let old = root.path(&format!("schema-{schema}.fmpreset"));
         fs::write(
             &old,
