@@ -1855,6 +1855,14 @@ impl<A: AuthorizationHook> ControlService<A> {
         media_list::media_list_states(&self.engine)
     }
 
+    /// The `audio_strip_dsp_state` records that complete a snapshot: one
+    /// per input whose strip DSP chain is not the default, ascending
+    /// (Protocol 2.70).
+    #[must_use]
+    pub fn strip_dsp_states(&self) -> Vec<fm_protocol::AudioStripDspStateMessage> {
+        audio_mixer::strip_dsp_states(&self.engine)
+    }
+
     /// Returns the only `(list, frame)` a `cue_advance` is accepted for, or
     /// `None` while no cue waits (see [`Engine::cue_advance_frame`]).
     #[must_use]

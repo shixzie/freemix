@@ -202,6 +202,9 @@ pub enum Intake {
     /// announced (IN-006).
     MediaListStateApplied,
 
+    /// An `audio_strip_dsp_state` completed one input strip's DSP chain the
+    /// snapshot announced (Protocol 2.70).
+    AudioStripDspStateApplied,
     /// A `display_inventory` reply updated the replicated display inventory
     /// (Protocol 2.42).
     DisplayInventoryApplied,
@@ -666,6 +669,10 @@ impl Client {
             WireMessage::MediaListState(state) => {
                 self.apply_media_list_state(state)?;
                 Ok(Intake::MediaListStateApplied)
+            }
+            WireMessage::AudioStripDspState(state) => {
+                self.apply_audio_strip_dsp_state(state)?;
+                Ok(Intake::AudioStripDspStateApplied)
             }
             WireMessage::DisplayInventory(message) => {
                 self.model.apply_display_inventory(message.inventory);
@@ -1534,6 +1541,66 @@ impl Client {
         Ok(())
     }
 
+    /// Completes one input strip's DSP chain the snapshot announced with
+    /// its `audio_strip_dsp_state` (Protocol 2.70).
+    ///
+    /// Strip DSP states arrive only while synchronizing from a snapshot, in
+    /// ascending input order after every other follow-on record and before
+    /// any event.
+    ///
+    /// # Errors
+    ///
+    /// A strip DSP state in any other state, at another revision, beyond the
+    /// announced count, out of order, or before the earlier follow-on
+    /// records forces a fresh-snapshot reconnect
+    /// ([`ClientError::ResyncRequired`]).
+    pub fn apply_audio_strip_dsp_state(
+        &mut self,
+        state: fm_protocol::AudioStripDspStateMessage,
+    ) -> Result<(), ClientError> {
+        let ConnectionState::Synchronizing {
+            mode: SyncMode::Snapshot,
+            target_revision,
+        } = self.state
+        else {
+            let expected = self
+                .model
+                .reconnect_cursor()
+                .map_or(0, |cursor| cursor.revision.get());
+            return self.require_resync(expected, state.revision);
+        };
+        let received_revision = state.revision;
+        let earlier_complete = self.model.state().is_none_or(|state| {
+            state.titles_complete()
+                && state.playlist_complete()
+                && state.grading_complete()
+                && state.title_animations_complete()
+                && state.title_layouts_complete()
+                && state.scene_animations_complete()
+                && state.scene_layouts_complete()
+                && state.animation_presets_complete()
+                && state.media_complete()
+                && state.cue_lists_complete()
+                && state.scripts_complete()
+                && state.shortcuts_complete()
+                && state.stills_complete()
+                && state.media_lists_complete()
+        });
+        if self
+            .model
+            .reconnect_cursor()
+            .is_none_or(|cursor| cursor.revision.get() != target_revision)
+            || !earlier_complete
+            || self.model.apply_audio_strip_dsp_state(state).is_err()
+        {
+            return self.require_resync(target_revision, received_revision);
+        }
+        if self.snapshot_complete() {
+            self.finish_sync();
+        }
+        Ok(())
+    }
+
     fn titles_complete(&self) -> bool {
         self.model
             .state()
@@ -1559,6 +1626,7 @@ impl Client {
                 && state.shortcuts_complete()
                 && state.stills_complete()
                 && state.media_lists_complete()
+                && state.audio_strip_dsps_complete()
         })
     }
 

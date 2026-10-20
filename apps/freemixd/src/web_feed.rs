@@ -103,6 +103,7 @@ pub(crate) fn web_meters(meters: &AudioMetersMessage) -> AudioMetersMessage {
         master: meters.master.clone(),
         inputs: Vec::new(),
         monitor: None,
+        dynamics: Vec::new(),
     }
 }
 

@@ -2010,6 +2010,12 @@ impl Runtime<'_> {
                     .into_iter()
                     .map(WireMessage::MediaListState),
             );
+            peer.initial_sync.extend(
+                control
+                    .strip_dsp_states()
+                    .into_iter()
+                    .map(WireMessage::AudioStripDspState),
+            );
         }
     }
 
@@ -2618,6 +2624,7 @@ mod tests {
             }],
             inputs: Vec::new(),
             monitor: None,
+            dynamics: Vec::new(),
         }
     }
 

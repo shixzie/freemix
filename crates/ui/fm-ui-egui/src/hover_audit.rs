@@ -1721,6 +1721,7 @@ fn meters() -> AudioMetersMessage {
             output: fm_protocol::AudioMonitorOutputState::Failed,
             channels: vec![channel(300_000); 2],
         }),
+        dynamics: Vec::new(),
     }
 }
 

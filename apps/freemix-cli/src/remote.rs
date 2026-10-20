@@ -1546,7 +1546,8 @@ impl Remote {
                 | WireMessage::MediaState(_)
                 | WireMessage::CueListState(_)
                 | WireMessage::ScriptState(_)
-                | WireMessage::MediaListState(_)) => {
+                | WireMessage::MediaListState(_)
+                | WireMessage::AudioStripDspState(_)) => {
                     client.intake(message)?;
                 }
                 WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),

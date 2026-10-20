@@ -4554,6 +4554,14 @@ fn engine_audio_mixer_edit(edit: AudioMixerArgs) -> AppResult<fm_engine::EngineA
                 muted,
             },
         },
+        AudioMixerArgs::StripDsp { input, chain } => fm_engine::EngineAudioMixerEdit::SetStripDsp {
+            target: match input {
+                Some(input) => fm_types::strip_dsp::StripDspTarget::Input(input_id(input)?),
+                None => fm_types::strip_dsp::StripDspTarget::Master,
+            },
+            chain: Box::new(chain),
+            gesture: None,
+        },
     })
 }
 
@@ -4615,6 +4623,22 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
                 muted: state.muted,
             }
         }
+        fm_engine::EngineAudioMixerEdit::SetStripDsp { target, chain, .. } => {
+            fm_protocol::AudioMixerOperation::SetStripDsp {
+                target: match target {
+                    fm_types::strip_dsp::StripDspTarget::Master => {
+                        fm_protocol::AudioDspTarget::Master
+                    }
+                    fm_types::strip_dsp::StripDspTarget::Input(input) => {
+                        fm_protocol::AudioDspTarget::Input(fm_protocol::WireInputId::from_domain(
+                            input,
+                        ))
+                    }
+                },
+                chain,
+                gesture: None,
+            }
+        }
     })
 }
 
@@ -4634,7 +4658,9 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppRes
         )?;
         show.set_input_audio_label(strip.input, strip.label.clone())?;
         show.set_input_audio_group(strip.input, strip.group)?;
+        show.set_input_audio_dsp(strip.input, strip.dsp)?;
     }
+    show.set_master_audio_dsp(*project.master_audio_dsp());
     for (group, value) in project.audio_groups().iter() {
         show.set_audio_group(
             group,
@@ -4718,7 +4744,13 @@ fn sync_audio_mixer(project: &mut Project, show: &ShowState) -> AppResult<()> {
         if !project.set_input_audio_group(input, show.input_audio_group(input)) {
             return Err(AppFailure(format!("project is missing input {input}")).into());
         }
+        project
+            .set_input_audio_dsp(input, show.input_audio_dsp(input))
+            .map_err(|error| AppFailure(format!("input {input} strip DSP: {error}")))?;
     }
+    project
+        .set_master_audio_dsp(*show.master_audio_dsp())
+        .map_err(|error| AppFailure(format!("Master DSP: {error}")))?;
     // Parents are cleared first so an old parent never closes a transient
     // cycle with a new one.
     for nested in [false, true] {
@@ -5972,6 +6004,7 @@ Usage:
   freemix-cli audio-solo-mode <show.freemix> <sip|pfl|afl> [--key <key>] [--expect <revision>]
   freemix-cli audio-monitor-device <show.freemix> <alsa-device|none> [--key <key>] [--expect <revision>]
   freemix-cli audio-monitor-level <show.freemix> <gain-millidb> <muted:on|off> [--key <key>] [--expect <revision>]
+  freemix-cli audio-strip-dsp <show.freemix> <input|master> <flat|voice|podcast|music|master|chain-code> [--key <key>] [--expect <revision>]
   freemix-cli rename <show.freemix> <input> <name> [--key <key>] [--expect <revision>]
   freemix-cli input-reorder <show.freemix> <input> [<input>...] [--key <key>] [--expect <revision>]
   freemix-cli preview <show.freemix> <input> [--key <key>] [--expect <revision>]
@@ -6027,7 +6060,7 @@ Usage:
   freemix-cli remote-status <127.0.0.1:port>
   freemix-cli remote-diagnostics <127.0.0.1:port>
   freemix-cli remote-audio-strip <127.0.0.1:port> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp>] [--key <key>] [--expect <revision>]
-  freemix-cli remote-audio-label|remote-audio-group|remote-audio-group-name|remote-audio-group-level|remote-audio-group-solo|remote-audio-group-parent|remote-audio-solo-mode|remote-audio-monitor-device|remote-audio-monitor-level <127.0.0.1:port> <arguments as above> [--key <key>] [--expect <revision>]
+  freemix-cli remote-audio-label|remote-audio-group|remote-audio-group-name|remote-audio-group-level|remote-audio-group-solo|remote-audio-group-parent|remote-audio-solo-mode|remote-audio-monitor-device|remote-audio-monitor-level|remote-audio-strip-dsp <127.0.0.1:port> <arguments as above> [--key <key>] [--expect <revision>]
   freemix-cli remote-rename <127.0.0.1:port> <input> <name> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-add <127.0.0.1:port> solid <input> <name> <red:0..=255> <green:0..=255> <blue:0..=255> <alpha:0..=255> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-add <127.0.0.1:port> bars <input> <name> [--key <key>] [--expect <revision>]

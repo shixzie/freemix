@@ -164,6 +164,13 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         "animation_preset_state" => {
             WireMessage::AnimationPresetState(decode_animation_preset_state(&mut fields)?)
         }
+        "audio_strip_dsp_state" => {
+            WireMessage::AudioStripDspState(crate::AudioStripDspStateMessage {
+                revision: fields.canonical_required("revision")?,
+                input: fields.canonical_input("input")?,
+                chain: super::audio_mixer::decode_chain("chain", &fields.required("chain")?)?,
+            })
+        }
         "display_inventory_request" => {
             let request_id = fields.required("request_id")?;
             validate_request_id(&request_id)?;
@@ -614,7 +621,8 @@ fn decode_command_payload(
         | "audio_group_parent"
         | "audio_solo_mode"
         | "audio_monitor_device"
-        | "audio_monitor_level") => CommandPayload::AudioMixer(
+        | "audio_monitor_level"
+        | "audio_strip_dsp") => CommandPayload::AudioMixer(
             super::audio_mixer::decode_operation(mixer, fields)?
                 .expect("every listed payload is a mixer operation"),
         ),
@@ -3583,6 +3591,7 @@ fn decode_audio_meters(fields: &mut Fields) -> Result<AudioMetersMessage, CodecE
         master,
         inputs,
         monitor,
+        dynamics: super::audio_mixer::decode_dynamics(&fields.required("dynamics")?)?,
     })
 }
 

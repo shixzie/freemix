@@ -116,6 +116,12 @@ pub enum AudioMixerArgs {
     /// `audio-monitor-level <gain millidB> <muted on|off>`: the headphone
     /// feed's own level.
     MonitorLevel { gain_millidb: i32, muted: bool },
+    /// `audio-strip-dsp <input|master> <preset|chain code>`: a strip's or
+    /// the Master's DSP chain (AU-005); `input` is `None` for the Master.
+    StripDsp {
+        input: Option<u128>,
+        chain: fm_types::strip_dsp::StripDsp,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2026,6 +2032,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "audio-solo-mode"
         | "audio-monitor-device"
         | "audio-monitor-level"
+        | "audio-strip-dsp"
         | "remote-audio-label"
         | "remote-audio-group"
         | "remote-audio-group-name"
@@ -2034,7 +2041,8 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-audio-group-parent"
         | "remote-audio-solo-mode"
         | "remote-audio-monitor-device"
-        | "remote-audio-monitor-level") => parse_audio_mixer(mixer, arguments),
+        | "remote-audio-monitor-level"
+        | "remote-audio-strip-dsp") => parse_audio_mixer(mixer, arguments),
         output @ ("ftb-output" | "remote-ftb-output") => {
             parse_fade_to_black_output(output, arguments)
         }
@@ -2987,6 +2995,29 @@ fn audio_group_number(value: &str) -> Result<u8, ArgsError> {
     }
 }
 
+/// `<input|master> <preset|chain code>` of `audio-strip-dsp` (AU-005).
+fn parse_strip_dsp(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<AudioMixerArgs, ArgsError> {
+    let target = required(arguments, "input or master")?;
+    let input = if target == "master" {
+        None
+    } else {
+        Some(number(&target, "input")?)
+    };
+    let chain = required(arguments, "DSP preset or chain code")?;
+    Ok(AudioMixerArgs::StripDsp {
+        input,
+        chain: fm_types::strip_dsp::StripDspPreset::from_token(&chain)
+            .map(fm_types::strip_dsp::StripDspPreset::chain)
+            .or_else(|| fm_types::strip_dsp::StripDsp::from_code(&chain).ok())
+            .ok_or(ArgsError::InvalidChoice {
+                field: "DSP preset or chain code",
+                value: chain,
+            })?,
+    })
+}
+
 fn parse_audio_mixer(
     command: &str,
     arguments: impl Iterator<Item = String>,
@@ -3059,6 +3090,7 @@ fn parse_audio_mixer(
             gain_millidb: number(&required(&mut arguments, "gain millidB")?, "gain millidB")?,
             muted: boolean_choice(&required(&mut arguments, "muted")?, "muted")?,
         },
+        "audio-strip-dsp" => parse_strip_dsp(&mut arguments)?,
         _ => AudioMixerArgs::GroupLevel {
             group: audio_group_number(&required(&mut arguments, "group")?)?,
             gain_millidb: number(&required(&mut arguments, "gain millidB")?, "gain millidB")?,
@@ -8424,8 +8456,42 @@ mod tests {
                 expected_revision: None,
             })
         );
+        assert_eq!(
+            parse(strings(&["audio-strip-dsp", "show.freemix", "3", "voice"])),
+            Ok(Command::AudioMixer {
+                path: PathBuf::from("show.freemix"),
+                edit: AudioMixerArgs::StripDsp {
+                    input: Some(3),
+                    chain: fm_types::strip_dsp::StripDspPreset::Voice.chain(),
+                },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        let code = fm_types::strip_dsp::StripDspPreset::Master.chain().code();
+        assert_eq!(
+            parse(strings(&[
+                "remote-audio-strip-dsp",
+                "127.0.0.1:9123",
+                "master",
+                &code,
+            ])),
+            Ok(Command::RemoteAudioMixer {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                edit: AudioMixerArgs::StripDsp {
+                    input: None,
+                    chain: fm_types::strip_dsp::StripDspPreset::Master.chain(),
+                },
+                key: None,
+                expected_revision: None,
+            })
+        );
         for bad in [
-            &["audio-monitor-device", "show.freemix"][..],
+            &["audio-strip-dsp", "show.freemix", "3"][..],
+            &["audio-strip-dsp", "show.freemix", "Master", "voice"],
+            &["audio-strip-dsp", "show.freemix", "3", "loud"],
+            &["audio-strip-dsp", "show.freemix", "3", &code[1..]],
+            &["audio-monitor-device", "show.freemix"],
             &["audio-monitor-level", "show.freemix", "-6000"],
             &["audio-monitor-level", "show.freemix", "loud", "on"],
             &["audio-monitor-level", "show.freemix", "0", "yes"],

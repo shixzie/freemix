@@ -120,5 +120,6 @@ pub fn inject(state: &mut StudioUiState) {
         ],
         inputs,
         monitor: None,
+        dynamics: Vec::new(),
     });
 }

@@ -138,6 +138,15 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         WireMessage::AnimationPresetState(message) => {
             encode_animation_preset_state(&mut record, message)?;
         }
+        WireMessage::AudioStripDspState(message) => {
+            record.kind("audio_strip_dsp_state");
+            record.field("revision", message.revision)?;
+            record.field("input", message.input)?;
+            record.field_string(
+                "chain",
+                super::audio_mixer::encode_chain("chain", &message.chain)?,
+            )?;
+        }
         WireMessage::DisplayInventoryRequest(message) => {
             record.kind("display_inventory_request");
             validate_request_id(&message.request_id)?;
@@ -3182,7 +3191,11 @@ fn encode_audio_meters(
     record.field("end_sample", message.end_sample)?;
     record.field_string("master", master)?;
     record.field_string("inputs", inputs.join(";"))?;
-    record.field_string("monitor", monitor)
+    record.field_string("monitor", monitor)?;
+    record.field_string(
+        "dynamics",
+        super::audio_mixer::encode_dynamics(&message.dynamics)?,
+    )
 }
 
 fn encode_meter_channels(

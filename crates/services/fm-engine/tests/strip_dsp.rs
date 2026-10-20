@@ -56,7 +56,7 @@ fn accept(engine: &mut Engine, key: &str, command: EngineCommand) -> EngineComma
 fn set(target: StripDspTarget, chain: StripDsp, gesture: Option<GradeGesture>) -> EngineCommand {
     EngineCommand::AudioMixer(EngineAudioMixerEdit::SetStripDsp {
         target,
-        chain,
+        chain: Box::new(chain),
         gesture,
     })
 }
@@ -88,7 +88,7 @@ fn a_chain_is_an_undoable_project_edit_realized_on_its_frame() {
     assert!(outcome.events.iter().any(|event| matches!(
         &event.payload,
         EngineEvent::AudioMixerChanged(EngineAudioMixerEdit::SetStripDsp { chain, .. })
-            if *chain == voice
+            if **chain == voice
     )));
     assert_eq!(engine.show().input_audio_dsp(input(1)), voice);
     assert_eq!(engine.show().input_audio_dsp(input(2)), StripDsp::DEFAULT);

@@ -155,7 +155,8 @@ pub enum EngineAudioMixerEdit {
     /// edit; `gesture` folds a knob drag into one undo step.
     SetStripDsp {
         target: StripDspTarget,
-        chain: StripDsp,
+        /// Boxed: a chain is larger than every other command's payload.
+        chain: Box<StripDsp>,
         gesture: Option<crate::GradeGesture>,
     },
 }
@@ -293,7 +294,7 @@ impl EngineAudioMixerUpdate {
             EngineAudioMixerEdit::SetMonitorLevel { state } => Some(Self::MonitorLevel(*state)),
             EngineAudioMixerEdit::SetStripDsp { target, chain, .. } => Some(Self::StripDsp {
                 target: *target,
-                chain: *chain,
+                chain: **chain,
             }),
             EngineAudioMixerEdit::SetLabel { .. } | EngineAudioMixerEdit::RenameGroup { .. } => {
                 None
@@ -442,9 +443,9 @@ pub(crate) fn apply(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Resul
                 )
             })?;
             match *target {
-                StripDspTarget::Master => state.set_master_audio_dsp(*chain),
+                StripDspTarget::Master => state.set_master_audio_dsp(**chain),
                 StripDspTarget::Input(input) => state
-                    .set_input_audio_dsp(input, *chain)
+                    .set_input_audio_dsp(input, **chain)
                     .map_err(|_| unknown_input(input))?,
             }
             Ok(())
@@ -503,7 +504,7 @@ pub(crate) fn inverse(
         EngineAudioMixerEdit::SetStripDsp { target, .. } => match *target {
             StripDspTarget::Master => Some(EngineAudioMixerEdit::SetStripDsp {
                 target: *target,
-                chain: *state.master_audio_dsp(),
+                chain: Box::new(*state.master_audio_dsp()),
                 gesture: None,
             }),
             StripDspTarget::Input(input) => {
@@ -512,7 +513,7 @@ pub(crate) fn inverse(
                     .contains(&input)
                     .then(|| EngineAudioMixerEdit::SetStripDsp {
                         target: *target,
-                        chain: state.input_audio_dsp(input),
+                        chain: Box::new(state.input_audio_dsp(input)),
                         gesture: None,
                     })
             }

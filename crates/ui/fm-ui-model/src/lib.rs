@@ -1214,6 +1214,12 @@ pub struct ProjectState {
     input_categories: Vec<InputCategoryStatus>,
     /// Strip labels and groups (Protocol 2.40).
     audio_mixer: fm_protocol::AudioMixerStatus,
+    /// Every input strip's non-default DSP chain (Protocol 2.70), kept
+    /// current by `audio_mixer_changed`.
+    audio_strip_dsp: BTreeMap<InputId, fm_types::strip_dsp::StripDsp>,
+    /// `audio_strip_dsp_state` records the snapshot announced that have not
+    /// arrived.
+    audio_strip_dsp_states_pending: u16,
     /// The outputs Fade to Black leaves live, ascending (Protocol 2.40).
     fade_to_black_excluded_outputs: Vec<OutputId>,
     /// The outputs with their own Fade-to-Black duration (Protocol 2.48).
@@ -1325,6 +1331,41 @@ impl ProjectState {
     #[must_use]
     pub const fn audio_mixer(&self) -> &fm_protocol::AudioMixerStatus {
         &self.audio_mixer
+    }
+
+    /// Returns input `input`'s strip DSP chain (Protocol 2.70); the default
+    /// chain for an input without one.
+    #[must_use]
+    pub fn input_audio_dsp(&self, input: InputId) -> fm_types::strip_dsp::StripDsp {
+        self.audio_strip_dsp
+            .get(&input)
+            .copied()
+            .unwrap_or(fm_types::strip_dsp::StripDsp::DEFAULT)
+    }
+
+    /// Returns the Master bus DSP chain (Protocol 2.70).
+    #[must_use]
+    pub const fn master_audio_dsp(&self) -> &fm_types::strip_dsp::StripDsp {
+        &self.audio_mixer.master_dsp
+    }
+
+    /// Returns the DSP chain `target` names (Protocol 2.70).
+    #[must_use]
+    pub fn audio_dsp(
+        &self,
+        target: fm_types::strip_dsp::StripDspTarget,
+    ) -> fm_types::strip_dsp::StripDsp {
+        match target {
+            fm_types::strip_dsp::StripDspTarget::Master => self.audio_mixer.master_dsp,
+            fm_types::strip_dsp::StripDspTarget::Input(input) => self.input_audio_dsp(input),
+        }
+    }
+
+    /// Returns whether every `audio_strip_dsp_state` the snapshot announced
+    /// arrived.
+    #[must_use]
+    pub const fn audio_strip_dsps_complete(&self) -> bool {
+        self.audio_strip_dsp_states_pending == 0
     }
 
     /// Returns the outputs Fade to Black leaves live, ascending.
@@ -2217,6 +2258,10 @@ pub enum ModelError {
     MediaListStateMismatch,
     /// A media list change names an unknown list input or is incoherent.
     InvalidMediaListChange(InputId),
+    /// An `audio_strip_dsp_state` arrived that the snapshot did not
+    /// announce, at another revision, out of order, for an unknown input, or
+    /// with a default or invalid chain (Protocol 2.70).
+    AudioStripDspStateMismatch,
 }
 
 impl fmt::Display for ModelError {
@@ -2379,6 +2424,8 @@ impl fmt::Display for ModelError {
             Self::InvalidMediaListChange(input) => {
                 write!(formatter, "media list change for input {input} does not apply")
             }
+            Self::AudioStripDspStateMismatch => formatter
+                .write_str("audio strip DSP state does not match the snapshot it follows"),
         }
     }
 }
@@ -3059,6 +3106,8 @@ impl ClientModel {
             media_list_states_pending: snapshot.media_list_states,
             input_lifecycle,
             input_categories: snapshot.input_categories,
+            audio_strip_dsp: BTreeMap::new(),
+            audio_strip_dsp_states_pending: snapshot.audio_mixer.strip_dsp_states,
             audio_mixer: snapshot.audio_mixer,
             fade_to_black_excluded_outputs: snapshot.fade_to_black_excluded_outputs,
             fade_to_black_output_durations: snapshot.fade_to_black_output_durations,
@@ -3562,6 +3611,43 @@ impl ClientModel {
         }
         state.media_lists.insert(input, message.status);
         state.media_list_states_pending -= 1;
+        Ok(())
+    }
+
+    /// Adds one of the `audio_strip_dsp_state` records the installed
+    /// snapshot announced (Protocol 2.70), in ascending input order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::AudioStripDspStateMismatch`] when the record is at
+    /// another revision, unannounced, out of order, for an unknown input, or
+    /// carries a default or invalid chain.
+    pub fn apply_audio_strip_dsp_state(
+        &mut self,
+        message: fm_protocol::AudioStripDspStateMessage,
+    ) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        let input = message.input.to_domain();
+        if Revision::new(message.revision) != revision
+            || state.audio_strip_dsp_states_pending == 0
+            || !state.inputs.contains(&input)
+            || state
+                .audio_strip_dsp
+                .last_key_value()
+                .is_some_and(|(last, _)| *last >= input)
+            || message.chain.is_default()
+            || message.chain.validate().is_err()
+        {
+            return Err(ModelError::AudioStripDspStateMismatch);
+        }
+        state.audio_strip_dsp.insert(input, message.chain);
+        state.audio_strip_dsp_states_pending -= 1;
         Ok(())
     }
 
@@ -4804,6 +4890,7 @@ fn apply_input_removed(state: &mut ProjectState, input: InputId) {
     state
         .input_audio_strips
         .retain(|strip| strip.input != input);
+    state.audio_strip_dsp.remove(&input);
     state.edit_locks.set(EditLockTarget::Input(input), false);
     state.titles.retain(|title| title.input != input);
     state.scenes.retain(|scene| scene.input != input);
@@ -5048,6 +5135,18 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                     .find(|strip| strip.input == input.to_domain())
             {
                 strip.group = *group;
+            }
+            if let fm_protocol::AudioMixerOperation::SetStripDsp {
+                target: fm_protocol::AudioDspTarget::Input(input),
+                chain,
+                ..
+            } = &operation
+            {
+                if chain.is_default() {
+                    state.audio_strip_dsp.remove(&input.to_domain());
+                } else {
+                    state.audio_strip_dsp.insert(input.to_domain(), **chain);
+                }
             }
             state.audio_mixer.apply(&operation);
         }
@@ -5313,6 +5412,13 @@ fn validate_audio_mixer_change(
             .is_none_or(fm_protocol::audio_monitor_device_is_valid),
         fm_protocol::AudioMixerOperation::SetMonitorLevel { gain_millidb, .. } => {
             (-96_000..=24_000).contains(gain_millidb)
+        }
+        fm_protocol::AudioMixerOperation::SetStripDsp { target, chain, .. } => {
+            chain.validate().is_ok()
+                && match target {
+                    fm_protocol::AudioDspTarget::Master => true,
+                    fm_protocol::AudioDspTarget::Input(input) => known(input),
+                }
         }
     };
     if valid {

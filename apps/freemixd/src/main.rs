@@ -7040,6 +7040,9 @@ impl NativeDaemon {
                     fm_engine::EngineAudioMixerUpdate::MonitorLevel(state) => {
                         monitor_output.set_level(state.gain_millidb, state.muted);
                     }
+                    fm_engine::EngineAudioMixerUpdate::StripDsp { target, chain } => project_plan
+                        .set_audio_dsp(target, chain)
+                        .map_err(NativeRealizationError::Audio)?,
                 }
             }
             if project_plan.output_ids().is_empty() {
@@ -8180,7 +8183,31 @@ fn audio_meters_message(
                 .map(protocol_audio_meter)
                 .collect(),
         }),
+        dynamics: meters
+            .dynamics
+            .iter()
+            .map(|&(input, reading)| fm_protocol::AudioDynamicsMeter {
+                target: input.map_or(fm_protocol::AudioDspTarget::Master, |input| {
+                    fm_protocol::AudioDspTarget::Input(WireInputId::from_domain(input))
+                }),
+                gate_millidb: reading.gate_db.map(reduction_millidb),
+                compressor_millidb: reading.compressor_db.map(reduction_millidb),
+                limiter_millidb: reading.limiter_db.map(reduction_millidb),
+            })
+            .collect(),
     }
+}
+
+/// A DSP stage's gain reduction in positive millidecibels, bounded for the
+/// wire (AU-005).
+#[cfg(feature = "native-media")]
+// Reductions are clamped to [0, MAX_DYNAMICS_REDUCTION_MILLIDB] before the
+// cast; truncation is not reachable.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn reduction_millidb(db: f32) -> u32 {
+    (f64::from(db.max(0.0)) * 1_000.0)
+        .round()
+        .min(f64::from(fm_protocol::MAX_DYNAMICS_REDUCTION_MILLIDB)) as u32
 }
 
 #[cfg(feature = "native-media")]
@@ -12209,7 +12236,9 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &fm_model::Project)
         )?;
         show.set_input_audio_label(strip.input, strip.label.clone())?;
         show.set_input_audio_group(strip.input, strip.group)?;
+        show.set_input_audio_dsp(strip.input, strip.dsp)?;
     }
+    show.set_master_audio_dsp(*project.master_audio_dsp());
     for (group, value) in project.audio_groups().iter() {
         show.set_audio_group(
             group,
@@ -12306,7 +12335,17 @@ fn sync_project_audio_mixer(project: &mut fm_model::Project, show: &ShowState) -
                 AppFailure(format!("project is missing audio strip for input {input}")).into(),
             );
         }
+        project
+            .set_input_audio_dsp(input, show.input_audio_dsp(input))
+            .map_err(|error| {
+                AppFailure(format!(
+                    "project cannot take input {input}'s strip DSP: {error}"
+                ))
+            })?;
     }
+    project
+        .set_master_audio_dsp(*show.master_audio_dsp())
+        .map_err(|error| AppFailure(format!("project cannot take the Master DSP: {error}")))?;
     // Parents are cleared first so an old parent never closes a transient
     // cycle with a new one.
     for nested in [false, true] {
@@ -12535,6 +12574,13 @@ fn handle_client(
                     &mut writer,
                     &mut session,
                     &WireMessage::MediaListState(state),
+                )?;
+            }
+            for state in control.borrow().strip_dsp_states() {
+                write_session_message(
+                    &mut writer,
+                    &mut session,
+                    &WireMessage::AudioStripDspState(state),
                 )?;
             }
         }

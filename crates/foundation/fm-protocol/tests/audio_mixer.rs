@@ -13,6 +13,7 @@ use fm_protocol::{
     ProtocolVersion, RecordingStatus, SnapshotMessage, WireInputId, WireMessage, WireOutputId,
     WireRecorderSlot, decode_line, encode_line,
 };
+use fm_types::strip_dsp::{STRIP_DSP_CODE_LEN, StripDsp, StripDspPreset};
 
 const PREFIX: &str = "command\tprotocol=2.74\tid=a\tidempotency_key=k";
 
@@ -528,9 +529,10 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
         "{line}"
     );
     assert!(
-        line.ends_with(
-            "\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CMics%252C%2520wireless%7E-12000%7E1%7E1%7E3%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=pfl\taudio_monitor=%7E0%7E0\tinput_audio_labels=1%7E8%3AHost%7Emic%2C2%7E5%3AGuest\tfade_to_black_excluded_outputs=8\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
-        ),
+        line.ends_with(&format!(
+            "\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CMics%252C%2520wireless%7E-12000%7E1%7E1%7E3%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=pfl\taudio_monitor=%7E0%7E0\tinput_audio_labels=1%7E8%3AHost%7Emic%2C2%7E5%3AGuest\taudio_master_dsp={}\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=8\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n",
+            fm_types::strip_dsp::StripDsp::DEFAULT.code()
+        )),
         "{line}"
     );
     // Output ids span the full 128-bit range.
@@ -546,7 +548,7 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
     );
     let line = round_trip(&snapshot(AudioMixerStatus::default(), Vec::new()));
     assert!(
-        line.ends_with("\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"),
+        line.ends_with(&format!("\tinput_audio_labels=\taudio_master_dsp={}\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n", fm_types::strip_dsp::StripDsp::DEFAULT.code())),
         "{line}"
     );
 
@@ -702,6 +704,10 @@ fn the_largest_snapshot_mixer_fits_one_line() {
     // A worst-case headphone device escapes every byte (2.53).
     snapshot.audio_mixer.monitor.device =
         Some("~".repeat(fm_protocol::MAX_AUDIO_MONITOR_DEVICE_BYTES));
+    // A Master chain and the most per-strip chain records (2.70): the strip
+    // chains follow as their own records, so only a count rides the line.
+    snapshot.audio_mixer.master_dsp = StripDspPreset::Master.chain();
+    snapshot.audio_mixer.strip_dsp_states = fm_protocol::MAX_AUDIO_STRIP_DSP_STATES;
     let line = round_trip(&message);
     assert!(line.len() <= fm_protocol::MAX_LINE_BYTES, "{}", line.len());
 }
@@ -838,4 +844,158 @@ fn snapshot_carries_the_monitor_output() {
     // A leading `-` would reach the daemon's FFmpeg child as an option.
     assert!(!fm_protocol::audio_monitor_device_is_valid("-report"));
     assert!(fm_protocol::audio_monitor_device_is_valid("hw:0-1"));
+}
+
+fn gesture(token: u64, continues: bool) -> fm_protocol::GradeGesture {
+    fm_protocol::GradeGesture {
+        token: core::num::NonZeroU64::new(token).unwrap(),
+        continues,
+    }
+}
+
+#[test]
+fn strip_dsp_commands_have_an_exact_wire_form() {
+    let voice = StripDspPreset::Voice.chain();
+    let code = voice.code();
+    assert_eq!(code.len(), STRIP_DSP_CODE_LEN);
+    let line = round_trip(&command(CommandPayload::AudioMixer(
+        AudioMixerOperation::SetStripDsp {
+            target: fm_protocol::AudioDspTarget::Input(input(3)),
+            chain: Box::new(voice),
+            gesture: None,
+        },
+    )));
+    assert_eq!(
+        line,
+        format!("{PREFIX}\tpayload=audio_strip_dsp\ttarget=3\tchain={code}\n")
+    );
+    let master = StripDspPreset::Master.chain();
+    let line = round_trip(&command(CommandPayload::AudioMixer(
+        AudioMixerOperation::SetStripDsp {
+            target: fm_protocol::AudioDspTarget::Master,
+            chain: Box::new(master),
+            gesture: Some(gesture(41, true)),
+        },
+    )));
+    assert_eq!(
+        line,
+        format!(
+            "{PREFIX}\tpayload=audio_strip_dsp\ttarget=master\tchain={}\tgesture=41\tcontinues=true\n",
+            master.code()
+        )
+    );
+    // The accepted edit is announced with its chain.
+    round_trip(&event(EventPayload::AudioMixerChanged(
+        AudioMixerOperation::SetStripDsp {
+            target: fm_protocol::AudioDspTarget::Input(input(3)),
+            chain: Box::new(voice),
+            gesture: None,
+        },
+    )));
+}
+
+#[test]
+fn strip_dsp_commands_are_strict() {
+    let code = StripDspPreset::Voice.chain().code();
+    let mut uppercase = code.clone();
+    uppercase.replace_range(0..1, "Z");
+    for bad in [
+        "\tpayload=audio_strip_dsp\ttarget=3".to_owned(),
+        format!("\tpayload=audio_strip_dsp\tchain={code}"),
+        format!("\tpayload=audio_strip_dsp\ttarget=Master\tchain={code}"),
+        format!("\tpayload=audio_strip_dsp\ttarget=03\tchain={code}"),
+        format!("\tpayload=audio_strip_dsp\ttarget=0\tchain={code}"),
+        format!("\tpayload=audio_strip_dsp\ttarget=3\tchain={}", &code[1..]),
+        format!("\tpayload=audio_strip_dsp\ttarget=3\tchain={code}A"),
+        format!("\tpayload=audio_strip_dsp\ttarget=3\tchain={uppercase}"),
+        format!("\tpayload=audio_strip_dsp\ttarget=3\tchain={code}\tcontinues=true"),
+        format!("\tpayload=audio_strip_dsp\ttarget=3\tchain={code}\tgesture=4"),
+        format!("\tpayload=audio_strip_dsp\ttarget=3\tchain={code}\tgesture=0\tcontinues=true"),
+        format!("\tpayload=audio_strip_dsp\ttarget=3\tchain={code}\tgesture=4\tcontinues=1"),
+    ] {
+        assert!(decode_line(&format!("{PREFIX}{bad}\n")).is_err(), "{bad}");
+    }
+    // The encoder refuses a chain the decoder would refuse.
+    let mut broken = StripDsp::DEFAULT;
+    broken.compressor.ratio_milli = 0;
+    assert!(
+        encode_line(&command(CommandPayload::AudioMixer(
+            AudioMixerOperation::SetStripDsp {
+                target: fm_protocol::AudioDspTarget::Master,
+                chain: Box::new(broken),
+                gesture: None,
+            }
+        )))
+        .is_err()
+    );
+}
+
+#[test]
+fn strip_dsp_state_records_and_snapshot_fields_round_trip_strictly() {
+    let music = StripDspPreset::Music.chain();
+    let record = WireMessage::AudioStripDspState(fm_protocol::AudioStripDspStateMessage {
+        revision: 12,
+        input: input(7),
+        chain: music,
+    });
+    let line = round_trip(&record);
+    assert_eq!(
+        line,
+        format!(
+            "audio_strip_dsp_state\trevision=12\tinput=7\tchain={}\n",
+            music.code()
+        )
+    );
+    assert!(decode_line(&line.replace("\tinput=7", "\tinput=07")).is_err());
+    assert!(decode_line(&line.replace("\tinput=7", "")).is_err());
+    assert!(decode_line(&line.replace("\tchain=", "\tchain=x")).is_err());
+
+    let mixer = AudioMixerStatus {
+        master_dsp: StripDspPreset::Master.chain(),
+        strip_dsp_states: 2,
+        ..AudioMixerStatus::default()
+    };
+    let message = snapshot(mixer, Vec::new());
+    let line = round_trip(&message);
+    let field = format!(
+        "\taudio_master_dsp={}\taudio_strip_dsp_states=2\t",
+        StripDspPreset::Master.chain().code()
+    );
+    assert!(line.contains(&field), "{line}");
+    for (from, to) in [
+        (
+            "\taudio_strip_dsp_states=2\t",
+            "\taudio_strip_dsp_states=257\t",
+        ),
+        (
+            "\taudio_strip_dsp_states=2\t",
+            "\taudio_strip_dsp_states=02\t",
+        ),
+        ("\taudio_strip_dsp_states=2\t", "\t"),
+        (field.as_str(), "\taudio_strip_dsp_states=2\t"),
+    ] {
+        let bad = line.replace(from, to);
+        assert_ne!(bad, line, "{from}");
+        assert!(decode_line(&bad).is_err(), "{to}");
+    }
+    let over = AudioMixerStatus {
+        strip_dsp_states: fm_protocol::MAX_AUDIO_STRIP_DSP_STATES + 1,
+        ..AudioMixerStatus::default()
+    };
+    assert!(encode_line(&snapshot(over, Vec::new())).is_err());
+
+    // The replicated mixer follows Master edits; strip chains are records.
+    let mut status = AudioMixerStatus::default();
+    status.apply(&AudioMixerOperation::SetStripDsp {
+        target: fm_protocol::AudioDspTarget::Master,
+        chain: Box::new(music),
+        gesture: None,
+    });
+    assert_eq!(status.master_dsp, music);
+    status.apply(&AudioMixerOperation::SetStripDsp {
+        target: fm_protocol::AudioDspTarget::Input(input(1)),
+        chain: Box::new(StripDsp::DEFAULT),
+        gesture: None,
+    });
+    assert_eq!(status.master_dsp, music);
 }

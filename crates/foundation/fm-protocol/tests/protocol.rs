@@ -267,11 +267,29 @@ fn audio_meter_codec_is_bounded_and_exact() {
                 },
             ],
         }),
+        // Gain reduction of every chain with a running dynamics stage
+        // (2.70, AU-005): Master first, then ascending inputs.
+        dynamics: vec![
+            fm_protocol::AudioDynamicsMeter {
+                target: fm_protocol::AudioDspTarget::Master,
+                gate_millidb: None,
+                compressor_millidb: Some(3_500),
+                limiter_millidb: Some(120),
+            },
+            fm_protocol::AudioDynamicsMeter {
+                target: fm_protocol::AudioDspTarget::Input(fm_protocol::WireInputId::new(
+                    core::num::NonZeroU128::new(3).unwrap(),
+                )),
+                gate_millidb: Some(40_000),
+                compressor_millidb: None,
+                limiter_millidb: None,
+            },
+        ],
     });
     let encoded = encode_line(&message).unwrap();
     assert_eq!(
         encoded,
-        "audio_meters\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=9\tframe=42\tstart_sample=80000\tend_sample=81920\tmaster=4000000%3A500000%2C250000%3A125000\tinputs=3%7E500000%3A250000%2C0%3A0\tmonitor=solo%7Eplaying%7E500000%3A250000%2C500000%3A250000\n"
+        "audio_meters\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=9\tframe=42\tstart_sample=80000\tend_sample=81920\tmaster=4000000%3A500000%2C250000%3A125000\tinputs=3%7E500000%3A250000%2C0%3A0\tmonitor=solo%7Eplaying%7E500000%3A250000%2C500000%3A250000\tdynamics=master%7E-%7E3500%7E120%2C3%7E40000%7E-%7E-\n"
     );
     assert_eq!(decode_line(&encoded).unwrap(), message);
 
@@ -300,6 +318,18 @@ fn audio_meter_codec_is_bounded_and_exact() {
         ("monitor=solo%7Eplaying%7E", "monitor=solo%7Eon%7E"),
         ("monitor=solo%7Eplaying%7E", "monitor=solo%7E"),
         ("monitor=solo%7E", "monitor="),
+        // Dynamics are ascending by target, Master first, each with a stage,
+        // canonical, and bounded.
+        (
+            "dynamics=master%7E-%7E3500%7E120%2C3%7E40000%7E-%7E-",
+            "dynamics=3%7E40000%7E-%7E-%2Cmaster%7E-%7E3500%7E120",
+        ),
+        ("3%7E40000%7E-%7E-", "3%7E-%7E-%7E-"),
+        ("3%7E40000%7E-%7E-", "3%7E040000%7E-%7E-"),
+        ("3%7E40000%7E-%7E-", "3%7E200001%7E-%7E-"),
+        ("3%7E40000%7E-%7E-", "3%7E40000%7E-"),
+        ("master%7E-%7E3500", "main%7E-%7E3500"),
+        ("\tdynamics=master%7E-%7E3500%7E120%2C3%7E40000%7E-%7E-", ""),
         (
             "\tmonitor=solo%7Eplaying%7E500000%3A250000%2C500000%3A250000",
             "",
@@ -365,6 +395,7 @@ fn every_message_variant_round_trips() {
             master: vec![AudioMeterChannel::default()],
             inputs: Vec::new(),
             monitor: None,
+            dynamics: Vec::new(),
         }),
         WireMessage::DiagnosticsRequest(DiagnosticsRequest {
             protocol: CURRENT_PROTOCOL_VERSION,
@@ -3010,7 +3041,7 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
     );
     let encoded = encode_line(&message).unwrap();
     assert!(encoded.ends_with(
-        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
+        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
     ));
     assert_eq!(decode_line(&encoded).unwrap(), message);
 
@@ -3018,7 +3049,7 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
     let encoded_unlocked = encode_line(&unlocked).unwrap();
     assert!(
         encoded_unlocked
-            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n")
+            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n")
     );
     assert_eq!(decode_line(&encoded_unlocked).unwrap(), unlocked);
 
@@ -3884,7 +3915,7 @@ mod titles {
         let encoded = encode_line(&message).unwrap();
         assert!(
             encoded.ends_with(
-                "\ttitles=2%3A0%2C3%3A17\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
+                "\ttitles=2%3A0%2C3%3A17\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
             ),
             "{encoded}"
         );
@@ -4722,7 +4753,7 @@ mod playlists {
         let encoded = encode_line(&message).unwrap();
         assert!(
             encoded.ends_with(
-                "\tframe_rate=50%2F1\tplaylist=1\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
+                "\tframe_rate=50%2F1\tplaylist=1\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
             ),
             "{encoded}"
         );

@@ -1,15 +1,54 @@
 //! Mixer labels, strip groups, the solo mode, the monitor output, and the
 //! Fade-to-Black output selection between the engine and the wire
-//! (Protocols 2.40, 2.44, and 2.53, AU-001 and SW-004).
+//! (Protocols 2.40, 2.44, and 2.53, AU-001 and SW-004), and the strip and
+//! Master DSP chains (Protocol 2.70, AU-005).
 
 use fm_engine::{
-    EngineAudioGroupState, EngineAudioMixerEdit, EngineCommand, EngineEvent, ShowState,
+    Engine, EngineAudioGroupState, EngineAudioMixerEdit, EngineCommand, EngineEvent, ShowState,
 };
 use fm_model::{AudioGroupNumber, AudioSoloMode};
 use fm_protocol::{
-    AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioMonitorStatus, CommandPayload,
-    EventPayload, InputAudioLabel, WireInputId, WireOutputId,
+    AudioDspTarget, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioMonitorStatus,
+    AudioStripDspStateMessage, CommandPayload, EventPayload, InputAudioLabel, WireInputId,
+    WireOutputId,
 };
+use fm_types::strip_dsp::StripDspTarget;
+
+use crate::grade::{domain_gesture, wire_gesture};
+
+/// The engine DSP target for a wire one.
+#[must_use]
+pub(super) const fn dsp_target(target: AudioDspTarget) -> StripDspTarget {
+    match target {
+        AudioDspTarget::Master => StripDspTarget::Master,
+        AudioDspTarget::Input(input) => StripDspTarget::Input(input.to_domain()),
+    }
+}
+
+/// The wire DSP target for an engine one.
+#[must_use]
+pub(super) const fn wire_dsp_target(target: StripDspTarget) -> AudioDspTarget {
+    match target {
+        StripDspTarget::Master => AudioDspTarget::Master,
+        StripDspTarget::Input(input) => AudioDspTarget::Input(WireInputId::from_domain(input)),
+    }
+}
+
+/// One `audio_strip_dsp_state` per input whose chain is not the default,
+/// ascending, at the engine's revision (Protocol 2.70).
+pub(super) fn strip_dsp_states(engine: &Engine) -> Vec<AudioStripDspStateMessage> {
+    let revision = engine.revision().get();
+    engine
+        .show()
+        .input_audio_dsps()
+        .iter()
+        .map(|(input, chain)| AudioStripDspStateMessage {
+            revision,
+            input: WireInputId::from_domain(*input),
+            chain: *chain,
+        })
+        .collect()
+}
 
 fn group_number(group: u8) -> AudioGroupNumber {
     AudioGroupNumber::new(group).expect("the codec bounds wire groups")
@@ -88,6 +127,15 @@ pub(super) fn engine_command(operation: &AudioMixerOperation) -> EngineCommand {
                 muted: *muted,
             },
         },
+        AudioMixerOperation::SetStripDsp {
+            target,
+            chain,
+            gesture,
+        } => EngineAudioMixerEdit::SetStripDsp {
+            target: dsp_target(*target),
+            chain: chain.clone(),
+            gesture: gesture.map(domain_gesture),
+        },
     })
 }
 
@@ -134,6 +182,15 @@ pub(super) fn wire_operation(edit: &EngineAudioMixerEdit) -> AudioMixerOperation
         EngineAudioMixerEdit::SetMonitorLevel { state } => AudioMixerOperation::SetMonitorLevel {
             gain_millidb: state.gain_millidb,
             muted: state.muted,
+        },
+        EngineAudioMixerEdit::SetStripDsp {
+            target,
+            chain,
+            gesture,
+        } => AudioMixerOperation::SetStripDsp {
+            target: wire_dsp_target(*target),
+            chain: chain.clone(),
+            gesture: gesture.map(wire_gesture),
         },
     }
 }
@@ -213,6 +270,9 @@ pub(super) fn wire_status(show: &ShowState) -> AudioMixerStatus {
                 label: label.clone(),
             })
             .collect(),
+        master_dsp: *show.master_audio_dsp(),
+        strip_dsp_states: u16::try_from(show.input_audio_dsps().len())
+            .expect("one chain per input, at most the input bound"),
     }
 }
 

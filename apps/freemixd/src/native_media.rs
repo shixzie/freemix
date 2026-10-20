@@ -551,6 +551,10 @@ pub struct NativeProjectPlan {
     audio_group_parents: [Option<fm_model::AudioGroupNumber>; fm_model::AUDIO_GROUP_COUNT],
     /// How a soloed strip is heard (AU-001).
     audio_solo_mode: fm_model::AudioSoloMode,
+    /// Every strip's non-default DSP chain (AU-005).
+    audio_dsp: BTreeMap<InputId, fm_types::strip_dsp::StripDsp>,
+    /// The Master bus DSP chain (AU-005).
+    master_audio_dsp: fm_types::strip_dsp::StripDsp,
     stingers: BTreeMap<fm_switcher::StingerSlotId, NativeStingerConfig>,
     frame_rate: FrameRate,
     dimensions: VideoDimensions,
@@ -933,6 +937,13 @@ impl NativeProjectPlan {
             audio_group_parents: fm_model::AudioGroupNumber::ALL
                 .map(|group| project.audio_groups().get(group).parent),
             audio_solo_mode: project.audio_solo_mode(),
+            audio_dsp: project
+                .input_audio_strips()
+                .iter()
+                .filter(|strip| !strip.dsp.is_default())
+                .map(|strip| (strip.input, strip.dsp))
+                .collect(),
+            master_audio_dsp: *project.master_audio_dsp(),
             stingers,
             frame_rate: project.settings().frame_rate,
             dimensions,
@@ -1043,6 +1054,71 @@ impl NativeProjectPlan {
     #[must_use]
     pub const fn audio_solo_mode(&self) -> fm_model::AudioSoloMode {
         self.audio_solo_mode
+    }
+
+    /// `input`'s strip DSP chain (AU-005); the default chain for a strip
+    /// without one.
+    #[must_use]
+    pub fn audio_dsp(&self, input: InputId) -> fm_types::strip_dsp::StripDsp {
+        self.audio_dsp
+            .get(&input)
+            .copied()
+            .unwrap_or(fm_types::strip_dsp::StripDsp::DEFAULT)
+    }
+
+    /// The Master bus DSP chain (AU-005).
+    #[must_use]
+    pub const fn master_audio_dsp(&self) -> &fm_types::strip_dsp::StripDsp {
+        &self.master_audio_dsp
+    }
+
+    /// Records the DSP chain `target` names (AU-005).
+    ///
+    /// # Errors
+    ///
+    /// Returns a missing-route error for an input without a strip.
+    pub fn set_audio_dsp(
+        &mut self,
+        target: fm_types::strip_dsp::StripDspTarget,
+        chain: fm_types::strip_dsp::StripDsp,
+    ) -> Result<(), NativeMasterError> {
+        match target {
+            fm_types::strip_dsp::StripDspTarget::Master => self.master_audio_dsp = chain,
+            fm_types::strip_dsp::StripDspTarget::Input(input) => {
+                if !self.audio_strips.contains_key(&input) {
+                    return Err(NativeMasterError::MissingAudioRoute { input });
+                }
+                if chain.is_default() {
+                    self.audio_dsp.remove(&input);
+                } else {
+                    self.audio_dsp.insert(input, chain);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Applies every strip's DSP chain and, when `master`, the Master chain
+    /// to `mixer` (AU-005). Strips the mixer does not carry are skipped.
+    ///
+    /// # Errors
+    ///
+    /// Returns the mixer's refusal of an out-of-range chain; callers apply
+    /// this to a scratch clone.
+    fn apply_audio_dsp(
+        &self,
+        mixer: &mut MasterMixer,
+        master: bool,
+    ) -> Result<(), NativeMasterError> {
+        for input in self.audio_strips.keys().copied() {
+            if mixer.input_state(input).is_some() {
+                mixer.set_input_dsp(input, &self.audio_dsp(input))?;
+            }
+        }
+        if master {
+            mixer.set_master_dsp(&self.master_audio_dsp)?;
+        }
+        Ok(())
     }
 
     /// Group `group`'s solo and parent group (AU-001).
@@ -3047,6 +3123,9 @@ struct NativeAudioScratch {
     /// Whether the last render's monitor bus carried a PFL/AFL solo.
     monitor_solo: bool,
     meter_frame: Option<(u64, u64, u64)>,
+    /// The gain reduction of every running DSP chain at the last taken
+    /// interval (AU-005): Master (`None`) first, then ascending inputs.
+    dynamics: Vec<(Option<InputId>, fm_audio::DspDynamicsReading)>,
 }
 
 /// Borrowed meter values for one completed native Master interval.
@@ -3067,6 +3146,9 @@ pub struct NativeAudioMeters<'a> {
     pub monitor_planes: &'a [Vec<f32>],
     /// The Master sample rate, in hertz.
     pub sample_rate: u32,
+    /// The gain reduction of every DSP chain with a running dynamics stage
+    /// (AU-005): the Master (`None`) first, then ascending inputs.
+    pub dynamics: &'a [(Option<InputId>, fm_audio::DspDynamicsReading)],
 }
 
 struct StagedAudioPadding {
@@ -3119,6 +3201,7 @@ impl NativeAudioScratch {
             monitor: vec![vec![0.0; samples]; channels],
             monitor_meters: vec![ChannelMeter::default(); channels],
             monitor_solo: false,
+            dynamics: Vec::with_capacity(source_count + 1),
             meter_inputs,
             meter_frame: None,
         }
@@ -3690,6 +3773,9 @@ impl NativeMasterRuntime {
         let worker = NativeAudioDecodeWorker::spawn(decoders)?;
         let sink = CollectingAudioSink::new(limits.sink_blocks, OverflowPolicy::DropOldest)?;
         observe_retained_peak(&mut audio_telemetry, retained);
+        // Strip and Master DSP chains process a whole frame's samples
+        // without allocating (AU-005).
+        mixer.set_dsp_block_capacity(output_samples);
         let pending_mixer = mixer.clone();
         let scratch = NativeAudioScratch::new(
             format.channels.channels().len(),
@@ -3815,6 +3901,12 @@ impl NativeMasterRuntime {
                 .set_input_delay(input, delay)
                 .map_err(|_| NativeMasterError::BoundsExceeded)?;
         }
+        let mut mixer = self.mixer.clone();
+        let mut pending_mixer = self.pending_mixer.clone();
+        project.apply_audio_dsp(&mut mixer, true)?;
+        project.apply_audio_dsp(&mut pending_mixer, true)?;
+        self.mixer = mixer;
+        self.pending_mixer = pending_mixer;
         let channels = self.format.channels.channels().len();
         self.scratch.meter_inputs.clear();
         self.scratch
@@ -3828,6 +3920,12 @@ impl NativeMasterRuntime {
                 .ok_or(NativeMasterError::BoundsExceeded)?,
             ChannelMeter::default(),
         );
+        let dynamics = self.scratch.meter_inputs.len() + 1;
+        if self.scratch.dynamics.capacity() < dynamics {
+            self.scratch
+                .dynamics
+                .reserve(dynamics - self.scratch.dynamics.len());
+        }
         let source_count = self.sources.len();
         if self.scratch.plans.capacity() < source_count {
             self.scratch.plans.reserve(source_count);
@@ -4007,6 +4105,21 @@ impl NativeMasterRuntime {
     /// Takes the latest completed native Master meter interval.
     pub fn take_audio_meters(&mut self) -> Option<NativeAudioMeters<'_>> {
         let (frame, start_sample, end_sample) = self.scratch.meter_frame.take()?;
+        self.scratch.dynamics.clear();
+        let running = |reading: fm_audio::DspDynamicsReading| {
+            (reading.gate_db.is_some()
+                || reading.compressor_db.is_some()
+                || reading.limiter_db.is_some())
+            .then_some(reading)
+        };
+        if let Some(reading) = self.mixer.master_dynamics().and_then(running) {
+            self.scratch.dynamics.push((None, reading));
+        }
+        for &input in &self.scratch.meter_inputs {
+            if let Some(reading) = self.mixer.input_dynamics(input).and_then(running) {
+                self.scratch.dynamics.push((Some(input), reading));
+            }
+        }
         Some(NativeAudioMeters {
             frame,
             start_sample,
@@ -4019,6 +4132,7 @@ impl NativeMasterRuntime {
             monitor_solo: self.scratch.monitor_solo,
             monitor_planes: &self.scratch.monitor,
             sample_rate: self.format.sample_rate.hertz(),
+            dynamics: &self.scratch.dynamics,
         })
     }
 
@@ -4086,7 +4200,9 @@ impl NativeMasterRuntime {
         &mut self,
         update: &fm_engine::EngineAudioMixerUpdate,
     ) -> Result<(), NativeMasterError> {
-        let apply = |mixer: &mut MasterMixer| -> Result<(), NativeMasterError> {
+        // The Master DSP chain runs on the ordinary Program bus only; a
+        // clip-local stinger mixer's strips follow their strip chains.
+        let apply = |mixer: &mut MasterMixer, master: bool| -> Result<(), NativeMasterError> {
             match *update {
                 fm_engine::EngineAudioMixerUpdate::Membership { input, group } => {
                     let Some(mut state) = mixer.input_state(input) else {
@@ -4118,6 +4234,20 @@ impl NativeMasterRuntime {
                 // never see its device or level.
                 fm_engine::EngineAudioMixerUpdate::MonitorDevice(_)
                 | fm_engine::EngineAudioMixerUpdate::MonitorLevel(_) => {}
+                // A chain glides or crossfades from the next rendered sample
+                // (AU-005).
+                fm_engine::EngineAudioMixerUpdate::StripDsp { target, ref chain } => match target {
+                    fm_types::strip_dsp::StripDspTarget::Master => {
+                        if master {
+                            mixer.set_master_dsp(chain)?;
+                        }
+                    }
+                    fm_types::strip_dsp::StripDspTarget::Input(input) => {
+                        if mixer.input_state(input).is_some() {
+                            mixer.set_input_dsp(input, chain)?;
+                        }
+                    }
+                },
             }
             Ok(())
         };
@@ -4128,15 +4258,15 @@ impl NativeMasterRuntime {
         }
         let mut mixer = self.mixer.clone();
         let mut pending_mixer = self.pending_mixer.clone();
-        apply(&mut mixer)?;
-        apply(&mut pending_mixer)?;
+        apply(&mut mixer, true)?;
+        apply(&mut pending_mixer, true)?;
         let mut stinger_mixers = Vec::new();
         if let Some(playback) = &self.stinger_audio {
             for (&media, master) in &playback.masters {
                 let mut stinger_mixer = master.mixer.clone();
                 let mut stinger_pending_mixer = master.pending_mixer.clone();
-                apply(&mut stinger_mixer)?;
-                apply(&mut stinger_pending_mixer)?;
+                apply(&mut stinger_mixer, false)?;
+                apply(&mut stinger_pending_mixer, false)?;
                 stinger_mixers.push((media, stinger_mixer, stinger_pending_mixer));
             }
         }
@@ -5258,6 +5388,9 @@ impl NativeStingerAudioRuntime {
                 }
                 project.apply_group_topology(&mut stinger_master.mixer)?;
                 project.apply_group_topology(&mut stinger_master.pending_mixer)?;
+                // The clip's strip chain, not the Master's (AU-005).
+                project.apply_audio_dsp(&mut stinger_master.mixer, false)?;
+                project.apply_audio_dsp(&mut stinger_master.pending_mixer, false)?;
                 stinger_master
                     .mixer
                     .set_input_delay(input, delay)

@@ -26,10 +26,12 @@
 
 use core::fmt::Write as _;
 
+use fm_types::strip_dsp::StripDsp;
+
 use crate::{
-    AUDIO_GROUP_COUNT, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioMonitorStatus,
-    AudioSoloMode, CodecError, InputAudioLabel, MAX_AUDIO_LABEL_BYTES, WireOutputId,
-    audio_group_is_valid, audio_label_is_valid, audio_monitor_device_is_valid,
+    AUDIO_GROUP_COUNT, AudioDspTarget, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus,
+    AudioMonitorStatus, AudioSoloMode, CodecError, InputAudioLabel, MAX_AUDIO_LABEL_BYTES,
+    WireOutputId, audio_group_is_valid, audio_label_is_valid, audio_monitor_device_is_valid,
 };
 
 use super::MAX_LIST_ITEMS;
@@ -447,6 +449,40 @@ fn decode_monitor(value: &str) -> Result<AudioMonitorStatus, CodecError> {
     })
 }
 
+/// Encodes a DSP chain as its canonical code.
+pub(super) fn encode_chain(field: &'static str, chain: &StripDsp) -> Result<String, CodecError> {
+    chain
+        .validate()
+        .map_err(|error| invalid(field, error.to_string()))?;
+    Ok(chain.code())
+}
+
+/// Decodes a canonical DSP chain code.
+pub(super) fn decode_chain(field: &'static str, value: &str) -> Result<StripDsp, CodecError> {
+    StripDsp::from_code(value).map_err(|_| invalid(field, value))
+}
+
+/// Encodes a DSP target: `master` or a canonical input id.
+pub(super) fn encode_target(target: AudioDspTarget) -> String {
+    match target {
+        AudioDspTarget::Master => "master".to_owned(),
+        AudioDspTarget::Input(input) => input.to_string(),
+    }
+}
+
+/// Decodes a DSP target.
+pub(super) fn decode_target(
+    field: &'static str,
+    value: &str,
+) -> Result<AudioDspTarget, CodecError> {
+    if value == "master" {
+        return Ok(AudioDspTarget::Master);
+    }
+    parse_canonical_input(value)
+        .map(AudioDspTarget::Input)
+        .ok_or_else(|| invalid(field, value))
+}
+
 /// Encodes the snapshot mixer fields.
 pub(super) fn encode_status(
     status: &AudioMixerStatus,
@@ -455,7 +491,21 @@ pub(super) fn encode_status(
     push("audio_groups", encode_groups(&status.groups)?)?;
     push("audio_solo_mode", status.solo_mode.token().to_owned())?;
     push("audio_monitor", encode_monitor(&status.monitor)?)?;
-    push("input_audio_labels", encode_labels(&status.labels)?)
+    push("input_audio_labels", encode_labels(&status.labels)?)?;
+    push(
+        "audio_master_dsp",
+        encode_chain("audio_master_dsp", &status.master_dsp)?,
+    )?;
+    if status.strip_dsp_states > crate::MAX_AUDIO_STRIP_DSP_STATES {
+        return Err(invalid(
+            "audio_strip_dsp_states",
+            status.strip_dsp_states.to_string(),
+        ));
+    }
+    push(
+        "audio_strip_dsp_states",
+        status.strip_dsp_states.to_string(),
+    )
 }
 
 /// Decodes the snapshot mixer fields.
@@ -465,7 +515,116 @@ pub(super) fn decode_status(fields: &mut dyn FieldSource) -> Result<AudioMixerSt
         solo_mode: parse_solo_mode("audio_solo_mode", &fields.required("audio_solo_mode")?)?,
         monitor: decode_monitor(&fields.required("audio_monitor")?)?,
         labels: decode_labels(&fields.required("input_audio_labels")?)?,
+        master_dsp: decode_chain("audio_master_dsp", &fields.required("audio_master_dsp")?)?,
+        strip_dsp_states: {
+            let value = fields.required("audio_strip_dsp_states")?;
+            parse_canonical_u64(&value)
+                .and_then(|count| u16::try_from(count).ok())
+                .filter(|count| *count <= crate::MAX_AUDIO_STRIP_DSP_STATES)
+                .ok_or_else(|| invalid("audio_strip_dsp_states", value))?
+        },
     })
+}
+
+/// Encodes `audio_meters` `dynamics`: comma-separated
+/// `<target>~<gate>~<compressor>~<limiter>` entries, each reduction a
+/// canonical millidecibel count up to [`crate::MAX_DYNAMICS_REDUCTION_MILLIDB`]
+/// or `-` for a stage that is off, at least one stage present, strictly
+/// ascending by target (Master first).
+pub(super) fn encode_dynamics(meters: &[crate::AudioDynamicsMeter]) -> Result<String, CodecError> {
+    if meters.len() > MAX_LIST_ITEMS + 1 {
+        return Err(CodecError::TooManyItems("dynamics"));
+    }
+    let stage = |value: Option<u32>| match value {
+        None => Ok("-".to_owned()),
+        Some(value) if value <= crate::MAX_DYNAMICS_REDUCTION_MILLIDB => Ok(value.to_string()),
+        Some(value) => Err(invalid("dynamics", value.to_string())),
+    };
+    let mut previous: Option<AudioDspTarget> = None;
+    let mut entries = Vec::with_capacity(meters.len());
+    for meter in meters {
+        if previous.is_some_and(|previous| previous >= meter.target)
+            || (meter.gate_millidb.is_none()
+                && meter.compressor_millidb.is_none()
+                && meter.limiter_millidb.is_none())
+        {
+            return Err(invalid("dynamics", encode_target(meter.target)));
+        }
+        previous = Some(meter.target);
+        entries.push(format!(
+            "{}~{}~{}~{}",
+            encode_target(meter.target),
+            stage(meter.gate_millidb)?,
+            stage(meter.compressor_millidb)?,
+            stage(meter.limiter_millidb)?
+        ));
+    }
+    Ok(entries.join(","))
+}
+
+/// Decodes `audio_meters` `dynamics`, the exact inverse of
+/// [`encode_dynamics`].
+pub(super) fn decode_dynamics(value: &str) -> Result<Vec<crate::AudioDynamicsMeter>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    if value.split(',').take(MAX_LIST_ITEMS + 2).count() > MAX_LIST_ITEMS + 1 {
+        return Err(CodecError::TooManyItems("dynamics"));
+    }
+    let stage = |value: &str| -> Result<Option<u32>, CodecError> {
+        if value == "-" {
+            return Ok(None);
+        }
+        parse_canonical_u32(value)
+            .filter(|value| *value <= crate::MAX_DYNAMICS_REDUCTION_MILLIDB)
+            .map(Some)
+            .ok_or_else(|| invalid("dynamics", value))
+    };
+    let mut previous: Option<AudioDspTarget> = None;
+    value
+        .split(',')
+        .map(|entry| {
+            let parts: Vec<&str> = entry.split('~').collect();
+            let [target, gate, compressor, limiter] = parts.as_slice() else {
+                return Err(invalid("dynamics", entry));
+            };
+            let meter = crate::AudioDynamicsMeter {
+                target: decode_target("dynamics", target)?,
+                gate_millidb: stage(gate)?,
+                compressor_millidb: stage(compressor)?,
+                limiter_millidb: stage(limiter)?,
+            };
+            if previous.is_some_and(|previous| previous >= meter.target)
+                || (meter.gate_millidb.is_none()
+                    && meter.compressor_millidb.is_none()
+                    && meter.limiter_millidb.is_none())
+            {
+                return Err(invalid("dynamics", entry));
+            }
+            previous = Some(meter.target);
+            Ok(meter)
+        })
+        .collect()
+}
+
+/// Decodes an optional knob drag: `gesture` (a canonical nonzero decimal)
+/// with `continues` (`true` or `false`), or neither.
+fn decode_gesture(fields: &mut dyn FieldSource) -> Result<Option<crate::GradeGesture>, CodecError> {
+    let Some(token) = fields.optional("gesture") else {
+        return match fields.optional("continues") {
+            Some(_) => Err(CodecError::MissingField("gesture")),
+            None => Ok(None),
+        };
+    };
+    let token = parse_canonical_u64(&token)
+        .and_then(core::num::NonZeroU64::new)
+        .ok_or_else(|| invalid("gesture", token))?;
+    let continues = match fields.required("continues")?.as_str() {
+        "true" => true,
+        "false" => false,
+        other => return Err(invalid("continues", other)),
+    };
+    Ok(Some(crate::GradeGesture { token, continues }))
 }
 
 /// Encodes an operation's fields (not its payload token).
@@ -539,6 +698,20 @@ pub(super) fn encode_operation(
             push("gain_millidb", gain_millidb.to_string())?;
             push("muted", u8::from(*muted).to_string())
         }
+        AudioMixerOperation::SetStripDsp {
+            target,
+            chain,
+            gesture,
+        } => {
+            let code = encode_chain("chain", chain)?;
+            push("target", encode_target(*target))?;
+            push("chain", code)?;
+            if let Some(gesture) = gesture {
+                push("gesture", gesture.token.to_string())?;
+                push("continues", gesture.continues.to_string())?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -599,6 +772,11 @@ pub(super) fn decode_operation(
         "audio_monitor_level" => AudioMixerOperation::SetMonitorLevel {
             gain_millidb: parse_gain("gain_millidb", &fields.required("gain_millidb")?)?,
             muted: parse_flag("muted", &fields.required("muted")?)?,
+        },
+        "audio_strip_dsp" => AudioMixerOperation::SetStripDsp {
+            target: decode_target("target", &fields.required("target")?)?,
+            chain: Box::new(decode_chain("chain", &fields.required("chain")?)?),
+            gesture: decode_gesture(fields)?,
         },
         _ => return Ok(None),
     }))

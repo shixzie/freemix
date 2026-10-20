@@ -43,14 +43,14 @@ fn wire_source(source: &GradeSource) -> WireGradeSource {
     }
 }
 
-const fn domain_gesture(gesture: fm_protocol::GradeGesture) -> fm_engine::GradeGesture {
+pub(super) const fn domain_gesture(gesture: fm_protocol::GradeGesture) -> fm_engine::GradeGesture {
     fm_engine::GradeGesture {
         token: gesture.token,
         continues: gesture.continues,
     }
 }
 
-const fn wire_gesture(gesture: fm_engine::GradeGesture) -> fm_protocol::GradeGesture {
+pub(super) const fn wire_gesture(gesture: fm_engine::GradeGesture) -> fm_protocol::GradeGesture {
     fm_protocol::GradeGesture {
         token: gesture.token,
         continues: gesture.continues,
