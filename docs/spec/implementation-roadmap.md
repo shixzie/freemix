@@ -17,7 +17,9 @@ highest-value remaining items, ranked:
 2. ~~**Native Preview monitor tap (`SW-001`, `SW-002`).**~~ Landed: the native
    daemon publishes a Preview `monitor_frame` tap (the incoming source during a
    transition) through nonblocking readbacks, and Studio shows it with a
-   `PVW FEED` lamp. The rows stay `planned` for their wider acceptance.
+   `PVW FEED` lamp. Timed transitions and title phases run on the native
+   frame loop like a held T-bar (Protocol 2.88), so the tap streams through
+   them too. The rows stay `planned` for their wider acceptance.
 3. **Strip DSP on the live mix (`AU-005`), remaining parts.** Every input
    strip and Master now carry a persisted, undoable polarity / high-pass /
    five-band EQ / gate / expander / compressor / limiter chain that the
@@ -3857,10 +3859,9 @@ down, offers Start/Stop/Pause-Resume/Previous/Next and a per-row jump or
 start-from key under the transition permission, and edits the list (add,
 remove, reorder, enable/skip, duration, transition, loop mode) under
 `edit_project` while the playlist is stopped or finished.
-Remaining gaps: frames a client transition command (or Stinger mutation)
-realizes run inside that command's execution, where no other journaled
-command can be ordered, so a boundary falling inside them is cut on the first
-frame after the command (its scheduled start, and so every later boundary, is
+Remaining gaps: the clocks wait while the native frame loop realizes a
+transition or title phase, so a boundary falling inside one is cut on the
+first frame after it (its scheduled start, and so every later boundary, is
 kept); a SIGKILL still loses up to one second of idle progress (the marker
 cadence), although marker and fold writes now run as background jobs on the
 persistence worker, off the frame loop; simulated pacing anchors to the wall clock when a

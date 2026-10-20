@@ -420,33 +420,55 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
     /// frames (its projection is then refused as work in flight).
     #[must_use]
     pub fn settle_ticks(&self, ticks: u64) -> u64 {
-        let engine = match &self.kind {
-            PreparedSubmissionKind::Engine { execution, .. } => execution.staged_engine(),
-            PreparedSubmissionKind::AuthorizationDenial { .. } => &self.control.engine,
-        };
+        let engine = self.staged_or_current();
         if engine.show().scene_inputs().is_empty()
             && engine.show().titles().is_empty()
             && !self.control.engine.work_in_flight()
         {
             return ticks;
         }
-        let mut projected = engine.clone();
+        self.settled_projection(ticks).0
+    }
+
+    /// Projects the post-commit engine by [`Self::settle_ticks`] of
+    /// `ticks`, ticking the projection once: those frames, and the
+    /// snapshot there (see [`Self::project`]).
+    pub fn project_settled(&self, ticks: u64) -> (u64, Result<EngineSnapshot, ControlError>) {
+        let (settled, projected) = self.settled_projection(ticks);
+        let snapshot =
+            projected.and_then(|projected| projected.snapshot().map_err(EngineError::from));
+        (settled, snapshot.map_err(ControlError::from))
+    }
+
+    fn staged_or_current(&self) -> &Engine {
+        match &self.kind {
+            PreparedSubmissionKind::Engine { execution, .. } => execution.staged_engine(),
+            PreparedSubmissionKind::AuthorizationDenial { .. } => &self.control.engine,
+        }
+    }
+
+    /// The staged engine ticked `ticks` frames and then until it settles
+    /// (see [`Self::settle_ticks`]), with the frames that took; a tick
+    /// error ends it, with `ticks` frames when it ended within them.
+    fn settled_projection(&self, ticks: u64) -> (u64, Result<Engine, EngineError>) {
+        let mut projected = self.staged_or_current().clone();
         for _ in 0..ticks {
-            if projected.tick().is_err() {
-                return ticks;
+            if let Err(error) = projected.tick() {
+                return (ticks, Err(error));
             }
         }
         let mut settled = ticks;
-        while projected.scenes_in_motion()
-            || projected.titles_in_motion()
-            || projected.work_in_flight()
+        while settled - ticks < MAX_SETTLE_TICKS
+            && (projected.scenes_in_motion()
+                || projected.titles_in_motion()
+                || projected.work_in_flight())
         {
-            if settled - ticks >= MAX_SETTLE_TICKS || projected.tick().is_err() {
-                break;
+            if let Err(error) = projected.tick() {
+                return (settled, Err(error));
             }
             settled += 1;
         }
-        settled
+        (settled, Ok(projected))
     }
 
     /// Returns the number of frames needed for the staged overlay channel to

@@ -76,7 +76,13 @@ client retries it with its usual reconnect backoff. The gateway is
 unavailable only with `--fullscreen-program`. A native daemon dispatches at
 most one command per scheduler pass, round-robin across the sessions that
 have one waiting, since each realizes a Program frame; heartbeats and records
-of every session are served between commands. A session that sends faster
+of every session are served between commands. A command realizes only its
+first frame before it is answered: the rest of a timed transition, Fade to
+Black, overlay motion, or title In/Out phase is realized on the frame loop
+one frame per pacer tick, like a held T-bar transition, so every session
+keeps receiving monitor frames, meters, events, and command results while it
+runs. A heartbeat a peer sent is recorded before that peer's heartbeat
+timeout is judged. A session that sends faster
 than it is served meets transport backpressure (its socket is not read while
 its inbound queue is full) and is never closed for it.
 
@@ -305,7 +311,9 @@ stage 3):
   during Out restarts In at frame 0 (the pose jumps, it does not blend);
   a take on another channel during Out is refused as on air. The pose is a
   pure function of the frame since the phase start, so dropped frames land
-  on the exact pose. A title command's execution spans its whole phase.
+  on the exact pose. A title command's projection spans its whole phase:
+  the simulated daemon realizes it within the command, the native daemon
+  realizes the take frame within it and the rest on its frame loop.
 - Generic overlay commands and Program cuts show titles in the Hold pose.
 
 Protocol 2.25 adds the frame-driven project playlist (`OR-015` slice):
@@ -350,9 +358,13 @@ Protocol 2.25 adds the frame-driven project playlist (`OR-015` slice):
   is prepared and dropped, so only the accepted one is journaled. Any other
   refusal waits for a new revision. The cue clock's `cue_advance` and a
   media end trigger's `playlist_control next` are retried the same way. The
-  native pacer also realizes idle frames between commands, so journal replay
-  ticks the engine idle up to the frame each recorded command began at (its
-  recorded end frame minus the frames it realizes) before re-executing it.
+  native pacer also realizes idle frames between commands, and every frame
+  of a command's transition or title phase after its first, so a command
+  may be committed while an earlier one's transition still runs. Each
+  journal record therefore carries the frame cursor its command was
+  committed at, and replay ticks the engine up to that frame before
+  re-executing it; the command then projects to where it settles, as it
+  did when it was accepted.
   Idle frames after the last command are made durable by a progress marker:
   a single overwritten `journal_progress` row in the bundle's journal
   database naming the journal head (sequence and revision) it was written
@@ -369,11 +381,11 @@ Protocol 2.25 adds the frame-driven project playlist (`OR-015` slice):
   at most 24 hours of idle frames (at the project frame rate) per recovery
   and refuses, before ticking, a journal that asks for more as damaged. The
   clock also runs inside the native recorder startup barrier, so a restored
-  playlist cuts on schedule while a configured recorder starts. Frames a
-  client transition command (or a Stinger mutation) realizes run inside that
-  command's execution, where no other journaled command can be ordered, so a
-  boundary that falls inside them is cut on the first frame after the
-  command (the entry keeps its scheduled start).
+  playlist cuts on schedule while a configured recorder starts. While the
+  native frame loop still realizes a transition, Fade to Black, overlay
+  motion, or title phase, the playlist and cue clocks and media end
+  triggers wait, so a boundary that falls inside it is cut on the first
+  frame after it (the entry keeps its scheduled start).
   After a refusal either clock retries only once another command changed the
   revision. Both runtimes accept `playlist_set` and every playlist control.
 - Every accepted playlist command publishes `event=playlist_changed` with

@@ -14118,7 +14118,8 @@ fn execute_native_stinger_mutation(
     };
     if !first_prepared.submission().is_accepted() {
         let staged = first_prepared
-            .project(first_prepared.settle_ticks(0))
+            .project_settled(0)
+            .1
             .map_err(Into::into)
             .and_then(|projected| {
                 stored_project_from_snapshot(
@@ -14160,7 +14161,8 @@ fn execute_native_stinger_mutation(
     }
 
     let staged = first_prepared
-        .project(first_prepared.settle_ticks(1))
+        .project_settled(1)
+        .1
         .map_err(Into::into)
         .and_then(|projected| {
             stored_project_from_snapshot(
@@ -14228,7 +14230,8 @@ fn execute_native_stinger_mutation(
     if !second_prepared.submission().is_accepted() {
         native.stinger_retirements.discard(mutation)?;
         let staged = second_prepared
-            .project(second_prepared.settle_ticks(0))
+            .project_settled(0)
+            .1
             .map_err(Into::into)
             .and_then(|projected| {
                 stored_project_from_snapshot(
@@ -14273,7 +14276,8 @@ fn execute_native_stinger_mutation(
     }
 
     let staged = second_prepared
-        .project(second_prepared.settle_ticks(1))
+        .project_settled(1)
+        .1
         .map_err(Into::into)
         .and_then(|projected| {
             stored_project_from_snapshot(
@@ -14665,32 +14669,30 @@ fn execute_durable_command_with_ticks(
         PrepareSubmitOutcome::Prepared(prepared) => prepared,
     };
 
-    // The frames after which the command leaves an idle frame boundary:
-    // its own, or, while an earlier command's work is still in flight,
-    // up to where that ends (see `fm_control::PreparedSubmission::settle_ticks`).
+    // The command is durable as the project it leaves once it settles: its
+    // own frames, extended until its scene and title phases end and, while
+    // an earlier command's work is still in flight, until that ends (see
+    // `fm_control::PreparedSubmission::settle_ticks`).
     let accepted = prepared.submission().is_accepted();
-    let ticks = if accepted {
-        command_ticks(command, &prepared)
+    let (ticks, projected) = prepared.project_settled(if accepted {
+        command_base_ticks(command, &prepared)
     } else {
-        prepared.settle_ticks(0)
-    };
+        0
+    });
     // An accepted undo or redo is journaled as the edit it resolved to:
     // replay restores an engine whose session history is empty. The project
     // sync reads the same resolved command, so an undone input removal and a
     // live input addition both know the input kind they persist.
     let journaled = prepared.replay_command(command);
-    let staged = prepared
-        .project(ticks)
-        .map_err(Into::into)
-        .and_then(|projected| {
-            stored_project_from_snapshot(
-                durable,
-                &projected,
-                command,
-                &journaled,
-                &prepared.output().result,
-            )
-        });
+    let staged = projected.map_err(Into::into).and_then(|projected| {
+        stored_project_from_snapshot(
+            durable,
+            &projected,
+            command,
+            &journaled,
+            &prepared.output().result,
+        )
+    });
     let updated = match staged {
         Ok(updated) => updated,
         Err(error) => {
@@ -14809,17 +14811,11 @@ fn staged_title_animations(
         .collect()
 }
 
-/// The frames an accepted command realizes: its own (see
-/// [`command_base_ticks`]), extended until every scene phase it started
-/// has played (GX-011 stage 5), as a title take realizes its whole In
-/// phase.
-fn command_ticks(
-    command: &CommandMessage,
-    prepared: &fm_control::PreparedSubmission<'_, Policy>,
-) -> u64 {
-    prepared.settle_ticks(command_base_ticks(command, prepared))
-}
-
+/// The frames an accepted command realizes on its own: its transition,
+/// title phase, or target frame. Its projection extends them until every
+/// scene and title phase it started has played (GX-011 stage 5) and any
+/// work in flight before it has ended (see
+/// `fm_control::PreparedSubmission::settle_ticks`).
 #[allow(clippy::too_many_lines)] // one arm per command payload
 fn command_base_ticks(
     command: &CommandMessage,
@@ -23813,6 +23809,136 @@ mod tests {
             replay_journal(&manifest, &BundleAssets::default(), scan.batches(), None).unwrap();
         assert_eq!(replayed.position(), durable.position());
         assert_eq!(replayed.project().playlist(), durable.project().playlist());
+    }
+
+    /// A native command realizes its first frame and leaves the rest of a
+    /// timed transition to the frame loop: it is durable as the project the
+    /// transition ends on, a command committed while the transition runs is
+    /// accepted (or refused, as a Cut is while one is in flight) on that
+    /// frame, and journal replay ticks to the frame each recorded command
+    /// was committed at, landing on every recorded position.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn a_command_committed_mid_transition_replays_onto_its_frame() {
+        use journal::DurableJournal;
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(directory.path().join("mid-transition.freemix")).unwrap();
+        let manifest = test_project();
+        store.save(&manifest).unwrap();
+        let mut control = test_control(&manifest);
+        let server = test_server(&control);
+        let mut durable = manifest.clone();
+        let execute = |control: &mut ControlService<Policy>,
+                       durable: &mut StoredProject,
+                       journal: &DurableJournal,
+                       id: &str,
+                       payload: CommandPayload| {
+            execute_durable_command_with_ticks(
+                control,
+                journal,
+                durable,
+                &operator(),
+                &server,
+                &test_command(id, &format!("{id}-key"), payload),
+                0,
+                None,
+                Realize::First,
+                |control, server| Ok(control.tick(server)?.runtime_events),
+            )
+            .unwrap()
+            .submission
+            .output
+            .result
+        };
+        let mut positions = Vec::new();
+        {
+            let journal = DurableJournal::open(&store).unwrap();
+            for _ in 0..3 {
+                control.tick(&server).unwrap();
+            }
+            let began = control.frame_cursor();
+            let fade = execute(
+                &mut control,
+                &mut durable,
+                &journal,
+                "fade",
+                CommandPayload::Fade {
+                    duration_frames: 10,
+                },
+            );
+            assert!(matches!(fade, CommandResult::Accepted { .. }), "{fade:?}");
+            // Only the first frame was realized; the project is durable as
+            // the transition ends.
+            assert_eq!(control.frame_cursor(), began + 1);
+            assert!(control.work_in_flight());
+            assert_eq!(durable.position().frames_rendered, began + 10);
+            positions.push(durable.position());
+            // The frame loop realizes the transition; another client's
+            // edit lands on one of its frames and settles where it ends.
+            for _ in 0..3 {
+                control.tick(&server).unwrap();
+            }
+            let renamed = execute(
+                &mut control,
+                &mut durable,
+                &journal,
+                "rename",
+                CommandPayload::RenameInput {
+                    input: fm_protocol::WireInputId::from_domain(test_input_id(1)),
+                    name: "Renamed mid transition".into(),
+                },
+            );
+            assert!(
+                matches!(renamed, CommandResult::Accepted { .. }),
+                "{renamed:?}"
+            );
+            assert_eq!(durable.position().frames_rendered, began + 10);
+            positions.push(durable.position());
+            let cut = execute(
+                &mut control,
+                &mut durable,
+                &journal,
+                "cut",
+                CommandPayload::Cut,
+            );
+            assert!(
+                matches!(&cut, CommandResult::Rejected { code, .. } if code == "conflict"),
+                "{cut:?}"
+            );
+            while control.work_in_flight() {
+                control.tick(&server).unwrap();
+            }
+            assert_eq!(control.frame_cursor(), began + 10);
+            assert_eq!(
+                stored_project_checkpoint(&durable, &control.idle_engine_snapshot().unwrap())
+                    .unwrap()
+                    .position(),
+                durable.position()
+            );
+            control.tick(&server).unwrap();
+            let after = execute(
+                &mut control,
+                &mut durable,
+                &journal,
+                "cut-after",
+                CommandPayload::Cut,
+            );
+            assert!(matches!(after, CommandResult::Accepted { .. }), "{after:?}");
+            positions.push(durable.position());
+        }
+        let scan = store.scan_journal().unwrap();
+        assert_eq!(scan.batches().len(), positions.len());
+        for (batch, position) in scan.batches().iter().zip(&positions) {
+            assert_eq!(
+                journal::decode_mutation(batch.payload()).unwrap().position,
+                *position
+            );
+        }
+        let replayed =
+            replay_journal(&manifest, &BundleAssets::default(), scan.batches(), None).unwrap();
+        assert_eq!(replayed.position(), durable.position());
+        assert_eq!(replayed.project(), durable.project());
     }
 
     /// Idle frames a native daemon realizes after its last command survive a
