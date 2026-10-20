@@ -1192,10 +1192,14 @@ impl CuePanel {
                     keymap::CUE_RESET_SHORTCUT,
                 ),
             ];
+            // The four transport keys share the row in equal widths under
+            // GO, like a hardware cue stack, instead of four ragged keys.
+            let gap = ui.spacing().item_spacing.x;
+            let width = ((ui.available_width() - 3.0 * gap) / 4.0).floor().max(64.0);
             for (label, hover, operation, key) in operations {
                 let hover = l10n::with_key(l, l.text(hover), key);
                 if ui
-                    .add_enabled(control.is_none(), key_button(l.text(label), None, 64.0))
+                    .add_enabled(control.is_none(), key_button(l.text(label), None, width))
                     .hint(&hover, control.unwrap_or(""))
                     .clicked()
                 {

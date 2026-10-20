@@ -121,15 +121,20 @@ pub(super) fn draw_fade_to_black(
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.label(section_label(l.text(Msg::FadeToBlack)));
-            ui.add_enabled(
-                availability.duration,
-                DragValue::new(duration_frames)
-                    .range(1..=3_600)
-                    .suffix(" fr")
-                    .speed(1.0),
-            )
-            .hint(l.text(Msg::FtbDurationHover), reason);
-            draw_fade_to_black_outputs(ui, state, intents);
+            // Duration and outputs share one row, so the block is as tall
+            // as the FTB key beside it; a narrow column wraps them.
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(6.0, 2.0);
+                ui.add_enabled(
+                    availability.duration,
+                    DragValue::new(duration_frames)
+                        .range(1..=3_600)
+                        .suffix(" fr")
+                        .speed(1.0),
+                )
+                .hint(l.text(Msg::FtbDurationHover), reason);
+                draw_fade_to_black_outputs(ui, state, intents);
+            });
         });
     });
     let phase = fade_to_black_phase(l, desired, realized);
