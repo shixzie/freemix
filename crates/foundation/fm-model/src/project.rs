@@ -3238,8 +3238,8 @@ impl Project {
     /// beyond the scene's layer count, [`SceneLayerError::InvalidKey`]
     /// when the key breaks its bounds, [`SceneLayerError::MissingInput`]
     /// when a key/fill key input does not exist, and
-    /// [`SceneLayerError::SceneKeyInput`] when it is a Scene input; the layer
-    /// is unchanged on error.
+    /// [`SceneLayerError::SceneKeyInput`] when it is a Scene input or an
+    /// alias whose chain ends at one; the layer is unchanged on error.
     pub fn set_scene_layer_key(
         &mut self,
         scene: SceneId,
@@ -3255,17 +3255,37 @@ impl Project {
                     reason,
                 })?;
             if let Some(input) = key.key_input() {
-                match self.inputs.iter().find(|candidate| candidate.id == input) {
-                    None => return Err(SceneLayerError::MissingInput(input)),
-                    Some(candidate) if matches!(candidate.kind, InputKind::Scene { .. }) => {
-                        return Err(SceneLayerError::SceneKeyInput(input));
-                    }
-                    Some(_) => {}
+                if !self.inputs.iter().any(|candidate| candidate.id == input) {
+                    return Err(SceneLayerError::MissingInput(input));
+                }
+                if self.input_renders_scene(input) {
+                    return Err(SceneLayerError::SceneKeyInput(input));
                 }
             }
         }
         self.scenes[scene_index].layers[index].key = key;
         Ok(())
+    }
+
+    /// Whether `input` renders a scene: it is a Scene input, or an alias
+    /// whose target chain ends at one. A chain that loops or names a
+    /// missing input renders no scene.
+    #[must_use]
+    pub fn input_renders_scene(&self, input: InputId) -> bool {
+        let mut current = input;
+        for _ in 0..=self.inputs.len() {
+            match self
+                .inputs
+                .iter()
+                .find(|candidate| candidate.id == current)
+                .map(|candidate| &candidate.kind)
+            {
+                Some(InputKind::Scene { .. }) => return true,
+                Some(InputKind::Alias { target, .. }) => current = *target,
+                _ => return false,
+            }
+        }
+        false
     }
 
     fn scene_layer_position(&self, scene: SceneId, index: usize) -> Result<usize, SceneLayerError> {

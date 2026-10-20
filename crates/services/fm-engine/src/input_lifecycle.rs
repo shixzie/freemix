@@ -45,7 +45,7 @@ use crate::{EngineCommand, EngineEvent, MAX_SHOW_INPUTS, ShowState};
 /// The inputs a show presents: on air (Program, a transition or manual
 /// transition endpoint, a keyed or fading overlay, a playing Stinger's
 /// media) and on Preview, each with every input a scene among them shows
-/// as an enabled layer, through nested scenes.
+/// as an enabled layer or its key/fill key input, through nested scenes.
 struct ShownInputs {
     air: BTreeSet<InputId>,
     preview: BTreeSet<InputId>,
@@ -66,8 +66,8 @@ impl ShownInputs {
     }
 }
 
-/// `roots` and every input the scenes among them show as enabled layers,
-/// through nested scenes.
+/// `roots` and every input the scenes among them show as enabled layers or
+/// their key/fill key inputs, through nested scenes.
 fn with_scene_layers(
     state: &ShowState,
     roots: impl IntoIterator<Item = InputId>,
@@ -98,6 +98,10 @@ fn with_scene_layers(
             match layer.source {
                 fm_model::SourceRef::Input(input) => pending.push(input),
                 fm_model::SourceRef::Scene(nested) => pending_scenes.push(nested),
+            }
+            // A key/fill key's key input is shown with the layer it keys.
+            if let Some(key_input) = layer.key.and_then(fm_model::LayerKey::key_input) {
+                pending.push(key_input);
             }
         }
     }

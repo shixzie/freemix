@@ -2320,6 +2320,14 @@ fn key_fill_keys_and_refinements_are_validated_and_hold_their_key_input() {
                 audio_source: None,
             },
         ),
+        (
+            98,
+            "Nested alias",
+            InputKind::Alias {
+                target: input_id(97),
+                crop: None,
+            },
+        ),
     ] {
         project.add_input(Input {
             id: input_id(id),
@@ -2375,6 +2383,15 @@ fn key_fill_keys_and_refinements_are_validated_and_hold_their_key_input() {
             Some(LayerKey::Fill(fm_model::FillLayerKey::linear(input_id(97))))
         ),
         Err(SceneLayerError::SceneKeyInput(input_id(97)))
+    );
+    // An alias renders its target: an alias of a Scene input is refused too.
+    assert_eq!(
+        project.set_scene_layer_key(
+            scene,
+            0,
+            Some(LayerKey::Fill(fm_model::FillLayerKey::linear(input_id(98))))
+        ),
+        Err(SceneLayerError::SceneKeyInput(input_id(98)))
     );
     assert_eq!(
         project.scenes()[0].layers[0].key,
@@ -2445,6 +2462,7 @@ fn key_fill_keys_and_refinements_are_validated_and_hold_their_key_input() {
             ValidationErrorKind::MissingReference(fm_model::EntityRef::Input(input_id(5))),
         ),
         (input_id(97), ValidationErrorKind::OutOfRange),
+        (input_id(98), ValidationErrorKind::OutOfRange),
     ] {
         let mut broken = Project::new(project_id(96), "Broken key input", settings());
         for input in project.inputs() {

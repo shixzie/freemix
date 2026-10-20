@@ -1319,21 +1319,20 @@ fn validate_scenes(project: &Project, errors: &mut Vec<ValidationError>) {
             // descriptor. The bounds themselves match the compositor plan.
             validate_layer_effects(layer, entity, errors);
             if let Some(key_input) = layer.key.and_then(crate::LayerKey::key_input) {
-                match project.inputs().iter().find(|input| input.id == key_input) {
-                    None => errors.push(ValidationError {
+                if !project.inputs().iter().any(|input| input.id == key_input) {
+                    errors.push(ValidationError {
                         entity,
                         field: "layers.key.key_input",
                         kind: ValidationErrorKind::MissingReference(EntityRef::Input(key_input)),
-                    }),
-                    // A key/fill key input is a leaf picture, never a scene.
-                    Some(input) if matches!(input.kind, crate::InputKind::Scene { .. }) => {
-                        errors.push(ValidationError {
-                            entity,
-                            field: "layers.key.key_input",
-                            kind: ValidationErrorKind::OutOfRange,
-                        });
-                    }
-                    Some(_) => {}
+                    });
+                } else if project.input_renders_scene(key_input) {
+                    // A key/fill key input is a leaf picture, never a scene
+                    // (directly or through an alias).
+                    errors.push(ValidationError {
+                        entity,
+                        field: "layers.key.key_input",
+                        kind: ValidationErrorKind::OutOfRange,
+                    });
                 }
             }
             match layer.source {

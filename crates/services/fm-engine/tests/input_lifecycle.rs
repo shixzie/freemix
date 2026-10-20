@@ -705,6 +705,81 @@ fn a_closed_input_never_reaches_preview_or_air() {
     assert_eq!(engine.show().desired_switcher().program(), input(2));
 }
 
+/// A key/fill key input is shown like a layer source: a closed key input
+/// keeps a scene keyed by it off Preview, and the key input of a scene on
+/// air cannot be closed.
+#[test]
+fn a_closed_key_input_keeps_its_scene_off_preview_and_air() {
+    let mut show = ShowState::new(
+        "closed key",
+        [
+            (1, "Camera"),
+            (2, "Slides"),
+            (3, "Key"),
+            (4, "Matte"),
+            (5, "Keyed scene"),
+            (6, "Keyed on air"),
+        ]
+        .into_iter()
+        .map(|(value, name)| (input(value), name.to_owned()))
+        .collect(),
+        input(6),
+        input(2),
+    )
+    .unwrap();
+    for value in 1..=4 {
+        show.set_input_source(
+            input(value),
+            InputSourceSpec::Generator {
+                video: GeneratorVideo::Bars,
+                tone_hz: None,
+            },
+        )
+        .unwrap();
+    }
+    let keyed = |id: u128, key: InputId| {
+        let mut scene = scene_of(id, input(1));
+        scene.layers[0].key = Some(fm_model::LayerKey::Fill(fm_model::FillLayerKey::linear(
+            key,
+        )));
+        scene
+    };
+    show.set_scene_input(input(5), keyed(1, input(3)), 32, 18)
+        .unwrap();
+    show.set_scene_input(input(6), keyed(2, input(4)), 32, 18)
+        .unwrap();
+    let mut engine = Engine::new(
+        show,
+        rate(),
+        ClockDomainId::new(NonZeroU128::new(100).unwrap()),
+    );
+    // The key input of the scene on Program cannot be closed.
+    let on_air = edit(
+        &mut engine,
+        "close-matte",
+        EngineInputLifecycleEdit::SetClosed {
+            input: input(4),
+            closed: true,
+        },
+    );
+    assert_eq!(first_issue(&on_air), Some("input_in_use"));
+    accept(
+        &mut engine,
+        "close-key",
+        EngineInputLifecycleEdit::SetClosed {
+            input: input(3),
+            closed: true,
+        },
+    );
+    let refused = run(
+        &mut engine,
+        "preview-keyed",
+        EngineCommand::SelectPreview(input(5)),
+    );
+    assert_eq!(first_issue(&refused), Some("input_closed"));
+    assert_eq!(engine.show().desired_switcher().preview(), input(2));
+}
+
 /// A cue's media action keeps its input a media input: replacing that
 /// input's media source with a non-media one is refused (RC-017), since it
 /// would leave the cue naming a non-media input, which no project may hold.
