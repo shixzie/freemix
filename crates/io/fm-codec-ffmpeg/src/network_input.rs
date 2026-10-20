@@ -63,15 +63,40 @@
 //!
 //! # Listening (RTMP and SRT)
 //!
-//! An RTMP listener (`-listen 1`) or SRT listener or rendezvous waits for its
-//! peer in `listening` without a data timeout. Its child gives up after
-//! [`LISTEN_CYCLE`] without a peer (so a child the receiver can no longer
-//! kill frees its port in bounded time), and the receiver listens again at
-//! once without counting a reconnect attempt; it does the same when a
-//! publisher disconnects. `ffmpeg`'s RTMP listener accepts any stream name,
-//! so the receiver itself drops a publisher whose stream key is not the
-//! configured one. A child that fails quickly (its port is taken) reconnects
-//! with the backoff policy.
+//! A listener reports `listening` only once its port accepts its peer, and
+//! `connecting` before that.
+//!
+//! An RTMP listener's port is the receiver's own: it binds the configured
+//! address once and keeps it bound for its whole life, so a publisher is
+//! never refused between sessions (after a session ends, or after a
+//! publisher with the wrong stream key is dropped). Each accepted publisher
+//! gets its own child, an `ffmpeg -listen 1` on a fresh loopback port, and
+//! the receiver relays bytes between the two sockets. (`ffmpeg`'s own
+//! listener accepts exactly one connection and then closes its listening
+//! socket, and a second child cannot bind the port while the first holds
+//! it, so a child-owned port is closed from every accept until the next
+//! child binds it.) The publisher then has `timeout_ms` plus
+//! [`CONNECT_GRACE`] to deliver its first picture. While one publisher is
+//! on air, another's connection waits in the listen backlog until the first
+//! leaves. A port the receiver cannot bind (taken) reconnects with the
+//! backoff policy.
+//!
+//! An SRT listener or rendezvous waits for its peer without a data timeout.
+//! Its child gives up after [`LISTEN_CYCLE`] without a peer (so a child the
+//! receiver can no longer kill frees its port in bounded time), and the
+//! receiver listens again at once without counting a reconnect attempt; it
+//! does the same when a caller disconnects. An SRT listener's port is
+//! `libsrt`'s, inside the child: the receiver reports `listening` once the
+//! child answers an SRT induction handshake (stateless on the listener: it
+//! only returns a cookie) on that port. Its port is still closed from a
+//! session's end until the next child binds it, but an SRT caller
+//! retransmits its handshake until its connect timeout (3 s by default), so
+//! that gap delays a caller rather than refusing it. A rendezvous binds no
+//! port that answers a stranger, so it reports `listening` as its child
+//! starts. `ffmpeg`'s RTMP listener accepts any stream name, so the
+//! receiver itself drops a publisher whose stream key is not the configured
+//! one. A child that fails quickly (its port is taken) reconnects with the
+//! backoff policy.
 //!
 //! # Reconnect
 //!
@@ -128,7 +153,10 @@ use std::ffi::OsString;
 use std::fmt::{self, Write as _};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::net::{
+    IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
+    UdpSocket,
+};
 use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -161,6 +189,12 @@ pub const LISTEN_CYCLE: Duration = Duration::from_secs(30);
 /// again at once; one that ended sooner failed (its port is taken) and
 /// reconnects with the backoff policy.
 const LISTEN_FAILURE_WINDOW: Duration = Duration::from_secs(2);
+/// How often an RTMP relay tries its child's loopback port while the child
+/// starts, and how long one try may take.
+const RELAY_RETRY: Duration = Duration::from_millis(10);
+const RELAY_CONNECT_TIMEOUT: Duration = Duration::from_millis(200);
+/// How often an SRT listener's readiness probe repeats its handshake.
+const SRT_PROBE_INTERVAL: Duration = Duration::from_millis(100);
 
 const AUDIO_HEADER_LIMIT: usize = 8 * 1024;
 const BITRATE_WINDOW: Duration = Duration::from_secs(1);
@@ -700,9 +734,27 @@ impl Plan {
         }
     }
 
-    /// The state a connection starts in before it delivers media.
-    fn waiting_state(&self) -> NetworkStreamState {
-        if self.listens() {
+    /// Whether the receiver owns the listening port and relays each
+    /// accepted publisher to its child (an RTMP listener).
+    fn relays(&self) -> bool {
+        self.protocol == Some(StreamProtocol::Rtmp)
+            && self.stream.is_some()
+            && self.config.settings.mode == StreamMode::Listener
+    }
+
+    /// Whether the receiver probes its child's port before it reports
+    /// `listening` (an SRT listener).
+    fn probes(&self) -> bool {
+        self.protocol == Some(StreamProtocol::Srt)
+            && self.stream.is_some()
+            && self.config.settings.mode == StreamMode::Listener
+    }
+
+    /// The state the receiver starts in: `listening` only for a rendezvous,
+    /// whose wait begins as its child starts; a listener is `connecting`
+    /// until its port accepts.
+    fn initial_state(&self) -> NetworkStreamState {
+        if self.listens() && self.config.settings.mode == StreamMode::Rendezvous {
             NetworkStreamState::Listening
         } else {
             NetworkStreamState::Connecting
@@ -806,7 +858,7 @@ impl NetworkReceiver {
             token: random_token()?,
             config,
         });
-        let state = plan.waiting_state();
+        let state = plan.initial_state();
         let shared = Arc::new(Shared {
             inner: Mutex::new(Inner {
                 state,
@@ -1050,8 +1102,9 @@ fn random_token() -> Result<String, NetworkInputError> {
 }
 
 /// The child's arguments: the input, then the video, optional audio, and
-/// bitrate outputs.
-fn arguments(plan: &Plan, audio_port: Option<u16>) -> Vec<OsString> {
+/// bitrate outputs. An RTMP listener's child listens on `relay_port` of the
+/// loopback interface instead of the configured address.
+fn arguments(plan: &Plan, audio_port: Option<u16>, relay_port: Option<u16>) -> Vec<OsString> {
     let config = &plan.config;
     let micros = (u64::from(config.settings.timeout_ms) * 1_000).to_string();
     // Informational lines (tagged by level) name the source's audio layout;
@@ -1072,10 +1125,13 @@ fn arguments(plan: &Plan, audio_port: Option<u16>) -> Vec<OsString> {
         return device_arguments(plan, device, args, audio_port);
     }
     let protocol = plan.protocol.unwrap_or(StreamProtocol::Udp);
-    let url = plan
+    let mut url = plan
         .stream
         .as_ref()
         .map_or_else(|| config.url.clone(), NetworkStreamConfig::connect_url);
+    if let Some(port) = relay_port.filter(|_| plan.relays()) {
+        url = relay_url(&url, port);
+    }
     if plan.script().is_some() {
         // Every SRT option travels in the script: given here, it would
         // apply to the script's own input and be refused as unused.
@@ -1191,12 +1247,14 @@ fn protocol_arguments(
         }
         StreamProtocol::Rtmp => {
             if config.settings.mode == StreamMode::Listener {
-                // `-timeout` is the listen timeout, in seconds.
+                // `-timeout` is the listen timeout, in seconds: the relayed
+                // child's peer is the receiver itself, which connects as
+                // soon as the port is bound.
                 args.extend([
                     "-listen".into(),
                     "1".into(),
                     "-timeout".into(),
-                    LISTEN_CYCLE.as_secs().to_string(),
+                    CONNECT_GRACE.as_secs().to_string(),
                 ]);
             } else {
                 args.extend(["-rw_timeout".into(), micros]);
@@ -1303,6 +1361,34 @@ const fn protocol_whitelist(protocol: StreamProtocol) -> &'static str {
         StreamProtocol::Rtmp => "rtmp,rtmps,tcp,tls",
         StreamProtocol::Srt => "srt",
     }
+}
+
+/// An RTMP listener's `url` with its authority replaced by the loopback
+/// `port` its relayed child listens on; the application and stream key
+/// path is kept, since the child checks the publisher's stream name.
+fn relay_url(url: &str, port: u16) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("rtmp", url));
+    let path = rest.find(['/', '?', '#']).map_or("", |at| &rest[at..]);
+    format!("{scheme}://127.0.0.1:{port}{path}")
+}
+
+/// The host and port a listener binds: the URL's host (a bracketed IPv6
+/// host unwrapped) and its listen port.
+fn listen_address(plan: &Plan) -> Option<(String, u16)> {
+    let stream = plan.stream.as_ref()?;
+    let port = stream.listen_endpoint()?.port;
+    let (_, rest) = stream.url.split_once("://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    let host = match host_port.strip_prefix('[') {
+        Some(bracketed) => bracketed.split_once(']')?.0,
+        None => host_port
+            .rsplit_once(':')
+            .map_or(host_port, |(host, _)| host),
+    };
+    Some((host.to_owned(), port))
 }
 
 /// `url` as the child receives it: with its scheme in lowercase, since
@@ -1533,7 +1619,7 @@ fn spawn_feeder(plan: &Plan, spec: &DeviceFeeder) -> Result<Child, String> {
     })
 }
 
-fn command(plan: &Plan, audio_port: Option<u16>) -> Command {
+fn command(plan: &Plan, audio_port: Option<u16>, relay_port: Option<u16>) -> Command {
     #[cfg(target_os = "linux")]
     let mut command = match parent_death_wrapper() {
         Some(setpriv) => {
@@ -1548,7 +1634,7 @@ fn command(plan: &Plan, audio_port: Option<u16>) -> Command {
     #[cfg(not(target_os = "linux"))]
     let mut command = Command::new(&plan.executable);
     command
-        .args(arguments(plan, audio_port))
+        .args(arguments(plan, audio_port, relay_port))
         .stdin(if plan.script().is_some() {
             Stdio::piped()
         } else {
@@ -1600,8 +1686,10 @@ enum Ended {
 fn supervise(shared: &Arc<Shared>, plan: &Arc<Plan>) {
     let policy = plan.config.settings.reconnect;
     let mut attempt: u32 = 0;
+    // An RTMP listener's own port, bound once and kept.
+    let mut relay = None;
     loop {
-        match connect_once(shared, plan) {
+        match connect_once(shared, plan, &mut relay) {
             Ended::Shutdown => return,
             Ended::Relisten => {
                 attempt = 0;
@@ -1691,8 +1779,10 @@ fn supervise(shared: &Arc<Shared>, plan: &Arc<Plan>) {
 }
 
 /// Resets the shared state for a new connection: its generation and
-/// whether the source has no audio, or `None` once shut down.
-fn begin_connection(shared: &Shared, plan: &Plan) -> Option<(u64, bool)> {
+/// whether the source has no audio, or `None` once shut down. A listener's
+/// connection starts `listening` when its port already accepts (a bound
+/// RTMP relay, or a rendezvous), and `connecting` until then.
+fn begin_connection(shared: &Shared, plan: &Plan, accepting: bool) -> Option<(u64, bool)> {
     let mut inner = shared.lock();
     if inner.shutdown {
         return None;
@@ -1710,7 +1800,11 @@ fn begin_connection(shared: &Shared, plan: &Plan) -> Option<(u64, bool)> {
     inner.rejected_peer = false;
     inner.in_input_dump = false;
     if plan.listens() {
-        inner.state = NetworkStreamState::Listening;
+        inner.state = if accepting {
+            NetworkStreamState::Listening
+        } else {
+            NetworkStreamState::Connecting
+        };
     }
     inner.bitrate.clear();
     Some((inner.generation, inner.audio_absent))
@@ -1724,26 +1818,61 @@ fn stop_feeder(feeder: Option<Child>) {
     }
 }
 
-/// Runs one connection to its end.
-fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>) -> Ended {
-    let Some((generation, audio_absent)) = begin_connection(shared, plan) else {
-        return Ended::Shutdown;
-    };
-    let listener = if audio_absent {
-        None
+/// A connection about to start its child.
+struct Opened {
+    generation: u64,
+    audio_absent: bool,
+    /// An SRT listener's readiness probe.
+    probe: Option<SrtProbe>,
+    /// An RTMP listener's accepted publisher and its child's loopback port.
+    publisher: Option<(TcpStream, u16)>,
+}
+
+/// Starts a connection: resets the shared state and, for an RTMP listener,
+/// waits for a publisher on the receiver's own port.
+fn open_connection(
+    shared: &Shared,
+    plan: &Plan,
+    relay: &mut Option<TcpListener>,
+) -> Result<Opened, Ended> {
+    let probe = if plan.probes() {
+        SrtProbe::new(plan)
     } else {
-        match TcpListener::bind((Ipv4Addr::LOCALHOST, 0)) {
-            Ok(listener) => Some(listener),
+        None
+    };
+    // Without a probe, an SRT listener reports `listening` as its child
+    // starts, as a rendezvous does.
+    let accepting = relay.is_some() || (plan.listens() && !plan.relays() && probe.is_none());
+    let (generation, audio_absent) =
+        begin_connection(shared, plan, accepting).ok_or(Ended::Shutdown)?;
+    let publisher = if plan.relays() {
+        let publisher = accept_publisher(shared, plan, relay)?;
+        match free_loopback_port() {
+            Ok(port) => Some((publisher, port)),
             Err(error) => {
-                shared.lock().last_error = Some(format!("audio listener: {:?}", error.kind()));
-                return Ended::Dropped { delivered: false };
+                shared.lock().last_error = Some(format!("relay port: {:?}", error.kind()));
+                return Err(Ended::Dropped { delivered: false });
             }
         }
+    } else {
+        None
     };
-    let port = listener
-        .as_ref()
-        .and_then(|listener| listener.local_addr().ok())
-        .map(|address| address.port());
+    Ok(Opened {
+        generation,
+        audio_absent,
+        probe,
+        publisher,
+    })
+}
+
+/// Spawns a connection's feeder (a device's capture helper) and child, and
+/// hands an encrypted SRT child its script.
+fn spawn_child(
+    shared: &Shared,
+    plan: &Plan,
+    audio_port: Option<u16>,
+    relay_port: Option<u16>,
+) -> Result<(Child, Option<Child>), Ended> {
     let feeder = plan
         .config
         .device
@@ -1755,10 +1884,10 @@ fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>) -> Ended {
         Ok(feeder) => feeder,
         Err(error) => {
             shared.lock().last_error = Some(error);
-            return Ended::Dropped { delivered: false };
+            return Err(Ended::Dropped { delivered: false });
         }
     };
-    let mut command = command(plan, port);
+    let mut command = command(plan, audio_port, relay_port);
     if let Some(stdout) = feeder.as_mut().and_then(|feeder| feeder.stdout.take()) {
         command.stdin(Stdio::from(stdout));
     }
@@ -1770,7 +1899,7 @@ fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>) -> Ended {
                 io::ErrorKind::NotFound => "ffmpeg unavailable".to_owned(),
                 kind => format!("ffmpeg spawn failed: {kind:?}"),
             });
-            return Ended::Dropped { delivered: false };
+            return Err(Ended::Dropped { delivered: false });
         }
     };
     if let Some(script) = plan.script() {
@@ -1784,12 +1913,47 @@ fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>) -> Ended {
         if let Err(error) = written {
             let _ = child.kill();
             let _ = child.wait();
+            stop_feeder(feeder);
             shared.lock().last_error = Some(format!("ffmpeg stdin: {:?}", error.kind()));
-            return Ended::Dropped { delivered: false };
+            return Err(Ended::Dropped { delivered: false });
         }
     }
-    let started = Instant::now();
-    let mut readers = Vec::with_capacity(3);
+    Ok((child, feeder))
+}
+
+/// Runs one connection to its end. `relay` is an RTMP listener's own
+/// listening socket, bound at its first connection and kept across them.
+fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>, relay: &mut Option<TcpListener>) -> Ended {
+    let Opened {
+        generation,
+        audio_absent,
+        probe,
+        publisher,
+    } = match open_connection(shared, plan, relay) {
+        Ok(opened) => opened,
+        Err(ended) => return ended,
+    };
+    let listener = if audio_absent {
+        None
+    } else {
+        match TcpListener::bind((Ipv4Addr::LOCALHOST, 0)) {
+            Ok(listener) => Some(listener),
+            Err(error) => {
+                shared.lock().last_error = Some(format!("audio listener: {:?}", error.kind()));
+                return Ended::Dropped { delivered: false };
+            }
+        }
+    };
+    let audio_port = listener
+        .as_ref()
+        .and_then(|listener| listener.local_addr().ok())
+        .map(|address| address.port());
+    let relay_port = publisher.as_ref().map(|(_, port)| *port);
+    let (mut child, feeder) = match spawn_child(shared, plan, audio_port, relay_port) {
+        Ok(spawned) => spawned,
+        Err(ended) => return ended,
+    };
+    let mut readers = Vec::with_capacity(5);
     if let Some(stdout) = child.stdout.take() {
         readers.push(spawn_reader("video", shared, plan, move |shared, plan| {
             read_video(shared, plan, generation, stdout);
@@ -1805,11 +1969,38 @@ fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>) -> Ended {
             read_audio(shared, plan, generation, &listener);
         }));
     }
-    let ended = watch(shared, plan, &mut child, started);
+    // An accepted publisher is relayed to the child once it listens; the
+    // sockets are kept to end the relay.
+    let linked = match publisher {
+        Some((publisher, port)) => {
+            relay_publisher(shared, &mut child, publisher, port, &mut readers)
+        }
+        None => Ok(Vec::new()),
+    };
+    let started = Instant::now();
+    let (ended, sockets) = match linked {
+        // The relayed publisher has its media timeout from the start.
+        Ok(sockets) => (
+            watch(
+                shared,
+                plan,
+                &mut child,
+                started,
+                plan.listens() && !plan.relays(),
+                probe,
+            ),
+            sockets,
+        ),
+        Err(ended) => (ended, Vec::new()),
+    };
     let ran = started.elapsed();
     let _ = child.kill();
     let _ = child.wait();
     stop_feeder(feeder);
+    // Ends the relay pumps, and drops the publisher.
+    for socket in &sockets {
+        let _ = socket.shutdown(Shutdown::Both);
+    }
     {
         let mut inner = shared.lock();
         // Readers of this connection stop pushing.
@@ -1819,6 +2010,14 @@ fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>) -> Ended {
         let _ = reader.join();
     }
     match ended {
+        // A relayed publisher's session ended (it left, was refused, or
+        // sent nothing): the port still listens, so listen on at once. A
+        // stream found without audio is the supervisor's to retry without.
+        Ended::Dropped { delivered }
+            if !sockets.is_empty() && (delivered || !shared.lock().saw_empty_output) =>
+        {
+            Ended::Relisten
+        }
         // A listener that waited out its cycle, or whose peer left (or was
         // refused), listens again at once.
         Ended::Dropped { delivered }
@@ -1844,8 +2043,18 @@ fn spawn_reader(
         .ok()
 }
 
-/// Watches one connection until it ends.
-fn watch(shared: &Shared, plan: &Plan, child: &mut Child, started: Instant) -> Ended {
+/// Watches one connection until it ends. A connection that `waits` (a
+/// listener's or rendezvous's child) has no media timeout until its peer
+/// delivers; an SRT listener's `probe` turns it `listening` once its port
+/// answers.
+fn watch(
+    shared: &Shared,
+    plan: &Plan,
+    child: &mut Child,
+    started: Instant,
+    waits: bool,
+    mut probe: Option<SrtProbe>,
+) -> Ended {
     let timeout = Duration::from_millis(u64::from(plan.config.settings.timeout_ms));
     let mut inner = shared.lock();
     loop {
@@ -1865,12 +2074,19 @@ fn watch(shared: &Shared, plan: &Plan, child: &mut Child, started: Instant) -> E
         };
         let since = inner.last_data.unwrap_or(started);
         // A listener waits for its peer as long as its child does.
-        let waiting = plan.listens() && inner.last_data.is_none();
+        let waiting = waits && inner.last_data.is_none();
         if !waiting && now.saturating_duration_since(since) >= limit {
             inner.last_error = Some(format!("no media for {} ms", limit.as_millis()));
             return Ended::Dropped { delivered };
         }
         drop(inner);
+        if probe.as_mut().is_some_and(SrtProbe::answered) {
+            probe = None;
+            let mut inner = shared.lock();
+            if inner.state == NetworkStreamState::Connecting {
+                inner.state = NetworkStreamState::Listening;
+            }
+        }
         if let Ok(Some(status)) = child.try_wait() {
             // Let the log reader record the child's last words first.
             thread::sleep(POLL);
@@ -2260,6 +2476,227 @@ fn is_timeout(error: &io::Error) -> bool {
     )
 }
 
+/// The SRT socket ID the readiness probe names itself by.
+const SRT_PROBE_SOCKET: u32 = 0x4652_4D58;
+
+/// An SRT (HSv4-compatible) caller's induction handshake: a control packet
+/// of type handshake to socket 0, carrying version 4, socket type
+/// `SOCK_DGRAM`, an MTU of 1500, a flow window of 8192, handshake type
+/// `INDUCTION`, and no cookie. A listener answers it statelessly with its
+/// SYN cookie and keeps no state for it.
+fn srt_induction() -> [u8; 64] {
+    let words: [u32; 13] = [
+        0x8000_0000, // control packet, type 0 (handshake)
+        0,           // type-specific information
+        0,           // timestamp
+        0,           // destination socket: the listener
+        4,           // handshake version
+        2,           // encryption field 0, extension field 2 (SOCK_DGRAM)
+        0x0000_1000, // initial packet sequence number
+        1_500,       // maximum transmission unit
+        8_192,       // maximum flow window
+        1,           // handshake type: induction
+        SRT_PROBE_SOCKET,
+        0, // SYN cookie
+        0, // peer address (first word; the rest stays zero)
+    ];
+    let mut packet = [0_u8; 64];
+    for (chunk, word) in packet.as_chunks_mut::<4>().0.iter_mut().zip(words) {
+        chunk.copy_from_slice(&word.to_be_bytes());
+    }
+    packet
+}
+
+/// Whether `packet` is a listener's answer to [`srt_induction`]: a
+/// handshake control packet to the probe's socket, of type induction.
+fn is_srt_induction_answer(packet: &[u8]) -> bool {
+    let word = |at: usize| {
+        packet
+            .get(at..at + 4)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u32::from_be_bytes)
+    };
+    packet.len() >= 64
+        && word(0) == Some(0x8000_0000)
+        && word(12) == Some(SRT_PROBE_SOCKET)
+        && word(36) == Some(1)
+}
+
+/// Probes whether an SRT listener's child has bound its port: repeats an
+/// induction handshake to it until the listener answers.
+struct SrtProbe {
+    socket: UdpSocket,
+    sent: Option<Instant>,
+}
+
+impl SrtProbe {
+    /// A probe of the plan's listen address (a wildcard address probed on
+    /// loopback), or `None` when the address does not resolve or no
+    /// socket opens.
+    fn new(plan: &Plan) -> Option<Self> {
+        let (host, port) = listen_address(plan)?;
+        let mut target = (host.as_str(), port).to_socket_addrs().ok()?.next()?;
+        if target.ip().is_unspecified() {
+            target.set_ip(match target {
+                SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
+                SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::LOCALHOST),
+            });
+        }
+        let local: SocketAddr = match target {
+            SocketAddr::V4(_) => (Ipv4Addr::UNSPECIFIED, 0).into(),
+            SocketAddr::V6(_) => (Ipv6Addr::UNSPECIFIED, 0).into(),
+        };
+        let socket = UdpSocket::bind(local).ok()?;
+        socket.connect(target).ok()?;
+        socket.set_nonblocking(true).ok()?;
+        Some(Self { socket, sent: None })
+    }
+
+    /// Whether the listener has answered; sends the handshake again once
+    /// [`SRT_PROBE_INTERVAL`] passed without an answer. Never blocks.
+    fn answered(&mut self) -> bool {
+        let mut packet = [0_u8; 256];
+        // Errors include a refusal of a port not bound yet.
+        while let Ok(read) = self.socket.recv(&mut packet) {
+            if is_srt_induction_answer(&packet[..read]) {
+                return true;
+            }
+        }
+        if self
+            .sent
+            .is_none_or(|at| at.elapsed() >= SRT_PROBE_INTERVAL)
+        {
+            let _ = self.socket.send(&srt_induction());
+            self.sent = Some(Instant::now());
+        }
+        false
+    }
+}
+
+/// A free loopback TCP port for a relayed child to listen on.
+fn free_loopback_port() -> io::Result<u16> {
+    Ok(TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?
+        .local_addr()?
+        .port())
+}
+
+/// Binds an RTMP listener's configured address, nonblocking.
+fn bind_relay(plan: &Plan) -> io::Result<TcpListener> {
+    let (host, port) = listen_address(plan).ok_or(io::ErrorKind::InvalidInput)?;
+    let listener = TcpListener::bind((host.as_str(), port))?;
+    listener.set_nonblocking(true)?;
+    Ok(listener)
+}
+
+/// Waits for an RTMP publisher on the receiver's own listening port,
+/// binding it first if it is not bound yet. The receiver reports
+/// `listening` from the bind on.
+fn accept_publisher(
+    shared: &Shared,
+    plan: &Plan,
+    relay: &mut Option<TcpListener>,
+) -> Result<TcpStream, Ended> {
+    if relay.is_none() {
+        match bind_relay(plan) {
+            Ok(listener) => {
+                *relay = Some(listener);
+                let mut inner = shared.lock();
+                inner.state = NetworkStreamState::Listening;
+                inner.last_error = None;
+            }
+            Err(error) => {
+                shared.lock().last_error = Some(format!("cannot listen: {:?}", error.kind()));
+                return Err(Ended::Dropped { delivered: false });
+            }
+        }
+    }
+    let Some(listener) = relay.as_ref() else {
+        return Err(Ended::Dropped { delivered: false });
+    };
+    loop {
+        if let Ok((publisher, _)) = listener.accept()
+            && publisher.set_nonblocking(false).is_ok()
+        {
+            let _ = publisher.set_nodelay(true);
+            return Ok(publisher);
+        }
+        let inner = shared.lock();
+        if inner.shutdown {
+            return Err(Ended::Shutdown);
+        }
+        drop(
+            shared
+                .wake
+                .wait_timeout(inner, POLL)
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+    }
+}
+
+/// Connects to a relayed child's loopback `port` once the child has bound
+/// it, within [`CONNECT_GRACE`].
+fn link_child(shared: &Shared, child: &mut Child, port: u16) -> Result<TcpStream, Ended> {
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let deadline = Instant::now() + CONNECT_GRACE;
+    loop {
+        if shared.lock().shutdown {
+            return Err(Ended::Shutdown);
+        }
+        if let Ok(link) = TcpStream::connect_timeout(&address, RELAY_CONNECT_TIMEOUT) {
+            let _ = link.set_nodelay(true);
+            return Ok(link);
+        }
+        if !matches!(child.try_wait(), Ok(None)) || Instant::now() >= deadline {
+            let mut inner = shared.lock();
+            if inner.last_error.is_none() {
+                inner.last_error = Some("ffmpeg did not take the publisher".to_owned());
+            }
+            return Err(Ended::Dropped { delivered: false });
+        }
+        thread::sleep(RELAY_RETRY);
+    }
+}
+
+/// Relays an accepted `publisher` to its child's loopback `port` once the
+/// child listens, pushing the two pumps onto `readers`. Returns the two
+/// sockets, whose shutdown ends the relay; a publisher that cannot be
+/// relayed is dropped.
+fn relay_publisher(
+    shared: &Shared,
+    child: &mut Child,
+    publisher: TcpStream,
+    port: u16,
+    readers: &mut Vec<Option<JoinHandle<()>>>,
+) -> Result<Vec<TcpStream>, Ended> {
+    let link = match link_child(shared, child, port) {
+        Ok(link) => link,
+        Err(ended) => {
+            let _ = publisher.shutdown(Shutdown::Both);
+            return Err(ended);
+        }
+    };
+    for (name, from, to) in [
+        ("relay-in", publisher.try_clone(), link.try_clone()),
+        ("relay-out", link.try_clone(), publisher.try_clone()),
+    ] {
+        if let (Ok(from), Ok(to)) = (from, to) {
+            readers.push(spawn_pump(name, from, to));
+        }
+    }
+    Ok(vec![publisher, link])
+}
+
+/// Copies `from` into `to` until either ends, then ends `to`'s writes.
+fn spawn_pump(name: &str, mut from: TcpStream, mut to: TcpStream) -> Option<JoinHandle<()>> {
+    thread::Builder::new()
+        .name(format!("freemix-network-{name}"))
+        .spawn(move || {
+            let _ = io::copy(&mut from, &mut to);
+            let _ = to.shutdown(Shutdown::Write);
+        })
+        .ok()
+}
+
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU32;
@@ -2288,8 +2725,10 @@ mod tests {
         }
     }
 
+    /// The child's arguments; an RTMP listener's child listens on loopback
+    /// port 40000.
     fn args(plan: &Plan, port: Option<u16>) -> Vec<String> {
-        arguments(plan, port)
+        arguments(plan, port, Some(40_000))
             .into_iter()
             .map(|arg| arg.into_string().unwrap())
             .collect()
@@ -2761,20 +3200,24 @@ mod tests {
     }
 
     #[test]
-    fn rtmp_listener_arguments_listen_and_append_the_stream_key() {
-        let mut stream = NetworkStreamConfig::new("rtmp://0.0.0.0:19350/live");
+    fn rtmp_listener_arguments_listen_on_the_relay_port_and_append_the_stream_key() {
+        let mut stream = NetworkStreamConfig::new("RTMP://0.0.0.0:19350/live");
         stream.settings.mode = StreamMode::Listener;
         stream.stream_key = Some("sk_9f8e".into());
         let plan = stream_plan(&stream);
-        assert!(plan.listens());
+        assert!(plan.listens() && plan.relays() && !plan.probes());
+        assert_eq!(plan.initial_state(), NetworkStreamState::Connecting);
+        assert_eq!(listen_address(&plan), Some(("0.0.0.0".into(), 19350)));
+        // The child listens on loopback only, for the receiver's relay.
         let joined = args(&plan, None).join(" ");
         assert!(
             joined.contains(
-                "-listen 1 -timeout 30 -protocol_whitelist rtmp,rtmps,tcp,tls \
-                 -i rtmp://0.0.0.0:19350/live/sk_9f8e"
+                "-listen 1 -timeout 5 -protocol_whitelist rtmp,rtmps,tcp,tls \
+                 -i rtmp://127.0.0.1:40000/live/sk_9f8e"
             ),
             "{joined}"
         );
+        assert!(!joined.contains("19350"), "{joined}");
         assert!(!joined.contains("-rw_timeout"));
         let mut caller = NetworkStreamConfig::new("rtmp://ingest.test/live");
         caller.stream_key = Some("k1".into());
@@ -2782,6 +3225,58 @@ mod tests {
         assert!(joined.contains("-rw_timeout 5000000 -protocol_whitelist"));
         assert!(joined.contains("-i rtmp://ingest.test/live/k1"));
         assert!(!joined.contains("-listen"));
+    }
+
+    #[test]
+    fn listeners_bind_the_url_host_and_port() {
+        let listener = |url: &str| {
+            let mut stream = NetworkStreamConfig::new(url);
+            stream.settings.mode = StreamMode::Listener;
+            stream_plan(&stream)
+        };
+        assert_eq!(
+            listen_address(&listener("rtmp://[::]:1935/live")),
+            Some(("::".into(), 1935))
+        );
+        assert_eq!(
+            listen_address(&listener("rtmp://localhost/live")),
+            Some(("localhost".into(), 1935))
+        );
+        let srt = listener("srt://127.0.0.1:9000");
+        assert!(srt.probes() && !srt.relays());
+        assert_eq!(srt.initial_state(), NetworkStreamState::Connecting);
+        assert_eq!(listen_address(&srt), Some(("127.0.0.1".into(), 9000)));
+        let mut rendezvous = NetworkStreamConfig::new("srt://127.0.0.1:9000");
+        rendezvous.settings.mode = StreamMode::Rendezvous;
+        let rendezvous = stream_plan(&rendezvous);
+        assert!(!rendezvous.probes() && !rendezvous.relays());
+        assert_eq!(rendezvous.initial_state(), NetworkStreamState::Listening);
+        assert_eq!(
+            relay_url("rtmp://0.0.0.0:1935/live/k?x=1", 40_001),
+            "rtmp://127.0.0.1:40001/live/k?x=1"
+        );
+    }
+
+    #[test]
+    fn the_srt_probe_sends_an_induction_and_knows_its_answer() {
+        let packet = srt_induction();
+        // A handshake control packet to socket 0: version 4, induction.
+        assert_eq!(packet[..4], [0x80, 0, 0, 0]);
+        assert_eq!(packet[12..16], [0; 4]);
+        assert_eq!(packet[16..20], [0, 0, 0, 4]);
+        assert_eq!(packet[36..40], [0, 0, 0, 1]);
+        assert!(!is_srt_induction_answer(&packet), "addressed to socket 0");
+        // A listener's answer (captured from `libsrt` 1.5): version 5, the
+        // SRT magic, the probe's socket as destination, and a cookie.
+        let mut answer = packet;
+        answer[12..16].copy_from_slice(&SRT_PROBE_SOCKET.to_be_bytes());
+        answer[16..24].copy_from_slice(&[0, 0, 0, 5, 0, 0, 0x4a, 0x17]);
+        answer[44..48].copy_from_slice(&[0xa4, 0x33, 0x11, 0xf1]);
+        assert!(is_srt_induction_answer(&answer));
+        assert!(!is_srt_induction_answer(&answer[..40]));
+        let mut conclusion = answer;
+        conclusion[39] = 0xff;
+        assert!(!is_srt_induction_answer(&conclusion));
     }
 
     #[test]

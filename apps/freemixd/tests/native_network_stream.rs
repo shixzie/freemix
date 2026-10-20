@@ -453,10 +453,12 @@ impl Client {
 /// A red test signal with a tone, published to `url` in `format`; stopped
 /// on drop.
 ///
-/// An `ffmpeg` publisher does not retry, and a listening receiver's child
-/// binds its port some time after the status turns `listening` (a loaded
-/// host can stretch that well past any fixed settle time), so a publisher
-/// that exits before it is dropped is started again.
+/// An `ffmpeg` publisher does not retry, so one that exits before it is
+/// dropped is started again, as a real encoder reconnects. (A listening
+/// receiver reports `listening` only once its port accepts, and an RTMP
+/// listener's port stays bound between publishers; an SRT caller that
+/// starts before a session's next child binds the port retransmits its
+/// handshake until its connect timeout.)
 struct Publisher {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -780,8 +782,7 @@ fn native_daemon_listens_for_an_rtmp_push_and_an_encrypted_srt_caller() {
     });
     assert_eq!(listening.reconnects, 0, "{listening:?}");
 
-    // The status turns `listening` as the child starts: the publisher keeps
-    // trying until the child has bound its port.
+    // `listening` means the port accepts the push.
     let publisher = Publisher::start(
         "flv",
         &format!("rtmp://127.0.0.1:{rtmp_port}/live/{stream_key}"),

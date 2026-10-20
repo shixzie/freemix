@@ -10,7 +10,7 @@
 //! and the SRT cases skip when `ffmpeg` lacks `libsrt` unless
 //! `FM_REQUIRE_FFMPEG_SRT=1`.
 
-use std::net::{Ipv4Addr, TcpListener, UdpSocket};
+use std::net::{Ipv4Addr, TcpListener, TcpStream, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
@@ -153,58 +153,6 @@ impl Drop for Peer {
     }
 }
 
-/// Pushes an RTMP publisher makes before it gives up.
-const PUBLISH_ATTEMPTS: u32 = 5;
-/// How long a refused publisher waits before it pushes again.
-const PUBLISH_RETRY: Duration = Duration::from_secs(1);
-
-/// An encoder pushing RTMP to the receiver's listener that, like a real
-/// encoder, pushes again (at most [`PUBLISH_ATTEMPTS`] times) when its push
-/// is refused. The receiver's `ffmpeg -listen 1` child closes its listening
-/// socket once it accepts a publisher, so the port refuses connections
-/// from then until the receiver's next child binds it; a loaded machine
-/// can stretch that gap past a test `ffmpeg`'s start, and the test `ffmpeg`
-/// itself never retries.
-struct Publisher {
-    url: String,
-    peer: Peer,
-    attempts: u32,
-    exited_at: Option<Instant>,
-}
-
-impl Publisher {
-    fn start(url: String) -> Self {
-        let peer = Peer::tone(&["-f", "flv", &url]);
-        Self {
-            url,
-            peer,
-            attempts: 1,
-            exited_at: None,
-        }
-    }
-
-    /// Pushes again [`PUBLISH_RETRY`] after a push ended, while attempts
-    /// remain.
-    fn keep_pushing(&mut self) {
-        if self.attempts >= PUBLISH_ATTEMPTS {
-            return;
-        }
-        match self.exited_at {
-            None => {
-                if matches!(self.peer.0.try_wait(), Ok(Some(_))) {
-                    self.exited_at = Some(Instant::now());
-                }
-            }
-            Some(at) if at.elapsed() >= PUBLISH_RETRY => {
-                self.peer = Peer::tone(&["-f", "flv", &self.url]);
-                self.attempts += 1;
-                self.exited_at = None;
-            }
-            Some(_) => {}
-        }
-    }
-}
-
 fn stream(url: &str) -> NetworkStreamConfig {
     let mut stream = NetworkStreamConfig::new(url);
     stream.settings.jitter_buffer_ms = 200;
@@ -287,25 +235,6 @@ fn expect_live(receiver: &NetworkReceiver, observed: &mut Observed, what: &str) 
     assert!(receiver.status().bitrate_bps > 0, "{what}: no bitrate");
 }
 
-/// [`expect_live`] for an RTMP push, which pushes again while it is refused.
-fn expect_pushed_live(
-    receiver: &NetworkReceiver,
-    observed: &mut Observed,
-    what: &str,
-    publisher: &mut Publisher,
-) {
-    assert!(
-        pull_until(receiver, Duration::from_secs(20), observed, |status, _| {
-            publisher.keep_pushing();
-            status.state == NetworkStreamState::Live
-        }),
-        "{what}: never went live after {} pushes: {:?}",
-        publisher.attempts,
-        receiver.status()
-    );
-    expect_live(receiver, observed, what);
-}
-
 /// Pulls for `span` and returns how many frames were loud.
 fn loud_frames_over(receiver: &NetworkReceiver, span: Duration) -> usize {
     let mut observed = Observed::default();
@@ -356,6 +285,19 @@ fn an_rtmp_listener_takes_an_encoder_push_refuses_a_wrong_key_and_listens_again(
     config.stream_key = Some(KEY.to_owned());
     let receiver = receiver(&config);
     let mut observed = Observed::default();
+    // `listening` means the port accepts: a connection made the moment it
+    // is reported is never refused.
+    assert!(
+        pull_until(
+            &receiver,
+            Duration::from_secs(10),
+            &mut observed,
+            |status, _| status.state == NetworkStreamState::Listening
+        ),
+        "the listener listens: {:?}",
+        receiver.status()
+    );
+    drop(TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("a listening port accepts"));
     pull_until(&receiver, Duration::from_secs(3), &mut observed, |_, _| {
         false
     });
@@ -387,10 +329,10 @@ fn an_rtmp_listener_takes_an_encoder_push_refuses_a_wrong_key_and_listens_again(
     assert_no_secret(&receiver.status(), &[KEY, "wrong"]);
     drop(wrong);
 
-    // The refused publisher's child accepted it and stopped listening: the
-    // port is closed until the receiver's next child binds it.
-    let mut publisher = Publisher::start(format!("rtmp://127.0.0.1:{port}/live/{KEY}"));
-    expect_pushed_live(&receiver, &mut observed, "rtmp listener", &mut publisher);
+    // The port never closes: a publisher pushing the moment the wrong one
+    // is refused, once and without retrying, goes live.
+    let publisher = Peer::tone(&["-f", "flv", &format!("rtmp://127.0.0.1:{port}/live/{KEY}")]);
+    expect_live(&receiver, &mut observed, "rtmp listener");
     assert!(loud_frames_over(&receiver, Duration::from_secs(2)) > 10);
     assert_eq!(receiver.status().source_channels, 1);
 
@@ -405,14 +347,43 @@ fn an_rtmp_listener_takes_an_encoder_push_refuses_a_wrong_key_and_listens_again(
         "the listener listens again once its publisher leaves: {:?}",
         receiver.status()
     );
-    let mut again = Publisher::start(format!("rtmp://127.0.0.1:{port}/live/{KEY}"));
-    expect_pushed_live(
-        &receiver,
-        &mut observed,
-        "rtmp listener, second push",
-        &mut again,
-    );
+    let _again = Peer::tone(&["-f", "flv", &format!("rtmp://127.0.0.1:{port}/live/{KEY}")]);
+    expect_live(&receiver, &mut observed, "rtmp listener, second push");
     assert_no_secret(&receiver.status(), &[KEY]);
+}
+
+#[test]
+fn an_rtmp_listener_takes_a_publisher_that_connects_while_another_is_refused() {
+    let _serial = serialize();
+    if !tools_available() {
+        return;
+    }
+    let port = free_tcp_port();
+    let mut config = stream(&format!("rtmp://127.0.0.1:{port}/live"));
+    config.settings.mode = StreamMode::Listener;
+    config.stream_key = Some(KEY.to_owned());
+    let receiver = receiver(&config);
+    let mut observed = Observed::default();
+    assert!(
+        pull_until(
+            &receiver,
+            Duration::from_secs(10),
+            &mut observed,
+            |status, _| status.state == NetworkStreamState::Listening
+        ),
+        "the listener listens: {:?}",
+        receiver.status()
+    );
+    // The right publisher connects right behind the wrong one, before the
+    // wrong one is refused: it waits for the port, then goes live, once
+    // and without retrying.
+    let wrong = Peer::tone(&["-f", "flv", &format!("rtmp://127.0.0.1:{port}/live/wrong")]);
+    thread::sleep(Duration::from_millis(300));
+    let _publisher = Peer::tone(&["-f", "flv", &format!("rtmp://127.0.0.1:{port}/live/{KEY}")]);
+    expect_live(&receiver, &mut observed, "rtmp listener after a refusal");
+    drop(wrong);
+    assert!(loud_frames_over(&receiver, Duration::from_secs(2)) > 10);
+    assert_no_secret(&receiver.status(), &[KEY, "wrong"]);
 }
 
 #[test]
@@ -517,8 +488,56 @@ fn an_srt_listener_refuses_a_wrong_passphrase() {
         false
     });
     assert_eq!(observed.pictures, 0, "a wrong passphrase never connects");
-    assert_ne!(receiver.status().state, NetworkStreamState::Live);
+    assert_eq!(
+        receiver.status().state,
+        NetworkStreamState::Listening,
+        "the listener keeps listening"
+    );
     assert_no_secret(&receiver.status(), &[PASSPHRASE]);
+}
+
+#[test]
+fn an_srt_listener_takes_a_new_caller_once_one_leaves() {
+    let _serial = serialize();
+    if !srt_available() {
+        return;
+    }
+    let port = free_udp_port();
+    let mut config = stream(&format!("srt://127.0.0.1:{port}"));
+    config.settings.mode = StreamMode::Listener;
+    config.settings.latency_ms = 80;
+    let receiver = receiver(&config);
+    let mut observed = Observed::default();
+    // `listening` is reported once the child answers on its port.
+    assert!(
+        pull_until(
+            &receiver,
+            Duration::from_secs(10),
+            &mut observed,
+            |status, _| status.state == NetworkStreamState::Listening
+        ),
+        "the SRT listener listens: {:?}",
+        receiver.status()
+    );
+    let caller_url = format!("srt://127.0.0.1:{port}?mode=caller");
+    let caller = Peer::tone(&["-f", "mpegts", &caller_url]);
+    expect_live(&receiver, &mut observed, "srt listener");
+    drop(caller);
+    // The next caller starts the moment the first leaves, once and without
+    // retrying: it retransmits its handshake while the receiver's next
+    // child binds the port.
+    let _next = Peer::tone(&["-f", "mpegts", &caller_url]);
+    assert!(
+        pull_until(
+            &receiver,
+            Duration::from_secs(10),
+            &mut observed,
+            |status, _| status.state != NetworkStreamState::Live
+        ),
+        "the first caller's session ends: {:?}",
+        receiver.status()
+    );
+    expect_live(&receiver, &mut observed, "srt listener, next caller");
 }
 
 #[test]
