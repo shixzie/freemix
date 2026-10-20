@@ -2809,7 +2809,7 @@ drift-correcting resampler and keeps its pictures following that audio.
   and a `SYNC` key on each live input's mixer strip whose menu lists the
   drift, correction, ratio, buffer, and counts. `freemix-cli
   remote-diagnostics` prints one `SourceSync(...)` line per source.
-- 2.74 is refused.
+- 2.75 is refused.
 
 Protocol 2.77 adds document inputs (IN-014, schema 66): a document input
 shows a PDF or a presentation one page at a time, stepped with the generic
