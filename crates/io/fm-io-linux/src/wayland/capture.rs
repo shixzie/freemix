@@ -21,6 +21,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use fm_types::screen_capture::{
@@ -105,8 +106,11 @@ impl Shared {
 }
 
 /// One input's share of a Wayland desktop, running until dropped.
+/// Dropping it does not wait: its thread ends the share (closing the
+/// desktop's session can take seconds) on its own.
 pub struct PortalCapture {
     shared: Arc<Shared>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl PortalCapture {
@@ -118,6 +122,22 @@ impl PortalCapture {
         request: ShareRequest,
         settings: CaptureSettings,
     ) -> Self {
+        Self::start_after(None, backend, request, settings)
+    }
+
+    /// Like [`Self::start`], replacing `previous` (the same input's last
+    /// capture, if any): `previous` is stopped, and this capture asks the
+    /// desktop only once its share has ended, so one input never runs two
+    /// portal sessions or dialogs at once. It is `opening` meanwhile.
+    #[must_use]
+    pub fn start_after(
+        previous: Option<Self>,
+        backend: Box<dyn PortalBackend>,
+        request: ShareRequest,
+        settings: CaptureSettings,
+    ) -> Self {
+        // Dropped here, which stops it; its thread is waited for below.
+        let previous = previous.and_then(|mut previous| previous.thread.take());
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 status: ScreenCaptureStatus {
@@ -138,16 +158,25 @@ impl PortalCapture {
         let worker = Arc::clone(&shared);
         let spawned = std::thread::Builder::new()
             .name("freemixd-portal-capture".into())
-            .spawn(move || run(backend, &worker, &request));
-        if let Err(error) = spawned {
-            shared.set(|status| {
-                status.state = ScreenCaptureState::Failed;
-                status.last_error = Some(bound_screen_capture_error(&format!(
-                    "the capture thread could not start: {error}"
-                )));
+            .spawn(move || {
+                if let Some(previous) = previous {
+                    let _ = previous.join();
+                }
+                run(backend, &worker, &request);
             });
-        }
-        Self { shared }
+        let thread = match spawned {
+            Ok(thread) => Some(thread),
+            Err(error) => {
+                shared.set(|status| {
+                    status.state = ScreenCaptureState::Failed;
+                    status.last_error = Some(bound_screen_capture_error(&format!(
+                        "the capture thread could not start: {error}"
+                    )));
+                });
+                None
+            }
+        };
+        Self { shared, thread }
     }
 
     /// Changes the crop, rate, or program size of the pictures to come.
@@ -190,6 +219,10 @@ fn run(mut backend: Box<dyn PortalBackend>, shared: &Shared, request: &ShareRequ
     let mut attempt = 0_u32;
     let mut restarts = 0_u32;
     loop {
+        if shared.stopping() {
+            // Dropped while waiting for the input's last capture to end.
+            return;
+        }
         let restore_token = shared.state().token.clone();
         shared.set(|status| {
             *status = ScreenCaptureStatus {
@@ -728,6 +761,65 @@ mod tests {
         );
         settle(&capture, |status| status.state == ScreenCaptureState::Live);
         assert_eq!(requests.lock().unwrap().len(), 2);
+    }
+
+    /// A share that takes a while to close, counting the shares open at
+    /// once.
+    struct SlowToClose {
+        open: Arc<std::sync::atomic::AtomicUsize>,
+        most: Arc<std::sync::atomic::AtomicUsize>,
+        shares: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl PortalBackend for SlowToClose {
+        fn share(&mut self, _: &ShareRequest, sink: &mut dyn ShareSink) -> ShareEnd {
+            self.shares.fetch_add(1, Ordering::SeqCst);
+            let open = self.open.fetch_add(1, Ordering::SeqCst) + 1;
+            self.most.fetch_max(open, Ordering::SeqCst);
+            sink.awaiting_selection();
+            while !sink.stopping() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            // Closing the desktop's session.
+            std::thread::sleep(Duration::from_millis(400));
+            self.open.fetch_sub(1, Ordering::SeqCst);
+            ShareEnd::Stopped
+        }
+    }
+
+    #[test]
+    fn a_replacing_capture_asks_only_once_the_last_one_closed() {
+        let open = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let most = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let shares = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let backend = || -> Box<dyn PortalBackend> {
+            Box::new(SlowToClose {
+                open: Arc::clone(&open),
+                most: Arc::clone(&most),
+                shares: Arc::clone(&shares),
+            })
+        };
+        let request = ShareRequest {
+            kind: SourceKind::Monitor,
+            cursor: false,
+            restore_token: None,
+        };
+        let first = PortalCapture::start(backend(), request.clone(), settings());
+        settle(&first, |status| {
+            status.state == ScreenCaptureState::AwaitingSelection
+        });
+        // Picked again twice in a row: the second replacement is dropped
+        // before it could ask.
+        let second =
+            PortalCapture::start_after(Some(first), backend(), request.clone(), settings());
+        assert_eq!(second.status().state, ScreenCaptureState::Opening);
+        let third = PortalCapture::start_after(Some(second), backend(), request, settings());
+        settle(&third, |status| {
+            status.state == ScreenCaptureState::AwaitingSelection
+        });
+        assert_eq!(most.load(Ordering::SeqCst), 1, "one share at a time");
+        assert_eq!(shares.load(Ordering::SeqCst), 2, "the second never asked");
+        drop(third);
     }
 
     #[test]

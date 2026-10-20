@@ -22,7 +22,8 @@
 //! in the project (see [`keep_restore_tokens`]), so a reopened project
 //! shares the same targets again without the dialog where the desktop
 //! allows it. A new pick forgets the input's token first, so the dialog
-//! asks again.
+//! asks again. An input's next share waits for its last one to close (which
+//! can take seconds), so one input never runs two shares or dialogs.
 //!
 //! A capture's sound does not depend on how its picture is shared: it is
 //! keyed by the server's audio system, not by the window system. **System
@@ -78,6 +79,9 @@ struct Source {
     config: ScreenCaptureConfig,
     closed: bool,
     capture: Option<PortalCapture>,
+    /// The input's last capture, stopped but perhaps still closing its
+    /// share: the next capture asks the desktop only once it has ended.
+    retired: Option<PortalCapture>,
     /// Shares started for this input after its first.
     restarts: u32,
     /// A captured picture is on the input (what a black slate replaces).
@@ -87,6 +91,15 @@ struct Source {
     /// The share's system audio, once the share went live.
     sound: Option<SystemSound>,
     reported: Option<(ScreenCaptureStatus, Instant)>,
+}
+
+impl Source {
+    /// Stops the input's capture; its successor waits for it to end.
+    fn retire(&mut self) {
+        if let Some(capture) = self.capture.take() {
+            self.retired = Some(capture);
+        }
+    }
 }
 
 /// A share's system audio: an audio-only receiver of the default output's
@@ -258,6 +271,7 @@ impl PortalSources {
                 config: config.clone(),
                 closed,
                 capture: None,
+                retired: None,
                 restarts: 0,
                 showing: false,
                 blank: false,
@@ -272,16 +286,16 @@ impl PortalSources {
                 if SourceKind::of(&old.target) != SourceKind::of(&config.target) {
                     // A token restores a screen or a window, not the other.
                     self.tokens_changed |= self.tokens.remove(input).is_some();
-                    source.capture = None;
+                    source.retire();
                 } else if old.cursor != config.cursor {
-                    source.capture = None;
+                    source.retire();
                 } else if let Some(capture) = &source.capture {
                     capture.set_settings(settings);
                 }
                 source.config = config.clone();
             }
             if closed && !source.closed {
-                source.capture = None;
+                source.retire();
                 source.showing = false;
                 source.blank = true;
             }
@@ -320,7 +334,8 @@ impl PortalSources {
                 width: self.format.dimensions.0,
                 height: self.format.dimensions.1,
             };
-            source.capture = Some(PortalCapture::start(
+            source.capture = Some(PortalCapture::start_after(
+                source.retired.take(),
                 (self.factory)(),
                 request(&source.config, self.tokens.get(input)),
                 settings,
@@ -336,7 +351,7 @@ impl PortalSources {
             return false;
         };
         self.tokens_changed |= self.tokens.remove(&input).is_some();
-        source.capture = None;
+        source.retire();
         source.sound = None;
         true
     }
@@ -588,6 +603,11 @@ mod tests {
     struct Script {
         shares: VecDeque<Share>,
         requests: Vec<ShareRequest>,
+        /// How long a share takes to close once stopped.
+        close: Duration,
+        /// The shares open now, and the most ever open at once.
+        open: usize,
+        most_open: usize,
     }
 
     struct Fake(Arc<Mutex<Script>>);
@@ -597,8 +617,20 @@ mod tests {
             let share = {
                 let mut script = self.0.lock().unwrap();
                 script.requests.push(request.clone());
+                script.open += 1;
+                script.most_open = script.most_open.max(script.open);
                 script.shares.pop_front().unwrap_or(Share::Wait)
             };
+            let end = Self::run(&share, sink);
+            let close = self.0.lock().unwrap().close;
+            std::thread::sleep(close);
+            self.0.lock().unwrap().open -= 1;
+            end
+        }
+    }
+
+    impl Fake {
+        fn run(share: &Share, sink: &mut dyn ShareSink) -> ShareEnd {
             match share {
                 Share::Deny => {
                     sink.awaiting_selection();
@@ -639,7 +671,7 @@ mod tests {
     ) -> (PortalSources, Arc<Mutex<Script>>) {
         let script = Arc::new(Mutex::new(Script {
             shares: shares.into(),
-            requests: Vec::new(),
+            ..Script::default()
         }));
         let fake = Arc::clone(&script);
         let factory: PortalFactory =
@@ -768,6 +800,28 @@ mod tests {
             .state,
             ScreenCaptureState::Idle
         );
+    }
+
+    #[test]
+    fn a_new_pick_asks_only_once_the_last_share_closed() {
+        let (mut sources, script) = sources(Vec::new());
+        script.lock().unwrap().close = Duration::from_millis(400);
+        sources.sync(&[(input(1), window())], |_| false);
+        settle(&mut sources, input(1), |state| {
+            state == ScreenCaptureState::AwaitingSelection
+        });
+        // Picked again twice in a row while the first share closes.
+        assert!(sources.pick(input(1)));
+        settle(&mut sources, input(1), |state| {
+            state == ScreenCaptureState::Opening
+        });
+        assert!(sources.pick(input(1)));
+        settle(&mut sources, input(1), |state| {
+            state == ScreenCaptureState::AwaitingSelection
+        });
+        let script = script.lock().unwrap();
+        assert_eq!(script.most_open, 1, "one share at a time");
+        assert_eq!(script.requests.len(), 2, "the dropped pick never asked");
     }
 
     #[test]
