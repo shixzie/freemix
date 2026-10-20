@@ -1,8 +1,9 @@
-//! Timed transitions on the native daemon's frame loop (SW-001, SW-002).
+//! Timed transitions, Stingers, and title Out phases on the native daemon's
+//! frame loop (SW-001, SW-002, SW-003, GX-001).
 //!
 //! A native command realizes only its first frame; the pacer realizes the
-//! rest of a timed transition one frame per tick, like a held T-bar
-//! transition. While it runs, every session keeps being served: Studio
+//! rest of a timed transition, Stinger, or title phase one frame per tick,
+//! like a held T-bar transition. While it runs, every session keeps being served: Studio
 //! receives Program and Preview monitor frames and meters, another
 //! client's commands are answered (or refused as the engine refuses them
 //! during a transition), and a session that only heartbeats survives a
@@ -34,8 +35,8 @@ use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProjec
 use fm_protocol::{
     AutoTransitionKind, CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload,
     CommandResult, HandshakeOutcome, HandshakeRequest, HeartbeatMessage, MonitorFrameAssembler,
-    MonitorImage, MonitorTap, Role, ServerIdentity, WireInputId, WireMessage, decode_line,
-    encode_line,
+    MonitorImage, MonitorTap, Role, RuntimeLifecycleEvent, ServerIdentity, WireInputId,
+    WireMessage, decode_line, encode_line,
 };
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
@@ -95,6 +96,18 @@ fn tools_available() -> bool {
 /// A `width`x48 25 fps show of three solid generators: red on
 /// Program, blue on Preview, and green; recorder 1 runs when `record`.
 fn save_project(path: &Path, width: u16, record: bool) {
+    save_project_with(path, width, record, |_, _| {});
+}
+
+/// [`save_project`], with `extend` adding to the project (and writing
+/// its assets into the bundle) before it is saved.
+fn save_project_with(
+    path: &Path,
+    width: u16,
+    record: bool,
+    extend: impl FnOnce(&mut Project, &ProjectStore),
+) {
+    let store = ProjectStore::new(path).unwrap();
     let rate = FrameRate::new(FRAME_RATE, 1).unwrap();
     let mut project = Project::new(
         ProjectId::new(NonZeroU128::new(7_301).unwrap()),
@@ -128,6 +141,7 @@ fn save_project(path: &Path, width: u16, record: bool) {
     }
     project.set_main_mix(MainMix::new(input(1), input(2)));
     project.set_recording_desired(RecorderSlot::new(1).unwrap(), record);
+    extend(&mut project, &store);
     let stored = StoredProject::from_project(
         project,
         RuntimeRouting {
@@ -140,7 +154,7 @@ fn save_project(path: &Path, width: u16, record: bool) {
         Vec::new(),
     )
     .unwrap();
-    ProjectStore::new(path).unwrap().save(&stored).unwrap();
+    store.save(&stored).unwrap();
 }
 
 fn drain(reader: impl std::io::Read + Send + 'static) -> mpsc::Receiver<String> {
@@ -255,6 +269,9 @@ struct Session {
     meter_frames: Vec<u64>,
     /// When each heartbeat acknowledgement arrived.
     acknowledged: Vec<Instant>,
+    /// Every switcher realization: its revision, when it arrived, and the
+    /// newest Program monitor frame received before it.
+    realized: Vec<(u64, Instant, Option<u64>)>,
     commands: u64,
 }
 
@@ -306,6 +323,7 @@ impl Session {
             images: Vec::new(),
             meter_frames: Vec::new(),
             acknowledged: Vec::new(),
+            realized: Vec::new(),
             commands: 0,
         }
     }
@@ -358,6 +376,20 @@ impl Session {
             }
             WireMessage::AudioMeters(meters) => self.meter_frames.push(meters.frame),
             WireMessage::HeartbeatAcknowledgement(_) => self.acknowledged.push(Instant::now()),
+            WireMessage::RuntimeEvent(runtime) => {
+                if let RuntimeLifecycleEvent::Realized { domain, .. } = &runtime.event
+                    && domain == "switcher"
+                {
+                    let program = self
+                        .images
+                        .iter()
+                        .filter(|image| image.tap == MonitorTap::Program)
+                        .map(|image| image.frame)
+                        .max();
+                    self.realized
+                        .push((runtime.revision, Instant::now(), program));
+                }
+            }
             _ => {}
         }
         Some(message)
@@ -392,10 +424,18 @@ impl Session {
     /// Sends `payload` and returns the frame its accepted result realized
     /// it on.
     fn accepted(&mut self, payload: CommandPayload) -> u64 {
+        self.accepted_revision(payload).1
+    }
+
+    /// Sends `payload` and returns its accepted revision and the frame it
+    /// was realized on.
+    fn accepted_revision(&mut self, payload: CommandPayload) -> (u64, u64) {
         match self.command(payload) {
             CommandResult::Accepted {
-                scheduled_frame, ..
-            } => scheduled_frame.expect("a scheduled frame"),
+                revision,
+                scheduled_frame,
+                ..
+            } => (revision, scheduled_frame.expect("a scheduled frame")),
             rejected @ CommandResult::Rejected { .. } => {
                 panic!("{}: refused: {rejected:?}", self.name)
             }
@@ -760,4 +800,451 @@ fn a_heartbeat_only_session_survives_a_transition_longer_than_its_timeout() {
         previous.duration_since(started) > length,
         "no heartbeat was acknowledged after the transition"
     );
+}
+
+/// The mean RGB of `image`.
+fn mean(image: &MonitorImage) -> [u8; 3] {
+    let pixels = image.rgba.as_chunks::<4>().0;
+    let count = u64::try_from(pixels.len()).unwrap().max(1);
+    let mut sums = [0_u64; 3];
+    for pixel in pixels {
+        for (sum, &value) in sums.iter_mut().zip(&pixel[..3]) {
+            *sum += u64::from(value);
+        }
+    }
+    sums.map(|sum| u8::try_from(sum / count).unwrap())
+}
+
+const TITLE_TEMPLATE_KEY: &str = "titles/out-phase.fmtitle";
+const TITLE_OUTPUT: u128 = 7_312;
+
+/// Adds title input 5 to `project`, a template covering the whole
+/// `width`x48 frame in green that fades out over `out_frames`, and a
+/// Program output overlays can be included in.
+fn add_fading_title(project: &mut Project, store: &ProjectStore, width: u16, out_frames: u32) {
+    use fm_titles::{
+        Bounds, Color, Element, ElementId, ElementKind, Style, TemplateId, TitleTemplate,
+        fm_animation::{AnimationPreset, Phase, Timebase},
+    };
+    let element = ElementId::new(NonZeroU128::MIN);
+    let mut template = TitleTemplate {
+        id: TemplateId::new(NonZeroU128::MIN),
+        name: "Out phase".into(),
+        width: u32::from(width),
+        height: u32::from(HEIGHT),
+        background: Color::TRANSPARENT,
+        fields: Vec::new(),
+        elements: vec![Element {
+            id: element,
+            name: "Plate".into(),
+            bounds: Bounds {
+                x: 0,
+                y: 0,
+                width: u32::from(width),
+                height: u32::from(HEIGHT),
+            },
+            z_index: 0,
+            visible: true,
+            style: Style {
+                fill: Color::new(GREEN[0], GREEN[1], GREEN[2], 255),
+                ..Style::default()
+            },
+            color_field: None,
+            kind: ElementKind::Rectangle,
+        }],
+        // Keyed at the show's rate, so the phase lasts `out_frames` show
+        // frames.
+        animation: fm_titles::TitleAnimation::empty(Timebase::new(
+            FrameRate::new(FRAME_RATE, 1).unwrap(),
+        )),
+    };
+    template
+        .apply_animation_preset(element, Phase::Out, AnimationPreset::Fade, out_frames)
+        .unwrap();
+    let document = fm_persistence::encode_title_template(&fm_persistence::StoredTitleTemplate {
+        template,
+        fonts: Vec::new(),
+        clocks: Vec::new(),
+    })
+    .unwrap();
+    let path = store.assets_root().join(TITLE_TEMPLATE_KEY);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, document).unwrap();
+    // An overlay composites only into the outputs that include it, so the
+    // show gets a Program output.
+    let scene = fm_types::SceneId::new(NonZeroU128::new(7_310).unwrap());
+    project.add_scene(fm_model::Scene {
+        id: scene,
+        name: "Program scene".into(),
+        background: fm_model::Rgba8::OPAQUE_BLACK,
+        layers: vec![fm_model::Layer {
+            id: fm_model::LayerId::new(1).unwrap(),
+            name: "Source".into(),
+            source: fm_model::SourceRef::Input(input(1)),
+            enabled: true,
+            geometry: fm_model::LayerGeometry::new(
+                0,
+                0,
+                u32::from(width),
+                u32::from(HEIGHT),
+                fm_model::Rotation::Deg0,
+            ),
+            crop: None,
+            mask: None,
+            key: None,
+            effects: Vec::new(),
+            opacity: u8::MAX,
+            z_order: 0,
+        }],
+        animation: fm_model::SceneAnimation::default(),
+    });
+    let bus = fm_types::BusId::new(NonZeroU128::new(7_311).unwrap());
+    project.add_audio_bus(fm_model::AudioBus {
+        id: bus,
+        name: "Program bus".into(),
+        sends: Vec::new(),
+    });
+    project.add_output(fm_model::Output {
+        id: fm_types::OutputId::new(NonZeroU128::new(TITLE_OUTPUT).unwrap()),
+        name: "Program output".into(),
+        video_source: scene,
+        audio_source: bus,
+        startup: fm_model::StartupPolicy::Stopped,
+        required_capabilities: Vec::new(),
+    });
+    project.add_input(Input {
+        id: input(5),
+        name: "Fading title".into(),
+        kind: InputKind::Title(fm_model::TitleInput {
+            template_uri: format!("asset://{TITLE_TEMPLATE_KEY}"),
+            field_revision: 0,
+            fields: Vec::new(),
+        }),
+        required_capabilities: Vec::new(),
+    });
+}
+
+/// Whether `image` is nearer red than blue: the Program a stinger covers
+/// before its cut point.
+fn reddish(image: &MonitorImage) -> bool {
+    let [red, _, blue] = mean(image);
+    red > blue
+}
+
+/// A Stinger runs on the frame loop like a mix: its command is answered
+/// once it started, Studio keeps receiving Program and Preview monitor
+/// frames through it, its clip covers Program which cuts underneath at the
+/// cut point, another client's edit is answered mid Stinger (and a Cut
+/// refused, as one is while a transition is in flight), and its switcher
+/// realization arrives only after the cut, once the clip has played out.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn a_stinger_runs_on_the_frame_loop_and_cuts_at_its_cut_point() {
+    const STINGER_FRAMES: u32 = 100;
+    const CUT_POINT: u32 = 50;
+    if !tools_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("stinger.freemix");
+    save_project_with(&project, 64, false, |project, _| {
+        // A half-transparent clip, so the cut under it shows.
+        project.add_input(Input {
+            id: input(4),
+            name: "Stinger clip".into(),
+            kind: InputKind::Simulated(SimulatedInput::new(
+                SimulatedVideo::Solid(SolidColor::new(240, 240, 240, 128)),
+                SimulatedAudio::Silence,
+            )),
+            required_capabilities: Vec::new(),
+        });
+        project.add_stinger(fm_model::StingerConfig::new(
+            fm_model::StingerSlotNumber::new(1).unwrap(),
+            input(4),
+            true,
+            CUT_POINT,
+            fm_model::StingerAudioPolicy::Muted,
+            fm_model::StingerMissingMediaFallback::KeepProgram,
+        ));
+    });
+    let Some(daemon) = DaemonProcess::start(&project, None) else {
+        return;
+    };
+    let mut studio = Session::connect(daemon.control, "studio", ClientType::Studio, Role::Admin);
+    let mut cli = Session::connect(daemon.control, "cli", ClientType::Cli, Role::Admin);
+    studio.read_until_image(MonitorTap::Program, 0, "a first Program frame");
+
+    let (started_sender, started) = mpsc::channel::<()>();
+    let other = thread::spawn(move || {
+        started.recv().unwrap();
+        thread::sleep(Duration::from_millis(500));
+        let renamed = cli.accepted(CommandPayload::RenameInput {
+            input: wire(3),
+            name: "Renamed mid stinger".into(),
+        });
+        let answered = Instant::now();
+        let cut = cli.command(CommandPayload::Cut);
+        let deadline = Instant::now() + FRAME_TIMEOUT;
+        while Instant::now() < deadline {
+            cli.receive();
+        }
+        (renamed, answered, cut)
+    });
+
+    let sent = Instant::now();
+    let (revision, start) = studio.accepted_revision(CommandPayload::Stinger {
+        slot: fm_protocol::WireStingerSlotId::new(1).unwrap(),
+        duration_frames: STINGER_FRAMES,
+    });
+    let answered = sent.elapsed();
+    started_sender.send(()).unwrap();
+    let cut_at = start + u64::from(CUT_POINT);
+    let end = start + u64::from(STINGER_FRAMES);
+    assert!(
+        answered < Duration::from_secs(2),
+        "the Stinger was answered after {answered:?}, not once it started"
+    );
+    studio.read_until_image(
+        MonitorTap::Program,
+        end + 1,
+        "the Program after the Stinger",
+    );
+
+    // The clip covers Program throughout, over the old Program before the
+    // cut point and the new one after it; Program still names the old
+    // input until the Stinger ends.
+    let program = |from: u64, to: u64| -> Vec<&MonitorImage> {
+        studio
+            .images
+            .iter()
+            .filter(|image| image.tap == MonitorTap::Program)
+            .filter(|image| image.frame > from && image.frame < to)
+            .collect()
+    };
+    let before = program(start, cut_at - 1);
+    let after = program(cut_at + 1, end - 1);
+    assert!(
+        before.len() >= DURING && after.len() >= DURING,
+        "during the Stinger Studio got {} Program frames before its cut point and {} after",
+        before.len(),
+        after.len()
+    );
+    for image in &before {
+        assert!(
+            reddish(image) && !solid(image, RED) && image.input == wire(1),
+            "Program at frame {} is not the clip over input 1: {:?}",
+            image.frame,
+            mean(image)
+        );
+    }
+    for image in &after {
+        assert!(
+            !reddish(image) && !solid(image, BLUE) && image.input == wire(1),
+            "Program at frame {} is not the clip over the cut to input 2: {:?}",
+            image.frame,
+            mean(image)
+        );
+    }
+    let landed = studio
+        .images
+        .iter()
+        .find(|image| image.tap == MonitorTap::Program && image.input == wire(2))
+        .expect("Program ends on input 2");
+    assert!(
+        landed.frame + 1 >= end && solid(landed, BLUE),
+        "Program took input 2 on frame {}, inside the Stinger ending on {end}",
+        landed.frame
+    );
+    let preview: Vec<&MonitorImage> = studio
+        .images
+        .iter()
+        .filter(|image| image.tap == MonitorTap::Preview)
+        .filter(|image| image.frame > start && image.frame + 1 < end)
+        .collect();
+    assert!(
+        preview.len() >= DURING,
+        "during the Stinger Studio got {} Preview frames",
+        preview.len()
+    );
+    for image in &preview {
+        assert!(
+            image.input == wire(2) && solid(image, BLUE),
+            "Preview at frame {}",
+            image.frame
+        );
+    }
+
+    let (renamed, renamed_at, cut) = other.join().unwrap();
+    assert!(
+        renamed > start && renamed < end,
+        "the other client's edit was realized on frame {renamed}, not inside {start}..{end}"
+    );
+    match cut {
+        CommandResult::Rejected { code, .. } => assert_eq!(code, "conflict"),
+        accepted @ CommandResult::Accepted { .. } => {
+            panic!("a Cut during the Stinger was accepted: {accepted:?}")
+        }
+    }
+    // The Stinger is realized once, after the cut and after the edit
+    // answered on one of its frames.
+    let realized: Vec<_> = studio
+        .realized
+        .iter()
+        .filter(|(realized, _, _)| *realized == revision)
+        .collect();
+    let [(_, realized_at, seen)] = realized.as_slice() else {
+        panic!("the Stinger was realized {} times", realized.len());
+    };
+    assert!(
+        *realized_at > renamed_at,
+        "the Stinger was realized before the edit answered mid Stinger"
+    );
+    assert!(
+        seen.is_some_and(|seen| seen > cut_at),
+        "the Stinger was realized when Program had reached frame {seen:?}, \
+         not after its cut point {cut_at}"
+    );
+    drop(studio);
+    daemon.stop();
+}
+
+/// A title's Out phase runs on the frame loop: taking it off air is
+/// answered on the phase's first frame (its switcher realization arrives
+/// then, as the overlay goes off), Studio's Program frames show the fade
+/// after the answer, another client's edit is answered on a frame inside
+/// the phase, and Program is clear of the title only once it has ended.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn a_title_out_phase_runs_on_the_frame_loop() {
+    const OUT_FRAMES: u32 = 75;
+    if !tools_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("title-out.freemix");
+    save_project_with(&project, 64, false, |project, store| {
+        add_fading_title(project, store, 64, OUT_FRAMES);
+    });
+    let Some(daemon) = DaemonProcess::start(&project, None) else {
+        return;
+    };
+    let mut studio = Session::connect(daemon.control, "studio", ClientType::Studio, Role::Admin);
+    let mut cli = Session::connect(daemon.control, "cli", ClientType::Cli, Role::Admin);
+    studio.read_until_image(MonitorTap::Program, 0, "a first Program frame");
+    let channel = fm_protocol::WireOverlayChannelId::new(1).unwrap();
+    studio.accepted(CommandPayload::SetOverlayOutputInclusion {
+        channel,
+        output: fm_protocol::WireOutputId::from_domain(fm_types::OutputId::new(
+            NonZeroU128::new(TITLE_OUTPUT).unwrap(),
+        )),
+        included: true,
+    });
+    let taken = studio.accepted(CommandPayload::TakeTitle {
+        input: wire(5),
+        channel,
+        base_revision: 0,
+        fields: Vec::new(),
+    });
+    let deadline = Instant::now() + FRAME_TIMEOUT;
+    while !studio
+        .images
+        .iter()
+        .any(|image| image.tap == MonitorTap::Program && image.frame > taken && solid(image, GREEN))
+    {
+        assert!(Instant::now() < deadline, "the title never reached Program");
+        studio.receive();
+    }
+
+    let (started_sender, started) = mpsc::channel::<()>();
+    let other = thread::spawn(move || {
+        started.recv().unwrap();
+        thread::sleep(Duration::from_millis(500));
+        let renamed = cli.accepted(CommandPayload::RenameInput {
+            input: wire(3),
+            name: "Renamed mid Out phase".into(),
+        });
+        let deadline = Instant::now() + FRAME_TIMEOUT;
+        while Instant::now() < deadline {
+            cli.receive();
+        }
+        renamed
+    });
+    let sent = Instant::now();
+    let (revision, off) = studio.accepted_revision(CommandPayload::TitleOffAir { input: wire(5) });
+    let answered = sent.elapsed();
+    started_sender.send(()).unwrap();
+    let end = off + u64::from(OUT_FRAMES);
+    assert!(
+        answered < Duration::from_secs(2),
+        "taking the title off was answered after {answered:?}, not once its Out phase started"
+    );
+    studio.read_until_image(
+        MonitorTap::Program,
+        end + 3,
+        "the Program after the Out phase",
+    );
+
+    // Every Program frame inside the phase is mid fade, fading on, and
+    // the Program is clear only after it.
+    let fading: Vec<&MonitorImage> = studio
+        .images
+        .iter()
+        .filter(|image| image.tap == MonitorTap::Program)
+        .filter(|image| image.frame > off + 1 && image.frame + 2 < end)
+        .collect();
+    assert!(
+        fading.len() >= DURING,
+        "during the Out phase Studio got {} Program frames",
+        fading.len()
+    );
+    let mut previous_green = u8::MAX;
+    for image in &fading {
+        let [_, green, _] = mean(image);
+        assert!(
+            !solid(image, GREEN) && !solid(image, RED) && green <= previous_green,
+            "Program at frame {} is not fading the title out: {:?}",
+            image.frame,
+            mean(image)
+        );
+        previous_green = green;
+    }
+    let clear = studio
+        .images
+        .iter()
+        .find(|image| image.tap == MonitorTap::Program && image.frame > off && solid(image, RED))
+        .expect("Program is clear of the title after its Out phase");
+    assert!(
+        clear.frame + 2 >= end,
+        "Program was clear of the title on frame {}, inside the Out phase ending on {end}",
+        clear.frame
+    );
+    let preview = studio
+        .images
+        .iter()
+        .filter(|image| image.tap == MonitorTap::Preview)
+        .filter(|image| image.frame > off && image.frame < end)
+        .count();
+    assert!(
+        preview >= DURING,
+        "during the Out phase Studio got {preview} Preview frames"
+    );
+
+    let renamed = other.join().unwrap();
+    assert!(
+        renamed > off && renamed < end,
+        "the other client's edit was realized on frame {renamed}, not inside {off}..{end}"
+    );
+    // The off-air command itself is realized on its first frame.
+    let realized: Vec<_> = studio
+        .realized
+        .iter()
+        .filter(|(realized, _, _)| *realized == revision)
+        .collect();
+    assert_eq!(realized.len(), 1, "{:?}", studio.realized);
+    assert!(
+        realized[0].2.is_some_and(|seen| seen < end),
+        "the off-air command was realized after its Out phase: {realized:?}"
+    );
+    drop(studio);
+    daemon.stop();
 }
