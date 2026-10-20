@@ -6,10 +6,11 @@
 //!     {"id": 1, "name": "Open", "auto_follow": false, "actions": [
 //!       {"type": "take", "input": 3, "effect": "fade", "duration_frames": 30},
 //!       {"type": "wait", "frames": 30},
-//!       {"type": "title_on", "input": 5, "channel": 2}
+//!       {"type": "title_on", "input": 5, "channel": 2},
+//!       {"type": "overlay_on", "channel": 1, "input": "selected"}
 //!     ]}
 //!   ], "state": {"standby": 1, "live": null, "pending": null, "played": [],
-//!                "fault": null, "armed": null}}
+//!                "fault": null, "armed": null, "targets": null}}
 //! ]
 //! ```
 //!
@@ -20,10 +21,11 @@
 //! that engine frame.
 //!
 //! Schema 73 (RC-004): an action's `input` is an input id or one of the
-//! dynamic targets `"preview"`, `"program"`, and `"selected"`, resolved when
-//! the action is fired. A run state's `targets` (and an armed GO's) is
-//! `null` or `{"preview", "program", "selected"}`, the inputs (each an id or
-//! `null`) the GO that started the run bound its dynamic targets to.
+//! dynamic targets `"preview"`, `"program"`, and `"selected"`, bound by the
+//! GO that starts the run (or when its GO is armed). A run state's
+//! `targets` (and an armed GO's) is `null` or `{"preview", "program",
+//! "selected"}`, the inputs (each an id or `null`) the GO that started the
+//! run (or the arm) bound its dynamic targets to.
 //!
 //! Action types: `preview` (`input`), `take` (`input` or `null` for the
 //! current Preview, `effect` a [`fm_model::TransitionEffect`] token or
@@ -607,4 +609,44 @@ fn parse_state(value: Value) -> Result<CueRunState, DecodeError> {
         armed,
         targets,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The example at the top of this module, without its `//! ` prefixes.
+    fn module_example() -> String {
+        let source = include_str!("cue.rs");
+        let start = source.find("//! ```text\n").expect("the example opens") + 12;
+        let end = start
+            + source[start..]
+                .find("//! ```\n")
+                .expect("the example closes");
+        source[start..end]
+            .lines()
+            .map(|line| line.strip_prefix("//!").unwrap_or(line).trim_start())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The documented example is a project's `cue_lists` exactly as the
+    /// decoder reads it, `targets` and a dynamic target included.
+    #[test]
+    fn the_module_example_decodes() {
+        let document = format!("{{{}}}", module_example());
+        let mut object = Object::new(
+            fm_preset_file::json::Reader::new(&document)
+                .document()
+                .expect("the example is JSON"),
+            "example",
+        )
+        .expect("an object");
+        let lists = parse_cue_lists(&mut object).expect("the example decodes");
+        object.finish().expect("nothing but cue_lists");
+        let cue = &lists[0].cues[0];
+        assert_eq!(cue.actions.len(), 4);
+        assert!(cue.actions[3].is_dynamic());
+        assert_eq!(lists[0].state.targets, None);
+    }
 }
