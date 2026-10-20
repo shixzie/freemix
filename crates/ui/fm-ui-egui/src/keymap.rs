@@ -734,6 +734,81 @@ mod tests {
         assert_eq!(shell.cue_key_intent(&viewer, crate::CueKey::Stop), None);
     }
 
+    /// RC-017: holding G, `,`, `.`, or a cue chord acts once. The OS repeats
+    /// the press without a release; egui marks those presses as repeats.
+    #[test]
+    fn a_held_cue_key_acts_once() {
+        let state = crate::hover_audit::cue_ran_script_fixture();
+        let shell = StudioShell::default();
+        let context = egui::Context::default();
+        let manual = crate::manual_transition_availability(
+            crate::ManualTransitionGate::from_state(&state),
+            false,
+        );
+        let mut sent = Vec::new();
+        for (key, modifiers) in [
+            (Key::G, Modifiers::NONE),
+            (Key::Comma, Modifiers::NONE),
+            (Key::Period, Modifiers::NONE),
+            (Key::X, press(true, true, false)),
+        ] {
+            let mut operations = Vec::new();
+            // Three frames of the key held down: one press, two OS repeats.
+            for _ in 0..3 {
+                context.begin_pass(egui::RawInput {
+                    events: vec![Event::Key {
+                        key,
+                        physical_key: None,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                    }],
+                    ..Default::default()
+                });
+                let mut ui = egui::Ui::new(
+                    context.clone(),
+                    egui::Id::new("studio-keymap-held"),
+                    egui::UiBuilder::new()
+                        .layer_id(egui::LayerId::background())
+                        .max_rect(context.viewport_rect()),
+                );
+                operations.extend(shell.keyboard_intents(&mut ui, &state, manual));
+                drop(ui);
+                let _ = context.end_pass();
+            }
+            // Released before the next key.
+            context.begin_pass(egui::RawInput {
+                events: vec![Event::Key {
+                    key,
+                    physical_key: None,
+                    pressed: false,
+                    repeat: false,
+                    modifiers,
+                }],
+                ..Default::default()
+            });
+            let _ = context.end_pass();
+            assert_eq!(operations.len(), 1, "{key:?}: {operations:?}");
+            sent.extend(operations);
+        }
+        let operations: Vec<fm_protocol::CueOperation> = sent
+            .into_iter()
+            .map(|intent| match intent {
+                StudioIntent::Cue(crate::CueIntent::Control { list: 1, operation }) => operation,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            operations,
+            [
+                fm_protocol::CueOperation::Go { cue: None },
+                fm_protocol::CueOperation::Back,
+                fm_protocol::CueOperation::Skip,
+                fm_protocol::CueOperation::Stop,
+            ]
+        );
+    }
+
     #[test]
     fn no_shortcut_acts_while_a_text_field_has_focus() {
         let state = output_state();

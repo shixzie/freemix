@@ -60,6 +60,8 @@ const REQUEST_CAPACITY: usize = 16;
 const DEFERRED_INTENT_CAPACITY: usize = 16;
 const STATE_NOTIFICATION_CAPACITY: usize = 1;
 const MAX_COMMAND_RECORDS: usize = 8;
+/// OSC actions one UI frame turns into intents.
+const OSC_ACTIONS_PER_FRAME: usize = 8;
 const TERMINAL_UNCERTAINTY_CAPACITY: usize = 8;
 static NEXT_WORKER_NONCE: AtomicU64 = AtomicU64::new(1);
 
@@ -339,7 +341,10 @@ impl StudioApp {
         config: StudioConfig,
         creation_context: &eframe::CreationContext<'_>,
     ) -> Result<Self, std::io::Error> {
-        let osc = config.osc_listen.map(OscReceiver::bind).transpose()?;
+        let osc = config
+            .osc_listen
+            .map(|address| OscReceiver::bind(address, creation_context.egui_ctx.clone()))
+            .transpose()?;
         let project_bundle = match &config.connection {
             crate::ConnectionConfig::Supervised(supervised) => {
                 Some(supervised.project_bundle.clone())
@@ -501,10 +506,17 @@ impl StudioApp {
     }
 
     fn drain_osc(&mut self) {
-        for _ in 0..8 {
+        for drained in 1..=OSC_ACTIONS_PER_FRAME {
             let Some(action) = self.osc.as_ref().and_then(|osc| osc.try_recv().ok()) else {
                 break;
             };
+            // More may be queued: the next frame drains them, without
+            // waiting for a datagram or an unrelated repaint.
+            if drained == OSC_ACTIONS_PER_FRAME
+                && let Some(osc) = &self.osc
+            {
+                osc.request_repaint();
+            }
             let action = match action {
                 // A cue key acts on the Cues panel's list, gated like the
                 // panel's own key (RC-017).
@@ -3226,7 +3238,7 @@ mod tests {
     use std::{
         io::{BufRead, BufReader, Write},
         net::{TcpListener, TcpStream, UdpSocket},
-        sync::mpsc::sync_channel,
+        sync::{atomic::AtomicUsize, mpsc::sync_channel},
         thread::sleep,
     };
 
@@ -6556,7 +6568,13 @@ mod tests {
             .unwrap()
             .local_addr()
             .unwrap();
-        let receiver = OscReceiver::bind(address).unwrap();
+        let repaint = egui::Context::default();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&wakes);
+        repaint.set_request_repaint_callback(move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        let receiver = OscReceiver::bind(address, repaint.clone()).unwrap();
         let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
         let queued = [
             "/freemix/switcher/preview/1",
@@ -6744,8 +6762,17 @@ mod tests {
         };
         app.shell.set_transition_duration_frames(42);
         app.shell.set_fade_to_black_duration_frames(84);
+        // Each queued action woke the UI; a drain that leaves actions queued
+        // asks for the frame that drains the rest.
+        assert!(wakes.load(Ordering::SeqCst) >= 1);
+        // The frames that answer those wakes run; the drain needs another.
+        for _ in 0..4 {
+            let _ = repaint.run_ui(egui::RawInput::default(), |_| {});
+        }
+        assert!(!repaint.has_requested_repaint());
         app.drain_osc();
         assert_eq!(app.pending_intents.intents.len(), 0);
+        assert!(repaint.has_requested_repaint(), "no frame for the rest");
         app.drain_osc();
         let order = rx
             .try_iter()

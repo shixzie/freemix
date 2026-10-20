@@ -11,6 +11,7 @@ use std::{
     time::Duration,
 };
 
+use eframe::egui;
 use fm_ui_egui::CueKey;
 
 const DATAGRAM_CAPACITY: usize = 128;
@@ -65,11 +66,15 @@ pub(crate) struct OscReceiver {
     cancel: Arc<AtomicBool>,
     wake_socket: UdpSocket,
     local_address: SocketAddr,
+    repaint: egui::Context,
     worker: Option<JoinHandle<()>>,
 }
 
 impl OscReceiver {
-    pub(crate) fn bind(address: SocketAddr) -> io::Result<Self> {
+    /// Listens on loopback `address`. Each queued action wakes `repaint`'s
+    /// UI, which drains the queue in its next frame: OSC must not wait for
+    /// an unrelated repaint, nor overflow while the console is idle.
+    pub(crate) fn bind(address: SocketAddr, repaint: egui::Context) -> io::Result<Self> {
         validate_listen_address(address)?;
         let socket = UdpSocket::bind(address)?;
         socket.set_read_timeout(Some(READ_TIMEOUT))?;
@@ -80,10 +85,17 @@ impl OscReceiver {
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_counters = Arc::clone(&counters);
         let worker_cancel = Arc::clone(&cancel);
+        let worker_repaint = repaint.clone();
         let worker = thread::Builder::new()
             .name("freemix-osc".to_owned())
             .spawn(move || {
-                receive_loop(&socket, &action_sender, &worker_counters, &worker_cancel);
+                receive_loop(
+                    &socket,
+                    &action_sender,
+                    &worker_counters,
+                    &worker_cancel,
+                    &worker_repaint,
+                );
             })?;
 
         Ok(Self {
@@ -92,8 +104,14 @@ impl OscReceiver {
             cancel,
             wake_socket,
             local_address,
+            repaint,
             worker: Some(worker),
         })
+    }
+
+    /// Asks for another UI frame, for actions still queued after a drain.
+    pub(crate) fn request_repaint(&self) {
+        self.repaint.request_repaint();
     }
 
     #[cfg(test)]
@@ -150,6 +168,7 @@ fn receive_loop(
     actions: &SyncSender<OscAction>,
     counters: &SharedCounters,
     cancel: &AtomicBool,
+    repaint: &egui::Context,
 ) {
     let mut datagram = [0_u8; DATAGRAM_CAPACITY];
     while !cancel.load(Ordering::Acquire) {
@@ -167,7 +186,7 @@ fn receive_loop(
                     continue;
                 };
                 match actions.try_send(action) {
-                    Ok(()) => {}
+                    Ok(()) => repaint.request_repaint(),
                     Err(TrySendError::Full(_)) => {
                         counters.overflow.fetch_add(1, Ordering::Relaxed);
                     }
@@ -266,7 +285,61 @@ fn padded_string(datagram: &[u8], start: usize) -> Result<(&str, usize), ()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CueKey, DATAGRAM_CAPACITY, OscAction, decode};
+    use std::{
+        net::UdpSocket,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        thread::sleep,
+        time::{Duration, Instant},
+    };
+
+    use eframe::egui;
+
+    use super::{CueKey, DATAGRAM_CAPACITY, OscAction, OscReceiver, decode};
+
+    /// A queued action wakes the UI: an idle console (no monitor timers, no
+    /// state traffic) must not hold an OSC GO until something else repaints.
+    #[test]
+    fn a_queued_action_wakes_the_ui() {
+        let repaint = egui::Context::default();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&wakes);
+        repaint.set_request_repaint_callback(move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        let address = UdpSocket::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let receiver = OscReceiver::bind(address, repaint).unwrap();
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender
+            .send_to(&message("/freemix/switcher/cut"), receiver.local_addr())
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let action = loop {
+            if let Ok(action) = receiver.try_recv() {
+                break Some(action);
+            }
+            if Instant::now() >= deadline {
+                break None;
+            }
+            sleep(Duration::from_millis(5));
+        };
+        assert_eq!(action, Some(OscAction::Cut));
+        assert!(wakes.load(Ordering::SeqCst) >= 1, "the UI was not woken");
+        // A malformed datagram wakes nothing.
+        let woken = wakes.load(Ordering::SeqCst);
+        sender.send_to(b"/freemix", receiver.local_addr()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while receiver.counters().malformed == 0 && Instant::now() < deadline {
+            sleep(Duration::from_millis(5));
+        }
+        assert_eq!(receiver.counters().malformed, 1);
+        assert_eq!(wakes.load(Ordering::SeqCst), woken);
+    }
 
     #[test]
     fn osc_decoder_accepts_only_the_exact_action_contract() {
