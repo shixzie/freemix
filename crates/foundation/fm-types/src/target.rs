@@ -21,11 +21,14 @@ use crate::InputId;
 pub enum InputTarget<I = InputId> {
     /// That input, always.
     Fixed(I),
-    /// The input on Preview when the action is fired.
+    /// The input on Preview when the action's fire is bound: when a
+    /// shortcut fires, when a cue GO starts the run (for every step of it),
+    /// or when a GO is armed, not when the armed GO fires.
     Preview,
-    /// The input on Program when the action is fired.
+    /// The input on Program when the action's fire is bound (as for
+    /// [`Self::Preview`]).
     Program,
-    /// The input selected on the console that fires the action.
+    /// The input selected on the console that fires (or arms) the action.
     Selected,
 }
 
@@ -39,7 +42,8 @@ impl<I: Copy> InputTarget<I> {
         }
     }
 
-    /// Whether the target is resolved when fired rather than fixed.
+    /// Whether the target is bound per fire (see [`Self::Preview`])
+    /// rather than fixed.
     #[must_use]
     pub const fn is_dynamic(self) -> bool {
         !matches!(self, Self::Fixed(_))
