@@ -10,8 +10,8 @@ use fm_client::{Client, ClientConfig, ConnectionState, Intake, Outbound};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandPayload, CommandResult, DiagnosticsRequest,
     DiagnosticsResponse, EventPayload, FadeToBlackState, HandshakeOutcome, HandshakeRequest,
-    MAX_LINE_BYTES, Role, RuntimeLifecycleEvent, ServerIdentity, StreamRealizedState,
-    StreamStatusMessage, WireMessage, decode_line, encode_line,
+    HeartbeatMessage, MAX_LINE_BYTES, Role, RuntimeLifecycleEvent, ServerIdentity,
+    StreamRealizedState, StreamStatusMessage, WireMessage, decode_line, encode_line,
 };
 use fm_types::ProjectId;
 use fm_ui_model::{ManualTransitionStatus, ProjectState};
@@ -19,6 +19,12 @@ use fm_ui_model::{ManualTransitionStatus, ProjectState};
 type RemoteResult<T> = Result<T, Box<dyn Error>>;
 
 const REMOTE_IO_TIMEOUT: Duration = Duration::from_secs(2);
+/// How often a command waiting for its realization heartbeats: well inside
+/// the daemon's 15 s session timeout.
+const REALIZATION_HEARTBEAT_EVERY: Duration = Duration::from_secs(1);
+/// The longest a command waits for its realization while the daemon keeps
+/// answering: an hour, past any transition, title phase, or cue wait.
+const REALIZATION_WAIT_LIMIT: Duration = Duration::from_hours(1);
 
 pub fn status(address: SocketAddr) -> RemoteResult<()> {
     let remote = Remote::connect(address, Role::Viewer)?;
@@ -1955,8 +1961,10 @@ impl Remote {
     ) -> RemoteResult<()> {
         let mut durable = false;
         let mut realized = false;
+        let waiting = Instant::now();
+        let mut heartbeats = 0;
         while !durable || !realized {
-            match self.read()? {
+            match self.read_awaiting_realization(waiting, &mut heartbeats)? {
                 WireMessage::Event(event) => {
                     let matches_revision = event.cursor.revision == revision;
                     let expected_event = match &event.payload {
@@ -2266,6 +2274,78 @@ impl Remote {
 
     fn read(&mut self) -> RemoteResult<WireMessage> {
         self.read_until_inner(None, false)
+    }
+
+    /// The next message of an accepted command's events. A native daemon
+    /// answers a command once its first frame is realized and realizes the
+    /// rest of a transition or title phase on its frame loop (Protocol
+    /// 2.88), so the realization can follow the result by the whole
+    /// transition. While nothing arrives the wait heartbeats every
+    /// [`REALIZATION_HEARTBEAT_EVERY`] (`heartbeats` sent so far) and keeps
+    /// waiting as long as the daemon acknowledges them, up to
+    /// [`REALIZATION_WAIT_LIMIT`] after `waiting`; a daemon silent for
+    /// [`REMOTE_IO_TIMEOUT`] times out as before. Acknowledgements are not
+    /// returned.
+    fn read_awaiting_realization(
+        &mut self,
+        waiting: Instant,
+        heartbeats: &mut u64,
+    ) -> RemoteResult<WireMessage> {
+        let mut heard = Instant::now();
+        loop {
+            if self.readable_within(REALIZATION_HEARTBEAT_EVERY)? {
+                self.reader
+                    .get_mut()
+                    .set_read_timeout(Some(REMOTE_IO_TIMEOUT))?;
+                match self.read()? {
+                    WireMessage::HeartbeatAcknowledgement(_) => {
+                        heard = Instant::now();
+                        continue;
+                    }
+                    message => return Ok(message),
+                }
+            }
+            if heard.elapsed() >= REMOTE_IO_TIMEOUT || waiting.elapsed() >= REALIZATION_WAIT_LIMIT {
+                return Err(RemoteFailure("daemon response timed out".into()).into());
+            }
+            *heartbeats += 1;
+            let sent_at_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |elapsed| {
+                    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+                });
+            self.write(&WireMessage::Heartbeat(HeartbeatMessage {
+                server: self.server.clone(),
+                sequence: *heartbeats,
+                sent_at_ms,
+                last_applied: None,
+            }))?;
+        }
+    }
+
+    /// Whether the daemon sent anything within `timeout`, without
+    /// consuming it (or a partial line of it).
+    fn readable_within(&mut self, timeout: Duration) -> RemoteResult<bool> {
+        if !self.reader.buffer().is_empty() {
+            return Ok(true);
+        }
+        self.reader.get_mut().set_read_timeout(Some(timeout))?;
+        match self.reader.fill_buf() {
+            // An empty buffer is the end of the stream, which the read
+            // that follows reports.
+            Ok(_) => Ok(true),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     fn read_until(&mut self, deadline: Instant) -> RemoteResult<WireMessage> {

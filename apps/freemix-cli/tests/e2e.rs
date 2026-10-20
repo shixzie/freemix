@@ -2064,6 +2064,100 @@ fn remote_commands_reject_non_loopback_addresses_before_connecting() {
     assert_failure_contains(&output, "requires a loopback address");
 }
 
+/// A native daemon answers a transition once its first frame is realized
+/// and realizes the rest on its frame loop (Protocol 2.88), so the
+/// command's events can follow its result by the whole transition:
+/// `remote-fade` waits past its I/O timeout for them, heartbeating, while
+/// the daemon acknowledges its heartbeats.
+#[test]
+fn remote_fade_waits_for_a_realization_that_follows_its_result() {
+    const REALIZED_AFTER: Duration = Duration::from_secs(3);
+    let server = FakeRemoteServer::start_test_peer(|stream| {
+        let engine = EngineIdentity {
+            engine_id: "project-42".into(),
+            state_epoch: 1,
+            log_id: "fake-remote-log".into(),
+        };
+        stream.set_read_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_handshake_request_role(read_message(&mut reader), Role::Operator);
+        write_handshake_role(&mut writer, &engine, 0, Role::Operator);
+        let WireMessage::Command(command) = read_message(&mut reader) else {
+            panic!("expected remote command");
+        };
+        assert_eq!(
+            command.payload,
+            CommandPayload::Fade {
+                duration_frames: 100
+            }
+        );
+        write_message(
+            &mut writer,
+            &WireMessage::CommandResult(CommandResult::Accepted {
+                id: command.id.clone(),
+                revision: 1,
+                scheduled_frame: Some(1),
+            }),
+        );
+        let realized_at = Instant::now() + REALIZED_AFTER;
+        let mut heartbeats = 0;
+        let mut line = String::new();
+        while let Some(remaining) = realized_at.checked_duration_since(Instant::now()) {
+            reader
+                .get_ref()
+                .set_read_timeout(Some(remaining.max(Duration::from_millis(1))))
+                .unwrap();
+            match reader.read_line(&mut line) {
+                Ok(0) => panic!("the CLI closed the session before the realization"),
+                Ok(_) => {
+                    let WireMessage::Heartbeat(heartbeat) = decode_line(&line).unwrap() else {
+                        panic!("expected a heartbeat, got {line:?}");
+                    };
+                    line.clear();
+                    heartbeats += 1;
+                    write_message(
+                        &mut writer,
+                        &WireMessage::HeartbeatAcknowledgement(
+                            fm_protocol::HeartbeatAcknowledgementMessage {
+                                server: server_identity(&engine),
+                                heartbeat_sequence: heartbeat.sequence,
+                                received_at_ms: heartbeat.sent_at_ms,
+                            },
+                        ),
+                    );
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(error) => panic!("{error}"),
+            }
+        }
+        assert!(heartbeats >= 2, "the CLI sent {heartbeats} heartbeats");
+        write_command_events(
+            &mut writer,
+            &engine,
+            1,
+            &command.payload,
+            input(1),
+            input(1),
+        );
+    });
+    let fade = invoke(&[
+        "remote-fade",
+        &server.address(),
+        "100",
+        "--key",
+        "remote-fade",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&fade);
+    server.finish();
+}
+
 #[test]
 fn remote_status_times_out_when_peer_sends_no_response() {
     let server = FakeRemoteServer::start_silent_response();
