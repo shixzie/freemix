@@ -1544,6 +1544,7 @@ fn diagnostics_wait_assembles_monitor_frames() {
             retained_events_limit: 16,
             subscriber_limit: 4,
             subscriber_queue_limit: 8,
+            source_sync: Vec::new(),
         }));
         peer.send_all(&records);
     });
@@ -1586,6 +1587,7 @@ fn diagnostics_wait_reconciles_results_answered_before_it() {
                 retained_events_limit: 16,
                 subscriber_limit: 4,
                 subscriber_queue_limit: 8,
+                source_sync: Vec::new(),
             }),
         ]);
     });
@@ -2039,5 +2041,118 @@ fn recorder_status_is_ephemeral_and_strictly_ordered() {
         ConnectionState::Backoff(_)
     ));
     assert!(session.latest_recorder_status().is_none());
+    server_thread.join().unwrap();
+}
+
+fn source_sync_status(sequence: u64, inputs: &[u128]) -> fm_protocol::SourceSyncStatusMessage {
+    fm_protocol::SourceSyncStatusMessage {
+        server: server(),
+        sequence,
+        sources: inputs
+            .iter()
+            .map(|&id| fm_protocol::SourceSyncSample {
+                input: input(id),
+                kind: fm_protocol::SourceSyncKind::Stream,
+                state: fm_protocol::SourceClockState::Running,
+                input_rate_hz: 44_100,
+                output_rate_hz: 48_000,
+                drift_mppm: i64::try_from(sequence).unwrap() * 1_000,
+                correction_mppm: -2_500,
+                buffer_us: 80_500,
+                target_us: 80_000,
+                resyncs: 0,
+                underruns: sequence,
+                overruns: 0,
+                picture_drops: 1,
+                picture_repeats: 0,
+                restarts: 1,
+            })
+            .collect(),
+    }
+}
+
+/// Protocol 2.75: `source_sync_status` is lossy, retained latest-wins, and
+/// strictly ordered like `recorder_status`; an empty record clears the
+/// sources, and a replayed sequence disconnects and forgets the telemetry.
+#[test]
+fn source_sync_status_is_retained_latest_wins_and_strictly_ordered() {
+    let (release_tx, release_rx) = mpsc::channel();
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        release_rx.recv().unwrap();
+        peer.send(&WireMessage::SourceSyncStatus(source_sync_status(
+            5,
+            &[1, 2],
+        )));
+        peer.send(&WireMessage::SourceSyncStatus(source_sync_status(6, &[2])));
+        peer.send(&WireMessage::SourceSyncStatus(source_sync_status(7, &[])));
+        peer.send(&WireMessage::SourceSyncStatus(source_sync_status(8, &[1])));
+        peer.send(&WireMessage::SourceSyncStatus(source_sync_status(8, &[1])));
+    });
+
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    assert!(session.latest_source_sync_status().is_none());
+    release_tx.send(()).unwrap();
+    assert!(matches!(
+        session.receive().unwrap(),
+        SessionEvent::SourceSyncStatus { status } if status.sources.len() == 2
+    ));
+    assert!(matches!(
+        session.receive().unwrap(),
+        SessionEvent::SourceSyncStatus { status } if status.sequence == 6
+    ));
+    let latest = session
+        .latest_source_sync_status()
+        .expect("retained status");
+    assert_eq!(latest.sources.len(), 1);
+    assert_eq!(latest.sources[0].input, input(2));
+    assert_eq!(latest.sources[0].drift_mppm, 6_000);
+    assert_eq!(latest.sources[0].underruns, 6);
+    session.receive().unwrap();
+    assert!(
+        session
+            .latest_source_sync_status()
+            .is_some_and(|status| status.sources.is_empty())
+    );
+    session.receive().unwrap();
+    assert_eq!(
+        session.latest_source_sync_status().unwrap().sources[0].input,
+        input(1)
+    );
+    // Lossy telemetry never advances the durable cursor.
+    assert_eq!(session.client().last_applied_cursor().unwrap().revision, 4);
+    assert!(matches!(
+        session.receive(),
+        Err(TcpSessionError::UnexpectedMessage)
+    ));
+    assert!(matches!(
+        session.client().state(),
+        ConnectionState::Backoff(_)
+    ));
+    assert!(session.latest_source_sync_status().is_none());
+    server_thread.join().unwrap();
+}
+
+#[test]
+fn source_sync_status_rejects_a_foreign_server_identity() {
+    let (release_tx, release_rx) = mpsc::channel();
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        release_rx.recv().unwrap();
+        let mut foreign = source_sync_status(1, &[1]);
+        foreign.server.engine_id = "engine-b".to_owned();
+        peer.send(&WireMessage::SourceSyncStatus(foreign));
+    });
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    release_tx.send(()).unwrap();
+    assert!(matches!(
+        session.receive(),
+        Err(TcpSessionError::UnexpectedMessage)
+    ));
+    assert!(session.latest_source_sync_status().is_none());
     server_thread.join().unwrap();
 }

@@ -154,7 +154,9 @@ fn age_text(l: Locale, age: Duration) -> String {
 }
 
 /// The strip's lamps in reading order. Stream and disk lamps appear only
-/// when the show has stream targets or a local HLS output reports space.
+/// when the show has stream targets or a local HLS output reports space,
+/// and the live source clock lamp only while the daemon reports a live
+/// source (AU-004).
 pub(crate) fn health_items(
     l: Locale,
     state: &StudioUiState,
@@ -170,6 +172,9 @@ pub(crate) fn health_items(
         items.extend(stream_items(l, state, tracker, now));
     }
     if let Some(item) = disk_item(l, state) {
+        items.push(item);
+    }
+    if let Some(item) = crate::source_sync_ui::health_item(l, state) {
         items.push(item);
     }
     items

@@ -756,6 +756,8 @@ struct NativeDaemon {
     /// Realized recorder slot bookkeeping behind `recorder_status`
     /// (Protocol 2.66).
     recorder_status: recorder_status::RecorderStatusTracker,
+    /// Live source drift telemetry records (Protocol 2.75, AU-004).
+    source_sync_status: native_sync::SourceSyncTracker,
     /// Encoded-fallback Program monitor tap; see [`NativeMonitorTap`].
     monitor: NativeMonitorTap,
     /// Title inputs realized as live source frames rendered off the loop;
@@ -5101,6 +5103,7 @@ impl NativeDaemon {
             stream_status_sequence: 0,
             pending_stream_status: None,
             recorder_status: recorder_status::RecorderStatusTracker::default(),
+            source_sync_status: native_sync::SourceSyncTracker::default(),
             monitor,
             titles,
             files,
@@ -6103,6 +6106,32 @@ impl NativeDaemon {
                 }
             });
         self.recorder_status.poll(server, views, Instant::now())
+    }
+
+    /// Every running live source's drift loop (Protocol 2.75, AU-004), in
+    /// input order.
+    fn source_sync_samples(&self) -> Vec<fm_protocol::SourceSyncSample> {
+        native_sync::wire_samples(live_sync_samples(
+            &self.network,
+            &self.system_audio,
+            self.captures.as_ref(),
+        ))
+    }
+
+    /// The live source drift telemetry record (Protocol 2.75), at most every
+    /// [`native_sync::SOURCE_SYNC_STATUS_INTERVAL`] while any live source
+    /// runs.
+    fn take_source_sync_status(
+        &mut self,
+        server: &ServerIdentity,
+    ) -> Option<fm_protocol::SourceSyncStatusMessage> {
+        let (network, system_audio) = (&self.network, &self.system_audio);
+        let captures = self.captures.as_ref();
+        self.source_sync_status.poll(
+            server,
+            || live_sync_samples(network, system_audio, captures),
+            Instant::now(),
+        )
     }
 
     /// Whether any eligible session currently wants monitor frames; without
@@ -8266,6 +8295,21 @@ fn validate_native_audio_modes(stored: &StoredProject) -> AppResult<()> {
     Ok(())
 }
 
+/// Every live source's drift loop, unordered (Protocol 2.75).
+#[cfg(feature = "native-media")]
+fn live_sync_samples(
+    network: &native_streams::NativeNetworkStreams,
+    system_audio: &native_system_audio::NativeSystemAudio,
+    captures: Option<&native_captures::NativeCaptures>,
+) -> Vec<fm_protocol::SourceSyncSample> {
+    let mut samples = network.sync_samples();
+    samples.extend(system_audio.sync_samples());
+    if let Some(captures) = captures {
+        samples.extend(captures.sync_samples());
+    }
+    samples
+}
+
 #[cfg(not(feature = "native-media"))]
 struct NativeDaemon;
 
@@ -8331,6 +8375,19 @@ impl NativeDaemon {
 
     #[allow(clippy::unused_self)]
     fn take_recorder_status(&mut self, _server: &ServerIdentity) -> Option<RecorderStatusMessage> {
+        None
+    }
+
+    #[allow(clippy::unused_self)]
+    fn source_sync_samples(&self) -> Vec<fm_protocol::SourceSyncSample> {
+        Vec::new()
+    }
+
+    #[allow(clippy::unused_self)]
+    fn take_source_sync_status(
+        &mut self,
+        _server: &ServerIdentity,
+    ) -> Option<fm_protocol::SourceSyncStatusMessage> {
         None
     }
 
@@ -12660,7 +12717,13 @@ fn handle_client(
                     write_session_message(
                         &mut writer,
                         &mut session,
-                        &WireMessage::DiagnosticsResponse(diagnostics_response(control, request)?),
+                        &WireMessage::DiagnosticsResponse(diagnostics_response(
+                            control,
+                            request,
+                            native
+                                .as_deref()
+                                .map_or_else(Vec::new, NativeDaemon::source_sync_samples),
+                        )?),
                     )?;
                 }
             }
@@ -15584,6 +15647,7 @@ fn session_rejection(
 fn diagnostics_response(
     control: &SharedControl,
     request: DiagnosticsRequest,
+    source_sync: Vec<fm_protocol::SourceSyncSample>,
 ) -> AppResult<DiagnosticsResponse> {
     let diagnostics = control.borrow().diagnostics();
     Ok(DiagnosticsResponse {
@@ -15597,6 +15661,7 @@ fn diagnostics_response(
         retained_events_limit: u32::try_from(diagnostics.limits.retained_events)?,
         subscriber_limit: u32::try_from(diagnostics.limits.max_subscribers)?,
         subscriber_queue_limit: u32::try_from(diagnostics.limits.subscriber_queue)?,
+        source_sync,
     })
 }
 

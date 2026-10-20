@@ -3177,6 +3177,9 @@ pub struct DiagnosticsResponse {
     pub retained_events_limit: u32,
     pub subscriber_limit: u32,
     pub subscriber_queue_limit: u32,
+    /// Every running live source's drift loop (Protocol 2.75), in strictly
+    /// increasing input order; empty without live sources.
+    pub source_sync: Vec<crate::SourceSyncSample>,
 }
 
 // A snapshot is sent once per (re)connection, so its inline size is not worth
@@ -3199,6 +3202,8 @@ pub enum WireMessage {
     StreamStatus(StreamStatusMessage),
     /// Lossy realized recorder status (Protocol 2.66).
     RecorderStatus(crate::RecorderStatusMessage),
+    /// Lossy live source drift telemetry (Protocol 2.75).
+    SourceSyncStatus(crate::SourceSyncStatusMessage),
     MonitorFrame(MonitorFrameMessage),
     CapabilityReport(CapabilityReportMessage),
     DiagnosticsRequest(DiagnosticsRequest),

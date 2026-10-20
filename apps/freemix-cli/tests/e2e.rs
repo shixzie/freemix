@@ -61,7 +61,16 @@ impl FakeRemoteServer {
     }
 
     fn start_diagnostics(response_log_id: &'static str) -> Self {
-        Self::start_test_peer(move |stream| serve_diagnostics_peer(stream, response_log_id))
+        Self::start_diagnostics_with(response_log_id, Vec::new())
+    }
+
+    fn start_diagnostics_with(
+        response_log_id: &'static str,
+        source_sync: Vec<fm_protocol::SourceSyncSample>,
+    ) -> Self {
+        Self::start_test_peer(move |stream| {
+            serve_diagnostics_peer(stream, response_log_id, source_sync);
+        })
     }
 
     fn start_unterminated_response() -> Self {
@@ -314,7 +323,11 @@ fn serve_remote_sessions(listener: &TcpListener) {
     }
 }
 
-fn serve_diagnostics_peer(stream: TcpStream, response_log_id: &str) {
+fn serve_diagnostics_peer(
+    stream: TcpStream,
+    response_log_id: &str,
+    source_sync: Vec<fm_protocol::SourceSyncSample>,
+) {
     let engine = EngineIdentity {
         engine_id: "diag-engine".into(),
         state_epoch: 7,
@@ -359,6 +372,7 @@ fn serve_diagnostics_peer(stream: TcpStream, response_log_id: &str) {
             retained_events_limit: 64,
             subscriber_limit: 8,
             subscriber_queue_limit: 16,
+            source_sync,
         }),
     );
 }
@@ -2065,6 +2079,57 @@ fn remote_diagnostics_reports_exact_identity_and_rejects_mismatched_log_id() {
     let output = invoke_bounded(&["remote-diagnostics", &server.address()]);
     server.finish();
     assert_failure_contains(&output, "diagnostics response does not match the request");
+}
+
+/// AU-004: `remote-diagnostics` lists every live source's drift loop the
+/// daemon reports, one line each.
+#[test]
+fn remote_diagnostics_lists_each_live_source_clock() {
+    let sample = |id: u128, kind, state, underruns| fm_protocol::SourceSyncSample {
+        input: WireInputId::new(NonZeroU128::new(id).unwrap()),
+        kind,
+        state,
+        input_rate_hz: 44_100,
+        output_rate_hz: 48_000,
+        drift_mppm: -12_345,
+        correction_mppm: 12_001,
+        buffer_us: 81_250,
+        target_us: 80_000,
+        resyncs: 1,
+        underruns,
+        overruns: 0,
+        picture_drops: 4,
+        picture_repeats: 5,
+        restarts: 1,
+    };
+    let server = FakeRemoteServer::start_diagnostics_with(
+        "secret-log",
+        vec![
+            sample(
+                7,
+                fm_protocol::SourceSyncKind::Capture,
+                fm_protocol::SourceClockState::Running,
+                0,
+            ),
+            sample(
+                9,
+                fm_protocol::SourceSyncKind::SystemAudio,
+                fm_protocol::SourceClockState::Recovering,
+                2,
+            ),
+        ],
+    );
+    let address = server.address();
+    let output = invoke_bounded(&["remote-diagnostics", &address]);
+    server.finish();
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output).lines().skip(1).collect::<Vec<_>>(),
+        [
+            "SourceSync(input=7, kind=capture, state=running, drift_ppm=-12.345, correction_ppm=+12.001, ratio=0.91876103, rate_hz=44100/48000, buffer_ms=81.250, target_ms=80.000, resyncs=1, underruns=0, overruns=0, picture_drops=4, picture_repeats=5, restarts=1)",
+            "SourceSync(input=9, kind=system_audio, state=recovering, drift_ppm=-12.345, correction_ppm=+12.001, ratio=0.91876103, rate_hz=44100/48000, buffer_ms=81.250, target_ms=80.000, resyncs=1, underruns=2, overruns=0, picture_drops=4, picture_repeats=5, restarts=1)",
+        ]
+    );
 }
 
 #[test]

@@ -34,7 +34,8 @@ use fm_protocol::{
     AudioMetersMessage, ClientType, CommandPayload, CommandResult, ErrorMessage,
     HandshakeOutcome as ProtocolHandshakeOutcome, HandshakeResponse,
     HeartbeatAcknowledgementMessage, LineDecoder, MonitorTap, RecorderStatusMessage,
-    ServerIdentity, StreamStatusMessage, StructuredError, WireMessage, encode_line,
+    ServerIdentity, SourceSyncStatusMessage, StreamStatusMessage, StructuredError, WireMessage,
+    encode_line,
 };
 use fm_server::{Server, Session, SessionError, SyncPayload};
 
@@ -261,10 +262,12 @@ enum LossySlot {
     /// The input thumbnail being written (Protocol 2.59); the next one waits
     /// in the peer's [`ThumbnailOutbox`] until this slot is empty.
     Thumbnail,
+    /// The latest `source_sync_status` (Protocol 2.75).
+    SourceSyncStatus,
 }
 
 impl LossySlot {
-    const COUNT: usize = 7;
+    const COUNT: usize = 8;
 
     const fn index(self) -> usize {
         match self {
@@ -275,6 +278,7 @@ impl LossySlot {
             Self::TitlePreview => 4,
             Self::Thumbnail => 5,
             Self::RecorderStatus => 6,
+            Self::SourceSyncStatus => 7,
         }
     }
 
@@ -502,6 +506,14 @@ impl Peer {
             feed.offer_recorder_status(bytes);
         } else if self.recorder_status {
             self.lossy.replace(LossySlot::RecorderStatus, bytes);
+        }
+    }
+
+    /// Coalesces the latest live source drift telemetry in its own slot
+    /// (Protocol 2.75); Web pages do not take it.
+    fn replace_source_sync_status(&mut self, bytes: Vec<u8>) {
+        if self.phase == Phase::Active && self.web_feed.is_none() && self.recorder_status {
+            self.lossy.replace(LossySlot::SourceSyncStatus, bytes);
         }
     }
 
@@ -1080,6 +1092,9 @@ pub(super) fn run(
             }
             if let Some(status) = native.take_recorder_status(authority) {
                 publish_recorder_status(&mut peers, status);
+            }
+            if let Some(status) = native.take_source_sync_status(authority) {
+                publish_source_sync_status(&mut peers, &status);
             }
         }
         let realizing = native.as_deref();
@@ -1699,7 +1714,14 @@ impl Runtime<'_> {
                     now_millis().map_err(|_| ())?,
                 ) {
                     Ok(()) => WireMessage::DiagnosticsResponse(
-                        diagnostics_response(self.control, request).map_err(|_| ())?,
+                        diagnostics_response(
+                            self.control,
+                            request,
+                            native
+                                .as_deref()
+                                .map_or_else(Vec::new, NativeDaemon::source_sync_samples),
+                        )
+                        .map_err(|_| ())?,
                     ),
                     Err(error) => WireMessage::Error(ErrorMessage {
                         request_id: Some(request.request_id),
@@ -2468,6 +2490,19 @@ fn publish_recorder_status(peers: &mut [Peer], status: RecorderStatusMessage) {
     };
     for peer in peers {
         peer.replace_recorder_status(bytes.clone());
+    }
+}
+
+/// Live source drift telemetry (Protocol 2.75) goes to raw Studio peers
+/// in its own latest-wins slot.
+fn publish_source_sync_status(peers: &mut [Peer], status: &SourceSyncStatusMessage) {
+    let Ok(bytes) =
+        encode_line(&WireMessage::SourceSyncStatus(status.clone())).map(String::into_bytes)
+    else {
+        return;
+    };
+    for peer in peers {
+        peer.replace_source_sync_status(bytes.clone());
     }
 }
 

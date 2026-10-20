@@ -35,7 +35,7 @@ use fm_types::network_stream::{
 use fm_types::{FrameRate, InputId};
 
 use crate::native_streams::{Format, PulledStream};
-use crate::native_sync::{SourceKind, SyncLog};
+use crate::native_sync::{SourceKind, SyncLog, wire_sample};
 
 /// Longest a changed error text waits before it is reported.
 const STATUS_INTERVAL: Duration = Duration::from_secs(1);
@@ -242,6 +242,19 @@ impl NativeSystemAudio {
             });
         }
         pulled
+    }
+
+    /// Every open system audio input's drift loop as wire samples
+    /// (Protocol 2.75).
+    pub(crate) fn sync_samples(&self) -> Vec<fm_protocol::SourceSyncSample> {
+        self.sources
+            .iter()
+            .filter(|(_, source)| !source.closed)
+            .filter_map(|(&input, source)| {
+                let telemetry = source.receiver.as_ref()?.sync_telemetry()?;
+                wire_sample(SourceKind::SystemAudio, input, &telemetry)
+            })
+            .collect()
     }
 
     /// The statuses due for a report at `now`: a changed state, attempt,

@@ -373,6 +373,56 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::BitrateKbps, t("{value} kb/s")),
     (Msg::BitrateMbps, t("{value} Mb/s")),
+    // Live source clock drift correction (AU-004).
+    (Msg::HealthSync, t("SINC {drift}")),
+    (
+        Msg::HealthSyncFaults,
+        plural("SINC {count} FALLO", "SINC {count} FALLOS"),
+    ),
+    (
+        Msg::HealthSyncHover,
+        t(
+            "Relojes de fuentes en vivo: {sources} con deriva corregida al reloj del motor · deriva máxima {drift} ppm · {faults} resincronizaciones, vaciados o desbordes. Ámbar mientras una fuente se llena o se recupera, o cuando alguna ha tenido un fallo.",
+        ),
+    ),
+    (Msg::SyncKindCapture, t("captura")),
+    (Msg::SyncKindStream, t("emisión de red")),
+    (Msg::SyncKindSystemAudio, t("audio del sistema")),
+    (Msg::SyncStatePriming, t("llenando")),
+    (Msg::SyncStateRunning, t("en marcha")),
+    (Msg::SyncStateRecovering, t("recuperándose")),
+    (
+        Msg::SyncBadgeHover,
+        t(
+            "Corrección de deriva de reloj de {name} ({kind}, {state}): su audio se remuestrea al reloj del motor y sus imágenes lo siguen.\nHaz clic para ver la relación, el búfer y los recuentos de recuperación.",
+        ),
+    ),
+    (
+        Msg::SyncSourceLine,
+        t(
+            "{name}: deriva {drift} ppm · corrección {correction} ppm · relación {ratio} · búfer {buffer} de {target} ms",
+        ),
+    ),
+    (
+        Msg::SyncDetailDrift,
+        t("Deriva {drift} ppm, corrección {correction} ppm"),
+    ),
+    (
+        Msg::SyncDetailRatio,
+        t("Relación de remuestreo {ratio} ({input} Hz a {output} Hz)"),
+    ),
+    (
+        Msg::SyncDetailBuffer,
+        t("Búfer {buffer} ms, objetivo {target} ms"),
+    ),
+    (
+        Msg::SyncDetailFaults,
+        t("{resyncs} resincronizaciones · {underruns} vaciados · {overruns} desbordes"),
+    ),
+    (
+        Msg::SyncDetailPictures,
+        t("{drops} imágenes descartadas · {repeats} repetidas · reconexiones: {restarts}"),
+    ),
     // Toasts.
     (Msg::ToastNotice, t("AVISO")),
     (Msg::ToastError, t("ERROR")),

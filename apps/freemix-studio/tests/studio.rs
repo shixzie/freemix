@@ -960,6 +960,7 @@ fn websocket_diagnose_uses_current_session_contract() {
                 retained_events_limit: 64,
                 subscriber_limit: 8,
                 subscriber_queue_limit: 16,
+                source_sync: Vec::new(),
             }),
             deadline,
         );
@@ -1197,6 +1198,7 @@ fn diagnose_reports_validated_heartbeat_and_control_diagnostics() {
                 retained_events_limit: 64,
                 subscriber_limit: 8,
                 subscriber_queue_limit: 16,
+                source_sync: Vec::new(),
             }),
             deadline,
         );
@@ -1278,6 +1280,7 @@ fn diagnose_swallows_monitor_frames_during_heartbeat_and_diagnostics_waits() {
                 retained_events_limit: 64,
                 subscriber_limit: 8,
                 subscriber_queue_limit: 16,
+                source_sync: Vec::new(),
             }),
             deadline,
         );

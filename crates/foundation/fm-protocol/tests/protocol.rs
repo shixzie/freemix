@@ -412,6 +412,7 @@ fn every_message_variant_round_trips() {
             retained_events_limit: 4_096,
             subscriber_limit: 16,
             subscriber_queue_limit: 256,
+            source_sync: Vec::new(),
         }),
         WireMessage::Command(CommandMessage {
             payload: CommandPayload::ReorderInputs {

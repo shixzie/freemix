@@ -40,10 +40,10 @@ use fm_model::{
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
-    EventPayload, HandshakeRequest, HeartbeatMessage, InputThumbnailMessage,
+    DiagnosticsRequest, EventPayload, HandshakeRequest, HeartbeatMessage, InputThumbnailMessage,
     InputThumbnailSubscription, MonitorFrameAssembler, MonitorFrameOrigin, MonitorImage,
-    MonitorTap, Role, RuntimeLifecycleEvent, ServerIdentity, WireInputId, WireMessage, decode_line,
-    encode_line,
+    MonitorTap, Role, RuntimeLifecycleEvent, ServerIdentity, SourceClockState, SourceSyncKind,
+    WireInputId, WireMessage, decode_line, encode_line,
 };
 use fm_types::network_stream::{
     NetworkStreamConfig, NetworkStreamSettings, NetworkStreamState, NetworkStreamStatus,
@@ -594,6 +594,40 @@ fn native_daemon_receives_a_network_stream_and_reports_its_status_over_the_wire(
         status.state == NetworkStreamState::Live
     });
     client.shows("the red picture again", red);
+
+    // The stream's drift loop reaches the Studio as `source_sync_status`
+    // (AU-004, Protocol 2.75) and answers diagnostics.
+    let synced = client.wait_for("the stream's drift telemetry", |_, message| {
+        let WireMessage::SourceSyncStatus(status) = message else {
+            return None;
+        };
+        status
+            .sources
+            .into_iter()
+            .find(|sample| sample.input == camera() && sample.state == SourceClockState::Running)
+    });
+    assert_eq!(synced.kind, SourceSyncKind::Stream, "{synced:?}");
+    assert!(synced.target_us > 0, "{synced:?}");
+    assert!(synced.drift_ppm().abs() <= 1_000.0, "{synced:?}");
+    assert!(
+        (synced.resampling_ratio() - 1.0).abs() < 0.01,
+        "a 48 kHz source into the 48 kHz engine: {synced:?}"
+    );
+    client.send(&WireMessage::DiagnosticsRequest(DiagnosticsRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: "diagnostics-sync".into(),
+    }));
+    let diagnostics = client.wait_for("the diagnostics response", |_, message| match message {
+        WireMessage::DiagnosticsResponse(response) => Some(response),
+        _ => None,
+    });
+    assert!(
+        diagnostics
+            .source_sync
+            .iter()
+            .any(|sample| sample.input == camera() && sample.kind == SourceSyncKind::Stream),
+        "{diagnostics:?}"
+    );
 
     // A settings change reconnects with the new jitter buffer, and its
     // event redacts the URL the edit kept.

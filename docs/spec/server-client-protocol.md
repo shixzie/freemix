@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.75 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.76 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -2774,6 +2774,41 @@ Protocol 2.75 puts a DSP chain on every input strip and on the Master bus
 - Studio's `FX` key on each strip and on Master opens the FX window; the
   CLI adds `audio-strip-dsp` and `remote-audio-strip-dsp`
   (`<input|master> <flat|voice|podcast|music|master|code>`).
+
+Protocol 2.76 puts live source clock drift telemetry on the wire (AU-004).
+Every live source a native daemon ingests (capture inputs, network streams,
+system audio inputs) converts its audio into the engine clock with a
+drift-correcting resampler and keeps its pictures following that audio.
+
+- New lossy, non-resumable record `source_sync_status` with server
+  identity, an independent strictly increasing `sequence`, and `sources`:
+  one `;`-separated sample per running live source in strictly increasing
+  input order (at most 64; empty when none runs), each
+  `<input>:<kind>:<state>:<input_hz>:<output_hz>:<drift_mppm>:<correction_mppm>:<buffer_us>:<target_us>:<resyncs>:<underruns>:<overruns>:<picture_drops>:<picture_repeats>:<restarts>`.
+  `kind` is `capture`, `stream`, or `system_audio`; `state` is `priming`,
+  `running`, or `recovering`; both rates are 1 to 768 000 Hz; the
+  estimated drift and the applied correction are canonical signed
+  milli-ppm within ±10⁹ (a positive correction consumes the source
+  faster, so the resampling ratio is `input_hz / output_hz × (1 +
+  correction)`); the backlog and its target are microseconds of source
+  audio; the counts are read-side hard resyncs, underruns, overruns, extra
+  pictures dropped and pictures repeated to follow the audio, and
+  connections. Anything else is refused.
+- Native `freemixd` builds it at most once a second while any live source
+  has a running loop, and once more, empty, after the last one stops; raw
+  Studio peers take it in its own latest-wins slot. Web pages and CLI
+  sessions do not receive it. `FREEMIXD_SOURCE_SYNC` log records continue.
+- `diagnostics_response` gains the required `source_sync` field: the same
+  sample list, current when the daemon answers (empty on the simulated
+  daemon or without live sources).
+- `fm-client` validates and retains the latest record like
+  `recorder_status` (a foreign identity or a non-increasing sequence
+  disconnects; disconnect forgets it). Studio shows a `SYNC` lamp in the
+  health strip (the largest drift, or the fault count once any source has
+  had a resync, underrun, or overrun; amber while one primes or recovers)
+  and a `SYNC` key on each live input's mixer strip whose menu lists the
+  drift, correction, ratio, buffer, and counts. `freemix-cli
+  remote-diagnostics` prints one `SourceSync(...)` line per source.
 - 2.74 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
@@ -2794,8 +2829,9 @@ a command, does not mutate state, and has no idempotency or revision preconditio
 The matching `diagnostics_response` carries request ID, engine identity,
 `current_revision`, optional retained revision bounds, and subscriber limits and
 counts. Exact fields are `oldest_retained_revision`, `newest_retained_revision`,
-`subscriber_count`, `retained_events_limit`, `subscriber_limit`, and
-`subscriber_queue_limit`. These fields do not claim readiness, health,
+`subscriber_count`, `retained_events_limit`, `subscriber_limit`,
+`subscriber_queue_limit`, and `source_sync` (Protocol 2.76: every running live
+source's clock drift loop, possibly empty). These fields do not claim readiness, health,
 capabilities, authentication state, session counters, paths, or error details.
 
 ## 4. Events and telemetry

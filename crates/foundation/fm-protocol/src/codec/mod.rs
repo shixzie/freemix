@@ -19,6 +19,7 @@ mod scene_layer;
 mod scene_layout;
 mod script;
 mod shortcut;
+mod source_sync;
 mod still;
 mod stream_target;
 mod system_audio;

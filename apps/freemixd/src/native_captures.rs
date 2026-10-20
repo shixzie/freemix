@@ -42,7 +42,7 @@ use fm_types::{FrameRate, InputId, SampleRate};
 use crate::native_files::blank_picture;
 use crate::native_files::output_timing;
 use crate::native_streams::{Format, PulledStream};
-use crate::native_sync::{SourceKind, SyncLog};
+use crate::native_sync::{SourceKind, SyncLog, wire_sample};
 
 /// Longest a changed-but-same-state status waits before it is reported.
 const STATUS_INTERVAL: Duration = Duration::from_secs(1);
@@ -303,6 +303,18 @@ impl NativeCaptures {
             });
         }
         pulled
+    }
+
+    /// Every open capture's drift loop as wire samples (Protocol 2.75).
+    pub(crate) fn sync_samples(&self) -> Vec<fm_protocol::SourceSyncSample> {
+        self.captures
+            .iter()
+            .filter(|(_, capture)| !capture.closed)
+            .filter_map(|(&input, capture)| {
+                let telemetry = capture.supervisor.sync_telemetry()?;
+                wire_sample(SourceKind::Capture, input, &telemetry)
+            })
+            .collect()
     }
 
     /// The statuses due for a report at `now`: a changed state at once,

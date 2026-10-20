@@ -702,6 +702,7 @@ impl Client {
             | WireMessage::AudioMeters(_)
             | WireMessage::StreamStatus(_)
             | WireMessage::RecorderStatus(_)
+            | WireMessage::SourceSyncStatus(_)
             | WireMessage::MonitorFrame(_)
             | WireMessage::InputThumbnailSubscription(_)
             | WireMessage::InputThumbnail(_)

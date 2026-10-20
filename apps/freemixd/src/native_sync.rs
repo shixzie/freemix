@@ -10,33 +10,127 @@
 //! [`SYNC_INTERVAL`]. A record carries the estimated drift and the applied
 //! correction in ppm, the audio backlog against its target in
 //! milliseconds, and the resync, underrun, overrun, and picture
-//! drop/repeat counts. There is no protocol event for it (yet): the record
-//! is the operator's and the test suite's telemetry.
+//! drop/repeat counts.
+//!
+//! The same loops reach clients as `source_sync_status` records (Protocol
+//! 2.75): [`SourceSyncTracker`] builds one at most every
+//! [`SOURCE_SYNC_STATUS_INTERVAL`] while any live source runs (and once
+//! more, empty, after the last one stops), and `diagnostics_response`
+//! carries the current samples.
 
 use std::time::{Duration, Instant};
 
 use fm_audio::SourceSyncState;
 use fm_codec_ffmpeg::network_input::LiveSourceTelemetry;
+use fm_protocol::{
+    MAX_SOURCE_SYNC_MPPM, MAX_SOURCE_SYNC_SAMPLES, ServerIdentity, SourceClockState,
+    SourceSyncSample, SourceSyncStatusMessage, WireInputId,
+};
 use fm_types::InputId;
 
 /// How often a steadily running source is reported.
 pub(crate) const SYNC_INTERVAL: Duration = Duration::from_secs(60);
 
+/// The shortest spacing of two `source_sync_status` records.
+pub(crate) const SOURCE_SYNC_STATUS_INTERVAL: Duration = Duration::from_secs(1);
+
 /// The kind of live source a record names.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SourceKind {
-    Capture,
-    Stream,
-    SystemAudio,
+pub(crate) use fm_protocol::SourceSyncKind as SourceKind;
+
+/// One source's loop as a wire sample; `None` when the telemetry cannot
+/// keep the wire contract (no rate yet).
+pub(crate) fn wire_sample(
+    kind: SourceKind,
+    input: InputId,
+    telemetry: &LiveSourceTelemetry,
+) -> Option<SourceSyncSample> {
+    let sync = &telemetry.sync;
+    #[allow(clippy::cast_possible_truncation)] // clamped to the wire bound first
+    let mppm = |ppm: f64| {
+        let limit = MAX_SOURCE_SYNC_MPPM as f64;
+        if ppm.is_finite() {
+            (ppm * 1_000.0).round().clamp(-limit, limit) as i64
+        } else {
+            0
+        }
+    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // non-negative, finite
+    let micros = |ms: f64| {
+        if ms.is_finite() && ms > 0.0 {
+            (ms * 1_000.0).round().min(u64::MAX as f64) as u64
+        } else {
+            0
+        }
+    };
+    let sample = SourceSyncSample {
+        input: WireInputId::from_domain(input),
+        kind,
+        state: match sync.state {
+            SourceSyncState::Priming => SourceClockState::Priming,
+            SourceSyncState::Running => SourceClockState::Running,
+            SourceSyncState::Recovering => SourceClockState::Recovering,
+        },
+        input_rate_hz: sync.input_rate_hz,
+        output_rate_hz: sync.output_rate_hz,
+        drift_mppm: mppm(sync.estimated_drift_ppm),
+        correction_mppm: mppm(sync.applied_correction_ppm),
+        buffer_us: micros(telemetry.buffer_ms()),
+        target_us: micros(telemetry.target_ms()),
+        resyncs: sync.resyncs,
+        underruns: sync.underruns,
+        overruns: sync.overruns,
+        picture_drops: telemetry.picture_drops,
+        picture_repeats: telemetry.picture_repeats,
+        restarts: telemetry.restarts,
+    };
+    sample.is_valid().then_some(sample)
 }
 
-impl SourceKind {
-    const fn token(self) -> &'static str {
-        match self {
-            Self::Capture => "capture",
-            Self::Stream => "stream",
-            Self::SystemAudio => "system_audio",
+/// Orders samples by input and keeps the wire bound.
+pub(crate) fn wire_samples(mut samples: Vec<SourceSyncSample>) -> Vec<SourceSyncSample> {
+    samples.sort_by_key(|sample| sample.input);
+    samples.dedup_by_key(|sample| sample.input);
+    samples.truncate(MAX_SOURCE_SYNC_SAMPLES);
+    samples
+}
+
+/// Builds the lossy `source_sync_status` records (Protocol 2.75).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SourceSyncTracker {
+    sequence: u64,
+    built_at: Option<Instant>,
+    /// The last record carried at least one source.
+    reported_sources: bool,
+}
+
+impl SourceSyncTracker {
+    /// The next record when one is due at `now`: at most every
+    /// [`SOURCE_SYNC_STATUS_INTERVAL`] while any source runs, and one empty
+    /// record after the last source stops.
+    pub(crate) fn poll(
+        &mut self,
+        server: &ServerIdentity,
+        samples: impl FnOnce() -> Vec<SourceSyncSample>,
+        now: Instant,
+    ) -> Option<SourceSyncStatusMessage> {
+        if self
+            .built_at
+            .is_some_and(|built| now.saturating_duration_since(built) < SOURCE_SYNC_STATUS_INTERVAL)
+        {
+            return None;
         }
+        let sources = wire_samples(samples());
+        if sources.is_empty() && !self.reported_sources {
+            return None;
+        }
+        self.built_at = Some(now);
+        self.reported_sources = !sources.is_empty();
+        self.sequence = self.sequence.checked_add(1)?;
+        Some(SourceSyncStatusMessage {
+            server: server.clone(),
+            sequence: self.sequence,
+            sources,
+        })
     }
 }
 
@@ -100,9 +194,105 @@ pub(crate) fn record(kind: SourceKind, input: InputId, telemetry: &LiveSourceTel
 #[cfg(test)]
 mod tests {
     use fm_audio::{LiveSourceClock, LiveSourceConfig};
+    use fm_protocol::SourceSyncKind;
     use fm_types::{FrameRate, SampleRate};
 
     use super::*;
+
+    fn server() -> ServerIdentity {
+        ServerIdentity {
+            engine_id: "engine".into(),
+            project_id: "project".into(),
+            state_epoch: 1,
+            log_id: "log".into(),
+        }
+    }
+
+    fn input(id: u128) -> InputId {
+        InputId::new(core::num::NonZeroU128::new(id).unwrap())
+    }
+
+    #[test]
+    fn a_running_source_becomes_an_exact_wire_sample() {
+        let mut telemetry = running_clock().telemetry();
+        telemetry.sync.estimated_drift_ppm = -12.3456;
+        telemetry.sync.applied_correction_ppm = 7.0004;
+        telemetry.sync.underruns = 2;
+        telemetry.picture_repeats = 3;
+        telemetry.restarts = 1;
+        let sample = wire_sample(SourceKind::Stream, input(7), &telemetry).unwrap();
+        assert_eq!(sample.input, WireInputId::from_domain(input(7)));
+        assert_eq!(sample.kind, SourceSyncKind::Stream);
+        assert_eq!(sample.state, SourceClockState::Running);
+        assert_eq!(
+            (sample.input_rate_hz, sample.output_rate_hz),
+            (48_000, 48_000)
+        );
+        assert_eq!(sample.drift_mppm, -12_346);
+        assert_eq!(sample.correction_mppm, 7_000);
+        assert_eq!(sample.target_us, 80_000);
+        assert_eq!(
+            sample.buffer_us,
+            (telemetry.buffer_ms() * 1_000.0).round() as u64
+        );
+        assert_eq!(
+            (sample.underruns, sample.picture_repeats, sample.restarts),
+            (2, 3, 1)
+        );
+        telemetry.sync.estimated_drift_ppm = f64::INFINITY;
+        telemetry.sync.applied_correction_ppm = 1e12;
+        let clamped = wire_sample(SourceKind::Stream, input(7), &telemetry).unwrap();
+        assert_eq!(clamped.drift_mppm, 0);
+        assert_eq!(clamped.correction_mppm, MAX_SOURCE_SYNC_MPPM);
+        telemetry.sync.input_rate_hz = 0;
+        assert!(wire_sample(SourceKind::Stream, input(7), &telemetry).is_none());
+    }
+
+    #[test]
+    fn status_records_are_paced_ordered_and_end_with_one_empty_record() {
+        let telemetry = running_clock().telemetry();
+        let samples = || {
+            vec![
+                wire_sample(SourceKind::Capture, input(9), &telemetry).unwrap(),
+                wire_sample(SourceKind::Stream, input(3), &telemetry).unwrap(),
+            ]
+        };
+        let mut tracker = SourceSyncTracker::default();
+        let start = Instant::now();
+        assert!(tracker.poll(&server(), Vec::new, start).is_none());
+        let first = tracker.poll(&server(), samples, start).unwrap();
+        assert_eq!(first.sequence, 1);
+        assert_eq!(
+            first.sources.iter().map(|s| s.input).collect::<Vec<_>>(),
+            [
+                WireInputId::from_domain(input(3)),
+                WireInputId::from_domain(input(9))
+            ]
+        );
+        assert!(
+            tracker
+                .poll(&server(), samples, start + SOURCE_SYNC_STATUS_INTERVAL / 2)
+                .is_none()
+        );
+        let second = tracker
+            .poll(&server(), samples, start + SOURCE_SYNC_STATUS_INTERVAL)
+            .unwrap();
+        assert_eq!(second.sequence, 2);
+        let empty = tracker
+            .poll(&server(), Vec::new, start + SOURCE_SYNC_STATUS_INTERVAL * 2)
+            .unwrap();
+        assert!(empty.sources.is_empty());
+        assert_eq!(empty.sequence, 3);
+        assert!(
+            tracker
+                .poll(&server(), Vec::new, start + SOURCE_SYNC_STATUS_INTERVAL * 3)
+                .is_none()
+        );
+        let many = (1..=100)
+            .map(|id| wire_sample(SourceKind::Stream, input(id), &telemetry).unwrap())
+            .collect();
+        assert_eq!(wire_samples(many).len(), MAX_SOURCE_SYNC_SAMPLES);
+    }
 
     fn running_clock() -> LiveSourceClock {
         let mut clock = LiveSourceClock::new(LiveSourceConfig::new(

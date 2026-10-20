@@ -29,7 +29,7 @@ use egui::{
     Align2, Color32, CornerRadius, DragValue, FontFamily, FontId, Key, Rect, RichText, ScrollArea,
     Sense, Stroke, StrokeKind, Ui, Vec2, pos2,
 };
-use fm_protocol::AudioMeterChannel;
+use fm_protocol::{AudioMeterChannel, SourceSyncSample};
 use fm_types::strip_dsp::StripDspTarget;
 use fm_ui_model::{ClientView, InputAudioStripStatus};
 
@@ -709,7 +709,14 @@ pub(crate) fn draw_mixer(
     // Monitor and Master stay pinned at the right edge; input strips scroll
     // when the mixer is narrower than all strips.
     let strip_count = view.input_audio_strips.len() + active_groups(view).len();
-    let layout = strip_layout(panel, strip_count, *details);
+    let mut layout = strip_layout(panel, strip_count, *details);
+    // Live source clock keys (AU-004) take a row from every fader, so the
+    // strips stay level.
+    let sync_row = crate::source_sync_ui::any_strip(state);
+    if sync_row {
+        layout.fader_height =
+            (layout.fader_height - crate::source_sync_ui::SYNC_ROW_HEIGHT).max(MIN_FADER_HEIGHT);
+    }
     let master_width = 2.0 * layout.pitch();
     let inputs_width = (ui.available_width() - master_width).max(layout.width);
     let viewport_width = whole_strips_width(inputs_width, strip_count, layout.pitch());
@@ -738,10 +745,13 @@ pub(crate) fn draw_mixer(
                                 let key = MeterKey::Input(status.input);
                                 let holds = ballistics.update(key, channels, dt_ms).to_vec();
                                 let target = StripDspTarget::Input(status.input);
+                                let sync = sync_row.then(|| {
+                                    crate::source_sync_ui::sample_for(state, status.input)
+                                });
                                 if draw_input_strip(
                                     ui,
                                     (view, fx_active(state, target), &mut *fx),
-                                    status,
+                                    (status, sync),
                                     MeterFeed {
                                         channels,
                                         holds: &holds,
@@ -1721,11 +1731,13 @@ fn peak_box(ui: &mut Ui, holds: &[ChannelBallistics], has_sample: bool, stale: b
 }
 
 /// Draws one input strip; returns `true` when the operator cleared its clip.
+/// `sync` is `Some` when the strips carry a live source clock row (AU-004),
+/// with this input's loop if it has one.
 #[allow(clippy::too_many_lines)] // one immediate-mode region
 fn draw_input_strip(
     ui: &mut Ui,
     (view, fx_on, fx): (&ClientView, bool, &mut Option<StripDspTarget>),
-    status: &InputAudioStripStatus,
+    (status, sync): (&InputAudioStripStatus, Option<Option<&SourceSyncSample>>),
     feed: MeterFeed<'_>,
     gate: StripGate,
     layout: StripLayout,
@@ -1894,6 +1906,18 @@ fn draw_input_strip(
                 *fx = Some(StripDspTarget::Input(status.input));
             }
         });
+        match sync {
+            Some(Some(sample)) => {
+                crate::source_sync_ui::strip_badge(ui, sample, &input_name, layout.inner_width())
+            }
+            Some(None) => {
+                ui.allocate_space(Vec2::new(
+                    layout.inner_width(),
+                    crate::source_sync_ui::SYNC_ROW_HEIGHT - 4.0,
+                ));
+            }
+            None => {}
+        }
     });
     let update = InputAudioStripUpdate {
         gain_millidb: gain_changed.then_some(gain_millidb),

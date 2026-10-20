@@ -235,6 +235,23 @@ messages! {
     HealthDiskHover => t("Lowest free space on a local HLS output directory's filesystem: {free}. Amber below 2 GB, red below 512 MB."),
     BitrateKbps => t("{value} kb/s"),
     BitrateMbps => t("{value} Mb/s"),
+    // Live source clock drift correction (AU-004).
+    HealthSync => t("SYNC {drift}"),
+    HealthSyncFaults => plural("SYNC {count} FAULT", "SYNC {count} FAULTS"),
+    HealthSyncHover => t("Live source clocks: {sources} drift-corrected into the engine clock · largest drift {drift} ppm · {faults} resyncs, underruns, or overruns. Amber while a source primes or recovers, or once one has had a fault."),
+    SyncKindCapture => t("capture"),
+    SyncKindStream => t("network stream"),
+    SyncKindSystemAudio => t("system audio"),
+    SyncStatePriming => t("priming"),
+    SyncStateRunning => t("running"),
+    SyncStateRecovering => t("recovering"),
+    SyncBadgeHover => t("Clock drift correction of {name} ({kind}, {state}): its audio is resampled into the engine clock and its pictures follow it.\nClick for the ratio, buffer, and recovery counts."),
+    SyncSourceLine => t("{name}: drift {drift} ppm · correction {correction} ppm · ratio {ratio} · buffer {buffer} of {target} ms"),
+    SyncDetailDrift => t("Drift {drift} ppm, correction {correction} ppm"),
+    SyncDetailRatio => t("Resampling ratio {ratio} ({input} Hz into {output} Hz)"),
+    SyncDetailBuffer => t("Buffer {buffer} ms, target {target} ms"),
+    SyncDetailFaults => t("{resyncs} resyncs · {underruns} underruns · {overruns} overruns"),
+    SyncDetailPictures => t("{drops} pictures dropped · {repeats} repeated · reconnections: {restarts}"),
 
     // Toasts.
     ToastNotice => t("NOTICE"),

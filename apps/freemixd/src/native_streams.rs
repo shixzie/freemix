@@ -43,7 +43,7 @@ use fm_types::network_stream::{NetworkStreamConfig, NetworkStreamState, NetworkS
 use fm_types::{FrameRate, InputId, PixelFormat, VideoDimensions};
 
 use crate::native_files::{blank_picture, output_timing};
-use crate::native_sync::{SourceKind, SyncLog};
+use crate::native_sync::{SourceKind, SyncLog, wire_sample};
 
 /// Longest a changed-but-same-state status waits before it is reported.
 const STATUS_INTERVAL: Duration = Duration::from_secs(1);
@@ -250,6 +250,18 @@ impl NativeNetworkStreams {
             });
         }
         pulled
+    }
+
+    /// Every open stream's drift loop as wire samples (Protocol 2.75).
+    pub(crate) fn sync_samples(&self) -> Vec<fm_protocol::SourceSyncSample> {
+        self.streams
+            .iter()
+            .filter(|(_, stream)| !stream.closed)
+            .filter_map(|(&input, stream)| {
+                let telemetry = stream.receiver.as_ref()?.sync_telemetry()?;
+                wire_sample(SourceKind::Stream, input, &telemetry)
+            })
+            .collect()
     }
 
     /// The statuses due for a report at `now`: a changed state at once,

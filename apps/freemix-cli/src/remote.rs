@@ -1196,6 +1196,39 @@ fn print_diagnostics(response: &DiagnosticsResponse) {
         response.retained_events_limit,
         response.subscriber_queue_limit,
     );
+    for sample in &response.source_sync {
+        println!("{}", format_source_sync(sample));
+    }
+}
+
+/// One live source's drift loop (AU-004) on one line.
+pub(crate) fn format_source_sync(sample: &fm_protocol::SourceSyncSample) -> String {
+    format!(
+        "SourceSync(input={}, kind={}, state={}, drift_ppm={}, correction_ppm={}, ratio={:.8}, rate_hz={}/{}, buffer_ms={:.3}, target_ms={:.3}, resyncs={}, underruns={}, overruns={}, picture_drops={}, picture_repeats={}, restarts={})",
+        sample.input,
+        sample.kind.token(),
+        sample.state.token(),
+        milli_ppm(sample.drift_mppm),
+        milli_ppm(sample.correction_mppm),
+        sample.resampling_ratio(),
+        sample.input_rate_hz,
+        sample.output_rate_hz,
+        sample.buffer_ms(),
+        sample.target_ms(),
+        sample.resyncs,
+        sample.underruns,
+        sample.overruns,
+        sample.picture_drops,
+        sample.picture_repeats,
+        sample.restarts,
+    )
+}
+
+/// Exact signed milli-ppm as ppm: `-12.345`, `+0.000`.
+fn milli_ppm(value: i64) -> String {
+    let sign = if value < 0 { '-' } else { '+' };
+    let magnitude = value.unsigned_abs();
+    format!("{sign}{}.{:03}", magnitude / 1_000, magnitude % 1_000)
 }
 
 /// One media input's settings and transport on one line (IN-003).

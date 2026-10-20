@@ -73,6 +73,7 @@ mod preferences;
 mod preset_files;
 mod scene_designer;
 mod scripts;
+mod source_sync_ui;
 mod still_input_ui;
 mod stinger_config;
 mod stream_control;
@@ -571,6 +572,10 @@ pub struct StudioUiState {
     /// (`recorder_status`, Protocol 2.66): whether it is configured, records,
     /// or failed and why. `None` when the daemon does not report it.
     pub recorder_realized: [Option<RecorderStatusSample>; RECORDER_SLOT_COUNT],
+    /// The latest live source drift telemetry (`source_sync_status`,
+    /// Protocol 2.75): one sample per running live source. `None` when the
+    /// daemon reports none.
+    pub source_sync: Option<fm_protocol::SourceSyncStatusMessage>,
     /// Stream targets whose start/stop command is still unresolved.
     pub stream_pending: Vec<WireStreamTargetId>,
     /// Whether a Start all or Stop all command is still unresolved.
@@ -645,6 +650,7 @@ impl StudioUiState {
             recording_desired: [false; RECORDER_SLOT_COUNT],
             recording_pending: [false; RECORDER_SLOT_COUNT],
             recorder_realized: [None, None],
+            source_sync: None,
             stream_pending: Vec::new(),
             stream_group_pending: false,
             reconnect: None,

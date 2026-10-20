@@ -10,8 +10,9 @@ use fm_protocol::{
     HandshakeOutcome, HeartbeatAcknowledgementMessage, InputThumbnailImage, InputThumbnailMessage,
     LineDecoder, MonitorFrameAssembler, MonitorFrameMessage, MonitorImage, MonitorTap,
     RecorderStatusMessage, RuntimeEventMessage, ScenePreviewImage, ScenePreviewRequest,
-    StreamStatusMessage, TitlePreviewAssembler, TitlePreviewFrameMessage, TitlePreviewImage,
-    TitlePreviewRequest, WireInputId, WireMessage, decode_input_thumbnail, encode_line,
+    SourceSyncStatusMessage, StreamStatusMessage, TitlePreviewAssembler, TitlePreviewFrameMessage,
+    TitlePreviewImage, TitlePreviewRequest, WireInputId, WireMessage, decode_input_thumbnail,
+    encode_line,
 };
 
 #[cfg(feature = "std-websocket")]
@@ -373,6 +374,11 @@ pub enum SessionEvent {
     RecorderStatus {
         status: RecorderStatusMessage,
     },
+    /// Every running live source's drift loop (Protocol 2.75); the latest
+    /// is retained in [`TcpSession::latest_source_sync_status`].
+    SourceSyncStatus {
+        status: SourceSyncStatusMessage,
+    },
     /// One valid `monitor_frame` part arrived for `tap`. When `complete` is
     /// `true` it finished its group and the decoded image is available from
     /// [`TcpSession::latest_monitor_frame`]; pixels are never carried here.
@@ -520,6 +526,8 @@ pub struct TcpSession {
     latest_stream_status: Option<StreamStatusMessage>,
     last_recorder_status_sequence: Option<u64>,
     latest_recorder_status: Option<RecorderStatusMessage>,
+    last_source_sync_sequence: Option<u64>,
+    latest_source_sync_status: Option<SourceSyncStatusMessage>,
     /// Last completed monitor frame sequence per [`MonitorTap::index`].
     monitor_sequences: [Option<u64>; 2],
     monitor_assemblers: [MonitorFrameAssembler; 2],
@@ -650,6 +658,8 @@ impl TcpSession {
             latest_stream_status: None,
             last_recorder_status_sequence: None,
             latest_recorder_status: None,
+            last_source_sync_sequence: None,
+            latest_source_sync_status: None,
             monitor_sequences: [None, None],
             monitor_assemblers: [MonitorFrameAssembler::new(), MonitorFrameAssembler::new()],
             latest_monitor: [None, None],
@@ -704,6 +714,13 @@ impl TcpSession {
     #[must_use]
     pub const fn latest_recorder_status(&self) -> Option<&RecorderStatusMessage> {
         self.latest_recorder_status.as_ref()
+    }
+
+    /// The latest live source drift telemetry (Protocol 2.75): one sample
+    /// per running live source. Cleared on disconnect.
+    #[must_use]
+    pub const fn latest_source_sync_status(&self) -> Option<&SourceSyncStatusMessage> {
+        self.latest_source_sync_status.as_ref()
     }
 
     /// The latest fully assembled and decoded monitor image for `tap` and
@@ -1353,6 +1370,9 @@ impl TcpSession {
                     WireMessage::RecorderStatus(status) => {
                         self.validate_recorder_status(&status)?;
                     }
+                    WireMessage::SourceSyncStatus(status) => {
+                        self.validate_source_sync_status(&status)?;
+                    }
                     WireMessage::MonitorFrame(frame) => {
                         self.validate_monitor_frame(&frame)?;
                     }
@@ -1444,6 +1464,10 @@ impl TcpSession {
             WireMessage::RecorderStatus(status) => {
                 self.validate_recorder_status(&status)?;
                 Ok(SessionEvent::RecorderStatus { status })
+            }
+            WireMessage::SourceSyncStatus(status) => {
+                self.validate_source_sync_status(&status)?;
+                Ok(SessionEvent::SourceSyncStatus { status })
             }
             WireMessage::MonitorFrame(frame) => {
                 let complete = self.validate_monitor_frame(&frame)?;
@@ -1753,6 +1777,8 @@ impl TcpSession {
         self.latest_stream_status = None;
         self.last_recorder_status_sequence = None;
         self.latest_recorder_status = None;
+        self.last_source_sync_sequence = None;
+        self.latest_source_sync_status = None;
         self.monitor_sequences = [None, None];
         for assembler in &mut self.monitor_assemblers {
             assembler.reset();
@@ -1827,6 +1853,29 @@ impl TcpSession {
         }
         self.last_recorder_status_sequence = Some(status.sequence);
         self.latest_recorder_status = Some(status.clone());
+        Ok(())
+    }
+
+    /// Like [`Self::validate_stream_status`]: a foreign identity or a
+    /// non-increasing sequence disconnects. The codec already holds each
+    /// sample to the wire contract.
+    fn validate_source_sync_status(
+        &mut self,
+        status: &SourceSyncStatusMessage,
+    ) -> Result<(), TcpSessionError> {
+        let valid_identity = self
+            .client
+            .session()
+            .is_some_and(|session| session.server == status.server);
+        let valid_sequence = self
+            .last_source_sync_sequence
+            .is_none_or(|sequence| status.sequence > sequence);
+        if !valid_identity || !valid_sequence {
+            self.transition_disconnect();
+            return Err(TcpSessionError::UnexpectedMessage);
+        }
+        self.last_source_sync_sequence = Some(status.sequence);
+        self.latest_source_sync_status = Some(status.clone());
         Ok(())
     }
 }

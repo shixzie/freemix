@@ -1288,6 +1288,7 @@ fn run_worker(
                     | SessionEvent::InputThumbnail { .. }
                     | SessionEvent::StreamStatus { .. }
                     | SessionEvent::RecorderStatus { .. }
+                    | SessionEvent::SourceSyncStatus { .. }
                     | SessionEvent::DisplayInventory { .. }
                     | SessionEvent::CaptureDevices { .. }
                     | SessionEvent::SystemAudioDevices { .. }
@@ -1797,6 +1798,7 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::Event { .. }
                         | SessionEvent::StreamStatus { .. }
                         | SessionEvent::RecorderStatus { .. }
+                        | SessionEvent::SourceSyncStatus { .. }
                         | SessionEvent::DisplayInventory { .. }
                         | SessionEvent::CaptureDevices { .. }
                         | SessionEvent::SystemAudioDevices { .. }
@@ -2346,6 +2348,7 @@ fn receive_command_event(
                 | SessionEvent::InputThumbnail { .. }
                 | SessionEvent::StreamStatus { .. }
                 | SessionEvent::RecorderStatus { .. }
+                | SessionEvent::SourceSyncStatus { .. }
                 | SessionEvent::DisplayInventory { .. }
                 | SessionEvent::CaptureDevices { .. }
                 | SessionEvent::SystemAudioDevices { .. }
@@ -3183,6 +3186,7 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
                     }
                 }
             }
+            state.source_sync = runtime.session().latest_source_sync_status().cloned();
             state.recording_desired = recording_desired_slots(view);
         }
         state.view = view;

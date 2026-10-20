@@ -92,6 +92,13 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             record.field("sequence", message.sequence)?;
             record.field_string("recorders", recorders)?;
         }
+        WireMessage::SourceSyncStatus(message) => {
+            let sources = super::source_sync::encode_samples("sources", &message.sources)?;
+            record.kind("source_sync_status");
+            encode_server_identity(&mut record, &message.server)?;
+            record.field("sequence", message.sequence)?;
+            record.field_string("sources", sources)?;
+        }
         WireMessage::MonitorFrame(message) => encode_monitor_frame(&mut record, message)?,
         WireMessage::InputThumbnailSubscription(message) => {
             record.kind("input_thumbnail_subscription");
@@ -3276,7 +3283,9 @@ fn encode_diagnostics_response(
     record.field("subscriber_count", message.subscriber_count)?;
     record.field("retained_events_limit", message.retained_events_limit)?;
     record.field("subscriber_limit", message.subscriber_limit)?;
-    record.field("subscriber_queue_limit", message.subscriber_queue_limit)
+    record.field("subscriber_queue_limit", message.subscriber_queue_limit)?;
+    let sources = super::source_sync::encode_samples("source_sync", &message.source_sync)?;
+    record.field_string("source_sync", sources)
 }
 
 fn encode_error_message(record: &mut Record, message: &ErrorMessage) -> Result<(), CodecError> {

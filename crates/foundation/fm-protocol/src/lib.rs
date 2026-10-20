@@ -18,6 +18,7 @@ mod recorder_status;
 mod scene_layer;
 mod script;
 mod shortcut;
+mod source_sync;
 mod still;
 mod stream_target;
 mod system_audio;
@@ -187,6 +188,10 @@ pub use shortcut::{
     MAX_SHORTCUT_TEXT_BYTES, MAX_SHORTCUTS, SHORTCUT_OSC_PREFIX, ShortcutFireChange, ShortcutSpec,
     ShortcutStateMessage, ShortcutStatus, WireShortcutAction, WireShortcutCueOperation,
     WireShortcutKey, shortcut_key_is_valid, shortcut_name_is_valid, shortcut_osc_is_valid,
+};
+pub use source_sync::{
+    MAX_SOURCE_SYNC_MPPM, MAX_SOURCE_SYNC_RATE_HZ, MAX_SOURCE_SYNC_SAMPLES, SourceClockState,
+    SourceSyncKind, SourceSyncSample, SourceSyncStatusMessage,
 };
 pub use still::{
     ImageInputConfig, MAX_IMAGE_URI_BYTES, MAX_SLIDE_CAPTION_BYTES, MAX_SLIDE_FRAMES,

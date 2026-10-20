@@ -1894,7 +1894,44 @@ fn ready_over(model: &ClientModel, operator: bool) -> StudioUiState {
         .clone_from(&state.view.as_ref().unwrap().streams);
     state.stream_status = Some(stream_status());
     state.audio_meters = Some(meters());
+    state.source_sync = Some(source_sync());
     state
+}
+
+/// Live source drift telemetry (AU-004): input 2's loop runs clean, input
+/// 3's recovers after underruns, so both `SYNC` keys and the amber health
+/// lamp are audited.
+fn source_sync() -> fm_protocol::SourceSyncStatusMessage {
+    let sample = |id, state, underruns| fm_protocol::SourceSyncSample {
+        input: wire(id),
+        kind: fm_protocol::SourceSyncKind::Stream,
+        state,
+        input_rate_hz: 44_100,
+        output_rate_hz: 48_000,
+        drift_mppm: -12_345,
+        correction_mppm: 12_001,
+        buffer_us: 81_250,
+        target_us: 80_000,
+        resyncs: 0,
+        underruns,
+        overruns: 0,
+        picture_drops: 4,
+        picture_repeats: 0,
+        restarts: 1,
+    };
+    fm_protocol::SourceSyncStatusMessage {
+        server: ServerIdentity {
+            engine_id: "e".into(),
+            project_id: "1".into(),
+            state_epoch: 1,
+            log_id: "l".into(),
+        },
+        sequence: 1,
+        sources: vec![
+            sample(2, fm_protocol::SourceClockState::Running, 0),
+            sample(3, fm_protocol::SourceClockState::Recovering, 2),
+        ],
+    }
 }
 
 /// Puts the console in one configuration before a scene renders.
@@ -3837,6 +3874,10 @@ fn dump(file: &str, language: Language, controls: &[Control]) {
     }
 }
 
+fn locale_text(language: Language, msg: Msg) -> String {
+    Locale::new(language).text(msg).to_owned()
+}
+
 /// Whether any rule failed.
 fn failed(findings: &Findings) -> bool {
     !(findings.missing.is_empty()
@@ -3874,6 +3915,17 @@ pub fn check(language: Language) {
             .any(|text| text.contains(&hint))
         {
             let _ = writeln!(failures, "no tooltip names the {hint} shortcut");
+        }
+    }
+    // Both live source clock keys explain themselves (AU-004).
+    for state in [Msg::SyncStateRunning, Msg::SyncStateRecovering] {
+        let state = locale_text(language, state);
+        if !controls
+            .iter()
+            .filter_map(|control| control.tooltip.as_deref())
+            .any(|text| text.contains(&format!(", {state})")))
+        {
+            let _ = writeln!(failures, "no SYNC key tooltip shows the {state:?} state");
         }
     }
     // So is each window and output chord, in the audited language's names.

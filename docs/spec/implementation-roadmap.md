@@ -40,14 +40,16 @@ highest-value remaining items, ranked:
    persist, and are edited in Studio; auto key is still CPU-only and unwired,
    distance is per RGB channel, and light wrap and non-rectangular garbage
    mattes are absent.
-7. **Source clock drift telemetry on the wire and on real devices
-   (`AU-004`).** Every live source the native daemon ingests (V4L2/ALSA
-   capture, network streams, system audio) now runs its audio through a
-   drift-correcting `LiveSourceClock` with pictures following it, but the
-   per-source drift, backlog, and resync counts reach operators only as
-   `FREEMIXD_SOURCE_SYNC` log records (no protocol event or Studio view),
-   there is no real-device soak evidence, and the Windows/macOS live paths
-   do not exist yet.
+7. **Source clock drift on real devices and other OSes (`AU-004`).** Every
+   live source the native daemon ingests (V4L2/ALSA capture, network
+   streams, system audio) runs its audio through a drift-correcting
+   `LiveSourceClock` with pictures following it, and its drift, correction,
+   ratio, backlog, and recovery counts now reach clients (Protocol 2.75
+   `source_sync_status` and `diagnostics_response`), Studio (a `SYNC`
+   health lamp and per-strip `SYNC` keys), and `freemix-cli
+   remote-diagnostics`. There is still no real-device soak evidence, no
+   adapter for non-receiver sources, no Web page view, and the
+   Windows/macOS live paths do not exist yet.
 8. **Windows and macOS ports of the Linux-only live paths (`IN-001`, `AU-011`,
    `AU-001`).** Live capture hot-plug, system audio inputs, and device listing
    are Linux-only; the roadmap requires the vertical slice on all Tier-1 OSes
@@ -1397,6 +1399,24 @@ within 2.6 ppm; a +5000 ppm source (beyond range) resyncs 22 times in 10 min,
 declicked, with no overrun. Remaining for `AU-004`: a wire event and Studio
 view of the telemetry, an `AudioBlock`/`MediaTiming` adapter for non-receiver
 sources, real-device soak evidence, and the Windows/macOS live paths.
+
+Update (Protocol 2.75): the telemetry is on the wire. Native `freemixd`
+sends raw Studio peers a lossy, latest-wins `source_sync_status` record at
+most once a second while any live source has a running loop (and one empty
+record after the last stops): per source its kind, loop state, both sample
+rates, estimated drift and applied correction in milli-ppm (hence the
+resampling ratio), backlog and target in microseconds, and the resync,
+underrun, overrun, picture drop/repeat, and connection counts.
+`diagnostics_response` carries the same samples on request. `fm-client`
+validates and retains the latest record; Studio shows a `SYNC` lamp in the
+health strip and a `SYNC` key on each live input's mixer strip (English and
+Spanish hover help, covered by the hover audit), and `freemix-cli
+remote-diagnostics` prints one `SourceSync(...)` line per source. The
+native network stream test now waits for its stream's running loop in
+`source_sync_status` and in diagnostics. Remaining for `AU-004`: an
+`AudioBlock`/`MediaTiming` adapter for non-receiver sources, a Web page
+view, real-device soak evidence, and the Windows/macOS live paths;
+`AU-004` remains planned.
 
 
 Current implementation boundary for item 4: native `freemixd` now realizes

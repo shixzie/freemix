@@ -117,6 +117,11 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
             sequence: fields.canonical_required("sequence")?,
             samples: super::recorder_status::decode_samples(&fields.required("recorders")?)?,
         }),
+        "source_sync_status" => WireMessage::SourceSyncStatus(crate::SourceSyncStatusMessage {
+            server: decode_server_identity(&mut fields)?,
+            sequence: fields.canonical_required("sequence")?,
+            sources: super::source_sync::decode_samples("sources", &fields.required("sources")?)?,
+        }),
         "monitor_frame" => WireMessage::MonitorFrame(decode_monitor_frame(&mut fields)?),
         "input_thumbnail_subscription" => {
             WireMessage::InputThumbnailSubscription(crate::InputThumbnailSubscription {
@@ -3698,6 +3703,10 @@ fn decode_diagnostics_response(fields: &mut Fields) -> Result<DiagnosticsRespons
         retained_events_limit: fields.parse_required("retained_events_limit")?,
         subscriber_limit: fields.parse_required("subscriber_limit")?,
         subscriber_queue_limit: fields.parse_required("subscriber_queue_limit")?,
+        source_sync: super::source_sync::decode_samples(
+            "source_sync",
+            &fields.required("source_sync")?,
+        )?,
     })
 }
 
