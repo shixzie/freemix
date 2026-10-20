@@ -325,8 +325,8 @@ mod x11 {
     //! The X11 desktop listing, through `x11rb`.
 
     use fm_types::screen_capture::{
-        MAX_SCREEN_CAPTURE_SIDE, MAX_SCREEN_CAPTURE_WINDOWS, ScreenCaptureInventory, ScreenInfo,
-        WindowInfo,
+        MAX_SCREEN_CAPTURE_MATCHED_WINDOWS, MAX_SCREEN_CAPTURE_SIDE, ScreenCaptureInventory,
+        ScreenInfo, WindowInfo,
     };
     use x11rb::connection::Connection;
     use x11rb::errors::ReplyError;
@@ -461,7 +461,7 @@ mod x11 {
         };
         let mut windows = Vec::new();
         for window in clients(connected)? {
-            if windows.len() == MAX_SCREEN_CAPTURE_WINDOWS {
+            if windows.len() == MAX_SCREEN_CAPTURE_MATCHED_WINDOWS {
                 break;
             }
             if let Some(info) = window_info(connected, window)? {

@@ -46,8 +46,12 @@ pub const MAX_SCREEN_CAPTURE_FPS: u8 = 60;
 pub const DEFAULT_SCREEN_CAPTURE_FPS: u8 = 30;
 /// Most screens one inventory lists.
 pub const MAX_SCREEN_CAPTURE_SCREENS: usize = 16;
-/// Most windows one inventory lists.
+/// Most windows one inventory lists on the wire (the front-most ones).
 pub const MAX_SCREEN_CAPTURE_WINDOWS: usize = 48;
+/// Most windows a desktop listing keeps for matching capture targets: a
+/// target deeper in the stacking order than the wire list reaches is still
+/// found again.
+pub const MAX_SCREEN_CAPTURE_MATCHED_WINDOWS: usize = 512;
 /// The largest target side a capture accepts, in pixels.
 pub const MAX_SCREEN_CAPTURE_SIDE: u32 = 16_384;
 
@@ -566,6 +570,18 @@ impl ScreenCaptureInventory {
     /// its bound. An unsupported inventory lists nothing.
     #[must_use]
     pub fn fitted(&self) -> Self {
+        self.bounded(MAX_SCREEN_CAPTURE_WINDOWS)
+    }
+
+    /// The inventory bounded as [`Self::fitted`] does, but keeping up to
+    /// [`MAX_SCREEN_CAPTURE_MATCHED_WINDOWS`] windows: the listing capture
+    /// targets are matched against. Fit it before it goes on the wire.
+    #[must_use]
+    pub fn fitted_for_matching(&self) -> Self {
+        self.bounded(MAX_SCREEN_CAPTURE_MATCHED_WINDOWS)
+    }
+
+    fn bounded(&self, max_windows: usize) -> Self {
         let error = self
             .error
             .as_deref()
@@ -599,7 +615,7 @@ impl ScreenCaptureInventory {
             if window.is_valid() && windows.iter().all(|listed| listed.id != window.id) {
                 windows.push(window);
             }
-            if windows.len() == MAX_SCREEN_CAPTURE_WINDOWS {
+            if windows.len() == max_windows {
                 break;
             }
         }
@@ -620,6 +636,8 @@ impl ScreenCaptureInventory {
     /// - `W`, id, pid (`0` when unknown), x, y, width, height, app, title
     ///
     /// Malformed lines are skipped; tabs inside a title are read as spaces.
+    /// The windows are bounded for matching
+    /// ([`Self::fitted_for_matching`]), not for the wire.
     #[must_use]
     pub fn from_records(listing: &str, backend: &str) -> Self {
         let mut screens = Vec::new();
@@ -679,7 +697,7 @@ impl ScreenCaptureInventory {
             windows,
             error: None,
         }
-        .fitted()
+        .fitted_for_matching()
     }
 
     /// The window `rule` follows: the window with the rule's id hint while
@@ -922,6 +940,28 @@ mod tests {
         assert!(!unsupported.supported);
         assert_eq!(unsupported.error.as_deref(), Some("Wayland session"));
         assert_eq!(unsupported.screens.len(), 0);
+    }
+
+    #[test]
+    fn a_window_deep_in_the_stack_is_found_while_the_wire_list_stays_bounded() {
+        let listing: String = (1..=200)
+            .map(|id| format!("W\t{id}\t0\t0\t0\t640\t480\tApp\tWindow {id}\n"))
+            .collect();
+        let inventory = ScreenCaptureInventory::from_records(&listing, "gdigrab");
+        let deep = WindowRule::exact("App", "Window 150", Some(150));
+        assert_eq!(inventory.resolve_window(&deep).map(|w| w.id), Some(150));
+        let renamed = WindowRule::exact("App", "Window 150", Some(9_999));
+        assert_eq!(inventory.resolve_window(&renamed).map(|w| w.id), Some(150));
+        assert_eq!(inventory.fitted().windows.len(), MAX_SCREEN_CAPTURE_WINDOWS);
+        let huge: String = (1..=(MAX_SCREEN_CAPTURE_MATCHED_WINDOWS + 10))
+            .map(|id| format!("W\t{id}\t0\t0\t0\t640\t480\tApp\tWindow {id}\n"))
+            .collect();
+        assert_eq!(
+            ScreenCaptureInventory::from_records(&huge, "gdigrab")
+                .windows
+                .len(),
+            MAX_SCREEN_CAPTURE_MATCHED_WINDOWS
+        );
     }
 
     #[test]
