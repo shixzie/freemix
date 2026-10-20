@@ -174,6 +174,13 @@ pub enum AudioError {
     },
     /// A strip or Master DSP chain was refused (AU-005).
     Dsp(DspError),
+    /// A render longer than an active strip DSP chain's scratch, which is
+    /// sized at configuration time and never grows on the audio thread
+    /// ([`MasterMixer::set_dsp_block_capacity`]).
+    DspBlockOverCapacity {
+        samples: usize,
+        capacity: usize,
+    },
 }
 
 impl fmt::Display for AudioError {
@@ -268,6 +275,10 @@ impl fmt::Display for AudioError {
                 parent.number()
             ),
             Self::Dsp(error) => write!(formatter, "strip DSP error: {error}"),
+            Self::DspBlockOverCapacity { samples, capacity } => write!(
+                formatter,
+                "a render of {samples} samples exceeds the strip DSP block capacity of {capacity}"
+            ),
         }
     }
 }
@@ -1498,7 +1509,9 @@ impl MasterMixer {
 
     /// Sets how many samples a strip DSP chain processes per render without
     /// allocating (the longest block the caller renders). Existing chains
-    /// grow to it now; a longer render grows the chain's scratch then.
+    /// grow to it now. A longer render through an active chain is refused
+    /// ([`AudioError::DspBlockOverCapacity`]): the scratch never grows on
+    /// the audio thread.
     pub fn set_dsp_block_capacity(&mut self, samples: usize) {
         self.dsp_block_capacity = samples.clamp(1, MAX_SAMPLES_PER_BLOCK);
         let capacity = self.dsp_block_capacity;
@@ -2409,6 +2422,7 @@ impl MasterMixer {
         } = extras;
         validate_sample_count(samples)?;
         validate_mixer_submissions(samples, blocks, &self.inputs)?;
+        self.validate_dsp_capacity(samples)?;
         let channels = self.format.channels.channels().len();
         validate_mixer_output_planes(samples, channels, output)?;
         if let Some(monitor) = &monitor {
@@ -2575,11 +2589,29 @@ impl MasterMixer {
         Ok(meters)
     }
 
+    /// Refuses a render of `samples` longer than an active strip chain's
+    /// scratch holds.
+    fn validate_dsp_capacity(&self, samples: usize) -> Result<(), AudioError> {
+        for strip in self.inputs.values() {
+            if let Some(slot) = &strip.dsp
+                && slot.capacity < samples
+                && !slot.live.is_transparent()
+            {
+                return Err(AudioError::DspBlockOverCapacity {
+                    samples,
+                    capacity: slot.capacity,
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Runs every strip's DSP over its delayed input into the strip's
     /// scratch, once per render, so the Program and monitor taps read the
     /// same processed samples. A transparent chain is skipped and its strip
-    /// routes the delayed input directly. Allocates only when `samples`
-    /// exceeds a chain's scratch capacity.
+    /// routes the delayed input directly. Never allocates: a render longer
+    /// than a chain's scratch was refused before
+    /// ([`Self::validate_dsp_capacity`]).
     fn process_strip_dsp<B: MixerBlockView, S: MixerSubmission<B>>(
         &mut self,
         samples: usize,
@@ -2593,11 +2625,7 @@ impl MasterMixer {
             if !slot.active {
                 continue;
             }
-            if slot.capacity < samples {
-                let live = slot.live.clone();
-                **slot = StripDspSlot::new(live, samples);
-                slot.active = true;
-            }
+            debug_assert!(slot.capacity >= samples, "validated before the render");
             let block = blocks
                 .iter()
                 .find(|submission| submission.input() == *id)

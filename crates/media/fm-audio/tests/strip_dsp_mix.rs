@@ -390,3 +390,55 @@ fn a_rejected_block_does_not_advance_the_dsp_state() {
         assert_eq!(output, expected);
     }
 }
+
+/// A strip chain's scratch is sized when the mixer is configured and never
+/// grows on the audio thread: a longer render through an active chain is
+/// refused before anything changes, a transparent chain does not limit it.
+#[test]
+fn a_render_longer_than_the_dsp_block_capacity_is_refused() {
+    let id = input(1);
+    let mut chain = StripDsp::DEFAULT;
+    chain.high_pass.enabled = true;
+    let mut mixer = mixer_with(&[id]);
+    mixer.set_dsp_block_capacity(BLOCK);
+    mixer.set_input_dsp(id, &chain).unwrap();
+    let long = 2 * BLOCK;
+    let mut output = vec![vec![0.0; long]; 2];
+    let mut meters = vec![ChannelMeter::default(); 2];
+    let planes = vec![vec![0.25_f32; long]; 2];
+    let layout = ChannelLayout::stereo();
+    let mut mix = |mixer: &mut MasterMixer, samples: usize| {
+        mixer.mix_planar_timed_into_with_meters(
+            timing(samples),
+            samples,
+            &[PlanarAudioSource {
+                input: id,
+                sample_rate: SampleRate::new(RATE).unwrap(),
+                channel_layout: &layout,
+                planes: &planes,
+                samples,
+                source_gain: SourceGain::UNITY,
+            }],
+            &[],
+            &mut output,
+            (&mut [ChannelMeter::default(); 2], &mut meters),
+        )
+    };
+    assert_eq!(
+        mix(&mut mixer, long),
+        Err(fm_audio::AudioError::DspBlockOverCapacity {
+            samples: long,
+            capacity: BLOCK,
+        })
+    );
+    assert_eq!(mix(&mut mixer, BLOCK), Ok(()));
+    // Configured for the longer block, it renders.
+    mixer.set_dsp_block_capacity(long);
+    assert_eq!(mix(&mut mixer, long), Ok(()));
+    // A transparent chain processes nothing and so limits nothing.
+    let mut bypassed = mixer_with(&[id]);
+    bypassed.set_dsp_block_capacity(BLOCK);
+    chain.bypass = true;
+    bypassed.set_input_dsp(id, &chain).unwrap();
+    assert_eq!(mix(&mut bypassed, long), Ok(()));
+}
