@@ -64,9 +64,16 @@ pub(super) enum PairRefusal {
     Unavailable,
 }
 
+/// How stale a device's stored last-seen time may grow before an
+/// authentication writes the device file again.
+const LAST_SEEN_WRITE_MS: u64 = 60_000;
+
 struct State {
     registry: DeviceRegistry,
     limiter: AttemptLimiter<IpAddr>,
+    /// When each device's last-seen time was last written, by device id
+    /// (empty after a restart, so a device's first authentication writes).
+    seen_written: std::collections::BTreeMap<String, u64>,
 }
 
 /// Shared by every gateway connection thread and the session scheduler.
@@ -119,6 +126,7 @@ impl WebAccess {
                     ATTEMPTS_TOTAL,
                     TRACKED_ADDRESSES,
                 ),
+                seen_written: std::collections::BTreeMap::new(),
             }),
         })
     }
@@ -138,7 +146,9 @@ impl WebAccess {
     }
 
     /// The identity a presented token proves, if any. The static token is
-    /// compared in constant time; device tokens by their digest.
+    /// compared in constant time; device tokens by their digest. A device's
+    /// last-seen time is updated in memory and written to the device file
+    /// at most once per [`LAST_SEEN_WRITE_MS`].
     pub(crate) fn authenticate(&self, token: &[u8]) -> Option<WebIdentity> {
         if let Some(expected) = &self.static_token
             && constant_time_eq(expected, token)
@@ -146,14 +156,30 @@ impl WebAccess {
             return Some(WebIdentity::StaticToken);
         }
         let digest = digest(token);
+        let now = now_ms();
         let mut state = self.lock();
-        let device = state.registry.authenticate(&digest, now_ms())?;
+        let device = state.registry.authenticate(&digest, now)?;
         let identity = WebIdentity::Device {
             id: device.id.clone(),
             role: device.role,
         };
-        // Last-seen times are best effort; a failed write only loses them.
-        let _ = self.persist(&state.registry);
+        let id = device.id.clone();
+        // Last-seen times are best effort: the file is rewritten only when
+        // the stored time is a minute stale, not on every request (each
+        // `/v1/whoami` authenticates), and a failed write only loses them.
+        let due = state
+            .seen_written
+            .get(&id)
+            .is_none_or(|written| now.saturating_sub(*written) >= LAST_SEEN_WRITE_MS);
+        if due && self.persist(&state.registry).is_ok() {
+            let State {
+                registry,
+                seen_written,
+                ..
+            } = &mut *state;
+            seen_written.retain(|known, _| registry.contains(known));
+            seen_written.insert(id, now);
+        }
         Some(identity)
     }
 
@@ -517,6 +543,28 @@ mod tests {
             restarted.authenticate(b"static-token-0123456789abcdef0123456789"),
             None
         );
+    }
+
+    #[test]
+    fn authentication_does_not_rewrite_the_device_file_every_time() {
+        let directory = tempfile::tempdir().unwrap();
+        let access = access(directory.path());
+        let (code, _) = pair(&access, WebDeviceRole::Viewer);
+        let device = access.redeem(&code, "Tally", PHONE).unwrap();
+        let file = directory.path().join(DEVICES_FILE);
+        // The first authentication records the device as seen.
+        assert!(access.authenticate(device.token.as_bytes()).is_some());
+        let stored = decode_devices(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(stored[0].last_seen_ms.is_some());
+        // Within the minute, authentications leave the file alone.
+        std::fs::remove_file(&file).unwrap();
+        for _ in 0..3 {
+            assert!(access.authenticate(device.token.as_bytes()).is_some());
+        }
+        assert!(!file.exists());
+        // The console still sees the latest time.
+        let (_, status) = access.handle(&WebAccessAction::Status);
+        assert!(status.devices[0].last_seen_ms.is_some());
     }
 
     #[test]
