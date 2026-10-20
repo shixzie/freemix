@@ -60,6 +60,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_playlist(project, &mut errors);
     validate_cue_lists(project, &mut errors);
     validate_scripts(project, &mut errors);
+    validate_shortcuts(project, &mut errors);
     validate_grading(project, &mut errors);
     validate_animation_presets(project, &mut errors);
     validate_main_mix(project, &mut errors);
@@ -334,6 +335,24 @@ fn validate_scripts(project: &Project, errors: &mut Vec<ValidationError>) {
             entity: None,
             field: "script_runs",
             kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+}
+
+fn validate_shortcuts(project: &Project, errors: &mut Vec<ValidationError>) {
+    if let Err(error) = crate::validate_shortcuts(project.shortcuts()) {
+        errors.push(ValidationError {
+            entity: None,
+            field: "shortcuts",
+            kind: match error {
+                crate::ShortcutError::DuplicateId(_) => ValidationErrorKind::DuplicateId,
+                crate::ShortcutError::DuplicateKey { .. }
+                | crate::ShortcutError::DuplicateOsc { .. } => {
+                    ValidationErrorKind::DuplicateReference
+                }
+                crate::ShortcutError::InvalidName => ValidationErrorKind::Empty,
+                _ => ValidationErrorKind::OutOfRange,
+            },
         });
     }
 }

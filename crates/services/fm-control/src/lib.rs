@@ -31,6 +31,7 @@ mod playlist;
 mod scene_animation;
 mod scene_layer;
 mod script;
+mod shortcut;
 mod stream_target;
 mod system_audio;
 mod title_animation;
@@ -54,6 +55,7 @@ pub use scene_layer::{
     wire_layer_source, wire_layer_spec, wire_mask, wire_scene_layer_edit,
 };
 pub use script::{run_status as script_run_status, script_engine_command, wire_script};
+pub use shortcut::{domain_shortcut, shortcut_engine_command, wire_shortcut};
 pub use title_animation::{title_clip_fits_wire, title_clip_from_wire, title_clip_to_wire};
 pub use title_layout::title_layout_to_wire;
 pub use transition::{
@@ -1739,6 +1741,14 @@ impl<A: AuthorizationHook> ControlService<A> {
         script::script_states(&self.engine)
     }
 
+    /// Returns the `shortcut_state` records a session writes after
+    /// [`Self::script_states`], one per user shortcut in project order
+    /// (Protocol 2.70).
+    #[must_use]
+    pub fn shortcut_states(&self) -> Vec<fm_protocol::ShortcutStateMessage> {
+        shortcut::shortcut_states(&self.engine)
+    }
+
     /// Returns the only `(list, frame)` a `cue_advance` is accepted for, or
     /// `None` while no cue waits (see [`Engine::cue_advance_frame`]).
     #[must_use]
@@ -2487,6 +2497,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::Redo { .. }
         | CommandPayload::SetEditLock { .. }
         | CommandPayload::SetTitleFields { .. }
+        | CommandPayload::SetShortcut { .. }
+        | CommandPayload::RemoveShortcut { .. }
         | CommandPayload::SetPlaylist { .. }
         | CommandPayload::SetCueList { .. }
         | CommandPayload::RemoveCueList { .. }
@@ -2551,7 +2563,10 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::CueControl { .. }
         | CommandPayload::CueAdvance { .. }
         | CommandPayload::RunScript { .. }
-        | CommandPayload::StopScript { .. } => CommandClass::Transition,
+        | CommandPayload::StopScript { .. }
+        // A fire needs `transition` like a cue GO or a script run, plus the
+        // class of every action it performs (see `action_authority`).
+        | CommandPayload::FireShortcut { .. } => CommandClass::Transition,
     }
 }
 
@@ -2735,6 +2750,9 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         | CommandPayload::RemoveScript { .. }
         | CommandPayload::RunScript { .. }
         | CommandPayload::StopScript { .. }) => script::script_engine_command(payload),
+        payload @ (CommandPayload::SetShortcut { .. }
+        | CommandPayload::RemoveShortcut { .. }
+        | CommandPayload::FireShortcut { .. }) => shortcut::shortcut_engine_command(payload),
         payload @ (CommandPayload::SetInputGrade { .. }
         | CommandPayload::SetLayerGrade { .. }
         | CommandPayload::SetProgramGrade { .. }
@@ -3143,6 +3161,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         command @ EngineCommand::SetScript { .. } => {
             return script::wire_edit_payload(command);
         }
+        command @ EngineCommand::SetShortcut { .. } => {
+            return shortcut::wire_edit_payload(command);
+        }
         _ => return None,
     })
 }
@@ -3329,6 +3350,8 @@ const fn is_program_transition(command: &EngineCommand) -> bool {
             | EngineCommand::CueAdvance { .. }
             // So may a script run.
             | EngineCommand::RunScript { .. }
+            // And a fired shortcut (RC-004).
+            | EngineCommand::FireShortcut { .. }
     )
 }
 
@@ -3448,6 +3471,27 @@ fn accepted_event_payload(engine: &Engine, outcome: &EngineCommandOutcome) -> Ev
         .iter()
         .find_map(|event| match &event.payload {
             EngineEvent::ScriptChanged { script } => Some(script::script_changed(engine, *script)),
+            EngineEvent::ShortcutChanged { shortcut } => {
+                Some(shortcut::shortcut_changed(engine, *shortcut))
+            }
+            EngineEvent::ShortcutFired {
+                shortcut,
+                frame,
+                actions,
+                title_texts,
+                applied,
+                scripts,
+            } => Some(shortcut::shortcut_fired(
+                engine,
+                &shortcut::ShortcutFire {
+                    shortcut: *shortcut,
+                    frame: *frame,
+                    actions: *actions,
+                    title_texts,
+                    applied,
+                    scripts,
+                },
+            )),
             EngineEvent::ScriptRunChanged { script, frame } => {
                 Some(script::script_run_changed(engine, *script, *frame))
             }
@@ -3830,6 +3874,7 @@ fn snapshot_record(
         media_states: media::media_state_count(engine),
         cue_list_states: cue::cue_list_state_count(engine),
         script_states: script::script_state_count(engine),
+        shortcut_states: shortcut::shortcut_state_count(engine),
         input_categories: input_lifecycle::wire_categories(engine.show()),
         audio_mixer: audio_mixer::wire_status(engine.show()),
         fade_to_black_excluded_outputs: audio_mixer::wire_excluded_outputs(engine.show()),

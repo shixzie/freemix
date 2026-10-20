@@ -16,6 +16,7 @@ mod output_failure;
 mod recorder_status;
 mod scene_layer;
 mod script;
+mod shortcut;
 mod stream_target;
 mod system_audio;
 mod version;
@@ -44,7 +45,7 @@ pub use codec::{
     MAX_STREAM_DETAIL_BYTES, MAX_STREAM_LOCAL_SEGMENTS, MAX_STREAM_LOCAL_TARGET_DURATION_MS,
     MAX_STREAM_SAMPLES, cue_action_token, cue_name_is_valid, decode_line, decode_refusal_reason,
     encode_line, encode_refusal_reason, motion_wire_bytes, parse_cue_action_token,
-    scene_clip_wire_bytes, scene_layout_wire_bytes, title_clip_wire_bytes,
+    scene_clip_wire_bytes, scene_layout_wire_bytes, title_clip_wire_bytes, validate_shortcut_spec,
 };
 pub use cue::{
     CueArmedStatus, CueFaultStatus, CueListSpec, CueListStateMessage, CueListStatus,
@@ -172,6 +173,12 @@ pub use script::{
     MAX_SCRIPT_NAME_BYTES, MAX_SCRIPT_RUNS, MAX_SCRIPT_SOURCE_BYTES, MAX_SCRIPTS, ScriptRunChange,
     ScriptRunStatus, ScriptSpec, ScriptStateMessage, ScriptStatus, script_name_is_valid,
     script_source_is_valid,
+};
+pub use shortcut::{
+    MAX_SHORTCUT_ACTIONS, MAX_SHORTCUT_KEY_BYTES, MAX_SHORTCUT_NAME_BYTES, MAX_SHORTCUT_OSC_BYTES,
+    MAX_SHORTCUT_TEXT_BYTES, MAX_SHORTCUTS, ShortcutFireChange, ShortcutSpec, ShortcutStateMessage,
+    ShortcutStatus, WireShortcutAction, WireShortcutCueOperation, WireShortcutKey,
+    shortcut_key_is_valid, shortcut_name_is_valid, shortcut_osc_is_valid,
 };
 pub use stream_target::{
     DEFAULT_STREAM_TARGET_SRT_LATENCY_MS, MAX_STREAM_RECONNECT_ATTEMPTS,

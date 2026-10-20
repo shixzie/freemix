@@ -191,6 +191,8 @@ pub struct ShowState {
     /// The script run waiting at a `wait`, or the last run's fault (RC-011,
     /// schema 56).
     script_run: fm_model::ScriptRunState,
+    /// The user shortcuts in display order (RC-004).
+    shortcuts: Vec<fm_model::Shortcut>,
     grading: ProjectGrading,
     luts: BTreeMap<LutId, EngineLut>,
     animation_presets: fm_model::AnimationPresetLibrary,
@@ -294,6 +296,7 @@ impl ShowState {
             cue_lists: Vec::new(),
             scripts: Vec::new(),
             script_run: fm_model::ScriptRunState::default(),
+            shortcuts: Vec::new(),
             grading: ProjectGrading::default(),
             luts: BTreeMap::new(),
             animation_presets: fm_model::AnimationPresetLibrary::default(),
@@ -1316,6 +1319,34 @@ impl ShowState {
 
     pub(crate) fn script_run_mut(&mut self) -> &mut fm_model::ScriptRunState {
         &mut self.script_run
+    }
+
+    /// The user shortcuts, in display order (RC-004).
+    #[must_use]
+    pub fn shortcuts(&self) -> &[fm_model::Shortcut] {
+        &self.shortcuts
+    }
+
+    /// The shortcut with `id`.
+    #[must_use]
+    pub fn shortcut(&self, id: u64) -> Option<&fm_model::Shortcut> {
+        self.shortcuts.iter().find(|shortcut| shortcut.id == id)
+    }
+
+    /// Installs restored shortcuts. What they name is checked when they
+    /// are fired, not here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidShortcuts`] when they break a bound.
+    pub fn set_shortcuts(&mut self, shortcuts: Vec<fm_model::Shortcut>) -> Result<(), ShowError> {
+        fm_model::validate_shortcuts(&shortcuts).map_err(|_| ShowError::InvalidShortcuts)?;
+        self.shortcuts = shortcuts;
+        Ok(())
+    }
+
+    pub(crate) fn shortcuts_mut(&mut self) -> &mut Vec<fm_model::Shortcut> {
+        &mut self.shortcuts
     }
 
     /// Returns the project grading: the grade library, imported LUTs, and

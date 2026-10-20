@@ -1,0 +1,229 @@
+//! User shortcuts in the engine (RC-004).
+//!
+//! The show owns the persisted [`fm_model::Shortcut`]s. Two engine commands
+//! act on them:
+//!
+//! - [`crate::EngineCommand::SetShortcut`] creates, replaces, or removes one
+//!   shortcut: a project edit honouring the project padlock, undone by
+//!   restoring the previous definition. A key or OSC name another shortcut
+//!   already uses is refused.
+//! - [`crate::EngineCommand::FireShortcut`] fires one: a disabled or unknown
+//!   shortcut is refused, and an enabled one resolves, before it is
+//!   scheduled, into the command it stands for. A cue list operation
+//!   becomes that [`crate::EngineCommand::CueControl`] and a script run that
+//!   [`crate::EngineCommand::RunScript`], each then accepted or refused
+//!   exactly as if it had been sent directly (with its own event). A
+//!   shortcut that runs cue actions stays a `FireShortcut` and is planned
+//!   here like the first frame of a cue GO: every action is checked against
+//!   the show (an input, title, or stream target it names must exist),
+//!   expanded to ordinary engine commands, and applied in order to a copy of
+//!   the show; one refused action refuses the whole fire, and the accepted
+//!   actions are realized together on the command's target frame. A fire is
+//!   a journaled live operation without undo.
+
+use fm_automation::FiredCueAction;
+use fm_command::{FieldIssue, IdKind, RefusalReason, Rejection, RejectionCode};
+use fm_model::{Shortcut, ShortcutAction, ShortcutCueOperation, ShortcutError};
+use fm_scheduler::FrameNumber;
+
+use crate::engine::{CueFrame, CuePlan};
+use crate::{Engine, EngineCommand, EngineCueOperation, EngineEvent, ShowState};
+
+pub(crate) fn unknown_shortcut(shortcut: u64) -> Rejection {
+    Rejection::new(
+        RejectionCode::NotFound,
+        format!("the show has no shortcut {shortcut}"),
+    )
+    .with_reason(RefusalReason::UnknownId {
+        kind: IdKind::Shortcut,
+        id: u128::from(shortcut),
+    })
+}
+
+fn invalid(error: &ShortcutError) -> Rejection {
+    let message = error.to_string();
+    match error {
+        ShortcutError::InvalidName => Rejection::new(RejectionCode::InvalidCommand, message)
+            .with_reason(RefusalReason::InvalidName {
+                max_bytes: u32::try_from(fm_model::MAX_SHORTCUT_NAME_BYTES).unwrap_or(u32::MAX),
+            }),
+        ShortcutError::DuplicateKey { .. } => Rejection::new(RejectionCode::Conflict, message)
+            .with_field(FieldIssue::new(
+                "key",
+                "key_in_use",
+                "another shortcut already uses this key",
+            )),
+        ShortcutError::DuplicateOsc { .. } => Rejection::new(RejectionCode::Conflict, message)
+            .with_field(FieldIssue::new(
+                "osc",
+                "osc_in_use",
+                "another shortcut already uses this OSC name",
+            )),
+        ShortcutError::TooManyShortcuts => Rejection::new(RejectionCode::Conflict, message)
+            .with_reason(RefusalReason::bounds(
+                "shortcuts",
+                fm_model::MAX_SHORTCUTS as u64,
+            )),
+        _ => Rejection::new(RejectionCode::InvalidCommand, message),
+    }
+}
+
+/// Applies a [`crate::EngineCommand::SetShortcut`] to `state`.
+///
+/// # Errors
+///
+/// Refuses shortcut id zero, an invalid definition, a definition whose id
+/// differs from the command's, a key or OSC name another shortcut uses, a
+/// shortcut past the project bound, and removing an unknown shortcut.
+pub(crate) fn apply_set(
+    state: &mut ShowState,
+    shortcut: u64,
+    definition: Option<&Shortcut>,
+) -> Result<(), Rejection> {
+    let existing = state
+        .shortcuts()
+        .iter()
+        .position(|candidate| candidate.id == shortcut);
+    let Some(definition) = definition else {
+        let index = existing.ok_or_else(|| unknown_shortcut(shortcut))?;
+        state.shortcuts_mut().remove(index);
+        return Ok(());
+    };
+    if shortcut == 0 || definition.id != shortcut {
+        return Err(Rejection::new(
+            RejectionCode::InvalidCommand,
+            "shortcut id must be nonzero and match its definition",
+        )
+        .with_field(FieldIssue::new(
+            "shortcut",
+            "zero",
+            "shortcut id must not be zero",
+        )));
+    }
+    fm_model::validate_shortcut_definition(definition).map_err(|error| invalid(&error))?;
+    let mut next = state.shortcuts().to_vec();
+    match existing {
+        Some(index) => next[index] = definition.clone(),
+        None => next.push(definition.clone()),
+    }
+    fm_model::validate_shortcuts(&next).map_err(|error| invalid(&error))?;
+    *state.shortcuts_mut() = next;
+    Ok(())
+}
+
+/// The definition of shortcut `shortcut` in `state`, for an undo.
+pub(crate) fn definition(state: &ShowState, shortcut: u64) -> Option<Box<Shortcut>> {
+    state.shortcut(shortcut).cloned().map(Box::new)
+}
+
+/// The command a fire of `shortcut` stands for on `state`: the cue list
+/// operation, the script run, or the fire itself for cue actions.
+///
+/// # Errors
+///
+/// Refuses an unknown or disabled shortcut.
+pub(crate) fn resolve(state: &ShowState, shortcut: u64) -> Result<EngineCommand, Rejection> {
+    let found = state
+        .shortcut(shortcut)
+        .ok_or_else(|| unknown_shortcut(shortcut))?;
+    if !found.enabled {
+        return Err(Rejection::new(
+            RejectionCode::Conflict,
+            format!("shortcut {shortcut} is disabled"),
+        )
+        .with_field(FieldIssue::new(
+            "shortcut",
+            "disabled",
+            "enable the shortcut before firing it",
+        )));
+    }
+    Ok(match &found.action {
+        ShortcutAction::Actions(_) => EngineCommand::FireShortcut { shortcut },
+        ShortcutAction::Cue { list, operation } => EngineCommand::CueControl {
+            list: *list,
+            operation: match operation {
+                ShortcutCueOperation::Go { cue } => EngineCueOperation::Go { cue: *cue },
+                ShortcutCueOperation::Stop => EngineCueOperation::Stop,
+                ShortcutCueOperation::Back => EngineCueOperation::Back,
+                ShortcutCueOperation::Skip => EngineCueOperation::Skip,
+                ShortcutCueOperation::Reset => EngineCueOperation::Reset,
+            },
+        },
+        ShortcutAction::Script { script } => EngineCommand::RunScript { script: *script },
+    })
+}
+
+/// Plans a fire of `shortcut`'s cue actions for `target_frame` (see the
+/// module documentation).
+///
+/// # Errors
+///
+/// Refuses an unknown or disabled shortcut, an action naming something the
+/// show lacks, and the first action the show refuses.
+pub(crate) fn plan(
+    engine: &Engine,
+    shortcut: u64,
+    target_frame: FrameNumber,
+) -> Result<CuePlan, Rejection> {
+    let state = engine.show();
+    let found = state
+        .shortcut(shortcut)
+        .ok_or_else(|| unknown_shortcut(shortcut))?;
+    let ShortcutAction::Actions(actions) = &found.action else {
+        return Err(Rejection::new(
+            RejectionCode::Internal,
+            "a cue or script shortcut resolves before it is planned",
+        ));
+    };
+    if !found.enabled {
+        return Err(resolve(state, shortcut).expect_err("a disabled shortcut is refused"));
+    }
+    let owner = format!("shortcut {shortcut}");
+    for action in actions {
+        crate::cue::check_action_references(state, action, &owner)?;
+    }
+    let fired: Vec<FiredCueAction<fm_model::CueAction>> = actions
+        .iter()
+        .enumerate()
+        .map(|(step, action)| FiredCueAction {
+            cue: shortcut,
+            step,
+            action: action.clone(),
+        })
+        .collect();
+    let mut show = state.clone();
+    let mut runtime = Vec::new();
+    let mut transition = None;
+    let mut title_texts = Vec::new();
+    let mut scripts = Vec::new();
+    engine
+        .apply_cue_actions(
+            &mut show,
+            &fired,
+            target_frame,
+            &mut CueFrame {
+                runtime: &mut runtime,
+                transition: &mut transition,
+                title_texts: &mut title_texts,
+                scripts: Some(&mut scripts),
+                takes: 0,
+            },
+        )
+        .map_err(|(_, step, rejection)| Rejection {
+            message: format!("{owner} action {}: {}", step + 1, rejection.message),
+            ..rejection
+        })?;
+    Ok(CuePlan {
+        show: Box::new(show),
+        event: EngineEvent::ShortcutFired {
+            shortcut,
+            frame: target_frame.get(),
+            actions: u32::try_from(actions.len()).unwrap_or(u32::MAX),
+            title_texts,
+            applied: runtime.clone(),
+            scripts,
+        },
+        runtime,
+        transition,
+    })
+}

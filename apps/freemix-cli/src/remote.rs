@@ -1677,10 +1677,14 @@ impl Remote {
                         | EventPayload::LiveLanChanged(_)
                         | EventPayload::NetworkStreamChanged { .. }
                         | EventPayload::CaptureSettingsChanged { .. }
-                        | EventPayload::StreamTargetChanged { .. } => matches!(
+                        | EventPayload::StreamTargetChanged { .. }
+                        | EventPayload::ShortcutChanged(_)
+                        | EventPayload::ShortcutRemoved { .. } => matches!(
                             completion,
                             CommandCompletion::Project | CommandCompletion::History
                         ),
+                        // The CLI never fires a shortcut.
+                        EventPayload::ShortcutFired(_) => false,
                         EventPayload::EditLockChanged { .. } => {
                             completion == CommandCompletion::Padlock
                         }

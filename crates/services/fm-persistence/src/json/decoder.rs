@@ -89,6 +89,7 @@ struct ProjectDto {
     live_lan: fm_types::live_lan::LiveLanConfig,
     scripts: Vec<fm_model::Script>,
     script_run: fm_model::ScriptRunState,
+    shortcuts: Vec<fm_model::Shortcut>,
 }
 
 struct EditLocks {
@@ -146,6 +147,7 @@ impl ProjectDto {
             live_lan: super::live_lan::parse_live_lan(&mut object)?,
             scripts: super::script::parse_scripts(&mut object)?,
             script_run: super::script::parse_script_run(&mut object)?,
+            shortcuts: super::shortcut::parse_shortcuts(&mut object)?,
         };
         object.finish()?;
         for input in &dto.inputs {
@@ -264,6 +266,9 @@ impl ProjectDto {
         // A run that does not fit the scripts is reported by project
         // validation.
         project.set_script_run(self.script_run);
+        // Shortcut bounds, duplicate ids, keys, and OSC names are reported
+        // by project validation.
+        project.set_shortcuts(self.shortcuts);
         project
     }
 }

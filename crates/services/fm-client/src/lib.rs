@@ -195,6 +195,9 @@ pub enum Intake {
     /// A `script_state` completed one project script the snapshot
     /// announced (Protocol 2.58).
     ScriptStateApplied,
+    /// A `shortcut_state` completed one user shortcut the snapshot
+    /// announced (Protocol 2.70).
+    ShortcutStateApplied,
     /// A `display_inventory` reply updated the replicated display inventory
     /// (Protocol 2.42).
     DisplayInventoryApplied,
@@ -637,6 +640,10 @@ impl Client {
             WireMessage::ScriptState(state) => {
                 self.apply_script_state(state)?;
                 Ok(Intake::ScriptStateApplied)
+            }
+            WireMessage::ShortcutState(state) => {
+                self.apply_shortcut_state(state)?;
+                Ok(Intake::ShortcutStateApplied)
             }
             WireMessage::DisplayInventory(message) => {
                 self.model.apply_display_inventory(message.inventory);
@@ -1345,6 +1352,59 @@ impl Client {
         Ok(())
     }
 
+    /// Adds one `shortcut_state` the installed snapshot announced
+    /// (Protocol 2.70). Shortcut states arrive only while synchronizing
+    /// from a snapshot, after its script states and before any event.
+    ///
+    /// # Errors
+    ///
+    /// A shortcut state in any other state, at another revision, beyond the
+    /// announced count, or before the earlier follow-on records forces a
+    /// fresh-snapshot reconnect ([`ClientError::ResyncRequired`]).
+    pub fn apply_shortcut_state(
+        &mut self,
+        state: fm_protocol::ShortcutStateMessage,
+    ) -> Result<(), ClientError> {
+        let ConnectionState::Synchronizing {
+            mode: SyncMode::Snapshot,
+            target_revision,
+        } = self.state
+        else {
+            let expected = self
+                .model
+                .reconnect_cursor()
+                .map_or(0, |cursor| cursor.revision.get());
+            return self.require_resync(expected, state.revision);
+        };
+        let received_revision = state.revision;
+        let earlier_complete = self.model.state().is_none_or(|state| {
+            state.titles_complete()
+                && state.playlist_complete()
+                && state.grading_complete()
+                && state.title_animations_complete()
+                && state.title_layouts_complete()
+                && state.scene_animations_complete()
+                && state.scene_layouts_complete()
+                && state.animation_presets_complete()
+                && state.media_complete()
+                && state.cue_lists_complete()
+                && state.scripts_complete()
+        });
+        if self
+            .model
+            .reconnect_cursor()
+            .is_none_or(|cursor| cursor.revision.get() != target_revision)
+            || !earlier_complete
+            || self.model.apply_shortcut_state(state).is_err()
+        {
+            return self.require_resync(target_revision, received_revision);
+        }
+        if self.snapshot_complete() {
+            self.finish_sync();
+        }
+        Ok(())
+    }
+
     fn titles_complete(&self) -> bool {
         self.model
             .state()
@@ -1367,6 +1427,7 @@ impl Client {
                 && state.media_complete()
                 && state.cue_lists_complete()
                 && state.scripts_complete()
+                && state.shortcuts_complete()
         })
     }
 
@@ -1695,6 +1756,9 @@ impl Client {
             | CommandPayload::RemoveScript { .. }
             | CommandPayload::RunScript { .. }
             | CommandPayload::StopScript { .. }
+            | CommandPayload::SetShortcut { .. }
+            | CommandPayload::RemoveShortcut { .. }
+            | CommandPayload::FireShortcut { .. }
             | CommandPayload::SetInputGrade { .. }
             | CommandPayload::SetLayerGrade { .. }
             | CommandPayload::SetProgramGrade { .. }

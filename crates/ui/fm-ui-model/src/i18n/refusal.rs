@@ -39,6 +39,7 @@ const fn id_kind_msg(kind: IdKind) -> Msg {
         IdKind::CueList => Msg::IdKindCueList,
         IdKind::Cue => Msg::IdKindCue,
         IdKind::Script => Msg::IdKindScript,
+        IdKind::Shortcut => Msg::IdKindShortcut,
     }
 }
 

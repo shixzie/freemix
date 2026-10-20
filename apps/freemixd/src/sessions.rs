@@ -1479,11 +1479,18 @@ impl Runtime<'_> {
         command: &fm_protocol::CommandMessage,
         durable: &StoredProject,
     ) -> AppResult<()> {
-        let cue = matches!(command.payload, CommandPayload::CueControl { .. });
+        // A fired shortcut may operate a cue list or start or stop the
+        // playlist (RC-004), so it honours both.
+        let cue = matches!(
+            command.payload,
+            CommandPayload::CueControl { .. } | CommandPayload::FireShortcut { .. }
+        );
         // A script run may start or stop the playlist too (RC-011).
         let playlist = matches!(
             command.payload,
-            CommandPayload::PlaylistControl { .. } | CommandPayload::RunScript { .. }
+            CommandPayload::PlaylistControl { .. }
+                | CommandPayload::RunScript { .. }
+                | CommandPayload::FireShortcut { .. }
         );
         if !(cue || playlist) {
             return Ok(());
@@ -1962,6 +1969,12 @@ impl Runtime<'_> {
                     .script_states()
                     .into_iter()
                     .map(WireMessage::ScriptState),
+            );
+            peer.initial_sync.extend(
+                control
+                    .shortcut_states()
+                    .into_iter()
+                    .map(WireMessage::ShortcutState),
             );
         }
     }

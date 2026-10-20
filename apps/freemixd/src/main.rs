@@ -2966,6 +2966,7 @@ fn cue_worker_commands(
         CommandPayload::CueControl { .. }
             | CommandPayload::CueAdvance { .. }
             | CommandPayload::RunScript { .. }
+            | CommandPayload::FireShortcut { .. }
     ) {
         return Vec::new();
     }
@@ -2977,7 +2978,8 @@ fn cue_worker_commands(
         .iter()
         .filter_map(|event| match &event.payload {
             fm_engine::EngineEvent::CueListChanged { applied, .. }
-            | fm_engine::EngineEvent::ScriptRan { applied, .. } => Some(applied),
+            | fm_engine::EngineEvent::ScriptRan { applied, .. }
+            | fm_engine::EngineEvent::ShortcutFired { applied, .. } => Some(applied),
             _ => None,
         })
         .flatten()
@@ -11948,6 +11950,7 @@ fn restore_engine_with_titles(
         canonical.script_run().clone(),
         canonical.settings().frame_rate,
     )?;
+    show.set_shortcuts(canonical.shortcuts().to_vec())?;
     let position = project.position();
     Ok(Engine::restore_persisted(
         show,
@@ -12430,6 +12433,13 @@ fn handle_client(
             }
             for state in control.borrow().script_states() {
                 write_session_message(&mut writer, &mut session, &WireMessage::ScriptState(state))?;
+            }
+            for state in control.borrow().shortcut_states() {
+                write_session_message(
+                    &mut writer,
+                    &mut session,
+                    &WireMessage::ShortcutState(state),
+                )?;
             }
         }
         SyncPayload::Resume(events) => {
@@ -14241,6 +14251,7 @@ fn command_base_ticks(
         CommandPayload::CueControl { .. }
             | CommandPayload::CueAdvance { .. }
             | CommandPayload::RunScript { .. }
+            | CommandPayload::FireShortcut { .. }
     ) {
         return prepared.cue_ticks();
     }
@@ -14353,7 +14364,10 @@ fn command_base_ticks(
         | CommandPayload::RenameAnimationPreset { .. }
         | CommandPayload::RemoveAnimationPreset { .. }
         | CommandPayload::ApplyTitleAnimationUserPreset { .. }
-        | CommandPayload::ApplySceneAnimationUserPreset { .. } => 1,
+        | CommandPayload::ApplySceneAnimationUserPreset { .. }
+        | CommandPayload::SetShortcut { .. }
+        | CommandPayload::RemoveShortcut { .. }
+        | CommandPayload::FireShortcut { .. } => 1,
     })
 }
 
@@ -14492,6 +14506,7 @@ fn stored_project_with_receipts(
     project.set_cue_lists(show.cue_lists().to_vec());
     project.set_scripts(show.scripts().to_vec());
     project.set_script_run(show.script_run().clone());
+    project.set_shortcuts(show.shortcuts().to_vec());
     project.set_grading(show.grading().clone());
     project.set_animation_presets(show.animation_presets().clone());
     project.set_transition_favorites(*show.transition_favorites());

@@ -258,6 +258,29 @@ pub fn action_classes(engine: &Engine, payload: &CommandPayload) -> ClassSet {
             let edited: Vec<fm_model::Cue> = spec.cues.iter().map(crate::cue::domain_cue).collect();
             classes(engine, armed_actions(found, &edited)).without(armed)
         }
+        // A fire needs what the command it stands for needs (RC-004).
+        CommandPayload::FireShortcut { shortcut } => match engine.shortcut_command(*shortcut) {
+            Ok(fm_engine::EngineCommand::FireShortcut { .. }) => {
+                match engine.show().shortcut(*shortcut).map(|found| &found.action) {
+                    Some(fm_model::ShortcutAction::Actions(actions)) => classes(engine, actions),
+                    _ => ClassSet::default(),
+                }
+            }
+            Ok(fm_engine::EngineCommand::RunScript { script }) => {
+                action_classes(engine, &CommandPayload::RunScript { script })
+            }
+            Ok(fm_engine::EngineCommand::CueControl {
+                list,
+                operation: fm_engine::EngineCueOperation::Go { cue },
+            }) => action_classes(
+                engine,
+                &CommandPayload::CueControl {
+                    list,
+                    operation: CueOperation::Go { cue },
+                },
+            ),
+            _ => ClassSet::default(),
+        },
         CommandPayload::SetScript { script, spec } if armed_chain_runs(engine, *script) => {
             let edited = fm_script::parse(&spec.source)
                 .map(|program| program.verbs())

@@ -959,6 +959,7 @@ pub struct Project {
     cue_lists: Vec<crate::CueList>,
     scripts: Vec<crate::Script>,
     script_run: crate::ScriptRunState,
+    shortcuts: Vec<crate::Shortcut>,
     grading: ProjectGrading,
     animation_presets: crate::AnimationPresetLibrary,
     transition_favorites: crate::TransitionFavorites,
@@ -999,6 +1000,7 @@ impl Project {
             cue_lists: Vec::new(),
             scripts: Vec::new(),
             script_run: crate::ScriptRunState::default(),
+            shortcuts: Vec::new(),
             grading: ProjectGrading::default(),
             animation_presets: crate::AnimationPresetLibrary::default(),
             transition_favorites: crate::TransitionFavorites::default(),
@@ -1468,6 +1470,18 @@ impl Project {
     /// reports runs that do not fit the scripts.
     pub fn set_script_run(&mut self, script_run: crate::ScriptRunState) {
         self.script_run = script_run;
+    }
+
+    /// The project's user shortcuts, in display order (RC-004, schema 61).
+    #[must_use]
+    pub fn shortcuts(&self) -> &[crate::Shortcut] {
+        &self.shortcuts
+    }
+
+    /// Replaces the shortcuts without checking them; [`Project::validate`]
+    /// reports structural errors.
+    pub fn set_shortcuts(&mut self, shortcuts: Vec<crate::Shortcut>) {
+        self.shortcuts = shortcuts;
     }
 
     /// Every persisted grading value: the grade library, imported LUTs, and

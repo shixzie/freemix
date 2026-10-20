@@ -50,6 +50,7 @@ pub mod i18n;
 mod input_lifecycle;
 pub mod scene_designer;
 pub mod scripts;
+pub mod shortcuts;
 pub mod title_animation;
 pub mod title_editor;
 
@@ -454,6 +455,9 @@ pub struct ProjectSnapshot {
     /// How many `script_state` records complete this snapshot (Protocol
     /// 2.58).
     pub script_states: u16,
+    /// How many `shortcut_state` records complete this snapshot (Protocol
+    /// 2.70).
+    pub shortcut_states: u16,
     /// Each input's lifecycle, parallel to `inputs` (Protocol 2.38).
     pub input_lifecycle: Vec<InputLifecycleStatus>,
     /// The project's input categories (Protocol 2.38).
@@ -573,6 +577,7 @@ impl ProjectSnapshot {
             media_states: message.media_states,
             cue_list_states: message.cue_list_states,
             script_states: message.script_states,
+            shortcut_states: message.shortcut_states,
             input_lifecycle,
             input_categories: message.input_categories,
             audio_mixer: message.audio_mixer,
@@ -782,6 +787,14 @@ pub enum DurableChange {
         frame: u64,
         scripts: Vec<u64>,
     },
+    /// A user shortcut after an edit, undo, or redo (Protocol 2.70).
+    ShortcutChanged(Box<fm_protocol::ShortcutStatus>),
+    /// A user shortcut was removed.
+    ShortcutRemoved {
+        shortcut: u64,
+    },
+    /// A shortcut's cue actions were accepted.
+    ShortcutFired(Box<shortcuts::ShortcutFireUpdate>),
 }
 
 /// The replicated playlist as of its snapshot's `playlist_state` or its last
@@ -1031,6 +1044,13 @@ impl DurableProjectEvent {
             EventPayload::ScriptRunsStopped { frame, scripts } => {
                 DurableChange::ScriptRunsStopped { frame, scripts }
             }
+            EventPayload::ShortcutChanged(shortcut) => DurableChange::ShortcutChanged(shortcut),
+            EventPayload::ShortcutRemoved { shortcut } => {
+                DurableChange::ShortcutRemoved { shortcut }
+            }
+            EventPayload::ShortcutFired(change) => DurableChange::ShortcutFired(Box::new(
+                shortcuts::ShortcutFireUpdate::from_protocol(*change),
+            )),
         };
         Self {
             cursor: ProjectCursor {
@@ -1134,6 +1154,14 @@ pub struct ProjectState {
     /// Every script whose run waits or faulted, with that state (Protocol
     /// 2.62; several since 2.69); every other script is idle.
     script_run_states: BTreeMap<u64, fm_protocol::ScriptRunStatus>,
+    /// Every user shortcut in project order (Protocol 2.70).
+    shortcuts: Vec<fm_protocol::ShortcutStatus>,
+    /// `shortcut_state` records the snapshot announced that have not
+    /// arrived.
+    shortcut_states_pending: u16,
+    /// The last accepted fire of a shortcut's cue actions since this
+    /// snapshot.
+    last_shortcut_fire: Option<shortcuts::ShortcutFireReport>,
     /// Every input's non-default lifecycle (Protocol 2.38).
     input_lifecycle: BTreeMap<InputId, InputLifecycleStatus>,
     /// The project's input categories (Protocol 2.38).
@@ -1324,6 +1352,35 @@ impl ProjectState {
     #[must_use]
     pub const fn scripts_complete(&self) -> bool {
         self.script_states_pending == 0
+    }
+
+    /// Returns every replicated user shortcut in project order (Protocol
+    /// 2.70).
+    #[must_use]
+    pub fn shortcuts(&self) -> &[fm_protocol::ShortcutStatus] {
+        &self.shortcuts
+    }
+
+    /// Returns user shortcut `shortcut`.
+    #[must_use]
+    pub fn shortcut(&self, shortcut: u64) -> Option<&fm_protocol::ShortcutStatus> {
+        self.shortcuts
+            .iter()
+            .find(|candidate| candidate.id == shortcut)
+    }
+
+    /// Returns whether every `shortcut_state` the snapshot announced
+    /// arrived.
+    #[must_use]
+    pub const fn shortcuts_complete(&self) -> bool {
+        self.shortcut_states_pending == 0
+    }
+
+    /// Returns the last accepted fire of a shortcut's cue actions
+    /// replicated since the snapshot.
+    #[must_use]
+    pub const fn last_shortcut_fire(&self) -> Option<shortcuts::ShortcutFireReport> {
+        self.last_shortcut_fire
     }
 
     /// Returns the last accepted script run replicated since the snapshot,
@@ -2045,6 +2102,12 @@ pub enum ModelError {
     /// A `script_state` arrived that the snapshot did not announce or at
     /// another revision (Protocol 2.58).
     ScriptStateMismatch,
+    /// A `shortcut_state` arrived that the snapshot did not announce or at
+    /// another revision (Protocol 2.70).
+    ShortcutStateMismatch,
+    /// A shortcut change names an unknown shortcut or does not fit its
+    /// bounds.
+    InvalidShortcut(u64),
     /// A script change names an unknown script or does not fit its bounds.
     InvalidScript(u64),
 }
@@ -2189,6 +2252,12 @@ impl fmt::Display for ModelError {
             }
             Self::InvalidCueList(list) => {
                 write!(formatter, "cue list {list} change does not apply")
+            }
+            Self::ShortcutStateMismatch => {
+                formatter.write_str("shortcut state does not match the snapshot it follows")
+            }
+            Self::InvalidShortcut(shortcut) => {
+                write!(formatter, "shortcut {shortcut} change does not apply")
             }
             Self::ScriptStateMismatch => {
                 formatter.write_str("script state does not match the snapshot it follows")
@@ -2810,6 +2879,9 @@ impl ClientModel {
             script_states_pending: snapshot.script_states,
             script_runs: Vec::new(),
             script_run_states: BTreeMap::new(),
+            shortcuts: Vec::new(),
+            shortcut_states_pending: snapshot.shortcut_states,
+            last_shortcut_fire: None,
             input_lifecycle,
             input_categories: snapshot.input_categories,
             audio_mixer: snapshot.audio_mixer,
@@ -3207,6 +3279,37 @@ impl ClientModel {
         }
         state.scripts.push(message.script);
         state.script_states_pending -= 1;
+        Ok(())
+    }
+
+    /// Adds one of the `shortcut_state` records the installed snapshot
+    /// announced (Protocol 2.70), in project order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::ShortcutStateMismatch`] when the record is at another
+    /// revision, unannounced, or duplicates a shortcut; a shortcut outside
+    /// its bounds is refused like a `shortcut_changed`.
+    pub fn apply_shortcut_state(
+        &mut self,
+        message: fm_protocol::ShortcutStateMessage,
+    ) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        if Revision::new(message.revision) != revision
+            || state.shortcut_states_pending == 0
+            || state.shortcut(message.shortcut.id).is_some()
+        {
+            return Err(ModelError::ShortcutStateMismatch);
+        }
+        shortcuts::validate_shortcut(&message.shortcut)?;
+        state.shortcuts.push(message.shortcut);
+        state.shortcut_states_pending -= 1;
         Ok(())
     }
 
@@ -4198,6 +4301,33 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
                 None => Ok(()),
             };
         }
+        DurableChange::ShortcutChanged(shortcut) => {
+            // A new shortcut must fit the project bound; a replaced one does.
+            let fits = state.shortcut(shortcut.id).is_some()
+                || state.shortcuts.len() < fm_protocol::MAX_SHORTCUTS;
+            return if state.shortcuts_complete() && fits {
+                shortcuts::validate_shortcut(shortcut)
+            } else {
+                Err(ModelError::InvalidShortcut(shortcut.id))
+            };
+        }
+        DurableChange::ShortcutRemoved { shortcut } => {
+            return if state.shortcut(*shortcut).is_some() {
+                Ok(())
+            } else {
+                Err(ModelError::InvalidShortcut(*shortcut))
+            };
+        }
+        DurableChange::ShortcutFired(update) => {
+            shortcuts::validate_fire(update, state)?;
+            (
+                update.effects.selection,
+                update.effects.manual_transition,
+                None,
+                &update.effects.overlays,
+                &update.effects.input_audio_strips,
+            )
+        }
         DurableChange::ScriptRan(update) => {
             scripts::validate_run(update, state)?;
             (
@@ -4773,6 +4903,11 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             scripts::set_run_status(state, script, run);
         }
         DurableChange::ScriptRunsStopped { .. } => state.script_run_states.clear(),
+        DurableChange::ShortcutChanged(shortcut) => shortcuts::apply_shortcut(state, *shortcut),
+        DurableChange::ShortcutRemoved { shortcut } => {
+            state.shortcuts.retain(|candidate| candidate.id != shortcut);
+        }
+        DurableChange::ShortcutFired(update) => shortcuts::apply_fire(state, *update),
         DurableChange::GradeChanged(change) => state.grading.apply(change),
         DurableChange::AnimationPresetChanged(change) => state.animation_presets.apply(change),
         DurableChange::TransitionFavoriteChanged { slot, favorite } => {

@@ -52,6 +52,8 @@ pub enum ShowError {
     InvalidCueList(&'static str),
     /// Restored scripts break a bound (RC-011).
     InvalidScripts,
+    /// Restored user shortcuts break a bound (RC-004).
+    InvalidShortcuts,
     Switcher(SwitcherError),
 }
 
@@ -114,6 +116,7 @@ impl fmt::Display for ShowError {
             ),
             Self::InvalidCueList(code) => write!(formatter, "invalid cue list ({code})"),
             Self::InvalidScripts => formatter.write_str("invalid scripts"),
+            Self::InvalidShortcuts => formatter.write_str("invalid shortcuts"),
             Self::Switcher(error) => error.fmt(formatter),
         }
     }

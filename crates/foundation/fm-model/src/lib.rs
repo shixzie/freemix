@@ -13,6 +13,7 @@ mod resolve;
 mod scene_animation;
 mod scene_layer_edit;
 mod script;
+mod shortcut;
 mod stream;
 mod title;
 mod transition_favorite;
@@ -106,6 +107,13 @@ pub use script::{
     MAX_SCRIPT_WAITS, MAX_SCRIPTS, Script, ScriptError, ScriptFault, ScriptRun, ScriptRunState,
     script_limits, script_name_is_valid, script_source_is_valid, script_wait_frames, script_waits,
     validate_script_definition, validate_script_run, validate_scripts,
+};
+pub use shortcut::{
+    MAX_SHORTCUT_ACTIONS, MAX_SHORTCUT_KEY_BYTES, MAX_SHORTCUT_NAME_BYTES, MAX_SHORTCUT_OSC_BYTES,
+    MAX_SHORTCUT_TEXT_BYTES, MAX_SHORTCUTS, SHORTCUT_OSC_PREFIX, Shortcut, ShortcutAction,
+    ShortcutCueOperation, ShortcutError, ShortcutKey, shortcut_name_is_valid,
+    shortcut_osc_is_valid, validate_shortcut_action, validate_shortcut_definition,
+    validate_shortcuts,
 };
 pub use stream::{
     DEFAULT_STREAM_SRT_LATENCY_MS, DEFAULT_VIDEO_BITRATE_KBPS, MAX_STREAM_ENDPOINT_BYTES,

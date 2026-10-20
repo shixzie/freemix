@@ -97,7 +97,7 @@ fn write_cue(output: &mut String, cue: &Cue) {
 }
 
 #[allow(clippy::too_many_lines)] // one arm per action type
-fn write_action(output: &mut String, action: &CueAction) {
+pub(crate) fn write_action(output: &mut String, action: &CueAction) {
     let result = match action {
         CueAction::Preview { input } => {
             write!(output, "{{\"type\": \"preview\", \"input\": {input}}}")
@@ -322,7 +322,7 @@ fn input(object: &mut Object) -> Result<InputId, DecodeError> {
 }
 
 #[allow(clippy::too_many_lines)] // one arm per action type
-fn parse_action(value: Value) -> Result<CueAction, DecodeError> {
+pub(crate) fn parse_action(value: Value) -> Result<CueAction, DecodeError> {
     let mut object = Object::new(value, "cue action")?;
     let action = match object.string("type")?.as_str() {
         "preview" => CueAction::Preview {

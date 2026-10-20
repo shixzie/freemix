@@ -1762,6 +1762,21 @@ pub enum CommandPayload {
     StopScript {
         run: Option<u64>,
     },
+    /// Creates or replaces user shortcut `shortcut` (Protocol 2.70,
+    /// RC-004): an undoable project edit. Wire payload `shortcut_set`.
+    SetShortcut {
+        shortcut: u64,
+        spec: Box<crate::ShortcutSpec>,
+    },
+    /// Removes user shortcut `shortcut`. Wire payload `shortcut_remove`.
+    RemoveShortcut {
+        shortcut: u64,
+    },
+    /// Fires user shortcut `shortcut` on the authority, as the command it
+    /// stands for. Wire payload `shortcut_fire`.
+    FireShortcut {
+        shortcut: u64,
+    },
     /// Sets (`Some`) or clears (`None`) one input's grade (Protocol 2.28).
     /// Wire payloads `grade_input_set` and `grade_input_clear`.
     SetInputGrade {
@@ -2415,6 +2430,10 @@ pub struct SnapshotMessage {
     /// (after its cue list states), one per script in project order, at
     /// most [`crate::MAX_SCRIPTS`] (Protocol 2.58).
     pub script_states: u16,
+    /// How many [`crate::ShortcutStateMessage`] records follow this
+    /// snapshot (after its script states), one per shortcut in project
+    /// order, at most [`crate::MAX_SHORTCUTS`] (Protocol 2.70).
+    pub shortcut_states: u16,
     /// The project's input category list in display order (Protocol 2.38).
     pub input_categories: Vec<crate::InputCategoryStatus>,
     /// Strip labels and groups (Protocol 2.40).
@@ -2577,6 +2596,15 @@ pub enum EventPayload {
         frame: u64,
         scripts: Vec<u64>,
     },
+    /// A user shortcut was created or edited (or the edit undone or
+    /// redone): the whole shortcut afterwards (Protocol 2.70).
+    ShortcutChanged(Box<crate::ShortcutStatus>),
+    /// A user shortcut was removed.
+    ShortcutRemoved {
+        shortcut: u64,
+    },
+    /// A fired shortcut's cue actions were accepted (Protocol 2.70).
+    ShortcutFired(Box<crate::ShortcutFireChange>),
     /// A playlist command was accepted for `frame`: the complete playlist
     /// afterwards and the desired Program and Preview. When the command put
     /// an entry on air, its input reaches Program on exactly `frame`.
@@ -3137,6 +3165,8 @@ pub enum WireMessage {
     CueListState(crate::CueListStateMessage),
     /// One script after a snapshot (Protocol 2.58).
     ScriptState(crate::ScriptStateMessage),
+    /// One user shortcut after a snapshot (Protocol 2.70).
+    ShortcutState(crate::ShortcutStateMessage),
     /// Asks for the current display inventory (Protocol 2.42).
     DisplayInventoryRequest(crate::DisplayInventoryRequest),
     /// Answers a [`crate::DisplayInventoryRequest`] (Protocol 2.42).

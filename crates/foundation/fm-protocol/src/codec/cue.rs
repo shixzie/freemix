@@ -96,7 +96,7 @@ pub fn cue_name_is_valid(name: &str) -> bool {
         && !name.chars().any(char::is_control)
 }
 
-fn action_is_valid(action: &WireCueAction) -> bool {
+pub(super) fn action_is_valid(action: &WireCueAction) -> bool {
     let transition = |frames: u32| (1..=MAX_CUE_TRANSITION_FRAMES).contains(&frames);
     match action {
         WireCueAction::Take {

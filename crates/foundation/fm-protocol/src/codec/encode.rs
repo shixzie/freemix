@@ -207,6 +207,13 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
                 record.field_string(name, value)
             })?;
         }
+        WireMessage::ShortcutState(message) => {
+            record.kind("shortcut_state");
+            record.field("revision", message.revision)?;
+            super::shortcut::encode_status(&message.shortcut, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         WireMessage::ScriptState(message) => {
             record.kind("script_state");
             record.field("revision", message.revision)?;
@@ -386,6 +393,24 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("payload", "cue_advance")?;
             record.field("list", list)?;
             record.field("frame", frame)?;
+        }
+        CommandPayload::SetShortcut { shortcut, spec } => {
+            record.field("payload", "shortcut_set")?;
+            super::shortcut::encode_spec(*shortcut, spec, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        CommandPayload::RemoveShortcut { shortcut } | CommandPayload::FireShortcut { shortcut } => {
+            record.field(
+                "payload",
+                if matches!(&message.payload, CommandPayload::FireShortcut { .. }) {
+                    "shortcut_fire"
+                } else {
+                    "shortcut_remove"
+                },
+            )?;
+            super::shortcut::validate_shortcut_id(*shortcut)?;
+            record.field("shortcut", shortcut)?;
         }
         CommandPayload::StopScript { run } => {
             record.field("payload", "script_stop")?;
@@ -1586,6 +1611,13 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         });
     }
     record.field("script_states", message.script_states)?;
+    if !super::shortcut::state_count_is_valid(message.shortcut_states) {
+        return Err(CodecError::InvalidField {
+            field: "shortcut_states",
+            value: message.shortcut_states.to_string(),
+        });
+    }
+    record.field("shortcut_states", message.shortcut_states)?;
     record.field_string(
         "input_categories",
         super::input_lifecycle::encode_categories(&message.input_categories)?,
@@ -2300,6 +2332,47 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
             )?;
             record.field_string("titles", super::cue::encode_titles(&change.titles)?)?;
             record.field_string("media", super::cue::encode_media(&change.media)?)?;
+        }
+        EventPayload::ShortcutChanged(status) => {
+            record.field("event", "shortcut_changed")?;
+            super::shortcut::encode_status(status, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        EventPayload::ShortcutRemoved { shortcut } => {
+            record.field("event", "shortcut_removed")?;
+            super::shortcut::validate_shortcut_id(*shortcut)?;
+            record.field("shortcut", shortcut)?;
+        }
+        EventPayload::ShortcutFired(change) => {
+            record.field("event", "shortcut_fired")?;
+            super::shortcut::validate_shortcut_id(change.shortcut)?;
+            record.field("shortcut", change.shortcut)?;
+            record.field("frame", change.frame)?;
+            record.field("actions", change.actions)?;
+            record.field("program", change.program)?;
+            record.field("preview", change.preview)?;
+            encode_manual_status(
+                record,
+                change.manual_transition,
+                ManualStatusFields::Unqualified,
+            )?;
+            encode_fade_to_black_state(
+                record,
+                change.fade_to_black,
+                FadeToBlackStateFields::Unqualified,
+            )?;
+            encode_overlays(record, "overlays", &change.overlays)?;
+            encode_input_audio_strips(record, &change.input_audio_strips)?;
+            record.field_string("streams", stream_statuses(&change.streams)?)?;
+            record.field_string("recordings", recording_statuses(&change.recordings)?)?;
+            record.field_string(
+                "playlist",
+                super::playlist::encode_playlist_state(change.playlist),
+            )?;
+            record.field_string("titles", super::cue::encode_titles(&change.titles)?)?;
+            record.field_string("media", super::cue::encode_media(&change.media)?)?;
+            record.field_string("scripts", super::cue::encode_scripts(&change.scripts)?)?;
         }
         EventPayload::ScriptRunChanged { script, frame, run } => {
             record.field("event", "script_run_changed")?;

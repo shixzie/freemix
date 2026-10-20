@@ -17,6 +17,7 @@ mod refusal;
 mod scene_layer;
 mod scene_layout;
 mod script;
+mod shortcut;
 mod stream_target;
 mod system_audio;
 mod title;
@@ -30,6 +31,7 @@ pub use decode::{LineDecoder, decode_line};
 pub use encode::encode_line;
 pub use refusal::{decode_refusal_reason, encode_refusal_reason};
 pub use scene_layout::scene_layout_wire_bytes;
+pub use shortcut::validate_shortcut_spec;
 
 use core::fmt;
 

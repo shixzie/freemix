@@ -33,11 +33,13 @@ pub enum IdKind {
     Cue,
     /// A project script (RC-011).
     Script,
+    /// A user shortcut (RC-004).
+    Shortcut,
 }
 
 impl IdKind {
     /// Every kind, in declaration order.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Input,
         Self::Output,
         Self::Scene,
@@ -51,6 +53,7 @@ impl IdKind {
         Self::CueList,
         Self::Cue,
         Self::Script,
+        Self::Shortcut,
     ];
 
     /// The kind's English noun.
@@ -70,6 +73,7 @@ impl IdKind {
             Self::CueList => "cue list",
             Self::Cue => "cue",
             Self::Script => "script",
+            Self::Shortcut => "shortcut",
         }
     }
 }

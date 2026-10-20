@@ -14,6 +14,7 @@ mod playlist;
 mod scene_animation;
 mod scene_layer;
 mod script;
+mod shortcut;
 mod state;
 mod stream_target;
 mod title_animation;

@@ -34,6 +34,7 @@ const fn kind_token(kind: IdKind) -> &'static str {
         IdKind::CueList => "cue_list",
         IdKind::Cue => "cue",
         IdKind::Script => "script",
+        IdKind::Shortcut => "shortcut",
     }
 }
 

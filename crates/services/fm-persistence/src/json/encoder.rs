@@ -121,6 +121,7 @@ fn write_project(output: &mut String, project: &fm_model::Project) {
     super::live_lan::write_live_lan(output, project);
     super::script::write_scripts(output, project.scripts());
     super::script::write_script_run(output, project.script_run());
+    super::shortcut::write_shortcuts(output, project.shortcuts());
     output.push_str("\n  },");
 }
 

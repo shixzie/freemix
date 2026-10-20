@@ -127,6 +127,7 @@ fn control() -> FakeControl {
         media_states: 0,
         cue_list_states: 0,
         script_states: 0,
+        shortcut_states: 0,
         input_categories: Vec::new(),
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
         stream_targets: Vec::new(),

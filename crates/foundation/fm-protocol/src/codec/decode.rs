@@ -236,6 +236,10 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
             frame: fields.canonical_required("frame")?,
             list: super::cue::decode_list(&mut fields)?,
         }),
+        "shortcut_state" => WireMessage::ShortcutState(crate::ShortcutStateMessage {
+            revision: fields.canonical_required("revision")?,
+            shortcut: super::shortcut::decode_status(&mut fields)?,
+        }),
         "script_state" => WireMessage::ScriptState(crate::ScriptStateMessage {
             revision: fields.canonical_required("revision")?,
             script: super::script::decode_status(&mut fields)?,
@@ -589,6 +593,16 @@ fn decode_command_payload(
         },
         "script_run" => CommandPayload::RunScript {
             script: super::script::decode_script_id(fields)?,
+        },
+        "shortcut_set" => CommandPayload::SetShortcut {
+            shortcut: super::shortcut::decode_shortcut_id(fields)?,
+            spec: Box::new(super::shortcut::decode_spec(fields)?),
+        },
+        "shortcut_remove" => CommandPayload::RemoveShortcut {
+            shortcut: super::shortcut::decode_shortcut_id(fields)?,
+        },
+        "shortcut_fire" => CommandPayload::FireShortcut {
+            shortcut: super::shortcut::decode_shortcut_id(fields)?,
         },
         "script_stop" => CommandPayload::StopScript {
             run: super::script::decode_optional_run_id(fields)?,
@@ -1704,6 +1718,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         },
         cue_list_states: super::cue::parse_list_count(&fields.required("cue_list_states")?)?,
         script_states: super::script::parse_state_count(&fields.required("script_states")?)?,
+        shortcut_states: super::shortcut::parse_state_count(&fields.required("shortcut_states")?)?,
         input_categories: super::input_lifecycle::decode_categories(
             &fields.required("input_categories")?,
         )?,
@@ -2539,6 +2554,29 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             playlist: decode_playlist_state(fields.required("playlist")?)?,
             titles: super::cue::decode_titles(&fields.required("titles")?)?,
             media: super::cue::decode_media(&fields.required("media")?)?,
+        })),
+        "shortcut_changed" => {
+            EventPayload::ShortcutChanged(Box::new(super::shortcut::decode_status(fields)?))
+        }
+        "shortcut_removed" => EventPayload::ShortcutRemoved {
+            shortcut: super::shortcut::decode_shortcut_id(fields)?,
+        },
+        "shortcut_fired" => EventPayload::ShortcutFired(Box::new(crate::ShortcutFireChange {
+            shortcut: super::shortcut::decode_shortcut_id(fields)?,
+            frame: fields.canonical_required("frame")?,
+            actions: fields.canonical_u32("actions")?,
+            program: fields.input("program")?,
+            preview: fields.input("preview")?,
+            manual_transition: decode_manual_status(fields, ManualStatusFields::Unqualified)?,
+            fade_to_black: decode_fade_to_black_state(fields, FadeToBlackStateFields::Unqualified)?,
+            overlays: decode_overlays(fields, "overlays")?,
+            input_audio_strips: decode_input_audio_strips(fields)?,
+            streams: parse_stream_statuses(&fields.required("streams")?)?,
+            recordings: parse_recording_statuses(&fields.required("recordings")?)?,
+            playlist: decode_playlist_state(fields.required("playlist")?)?,
+            titles: super::cue::decode_titles(&fields.required("titles")?)?,
+            media: super::cue::decode_media(&fields.required("media")?)?,
+            scripts: super::cue::decode_scripts(&fields.required("scripts")?)?,
         })),
         "script_run_changed" => EventPayload::ScriptRunChanged {
             script: super::script::decode_script_id(fields)?,

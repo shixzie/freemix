@@ -2421,6 +2421,7 @@ messages! {
 
     // Project scripts (RC-011, Protocol 2.58).
     IdKindScript => t("Script {id}"),
+    IdKindShortcut => t("Shortcut {id}"),
     BoundsFieldScripts => t("Scripts in a project"),
     BoundsFieldScriptSource => t("Script length (bytes)"),
     RsnScriptFailed => t("The script stopped with {failure} at line {line}, column {column}; nothing it did was kept."),

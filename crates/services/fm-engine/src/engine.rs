@@ -540,6 +540,21 @@ pub enum EngineCommand {
     StopScript {
         run: Option<u64>,
     },
+    /// Creates or replaces (`Some`) or removes (`None`) user shortcut
+    /// `shortcut` (RC-004). A project edit honouring the project padlock,
+    /// undone by restoring the previous definition (see
+    /// [`crate::shortcut`]).
+    SetShortcut {
+        shortcut: u64,
+        definition: Option<Box<fm_model::Shortcut>>,
+    },
+    /// Fires user shortcut `shortcut` on the command's target frame
+    /// (RC-004): resolved into the cue list operation or script run it
+    /// stands for, or, for cue actions, planned and realized like a cue
+    /// GO's first frame. A live operation.
+    FireShortcut {
+        shortcut: u64,
+    },
 }
 
 /// What an accepted title command does on air.
@@ -770,6 +785,22 @@ pub enum EngineEvent {
     ScriptRunsStopped {
         scripts: Vec<u64>,
         frame: u64,
+    },
+    /// A user shortcut was created, replaced, or removed (or the edit
+    /// undone or redone) (RC-004); it is read from [`ShowState::shortcut`].
+    ShortcutChanged {
+        shortcut: u64,
+    },
+    /// A shortcut's cue actions were accepted for `frame` (RC-004).
+    /// `title_texts`, `applied`, and `scripts` are as for
+    /// [`Self::CueListChanged`].
+    ShortcutFired {
+        shortcut: u64,
+        frame: u64,
+        actions: u32,
+        title_texts: Vec<(InputId, FieldId, FieldValue)>,
+        applied: Vec<EngineCommand>,
+        scripts: Vec<CueScriptRun>,
     },
 }
 
@@ -1436,6 +1467,18 @@ impl Engine {
         earliest.map(|(list, due)| (list, due.max(self.scheduler.pacer().next_frame().get())))
     }
 
+    /// The command a fire of user shortcut `shortcut` stands for on the
+    /// current show (RC-004): the cue list operation or script run it
+    /// resolves to, or [`EngineCommand::FireShortcut`] itself when it runs
+    /// cue actions (read them from [`ShowState::shortcut`]).
+    ///
+    /// # Errors
+    ///
+    /// Refuses an unknown or disabled shortcut, as a fire would.
+    pub fn shortcut_command(&self, shortcut: u64) -> Result<EngineCommand, Rejection> {
+        crate::shortcut::resolve(self.show(), shortcut)
+    }
+
     /// Whether script `script`'s source holds a `wait`, so a run of it may
     /// span frames (RC-011, schema 56); `None` for an unknown script.
     #[must_use]
@@ -1927,6 +1970,10 @@ impl Engine {
             Ok(EngineCommand::StopScript { run }) => {
                 Some(crate::script::plan_stop(self, *run, target_frame))
             }
+            // A shortcut's cue actions are planned the same way (RC-004).
+            Ok(EngineCommand::FireShortcut { shortcut }) => {
+                Some(crate::shortcut::plan(self, *shortcut, target_frame))
+            }
             _ => None,
         };
         let cue_transition = match &cue {
@@ -2056,6 +2103,8 @@ impl Engine {
                         | EngineCommand::RunScript { .. }
                         | EngineCommand::StopScript { .. }
                         | EngineCommand::SetScript { .. }
+                        | EngineCommand::FireShortcut { .. }
+                        | EngineCommand::SetShortcut { .. }
                 )
             {
                 let name = transition_kind_name(kind);
@@ -2856,6 +2905,19 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::SetShortcut {
+            shortcut,
+            definition,
+        } = &self.command
+        {
+            crate::shortcut::apply_set(state, *shortcut, definition.as_deref())?;
+            events.push(EngineEvent::ShortcutChanged {
+                shortcut: *shortcut,
+            });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if matches!(
             &self.command,
             EngineCommand::CueControl { .. }
@@ -2863,6 +2925,7 @@ impl EngineMutation {
                 | EngineCommand::RealizeCueActions(_)
                 | EngineCommand::RunScript { .. }
                 | EngineCommand::StopScript { .. }
+                | EngineCommand::FireShortcut { .. }
         ) {
             let Some(plan) = self.cue else {
                 return Err(Rejection::new(
@@ -3407,7 +3470,9 @@ impl EngineMutation {
             | EngineCommand::RealizeCueActions(_)
             | EngineCommand::SetScript { .. }
             | EngineCommand::RunScript { .. }
-            | EngineCommand::StopScript { .. } => {
+            | EngineCommand::StopScript { .. }
+            | EngineCommand::SetShortcut { .. }
+            | EngineCommand::FireShortcut { .. } => {
                 unreachable!("cue mutations return before switcher command mapping")
             }
             EngineCommand::Grade(_)
@@ -3929,6 +3994,7 @@ fn apply_runtime(
             | EngineCommand::SetInputAudioStrip { .. }
             | EngineCommand::SetCueList { .. }
             | EngineCommand::SetScript { .. }
+            | EngineCommand::SetShortcut { .. }
             | EngineCommand::SetEditLock { .. }
             | EngineCommand::SetTitleFields { .. }
             | EngineCommand::Grade(_)
@@ -4115,7 +4181,9 @@ fn apply_runtime(
         | EngineCommand::RealizeCueActions(_)
         | EngineCommand::SetScript { .. }
         | EngineCommand::RunScript { .. }
-        | EngineCommand::StopScript { .. } => {
+        | EngineCommand::StopScript { .. }
+        | EngineCommand::SetShortcut { .. }
+        | EngineCommand::FireShortcut { .. } => {
             unreachable!("cue commands are realized by the engine tick")
         }
         EngineCommand::Grade(_)
@@ -4335,7 +4403,9 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::RealizeCueActions(_)
         | EngineCommand::SetScript { .. }
         | EngineCommand::RunScript { .. }
-        | EngineCommand::StopScript { .. } => None,
+        | EngineCommand::StopScript { .. }
+        | EngineCommand::SetShortcut { .. }
+        | EngineCommand::FireShortcut { .. } => None,
     }
 }
 

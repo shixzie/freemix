@@ -6549,6 +6549,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Magnitud de un número de título"),
     ),
     (Msg::IdKindScript, t("Guion {id}")),
+    (Msg::IdKindShortcut, t("Atajo {id}")),
     (Msg::BoundsFieldScripts, t("Guiones de un proyecto")),
     (
         Msg::BoundsFieldScriptSource,

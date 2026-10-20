@@ -163,6 +163,7 @@ impl EngineCommand {
             | Self::SetCaptureSettings { .. }
             | Self::SetCueList { .. }
             | Self::SetScript { .. }
+            | Self::SetShortcut { .. }
             | Self::SetStreamTarget { .. }
             | Self::InputLifecycle(_) => EngineCommandKind::ProjectEdit,
             Self::AudioMixer(edit) => {
@@ -217,7 +218,8 @@ impl EngineCommand {
             | Self::CueAdvance { .. }
             | Self::RealizeCueActions(_)
             | Self::RunScript { .. }
-            | Self::StopScript { .. } => EngineCommandKind::LiveOperation,
+            | Self::StopScript { .. }
+            | Self::FireShortcut { .. } => EngineCommandKind::LiveOperation,
         }
     }
 }
@@ -460,6 +462,11 @@ impl EditHistory {
                 let entry = self.redo.last();
                 Self::resolve_step(state, entry, *expected_edit, false)
             }
+            // A fire resolves into the command it stands for (RC-004).
+            EngineCommand::FireShortcut { shortcut } => Ok(ResolvedCommand {
+                command: crate::shortcut::resolve(state, *shortcut)?,
+                step: HistoryStep::None,
+            }),
             EngineCommand::RemoveInput { input } => Ok(ResolvedCommand {
                 command: command.clone(),
                 step: HistoryStep::Forget {
@@ -954,6 +961,10 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
                 .position(|config| config.id().get() == target.get()),
         }),
 
+        EngineCommand::SetShortcut { shortcut, .. } => Some(EngineCommand::SetShortcut {
+            shortcut: *shortcut,
+            definition: crate::shortcut::definition(state, *shortcut),
+        }),
         EngineCommand::SetScript { script, .. } => Some(EngineCommand::SetScript {
             script: *script,
             definition: crate::script::definition(state, *script),
