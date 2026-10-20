@@ -182,6 +182,12 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             validate_request_id(&message.request_id)?;
             record.field_str("request_id", &message.request_id)?;
         }
+        WireMessage::ScreenCapturePickRequest(message) => {
+            record.kind("screen_capture_pick_request");
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+            record.field("input", message.input)?;
+        }
         WireMessage::ScreenCaptureTargets(message) => {
             record.kind("screen_capture_targets");
             validate_request_id(&message.request_id)?;

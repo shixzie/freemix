@@ -984,6 +984,9 @@ pub struct Project {
     display_outputs:
         BTreeMap<fm_types::display::DisplayOutputSlot, fm_types::display::DisplayOutputConfig>,
     live_lan: fm_types::live_lan::LiveLanConfig,
+    /// The desktop restore token each screen capture input's last screen
+    /// sharing grant returned (IN-011, schema 72), by input.
+    screen_capture_restore_tokens: BTreeMap<InputId, String>,
 }
 
 impl Project {
@@ -1027,6 +1030,7 @@ impl Project {
             fade_to_black_curve: fm_types::FadeToBlackCurve::Linear,
             display_outputs: BTreeMap::new(),
             live_lan: fm_types::live_lan::LiveLanConfig::default(),
+            screen_capture_restore_tokens: BTreeMap::new(),
         }
     }
 
@@ -1542,6 +1546,44 @@ impl Project {
         self.title_timelines = timelines;
     }
 
+    /// Every screen capture input's desktop restore token (IN-011, schema
+    /// 72), by input: what a Wayland desktop's screen sharing dialog last
+    /// granted, so the same screen or window is shared again without
+    /// asking. Not an edit: the server keeps it up to date.
+    #[must_use]
+    pub const fn screen_capture_restore_tokens(&self) -> &BTreeMap<InputId, String> {
+        &self.screen_capture_restore_tokens
+    }
+
+    /// Replaces every restore token with `tokens`, keeping only valid tokens
+    /// of screen capture inputs (see
+    /// [`fm_types::screen_capture::is_screen_capture_restore_token`]).
+    /// Returns whether anything changed.
+    pub fn set_screen_capture_restore_tokens(&mut self, tokens: BTreeMap<InputId, String>) -> bool {
+        let tokens: BTreeMap<InputId, String> = tokens
+            .into_iter()
+            .filter(|(input, token)| {
+                fm_types::screen_capture::is_screen_capture_restore_token(token)
+                    && self.inputs.iter().any(|candidate| {
+                        candidate.id == *input
+                            && matches!(candidate.kind, InputKind::ScreenCapture(_))
+                    })
+            })
+            .collect();
+        if tokens == self.screen_capture_restore_tokens {
+            return false;
+        }
+        self.screen_capture_restore_tokens = tokens;
+        true
+    }
+
+    /// Restores one persisted restore token without checking it;
+    /// [`Self::validate`] reports a token of an unknown or other input, or
+    /// an unusable token.
+    pub fn restore_screen_capture_restore_token(&mut self, input: InputId, token: String) {
+        self.screen_capture_restore_tokens.insert(input, token);
+    }
+
     /// The project's scripts, in display order (RC-011, schema 54).
     #[must_use]
     pub fn scripts(&self) -> &[crate::Script] {
@@ -1956,6 +1998,7 @@ impl Project {
         self.input_lifecycle.remove(&input);
         self.media_lists.remove(&input);
         self.title_timelines.remove(&input);
+        self.screen_capture_restore_tokens.remove(&input);
         Ok(())
     }
 
@@ -2181,6 +2224,17 @@ impl Project {
             })
         {
             return Err(ReplaceInputError::SceneKeyInput(key_input));
+        }
+        // A desktop restore token restores a screen or a window: it is
+        // kept only while the input still captures the same kind of target.
+        let same_target = |kind: &InputKind| match kind {
+            InputKind::ScreenCapture(config) => Some(config.target.kind_token()),
+            _ => None,
+        };
+        if same_target(&self.inputs[index].kind).is_none()
+            || same_target(&self.inputs[index].kind) != same_target(&candidate.inputs[index].kind)
+        {
+            candidate.screen_capture_restore_tokens.remove(&input);
         }
         *self = candidate;
         Ok(())

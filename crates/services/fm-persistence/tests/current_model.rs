@@ -1936,7 +1936,7 @@ fn edit_locks_round_trip_exactly_and_are_strict_at_the_current_schema() {
     store.save(&stored_rich_project()).unwrap();
     let unlocked = fs::read_to_string(store.manifest_path()).unwrap();
     assert!(unlocked.contains(
-        "\"recording_desired\": [false, false],\n    \"edit_locks\": {\"project\": false, \"inputs\": []},\n    \"playlist\": {\"loop\": \"off\", \"entries\": [], \"state\": {\"type\": \"stopped\"}, \"next_take\": 1, \"observed_frame\": 0},\n    \"cue_lists\": [],\n    \"luts\": [],\n    \"grades\": [],\n    \"input_grades\": [],\n    \"layer_grades\": [],\n    \"program_grade\": null,\n    \"animation_presets\": [],\n    \"transition_favorites\": [\n      {\"effect\": \"fade\", \"duration_frames\": 30},\n      {\"effect\": \"wipe\", \"duration_frames\": 30},\n      {\"effect\": \"fly\", \"duration_frames\": 30},\n      {\"effect\": \"cube\", \"duration_frames\": 30}\n    ],\n    \"input_categories\": [],\n    \"input_lifecycle\": [],\n    \"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 2\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"audio_solo_mode\": \"sip\",\n    \"audio_monitor_output\": {\"device\": null, \"gain_milli_db\": 0, \"muted\": false},\n    \"master_audio_dsp\": null,\n    \"fade_to_black_excluded_outputs\": [],\n    \"fade_to_black_output_durations\": [],\n    \"fade_to_black_curve\": \"linear\",\n    \"display_outputs\": [],\n    \"live_lan\": {\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null},\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": []\n  },\n  \"runtime\": {"
+        "\"recording_desired\": [false, false],\n    \"edit_locks\": {\"project\": false, \"inputs\": []},\n    \"playlist\": {\"loop\": \"off\", \"entries\": [], \"state\": {\"type\": \"stopped\"}, \"next_take\": 1, \"observed_frame\": 0},\n    \"cue_lists\": [],\n    \"luts\": [],\n    \"grades\": [],\n    \"input_grades\": [],\n    \"layer_grades\": [],\n    \"program_grade\": null,\n    \"animation_presets\": [],\n    \"transition_favorites\": [\n      {\"effect\": \"fade\", \"duration_frames\": 30},\n      {\"effect\": \"wipe\", \"duration_frames\": 30},\n      {\"effect\": \"fly\", \"duration_frames\": 30},\n      {\"effect\": \"cube\", \"duration_frames\": 30}\n    ],\n    \"input_categories\": [],\n    \"input_lifecycle\": [],\n    \"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 2\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"audio_solo_mode\": \"sip\",\n    \"audio_monitor_output\": {\"device\": null, \"gain_milli_db\": 0, \"muted\": false},\n    \"master_audio_dsp\": null,\n    \"fade_to_black_excluded_outputs\": [],\n    \"fade_to_black_output_durations\": [],\n    \"fade_to_black_curve\": \"linear\",\n    \"display_outputs\": [],\n    \"live_lan\": {\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null},\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": []\n  },\n  \"runtime\": {"
     ));
 
     // Locks are written in identifier order regardless of the order applied.
@@ -1961,7 +1961,7 @@ fn edit_locks_round_trip_exactly_and_are_strict_at_the_current_schema() {
     let locks = "\"edit_locks\": {\"project\": true, \"inputs\": [18446744073709551716, 18446744073709551718]}";
     assert!(
         encoded.contains(&format!(
-            "\"recording_desired\": [false, false],\n    {locks},\n    \"playlist\": {{\"loop\": \"off\", \"entries\": [], \"state\": {{\"type\": \"stopped\"}}, \"next_take\": 1, \"observed_frame\": 0}},\n    \"cue_lists\": [],\n    \"luts\": [],\n    \"grades\": [],\n    \"input_grades\": [],\n    \"layer_grades\": [],\n    \"program_grade\": null,\n    \"animation_presets\": [],\n    \"transition_favorites\": [\n      {{\"effect\": \"fade\", \"duration_frames\": 30}},\n      {{\"effect\": \"wipe\", \"duration_frames\": 30}},\n      {{\"effect\": \"fly\", \"duration_frames\": 30}},\n      {{\"effect\": \"cube\", \"duration_frames\": 30}}\n    ],\n    \"input_categories\": [],\n    \"input_lifecycle\": [],\n    \"audio_groups\": [\n      {{\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}},\n      {{\"name\": \"Group 2\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}},\n      {{\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}},\n      {{\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}}\n    ],\n    \"audio_solo_mode\": \"sip\",\n    \"audio_monitor_output\": {{\"device\": null, \"gain_milli_db\": 0, \"muted\": false}},\n    \"master_audio_dsp\": null,\n    \"fade_to_black_excluded_outputs\": [],\n    \"fade_to_black_output_durations\": [],\n    \"fade_to_black_curve\": \"linear\",\n    \"display_outputs\": [],\n    \"live_lan\": {{\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null}},\n    \"scripts\": [],\n    \"script_runs\": {{\"last_run\": 0, \"runs\": [], \"faults\": []}},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": []\n  }},\n  \"runtime\": {{"
+            "\"recording_desired\": [false, false],\n    {locks},\n    \"playlist\": {{\"loop\": \"off\", \"entries\": [], \"state\": {{\"type\": \"stopped\"}}, \"next_take\": 1, \"observed_frame\": 0}},\n    \"cue_lists\": [],\n    \"luts\": [],\n    \"grades\": [],\n    \"input_grades\": [],\n    \"layer_grades\": [],\n    \"program_grade\": null,\n    \"animation_presets\": [],\n    \"transition_favorites\": [\n      {{\"effect\": \"fade\", \"duration_frames\": 30}},\n      {{\"effect\": \"wipe\", \"duration_frames\": 30}},\n      {{\"effect\": \"fly\", \"duration_frames\": 30}},\n      {{\"effect\": \"cube\", \"duration_frames\": 30}}\n    ],\n    \"input_categories\": [],\n    \"input_lifecycle\": [],\n    \"audio_groups\": [\n      {{\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}},\n      {{\"name\": \"Group 2\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}},\n      {{\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}},\n      {{\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}}\n    ],\n    \"audio_solo_mode\": \"sip\",\n    \"audio_monitor_output\": {{\"device\": null, \"gain_milli_db\": 0, \"muted\": false}},\n    \"master_audio_dsp\": null,\n    \"fade_to_black_excluded_outputs\": [],\n    \"fade_to_black_output_durations\": [],\n    \"fade_to_black_curve\": \"linear\",\n    \"display_outputs\": [],\n    \"live_lan\": {{\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null}},\n    \"scripts\": [],\n    \"script_runs\": {{\"last_run\": 0, \"runs\": [], \"faults\": []}},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": []\n  }},\n  \"runtime\": {{"
         )),
         "unexpected edit lock encoding in {encoded}"
     );
@@ -3056,4 +3056,144 @@ fn screen_capture_inputs_round_trip_exactly_and_reject_malformed_values() {
             "{from} -> {to}"
         );
     }
+}
+
+/// IN-011 (schema 72): the desktop restore token a Wayland desktop granted
+/// a screen capture input round-trips beside it, is dropped with the input
+/// or when the input stops capturing that kind of target, and a token of
+/// another input or an unusable token is refused.
+#[test]
+fn screen_capture_restore_tokens_round_trip_exactly_and_strictly() {
+    use std::collections::BTreeMap;
+
+    use fm_types::screen_capture::{ScreenCaptureConfig, ScreenCaptureTarget, WindowRule};
+
+    let temp = TestDirectory::new("screen-capture-tokens");
+    let store = temp.store("show");
+    let mut project = rich_project();
+    let window = project.inputs()[0].id;
+    let screen = project.inputs()[1].id;
+    let other = project.inputs()[2].id;
+    project
+        .replace_input_source(
+            window,
+            InputKind::ScreenCapture(ScreenCaptureConfig::new(ScreenCaptureTarget::Window(
+                WindowRule::picked(),
+            ))),
+            Vec::new(),
+        )
+        .unwrap();
+    project
+        .replace_input_source(
+            screen,
+            InputKind::ScreenCapture(ScreenCaptureConfig::new(ScreenCaptureTarget::Screen {
+                index: 0,
+            })),
+            Vec::new(),
+        )
+        .unwrap();
+    // Only valid tokens of screen capture inputs are kept.
+    assert!(project.set_screen_capture_restore_tokens(BTreeMap::from([
+        (window, "6e1f-window".to_owned()),
+        (screen, "9a2b-screen".to_owned()),
+        (other, "not-a-capture".to_owned()),
+    ])));
+    assert_eq!(project.screen_capture_restore_tokens().len(), 2);
+    let same = project.screen_capture_restore_tokens().clone();
+    assert!(!project.set_screen_capture_restore_tokens(same));
+    let stored = StoredProject::from_project(
+        project.clone(),
+        RuntimeRouting::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    store.save(&stored).unwrap();
+    let loaded = store.load().unwrap();
+    assert_eq!(loaded.project(), &project);
+    let encoded = fs::read_to_string(store.manifest_path()).unwrap();
+    let (low, high) = if window < screen {
+        ((window, "6e1f-window"), (screen, "9a2b-screen"))
+    } else {
+        ((screen, "9a2b-screen"), (window, "6e1f-window"))
+    };
+    let field = format!(
+        ",\n    \"screen_capture_restore_tokens\": [\n      {{\"input\": {}, \"token\": \"{}\"}},\n      {{\"input\": {}, \"token\": \"{}\"}}\n    ]\n  }},",
+        low.0, low.1, high.0, high.1
+    );
+    assert!(encoded.contains(&field), "{encoded}");
+
+    for (from, to) in [
+        (
+            format!("{{\"input\": {}, \"token\"", low.0),
+            format!("{{\"input\": {other}, \"token\""),
+        ),
+        (
+            format!("\"token\": \"{}\"", low.1),
+            "\"token\": \"\"".to_owned(),
+        ),
+        (
+            format!("\"token\": \"{}\"", low.1),
+            "\"token\": \"with space\"".to_owned(),
+        ),
+        (
+            format!("\"token\": \"{}\"", low.1),
+            "\"token\": 7".to_owned(),
+        ),
+        (
+            format!("\"token\": \"{}\"}}", low.1),
+            format!("\"token\": \"{}\", \"extra\": true}}", low.1),
+        ),
+        (
+            format!("{{\"input\": {}, ", high.0),
+            format!("{{\"input\": {}, ", low.0),
+        ),
+        (
+            "\"screen_capture_restore_tokens\"".to_owned(),
+            "\"restore_tokens\"".to_owned(),
+        ),
+    ] {
+        let invalid = encoded.replacen(&from, &to, 1);
+        assert_ne!(invalid, encoded, "{from}");
+        fs::write(store.manifest_path(), invalid).unwrap();
+        assert!(
+            matches!(
+                store.load(),
+                Err(StoreError::MalformedManifest { .. } | StoreError::Validation(_))
+            ),
+            "{from} -> {to}"
+        );
+    }
+
+    // A screen capture input that now captures a window drops the screen's
+    // token; one still capturing a window keeps its token through a crop
+    // edit; another kind of source drops it.
+    let mut edited = project;
+    edited
+        .replace_input_source(
+            screen,
+            InputKind::ScreenCapture(ScreenCaptureConfig::new(ScreenCaptureTarget::Window(
+                WindowRule::picked(),
+            ))),
+            Vec::new(),
+        )
+        .unwrap();
+    assert_eq!(
+        edited
+            .screen_capture_restore_tokens()
+            .keys()
+            .collect::<Vec<_>>(),
+        [&window]
+    );
+    let mut cropped = ScreenCaptureConfig::new(ScreenCaptureTarget::Window(WindowRule::picked()));
+    cropped.crop.top = 30;
+    edited
+        .replace_input_source(window, InputKind::ScreenCapture(cropped), Vec::new())
+        .unwrap();
+    assert_eq!(edited.screen_capture_restore_tokens().len(), 1, "same kind");
+    let media = edited.inputs()[2].kind.clone();
+    edited
+        .replace_input_source(window, media, Vec::new())
+        .unwrap();
+    assert!(edited.screen_capture_restore_tokens().is_empty());
 }

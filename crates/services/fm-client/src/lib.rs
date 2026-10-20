@@ -712,6 +712,7 @@ impl Client {
             | WireMessage::PagedPageRequest(_)
             | WireMessage::PagedPage(_)
             | WireMessage::ScreenCaptureTargetsRequest(_)
+            | WireMessage::ScreenCapturePickRequest(_)
             | WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
             | WireMessage::DurableEventBatch(_)

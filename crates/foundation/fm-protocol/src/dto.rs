@@ -3340,4 +3340,7 @@ pub enum WireMessage {
     ScreenCaptureTargetsRequest(crate::ScreenCaptureTargetsRequest),
     /// Answers a [`crate::ScreenCaptureTargetsRequest`] (IN-011).
     ScreenCaptureTargets(crate::ScreenCaptureTargetsMessage),
+    /// Asks the server's desktop to pick a screen capture input's screen or
+    /// window again (IN-011, Protocol 2.85).
+    ScreenCapturePickRequest(crate::ScreenCapturePickRequest),
 }

@@ -907,6 +907,26 @@ impl TcpSession {
         self.flush_wire_wait(None)
     }
 
+    /// Asks the daemon's desktop to pick a screen capture input's screen or
+    /// window again (IN-011, Protocol 2.85). Nothing answers an accepted
+    /// request: the input's next `screen_capture_status` events show the
+    /// new capture; a refusal arrives as an error naming `request_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected or when encoding or writing the
+    /// request fails.
+    pub fn send_screen_capture_pick_request(
+        &mut self,
+        request: fm_protocol::ScreenCapturePickRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        self.send_wire_wait(&WireMessage::ScreenCapturePickRequest(request), None)?;
+        self.flush_wire_wait(None)
+    }
+
     /// Asks for the daemon's system audio capture devices (Protocol 2.68).
     /// The answer arrives later as [`SessionEvent::SystemAudioDevices`]
     /// naming the same `request_id`; the daemon may answer only the newest
@@ -1695,7 +1715,8 @@ impl TcpSession {
             | WireMessage::WebAccessRequest(_)
             | WireMessage::SlideshowSlidesRequest(_)
             | WireMessage::PagedPageRequest(_)
-            | WireMessage::ScreenCaptureTargetsRequest(_) => {
+            | WireMessage::ScreenCaptureTargetsRequest(_)
+            | WireMessage::ScreenCapturePickRequest(_) => {
                 self.transition_disconnect();
                 Err(TcpSessionError::UnexpectedMessage)
             }

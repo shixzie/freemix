@@ -17,11 +17,18 @@
 //! changes is kept while its id still lives.
 //!
 //! The runtime side reports each input's [`ScreenCaptureStatus`]: opening,
-//! live, target gone (the window closed or the screen went away; the input
-//! keeps its slate and recovers when the target reappears), reopening
-//! after a capture failure, unsupported (this server cannot capture, for
-//! example a Wayland session), or failed. The server lists what it can
-//! capture as a [`ScreenCaptureInventory`] of screens and windows.
+//! waiting for the operator to pick what to share in the desktop's sharing
+//! dialog (a Wayland session's xdg-desktop-portal), live, target gone (the
+//! window closed or the screen went away; the input keeps its slate and
+//! recovers when the target reappears), reopening after a capture failure,
+//! denied (sharing was refused or stopped on the desktop), unsupported
+//! (this server cannot capture), or failed. The server lists what it can
+//! capture as a [`ScreenCaptureInventory`] of screens and windows; a desktop
+//! that picks targets in its own dialog ([`PORTAL_BACKEND`]) lists none.
+//!
+//! A Wayland desktop remembers what was picked as a restore token, which
+//! the server keeps beside the input ([`is_screen_capture_restore_token`])
+//! so the same screen or window is shared again without asking.
 
 use std::fmt;
 
@@ -56,6 +63,12 @@ pub const MAX_SCREEN_CAPTURE_WINDOWS: usize = 48;
 pub const MAX_SCREEN_CAPTURE_MATCHED_WINDOWS: usize = 512;
 /// The largest target side a capture accepts, in pixels.
 pub const MAX_SCREEN_CAPTURE_SIDE: u32 = 16_384;
+/// The longest desktop restore token kept for an input, in bytes.
+pub const MAX_SCREEN_CAPTURE_RESTORE_TOKEN_BYTES: usize = 256;
+/// The backend token of a desktop whose own sharing dialog picks the screen
+/// or window (the xdg-desktop-portal `ScreenCast` interface of a Wayland
+/// session): it lists no targets.
+pub const PORTAL_BACKEND: &str = "portal";
 
 /// How a [`WindowRule`] matches a window's title.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -116,6 +129,28 @@ impl WindowRule {
             title_match: TitleMatch::Exact,
             window_id,
         }
+    }
+
+    /// The rule of a window the operator picks in the desktop's sharing
+    /// dialog ([`PORTAL_BACKEND`]): no application, no title, any title.
+    /// A desktop that lists its windows never resolves it.
+    #[must_use]
+    pub fn picked() -> Self {
+        Self {
+            app: String::new(),
+            title: String::new(),
+            title_match: TitleMatch::Any,
+            window_id: None,
+        }
+    }
+
+    /// Whether this is the [`Self::picked`] rule.
+    #[must_use]
+    pub fn is_picked(&self) -> bool {
+        self.app.is_empty()
+            && self.title.is_empty()
+            && self.title_match == TitleMatch::Any
+            && self.window_id.is_none()
     }
 
     /// Whether a window of `app` titled `title` satisfies the rule. The
@@ -342,7 +377,8 @@ pub fn is_screen_capture_text(text: &str, max: usize) -> bool {
 
 /// Checks a window rule: bounded texts, an application or a title to match
 /// (a rule matching any title names an application, a rule matching a
-/// title names a non-empty title), and a non-zero id hint.
+/// title names a non-empty title) unless it is the [`WindowRule::picked`]
+/// rule, and a non-zero id hint.
 ///
 /// # Errors
 ///
@@ -351,7 +387,7 @@ pub fn validate_window_rule(rule: &WindowRule) -> Result<(), ScreenCaptureError>
     let texts = is_screen_capture_text(&rule.app, MAX_SCREEN_CAPTURE_APP_BYTES)
         && is_screen_capture_text(&rule.title, MAX_SCREEN_CAPTURE_TITLE_BYTES);
     let names_something = match rule.title_match {
-        TitleMatch::Any => !rule.app.is_empty() && rule.title.is_empty(),
+        TitleMatch::Any => rule.title.is_empty() && (!rule.app.is_empty() || rule.is_picked()),
         TitleMatch::Exact | TitleMatch::Contains => !rule.title.is_empty(),
     };
     if texts && names_something && rule.window_id != Some(0) {
@@ -359,6 +395,15 @@ pub fn validate_window_rule(rule: &WindowRule) -> Result<(), ScreenCaptureError>
     } else {
         Err(ScreenCaptureError::InvalidWindowRule)
     }
+}
+
+/// Whether `token` can be kept as an input's desktop restore token: 1 to
+/// [`MAX_SCREEN_CAPTURE_RESTORE_TOKEN_BYTES`] printable ASCII characters
+/// without spaces.
+#[must_use]
+pub fn is_screen_capture_restore_token(token: &str) -> bool {
+    (1..=MAX_SCREEN_CAPTURE_RESTORE_TOKEN_BYTES).contains(&token.len())
+        && token.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
 /// Why a screen capture configuration is unusable.
@@ -408,7 +453,8 @@ impl fmt::Display for ScreenCaptureError {
             Self::InvalidScreen => "a screen capture names a screen from 0 to 63",
             Self::InvalidWindowRule => {
                 "a window capture names a title (or an application to match any title) of \
-                 bounded text without control characters or surrounding spaces"
+                 bounded text without control characters or surrounding spaces, or is picked \
+                 on the desktop"
             }
             Self::InvalidCrop => "a screen capture crop trims at most 16384 pixels from an edge",
             Self::InvalidFps => "a screen capture rate cap is 1 to 60 frames per second",
@@ -430,6 +476,10 @@ pub enum ScreenCaptureState {
     Idle,
     /// The target was found and its capture is starting.
     Opening,
+    /// The desktop's sharing dialog asks the operator which screen or
+    /// window to share (a Wayland session); nothing captures until they
+    /// pick one on the server's desktop.
+    AwaitingSelection,
     /// The target delivers pictures.
     Live,
     /// No window matches the rule, or the screen is gone: the input shows
@@ -438,9 +488,14 @@ pub enum ScreenCaptureState {
     /// The capture stopped or failed to start: waiting `next_in_ms` before
     /// attempt `attempt` (one-based).
     Reopening { attempt: u32, next_in_ms: u32 },
+    /// Sharing was refused: the operator cancelled the desktop's sharing
+    /// dialog, the desktop refused, or sharing was stopped on the desktop.
+    /// Nothing is asked again until the operator asks for a new pick, or
+    /// the input is reconfigured or reopened; the error says why.
+    Denied,
     /// This server cannot capture its screens or windows (no capture
-    /// backend, or a desktop session such as Wayland that refuses silent
-    /// capture); the error says why.
+    /// backend, or a desktop session that offers no capture this server
+    /// can use); the error says why.
     Unsupported,
     /// The capture cannot start here and is not retried.
     Failed,
@@ -453,9 +508,11 @@ impl ScreenCaptureState {
         match self {
             Self::Idle => "idle",
             Self::Opening => "opening",
+            Self::AwaitingSelection => "awaiting_selection",
             Self::Live => "live",
             Self::TargetGone => "target_gone",
             Self::Reopening { .. } => "reopening",
+            Self::Denied => "denied",
             Self::Unsupported => "unsupported",
             Self::Failed => "failed",
         }
@@ -650,8 +707,8 @@ pub struct ScreenCaptureInventory {
     /// The server captures screens or windows at all; when false nothing
     /// is listed and [`Self::error`] says why.
     pub supported: bool,
-    /// The capture backend's token (such as `x11`, `screencapturekit`, or
-    /// `gdigrab`); empty when unsupported.
+    /// The capture backend's token (such as `x11`, `portal`,
+    /// `screencapturekit`, or `gdigrab`); empty when unsupported.
     pub backend: String,
     /// The screens, ascending by index, each once.
     pub screens: Vec<ScreenInfo>,
@@ -812,6 +869,14 @@ impl ScreenCaptureInventory {
         .fitted_for_matching()
     }
 
+    /// Whether the desktop's own sharing dialog picks the target
+    /// ([`PORTAL_BACKEND`]): nothing is listed, and a screen or a window is
+    /// chosen on the server's desktop when the capture starts.
+    #[must_use]
+    pub fn picks_on_desktop(&self) -> bool {
+        self.supported && self.backend == PORTAL_BACKEND
+    }
+
     /// The window `rule` follows: the window with the rule's id hint while
     /// it lives and its application matches, otherwise the first window the
     /// rule matches.
@@ -831,6 +896,9 @@ impl ScreenCaptureInventory {
 /// [`ScreenCaptureInventory::resolve_window`]).
 #[must_use]
 pub fn resolve_window<'w>(windows: &'w [WindowInfo], rule: &WindowRule) -> Option<&'w WindowInfo> {
+    if rule.is_picked() {
+        return None;
+    }
     rule.window_id
         .and_then(|id| {
             windows
@@ -875,6 +943,7 @@ mod tests {
             window(WindowRule::exact("XTerm", "build", None)).validate(),
             Ok(())
         );
+        assert_eq!(window(WindowRule::picked()).validate(), Ok(()));
         for rule in [
             WindowRule::exact("XTerm", "", None),
             WindowRule::exact("XTerm", " lead", None),
@@ -882,8 +951,8 @@ mod tests {
             WindowRule::exact("XTerm", "t".repeat(161), None),
             WindowRule::exact("XTerm", "build", Some(0)),
             WindowRule {
-                title_match: TitleMatch::Any,
-                ..WindowRule::exact("", "", None)
+                window_id: Some(4),
+                ..WindowRule::picked()
             },
             WindowRule {
                 title_match: TitleMatch::Any,
@@ -970,6 +1039,8 @@ mod tests {
         };
         assert_eq!(resolve_window(&windows, &any).map(|w| w.id), Some(7));
         assert!(resolve_window(&windows, &WindowRule::exact("XTerm", "gone", None)).is_none());
+        // A window picked on the desktop is never one a listing names.
+        assert!(resolve_window(&windows, &WindowRule::picked()).is_none());
         assert_eq!(
             windows[1].rule(),
             WindowRule::exact("XTerm", "build", Some(7))
@@ -1100,6 +1171,39 @@ mod tests {
                 .len(),
             MAX_SCREEN_CAPTURE_MATCHED_WINDOWS
         );
+    }
+
+    #[test]
+    fn restore_tokens_and_portal_inventories() {
+        assert!(is_screen_capture_restore_token(
+            "3a7c6b52-1f0e-4f43-9a51-2d1c0f2e8b11"
+        ));
+        assert!(is_screen_capture_restore_token(
+            &"t".repeat(MAX_SCREEN_CAPTURE_RESTORE_TOKEN_BYTES)
+        ));
+        for token in [
+            String::new(),
+            "with space".to_owned(),
+            "tab\t".to_owned(),
+            "\u{e9}".to_owned(),
+            "t".repeat(MAX_SCREEN_CAPTURE_RESTORE_TOKEN_BYTES + 1),
+        ] {
+            assert!(!is_screen_capture_restore_token(&token), "{token:?}");
+        }
+        let portal = ScreenCaptureInventory {
+            supported: true,
+            backend: PORTAL_BACKEND.into(),
+            ..ScreenCaptureInventory::default()
+        };
+        assert!(portal.picks_on_desktop());
+        assert!(!ScreenCaptureInventory::unsupported("no").picks_on_desktop());
+        assert_eq!(
+            ScreenCaptureState::AwaitingSelection.token(),
+            "awaiting_selection"
+        );
+        assert_eq!(ScreenCaptureState::Denied.token(), "denied");
+        assert!(WindowRule::picked().is_picked());
+        assert!(!WindowRule::exact("XTerm", "build", None).is_picked());
     }
 
     #[test]

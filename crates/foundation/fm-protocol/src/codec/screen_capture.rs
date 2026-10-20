@@ -298,8 +298,10 @@ fn parse_state(
     let state = match token {
         "idle" => ScreenCaptureState::Idle,
         "opening" => ScreenCaptureState::Opening,
+        "awaiting_selection" => ScreenCaptureState::AwaitingSelection,
         "live" => ScreenCaptureState::Live,
         "target_gone" => ScreenCaptureState::TargetGone,
+        "denied" => ScreenCaptureState::Denied,
         "unsupported" => ScreenCaptureState::Unsupported,
         "failed" => ScreenCaptureState::Failed,
         "reopening" if attempt > 0 => {

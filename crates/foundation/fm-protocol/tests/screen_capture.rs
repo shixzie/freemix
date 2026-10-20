@@ -12,10 +12,10 @@ use fm_protocol::{
     MAX_SCREEN_CAPTURE_ERROR_BYTES, MAX_SCREEN_CAPTURE_INPUTS, MAX_SCREEN_CAPTURE_TITLE_BYTES,
     MAX_SCREEN_CAPTURE_WINDOWS, RuntimeEventMessage, RuntimeLifecycleEvent, ScreenCaptureAudio,
     ScreenCaptureAudioState, ScreenCaptureConfig, ScreenCaptureCrop, ScreenCaptureEntry,
-    ScreenCaptureInventory, ScreenCaptureState, ScreenCaptureStatus, ScreenCaptureTarget,
-    ScreenCaptureTargetsMessage, ScreenCaptureTargetsRequest, ScreenInfo, ServerIdentity,
-    TitleMatch, WindowInfo, WindowRule, WireInputId, WireInputSource, WireMessage, decode_line,
-    encode_line,
+    ScreenCaptureInventory, ScreenCapturePickRequest, ScreenCaptureState, ScreenCaptureStatus,
+    ScreenCaptureTarget, ScreenCaptureTargetsMessage, ScreenCaptureTargetsRequest, ScreenInfo,
+    ServerIdentity, TitleMatch, WindowInfo, WindowRule, WireInputId, WireInputSource, WireMessage,
+    decode_line, encode_line,
 };
 use fm_types::network_stream::StallSlate;
 
@@ -181,12 +181,14 @@ fn the_add_command_has_an_exact_wire_form_and_is_strict() {
     refused(&line.replacen("stall=black", "stall=slate", 1));
     refused(&line.replacen('\n', "\textra=1\n", 1));
     refused(&screen.replacen("screen=1", "screen=64", 1));
-    // A rule that matches nothing in particular is not encoded.
+    // A rule that matches nothing in particular is not encoded (the rule
+    // with no application, no title, and no id is the window picked on the
+    // desktop instead, see `desktop_picked_captures_have_exact_wire_forms`).
     let anything = ScreenCaptureConfig::new(ScreenCaptureTarget::Window(WindowRule {
         app: String::new(),
         title: String::new(),
         title_match: TitleMatch::Any,
-        window_id: None,
+        window_id: Some(3),
     }));
     assert!(encode_line(&add(anything)).is_err());
     let mut long = slides();
@@ -744,4 +746,67 @@ fn target_lists_that_break_the_contract_are_refused() {
     refused(&line.replacen("%7E13%3AKeynote", "%7E14%3AKeynote", 1));
     refused(&line.replacen("\twindows=", "\twindows=x", 1));
     refused(&line.replacen('\n', "\textra=1\n", 1));
+}
+
+#[test]
+fn desktop_picked_captures_have_exact_wire_forms() {
+    // The picked window rule travels as an empty application and title.
+    let picked = ScreenCaptureConfig::new(ScreenCaptureTarget::Window(WindowRule::picked()));
+    let line = round_trip(&add(picked.clone()));
+    assert!(
+        line.contains("\ttarget=window\tapp=\ttitle=\ttitle_match=any\t"),
+        "{line}"
+    );
+    round_trip(&command(CommandPayload::InputLifecycle(
+        InputLifecycleOperation::ReplaceSource {
+            input: input(5),
+            source: WireInputSource::ScreenCapture(picked),
+        },
+    )));
+
+    // The dialog's states.
+    for (state, token) in [
+        (ScreenCaptureState::AwaitingSelection, "awaiting_selection"),
+        (ScreenCaptureState::Denied, "denied"),
+    ] {
+        let line = round_trip(&runtime(RuntimeLifecycleEvent::ScreenCaptureStatus {
+            input: input(5),
+            status: Box::new(ScreenCaptureStatus {
+                state,
+                last_error: Some("the operator cancelled sharing".into()),
+                ..ScreenCaptureStatus::default()
+            }),
+        }));
+        assert!(
+            line.contains(&format!("\tstate={token}\treopens=0\t")),
+            "{line}"
+        );
+        refused(&line.replacen("\treopens=0", "\tattempt=1\tnext_in_ms=0\treopens=0", 1));
+    }
+
+    // A portal inventory lists nothing.
+    let portal = ScreenCaptureInventory {
+        supported: true,
+        backend: fm_protocol::PORTAL_BACKEND.into(),
+        ..ScreenCaptureInventory::default()
+    };
+    assert_eq!(
+        round_trip(&targets("p", portal)),
+        "screen_capture_targets\trequest_id=p\tsupported=1\tbackend=portal\tscreens=\twindows=\n"
+    );
+
+    // Asking the desktop to pick again.
+    let pick = WireMessage::ScreenCapturePickRequest(ScreenCapturePickRequest {
+        request_id: "pick-1".into(),
+        input: input(5),
+    });
+    assert_eq!(
+        round_trip(&pick),
+        "screen_capture_pick_request\trequest_id=pick-1\tinput=5\n"
+    );
+    refused("screen_capture_pick_request\trequest_id=pick-1\n");
+    refused("screen_capture_pick_request\tinput=5\n");
+    refused("screen_capture_pick_request\trequest_id=pick-1\tinput=05\n");
+    refused("screen_capture_pick_request\trequest_id=pick-1\tinput=0\n");
+    refused("screen_capture_pick_request\trequest_id=pick-1\tinput=5\textra=1\n");
 }

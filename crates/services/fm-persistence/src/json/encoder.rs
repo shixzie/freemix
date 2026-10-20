@@ -124,6 +124,7 @@ fn write_project(output: &mut String, project: &fm_model::Project) {
     super::shortcut::write_shortcuts(output, project.shortcuts());
     super::media_list::write_media_lists(output, project);
     super::title_timeline::write_title_timelines(output, project);
+    super::screen_capture_tokens::write_screen_capture_restore_tokens(output, project);
     output.push_str("\n  },");
 }
 

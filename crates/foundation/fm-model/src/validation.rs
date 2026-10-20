@@ -57,6 +57,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_input_audio_strips(project, &mut errors);
     validate_input_locks(project, &mut errors);
     validate_input_lifecycle(project, &mut errors);
+    validate_screen_capture_restore_tokens(project, &mut errors);
     validate_playlist(project, &mut errors);
     validate_cue_lists(project, &mut errors);
     validate_scripts(project, &mut errors);
@@ -1126,6 +1127,43 @@ fn validate_screen_capture(
             },
             kind: ValidationErrorKind::OutOfRange,
         });
+    }
+}
+
+/// IN-011 (schema 72): every desktop restore token belongs to a screen
+/// capture input and is usable.
+fn validate_screen_capture_restore_tokens(project: &Project, errors: &mut Vec<ValidationError>) {
+    for (input, token) in project.screen_capture_restore_tokens() {
+        let entity = Some(EntityRef::Input(*input));
+        match project
+            .inputs()
+            .iter()
+            .find(|candidate| candidate.id == *input)
+        {
+            None => push_error(
+                errors,
+                entity,
+                "screen_capture_restore_tokens.input",
+                ValidationErrorKind::MissingReference(EntityRef::Input(*input)),
+            ),
+            Some(candidate) if !matches!(candidate.kind, InputKind::ScreenCapture(_)) => {
+                push_error(
+                    errors,
+                    entity,
+                    "screen_capture_restore_tokens.input",
+                    ValidationErrorKind::FormatMismatch,
+                );
+            }
+            Some(_) => {}
+        }
+        if !fm_types::screen_capture::is_screen_capture_restore_token(token) {
+            push_error(
+                errors,
+                entity,
+                "screen_capture_restore_tokens.token",
+                ValidationErrorKind::OutOfRange,
+            );
+        }
     }
 }
 

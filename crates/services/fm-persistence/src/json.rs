@@ -14,6 +14,7 @@ mod media_playback;
 mod network_stream;
 mod scene_animation;
 mod screen_capture;
+mod screen_capture_tokens;
 mod script;
 mod shortcut;
 mod still;

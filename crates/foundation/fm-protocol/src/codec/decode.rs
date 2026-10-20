@@ -206,6 +206,14 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
                 request_id,
             })
         }
+        "screen_capture_pick_request" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::ScreenCapturePickRequest(crate::ScreenCapturePickRequest {
+                request_id,
+                input: fields.canonical_input("input")?,
+            })
+        }
         "screen_capture_targets" => {
             let request_id = fields.required("request_id")?;
             validate_request_id(&request_id)?;

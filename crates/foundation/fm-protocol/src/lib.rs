@@ -195,11 +195,11 @@ pub use screen_capture::{
     MAX_SCREEN_CAPTURE_ERROR_BYTES, MAX_SCREEN_CAPTURE_FPS, MAX_SCREEN_CAPTURE_INPUTS,
     MAX_SCREEN_CAPTURE_SCREEN_INDEX, MAX_SCREEN_CAPTURE_SCREEN_NAME_BYTES,
     MAX_SCREEN_CAPTURE_SCREENS, MAX_SCREEN_CAPTURE_TITLE_BYTES, MAX_SCREEN_CAPTURE_WINDOWS,
-    MIN_SCREEN_CAPTURE_FPS, ScreenCaptureAudio, ScreenCaptureAudioState, ScreenCaptureConfig,
-    ScreenCaptureCrop, ScreenCaptureEntry, ScreenCaptureError, ScreenCaptureInventory,
-    ScreenCaptureState, ScreenCaptureStatus, ScreenCaptureTarget, ScreenCaptureTargetsMessage,
-    ScreenCaptureTargetsRequest, ScreenInfo, TitleMatch, WindowInfo, WindowRule,
-    bound_screen_capture_error,
+    MIN_SCREEN_CAPTURE_FPS, PORTAL_BACKEND, ScreenCaptureAudio, ScreenCaptureAudioState,
+    ScreenCaptureConfig, ScreenCaptureCrop, ScreenCaptureEntry, ScreenCaptureError,
+    ScreenCaptureInventory, ScreenCapturePickRequest, ScreenCaptureState, ScreenCaptureStatus,
+    ScreenCaptureTarget, ScreenCaptureTargetsMessage, ScreenCaptureTargetsRequest, ScreenInfo,
+    TitleMatch, WindowInfo, WindowRule, bound_screen_capture_error,
 };
 pub use script::{
     MAX_SCRIPT_NAME_BYTES, MAX_SCRIPT_RUNS, MAX_SCRIPT_SOURCE_BYTES, MAX_SCRIPTS, ScriptRunChange,
