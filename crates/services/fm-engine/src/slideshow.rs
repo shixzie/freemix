@@ -204,9 +204,6 @@ pub(crate) struct SlideshowRuntime {
     /// The settings the transport was built for.
     config: Option<SlideshowConfig>,
     listing: Vec<EngineSlide>,
-    /// The stable id of every listed occurrence of a URI.
-    ids: BTreeMap<(Arc<str>, u32), SlideId>,
-    next_id: u128,
     /// The listing's slide ids in listing order.
     order: Vec<SlideId>,
     /// Every slide that may be on air, by id (listed or retiring).
@@ -279,15 +276,17 @@ impl SlideshowRuntime {
     /// The slides of the listing with their stable ids.
     fn slides(&mut self) -> Vec<Slide> {
         let mut seen = BTreeMap::<Arc<str>, u32>::new();
+        let mut used = std::collections::BTreeSet::new();
         let mut slides = Vec::with_capacity(self.listing.len());
         for slide in &self.listing {
             let occurrence = seen.entry(slide.asset_uri.clone()).or_default();
-            let key = (slide.asset_uri.clone(), *occurrence);
+            let mut id = slide_id(&slide.asset_uri, *occurrence);
             *occurrence += 1;
-            let id = *self.ids.entry(key).or_insert_with(|| {
-                self.next_id += 1;
-                SlideId::new(self.next_id)
-            });
+            // A hash collision (practically never) takes the next free id,
+            // which the listing's order makes deterministic too.
+            while !used.insert(id) {
+                id = SlideId::new(id.get().wrapping_add(1));
+            }
             let mut built = Slide::new(id, slide.file_name(), KEN_BURNS_SPACE, KEN_BURNS_SPACE);
             if self.config.as_ref().is_some_and(|config| config.ken_burns) {
                 built = built.with_ken_burns(ken_burns(id));
@@ -541,9 +540,40 @@ fn playback_config(config: &SlideshowConfig) -> PlaybackConfig {
     }
 }
 
+/// The stable id of the `occurrence`th listing of `asset_uri`: a hash of
+/// the file and the occurrence, never the order listings were seen in, so
+/// a replayed show (which may see its folder's listing grow differently)
+/// gives every slide the same id and Ken Burns motion.
+fn slide_id(asset_uri: &str, occurrence: u32) -> SlideId {
+    // 128-bit FNV-1a: stable across builds and platforms.
+    const OFFSET: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
+    const PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013b;
+    let mut hash = OFFSET;
+    for byte in asset_uri
+        .as_bytes()
+        .iter()
+        .copied()
+        .chain([0])
+        .chain(occurrence.to_le_bytes())
+    {
+        hash ^= u128::from(byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    SlideId::new(hash)
+}
+
+/// Sorts a folder listing into its one deterministic order: natural order
+/// of file names, then of whole URIs, then captions.
+pub(crate) fn sort_folder_listing(listing: &mut [EngineSlide]) {
+    listing.sort_by(|left, right| {
+        fm_playback::natural_cmp(left.file_name(), right.file_name())
+            .then_with(|| left.asset_uri.cmp(&right.asset_uri))
+            .then_with(|| left.caption.cmp(&right.caption))
+    });
+}
+
 /// A slide's Ken Burns motion: a zoom in or out between the whole picture
-/// and a corner, alternating with the slide's id so consecutive slides
-/// move differently.
+/// and a corner, chosen by the slide's id.
 fn ken_burns(id: SlideId) -> KenBurns {
     let full = PixelRect::new(0, 0, KEN_BURNS_SPACE, KEN_BURNS_SPACE);
     let offset = KEN_BURNS_SPACE - KEN_BURNS_ZOOMED;

@@ -395,3 +395,62 @@ fn identical_commands_replay_identical_slideshow_frames() {
         first.iter().map(|frame| frame.page.index).collect();
     assert!(visited.len() >= 3);
 }
+
+#[test]
+fn a_folder_listing_replays_the_same_slides_whatever_order_it_was_seen_in() {
+    let config = SlideshowConfig {
+        ken_burns: true,
+        auto_advance: false,
+        ..cut_config(SlideshowSource::Folder {
+            asset_uri: "asset://photos".into(),
+        })
+    };
+    let slide = |name: &str| EngineSlide::new(format!("asset://photos/{name}"), None);
+    // Live, the folder grew from one picture to three, listed unsorted.
+    let mut live = engine_with(config.clone());
+    live.set_slideshow_listing(input(SHOW), vec![slide("c.png")])
+        .unwrap();
+    step(&mut live);
+    live.set_slideshow_listing(
+        input(SHOW),
+        vec![slide("c.png"), slide("a.png"), slide("b.png")],
+    )
+    .unwrap();
+    step(&mut live);
+    // On replay, the server lists the folder once, already complete.
+    let mut replay = engine_with(config);
+    replay
+        .set_slideshow_listing(
+            input(SHOW),
+            vec![slide("a.png"), slide("b.png"), slide("c.png")],
+        )
+        .unwrap();
+    step(&mut replay);
+    assert_eq!(
+        live.slideshow_listing(input(SHOW)),
+        replay.slideshow_listing(input(SHOW))
+    );
+    let script = |engine: &mut Engine| {
+        let mut shown = Vec::new();
+        for (key, navigation) in [
+            ("goto-1", PagedNavigation::Goto(1)),
+            ("goto-2", PagedNavigation::Goto(2)),
+            ("first", PagedNavigation::First),
+            ("next", PagedNavigation::Next),
+        ] {
+            navigate(engine, key, navigation);
+            for _ in 0..2 {
+                let frame = step(engine);
+                shown.push((
+                    frame.page,
+                    frame.label,
+                    frame.incoming.map(|view| view.crop),
+                ));
+            }
+        }
+        shown
+    };
+    let live_shown = script(&mut live);
+    assert_eq!(live_shown[4].1, "a.png");
+    assert_eq!(live_shown, script(&mut replay));
+}

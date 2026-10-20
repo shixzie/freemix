@@ -1356,7 +1356,8 @@ impl Engine {
     }
 
     /// Installs the pictures the server found in a folder slideshow's
-    /// folder (IN-009). Runtime state, never journaled: the slide on air
+    /// folder (IN-009), in any order: the engine sorts them by file name
+    /// (natural order). Runtime state, never journaled: the slide on air
     /// stays until it leaves, new pictures join, and the listing
     /// generation increases when anything changed.
     ///
@@ -1378,6 +1379,10 @@ impl Engine {
             return Err(crate::EngineSlideshowError::NotFolderSource(input));
         }
         let config = config.clone();
+        // The server may list a folder in any order; the engine shows it
+        // in one, so a replay lands navigations on the same slides.
+        let mut listing = listing;
+        crate::slideshow::sort_folder_listing(&mut listing);
         let runtime = self.slideshows.entry(input).or_default();
         runtime.follow(&config);
         runtime.set_listing(listing);
