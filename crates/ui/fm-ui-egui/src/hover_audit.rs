@@ -2519,6 +2519,19 @@ fn scenes(language: Language) -> Vec<Scene> {
             },
         ),
     ));
+    // The Cues panel's standby preview marks the GO frame's switcher steps
+    // refused while the timed transition runs.
+    scenes.push(Scene::console(
+        "operator/cues-timed-transition",
+        shell(&|shell| shell.layout.dock.show(PanelId::Cues)),
+        ready(
+            true,
+            Variant {
+                transitioning: true,
+                ..Variant::default()
+            },
+        ),
+    ));
     scenes.push(Scene::console(
         "operator/locked",
         shell(&|_| {}),

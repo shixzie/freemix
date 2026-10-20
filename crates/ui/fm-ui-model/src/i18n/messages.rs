@@ -2819,6 +2819,7 @@ messages! {
     CuePvRefPreviewIsProgram => t("that input is on Program, and Preview and Program must differ"),
     CuePvRefTwice => t("Program would be taken twice on one frame"),
     CuePvRefInFlight => t("the transition started earlier is still running then"),
+    CuePvRefTimedInFlight => t("a timed transition is still running on Program; GO now would be refused until it ends"),
     CuePvStingerNotReady => t("Stinger slot {slot} is not loaded yet, so the take may fall back or be refused"),
 
     // Stream destinations (OR-006).

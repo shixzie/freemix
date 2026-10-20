@@ -7698,6 +7698,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("la transición iniciada antes aún estaría en curso"),
     ),
     (
+        Msg::CuePvRefTimedInFlight,
+        t(
+            "una transición temporizada sigue en curso en Programa; un GO ahora se rechazaría hasta que termine",
+        ),
+    ),
+    (
         Msg::CuePvStingerNotReady,
         t(
             "la ranura de Stinger {slot} aún no está cargada, así que la toma puede usar su alternativa o ser rechazada",

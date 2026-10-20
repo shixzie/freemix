@@ -87,6 +87,9 @@ pub(crate) struct Show {
     pub(crate) rate: FrameRate,
     /// An operator's T-bar transition is in flight.
     pub(crate) manual_in_flight: bool,
+    /// A timed transition (or a scheduled take) the daemon accepted is
+    /// still being realized on its frame loop (Protocol 2.86).
+    pub(crate) timed_in_flight: bool,
     pub(crate) permissions: Permissions,
     /// The input selected on this console, which an action on the
     /// selected input acts on (RC-004).
@@ -105,6 +108,7 @@ impl Show {
     /// The show of `state`, once its view and project state are synced.
     pub(crate) fn of(state: &StudioUiState) -> Option<Self> {
         let (view, project) = (state.view.as_ref()?, state.project_state.as_ref()?);
+        let gate = crate::TransitionGate::from_state(state);
         let mut recording = [false; 2];
         for status in &view.recordings {
             if let Some(slot) = recording.get_mut(usize::from(status.recorder.get()) - 1) {
@@ -161,7 +165,8 @@ impl Show {
                 .collect(),
             scripts: project.scripts().to_vec(),
             rate: project.frame_rate(),
-            manual_in_flight: crate::TransitionGate::from_state(state).manual_transition_in_flight,
+            manual_in_flight: gate.manual_transition_in_flight,
+            timed_in_flight: gate.transition_in_flight,
             permissions: Permissions {
                 select_preview: state.can_select_preview,
                 control_audio: state.can_control_audio,
@@ -601,6 +606,9 @@ impl Walk<'_> {
     fn switcher_busy(&self) -> Option<Issue> {
         if self.sim.segment == 0 && self.show.manual_in_flight {
             return Some(self.refused(Msg::ReasonManualInFlight.en()));
+        }
+        if self.sim.segment == 0 && self.show.timed_in_flight {
+            return Some(self.refused(Msg::CuePvRefTimedInFlight.en()));
         }
         self.sim
             .transition_until
@@ -1365,6 +1373,7 @@ mod tests {
             ],
             rate: FrameRate::new(25, 1).unwrap(),
             manual_in_flight: false,
+            timed_in_flight: false,
             permissions: Permissions {
                 select_preview: true,
                 control_audio: true,
@@ -1769,6 +1778,41 @@ mod tests {
             [refused("Program would be taken twice on one frame")]
         );
         assert!(preview.refuses_go);
+    }
+
+    /// A timed transition the daemon is still realizing refuses the GO
+    /// frame's switcher steps, as an operator's T-bar does, in English and
+    /// Spanish; the cue's later segments run after it ends.
+    #[test]
+    fn a_timed_transition_in_flight_refuses_the_go_frame() {
+        let mut busy = show();
+        busy.timed_in_flight = true;
+        let preview = run(
+            &busy,
+            &[cue(
+                1,
+                false,
+                vec![cut(3), WireCueAction::Wait { frames: 40 }, cut(2)],
+            )],
+        );
+        assert_eq!(
+            preview.lines[0].issues,
+            [refused(
+                "a timed transition is still running on Program; GO now would be refused until it ends"
+            )]
+        );
+        assert!(preview.refuses_go);
+        assert_eq!(preview.lines[2].issues, []);
+        let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+        let es = super::preview(spanish, &busy, &[cue(1, false, vec![cut(3)])], 1).unwrap();
+        assert!(
+            es.lines[0].issues.iter().any(|issue| matches!(
+                issue,
+                Issue::Refused(text) if text.contains("una transición temporizada sigue en curso")
+            )),
+            "{:?}",
+            es.lines[0].issues
+        );
     }
 
     #[test]
