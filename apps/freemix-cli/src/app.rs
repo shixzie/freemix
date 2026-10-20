@@ -714,6 +714,48 @@ pub fn run(command: Command) -> AppResult<()> {
                 expected_revision,
             )?,
         },
+        Command::InputPage {
+            target,
+            input,
+            navigation,
+            key,
+            expected_revision,
+        } => match target {
+            crate::args::MediaTarget::Local(path) => mutate(
+                &path,
+                EngineCommand::Paged(fm_engine::EnginePagedCommand {
+                    input: input_id(input)?,
+                    navigation,
+                }),
+                1,
+                key,
+                expected_revision,
+            )?,
+            crate::args::MediaTarget::Remote(address) => remote::execute(
+                address,
+                fm_protocol::CommandPayload::PagedInput {
+                    input: fm_protocol::WireInputId::from_domain(input_id(input)?),
+                    navigation,
+                },
+                key,
+                expected_revision,
+            )?,
+        },
+        Command::InputPages { path } => {
+            let project = inspect_engine(&path)?;
+            for (input, document) in project.project.documents() {
+                let status = project.engine.paged_status(input);
+                let page = status.map_or(document.page, |status| status.page);
+                let count = status
+                    .and_then(|status| status.count)
+                    .map_or_else(|| "unknown".to_owned(), |count| count.to_string());
+                println!(
+                    "input-page: input={input} page={} count={count} asset={}",
+                    page.saturating_add(1),
+                    document.asset_uri
+                );
+            }
+        }
         Command::TransitionFavoriteSet {
             path,
             slot,
@@ -3011,6 +3053,18 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     project.set_shortcuts(snapshot.show().shortcuts().to_vec());
     project.set_media_lists(snapshot.show().media_lists().clone());
     sync_title_fields(&mut project, snapshot.show())?;
+    // A document's page lives beside its asset (IN-014).
+    for (&input, &page) in snapshot.show().paged_inputs() {
+        if project
+            .document(input)
+            .is_some_and(|document| document.page != page)
+            && !project.set_document_page(input, page)
+        {
+            return Err(
+                AppFailure(format!("project cannot take document input {input}'s page")).into(),
+            );
+        }
+    }
     for (&input, settings) in snapshot.show().media_inputs() {
         if project.media_playback(input) != Some(settings) {
             project
@@ -4392,6 +4446,10 @@ fn restore_project_edit_state(show: &mut ShowState, project: &Project) -> AppRes
         if let InputKind::Device { capture, .. } = &input.kind {
             show.set_capture_settings(input.id, capture.clone())?;
         }
+        // A document opens on the page it was left on (IN-014).
+        if let InputKind::Document(document) = &input.kind {
+            show.set_paged_page(input.id, document.page)?;
+        }
     }
     show.restore_input_lifecycle(
         project.input_categories().to_vec(),
@@ -4512,7 +4570,36 @@ fn restore_project_engine(path: &Path, stored: &StoredProject) -> AppResult<Proj
                 .collect::<AppResult<Vec<_>>>()?,
         },
     )?;
+    let mut engine = engine;
+    restore_document_page_counts(path, &project, &mut engine);
     Ok(ProjectEngine { project, engine })
+}
+
+/// Reports every document input's page count to the engine (IN-014), read
+/// from the bundle asset exactly as the daemon reads it: a PDF is parsed, a
+/// presentation's package is read (no converter is needed for a count). A
+/// document that cannot be read keeps no count, so a page step on it is
+/// refused as unavailable.
+fn restore_document_page_counts(path: &Path, project: &Project, engine: &mut Engine) {
+    let Ok(store) = ProjectStore::new(path) else {
+        return;
+    };
+    for (input, document) in project.documents() {
+        let count = document_page_count(&store, &document.asset_uri);
+        engine.set_paged_count(input, count);
+    }
+}
+
+fn document_page_count(store: &ProjectStore, asset_uri: &str) -> Option<u32> {
+    let format = fm_types::paged::DocumentFormat::from_file_name(asset_uri)?;
+    let file = store.resolve_asset_uri(asset_uri).ok()?;
+    if std::fs::metadata(&file).ok()?.len() > fm_presentations::MAX_DOCUMENT_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(file).ok()?;
+    fm_presentations::probe(format, &bytes)
+        .ok()
+        .map(|info| info.page_count)
 }
 
 fn engine_audio_strip_state(
@@ -5758,6 +5845,7 @@ const fn input_kind_name(kind: &InputKind) -> &'static str {
         InputKind::MixFeed(fm_model::MixFeed::Program) => "program-feed",
         InputKind::MixFeed(fm_model::MixFeed::Preview) => "preview-feed",
         InputKind::Title(_) => "title",
+        InputKind::Document(_) => "document",
     }
 }
 
@@ -6040,6 +6128,8 @@ Usage:
   freemix-cli input-replace-media <show.freemix> <input-id> <asset://key>
   freemix-cli input-replace-scene <show.freemix> <input-id> <existing-scene-id>
   freemix-cli input-media-list <show.freemix>
+  freemix-cli input-pages <show.freemix>
+  freemix-cli input-page <show.freemix> <input-id> <next|previous|first|last|goto <page>> [--key <key>] [--expect <revision>]
   freemix-cli input-categories <show.freemix> [<id>=<name>...] [--key <key>] [--expect <revision>]
   freemix-cli input-category <show.freemix> <input-id> <category-id|none> [--key <key>] [--expect <revision>]
   freemix-cli input-color <show.freemix> <input-id> <red|orange|yellow|green|teal|blue|purple|pink|none> [--key <key>] [--expect <revision>]
@@ -6194,6 +6284,7 @@ Usage:
   freemix-cli remote-transition-favorite-set <127.0.0.1:port> <slot:1..=4> <cut|kind|stinger-N> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-media-<play|pause|stop|complete|seek|trim|rate|end-action|end-trigger|audio-track|audio-policy> <127.0.0.1:port> <input-id> <operands> [--key <key>] [--expect <revision>]
       seek <frame|N/Ds|Ns>; complete declares a growing file finished
+  freemix-cli remote-input-page <127.0.0.1:port> <input-id> <next|previous|first|last|goto <page>> [--key <key>] [--expect <revision>]
   freemix-cli remote-stinger <127.0.0.1:port> <slot:1..=8> <frames> [--key <key>] [--expect <revision>]
   freemix-cli remote-stinger-configure <127.0.0.1:port> <slot:1..=8> <media-input> <true|false> <cut-point-frames> <muted|stinger-only|mix-with-program> <cut|fade|keep-program> [--key <key>] [--expect <revision>]
   freemix-cli remote-stinger-remove <127.0.0.1:port> <slot:1..=8> [--key <key>] [--expect <revision>]
@@ -6241,7 +6332,7 @@ Usage:
   freemix-cli project-export-bundle <source.freemix> <destination.freemix>
   freemix-cli project-from-template <template.freemix> <destination.freemix> --name <name>
   freemix-cli project-append <target.freemix> <source.freemix>
-  freemix-cli project-import-media <show.freemix> <media-file> [--input <new-nonzero-input-id> [--name <name>]]
+  freemix-cli project-import-media <show.freemix> <media-file|pdf|pptx|odp> [--input <new-nonzero-input-id> [--name <name>]]
   freemix-cli project-relink <show.freemix> [--search <dir>]... [--apply]
   freemix-cli project-autosave <show.freemix> [--keep <1..=64>]
   freemix-cli project-recover <show.freemix> [--restore]

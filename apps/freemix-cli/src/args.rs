@@ -797,6 +797,18 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Turns a document input's page, locally or on a server (IN-014).
+    InputPage {
+        target: MediaTarget,
+        input: u128,
+        navigation: fm_types::paged::PagedNavigation,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Lists the document inputs' pages and page counts (IN-014).
+    InputPages {
+        path: PathBuf,
+    },
     /// Assigns one favourite transition button.
     TransitionFavoriteSet {
         path: PathBuf,
@@ -2366,6 +2378,19 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let address = socket_address(&required(&mut arguments, "address")?)?;
             let operation = command.strip_prefix("remote-input-").unwrap_or_default();
             parse_input_lifecycle(MediaTarget::Remote(address), operation, arguments)
+        }
+        "input-page" => {
+            let path = required_path(&mut arguments, "project path")?;
+            parse_input_page(MediaTarget::Local(path), arguments)
+        }
+        "remote-input-page" => {
+            let address = socket_address(&required(&mut arguments, "address")?)?;
+            parse_input_page(MediaTarget::Remote(address), arguments)
+        }
+        "input-pages" => {
+            let path = required_path(&mut arguments, "project path")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::InputPages { path })
         }
         "help" | "--help" | "-h" => Ok(Command::Help),
         _ => {
@@ -7037,6 +7062,38 @@ fn parse_input_media(
         target,
         input,
         operation,
+        key,
+        expected_revision,
+    })
+}
+
+/// `<input> next|previous|first|last|goto <page>`, the page one-based.
+fn parse_input_page(
+    target: MediaTarget,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let value = required(&mut arguments, "page action")?;
+    let page = if value == "goto" {
+        let page: u32 = number(&required(&mut arguments, "page")?, "page")?;
+        Some(page.checked_sub(1).ok_or(ArgsError::InvalidNumber {
+            field: "page",
+            value: page.to_string(),
+        })?)
+    } else {
+        None
+    };
+    let navigation = fm_types::paged::PagedNavigation::from_token(&value, page).ok_or(
+        ArgsError::InvalidChoice {
+            field: "page action",
+            value,
+        },
+    )?;
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(Command::InputPage {
+        target,
+        input,
+        navigation,
         key,
         expected_revision,
     })

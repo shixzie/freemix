@@ -1232,6 +1232,30 @@ fn milli_ppm(value: i64) -> String {
 }
 
 /// One media input's settings and transport on one line (IN-003).
+/// One paged input's replicated status (IN-014), its page one-based.
+fn format_paged_status(status: &fm_protocol::PagedStatus) -> String {
+    use std::fmt::Write as _;
+    let count = if status.count == 0 {
+        "unknown".to_owned()
+    } else {
+        status.count.to_string()
+    };
+    let mut line = format!(
+        "input-page: input={} kind={} page={} count={count} state={}",
+        status.input.to_domain(),
+        status.kind.token(),
+        status.page.saturating_add(1),
+        status.state.token()
+    );
+    if let Some(title) = &status.title {
+        let _ = write!(line, " title={title:?}");
+    }
+    if let Some(message) = &status.message {
+        let _ = write!(line, " message={message:?}");
+    }
+    line
+}
+
 pub(crate) fn format_media_status(status: &fm_protocol::MediaStatus) -> String {
     let settings = &status.settings;
     let transport = &status.transport;
@@ -1442,6 +1466,9 @@ impl CommandCompletion {
             CommandPayload::Media { operation, .. } => Self::Media {
                 transport: operation.is_transport(),
             },
+            // A page step is a live operator control realized like a media
+            // transport (Protocol 2.70).
+            CommandPayload::PagedInput { .. } => Self::Media { transport: true },
             CommandPayload::PlaylistControl { .. } | CommandPayload::PlaylistAdvance { .. } => {
                 Self::Playlist { edit: false }
             }
@@ -1582,7 +1609,8 @@ impl Remote {
                 | WireMessage::ShortcutState(_)
                 | WireMessage::StillState(_)
                 | WireMessage::MediaListState(_)
-                | WireMessage::AudioStripDspState(_)) => {
+                | WireMessage::AudioStripDspState(_)
+                | WireMessage::PagedState(_)) => {
                     client.intake(message)?;
                 }
                 WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
@@ -1787,6 +1815,9 @@ impl Remote {
                                 )
                             }
                         }
+                        EventPayload::PagedChanged { .. } => {
+                            completion == CommandCompletion::Media { transport: true }
+                        }
                         EventPayload::AudioMixerChanged(_) => matches!(
                             completion,
                             CommandCompletion::Mixer { .. } | CommandCompletion::History
@@ -1892,6 +1923,9 @@ impl Remote {
         }
         for status in state.media().values() {
             println!("{}", format_media_status(status));
+        }
+        for status in state.paged_statuses() {
+            println!("{}", format_paged_status(status));
         }
         for (slot, config) in state.display_outputs() {
             println!(

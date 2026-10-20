@@ -213,10 +213,8 @@ pub fn import_media(
             path,
             input,
             name,
-            InputKind::Media {
-                asset_uri: imported.asset_uri,
-                playback: fm_model::MediaPlaybackSettings::default(),
-            },
+            fm_model::InputSourceSpec::from_asset_uri(&imported.asset_uri)
+                .to_kind(fm_model::MediaPlaybackSettings::default()),
         )?;
     }
     Ok(())
@@ -567,7 +565,7 @@ pub fn import_batch(path: &Path, first_input: u128, files: &[std::path::PathBuf]
     for (offset, file) in (0_u128..).zip(files) {
         let input = input_id(first_input.saturating_add(offset))?;
         let display = file.to_string_lossy().into_owned();
-        let asset_uri = if fm_model::is_media_file_name(&display) && file.is_file() {
+        let asset_uri = if fm_model::is_importable_file_name(&display) && file.is_file() {
             store
                 .import_media_file(file)
                 .map_or(display, |imported| imported.asset_uri)
@@ -595,10 +593,9 @@ pub fn import_batch(path: &Path, first_input: u128, files: &[std::path::PathBuf]
         project.add_input_checked(fm_model::Input {
             id: item.input,
             name: item.name.clone(),
-            kind: InputKind::Media {
-                asset_uri: item.asset_uri.clone(),
-                playback: fm_model::MediaPlaybackSettings::default(),
-            },
+            // A PDF or presentation becomes a document input (IN-014).
+            kind: fm_model::InputSourceSpec::from_asset_uri(&item.asset_uri)
+                .to_kind(fm_model::MediaPlaybackSettings::default()),
             required_capabilities: Vec::new(),
         })?;
         println!(
