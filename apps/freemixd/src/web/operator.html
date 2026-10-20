@@ -122,6 +122,7 @@
   <button type="button" id="reconnect" hidden data-i18n="reconnectNow">Reconnect now</button>
   <button type="button" id="signout" hidden>Forget token</button>
   <button type="button" id="language" lang="es" data-i18n="otherLanguage" data-i18n-label="otherLanguageLabel" aria-label="Ver en español">Español</button>
+  <a href="/titles" data-i18n="titlesLink">Titles</a>
   <a href="/tally">Tally</a>
 </header>
 <main id="surface" aria-labelledby="title">
@@ -294,6 +295,7 @@
       reconnectNow: "Reconnect now",
       otherLanguage: "Español",
       otherLanguageLabel: "Ver en español",
+      titlesLink: "Titles",
       connect: "Connect",
       pairHeading: "Pair this device",
       pairHint: "In FreeMix Studio, open Web access and start pairing, then type the six-digit code it shows.",
@@ -477,6 +479,7 @@
       reconnectNow: "Reconectar ahora",
       otherLanguage: "English",
       otherLanguageLabel: "View in English",
+      titlesLink: "Títulos",
       connect: "Conectar",
       pairHeading: "Emparejar este dispositivo",
       pairHint: "En FreeMix Studio, abra Acceso web e inicie el emparejamiento; después escriba el código de seis dígitos que muestra.",
@@ -910,7 +913,7 @@
   // /tally and /operator, so a phone pairs once) or a typed access token
   // (sessionStorage, this tab only). Neither ever appears in a URL. ----
   const DEVICE_KEY = "freemix.web.device";
-  const DEVICE_ROLES = ["viewer", "audio", "operator"];
+  const DEVICE_ROLES = ["viewer", "audio", "operator", "graphics"];
   function deviceStores() {
     const stores = [];
     try { stores.push(window.localStorage); } catch (error) { /* unavailable */ }

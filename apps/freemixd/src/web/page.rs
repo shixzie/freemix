@@ -1,5 +1,5 @@
-//! The self-contained phone tally and operator pages served on the WebSocket
-//! gateway port.
+//! The self-contained phone tally, operator, and title editor pages served
+//! on the WebSocket gateway port.
 //!
 //! Serving them from the gateway's own origin lets a page reach
 //! `/v1/control` same-origin, so the gateway can require a matching `Origin`
@@ -13,12 +13,17 @@ pub(super) const TALLY_PAGE: &str = include_str!("tally.html");
 /// The phone and tablet operator surface (`RC-014`).
 pub(super) const OPERATOR_PATH: &str = "/operator";
 pub(super) const OPERATOR_PAGE: &str = include_str!("operator.html");
+/// The browser title editor (`GX-006`): edits a title input's fields and
+/// takes it on or off air through the title commands.
+pub(super) const TITLES_PATH: &str = "/titles";
+pub(super) const TITLES_PAGE: &str = include_str!("titles.html");
 
 /// The page served at `path`, if any.
 pub(super) fn page_for(path: &str) -> Option<&'static str> {
     match path {
         TALLY_PATH => Some(TALLY_PAGE),
         OPERATOR_PATH => Some(OPERATOR_PAGE),
+        TITLES_PATH => Some(TITLES_PAGE),
         _ => None,
     }
 }
@@ -60,13 +65,16 @@ pub(super) fn page_response(host: Option<&str>, tls: bool, page: &str, body: boo
 
 #[cfg(test)]
 mod tests {
-    use super::{OPERATOR_PAGE, TALLY_PAGE, page_for, page_response};
+    use super::{OPERATOR_PAGE, TALLY_PAGE, TITLES_PAGE, page_for, page_response};
 
     #[test]
     fn only_the_page_paths_are_pages() {
         assert_eq!(page_for("/tally"), Some(TALLY_PAGE));
         assert_eq!(page_for("/operator"), Some(OPERATOR_PAGE));
+        assert_eq!(page_for("/titles"), Some(TITLES_PAGE));
         for path in [
+            "/titles/",
+            "/titles/1",
             "/v1/control",
             "/tally/",
             "/tallyx",

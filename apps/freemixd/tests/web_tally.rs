@@ -1738,7 +1738,26 @@ fn pages_carry_complete_english_and_spanish_string_tables() {
             "t(\"Último error: {failure}\")",
         ),
     ];
-    for (path, spanish) in [("/tally", tally), ("/operator", operator)] {
+    let titles: &[(&str, &str)] = &[
+        ("titles: \"Títulos\"", "t(\"Títulos\")"),
+        ("take: \"Tomar\"", "t(\"Tomar\")"),
+        ("update: \"Actualizar en vivo\"", "t(\"Actualizar en vivo\")"),
+        ("offAir: \"Retirar del aire\"", "t(\"Retirar del aire\")"),
+        ("save: \"Guardar\"", "t(\"Guardar\")"),
+        ("channel: \"Canal\"", "t(\"Canal\")"),
+        ("editedBadge: \"EDITADO\"", "t(\"EDITADO\")"),
+        ("offBadge: \"FUERA DEL AIRE\"", "t(\"FUERA DEL AIRE\")"),
+        ("previewBadge: \"PREVIO\"", "t(\"PREVIO\")"),
+        (
+            "permission: \"Esta sesión no tiene el permiso {name}\"",
+            "esta sesión no tiene el permiso transition",
+        ),
+    ];
+    for (path, spanish) in [
+        ("/tally", tally),
+        ("/operator", operator),
+        ("/titles", titles),
+    ] {
         let (_, _, body) = http(
             daemon.web,
             &format!("GET {path} HTTP/1.1\r\nHost: {}\r\n\r\n", daemon.web),
@@ -1872,6 +1891,7 @@ fn page_scripts_parse_with_node_when_available() {
     for (name, page) in [
         ("tally", include_str!("../src/web/tally.html")),
         ("operator", include_str!("../src/web/operator.html")),
+        ("titles", include_str!("../src/web/titles.html")),
         ("live_lan", include_str!("../src/web/live_lan.html")),
     ] {
         let scripts: Vec<&str> = page
@@ -1893,4 +1913,142 @@ fn page_scripts_parse_with_node_when_available() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+/// GX-006: the browser title editor is served like the other pages and its
+/// exact wire records edit, take, update, and take off a title, each within
+/// the session's role: a Graphics page edits text but cannot go to air, an
+/// Operator page takes and clears but cannot change text, and a stale edit
+/// is refused rather than overwriting a newer one.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn titles_page_edits_and_takes_a_title_within_the_session_role() {
+    let directory = TestDirectory::new("titles-page");
+    let project = directory.0.join("show.freemix");
+    create_project_with(&project, true, false);
+    let daemon = Daemon::start(&project);
+
+    let (status, headers, body) = http(
+        daemon.web,
+        &format!("GET /titles HTTP/1.1\r\nHost: {}\r\n\r\n", daemon.web),
+    );
+    assert_eq!(status, "HTTP/1.1 200 OK");
+    assert_eq!(header(&headers, "content-type"), "text/html; charset=utf-8");
+    assert_eq!(header(&headers, "cache-control"), "no-store");
+    assert_eq!(header(&headers, "x-frame-options"), "DENY");
+    let policy = header(&headers, "content-security-policy");
+    assert!(policy.starts_with("default-src 'none';"), "{policy}");
+    let page = String::from_utf8(body).unwrap();
+    assert!(page.starts_with("<!doctype html>"));
+    assert!(
+        page.contains(&format!("const PROTOCOL = \"{CURRENT_PROTOCOL_VERSION}\";")),
+        "titles.html must be updated with the protocol identifier"
+    );
+    assert!(!page.contains(TOKEN), "the page never embeds the token");
+    assert!(page.contains("history.replaceState(null, \"\", location.pathname + location.search)"));
+    // The exact title commands driven below, and the pairing role.
+    for source in [
+        "[\"payload\", \"title_fields\"], [\"input\", title.id], [\"base_revision\", String(title.fieldRevision)],\n      [\"require\", \"off_air\"]",
+        "[\"require\", \"on_air\"], [\"fields\", changesKey(list)]",
+        "[\"payload\", \"title_take\"], [\"input\", title.id], [\"channel\", String(channel)]",
+        "[\"payload\", \"title_off_air\"], [\"input\", title.id]",
+        "const DEVICE_ROLES = [\"viewer\", \"audio\", \"operator\", \"graphics\"];",
+        "case \"title_state\":",
+        "name === \"title_changed\"",
+        "issue === \"title_revision_conflict\"",
+        "const COMMAND_TIMEOUT_MS = 8000;",
+    ] {
+        assert!(page.contains(source), "{source}");
+    }
+    // The other pages pair a Graphics device too and link the editor.
+    for (path, needle) in [
+        ("/operator", "<a href=\"/titles\" data-i18n=\"titlesLink\">Titles</a>"),
+        ("/tally", "\"operator\", \"graphics\"]"),
+    ] {
+        let (_, _, body) = http(
+            daemon.web,
+            &format!("GET {path} HTTP/1.1\r\nHost: {}\r\n\r\n", daemon.web),
+        );
+        assert!(String::from_utf8(body).unwrap().contains(needle), "{path}");
+    }
+
+    let title = input(4);
+    let fields = |text: &str| format!("1%3At%3A{}%3A{text}", text.len());
+    let edit = |base: u64, require: &str, text: &str| {
+        format!(
+            "payload=title_fields\tinput={title}\tbase_revision={base}\trequire={require}\tfields={}",
+            fields(text)
+        )
+    };
+    let take = |base: u64, text: &str| {
+        format!(
+            "payload=title_take\tinput={title}\tchannel=1\tbase_revision={base}\tfields={}",
+            if text.is_empty() { String::new() } else { fields(text) }
+        )
+    };
+    let off_air = format!("payload=title_off_air\tinput={title}");
+
+    // A Graphics page edits the text of an off-air title.
+    let (mut graphics, _, permissions, snapshot) = web_session(daemon.web, Role::Graphics);
+    assert_eq!(permissions, ["view_status", "edit_project"]);
+    assert_eq!(snapshot.titles.len(), 1);
+    assert_eq!(snapshot.titles[0].input, title);
+    assert_eq!(snapshot.titles[0].field_revision, 0);
+    let (_, event) =
+        page_command(&mut graphics, "graphics-save", None, &edit(0, "off_air", "Ana")).unwrap();
+    let EventPayload::TitleChanged {
+        input: changed,
+        field_revision,
+        ..
+    } = event
+    else {
+        panic!("a save is a title change: {event:?}");
+    };
+    assert_eq!((changed, field_revision), (title, 1));
+    // A save on the old revision is refused, not applied over the newer one.
+    assert_eq!(
+        page_command(&mut graphics, "graphics-stale", None, &edit(0, "off_air", "Old"))
+            .unwrap_err()
+            .0,
+        "conflict"
+    );
+    // Nor may it take the title to air or update it as if live.
+    assert_eq!(
+        page_command(&mut graphics, "graphics-take", None, &take(1, ""))
+            .unwrap_err()
+            .0,
+        "permission_denied"
+    );
+    assert_eq!(
+        page_command(&mut graphics, "graphics-live", None, &edit(1, "on_air", "Bea"))
+            .unwrap_err()
+            .0,
+        "conflict"
+    );
+
+    // An Operator page takes the title as saved but cannot change its text.
+    let (mut operator, _, permissions, _) = web_session(daemon.web, Role::Operator);
+    assert!(!permissions.iter().any(|granted| granted == "edit_project"));
+    assert_eq!(
+        page_command(&mut operator, "operator-take-text", None, &take(1, "Cy"))
+            .unwrap_err()
+            .0,
+        "permission_denied"
+    );
+    page_command(&mut operator, "operator-take", None, &take(1, "")).unwrap();
+
+    // On air, the Graphics page updates it live and still cannot clear it.
+    let (_, event) =
+        page_command(&mut graphics, "graphics-update", None, &edit(1, "on_air", "Bea")).unwrap();
+    assert!(
+        matches!(event, EventPayload::TitleChanged { field_revision: 2, .. }),
+        "{event:?}"
+    );
+    assert_eq!(
+        page_command(&mut graphics, "graphics-off", None, &off_air)
+            .unwrap_err()
+            .0,
+        "permission_denied"
+    );
+    page_command(&mut operator, "operator-off", None, &off_air).unwrap();
 }

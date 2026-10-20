@@ -670,7 +670,7 @@
   // /tally and /operator, so a phone pairs once) or a typed access token
   // (sessionStorage, this tab only). Neither ever appears in a URL. ----
   const DEVICE_KEY = "freemix.web.device";
-  const DEVICE_ROLES = ["viewer", "audio", "operator"];
+  const DEVICE_ROLES = ["viewer", "audio", "operator", "graphics"];
   function deviceStores() {
     const stores = [];
     try { stores.push(window.localStorage); } catch (error) { /* unavailable */ }
