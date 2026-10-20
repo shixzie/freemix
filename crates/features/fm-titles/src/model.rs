@@ -174,6 +174,10 @@ pub struct FieldDefinition {
     pub id: FieldId,
     pub name: String,
     pub default: FieldValue,
+    /// Whether browser clients (the web title editor, GX-006) may see and
+    /// edit the field. A hidden field's name and value are never sent to a
+    /// Web session; Studio and raw clients see every field.
+    pub exposed: bool,
 }
 
 impl FieldDefinition {

@@ -3025,11 +3025,13 @@ mod titles {
                     id: FieldId::new(NonZeroU128::new(NAME).unwrap()),
                     name: "Name".into(),
                     default: FieldValue::Text("Ana".into()),
+                    exposed: true,
                 },
                 FieldDefinition {
                     id: FieldId::new(NonZeroU128::new(SCORE).unwrap()),
                     name: "Score".into(),
                     default: FieldValue::Number(0),
+                    exposed: true,
                 },
             ],
             elements: Vec::new(),
@@ -4576,11 +4578,13 @@ fn title_layout_states_match_each_template() {
                 id: field(1),
                 name: "Name".into(),
                 default: FieldValue::Text("Ana".into()),
+                exposed: true,
             },
             FieldDefinition {
                 id: field(2),
                 name: "Logo".into(),
                 default: FieldValue::Image(ImageSource::new("asset://logo.png")),
+                exposed: true,
             },
         ],
         elements: vec![

@@ -1675,6 +1675,7 @@ mod tests {
                 id: field,
                 name: "Bar".into(),
                 default: FieldValue::Color(Color::new(colour[0], colour[1], colour[2], 255)),
+                exposed: true,
             }],
             elements: vec![Element {
                 id: ElementId::new(NonZeroU128::new(1).unwrap()),

@@ -781,6 +781,7 @@ fn title_show() -> ShowState {
             id: FieldId::new(id(1)),
             name: "name".into(),
             default: FieldValue::Text(String::new()),
+            exposed: true,
         }],
         elements: vec![Element {
             id: ElementId::new(id(1)),
@@ -1337,6 +1338,7 @@ fn score_show() -> ShowState {
         id: FieldId::new(id(value)),
         name: name.into(),
         default,
+        exposed: true,
     };
     let template = TitleTemplate {
         id: TemplateId::new(id(9)),

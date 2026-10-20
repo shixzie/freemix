@@ -1427,6 +1427,11 @@ impl Object {
             .ok_or_else(|| syntax(format!("missing field `{field}` in {}", self.context)))
     }
 
+    /// Removes `field` when present; `None` when the key is absent.
+    pub(crate) fn take_optional(&mut self, field: &str) -> Option<Value> {
+        self.values.remove(field)
+    }
+
     pub(crate) fn string(&mut self, field: &str) -> Result<String, DecodeError> {
         let Value::String(value) = self.take(field)? else {
             return Err(syntax(format!("field `{field}` must be a string")));

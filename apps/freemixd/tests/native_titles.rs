@@ -76,6 +76,7 @@ fn save_title_project(path: &Path) {
             id: field,
             name: "Bar".into(),
             default: FieldValue::Color(Color::new(1, 2, 3, 255)),
+            exposed: true,
         }],
         elements: vec![Element {
             id: ElementId::new(NonZeroU128::MIN),

@@ -138,6 +138,7 @@ fn scene_of(text: &str, width: u32, height: u32, element: Element) -> TitleTempl
             id: field_id(1),
             name: "message".into(),
             default: FieldValue::Text(text.into()),
+            exposed: true,
         }],
         elements: vec![element],
         animation: fm_titles::TitleAnimation::default(),

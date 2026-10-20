@@ -44,6 +44,7 @@ fn definition(id: u128, default: FieldValue) -> FieldDefinition {
         id: field(id),
         name: format!("field-{id}"),
         default,
+        exposed: true,
     }
 }
 

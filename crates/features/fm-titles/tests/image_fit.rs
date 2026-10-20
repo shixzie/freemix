@@ -78,6 +78,7 @@ impl Case {
                 id: field,
                 name: "logo".into(),
                 default: FieldValue::Image(ImageSource::new("logo")),
+                exposed: true,
             }],
             elements: vec![Element {
                 id: ElementId::new(id(1)),

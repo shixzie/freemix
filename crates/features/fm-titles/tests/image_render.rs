@@ -111,6 +111,7 @@ fn image_template(
             id: field_id(1),
             name: "logo".into(),
             default: FieldValue::Image(ImageSource::new(asset)),
+            exposed: true,
         }],
         elements,
         animation: fm_titles::TitleAnimation::default(),

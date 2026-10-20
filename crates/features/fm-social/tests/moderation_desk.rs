@@ -482,6 +482,7 @@ fn lower_third() -> TitleTemplate {
         id: field(id),
         name: name.to_owned(),
         default: FieldValue::Text(String::new()),
+        exposed: true,
     };
     TitleTemplate {
         id: TemplateId::new(NonZeroU128::new(1).unwrap()),
@@ -497,6 +498,7 @@ fn lower_third() -> TitleTemplate {
                 id: field(4),
                 name: "created".to_owned(),
                 default: FieldValue::Number(0),
+                exposed: true,
             },
         ],
         elements: Vec::new(),

@@ -160,6 +160,7 @@ fn write_title_template(store: &ProjectStore) {
             id: FieldId::new(NonZeroU128::new(1).unwrap()),
             name: "Name".into(),
             default: FieldValue::Text("Name".into()),
+            exposed: true,
         }],
         elements: Vec::new(),
         animation: fm_titles::TitleAnimation::default(),

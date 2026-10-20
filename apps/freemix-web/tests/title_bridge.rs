@@ -53,6 +53,7 @@ fn template() -> TitleTemplate {
         id: FieldId::new(NonZeroU128::new(id).unwrap()),
         name: name.to_owned(),
         default,
+        exposed: true,
     };
     TitleTemplate {
         id: TemplateId::new(NonZeroU128::new(9).unwrap()),

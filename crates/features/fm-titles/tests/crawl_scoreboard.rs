@@ -475,6 +475,7 @@ fn reference_scene(
             id: field(1),
             name: "text".into(),
             default: FieldValue::Text(text.into()),
+            exposed: true,
         }],
         vec![Element {
             id: ElementId::new(nz(1)),
@@ -887,6 +888,7 @@ fn scoreboard_template() -> TitleTemplate {
         id: field(id),
         name: name.into(),
         default: FieldValue::Text(String::new()),
+        exposed: true,
     };
     template(
         64,
@@ -898,12 +900,14 @@ fn scoreboard_template() -> TitleTemplate {
                 id: field(3),
                 name: "home score".into(),
                 default: FieldValue::Number(0),
+                exposed: true,
             },
             text(4, "away score"),
             FieldDefinition {
                 id: field(5),
                 name: "period".into(),
                 default: FieldValue::Number(1),
+                exposed: true,
             },
             text(6, "clock"),
             text(7, "home player"),

@@ -107,6 +107,7 @@ fn definition(id: u128, name: &str, default: FieldValue) -> FieldDefinition {
         id: FieldId::new(NonZeroU128::new(id).unwrap()),
         name: name.to_owned(),
         default,
+        exposed: true,
     }
 }
 

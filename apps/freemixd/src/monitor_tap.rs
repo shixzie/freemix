@@ -1729,6 +1729,7 @@ mod tests {
                 id: field(1),
                 name: "Bar".into(),
                 default: FieldValue::Color(Color::new(1, 2, 3, 255)),
+                exposed: true,
             }],
             elements,
             animation: fm_titles::TitleAnimation::default(),

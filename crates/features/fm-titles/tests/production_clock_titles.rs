@@ -365,6 +365,7 @@ fn oracle(assets: &AssetCatalog, expected: &str) -> Vec<u8> {
         id: field_id(),
         name: "text".into(),
         default: FieldValue::Text(expected.into()),
+        exposed: true,
     }];
     let scene = template(fields, element(ElementKind::Text { field: field_id() }))
         .instantiate(TitleId::new(NonZeroU128::new(1).unwrap()))

@@ -818,6 +818,7 @@ mod tests {
                 id: field,
                 name: "Logo".into(),
                 default: FieldValue::Image(ImageSource::new("asset://images/missing.png")),
+                exposed: true,
             }],
             elements: vec![Element {
                 id: ElementId::new(NonZeroU128::MIN),
@@ -1302,6 +1303,7 @@ mod clock_tests {
                         id: field,
                         name: "Text".into(),
                         default: FieldValue::Text(expected.into()),
+                        exposed: true,
                     }],
                 ),
                 catalog.clone(),

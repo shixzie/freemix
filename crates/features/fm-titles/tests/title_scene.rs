@@ -75,21 +75,25 @@ fn fields_are_typed_and_ids_survive_instantiation() {
             id: field_id(1),
             name: "name".into(),
             default: FieldValue::Text("Ada".into()),
+            exposed: true,
         },
         FieldDefinition {
             id: field_id(2),
             name: "score".into(),
             default: FieldValue::Number(3),
+            exposed: true,
         },
         FieldDefinition {
             id: field_id(3),
             name: "logo".into(),
             default: FieldValue::Image(ImageSource::new("logo.png")),
+            exposed: true,
         },
         FieldDefinition {
             id: field_id(4),
             name: "accent".into(),
             default: FieldValue::Color(Color::new(1, 2, 3, 255)),
+            exposed: true,
         },
     ];
     assert_eq!(fields[0].field_type(), FieldType::Text);
@@ -224,11 +228,13 @@ fn optimistic_conflicts_and_batch_errors_are_atomic() {
             id: field_id(1),
             name: "left".into(),
             default: FieldValue::Number(1),
+            exposed: true,
         },
         FieldDefinition {
             id: field_id(2),
             name: "right".into(),
             default: FieldValue::Number(2),
+            exposed: true,
         },
     ];
     let mut scene = template(fields, Vec::new(), 1, 1)
@@ -267,6 +273,7 @@ fn live_update_rejects_a_blank_image_asset_the_template_would_reject() {
         id: field_id(1),
         name: "logo".into(),
         default: FieldValue::Image(ImageSource::new("logo.png")),
+        exposed: true,
     };
     let mut blank_default = logo.clone();
     blank_default.default = FieldValue::Image(ImageSource::new("  "));
@@ -297,6 +304,7 @@ fn validation_and_rendering_report_missing_assets_and_limitations() {
         id: logo,
         name: "logo".into(),
         default: FieldValue::Image(ImageSource::new("missing-logo.png")),
+        exposed: true,
     }];
     let element = Element {
         id: element_id(1),
@@ -369,6 +377,7 @@ fn text_elements_require_a_resolvable_font_style() {
         id: message,
         name: "message".into(),
         default: FieldValue::Text("hello".into()),
+        exposed: true,
     }];
     let bounds = Bounds {
         x: 0,
@@ -412,6 +421,7 @@ fn font_sizes_above_the_render_limit_are_rejected_at_validation() {
         id: message,
         name: "message".into(),
         default: FieldValue::Text("hello".into()),
+        exposed: true,
     }];
     let mut element = Element {
         id: element_id(1),

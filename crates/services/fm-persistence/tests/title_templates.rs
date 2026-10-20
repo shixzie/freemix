@@ -143,11 +143,13 @@ fn shape_template(name: &str) -> TitleTemplate {
                 id: field_id(2),
                 name: "Bar color".into(),
                 default: FieldValue::Color(Color::new(0x11, 0x22, 0x33, 0xff)),
+                exposed: true,
             },
             FieldDefinition {
                 id: field_id(1),
                 name: "Score".into(),
                 default: FieldValue::Number(-4),
+                exposed: true,
             },
         ],
         elements: vec![bar],
@@ -167,6 +169,7 @@ fn text_template(family: &str) -> TitleTemplate {
             id: field_id(1),
             name: "Name".into(),
             default: FieldValue::Text("Jane Doe".into()),
+            exposed: true,
         }],
         elements: vec![element(
             1,
@@ -291,21 +294,25 @@ fn rich_template() -> StoredTitleTemplate {
                     id: field_id(1),
                     name: "Name".into(),
                     default: FieldValue::Text("Jane Doe".into()),
+                    exposed: true,
                 },
                 FieldDefinition {
                     id: field_id(2),
                     name: "Count".into(),
                     default: FieldValue::Number(i64::MIN),
+                    exposed: true,
                 },
                 FieldDefinition {
                     id: field_id(3),
                     name: "Bar".into(),
                     default: FieldValue::Color(Color::new(0xab, 0xcd, 0xef, 0x01)),
+                    exposed: true,
                 },
                 FieldDefinition {
                     id: field_id(4),
                     name: "Logo".into(),
                     default: FieldValue::Image(ImageSource::new("asset://images/logo.png")),
+                    exposed: true,
                 },
             ],
             elements: vec![
@@ -612,6 +619,31 @@ fn every_element_kind_round_trips_exactly() {
             ),
         ]
     );
+}
+
+/// GX-006 (schema 74): a field the web title editor may not show is written
+/// `"exposed": false`; an exposed field writes nothing, and the key is never
+/// written `true`.
+#[test]
+fn hidden_fields_round_trip_and_exposed_is_canonically_absent() {
+    let mut expected = rich_template();
+    expected.template.fields[0].exposed = false;
+    let encoded = encode_title_template(&expected).unwrap();
+    assert_eq!(encoded.matches("\"exposed\": false").count(), 1);
+    assert!(!encoded.contains("\"exposed\": true"));
+    let decoded = decode_title_template(&encoded).unwrap();
+    assert_eq!(decoded, expected);
+    assert!(!decoded.template.fields[0].exposed);
+    assert!(
+        decoded.template.fields[1..]
+            .iter()
+            .all(|field| field.exposed)
+    );
+
+    let written_true = encoded.replacen("\"exposed\": false", "\"exposed\": true", 1);
+    assert!(decode_title_template(&written_true).is_err());
+    let not_bool = encoded.replacen("\"exposed\": false", "\"exposed\": 0", 1);
+    assert!(decode_title_template(&not_bool).is_err());
 }
 
 #[test]
@@ -1498,6 +1530,7 @@ fn imports_refuse_bad_sources_and_fonts_before_copying_anything() {
         id: field_id(9),
         name: "Logo".into(),
         default: FieldValue::Image(ImageSource::new("asset://images/logo.png")),
+        exposed: true,
     });
     let logo_source = write_source(&temp, "logo.fmtitle", &logo);
     assert!(matches!(
@@ -1653,6 +1686,7 @@ fn audit_reports_missing_templates_fonts_and_images() {
         id: field_id(2),
         name: "Logo".into(),
         default: FieldValue::Image(ImageSource::new("asset://images/default.png")),
+        exposed: true,
     });
     let font = TitleFontAsset {
         family: "Sans".into(),
@@ -1731,6 +1765,7 @@ fn titled_bundle(temp: &TestDirectory, name: &str, template_key: &str) -> Projec
         id: field_id(2),
         name: "Logo".into(),
         default: FieldValue::Image(ImageSource::new("asset://images/default.png")),
+        exposed: true,
     });
     let uri = store_template(
         &store,

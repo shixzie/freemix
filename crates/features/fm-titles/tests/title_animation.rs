@@ -295,6 +295,7 @@ fn image_title(area: Bounds) -> (TitleTemplate, AssetCatalog) {
             id: field,
             name: "picture".into(),
             default: FieldValue::Image(ImageSource::new("picture")),
+            exposed: true,
         }],
     );
     let assets = AssetCatalog::new()
@@ -524,6 +525,7 @@ fn text_title(area: Bounds, size_px: u32) -> TitleTemplate {
             id: field,
             name: "name".into(),
             default: FieldValue::Text("Scaled Ag".into()),
+            exposed: true,
         }],
     );
     title.width = 400;

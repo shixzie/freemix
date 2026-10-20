@@ -1189,6 +1189,9 @@ pub fn encode_title_template(stored: &StoredTitleTemplate) -> Result<String, Tit
         write_string(&mut output, &field.name);
         output.push_str(", \"default\": ");
         write_field_value(&mut output, &field.default);
+        if !field.exposed {
+            output.push_str(", \"exposed\": false");
+        }
         output.push('}');
     }
     output.push_str(if template.fields.is_empty() {
@@ -1786,6 +1789,17 @@ fn parse_field(value: Value) -> Result<FieldDefinition, DecodeError> {
         id: FieldId::new(object.nonzero_u128("id")?),
         name: object.string("name")?,
         default: parse_field_value(object.take("default")?)?,
+        // Canonically absent for a field the web title editor may show;
+        // a hidden one is written `"exposed": false` (schema 74).
+        exposed: match object.take_optional("exposed") {
+            None => true,
+            Some(Value::Bool(false)) => false,
+            Some(_) => {
+                return Err(syntax(
+                    "field `exposed` is written only as false".to_owned(),
+                ));
+            }
+        },
     };
     object.finish()?;
     Ok(field)
