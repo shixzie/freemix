@@ -1394,7 +1394,7 @@ fn handle_preview_request(
         }
         return true;
     }
-    // So is web access management (RC-007, Protocol 2.70); while the
+    // So is web access management (RC-007, Protocol 2.71); while the
     // session recovers only the wish for the status survives.
     if let StudioIntent::WebAccess(action) = request {
         if recovery.active() {

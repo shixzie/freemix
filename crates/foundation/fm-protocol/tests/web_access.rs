@@ -1,4 +1,4 @@
-//! Web access management (Protocol 2.70): the exact request and answer
+//! Web access management (Protocol 2.71): the exact request and answer
 //! records, the pairing link, and strict refusal of malformed records.
 
 use fm_protocol::{
@@ -58,8 +58,8 @@ fn gateway() -> WebGatewayStatus {
 }
 
 #[test]
-fn the_current_protocol_is_2_69() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 69));
+fn the_current_protocol_is_2_71() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 71));
 }
 
 #[test]

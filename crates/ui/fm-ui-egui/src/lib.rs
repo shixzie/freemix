@@ -234,7 +234,7 @@ pub enum StudioIntent {
     /// [`fm_ui_model::ClientView::system_audio_inventory`].
     RequestSystemAudioDevices,
     /// Manages the web gateway's pairing and paired devices (RC-007,
-    /// Protocol 2.70); the answer updates
+    /// Protocol 2.71); the answer updates
     /// [`fm_ui_model::ClientView::web_access`].
     WebAccess(fm_protocol::WebAccessAction),
     /// Turns the live input thumbnail feed on while the input bank is

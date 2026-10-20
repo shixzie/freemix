@@ -2878,7 +2878,7 @@ messages! {
     LiveLanReasonPinDigits => t("type 4 to 12 digits"),
     LiveLanReasonNoPin => t("no PIN is set"),
     LiveLanReasonNoAddress => t("the server has not reported an address"),
-    // Web access: paired phones and tablets (RC-007, Protocol 2.70).
+    // Web access: paired phones and tablets (RC-007, Protocol 2.71).
     MenuWebAccess => t("Web access (phones and tablets)…"),
     MenuWebAccessHover => t("Pair phones and tablets on the local network with the web tally and operator pages, and revoke them"),
     WebAccessTitle => t("Web access"),

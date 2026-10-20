@@ -7881,7 +7881,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::LiveLanReasonNoAddress,
         t("el servidor no ha informado ninguna dirección"),
     ),
-    // Web access (RC-007, Protocol 2.70).
+    // Web access (RC-007, Protocol 2.71).
     (Msg::MenuWebAccess, t("Acceso web (teléfonos y tabletas)…")),
     (
         Msg::MenuWebAccessHover,

@@ -10,7 +10,7 @@ highest-value remaining items, ranked:
 
 1. **Web gateway on the LAN: trust and reach (`RC-007`, `RC-014`, `RC-008`).**
    `freemixd serve` now serves the pages over TLS on LAN addresses with
-   Studio-driven device pairing (Protocol 2.70), but trust is a
+   Studio-driven device pairing (Protocol 2.71), but trust is a
    self-signed certificate checked by fingerprint, the windowed program
    daemon still does not serve the gateway, and the pairing flow is proven
    in headless Chromium, not on real phones.
@@ -3911,7 +3911,7 @@ frame-denial headers. Because browsers cannot set `Authorization`, the page
 presents the same `FREEMIXD_WEB_TOKEN` as a `freemix.bearer.<base64url>`
 WebSocket subprotocol, accepted only from the serving origin, compared in
 constant time, and never echoed; roles still come from the handshake.
-The gateway reaches phones on the LAN (Protocol 2.70): plain HTTP stays
+The gateway reaches phones on the LAN (Protocol 2.71): plain HTTP stays
 loopback-only and any other `--web-listen` address requires TLS, either
 `--web-tls-cert`/`--web-tls-key` or `--web-tls`, a self-signed ECDSA P-256
 certificate (rustls with the `ring` provider, rcgen) kept with mode 0600 in

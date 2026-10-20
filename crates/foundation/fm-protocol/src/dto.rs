@@ -3153,8 +3153,8 @@ pub enum WireMessage {
     SystemAudioDevicesRequest(crate::SystemAudioDevicesRequest),
     /// Answers a [`crate::SystemAudioDevicesRequest`] (Protocol 2.68).
     SystemAudioDevices(crate::SystemAudioDevicesMessage),
-    /// Manages the web gateway's paired devices (Protocol 2.70).
+    /// Manages the web gateway's paired devices (Protocol 2.71).
     WebAccessRequest(crate::WebAccessRequest),
-    /// Answers a [`crate::WebAccessRequest`] (Protocol 2.70).
+    /// Answers a [`crate::WebAccessRequest`] (Protocol 2.71).
     WebAccess(crate::WebAccessMessage),
 }

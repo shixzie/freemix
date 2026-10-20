@@ -1,6 +1,6 @@
 //! Who may use the web gateway: the optional `FREEMIXD_WEB_TOKEN` and the
 //! paired devices, the outstanding pairing, and the console-facing
-//! `web_access` answers (Protocol 2.70).
+//! `web_access` answers (Protocol 2.71).
 //!
 //! A device token is 32 random bytes (`fmd1_` + base64url), handed to the
 //! device once when it redeems a pairing code; the daemon keeps only its

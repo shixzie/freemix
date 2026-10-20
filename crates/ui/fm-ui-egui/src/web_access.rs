@@ -1,4 +1,4 @@
-//! Output ▸ Web access (RC-007, RC-014, Protocol 2.70).
+//! Output ▸ Web access (RC-007, RC-014, Protocol 2.71).
 //!
 //! Phones and tablets on the local network open the daemon's web tally and
 //! operator pages. Each one pairs once: the operator starts pairing here

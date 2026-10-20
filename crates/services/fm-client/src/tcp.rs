@@ -398,7 +398,7 @@ pub enum SessionEvent {
     SystemAudioDevices {
         message: fm_protocol::SystemAudioDevicesMessage,
     },
-    /// The daemon answered a web access request (Protocol 2.70). The
+    /// The daemon answered a web access request (Protocol 2.71). The
     /// answer is also in the replicated model.
     WebAccess {
         message: fm_protocol::WebAccessMessage,
@@ -847,7 +847,7 @@ impl TcpSession {
     }
 
     /// Manages the daemon's web gateway pairing and paired devices
-    /// (Protocol 2.70). The answer arrives later as
+    /// (Protocol 2.71). The answer arrives later as
     /// [`SessionEvent::WebAccess`] naming the same `request_id`.
     ///
     /// # Errors

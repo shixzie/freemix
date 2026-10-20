@@ -1654,7 +1654,7 @@ pub struct ClientView {
     /// arrives.
     pub system_audio_inventory: Option<fm_protocol::SystemAudioInventory>,
     /// The web gateway's pairing and paired devices as the daemon last
-    /// answered a `web_access_request` (Protocol 2.70); `None` until then.
+    /// answered a `web_access_request` (Protocol 2.71); `None` until then.
     pub web_access: Option<fm_protocol::WebAccessMessage>,
     /// Every configured stream destination in authored order, without its
     /// key (Protocol 2.52).
@@ -2339,7 +2339,7 @@ pub struct ClientModel {
     /// The system audio capture devices as last listed (Protocol 2.68).
     /// Runtime state that survives resynchronization.
     system_audio_inventory: Option<fm_protocol::SystemAudioInventory>,
-    /// The latest web access answer (Protocol 2.70). Runtime state that
+    /// The latest web access answer (Protocol 2.71). Runtime state that
     /// survives resynchronization.
     web_access: Option<fm_protocol::WebAccessMessage>,
 }
@@ -2366,12 +2366,12 @@ impl ClientModel {
         }
     }
 
-    /// Records the latest `web_access` answer (Protocol 2.70).
+    /// Records the latest `web_access` answer (Protocol 2.71).
     pub fn apply_web_access(&mut self, message: fm_protocol::WebAccessMessage) {
         self.web_access = Some(message);
     }
 
-    /// Returns the latest web access answer (Protocol 2.70).
+    /// Returns the latest web access answer (Protocol 2.71).
     #[must_use]
     pub const fn web_access(&self) -> Option<&fm_protocol::WebAccessMessage> {
         self.web_access.as_ref()

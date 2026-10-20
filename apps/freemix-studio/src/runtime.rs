@@ -105,7 +105,7 @@ struct WantedLists {
     capture_devices: bool,
     /// The system audio devices (AU-011, Protocol 2.68).
     system_audio_devices: bool,
-    /// The web gateway status (RC-007, Protocol 2.70).
+    /// The web gateway status (RC-007, Protocol 2.71).
     web_access: bool,
 }
 
@@ -315,7 +315,7 @@ impl StudioRuntime {
         self.wanted.web_access = true;
     }
 
-    /// Sends one web access request (RC-007, Protocol 2.70): a status
+    /// Sends one web access request (RC-007, Protocol 2.71): a status
     /// read, or starting or cancelling pairing, or revoking a device. The
     /// answer updates the replicated web access state. Returns whether the
     /// request went out; one that cannot be sent is dropped (a pairing or

@@ -248,7 +248,7 @@ impl Session {
         Ok(())
     }
 
-    /// Authorizes and accounts for one web access request (Protocol 2.70).
+    /// Authorizes and accounts for one web access request (Protocol 2.71).
     ///
     /// Pairing a device grants a new user and revoking one removes it, so
     /// every web access request, even a status read that reveals the

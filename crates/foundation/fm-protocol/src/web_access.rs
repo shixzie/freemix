@@ -91,7 +91,7 @@ pub enum WebAccessAction {
     Revoke { device: String },
 }
 
-/// A console's web access request (Protocol 2.70).
+/// A console's web access request (Protocol 2.71).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WebAccessRequest {
     pub request_id: String,

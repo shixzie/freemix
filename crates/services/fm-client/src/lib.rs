@@ -205,7 +205,7 @@ pub enum Intake {
     /// device list (Protocol 2.68).
     SystemAudioDevicesApplied,
     /// A `web_access` reply updated the replicated web access state
-    /// (Protocol 2.70).
+    /// (Protocol 2.71).
     WebAccessApplied,
 }
 

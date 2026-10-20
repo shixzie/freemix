@@ -1435,7 +1435,7 @@ struct Runtime<'a> {
     title_previews: &'a crate::title_preview::TitlePreviewWorker,
     /// Lists system audio devices off this loop (Protocol 2.68).
     system_audio_devices: &'a crate::system_audio_devices::SystemAudioDevices,
-    /// The web gateway's pairing and devices (Protocol 2.70), when it runs.
+    /// The web gateway's pairing and devices (Protocol 2.71), when it runs.
     web_access: Option<&'a std::sync::Arc<crate::web::WebAccess>>,
     process_shutdown: &'a ProcessShutdown,
     /// The playlist clock; simulated snapshots read its wall-clock frame.
@@ -1734,7 +1734,7 @@ impl Runtime<'_> {
                 ))?;
                 Ok(())
             }
-            // Web device pairing (RC-007, Protocol 2.70): only a raw
+            // Web device pairing (RC-007, Protocol 2.71): only a raw
             // control session holding manage_users may manage it, never a
             // session relayed by the gateway itself.
             WireMessage::WebAccessRequest(request) => {

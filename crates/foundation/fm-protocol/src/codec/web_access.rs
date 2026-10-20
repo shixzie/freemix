@@ -1,4 +1,4 @@
-//! Web access codec (Protocol 2.70); see [`crate::WebAccessMessage`].
+//! Web access codec (Protocol 2.71); see [`crate::WebAccessMessage`].
 
 use core::fmt::Write as _;
 
