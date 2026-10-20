@@ -3532,6 +3532,146 @@ fn simulated_daemon_realizes_a_timed_transition_on_its_frame_loop() {
     assert_eq!(persisted.project().inputs()[0].name, "Renamed mid fade");
 }
 
+/// A title taken off air with an Out phase is answered on the phase's first
+/// frame and realized once the phase has played at the show's frame rate,
+/// as on the native daemon; another client's edit inside the phase is
+/// realized first, and the journal replays both onto their frames.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn simulated_daemon_realizes_a_title_off_air_when_its_out_phase_ends() {
+    use fm_titles::fm_animation::{AnimationPreset, Phase, Timebase};
+
+    let directory = TestDirectory::new("simulated-title-out");
+    let project_path = directory.project_path();
+    let mut template = process_title_template();
+    // Keyed at the show's 25 fps: 50 frames are two seconds of fade.
+    template.animation =
+        fm_titles::TitleAnimation::empty(Timebase::new(FrameRate::new(25, 1).unwrap()));
+    template
+        .apply_animation_preset(
+            fm_titles::ElementId::new(NonZeroU128::new(1).unwrap()),
+            Phase::Out,
+            AnimationPreset::Fade,
+            50,
+        )
+        .unwrap();
+    create_title_project_with(&project_path, template);
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut operator = daemon.connect();
+    let mut other = daemon.connect();
+    for client in [&mut operator, &mut other] {
+        client
+            .reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        client.handshake_as(Role::Admin, None);
+        client.receive_snapshot();
+    }
+
+    operator.send(&command(
+        "take",
+        "take-key",
+        CommandPayload::TakeTitle {
+            input: input(4),
+            channel: fm_protocol::WireOverlayChannelId::new(2).unwrap(),
+            base_revision: 3,
+            fields: Vec::new(),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut operator, "take"), 1);
+    await_switcher_realized(&mut operator, 1);
+    // Let the channel's take transition settle into the Hold pose.
+    std::thread::sleep(Duration::from_millis(500));
+
+    let sent = Instant::now();
+    operator.send(&command(
+        "off",
+        "off-key",
+        CommandPayload::TitleOffAir { input: input(4) },
+    ));
+    let answered = loop {
+        match operator.receive() {
+            WireMessage::CommandResult(result) => {
+                assert!(
+                    matches!(result, CommandResult::Accepted { revision: 2, .. }),
+                    "{result:?}"
+                );
+                break sent.elapsed();
+            }
+            WireMessage::RuntimeEvent(runtime) => assert!(
+                runtime.revision != 2,
+                "the off-air was realized before it was answered: {runtime:?}"
+            ),
+            _ => {}
+        }
+    };
+    assert!(
+        answered < Duration::from_millis(1_000),
+        "the off-air was answered after {answered:?}, not on its first frame"
+    );
+
+    other.send(&command(
+        "rename",
+        "rename-key",
+        CommandPayload::RenameInput {
+            input: input(1),
+            name: "Renamed mid Out phase".into(),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut other, "rename"), 3);
+    let mut realized = Vec::new();
+    while !realized.contains(&2) {
+        if let WireMessage::RuntimeEvent(runtime) = operator.receive()
+            && matches!(
+                &runtime.event,
+                RuntimeLifecycleEvent::Realized { domain, .. } if domain == "switcher" || domain == "project"
+            )
+        {
+            realized.push(runtime.revision);
+        }
+    }
+    let ended = sent.elapsed();
+    assert_eq!(
+        realized,
+        [3, 2],
+        "the edit inside the phase is realized first"
+    );
+    assert!(
+        ended >= Duration::from_millis(1_800),
+        "the off-air's 50-frame Out phase was realized in {ended:?}"
+    );
+    let snapshot = snapshot_of(&daemon, Role::Viewer);
+    assert!(
+        snapshot
+            .realized_overlays
+            .iter()
+            .all(|overlay| !overlay.active),
+        "{:?}",
+        snapshot.realized_overlays
+    );
+    drop(operator);
+    drop(other);
+    // Killed: recovery replays the off-air and the edit onto their frames.
+    daemon.stop();
+    let restarted = Daemon::start(&project_path);
+    let snapshot = snapshot_of(&restarted, Role::Viewer);
+    assert_eq!(snapshot.revision, 3);
+    assert!(
+        snapshot
+            .realized_overlays
+            .iter()
+            .all(|overlay| !overlay.active)
+    );
+    restarted.wait_success();
+    let persisted = ProjectStore::new(&project_path).unwrap().load().unwrap();
+    assert_eq!(persisted.position().revision, 3);
+    assert_eq!(
+        persisted.project().inputs()[0].name,
+        "Renamed mid Out phase"
+    );
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn manual_alpha_fade_state_and_receipts_survive_restart_through_commit_and_cancel() {
@@ -5440,7 +5580,11 @@ fn process_title_template() -> fm_titles::TitleTemplate {
 /// whose stored template draws one rectangle at (200, 100) sized 400x200,
 /// tinted by color field 1, on a transparent background. No font is needed.
 fn create_title_project(path: &Path) {
-    let template = process_title_template();
+    create_title_project_with(path, process_title_template());
+}
+
+/// [`create_title_project`] with `template` stored for title input 4.
+fn create_title_project_with(path: &Path, template: fm_titles::TitleTemplate) {
     let store = ProjectStore::new(path).unwrap();
     let document = fm_persistence::encode_title_template(&fm_persistence::StoredTitleTemplate {
         template,

@@ -3175,6 +3175,89 @@ mod titles {
         assert_eq!(control.titles_on_air(), Vec::new());
     }
 
+    /// The off-air revision's realization, if `outcome` published one.
+    fn realized(outcome: &crate::TickOutcome, revision: u64) -> Option<RuntimeLifecycleEvent> {
+        outcome
+            .runtime_events
+            .iter()
+            .find(|event| event.revision == revision)
+            .map(|event| event.event.clone())
+    }
+
+    #[test]
+    fn a_title_off_air_is_realized_when_its_out_phase_ends() {
+        use fm_protocol::TitlePhase;
+
+        let mut control = animated_title_service();
+        let admin = principal(Role::Admin);
+        let server = server_identity();
+        let channel = OverlayChannelId::new(2).unwrap();
+        let submit = |control: &mut ControlService, id: &str, payload| {
+            let submission = control
+                .submit(&admin, command(id, &format!("{id}-key"), payload), 0)
+                .unwrap();
+            assert!(submission.is_accepted(), "{submission:?}");
+            control.engine.revision().get()
+        };
+
+        submit(&mut control, "take", take(0, Vec::new()));
+        for _ in 0..20 {
+            control.tick(&server).unwrap();
+        }
+        assert_eq!(phase_of(&control), (TitlePhase::Hold, 0, 0));
+
+        // The 10-frame Out phase: nothing on its first nine frames, the
+        // realization on its last, once the overlay is off.
+        let off = submit(&mut control, "off", off_air());
+        for frame in 0..9 {
+            let outcome = control.tick(&server).unwrap();
+            assert_eq!(realized(&outcome, off), None, "Out frame {frame}");
+            assert!(control.work_in_flight());
+            assert!(control.idle_engine_snapshot().is_err());
+        }
+        let outcome = control.tick(&server).unwrap();
+        assert!(
+            matches!(
+                realized(&outcome, off),
+                Some(RuntimeLifecycleEvent::Realized { ref domain, .. }) if domain == "switcher"
+            ),
+            "{:?}",
+            outcome.runtime_events
+        );
+        assert_eq!(control.titles_on_air(), Vec::new());
+        assert!(
+            !control
+                .engine
+                .realized_switcher()
+                .overlay(channel)
+                .is_active()
+        );
+        assert!(!control.work_in_flight());
+
+        // A re-take during Out supersedes the off-air, which is never
+        // realized.
+        submit(&mut control, "retake", take(0, Vec::new()));
+        for _ in 0..20 {
+            control.tick(&server).unwrap();
+        }
+        let off = submit(&mut control, "off-again", off_air());
+        for _ in 0..3 {
+            assert_eq!(realized(&control.tick(&server).unwrap(), off), None);
+        }
+        let retake = submit(&mut control, "retake-mid-out", take(0, Vec::new()));
+        let outcome = control.tick(&server).unwrap();
+        assert_eq!(
+            realized(&outcome, off),
+            Some(RuntimeLifecycleEvent::Superseded {
+                by_revision: retake
+            })
+        );
+        for _ in 0..30 {
+            assert_eq!(realized(&control.tick(&server).unwrap(), off), None);
+        }
+        assert_eq!(phase_of(&control), (TitlePhase::Hold, 0, 0));
+    }
+
     fn score(value: i64) -> Vec<TitleFieldUpdate> {
         vec![TitleFieldUpdate {
             field: field(SCORE),

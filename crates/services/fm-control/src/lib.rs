@@ -906,6 +906,14 @@ struct ActiveTransition {
     generation: u64,
 }
 
+/// A title taken off air whose Out phase is still playing: its off-air
+/// command is realized once the phase ends (and the overlay is off).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ActiveTitleOut {
+    revision: u64,
+    input: InputId,
+}
+
 /// Single-writer Phase 1 control service.
 pub struct ControlService<A = Policy> {
     engine: Engine,
@@ -927,6 +935,8 @@ pub struct ControlService<A = Policy> {
     /// transition's revision must see that revision complete.
     active_transitions: Vec<ActiveTransition>,
     active_fade_to_black: Option<ActiveTransition>,
+    /// Off-air commands whose title's Out phase is still playing.
+    active_title_outs: Vec<ActiveTitleOut>,
     runtime_sequence_generation: u64,
     runtime_sequence: u64,
     /// Each media input's transport state on the last published frame.
@@ -1046,6 +1056,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             pending_runtime_actions: VecDeque::new(),
             active_transitions: Vec::new(),
             active_fade_to_black: None,
+            active_title_outs: Vec::new(),
             runtime_sequence_generation,
             runtime_sequence: 0,
             media_published: HashMap::new(),
@@ -1108,6 +1119,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             pending_runtime_actions: self.pending_runtime_actions.clone(),
             active_transitions: self.active_transitions.clone(),
             active_fade_to_black: self.active_fade_to_black,
+            active_title_outs: self.active_title_outs.clone(),
             runtime_sequence_generation: self.runtime_sequence_generation,
             runtime_sequence: self.runtime_sequence,
             media_published: self.media_published.clone(),
@@ -2148,6 +2160,7 @@ impl<A: AuthorizationHook> ControlService<A> {
         !self.pending_runtime_actions.is_empty()
             || !self.active_transitions.is_empty()
             || self.active_fade_to_black.is_some()
+            || !self.active_title_outs.is_empty()
             || self.engine.work_in_flight()
     }
 
@@ -2161,6 +2174,7 @@ impl<A: AuthorizationHook> ControlService<A> {
         if !self.pending_runtime_actions.is_empty()
             || !self.active_transitions.is_empty()
             || self.active_fade_to_black.is_some()
+            || !self.active_title_outs.is_empty()
         {
             return Err(SnapshotError::WorkInFlight);
         }
@@ -2664,38 +2678,10 @@ impl<A: AuthorizationHook> ControlService<A> {
                 .checked_add(offset)
                 .ok_or(ControlError::RuntimeGenerationOutOfOrder)
                 .map_err(TickWithRealizerError::Tick)?;
-            if is_program_transition(&pending.command) {
-                self.active_transitions.push(ActiveTransition {
-                    revision: pending.revision,
-                    generation,
-                });
-            } else if matches!(&pending.command, EngineCommand::FadeToBlack { .. }) {
-                if let Some(superseded) = self.active_fade_to_black.replace(ActiveTransition {
-                    revision: pending.revision,
-                    generation,
-                }) && publish_runtime_realization
-                {
-                    runtime_events.push(
-                        self.runtime_superseded(
-                            server,
-                            superseded.revision,
-                            generation,
-                            pending.revision,
-                        )
-                        .map_err(TickWithRealizerError::Tick)?,
-                    );
-                }
-            } else if publish_runtime_realization {
-                runtime_events.push(
-                    self.runtime_realized(
-                        server,
-                        pending.revision,
-                        generation,
-                        runtime_domain(&pending.command),
-                    )
+            runtime_events.extend(
+                self.realize_pending(server, &pending, generation, publish_runtime_realization)
                     .map_err(TickWithRealizerError::Tick)?,
-                );
-            }
+            );
         }
 
         let completions = self.take_completed_switcher_operations();
@@ -2712,6 +2698,10 @@ impl<A: AuthorizationHook> ControlService<A> {
                 );
             }
         }
+        runtime_events.extend(
+            self.end_title_outs(server, current_generation, publish_runtime_realization)
+                .map_err(TickWithRealizerError::Tick)?,
+        );
 
         runtime_events.extend(
             self.observe_media_frames(
@@ -2735,6 +2725,111 @@ impl<A: AuthorizationHook> ControlService<A> {
             runtime_events,
             subscriber_failures,
         })
+    }
+
+    /// Whether title `input` is still on air in its Out phase. The engine
+    /// drops it on the phase's last frame, when it also cuts its overlay off.
+    fn title_leaving(&self, input: InputId) -> bool {
+        self.engine
+            .titles_on_air()
+            .iter()
+            .any(|title| title.input == input && title.frame.phase == TitleAirPhase::Out)
+    }
+
+    /// Realizes one runtime action the engine applied on this tick:
+    /// publishes its realization, or starts tracking the timed work that
+    /// realizes it later.
+    fn realize_pending(
+        &mut self,
+        server: &ServerIdentity,
+        pending: &PendingRuntimeAction,
+        generation: u64,
+        publish: bool,
+    ) -> Result<Vec<RuntimeEventMessage>, ControlError> {
+        let mut events = Vec::new();
+        if is_program_transition(&pending.command) {
+            self.active_transitions.push(ActiveTransition {
+                revision: pending.revision,
+                generation,
+            });
+        } else if matches!(&pending.command, EngineCommand::FadeToBlack { .. }) {
+            if let Some(superseded) = self.active_fade_to_black.replace(ActiveTransition {
+                revision: pending.revision,
+                generation,
+            }) && publish
+            {
+                events.push(self.runtime_superseded(
+                    server,
+                    superseded.revision,
+                    generation,
+                    pending.revision,
+                )?);
+            }
+        } else if let EngineCommand::TitleOffAir { input } = pending.command
+            && self.title_leaving(input)
+        {
+            // Realized once its Out phase ends (Protocol 2.86).
+            self.active_title_outs.push(ActiveTitleOut {
+                revision: pending.revision,
+                input,
+            });
+        } else {
+            events.extend(self.abandon_title_outs(server, pending, generation, publish)?);
+            if publish {
+                events.push(self.runtime_realized(
+                    server,
+                    pending.revision,
+                    generation,
+                    runtime_domain(&pending.command),
+                )?);
+            }
+        }
+        Ok(events)
+    }
+
+    /// A re-take of a title abandons its unfinished Out phase: that off-air
+    /// is superseded by the take (`pending`), never realized.
+    fn abandon_title_outs(
+        &mut self,
+        server: &ServerIdentity,
+        pending: &PendingRuntimeAction,
+        generation: u64,
+        publish: bool,
+    ) -> Result<Vec<RuntimeEventMessage>, ControlError> {
+        let EngineCommand::TakeTitle { input, .. } = pending.command else {
+            return Ok(Vec::new());
+        };
+        let (abandoned, kept) = std::mem::take(&mut self.active_title_outs)
+            .into_iter()
+            .partition::<Vec<_>, _>(|out| out.input == input);
+        self.active_title_outs = kept;
+        if !publish {
+            return Ok(Vec::new());
+        }
+        abandoned
+            .into_iter()
+            .map(|out| self.runtime_superseded(server, out.revision, generation, pending.revision))
+            .collect()
+    }
+
+    /// Realizes each off-air whose Out phase has ended.
+    fn end_title_outs(
+        &mut self,
+        server: &ServerIdentity,
+        generation: u64,
+        publish: bool,
+    ) -> Result<Vec<RuntimeEventMessage>, ControlError> {
+        let (ended, playing) = std::mem::take(&mut self.active_title_outs)
+            .into_iter()
+            .partition::<Vec<_>, _>(|out| !self.title_leaving(out.input));
+        self.active_title_outs = playing;
+        if !publish {
+            return Ok(Vec::new());
+        }
+        ended
+            .into_iter()
+            .map(|out| self.runtime_realized(server, out.revision, generation, "switcher"))
+            .collect()
     }
 
     fn take_completed_switcher_operations(&mut self) -> Vec<ActiveTransition> {
