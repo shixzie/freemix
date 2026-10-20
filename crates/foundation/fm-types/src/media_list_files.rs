@@ -53,7 +53,7 @@ pub fn parse_m3u(
     max_entries: usize,
     max_title_bytes: usize,
 ) -> Vec<M3uEntry> {
-    let text = text.get(..MAX_M3U_BYTES.min(text.len())).unwrap_or(text);
+    let text = &text[..text.floor_char_boundary(MAX_M3U_BYTES)];
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut entries = Vec::new();
     let mut pending: Option<(Option<u64>, Option<String>)> = None;
@@ -150,4 +150,26 @@ pub fn is_m3u_file_name(path: &str) -> bool {
     path.rsplit_once('.').is_some_and(|(_, extension)| {
         extension.eq_ignore_ascii_case("m3u") || extension.eq_ignore_ascii_case("m3u8")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Text past [`MAX_M3U_BYTES`] is never read, even when the limit falls
+    /// inside a multi-byte character.
+    #[test]
+    fn a_playlist_is_read_only_up_to_its_byte_limit() {
+        let mut text = "#".repeat(MAX_M3U_BYTES - 1);
+        text.push('\u{e9}');
+        text.push_str("\n/shows/after.mov\n");
+        assert!(!text.is_char_boundary(MAX_M3U_BYTES));
+        assert_eq!(parse_m3u(&text, Path::new("/"), 10, 64), Vec::new());
+
+        let mut text = "#".repeat(MAX_M3U_BYTES - 32);
+        text.push_str("\n/shows/before.mov\n");
+        let entries = parse_m3u(&text, Path::new("/"), 10, 64);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, PathBuf::from("/shows/before.mov"));
+    }
 }
