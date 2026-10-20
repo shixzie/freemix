@@ -164,6 +164,7 @@ pub(crate) fn draw_documents(ui: &mut Ui, state: &StudioUiState, intents: &mut V
     ui.data_mut(|data| data.insert_temp(asked_id, Arc::new(asked)));
 }
 
+#[allow(clippy::too_many_lines)] // one document card
 fn draw_card(
     ui: &mut Ui,
     l: Locale,
@@ -384,7 +385,10 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert!(!first[0].thumbnail);
         assert_eq!(first[0].page, 1);
-        assert!(wanted_page_requests(&state, &unavailable, &mut asked).is_empty());
+        assert_eq!(
+            wanted_page_requests(&state, &unavailable, &mut asked).len(),
+            0
+        );
         // Ready: the notes again (the answer was unavailable) and the strip.
         state.paged_pages.insert(
             PagedPageKey {
@@ -413,11 +417,11 @@ mod tests {
             );
         }
         asked.clear();
-        assert!(wanted_page_requests(&state, &ready, &mut asked).is_empty());
+        assert_eq!(wanted_page_requests(&state, &ready, &mut asked).len(), 0);
         // No page count, nothing to ask.
-        assert!(
-            wanted_page_requests(&state, &status(0, 0, DocumentState::Loading), &mut asked)
-                .is_empty()
+        assert_eq!(
+            wanted_page_requests(&state, &status(0, 0, DocumentState::Loading), &mut asked).len(),
+            0
         );
     }
 }

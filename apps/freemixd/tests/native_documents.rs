@@ -254,10 +254,13 @@ fn program_frame_filled(
 ) -> MonitorImage {
     let deadline = Instant::now() + FRAME_TIMEOUT;
     while Instant::now() < deadline {
+        // Preview frames may interleave; only Program is checked.
         let WireMessage::MonitorFrame(part) = client.receive() else {
             continue;
         };
-        assert_eq!(part.tap, MonitorTap::Program);
+        if part.tap != MonitorTap::Program {
+            continue;
+        }
         if let Some(image) = assembler.push(&part).unwrap()
             && filled_with(&image, color)
         {

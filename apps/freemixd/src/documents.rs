@@ -8,7 +8,7 @@
 //! live source frame).
 //!
 //! A document asset is read once per URI and probed synchronously: a PDF is
-//! parsed with the pure-Rust `hayro` renderer, a PowerPoint or
+//! parsed with the pure-Rust `hayro` renderer, a `PowerPoint` or
 //! `OpenDocument` presentation's XML package is read for its slide count,
 //! title, and presenter notes (no converter needed). The probe depends only
 //! on the file's bytes, so the page count it reports to the engine
@@ -17,11 +17,11 @@
 //! before and after each command, so a replayed page step lands where it
 //! first did.
 //!
-//! Showing a presentation needs a PDF: when LibreOffice is installed the
+//! Showing a presentation needs a PDF: when `LibreOffice` is installed the
 //! presentation converts headlessly on its own thread, in a private sandbox
 //! and with a timeout (see [`fm_presentations::OfficeConverter`]), and the
 //! input reads `converting` until it is `ready`. Without a converter it
-//! reads `unavailable` with the instruction to install LibreOffice or
+//! reads `unavailable` with the instruction to install `LibreOffice` or
 //! export to PDF, while its page count and notes still work. Keynote
 //! packages are never converted: the operator exports them to PDF.
 //!
@@ -167,7 +167,7 @@ impl DocumentPages {
     }
 
     /// Pages of the assets under `assets_root`, converting presentations
-    /// with the LibreOffice this host has (`FREEMIX_SOFFICE`, then
+    /// with the `LibreOffice` this host has (`FREEMIX_SOFFICE`, then
     /// `soffice` on `PATH`).
     pub(crate) fn with_host_converter(assets_root: impl Into<PathBuf>) -> Self {
         Self::new(assets_root, OfficeConverter::locate())
@@ -302,10 +302,10 @@ impl DocumentPages {
         let spawned = thread::Builder::new()
             .name("freemixd-document-convert".into())
             .spawn(move || {
-                let converted = converter
+                let pdf_bytes = converter
                     .convert(format, &bytes, DEFAULT_CONVERSION_TIMEOUT)
                     .and_then(PdfDocument::open);
-                let result = match converted {
+                let result = match pdf_bytes {
                     Ok(pdf) => Renderable::Ready(Arc::new(Mutex::new(pdf))),
                     Err(error) => {
                         eprintln!(

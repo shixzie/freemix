@@ -1850,7 +1850,7 @@ fn paged_page_answers_are_kept_by_page_and_kind() {
     assert_eq!(&rgba[..4], &[200, 10, 20, 255]);
     server_thread.join().unwrap();
     let _ = session.receive();
-    assert!(session.paged_pages().is_empty());
+    assert_eq!(session.paged_pages().len(), 0);
 }
 
 fn input_thumbnail(input: u128, sequence: u64, red: u8) -> fm_protocol::InputThumbnailMessage {

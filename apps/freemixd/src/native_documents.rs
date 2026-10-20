@@ -300,7 +300,7 @@ mod tests {
         // An unchanged page renders nothing more.
         sources.observe(&project(0), &pages);
         thread::sleep(Duration::from_millis(50));
-        assert!(sources.take_completed().is_empty());
+        assert_eq!(sources.take_completed().len(), 0);
         sources.observe(&project(1), &pages);
         let second = wait(&sources);
         assert_eq!(centre(&second[0].1), [0, 0, 255, 255]);

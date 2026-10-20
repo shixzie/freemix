@@ -1,9 +1,9 @@
 //! Process-level IN-014 on the simulated runtime: a host PDF and a
-//! PowerPoint presentation import as document inputs; the PDF reports its
+//! `PowerPoint` presentation import as document inputs; the PDF reports its
 //! page count and title, steps page by page (clamped at both ends) through
 //! `paged_input`, answers presenter notes and page thumbnails, and lands
 //! on the same page after a crash (journal replay) and a clean restart; a
-//! presentation without LibreOffice still counts its slides and serves its
+//! presentation without `LibreOffice` still counts its slides and serves its
 //! notes, and says how to show it; with a converter it converts and
 //! becomes ready.
 
@@ -545,14 +545,14 @@ fn a_presentation_counts_and_serves_notes_without_libreoffice_and_converts_with_
 
     // A converter (a stand-in that writes a PDF where LibreOffice would)
     // makes it ready.
-    let converted = directory.0.join("converted.pdf");
-    fs::write(&converted, deck()).unwrap();
+    let converted_pdf = directory.0.join("converted.pdf");
+    fs::write(&converted_pdf, deck()).unwrap();
     let converter = directory.0.join("soffice");
     fs::write(
         &converter,
         format!(
             "#!/bin/sh\nwhile [ \"$1\" != \"--outdir\" ]; do shift; done\ncp '{}' \"$2/presentation.pdf\"\n",
-            converted.display()
+            converted_pdf.display()
         ),
     )
     .unwrap();

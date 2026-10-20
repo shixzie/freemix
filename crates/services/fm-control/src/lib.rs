@@ -2093,6 +2093,7 @@ impl<A: AuthorizationHook> ControlService<A> {
     ///
     /// Returns an engine infrastructure error. Command rejections and authorization
     /// denials are staged as normal [`CommandResult::Rejected`] values.
+    #[allow(clippy::too_many_lines)] // one staged path per command family
     pub fn prepare_submit<'a>(
         &'a mut self,
         principal: &Principal,
@@ -2764,8 +2765,6 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
             CommandClass::Transition
         }
         CommandPayload::Media { operation, .. } => media_command_class(*operation),
-        // Stepping a document is an operator control like media transport.
-        CommandPayload::PagedInput { .. } => CommandClass::Transition,
         // Mixer labels and groups are project edits an audio operator owns.
         CommandPayload::SetInputAudioStrip { .. } | CommandPayload::AudioMixer(_) => {
             CommandClass::ControlAudio
@@ -2778,6 +2777,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::SetFadeToBlackOutput { .. }
         | CommandPayload::SetFadeToBlackOutputDuration { .. }
         | CommandPayload::SetFadeToBlackCurve { .. }
+        // Stepping a document is an operator control like media transport.
+        | CommandPayload::PagedInput { .. }
         | CommandPayload::Cut
         | CommandPayload::Fade { .. }
         | CommandPayload::AlphaFade { .. }

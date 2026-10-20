@@ -1467,7 +1467,7 @@ impl CommandCompletion {
                 transport: operation.is_transport(),
             },
             // A page step is a live operator control realized like a media
-            // transport (Protocol 2.70).
+            // transport (Protocol 2.73).
             CommandPayload::PagedInput { .. } => Self::Media { transport: true },
             CommandPayload::PlaylistControl { .. } | CommandPayload::PlaylistAdvance { .. } => {
                 Self::Playlist { edit: false }

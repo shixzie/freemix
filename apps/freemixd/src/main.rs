@@ -14389,7 +14389,7 @@ type ProjectVet<'a> = dyn Fn(&StoredProject, &StoredProject) -> Option<CommandRe
 /// Failures before `store.record` refuse the command as classified by
 /// [`staging_refusal`]; a failing `record` refuses it as undurable; failures
 /// from the commit on are fatal because the command is already journaled.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn execute_durable_command_with_ticks(
     control: &mut ControlService<Policy>,
     store: &dyn DurableStore,
@@ -14806,6 +14806,7 @@ fn receipt_recency(receipt: &IdempotencyReceipt, pinned: Option<&str>) -> (bool,
     (pinned == Some(receipt.key()), revision, rejected)
 }
 
+#[allow(clippy::too_many_lines)]
 fn stored_project_with_receipts(
     durable: &StoredProject,
     snapshot: &EngineSnapshot,
