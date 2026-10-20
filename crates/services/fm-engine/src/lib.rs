@@ -11,6 +11,7 @@ mod history;
 mod input_lifecycle;
 mod media;
 pub(crate) mod media_list;
+mod paged;
 mod playlist;
 mod scene_animation;
 mod scene_layer;
@@ -59,6 +60,7 @@ pub use media_list::{
     EngineMediaListCommand, EngineMediaListNavigation, EngineMediaListOperation,
     EngineMediaListStatus,
 };
+pub use paged::{EnginePagedCommand, EnginePagedStatus};
 pub use playlist::{
     EnginePlaylistOperation, EnginePlaylistStart, MAX_PLAYLIST_TRANSITION_FRAMES, PlaylistCue,
     PlaylistRestoreError, playlist_due_frame, playlist_from_model, playlist_to_model,

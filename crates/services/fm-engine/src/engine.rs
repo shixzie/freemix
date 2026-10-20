@@ -450,6 +450,10 @@ pub enum EngineCommand {
     /// [`crate::media_list`]). Creating and editing are project edits;
     /// navigation and advances are live operations.
     MediaList(crate::EngineMediaListCommand),
+    /// Steps a paged (document) input to another page (IN-014; see
+    /// [`crate::paged`]). A live operation, resolved against the page count
+    /// the media plane reported.
+    Paged(crate::EnginePagedCommand),
     /// Edits an input's lifecycle or the input catalogue (IN-026; see
     /// [`crate::EngineInputLifecycleEdit`]). A project edit.
     InputLifecycle(crate::EngineInputLifecycleEdit),
@@ -702,6 +706,12 @@ pub enum EngineEvent {
         input: InputId,
         frame: u64,
         operation: crate::EngineMediaListOperation,
+    },
+    /// A paged command was accepted (IN-014); the page afterwards is read
+    /// from [`ShowState::paged_page`].
+    PagedChanged {
+        input: InputId,
+        navigation: fm_types::paged::PagedNavigation,
     },
     /// An input lifecycle edit (or its undo or redo) was accepted
     /// (IN-026). `added` lists the inputs a duplicate or import appended,
@@ -1145,6 +1155,9 @@ pub struct Engine {
     /// snapshotted, so a restored source is cued at its start frame.
     media: BTreeMap<InputId, crate::media::MediaRuntime>,
     slideshows: BTreeMap<InputId, crate::slideshow::SlideshowRuntime>,
+    /// Every paged input's page count as the media plane reported it
+    /// (IN-014). Runtime only: never snapshotted.
+    paged_counts: BTreeMap<InputId, u32>,
 }
 
 impl Engine {
@@ -1170,6 +1183,7 @@ impl Engine {
             scene_clip_bound: None,
             media: BTreeMap::new(),
             slideshows: BTreeMap::new(),
+            paged_counts: BTreeMap::new(),
         }
     }
 
@@ -1202,6 +1216,49 @@ impl Engine {
             return Err(crate::EngineMediaError::Playback(error));
         }
         Ok(())
+    }
+
+    /// Records paged input `input`'s page count as the media plane reads
+    /// it (IN-014): `Some` once its document is known (a count of zero is
+    /// treated as unknown), `None` while it is not. Navigation resolves
+    /// against it. Returns whether `input` is a paged input of the show.
+    pub fn set_paged_count(&mut self, input: InputId, count: Option<u32>) -> bool {
+        if self.show().paged_page(input).is_none() {
+            self.paged_counts.remove(&input);
+            return false;
+        }
+        match count.filter(|count| *count > 0) {
+            Some(count) => {
+                self.paged_counts
+                    .insert(input, count.min(fm_types::paged::MAX_PAGED_PAGES));
+            }
+            None => {
+                self.paged_counts.remove(&input);
+            }
+        }
+        true
+    }
+
+    /// Paged input `input`'s page and reported count, or `None` for an
+    /// input that is not paged (IN-014).
+    #[must_use]
+    pub fn paged_status(&self, input: InputId) -> Option<crate::EnginePagedStatus> {
+        let page = self.show().paged_page(input)?;
+        Some(crate::EnginePagedStatus {
+            input,
+            page,
+            count: self.paged_counts.get(&input).copied(),
+        })
+    }
+
+    /// Every paged input's status, ascending by input (IN-014).
+    #[must_use]
+    pub fn paged_statuses(&self) -> Vec<crate::EnginePagedStatus> {
+        self.show()
+            .paged_inputs()
+            .keys()
+            .filter_map(|input| self.paged_status(*input))
+            .collect()
     }
 
     /// Whether media input `input` plays from an open source (IN-026): a
@@ -1963,6 +2020,7 @@ impl Engine {
                     scene_clip_bound: None,
                     media_tracks: None,
                     media_list: None,
+                    paged_count: None,
                     cue: None,
                 };
                 mutation.apply(show, &mut Vec::new()).map_err(refuse)?;
@@ -2224,6 +2282,10 @@ impl Engine {
             ) => self.realized_switcher.on_air_usage(*input),
             _ => None,
         };
+        let paged_count = match resolution.as_ref().map(|resolved| &resolved.command) {
+            Ok(EngineCommand::Paged(command)) => self.paged_counts.get(&command.input).copied(),
+            _ => None,
+        };
         let media_tracks = match resolution.as_ref().map(|resolved| &resolved.command) {
             Ok(EngineCommand::Media(command)) => self
                 .media
@@ -2321,6 +2383,7 @@ impl Engine {
                 scene_clip_bound,
                 media_tracks,
                 media_list: staged_media_list,
+                paged_count,
                 cue,
             })
         });
@@ -2780,6 +2843,7 @@ impl Engine {
             scene_clip_bound: None,
             media: BTreeMap::new(),
             slideshows: BTreeMap::new(),
+            paged_counts: BTreeMap::new(),
         })
     }
 }
@@ -2979,6 +3043,8 @@ struct EngineMutation {
     media_tracks: Option<Vec<u32>>,
     /// The planned step of a media list command (IN-006).
     media_list: Option<Result<crate::media_list::MediaListPlan, Rejection>>,
+    /// The input's reported page count, for a paged command.
+    paged_count: Option<u32>,
     /// The planned cue GO, operation, or advance of a cue runtime command.
     cue: Option<Result<CuePlan, Rejection>>,
 }
@@ -3479,6 +3545,17 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::Paged(command) = &self.command {
+            let page = crate::paged::accept(state, command, self.paged_count)?;
+            state.set_paged_page_unchecked(command.input, page);
+            events.push(EngineEvent::PagedChanged {
+                input: command.input,
+                navigation: command.navigation,
+            });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::SetTransitionFavorite { slot, favorite } = self.command {
             state.set_transition_favorite(slot, favorite)?;
             events.push(EngineEvent::TransitionFavoriteChanged { slot });
@@ -3793,6 +3870,7 @@ impl EngineMutation {
             | EngineCommand::Media(_)
             | EngineCommand::PageNavigate { .. }
             | EngineCommand::MediaList(_)
+            | EngineCommand::Paged(_)
             | EngineCommand::InputLifecycle(_) => {
                 unreachable!("grade and animation mutations return before switcher command mapping")
             }
@@ -3970,6 +4048,18 @@ pub(crate) fn check_system_audio_room(state: &ShowState) -> Result<(), Rejection
                 message,
             )),
         );
+    }
+    Ok(())
+}
+
+/// Refuses another document input once the show holds
+/// [`fm_types::paged::MAX_DOCUMENT_INPUTS`] (IN-014).
+pub(crate) fn check_document_room(state: &ShowState) -> Result<(), Rejection> {
+    let count = state.paged_inputs().len();
+    if count >= fm_types::paged::MAX_DOCUMENT_INPUTS {
+        let message = format!("the show already has {count} document inputs, the most it may hold");
+        return Err(Rejection::new(RejectionCode::Conflict, message.clone())
+            .with_field(FieldIssue::new("kind", "too_many_document_inputs", message)));
     }
     Ok(())
 }
@@ -4353,6 +4443,7 @@ fn apply_runtime(
             | EngineCommand::Media(_)
             | EngineCommand::PageNavigate { .. }
             | EngineCommand::MediaList(_)
+            | EngineCommand::Paged(_)
     ) {
         return Ok(Vec::new());
     }
@@ -4547,6 +4638,7 @@ fn apply_runtime(
         | EngineCommand::Media(_)
         | EngineCommand::PageNavigate { .. }
         | EngineCommand::MediaList(_)
+        | EngineCommand::Paged(_)
         | EngineCommand::InputLifecycle(_) => {
             unreachable!("grade and animation commands return before switcher command mapping")
         }
@@ -4744,6 +4836,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::Media(_)
         | EngineCommand::PageNavigate { .. }
         | EngineCommand::MediaList(_)
+        | EngineCommand::Paged(_)
         | EngineCommand::InputLifecycle(_)
         | EngineCommand::SetCueList { .. }
         | EngineCommand::CueControl { .. }
@@ -4783,6 +4876,7 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::Media(_))
         && !matches!(command, EngineCommand::PageNavigate { .. })
         && !matches!(command, EngineCommand::MediaList(_))
+        && !matches!(command, EngineCommand::Paged(_))
         && !matches!(
             command,
             EngineCommand::InputLifecycle(edit) if !matches!(

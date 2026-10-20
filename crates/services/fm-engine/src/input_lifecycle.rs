@@ -505,7 +505,14 @@ pub(crate) fn apply(
                 },
             );
             if let Some(spec) = state.input_source(*source) {
+                if matches!(spec, InputSourceSpec::Document { .. }) {
+                    crate::engine::check_document_room(&staged)?;
+                }
                 staged.set_input_source_unchecked(input, spec.clone());
+            }
+            // A duplicated document opens on the original's page (IN-014).
+            if let Some(page) = state.paged_page(*source) {
+                staged.set_paged_page_unchecked(input, page);
             }
             if let Some(settings) = state.capture_settings(*source) {
                 staged.set_capture_settings_unchecked(input, settings.clone());
@@ -607,6 +614,11 @@ pub(crate) fn apply(
                     ),
                 )
                 .with_reason(error.reason()));
+            }
+            if matches!(source, InputSourceSpec::Document { .. })
+                && !matches!(current, InputSourceSpec::Document { .. })
+            {
+                crate::engine::check_document_room(state)?;
             }
             match (current.is_media(), source.is_media()) {
                 (false, true) => {
@@ -736,13 +748,14 @@ pub(crate) fn apply(
                     .find(|item| item.input == *input)
                     .expect("accepted items come from the request");
                 staged.add_input(*input, name.clone()).map_err(catalogue)?;
-                staged.set_input_source_unchecked(
-                    *input,
-                    InputSourceSpec::Media {
-                        asset_uri: item.asset_uri.clone(),
-                    },
-                );
-                staged.insert_media_input(*input, fm_model::MediaPlaybackSettings::default());
+                // A PDF or presentation becomes a document input (IN-014).
+                let source = InputSourceSpec::from_asset_uri(&item.asset_uri);
+                if source.is_media() {
+                    staged.insert_media_input(*input, fm_model::MediaPlaybackSettings::default());
+                } else {
+                    crate::engine::check_document_room(&staged)?;
+                }
+                staged.set_input_source_unchecked(*input, source);
             }
             *state = staged;
             added = inputs;

@@ -187,6 +187,7 @@ impl EngineCommand {
                     EngineCommandKind::ProjectEdit
                 }
             }
+            Self::Paged(_) => EngineCommandKind::LiveOperation,
             Self::Undo { .. } | Self::Redo { .. } => EngineCommandKind::History,
             Self::SetEditLock { .. } => EngineCommandKind::EditLock,
             Self::SetInputAudioStrip { .. }

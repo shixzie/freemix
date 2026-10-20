@@ -217,6 +217,9 @@ pub struct ShowState {
     input_lifecycle: BTreeMap<InputId, fm_model::InputLifecycle>,
     /// The replaceable source of every input that has one (IN-026).
     input_sources: BTreeMap<InputId, fm_model::InputSourceSpec>,
+    /// Every paged (document) input's current zero-based page (IN-014):
+    /// exactly the inputs whose source is a document.
+    paged: BTreeMap<InputId, u32>,
     /// Every capture device input's settings (IN-001): exactly the inputs
     /// whose source is a device.
     capture: BTreeMap<InputId, fm_types::capture::CaptureSettings>,
@@ -321,6 +324,7 @@ impl ShowState {
             input_categories: Vec::new(),
             input_lifecycle: BTreeMap::new(),
             input_sources: BTreeMap::new(),
+            paged: BTreeMap::new(),
             capture: BTreeMap::new(),
             input_audio_labels: BTreeMap::new(),
             input_audio_groups: BTreeMap::new(),
@@ -663,6 +667,7 @@ impl ShowState {
         self.media_lists.remove(&input);
         self.input_lifecycle.remove(&input);
         self.input_sources.remove(&input);
+        self.paged.remove(&input);
         self.capture.remove(&input);
         self.input_audio_labels.remove(&input);
         self.input_audio_groups.remove(&input);
@@ -1693,7 +1698,65 @@ impl ShowState {
         } else {
             self.capture.remove(&input);
         }
+        // A new or replaced document starts on its first page (IN-014).
+        if matches!(source, fm_model::InputSourceSpec::Document { .. }) {
+            if self.input_sources.get(&input) != Some(&source) {
+                self.paged.insert(input, 0);
+            }
+        } else {
+            self.paged.remove(&input);
+        }
         self.input_sources.insert(input, source);
+    }
+
+    /// Paged input `input`'s current page (IN-014), or `None` when `input`
+    /// is not a paged input.
+    #[must_use]
+    pub fn paged_page(&self, input: InputId) -> Option<u32> {
+        self.paged.get(&input).copied()
+    }
+
+    /// Every paged input's current page, ascending by input (IN-014).
+    #[must_use]
+    pub const fn paged_inputs(&self) -> &BTreeMap<InputId, u32> {
+        &self.paged
+    }
+
+    /// Every document input and its asset URI, ascending by input (IN-014).
+    pub fn document_inputs(&self) -> impl Iterator<Item = (InputId, &str)> {
+        self.input_sources
+            .iter()
+            .filter_map(|(input, source)| match source {
+                fm_model::InputSourceSpec::Document { asset_uri } => {
+                    Some((*input, asset_uri.as_str()))
+                }
+                _ => None,
+            })
+    }
+
+    /// Restores paged input `input`'s page, as a project restores it; its
+    /// source must already be a document (IN-014).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::UnknownInput`] for an input outside this show
+    /// and [`ShowError::InvalidPagedPage`] for an input that is not paged
+    /// or a page past the paged bound.
+    pub fn set_paged_page(&mut self, input: InputId, page: u32) -> Result<(), ShowError> {
+        if !self.inputs.contains(&input) {
+            return Err(ShowError::UnknownInput(input));
+        }
+        if !self.paged.contains_key(&input) || page >= fm_types::paged::MAX_PAGED_PAGES {
+            return Err(ShowError::InvalidPagedPage(input));
+        }
+        self.paged.insert(input, page);
+        Ok(())
+    }
+
+    pub(crate) fn set_paged_page_unchecked(&mut self, input: InputId, page: u32) {
+        if let Some(current) = self.paged.get_mut(&input) {
+            *current = page;
+        }
     }
 
     /// Capture input `input`'s settings (IN-001), or `None` when `input` is

@@ -27,6 +27,9 @@ pub enum ShowError {
     /// The input is not a capture device input, or the capture settings are
     /// invalid (IN-001).
     InvalidCaptureSettings(InputId),
+    /// The input is not a paged input, or the page is out of range
+    /// (IN-014).
+    InvalidPagedPage(InputId),
     /// The input category list or a lifecycle entry is invalid; carries the
     /// [`fm_model::InputLifecycleError::code`] (IN-026).
     InvalidInputLifecycle(&'static str),
@@ -89,6 +92,10 @@ impl fmt::Display for ShowError {
             Self::InvalidCaptureSettings(input) => write!(
                 formatter,
                 "input {input} is not a capture input or its capture settings are invalid"
+            ),
+            Self::InvalidPagedPage(input) => write!(
+                formatter,
+                "input {input} is not a paged input or its page is out of range"
             ),
             Self::InvalidInputLifecycle(code) => {
                 write!(
