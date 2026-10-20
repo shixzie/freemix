@@ -100,9 +100,11 @@
 //! A system audio source (a `PulseAudio`/`PipeWire` source or an ALSA capture
 //! device) is read as an audio-only [`DeviceInput`]: the child decodes the
 //! device's audio and paces one tiny `showwaves` picture per program frame
-//! from that same audio, so the jitter buffer, frame-locked audio cut,
+//! from that same audio, so the jitter buffer, drift-corrected audio,
 //! stall detection, and reopen policy work exactly as for a stream, and a
-//! device that stops delivering stops the pictures too. Its audio is
+//! device that stops delivering stops the pictures too. A device's audio is
+//! resampled without timestamp compensation, so its sample count stays on
+//! the sound card's clock and the receiver's drift loop corrects it. Its audio is
 //! required: the receiver never falls back to reopening it without audio.
 //! The child keeps the audio-server environment (`HOME`,
 //! `XDG_RUNTIME_DIR`, `PULSE_SERVER`, `PULSE_COOKIE`, and
@@ -203,8 +205,8 @@ pub struct NetworkInputConfig {
 /// second one for the audio.
 ///
 /// The receiver treats the device like a stream: it buffers pictures in the
-/// same bounded jitter buffer, cuts audio on program frame boundaries, and
-/// reconnects (reopens the device) when it stops delivering. An audio input
+/// same bounded jitter buffer, drift-corrects its audio into the engine
+/// clock (the pictures following it), and reconnects (reopens the device) when it stops delivering. An audio input
 /// that keeps the device from opening is dropped: the receiver reopens the
 /// device without audio.
 #[derive(Clone, Debug, Eq, PartialEq)]

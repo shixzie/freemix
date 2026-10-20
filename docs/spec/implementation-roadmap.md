@@ -26,8 +26,14 @@ highest-value remaining items, ranked:
 6. **Native key/fill and key refinements (`SW-008`).** Chroma and luma keys run
    natively, but key/fill, choke/despill refinements, and auto key are refused
    by the native GPU path and absent from Studio.
-7. **Source clock drift correction (`AU-004`).** `SourceSync` is unwired, so
-   capture and system audio drift against Master over a long show.
+7. **Source clock drift telemetry on the wire and on real devices
+   (`AU-004`).** Every live source the native daemon ingests (V4L2/ALSA
+   capture, network streams, system audio) now runs its audio through a
+   drift-correcting `LiveSourceClock` with pictures following it, but the
+   per-source drift, backlog, and resync counts reach operators only as
+   `FREEMIXD_SOURCE_SYNC` log records (no protocol event or Studio view),
+   there is no real-device soak evidence, and the Windows/macOS live paths
+   do not exist yet.
 8. **Windows and macOS ports of the Linux-only live paths (`IN-001`, `AU-011`,
    `AU-001`).** Live capture hot-plug, system audio inputs, and device listing
    are Linux-only; the roadmap requires the vertical slice on all Tier-1 OSes
@@ -1276,6 +1282,39 @@ correction, fill, and every recovery count. Remaining gaps: nothing wires
 `AudioBlock`/`MediaTiming` adapter, shared filter tables, keyed source set,
 quality measurement under active drift, jitter or bursty-delivery coverage,
 crossfaded splices, or real-device evidence. `AU-004` remains planned.
+
+Update (2026-10-20): `SourceSync` is wired into every live source of the
+native daemon. `fm-audio`'s `LiveSourceClock` wraps it for live delivery: the
+connection's audio is pushed contiguously with its arrival time, the PI loop
+(`DriftControlConfig::live`: ±1000 ppm, 0.01 Hz critically damped, 100 ppm/s
+slew) observes a continuous-time one-pole (2 s) filtered fill instead of the
+fill sampled before each pull, which aliased the delivery bursts into a slow
+beat the loop chased with ratio swings of hundreds of ppm, and after any fill
+jump (connect, re-prime, resync, overrun) it holds the ratio for 6 s and
+re-anchors on the settled sub-burst offset so the drift estimate survives
+pauses and reconnects. A read-side hard resync (declicked skip back to the
+target) fires only above twice the target fill; underruns count separately.
+The pictures follow the audio: the smoothed picture-queue latency is held
+within ¾ frame of the audio latency by dropping one extra picture or
+repeating one, which also holds for a capture card whose pictures are on the
+host clock while its audio is on the card's crystal. `fm-codec-ffmpeg`'s
+`NetworkReceiver` (network streams, V4L2/ALSA capture through `fm-io-linux`,
+and system audio) replaces its frame-locked audio queue with it, pulls audio
+while not live so the backlog stays primed, no longer asks `ffmpeg` to pad and
+trim device audio against host timestamps (`aresample` without `async`), and
+gives the picture buffer at least three frames above its target; `freemixd`
+logs a `FREEMIXD_SOURCE_SYNC` record per source when it first runs, on every
+resync or underrun, and once a minute. Measured in the sample domain
+(`fm-audio --test live_source_drift`, bursty 256-sample delivery): ±500 ppm
+sources over one simulated hour settle within 5 ppm after 98–100 s, end
+within 0.002 ppm of the true skew, and keep the fill within 1.4× the target
+with no resync or underrun, 44 picture drops (fast) or repeats (slow) against
+45 skewed frames, and at most 0.6 frame of A/V error; a −300 → +700 ppm step
+settles in 89 s then 111 s; a 5 s pause re-primes once and keeps the estimate
+within 2.6 ppm; a +5000 ppm source (beyond range) resyncs 22 times in 10 min,
+declicked, with no overrun. Remaining for `AU-004`: a wire event and Studio
+view of the telemetry, an `AudioBlock`/`MediaTiming` adapter for non-receiver
+sources, real-device soak evidence, and the Windows/macOS live paths.
 
 
 Current implementation boundary for item 4: native `freemixd` now realizes

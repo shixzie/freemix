@@ -301,8 +301,8 @@ commands = ["cargo test -p fm-audio --test multichannel", "cargo test -p fm-audi
 [[tests]]
 id = "accept-au-004"
 state = "present"
-paths = ["crates/media/fm-audio/tests/sample_rate_sync.rs"]
-commands = ["cargo test -p fm-audio --test sample_rate_sync"]
+paths = ["crates/media/fm-audio/tests/sample_rate_sync.rs", "crates/media/fm-audio/tests/live_source_drift.rs", "apps/freemixd/tests/native_network_stream.rs"]
+commands = ["cargo test -p fm-audio --test sample_rate_sync", "cargo test -p fm-audio --test live_source_drift", "cargo test -p freemixd --test native_network_stream"]
 [[tests]]
 id = "accept-au-005"
 state = "present"
