@@ -77,6 +77,7 @@ mod still_input_ui;
 mod stinger_config;
 mod stream_control;
 mod stream_targets;
+mod strip_fx;
 mod studio_animation;
 mod studio_color;
 mod system_audio_ui;
@@ -1556,6 +1557,8 @@ pub struct StudioShell {
     show_about: bool,
     toasts: toasts::ToastQueue,
     meters: meter_ballistics::MeterBallistics,
+    /// The strip or Master FX window (AU-005).
+    strip_fx: strip_fx::StripFxPanel,
     monitor_textures: monitors::MonitorTextures,
     /// Uploaded live input thumbnails (Protocol 2.59).
     thumbnail_textures: input_thumbnail_ui::ThumbnailTextures,
@@ -1986,6 +1989,7 @@ impl StudioShell {
         self.draw_stream_target_dialogs(ui.ctx(), state, &mut intents);
         self.draw_lifecycle_dialogs(ui.ctx(), state, &mut intents);
         self.draw_tool_windows(ui.ctx(), state, &mut intents);
+        self.draw_strip_fx_window(ui.ctx(), state, &mut intents);
         self.draw_layout_name_dialog(ui.ctx());
         self.track_catalogue_intents(ui.ctx(), state, &intents);
         self.follow_input_bank_visibility(state, &mut intents);
@@ -2106,6 +2110,7 @@ impl Default for StudioShell {
             show_about: false,
             toasts: toasts::ToastQueue::default(),
             meters: meter_ballistics::MeterBallistics::default(),
+            strip_fx: strip_fx::StripFxPanel::default(),
             monitor_textures: monitors::MonitorTextures::default(),
             thumbnail_textures: input_thumbnail_ui::ThumbnailTextures::default(),
             input_bank_drawn: false,

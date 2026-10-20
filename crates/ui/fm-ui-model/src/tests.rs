@@ -3888,3 +3888,119 @@ fn media_lists_replicate_from_records_and_events() {
         .unwrap();
     assert!(model.state().unwrap().media_list(input(9)).is_none());
 }
+
+#[test]
+#[allow(clippy::too_many_lines)] // one sync and its edits
+fn strip_dsp_records_complete_the_snapshot_and_events_keep_them_current() {
+    use fm_protocol::{
+        AudioDspTarget, AudioMixerOperation, AudioStripDspStateMessage, WireInputId,
+    };
+    use fm_types::strip_dsp::{StripDsp, StripDspPreset, StripDspTarget};
+    let record = |revision, value, chain| AudioStripDspStateMessage {
+        revision,
+        input: WireInputId::from_domain(input(value)),
+        chain,
+    };
+    let project_id = project(10);
+    let identity = engine("engine-a", 1, "log-a");
+    let mut model = ClientModel::new(project_id);
+    let mut installed = snapshot(project_id, 7);
+    installed.audio_mixer.master_dsp = StripDspPreset::Master.chain();
+    installed.audio_mixer.strip_dsp_states = 2;
+    model.install_snapshot(installed).unwrap();
+    assert!(!model.state().unwrap().audio_strip_dsps_complete());
+    let voice = StripDspPreset::Voice.chain();
+    let music = StripDspPreset::Music.chain();
+    // Another revision, an unknown input, or a default chain is refused.
+    for refused in [
+        record(6, 1, voice),
+        record(7, 9, voice),
+        record(7, 1, StripDsp::DEFAULT),
+    ] {
+        assert_eq!(
+            model.apply_audio_strip_dsp_state(refused),
+            Err(ModelError::AudioStripDspStateMismatch)
+        );
+    }
+    model
+        .apply_audio_strip_dsp_state(record(7, 2, voice))
+        .unwrap();
+    // Records ascend by input.
+    assert_eq!(
+        model.apply_audio_strip_dsp_state(record(7, 1, music)),
+        Err(ModelError::AudioStripDspStateMismatch)
+    );
+    model
+        .apply_audio_strip_dsp_state(record(7, 3, music))
+        .unwrap();
+    let state = model.state().unwrap();
+    assert!(state.audio_strip_dsps_complete());
+    assert_eq!(state.input_audio_dsp(input(1)), StripDsp::DEFAULT);
+    assert_eq!(state.input_audio_dsp(input(2)), voice);
+    assert_eq!(
+        state.audio_dsp(StripDspTarget::Master),
+        StripDspPreset::Master.chain()
+    );
+    // Beyond the announced count.
+    assert_eq!(
+        model.apply_audio_strip_dsp_state(record(7, 1, music)),
+        Err(ModelError::AudioStripDspStateMismatch)
+    );
+
+    // An accepted edit replaces a chain; a default chain clears it.
+    let set = |target, chain| {
+        DurableChange::AudioMixerChanged(AudioMixerOperation::SetStripDsp {
+            target,
+            chain: Box::new(chain),
+            gesture: None,
+        })
+    };
+    let strip = |value| AudioDspTarget::Input(WireInputId::from_domain(input(value)));
+    model
+        .apply_event(event(project_id, identity.clone(), 8, set(strip(1), music)))
+        .unwrap();
+    model
+        .apply_event(event(
+            project_id,
+            identity.clone(),
+            9,
+            set(strip(2), StripDsp::DEFAULT),
+        ))
+        .unwrap();
+    model
+        .apply_event(event(
+            project_id,
+            identity.clone(),
+            10,
+            set(AudioDspTarget::Master, StripDsp::DEFAULT),
+        ))
+        .unwrap();
+    let state = model.state().unwrap();
+    assert_eq!(state.input_audio_dsp(input(1)), music);
+    assert_eq!(state.input_audio_dsp(input(2)), StripDsp::DEFAULT);
+    assert_eq!(state.master_audio_dsp(), &StripDsp::DEFAULT);
+    // An edit for an unknown input does not apply.
+    assert!(
+        model
+            .apply_event(event(
+                project_id,
+                identity.clone(),
+                11,
+                set(strip(9), music)
+            ))
+            .is_err()
+    );
+    // A removed input's chain leaves with it.
+    model
+        .apply_event(event(
+            project_id,
+            identity,
+            11,
+            DurableChange::InputRemoved { input: input(3) },
+        ))
+        .unwrap();
+    assert_eq!(
+        model.state().unwrap().input_audio_dsp(input(3)),
+        StripDsp::DEFAULT
+    );
+}

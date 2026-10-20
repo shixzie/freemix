@@ -53,6 +53,7 @@ mod media_lists;
 pub mod scene_designer;
 pub mod scripts;
 pub mod shortcuts;
+pub mod strip_dsp;
 pub mod title_animation;
 pub mod title_editor;
 

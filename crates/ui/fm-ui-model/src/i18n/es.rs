@@ -8625,4 +8625,155 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Mostrar la diapositiva {page}: {name}"),
     ),
     (Msg::ThumbSlideshowEmpty, t("Aún sin imágenes")),
+    // Strip and Master FX (AU-005).
+    (Msg::FxKey, t("FX")),
+    (
+        Msg::FxKeyHover,
+        t(
+            "Abre la cadena FX de este canal: paso alto, EQ, puerta, compresor y limitador; se ilumina mientras alguna etapa está activa",
+        ),
+    ),
+    (
+        Msg::FxMasterKeyHover,
+        t(
+            "Abre la cadena FX del Máster, que procesa el bus de Programa sumado; se ilumina mientras alguna etapa está activa",
+        ),
+    ),
+    (Msg::FxWindowTitle, t("FX: {strip}")),
+    (Msg::FxMasterName, t("Bus máster")),
+    (Msg::FxBypass, t("BYPASS")),
+    (
+        Msg::FxBypassHover,
+        t("Puentea toda la cadena: el canal se oye sin procesar y se conservan todos los ajustes"),
+    ),
+    (
+        Msg::FxPresetHover,
+        t("Carga una cadena de partida; todas las etapas siguen siendo editables"),
+    ),
+    (Msg::FxPresetLabel, t("Preajuste")),
+    (Msg::FxPresetFlat, t("Plano")),
+    (Msg::FxPresetVoice, t("Voz")),
+    (Msg::FxPresetPodcast, t("Pódcast")),
+    (Msg::FxPresetMusic, t("Música")),
+    (Msg::FxPresetMaster, t("Pegamento de máster")),
+    (
+        Msg::FxPresetOptionHover,
+        t("Carga la cadena {preset} en este canal"),
+    ),
+    (Msg::FxCopy, t("Copiar cadena")),
+    (
+        Msg::FxCopyHover,
+        t("Copia esta cadena para pegarla en otro canal"),
+    ),
+    (Msg::FxPaste, t("Pegar cadena")),
+    (Msg::FxPasteHover, t("Sustituye esta cadena por la copiada")),
+    (Msg::FxReset, t("Restablecer cadena")),
+    (
+        Msg::FxResetHover,
+        t("Desactiva todas las etapas y restaura los ajustes predeterminados"),
+    ),
+    (
+        Msg::FxReasonNothingCopied,
+        t("aún no se ha copiado ninguna cadena"),
+    ),
+    (Msg::FxStageHighPass, t("Paso alto")),
+    (Msg::FxStageEq, t("EQ")),
+    (Msg::FxStageGate, t("Puerta")),
+    (Msg::FxStageCompressor, t("Compresor")),
+    (Msg::FxStageLimiter, t("Limitador")),
+    (
+        Msg::FxStageOnHover,
+        t("{stage} activo: haga clic para desactivarlo"),
+    ),
+    (
+        Msg::FxStageOffHover,
+        t("{stage} inactivo: haga clic para activarlo"),
+    ),
+    (
+        Msg::FxCurveHover,
+        t(
+            "Arrastre un punto numerado para ajustar la frecuencia y la ganancia de su banda, y use la rueda sobre él para cambiar su anchura (Q); arrastre HP para mover el corte del paso alto",
+        ),
+    ),
+    (
+        Msg::FxBandHover,
+        t("Activa o desactiva la banda {band} del EQ"),
+    ),
+    (
+        Msg::FxBandKindHover,
+        t("La forma de la banda {band}: estante grave, pico o estante agudo"),
+    ),
+    (Msg::FxKindLowShelf, t("Estante grave")),
+    (Msg::FxKindPeak, t("Pico")),
+    (Msg::FxKindHighShelf, t("Estante agudo")),
+    (Msg::FxKindOptionHover, t("Convierte esta banda en {kind}")),
+    (
+        Msg::FxFrequencyHover,
+        t("Frecuencia de la banda en hercios"),
+    ),
+    (
+        Msg::FxBandGainHover,
+        t("Realce o atenuación de la banda en dB"),
+    ),
+    (
+        Msg::FxQHover,
+        t("Anchura de la banda: una Q mayor es más estrecha"),
+    ),
+    (
+        Msg::FxHighPassHover,
+        t("Corte del paso alto: las frecuencias más graves se atenúan 12 dB por octava"),
+    ),
+    (
+        Msg::FxGateThresholdHover,
+        t("La puerta se abre mientras el nivel supera este valor"),
+    ),
+    (
+        Msg::FxGateRangeHover,
+        t("Cuánto baja el canal la puerta cerrada"),
+    ),
+    (
+        Msg::FxAttackHover,
+        t("Con qué rapidez reacciona la etapa a una subida de nivel"),
+    ),
+    (
+        Msg::FxHoldHover,
+        t("Cuánto tiempo sigue abierta la puerta después de que baja el nivel"),
+    ),
+    (
+        Msg::FxReleaseHover,
+        t("Con qué rapidez se recupera la etapa cuando baja el nivel"),
+    ),
+    (
+        Msg::FxCompThresholdHover,
+        t("El compresor baja los niveles que superan este valor"),
+    ),
+    (
+        Msg::FxRatioHover,
+        t("Con qué intensidad se reducen los niveles por encima del umbral"),
+    ),
+    (
+        Msg::FxKneeHover,
+        t("Suaviza la entrada de la compresión alrededor del umbral"),
+    ),
+    (
+        Msg::FxMakeupHover,
+        t("Ganancia añadida tras la compresión para recuperar el nivel"),
+    ),
+    (
+        Msg::FxCeilingHover,
+        t("El limitador mantiene los picos por debajo de este nivel"),
+    ),
+    (
+        Msg::FxGrHover,
+        t("Reducción de ganancia que aplica ahora {stage}: {db}"),
+    ),
+    (
+        Msg::FxGrIdleHover,
+        t("No se informa reducción de ganancia para {stage}"),
+    ),
+    (Msg::FxPendingHover, t("Enviando esta cadena al servidor")),
+    (
+        Msg::FxCloseHover,
+        t("Cierra la ventana FX; la cadena se queda en el canal"),
+    ),
 ];

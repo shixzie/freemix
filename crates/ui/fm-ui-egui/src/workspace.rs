@@ -1486,13 +1486,19 @@ impl StudioShell {
             }
             PanelId::Transitions => self.draw_transitions_body(ui, state, frame, intents),
             PanelId::InputBank => self.draw_inputs(ui, state, intents),
-            PanelId::Mixer => mixer::draw_mixer(
-                ui,
-                state,
-                &mut self.meters,
-                (frame.dt_ms, &mut self.layout.show_mixer_details),
-                intents,
-            ),
+            PanelId::Mixer => {
+                let mut fx = None;
+                mixer::draw_mixer(
+                    ui,
+                    state,
+                    &mut self.meters,
+                    (frame.dt_ms, &mut self.layout.show_mixer_details, &mut fx),
+                    intents,
+                );
+                if let Some(target) = fx {
+                    self.strip_fx.open(target);
+                }
+            }
             PanelId::Outputs => {
                 if let Some(action) = self.draw_recording(ui, state) {
                     intents.push(StudioIntent::Recording(action));

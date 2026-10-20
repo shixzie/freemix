@@ -173,6 +173,27 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
             *current = incoming;
             true
         }
+        // A strip DSP drag sends the latest chain of one target, never a
+        // backlog (AU-005); the queued set keeps its place in the drag, so a
+        // drag's first set still opens its undo step.
+        (
+            StudioIntent::AudioMixer(fm_protocol::AudioMixerOperation::SetStripDsp {
+                target: current_target,
+                chain: current_chain,
+                gesture: current_gesture,
+            }),
+            StudioIntent::AudioMixer(fm_protocol::AudioMixerOperation::SetStripDsp {
+                target,
+                chain,
+                gesture,
+            }),
+        ) if *current_target == target
+            && current_gesture.map(|gesture| gesture.token)
+                == gesture.map(|gesture| gesture.token) =>
+        {
+            *current_chain = chain;
+            true
+        }
         // One queued display inventory (or capture or system audio devices)
         // request answers every later one.
         (StudioIntent::RequestDisplayInventory, StudioIntent::RequestDisplayInventory)
@@ -5414,6 +5435,48 @@ mod tests {
         assert_eq!(
             queued,
             vec![set(GradeTarget::Program, 200), set(input, 400)]
+        );
+    }
+
+    #[test]
+    fn queued_strip_dsp_sets_of_one_drag_coalesce_to_the_latest() {
+        use fm_types::strip_dsp::{StripDsp, StripDspTarget};
+        let input = StripDspTarget::Input(fm_types::InputId::new(NonZeroU128::new(2).unwrap()));
+        let gesture = |token: u64, continues| fm_protocol::GradeGesture {
+            token: core::num::NonZeroU64::new(token).unwrap(),
+            continues,
+        };
+        let set = |target, threshold, gesture| {
+            let mut chain = StripDsp::DEFAULT;
+            chain.compressor.enabled = true;
+            chain.compressor.threshold_millidb = threshold;
+            StudioIntent::AudioMixer(fm_ui_model::strip_dsp::set_operation(
+                target, chain, gesture,
+            ))
+        };
+        let mut pending = PendingIntents::new();
+        pending
+            .push(set(input, -10_000, Some(gesture(7, false))))
+            .unwrap();
+        pending
+            .push(set(input, -20_000, Some(gesture(7, true))))
+            .unwrap();
+        // Another drag, and another target, keep their own sets.
+        pending
+            .push(set(input, -30_000, Some(gesture(8, false))))
+            .unwrap();
+        pending
+            .push(set(StripDspTarget::Master, -5_000, None))
+            .unwrap();
+        let queued: Vec<_> = pending.intents.iter().cloned().collect();
+        assert_eq!(
+            queued,
+            vec![
+                // The drag's first set keeps opening it, with the latest chain.
+                set(input, -20_000, Some(gesture(7, false))),
+                set(input, -30_000, Some(gesture(8, false))),
+                set(StripDspTarget::Master, -5_000, None),
+            ]
         );
     }
 

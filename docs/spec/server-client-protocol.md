@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.74 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.75 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -2722,6 +2722,58 @@ input plays a list of video and audio files one at a time.
   reordering, per-item in and out marks, removal, appending files, and the
   Auto Next, Auto First, Loop, and Shuffle options.
 - 2.73 is refused.
+
+Protocol 2.75 puts a DSP chain on every input strip and on the Master bus
+(AU-005, schema 65).
+
+- A chain is high-pass, five EQ bands, gate, compressor, and limiter, each
+  switchable, plus a chain bypass, carried everywhere as its canonical code:
+  85 bytes (big-endian integers: Hz, millidB, thousandths, microseconds)
+  in unpadded base64url, exactly 114 characters. Bounds: high-pass
+  20..=2000 Hz; band kind `low_shelf|peak|high_shelf`, 20..=20000 Hz,
+  -24000..=24000 millidB, Q 100..=10000 thousandths; gate threshold
+  -80000..=0, range 0..=80000, hold 0..=1 s, release up to 5 s; compressor
+  threshold -60000..=0, ratio 1000..=20000, knee and makeup 0..=24000;
+  limiter ceiling -60000..=0; every other time 100 us..=1 s. A code
+  outside them, non-canonical, or of another length is refused.
+- `payload=audio_strip_dsp` (`target`: `master` or a canonical input id,
+  `chain`: a code, optional `gesture` (a nonzero decimal) with `continues`
+  `true|false`) replaces the chain. It is an undoable, journaled project
+  edit authorized as an audio operation and refused while the project
+  padlock (or, for a strip, the input's padlock) is engaged. Sets of one
+  knob drag share a gesture token: a continuing set folds into the undo
+  step its drag opened for the same target, and a drag that ends where it
+  began leaves none. It is announced by `event=audio_mixer_changed` with
+  `operation=audio_strip_dsp` and the same fields.
+- The snapshot adds `audio_master_dsp=<code>` and
+  `audio_strip_dsp_states=<count>` (0..=256) after `input_audio_labels`;
+  that many `audio_strip_dsp_state` records (`revision`, `input`, `chain`),
+  one per input whose chain is not the default, ascending by input, follow
+  the `media_list_state` records. A record at another revision, beyond the
+  count, out of order, for an unknown input, or with a default chain forces
+  a fresh snapshot.
+- `audio_meters` appends `dynamics`: comma-separated
+  `<target>~<gate>~<compressor>~<limiter>` entries, Master first then
+  ascending inputs, one per chain with a running dynamics stage; each value
+  is the stage's gain reduction over the interval in millidB
+  (0..=200000), or `-` while that stage is off or the chain bypassed.
+- Durability (schema 65): each `input_audio_strips` entry gains required
+  `"dsp"` and the project gains required `"master_audio_dsp"`, each `null`
+  for the default chain or the chain as an object (`bypass`, `high_pass`
+  `{enabled, frequency_hz}`, `eq` `{enabled, bands}` with exactly five
+  `{enabled, kind, frequency_hz, gain_millidb, q_milli}`, `gate`,
+  `compressor`, `limiter`); an explicit default chain, an unknown field, or
+  a value out of bounds is refused.
+- `freemixd --native-media` processes each strip's chain after its delay
+  and before routing and the Master chain on the summed Program bus before
+  clipping and the Master meters, without allocating per block; parameter
+  changes glide and stage switches crossfade, so edits do not click.
+  Stinger clip-local audio is mixed after the Master chain. The simulated
+  daemon renders no audio: it keeps, saves, and announces chains only.
+- Studio's `FX` key on each strip and on Master opens the FX window; the
+  CLI adds `audio-strip-dsp` and `remote-audio-strip-dsp`
+  (`<input|master> <flat|voice|podcast|music|master|code>`).
+- 2.74 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

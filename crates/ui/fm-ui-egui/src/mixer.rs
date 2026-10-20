@@ -30,6 +30,7 @@ use egui::{
     Sense, Stroke, StrokeKind, Ui, Vec2, pos2,
 };
 use fm_protocol::AudioMeterChannel;
+use fm_types::strip_dsp::StripDspTarget;
 use fm_ui_model::{ClientView, InputAudioStripStatus};
 
 use crate::gating::{Capability, Hint, unavailable_reason};
@@ -595,7 +596,7 @@ pub(crate) fn draw_mixer(
     ui: &mut Ui,
     state: &StudioUiState,
     ballistics: &mut MeterBallistics,
-    (dt_ms, details): (u32, &mut bool),
+    (dt_ms, details, fx): (u32, &mut bool, &mut Option<StripDspTarget>),
     intents: &mut Vec<StudioIntent>,
 ) {
     // The strips share the whole panel; hidden entries give their height
@@ -736,9 +737,10 @@ pub(crate) fn draw_mixer(
                                 });
                                 let key = MeterKey::Input(status.input);
                                 let holds = ballistics.update(key, channels, dt_ms).to_vec();
+                                let target = StripDspTarget::Input(status.input);
                                 if draw_input_strip(
                                     ui,
-                                    view,
+                                    (view, fx_active(state, target), &mut *fx),
                                     status,
                                     MeterFeed {
                                         channels,
@@ -845,6 +847,7 @@ pub(crate) fn draw_mixer(
                 stale: meters_stale,
             },
             layout,
+            (fx_active(state, StripDspTarget::Master), &mut *fx),
         ) {
             clear.push(MeterKey::Master);
         }
@@ -856,6 +859,33 @@ pub(crate) fn draw_mixer(
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(33));
     }
+}
+
+/// Whether `target`'s DSP chain processes audio now (AU-005): its `FX` key
+/// is lit.
+fn fx_active(state: &StudioUiState, target: StripDspTarget) -> bool {
+    state
+        .project_state
+        .as_ref()
+        .is_some_and(|project| project.audio_dsp(target).is_active())
+}
+
+/// The `FX` key that opens a strip's or Master's FX window (AU-005): lit
+/// while the chain processes audio. Opening the window is local, so the key
+/// is always enabled.
+fn fx_key(ui: &mut Ui, active: bool, hover: &str, width: f32) -> bool {
+    let l = l10n::locale(ui.ctx());
+    let mut lit = active;
+    led_key(
+        ui,
+        true,
+        &mut lit,
+        l.text(Msg::FxKey),
+        accent_color(),
+        width,
+    )
+    .on_hover_text(hover)
+    .clicked()
 }
 
 /// One meter's latest sample plus its ballistic state.
@@ -1694,7 +1724,7 @@ fn peak_box(ui: &mut Ui, holds: &[ChannelBallistics], has_sample: bool, stale: b
 #[allow(clippy::too_many_lines)] // one immediate-mode region
 fn draw_input_strip(
     ui: &mut Ui,
-    view: &ClientView,
+    (view, fx_on, fx): (&ClientView, bool, &mut Option<StripDspTarget>),
     status: &InputAudioStripStatus,
     feed: MeterFeed<'_>,
     gate: StripGate,
@@ -1854,16 +1884,16 @@ fn draw_input_strip(
                 )
                 .changed();
         });
-        follow_changed = led_key(
-            ui,
-            enabled,
-            &mut follow_video,
-            "AFV",
-            accent_color(),
-            layout.inner_width(),
-        )
-        .hint(l.text(Msg::AfvHover), reason)
-        .changed();
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            let half = (layout.inner_width() - 3.0) / 2.0;
+            follow_changed = led_key(ui, enabled, &mut follow_video, "AFV", accent_color(), half)
+                .hint(l.text(Msg::AfvHover), reason)
+                .changed();
+            if fx_key(ui, fx_on, l.text(Msg::FxKeyHover), half) {
+                *fx = Some(StripDspTarget::Input(status.input));
+            }
+        });
     });
     let update = InputAudioStripUpdate {
         gain_millidb: gain_changed.then_some(gain_millidb),
@@ -1886,7 +1916,7 @@ fn draw_input_strip(
 /// A latching console key with an LED bar: lit in `color` while on, an unlit
 /// LED and dim label while off. `changed()` reports a click that flipped
 /// `value`.
-fn led_key(
+pub(crate) fn led_key(
     ui: &mut Ui,
     enabled: bool,
     value: &mut bool,
@@ -2161,7 +2191,12 @@ fn fader(
 }
 
 /// Draws the Master strip; returns `true` when the operator cleared its clip.
-fn draw_master_strip(ui: &mut Ui, feed: MeterFeed<'_>, layout: StripLayout) -> bool {
+fn draw_master_strip(
+    ui: &mut Ui,
+    feed: MeterFeed<'_>,
+    layout: StripLayout,
+    (fx_on, fx): (bool, &mut Option<StripDspTarget>),
+) -> bool {
     let l = l10n::locale(ui.ctx());
     let mut clear_clip = false;
     strip_frame(ui, accent_color(), layout.width, |ui| {
@@ -2199,6 +2234,14 @@ fn draw_master_strip(ui: &mut Ui, feed: MeterFeed<'_>, layout: StripLayout) -> b
             )
             .on_hover_text(l.text(Msg::MasterTapHover));
         });
+        if fx_key(
+            ui,
+            fx_on,
+            l.text(Msg::FxMasterKeyHover),
+            layout.inner_width(),
+        ) {
+            *fx = Some(StripDspTarget::Master);
+        }
     });
     clear_clip
 }

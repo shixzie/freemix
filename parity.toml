@@ -306,8 +306,8 @@ commands = ["cargo test -p fm-audio --test sample_rate_sync", "cargo test -p fm-
 [[tests]]
 id = "accept-au-005"
 state = "present"
-paths = ["crates/media/fm-audio/tests/dsp.rs", "crates/media/fm-audio/tests/sample_delay.rs", "crates/media/fm-audio/tests/master_input_meters.rs"]
-commands = ["cargo test -p fm-audio --test dsp", "cargo test -p fm-audio --test sample_delay", "cargo test -p fm-audio --test master_input_meters"]
+paths = ["crates/media/fm-audio/tests/dsp.rs", "crates/media/fm-audio/tests/sample_delay.rs", "crates/media/fm-audio/tests/master_input_meters.rs", "crates/media/fm-audio/tests/strip_dsp_mix.rs", "crates/services/fm-engine/tests/strip_dsp.rs", "crates/services/fm-persistence/tests/audio_mixer.rs", "crates/foundation/fm-protocol/tests/audio_mixer.rs", "apps/freemixd/tests/native_strip_dsp.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+commands = ["cargo test -p fm-audio --test dsp", "cargo test -p fm-audio --test sample_delay", "cargo test -p fm-audio --test master_input_meters", "cargo test -p fm-audio --test strip_dsp_mix", "cargo test -p fm-engine --test strip_dsp", "cargo test -p fm-persistence --test audio_mixer", "cargo test -p fm-protocol --test audio_mixer", "cargo test -p freemixd --test native_strip_dsp", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-au-006"
 state = "planned"

@@ -18,9 +18,12 @@ highest-value remaining items, ranked:
    daemon publishes a Preview `monitor_frame` tap (the incoming source during a
    transition) through nonblocking readbacks, and Studio shows it with a
    `PVW FEED` lamp. The rows stay `planned` for their wider acceptance.
-3. **Strip DSP on the live mix (`AU-005`).** The tested `fm-audio` EQ, gate,
-   compressor, and limiter chain is not wired to persisted strips, the engine,
-   or the daemon; this is a P0 row.
+3. **Strip DSP on the live mix (`AU-005`), remaining parts.** Every input
+   strip and Master now carry a persisted, undoable high-pass / five-band EQ /
+   gate / compressor / limiter chain that the native daemon applies and
+   meters (see the item 3 boundary below); polarity, an expander, loudness
+   metering, Web controls, the simulated daemon's audio path, and hardware
+   acceptance remain.
 4. **Finish user shortcuts (`RC-004`).** Project shortcuts now persist, travel
    on the wire, fire on the authority under per-action permissions, and are
    edited and dispatched in Studio (keys and OSC); still missing are Studio-local
@@ -1150,10 +1153,46 @@ bands, a soft-knee compressor with makeup gain, an instant-attack ceiling
 limiter, a hold/attack/release downward gate, and a peak/RMS window meter,
 composed per channel by a preallocated `StripDsp` that processes planar
 `AudioBlock`s in place without steady-state allocation and rejects mismatched
-formats or non-finite samples before mutating state. No persisted strip DSP
-state, protocol command, daemon mixer realization, Studio/Web surface, or
-hardware acceptance consumes those primitives yet. This is still a partial item
-3 slice and does not complete or change the status of any `AU-*` parity row.
+formats or non-finite samples before mutating state.
+
+Current implementation boundary for item 3 strip DSP on the live mix
+(`AU-005`): every input strip and the Master bus carry an ordered chain
+(`fm_types::strip_dsp::StripDsp`): high-pass (12 dB/octave), a five-band
+parametric EQ (each band low shelf, peak, or high shelf), a downward gate
+(threshold, range, attack, hold, release), a soft-knee compressor (threshold,
+ratio, attack, release, knee, makeup), and a ceiling limiter, each stage
+switchable, plus a chain bypass. Values are integers (Hz, millidB,
+thousandths, microseconds) with an exact 114-character code. The project
+persists them (`"dsp"` on each strip and `"master_audio_dsp"`, `null` for the
+default chain, strictly validated); engine edits are undoable, journaled,
+padlock-guarded project edits, and a knob drag's gesture token folds the
+whole drag into one undo step. `fm-audio`'s `LiveStripDsp` runs a chain in
+32-sample sub-blocks with no allocation after its first non-default chain:
+biquads are retuned without resetting their history, parameters glide over
+about 20 ms, and stage switches and the bypass crossfade over 10 ms. The
+`MasterMixer` processes each strip's chain before routing (after the strip
+delay) and the Master chain on the summed Program bus before clipping and
+the Master meters; the transactional mixer pair copies DSP state without
+allocating. `freemixd --native-media` restores the chains, applies each
+realized `audio_strip_dsp` edit to its ordinary and clip-local stinger mixers
+(the Master chain to the Program bus only), saves them, and reports
+gate/compressor/limiter gain reduction in `audio_meters` `dynamics`
+(`apps/freemixd/tests/native_strip_dsp.rs` proves an EQ boost, a
+compressor, a gate, the Master limiter, bypass, reconnect, and undo on a
+running daemon). Studio's `FX` key on each strip and on Master opens a
+floating FX window with the EQ response curve (draggable band points and
+high-pass corner, wheel for Q), per-band and per-stage controls, live
+gain-reduction meters, presets (flat, voice, podcast, music, master glue),
+and copy/paste between strips; drags send at most every 80 ms under one
+gesture token and the worker coalesces queued sets of one drag. The CLI has
+`audio-strip-dsp` / `remote-audio-strip-dsp` with presets or a chain code.
+Remaining for `AU-005`: polarity, an expander, delay as a DSP stage,
+loudness (LUFS) metering, Web controls, an audio render path in the
+simulated daemon (its chains are state, persistence, and events only), stinger
+clip audio passing the Master chain (it is mixed after it), an
+allocation-counting real-time test (the workspace forbids the `unsafe` a
+counting allocator needs; the no-allocation property rests on preallocated
+buffers and review), and hardware acceptance.
 
 Current implementation boundary for item 1: `fm-io-macos` is the first native
 platform leaf. An isolated Swift helper uses `AVFoundation` to enumerate camera

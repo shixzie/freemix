@@ -1721,7 +1721,22 @@ fn meters() -> AudioMetersMessage {
             output: fm_protocol::AudioMonitorOutputState::Failed,
             channels: vec![channel(300_000); 2],
         }),
-        dynamics: Vec::new(),
+        // The Master compressor and limiter and input 1's gate are working
+        // (AU-005), so the FX window's meters show a reduction.
+        dynamics: vec![
+            fm_protocol::AudioDynamicsMeter {
+                target: fm_protocol::AudioDspTarget::Master,
+                gate_millidb: None,
+                compressor_millidb: Some(4_500),
+                limiter_millidb: Some(1_200),
+            },
+            fm_protocol::AudioDynamicsMeter {
+                target: fm_protocol::AudioDspTarget::Input(wire(1)),
+                gate_millidb: Some(30_000),
+                compressor_millidb: Some(14_000),
+                limiter_millidb: None,
+            },
+        ],
     }
 }
 
@@ -1968,6 +1983,28 @@ fn scenes(language: Language) -> Vec<Scene> {
                 shell(&|shell| {
                     shell.layout.dock.show(PanelId::Cues);
                     shell.cues.select(list, Some(cue));
+                }),
+                ready(operator, Variant::default()),
+            ));
+        }
+    }
+    // AU-005: the FX window on a strip (with a copied chain to paste) and
+    // on Master, for an operator and a viewer.
+    for (operator, role) in [(true, "operator"), (false, "viewer")] {
+        for (name, target) in [
+            (
+                "strip-fx",
+                fm_types::strip_dsp::StripDspTarget::Input(input(1)),
+            ),
+            ("master-fx", fm_types::strip_dsp::StripDspTarget::Master),
+        ] {
+            scenes.push(Scene::console(
+                format!("{role}/{name}"),
+                shell(&|shell| {
+                    shell.strip_fx.open(target);
+                    shell
+                        .strip_fx
+                        .copy(fm_types::strip_dsp::StripDspPreset::Voice.chain());
                 }),
                 ready(operator, Variant::default()),
             ));
