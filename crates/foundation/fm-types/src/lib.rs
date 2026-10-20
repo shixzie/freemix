@@ -13,6 +13,7 @@ pub mod network_stream;
 pub mod paged;
 mod scaling;
 pub mod still;
+pub mod strip_dsp;
 pub mod system_audio;
 mod time;
 mod video;

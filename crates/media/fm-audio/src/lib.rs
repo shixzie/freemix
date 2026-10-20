@@ -17,6 +17,7 @@ mod dsp;
 mod embedded_audio;
 mod gain_smoother;
 mod live_source;
+mod live_strip_dsp;
 mod monitor;
 mod multichannel;
 mod resampler;
@@ -56,6 +57,9 @@ pub use gain_smoother::{
 pub use live_source::{
     AV_SMOOTHING_SECONDS, AV_TOLERANCE_FRAMES, LivePull, LiveSourceClock, LiveSourceConfig,
     LiveSourceTelemetry, MIN_LIVE_LATENCY_FRAMES, MIN_LIVE_TARGET_SAMPLES, PictureAction,
+};
+pub use live_strip_dsp::{
+    DspDynamicsReading, InPlacePlanes, LiveDspIo, LiveStripDsp, SUB_BLOCK as LIVE_DSP_SUB_BLOCK,
 };
 pub use monitor::{
     MAX_MONITOR_AUX_BUSES, MAX_MONITOR_CHANNELS, MAX_MONITOR_LEVEL_DB, MAX_MONITOR_STRIPS,
@@ -166,6 +170,8 @@ pub enum AudioError {
         group: MixerGroup,
         parent: MixerGroup,
     },
+    /// A strip or Master DSP chain was refused (AU-005).
+    Dsp(DspError),
 }
 
 impl fmt::Display for AudioError {
@@ -259,6 +265,7 @@ impl fmt::Display for AudioError {
                 group.number(),
                 parent.number()
             ),
+            Self::Dsp(error) => write!(formatter, "strip DSP error: {error}"),
         }
     }
 }
@@ -1064,7 +1071,65 @@ struct InputStrip {
     balance_ramp: PositionRamp,
     pan_ramp: PositionRamp,
     delay: SampleDelay,
+    /// The strip's DSP chain (AU-005), created by the first non-default
+    /// chain and kept so later edits crossfade.
+    dsp: Option<Box<StripDspSlot>>,
 }
+
+/// One strip's live DSP chain and its processed-sample scratch.
+#[derive(Clone, Debug)]
+struct StripDspSlot {
+    live: LiveStripDsp,
+    /// Processed samples, channel-major with stride `capacity`.
+    scratch: Vec<f32>,
+    capacity: usize,
+    /// Whether the last render routed the processed samples.
+    active: bool,
+}
+
+impl StripDspSlot {
+    fn new(live: LiveStripDsp, capacity: usize) -> Self {
+        let channels = live.channels();
+        Self {
+            live,
+            scratch: vec![0.0; channels * capacity],
+            capacity,
+            active: false,
+        }
+    }
+
+    /// The processed sample `sample` of source channel `channel`, when the
+    /// last render routed processed samples.
+    fn sample(&self, channel: usize, sample: usize) -> Option<f32> {
+        self.active
+            .then(|| self.scratch[channel * self.capacity + sample])
+    }
+}
+
+/// Feeds a strip's delayed input into its DSP and its scratch.
+struct StripDspIo<'a, B> {
+    delay: &'a SampleDelay,
+    block: Option<&'a B>,
+    scratch: &'a mut [f32],
+    capacity: usize,
+}
+
+impl<B: MixerBlockView> LiveDspIo for StripDspIo<'_, B> {
+    fn read(&mut self, channel: usize, start: usize, buffer: &mut [f32]) {
+        let input = self.block.map(|block| block.planes()[channel].as_slice());
+        for (offset, value) in buffer.iter_mut().enumerate() {
+            *value = self.delay.preview_sample(channel, start + offset, input);
+        }
+    }
+
+    fn write(&mut self, channel: usize, start: usize, buffer: &[f32]) {
+        let begin = channel * self.capacity + start;
+        self.scratch[begin..begin + buffer.len()].copy_from_slice(buffer);
+    }
+}
+
+/// Default processed-sample capacity per strip DSP chain: 100 ms at 48 kHz.
+pub const DEFAULT_DSP_BLOCK_CAPACITY: usize = 4_800;
 
 impl InputStrip {
     /// Whether pan applies: the strip's source is mono.
@@ -1369,6 +1434,10 @@ pub struct MasterMixer {
     solo_mode: SoloMode,
     clipping_policy: ClippingPolicy,
     retained_delay_bytes: usize,
+    /// The Master bus DSP chain (AU-005), after the strips are summed.
+    master_dsp: Option<Box<LiveStripDsp>>,
+    /// Samples each strip DSP scratch holds without growing.
+    dsp_block_capacity: usize,
 }
 
 impl MasterMixer {
@@ -1388,7 +1457,122 @@ impl MasterMixer {
             solo_mode: SoloMode::InPlace,
             clipping_policy: ClippingPolicy::default(),
             retained_delay_bytes: 0,
+            master_dsp: None,
+            dsp_block_capacity: DEFAULT_DSP_BLOCK_CAPACITY,
         })
+    }
+
+    /// Sets how many samples a strip DSP chain processes per render without
+    /// allocating (the longest block the caller renders). Existing chains
+    /// grow to it now; a longer render grows the chain's scratch then.
+    pub fn set_dsp_block_capacity(&mut self, samples: usize) {
+        self.dsp_block_capacity = samples.clamp(1, MAX_SAMPLES_PER_BLOCK);
+        let capacity = self.dsp_block_capacity;
+        for strip in self.inputs.values_mut() {
+            if let Some(slot) = &mut strip.dsp
+                && slot.capacity < capacity
+            {
+                **slot = StripDspSlot::new(slot.live.clone(), capacity);
+            }
+        }
+    }
+
+    /// The DSP chain of `id`'s strip; `None` for an unknown input or a
+    /// strip that never had one (the default chain).
+    #[must_use]
+    pub fn input_dsp(&self, id: InputId) -> Option<&fm_types::strip_dsp::StripDsp> {
+        self.inputs
+            .get(&id)?
+            .dsp
+            .as_ref()
+            .map(|slot| slot.live.settings())
+    }
+
+    /// Retargets `id`'s strip DSP chain (AU-005); the change glides or
+    /// crossfades from the next rendered sample. The first non-default chain
+    /// allocates the strip's chain and scratch; later edits do not allocate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AudioError::UnknownInput`] or [`AudioError::Dsp`] for an
+    /// out-of-range chain. Nothing changes on error.
+    pub fn set_input_dsp(
+        &mut self,
+        id: InputId,
+        settings: &fm_types::strip_dsp::StripDsp,
+    ) -> Result<(), AudioError> {
+        let rate = self.format.sample_rate.hertz();
+        let capacity = self.dsp_block_capacity;
+        let strip = self
+            .inputs
+            .get_mut(&id)
+            .ok_or(AudioError::UnknownInput(id))?;
+        match &mut strip.dsp {
+            Some(slot) => slot.live.set_settings(settings).map_err(AudioError::Dsp),
+            None if settings.is_default() => Ok(()),
+            None => {
+                #[allow(clippy::cast_precision_loss)]
+                let live = LiveStripDsp::new(
+                    rate as f32,
+                    strip.format.channels.channels().len(),
+                    settings,
+                )
+                .map_err(AudioError::Dsp)?;
+                strip.dsp = Some(Box::new(StripDspSlot::new(live, capacity)));
+                Ok(())
+            }
+        }
+    }
+
+    /// The Master bus DSP chain; `None` until a non-default chain is set.
+    #[must_use]
+    pub fn master_dsp(&self) -> Option<&fm_types::strip_dsp::StripDsp> {
+        self.master_dsp.as_ref().map(|live| live.settings())
+    }
+
+    /// Retargets the Master bus DSP chain (AU-005), which processes the
+    /// summed Program bus before clipping, the Master meters, and the
+    /// monitor bus that follows Master.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AudioError::Dsp`] for an out-of-range chain; nothing
+    /// changes.
+    pub fn set_master_dsp(
+        &mut self,
+        settings: &fm_types::strip_dsp::StripDsp,
+    ) -> Result<(), AudioError> {
+        match &mut self.master_dsp {
+            Some(live) => live.set_settings(settings).map_err(AudioError::Dsp),
+            None if settings.is_default() => Ok(()),
+            None => {
+                #[allow(clippy::cast_precision_loss)]
+                let live = LiveStripDsp::new(
+                    self.format.sample_rate.hertz() as f32,
+                    self.format.channels.channels().len(),
+                    settings,
+                )
+                .map_err(AudioError::Dsp)?;
+                self.master_dsp = Some(Box::new(live));
+                Ok(())
+            }
+        }
+    }
+
+    /// The gain reduction `id`'s strip DSP applied during the last render.
+    #[must_use]
+    pub fn input_dynamics(&self, id: InputId) -> Option<DspDynamicsReading> {
+        self.inputs
+            .get(&id)?
+            .dsp
+            .as_ref()
+            .map(|slot| slot.live.dynamics())
+    }
+
+    /// The gain reduction the Master DSP applied during the last render.
+    #[must_use]
+    pub fn master_dynamics(&self) -> Option<DspDynamicsReading> {
+        self.master_dsp.as_ref().map(|live| live.dynamics())
     }
 
     #[must_use]
@@ -1549,6 +1733,7 @@ impl MasterMixer {
                 balance_ramp,
                 pan_ramp,
                 delay,
+                dsp: None,
             },
         );
         Ok(())
@@ -1754,9 +1939,18 @@ impl MasterMixer {
                 || strip.mapping != source.mapping
                 || strip.delay.channels() != source.delay.channels()
                 || strip.delay.delay_samples() != source.delay.delay_samples()
+                || strip.dsp.is_some() != source.dsp.is_some()
+                || strip
+                    .dsp
+                    .as_ref()
+                    .zip(source.dsp.as_ref())
+                    .is_some_and(|(own, other)| own.live.channels() != other.live.channels())
             {
                 return Err(AudioError::FormatMismatch);
             }
+        }
+        if self.master_dsp.is_some() != other.master_dsp.is_some() {
+            return Err(AudioError::FormatMismatch);
         }
         for (id, strip) in &mut self.inputs {
             let Some(source) = other.inputs.get(id) else {
@@ -1767,6 +1961,15 @@ impl MasterMixer {
             strip.balance_ramp = source.balance_ramp;
             strip.pan_ramp = source.pan_ramp;
             strip.delay.copy_runtime_state_from(&source.delay);
+            if let (Some(own), Some(other)) = (&mut strip.dsp, &source.dsp) {
+                own.live
+                    .copy_state_from(&other.live)
+                    .map_err(|_| AudioError::FormatMismatch)?;
+            }
+        }
+        if let (Some(own), Some(other)) = (&mut self.master_dsp, &other.master_dsp) {
+            own.copy_state_from(other)
+                .map_err(|_| AudioError::FormatMismatch)?;
         }
         self.groups = other.groups;
         self.solo_mode = other.solo_mode;
@@ -1784,9 +1987,15 @@ impl MasterMixer {
             strip.balance_ramp = PositionRamp::immediate(strip.state.balance.normalized());
             strip.pan_ramp = PositionRamp::immediate(strip.state.pan.normalized());
             strip.delay.reset();
+            if let Some(slot) = &mut strip.dsp {
+                slot.live.reset();
+            }
         }
         for group in &mut self.groups {
             group.ramp = GainRamp::immediate(group.state.gain);
+        }
+        if let Some(live) = &mut self.master_dsp {
+            live.reset();
         }
     }
 
@@ -2102,6 +2311,7 @@ impl MasterMixer {
                 plane[..samples].fill(0.0);
             }
         }
+        self.process_strip_dsp(samples, blocks);
         let metering = measure_output || meter_output.is_some();
         let mut allocated_input_meters =
             measure_output.then(|| Vec::with_capacity(self.inputs.len()));
@@ -2177,6 +2387,12 @@ impl MasterMixer {
             }
         }
 
+        if let Some(live) = &mut self.master_dsp
+            && !live.is_transparent()
+        {
+            validate_finite_sample_prefix(output, samples)?;
+            live.process(samples, &mut InPlacePlanes(output));
+        }
         if self.clipping_policy == ClippingPolicy::Clamp {
             for plane in output.iter_mut() {
                 for sample in &mut plane[..samples] {
@@ -2213,6 +2429,44 @@ impl MasterMixer {
         });
         self.commit_render(samples, blocks);
         Ok(meters)
+    }
+
+    /// Runs every strip's DSP over its delayed input into the strip's
+    /// scratch, once per render, so the Program and monitor taps read the
+    /// same processed samples. A transparent chain is skipped and its strip
+    /// routes the delayed input directly. Allocates only when `samples`
+    /// exceeds a chain's scratch capacity.
+    fn process_strip_dsp<B: MixerBlockView, S: MixerSubmission<B>>(
+        &mut self,
+        samples: usize,
+        blocks: &[S],
+    ) {
+        for (id, strip) in &mut self.inputs {
+            let Some(slot) = &mut strip.dsp else {
+                continue;
+            };
+            slot.active = !slot.live.is_transparent();
+            if !slot.active {
+                continue;
+            }
+            if slot.capacity < samples {
+                let live = slot.live.clone();
+                **slot = StripDspSlot::new(live, samples);
+                slot.active = true;
+            }
+            let block = blocks
+                .iter()
+                .find(|submission| submission.input() == *id)
+                .map(MixerSubmission::block);
+            let capacity = slot.capacity;
+            let mut io = StripDspIo {
+                delay: &strip.delay,
+                block,
+                scratch: &mut slot.scratch,
+                capacity,
+            };
+            slot.live.process(samples, &mut io);
+        }
     }
 
     fn commit_render<B: MixerBlockView, S: MixerSubmission<B>>(
@@ -2377,7 +2631,11 @@ fn mix_audible_strip_samples<B: MixerBlockView>(
         let source_gain = source_gain.at_sample(sample, samples);
         for (source, destination, coefficient) in strip.mapping.compiled_routes() {
             let input = block.map(|(block, _)| block.planes()[source].as_slice());
-            let delayed = strip.delay.preview_sample(source, sample, input);
+            let delayed = strip
+                .dsp
+                .as_ref()
+                .and_then(|slot| slot.sample(source, sample))
+                .unwrap_or_else(|| strip.delay.preview_sample(source, sample, input));
             let label = master_layout.channels()[destination];
             let balance_gain = balance_gain(balance, label) * pan_gain(pan, label);
             let contribution = delayed * strip_gain * balance_gain * source_gain * coefficient;

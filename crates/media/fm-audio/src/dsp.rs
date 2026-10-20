@@ -507,6 +507,14 @@ impl Biquad {
         self.reset();
     }
 
+    /// Replaces the coefficients and keeps the state.
+    ///
+    /// A live filter whose parameters glide in small steps is retuned this
+    /// way so the response moves without the click a history reset causes.
+    pub const fn retune(&mut self, coefficients: BiquadCoefficients) {
+        self.coefficients = coefficients;
+    }
+
     /// Clears the section history.
     pub fn reset(&mut self) {
         self.z1 = 0.0;
