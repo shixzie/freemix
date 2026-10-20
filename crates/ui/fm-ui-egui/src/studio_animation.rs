@@ -956,7 +956,7 @@ impl StudioShell {
             .show(ui, |ui| {
                 // The panel keeps the height it was given, not its content's.
                 ui.set_min_size(ui.available_size());
-                self.draw_animation_contents(ui, state, &mut open);
+                self.draw_animation_contents(ui, state, Some(&mut open));
             });
         let dragging = context
             .read_response(id.with("__resize"))
@@ -1002,25 +1002,33 @@ impl StudioShell {
             && let Some(geometry) = self.layout.tool_popped(ToolWindow::Animation)
         {
             let l = self.locale;
-            let mut open = true;
+            let close_hover = l10n::with_key(l, l.text(Msg::AnimClose), ANIMATION_SHORTCUT);
             let (id, builder) = self.tool_viewport(ToolWindow::Animation, geometry);
-            let outcome = context.show_viewport_immediate(id, builder, |ui, class| {
-                workspace::tool_popout_frame(ui, l, ToolWindow::Animation, class, |ui| {
-                    ui.set_min_size(ui.available_size());
-                    self.draw_animation_contents(ui, state, &mut open);
-                })
+            let (outcome, close) = context.show_viewport_immediate(id, builder, |ui, class| {
+                workspace::tool_popout_frame(
+                    ui,
+                    l,
+                    ToolWindow::Animation,
+                    class,
+                    &close_hover,
+                    |ui| {
+                        ui.set_min_size(ui.available_size());
+                        self.draw_animation_contents(ui, state, None);
+                    },
+                )
             });
             self.finish_tool_popout(ToolWindow::Animation, outcome);
             self.animation.last_size = None;
-            if !open {
+            if close {
                 self.close_animation();
             }
         } else if self.animation.open && !self.layout.animation_docked {
             let l = self.locale;
-            let mut open = true;
-            let viewport = context.viewport_rect();
+            let close_hover = l10n::with_key(l, l.text(Msg::AnimClose), ANIMATION_SHORTCUT);
+            // Inside the work area, never over the top bar.
+            let area = workspace::tool_area(self, context);
             let min = Vec2::splat(f32::from(ConsoleLayout::MIN_ANIMATION_SIDE));
-            let max = Vec2::new(viewport.width() - 24.0, viewport.height() - 60.0).max(min);
+            let max = Vec2::new(area.width() - 32.0, area.height() - 24.0).max(min);
             let size = self
                 .layout
                 .animation_size
@@ -1036,30 +1044,31 @@ impl StudioShell {
                 .default_size(size)
                 .min_size(min)
                 .max_size(max)
+                .constrain_to(area)
                 .pivot(Align2::CENTER_TOP)
-                .default_pos(pos2(viewport.center().x, 40.0))
-                .frame(
-                    Frame::new()
-                        .fill(raised_color())
-                        .stroke(Stroke::new(
-                            crate::theme::line_width(),
-                            border_strong_color(),
-                        ))
-                        .corner_radius(CornerRadius::same(8))
-                        .inner_margin(Margin::same(12)),
-                )
+                .default_pos(pos2(area.center().x, area.top() + 4.0))
+                .frame(workspace::tool_window_frame())
                 .show(context, |ui| {
                     let inner = ui.available_size();
                     // Fill the size the operator gave the window.
                     ui.set_min_size(inner);
-                    self.draw_animation_contents(ui, state, &mut open);
-                    inner
+                    let (header, ()) = workspace::floating_tool_frame(
+                        ui,
+                        l,
+                        ToolWindow::Animation,
+                        &close_hover,
+                        |ui| self.draw_animation_contents(ui, state, None),
+                    );
+                    (inner, header)
                 });
-            if let Some(inner) = shown.and_then(|shown| shown.inner) {
+            if let Some((inner, header)) = shown.and_then(|shown| shown.inner) {
                 self.track_animation_size(context, inner);
-            }
-            if !open {
-                self.close_animation();
+                if header.pop_out {
+                    self.layout.set_tool_popped(ToolWindow::Animation, true);
+                }
+                if header.close {
+                    self.close_animation();
+                }
             }
         } else {
             self.animation.last_size = None;
@@ -1181,8 +1190,15 @@ impl StudioShell {
         self.animation.last_size = Some(inner);
     }
 
+    /// The window's body; `open` is the close key's flag where the body
+    /// has no header of its own (docked along the console).
     #[allow(clippy::too_many_lines)] // one window: header, notices, canvas, timeline
-    fn draw_animation_contents(&mut self, ui: &mut Ui, state: &StudioUiState, open: &mut bool) {
+    fn draw_animation_contents(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        open: Option<&mut bool>,
+    ) {
         let l = self.locale;
         let now = Duration::from_secs_f64(ui.input(|input| input.time).max(0.0));
         let titles = animatable_titles(l, state);
@@ -1251,16 +1267,22 @@ impl StudioShell {
             {
                 *docked = !*docked;
             }
-            if ui
-                .add(close_key(14.0))
-                .on_hover_text(l10n::with_key(
-                    l,
-                    l.text(Msg::AnimClose),
-                    ANIMATION_SHORTCUT,
-                ))
-                .clicked()
-            {
-                *open = false;
+            // Docked along the console, the panel has no window header: its
+            // close key sits at the row's right end.
+            if let Some(open) = open {
+                ui.with_layout(l10n::trailing_layout(l), |ui| {
+                    if ui
+                        .add(close_key(14.0))
+                        .on_hover_text(l10n::with_key(
+                            l,
+                            l.text(Msg::AnimClose),
+                            ANIMATION_SHORTCUT,
+                        ))
+                        .clicked()
+                    {
+                        *open = false;
+                    }
+                });
             }
         });
         if window.editing_scene {

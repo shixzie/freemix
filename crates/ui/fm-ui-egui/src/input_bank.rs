@@ -1293,16 +1293,7 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             FontId::new(9.0, FontFamily::Proportional),
             text_color(),
         );
-        let tag_rect = Rect::from_min_size(
-            pos2(thumb.min.x + 6.0, thumb.max.y - tag.size().y - 9.0),
-            tag.size() + Vec2::new(8.0, 4.0),
-        );
-        painter.rect_filled(
-            tag_rect,
-            CornerRadius::same(3),
-            Color32::from_black_alpha(190),
-        );
-        painter.galley(tag_rect.min + Vec2::new(4.0, 2.0), tag, text_color());
+        paint_thumb_tag(&painter, thumb, index, tag, Color32::from_black_alpha(190));
     } else if let Some(own) = own_thumbnail {
         painter.image(
             own.texture,
@@ -1319,20 +1310,12 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
             FontId::new(9.0, FontFamily::Proportional),
             text_color(),
         );
-        let tag_rect = Rect::from_min_size(
-            pos2(thumb.min.x + 6.0, thumb.max.y - tag.size().y - 9.0),
-            tag.size() + Vec2::new(8.0, 4.0),
-        );
-        painter.rect_filled(
-            tag_rect,
-            CornerRadius::same(3),
-            if own.stale() {
-                crate::theme::faded(AMBER, 0.85)
-            } else {
-                Color32::from_black_alpha(190)
-            },
-        );
-        painter.galley(tag_rect.min + Vec2::new(4.0, 2.0), tag, text_color());
+        let fill = if own.stale() {
+            crate::theme::faded(AMBER, 0.85)
+        } else {
+            Color32::from_black_alpha(190)
+        };
+        paint_thumb_tag(&painter, thumb, index, tag, fill);
     } else if let AudioPlaceholder::Meters(meters) = audio_placeholder {
         crate::input_thumbnail_ui::paint_audio_placeholder(
             &painter,
@@ -1520,6 +1503,39 @@ fn paint_tile(ui: &Ui, rect: Rect, paint: TilePaint<'_>) {
 
 /// The lifecycle badges (OFFLINE, CLOSED, PAUSED) in a row along the
 /// picture's trailing top corner, `top` below its top edge.
+/// Where a thumbnail's source tag (`FEED · SIM`, `PGM TAP`) goes in
+/// `thumb`, `size` big: along the top edge after the tile's number key, a
+/// corner pictures rarely use, clear of a lower third or caption along the
+/// bottom and of the tally and lifecycle badges at the top right.
+pub(crate) fn thumb_tag_rect(thumb: Rect, index: usize, size: Vec2) -> Rect {
+    let left = if index < 8 { 26.0 } else { 6.0 };
+    Rect::from_min_size(
+        pos2(thumb.min.x + left, thumb.min.y + 8.0),
+        Vec2::new(size.x + 8.0, 16.0),
+    )
+}
+
+/// Paints a thumbnail's source tag `galley` on `fill` (see
+/// [`thumb_tag_rect`]).
+fn paint_thumb_tag(
+    painter: &egui::Painter,
+    thumb: Rect,
+    index: usize,
+    galley: std::sync::Arc<egui::Galley>,
+    fill: Color32,
+) {
+    let tag_rect = thumb_tag_rect(thumb, index, galley.size());
+    painter.rect_filled(tag_rect, CornerRadius::same(3), fill);
+    painter.galley(
+        pos2(
+            tag_rect.min.x + 4.0,
+            tag_rect.center().y - galley.size().y / 2.0,
+        ),
+        galley,
+        text_color(),
+    );
+}
+
 fn paint_lifecycle_badges(
     ui: &Ui,
     painter: &egui::Painter,
@@ -1554,6 +1570,23 @@ mod tests {
     use core::num::NonZeroU128;
 
     use super::*;
+
+    /// Regression (round 7): the title tile's `FEED · SIM` tag sat along
+    /// the bottom, exactly where a lower third is drawn. It sits along the
+    /// top, after the number key and short of the tally badge.
+    #[test]
+    fn the_source_tag_sits_along_the_top_clear_of_the_number_key() {
+        let thumb = Rect::from_min_size(pos2(10.0, 20.0), Vec2::new(160.0, 90.0));
+        for index in [0, 7, 12] {
+            let tag = thumb_tag_rect(thumb, index, Vec2::new(44.0, 11.0));
+            assert!(thumb.contains_rect(tag), "{index}: {tag:?}");
+            assert!(tag.bottom() < thumb.top() + thumb.height() / 3.0);
+            if index < 8 {
+                // Right of the 16-point number key at 6 points in.
+                assert!(tag.left() >= thumb.left() + 6.0 + 16.0);
+            }
+        }
+    }
 
     #[test]
     fn tile_menu_notes_explain_each_disabled_group_once() {

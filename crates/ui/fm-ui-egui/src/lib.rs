@@ -1531,6 +1531,9 @@ pub struct StudioShell {
     /// Whether the input bank was drawn this frame, so the shell keeps the
     /// thumbnail feed on exactly while it is shown.
     input_bank_drawn: bool,
+    /// The work area below the top bar (and above the status bar) last
+    /// frame: floating tool windows stay inside it.
+    work_area: Option<egui::Rect>,
     /// The thumbnail feed state last asked of the host.
     input_thumbnails_requested: bool,
     /// Canvas shape of the latest monitor frame, kept while frames lapse.
@@ -1934,6 +1937,7 @@ impl StudioShell {
                     connection_overlay::paint_connection_card(ui, monitors, &card);
                 }
             });
+        self.work_area = Some(central.response.rect);
         self.draw_panel_popouts(ui.ctx(), state, &frame, &mut intents);
         self.draw_toasts(ui.ctx(), central.response.rect);
         self.draw_help_windows(ui.ctx(), state);
@@ -2068,6 +2072,7 @@ impl Default for StudioShell {
             monitor_textures: monitors::MonitorTextures::default(),
             thumbnail_textures: input_thumbnail_ui::ThumbnailTextures::default(),
             input_bank_drawn: false,
+            work_area: None,
             input_thumbnails_requested: false,
             canvas: monitors::DEFAULT_CANVAS,
             add_input: None,

@@ -725,6 +725,123 @@ pub(crate) fn draw_monitor(
     response.on_hover_text(tooltip);
 }
 
+/// Height of the audio level strip under a monitor in a tile taller than
+/// the picture needs.
+pub(crate) const MONITOR_METER_HEIGHT: f32 = 34.0;
+
+/// The dB marks along a monitor's level strip.
+const METER_MARKS: [i32; 6] = [-50, -40, -30, -20, -10, 0];
+
+/// A level on the strip's 60 dB scale, `0.0..=1.0`, from a linear
+/// amplitude in millionths.
+fn level_fraction(millionths: u32) -> f32 {
+    if millionths == 0 {
+        return 0.0;
+    }
+    #[allow(clippy::cast_precision_loss)] // a meter reading needs no more
+    let amplitude = millionths as f32 / 1_000_000.0;
+    ((20.0 * amplitude.log10() + 60.0) / 60.0).clamp(0.0, 1.0)
+}
+
+/// The meter colour at `fraction` of the 60 dB scale: green to -18 dBFS,
+/// amber to -6, red above, as on the mixer's strips.
+fn level_color(fraction: f32) -> Color32 {
+    if fraction > 54.0 / 60.0 {
+        PROGRAM
+    } else if fraction > 42.0 / 60.0 {
+        AMBER
+    } else {
+        PREVIEW
+    }
+}
+
+/// Draws the level strip under a monitor, `width` wide: the bus's audio
+/// as horizontal stereo bars (Program: the master mix; Preview: the
+/// previewed source's own level) over a dB scale, as a multiviewer shows
+/// audio beside each picture. Bars stay empty without a meter feed.
+pub(crate) fn draw_monitor_meters(
+    ui: &mut Ui,
+    bus: Bus,
+    width: f32,
+    channels: Option<&[fm_protocol::AudioMeterChannel]>,
+) {
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(width, MONITOR_METER_HEIGHT), Sense::hover());
+    let l = l10n::locale(ui.ctx());
+    response.on_hover_text(l.text(match bus {
+        Bus::Program => Msg::MonitorMetersProgramHover,
+        Bus::Preview => Msg::MonitorMetersPreviewHover,
+    }));
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    if channels.is_some() {
+        ui.ctx().request_repaint_after(Duration::from_millis(100));
+    }
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, CornerRadius::same(3), raised_color());
+    let font = FontId::new(crate::theme::legible(8.5), FontFamily::Monospace);
+    let scale = Rect::from_min_max(
+        pos2(rect.min.x + 8.0, rect.min.y + 5.0),
+        pos2(rect.max.x - 12.0, rect.min.y + 21.0),
+    );
+    let bar_height = 7.0;
+    for row in 0..2_usize {
+        #[allow(clippy::cast_precision_loss)] // two rows
+        let top = scale.min.y + row as f32 * (bar_height + 2.0);
+        let bar = Rect::from_min_size(pos2(scale.min.x, top), Vec2::new(scale.width(), bar_height));
+        painter.rect_filled(bar, CornerRadius::same(1), MONITOR_BLACK);
+        let channel = channels.and_then(|channels| {
+            channels
+                .get(row)
+                .or_else(|| (row == 1).then(|| channels.first()).flatten())
+        });
+        let Some(channel) = channel else {
+            continue;
+        };
+        let rms = level_fraction(channel.rms_millionths);
+        // Green, amber, and red zones, each up to the RMS level.
+        let mut from = 0.0;
+        for to in [42.0 / 60.0, 54.0 / 60.0, 1.0_f32] {
+            let end = rms.min(to);
+            if end > from {
+                painter.rect_filled(
+                    Rect::from_min_max(
+                        pos2(bar.min.x + bar.width() * from, bar.min.y),
+                        pos2(bar.min.x + bar.width() * end, bar.max.y),
+                    ),
+                    CornerRadius::ZERO,
+                    level_color(end),
+                );
+            }
+            from = to;
+        }
+        let peak = level_fraction(channel.peak_millionths);
+        if peak > 0.0 {
+            let x = bar.min.x + bar.width() * peak;
+            painter.line_segment(
+                [pos2(x, bar.min.y), pos2(x, bar.max.y)],
+                Stroke::new(2.0, level_color(peak)),
+            );
+        }
+    }
+    for mark in METER_MARKS {
+        #[allow(clippy::cast_precision_loss)] // small dB marks
+        let x = scale.min.x + scale.width() * (mark as f32 + 60.0) / 60.0;
+        painter.line_segment(
+            [pos2(x, scale.max.y - 1.0), pos2(x, scale.max.y + 2.0)],
+            Stroke::new(1.0, border_color()),
+        );
+        painter.text(
+            pos2(x, scale.max.y + 3.0),
+            Align2::CENTER_TOP,
+            mark.to_string(),
+            font.clone(),
+            text_dim_color(),
+        );
+    }
+}
+
 /// A dark ring behind a badge drawn over the picture, so a badge keeps its
 /// edge on any picture: an amber `SIMULATED` badge on an amber source (or a
 /// red `FTB` badge on red) still reads as a badge, while on the usual dark

@@ -830,6 +830,30 @@ fn nominal_fps<T: Copy + Ord>(document: &AnimDocument<T>) -> u32 {
     rate.numerator().div_ceil(rate.denominator()).max(1)
 }
 
+/// Half the width the playhead's head and the phase-end grip take on the
+/// ruler, with a little air.
+const RULER_KEEP_CLEAR: f32 = 7.0;
+
+/// Where a ruler label `width` wide for the tick at `x` starts: right of
+/// its tick, else left of it (stepped clear of a mark on the tick itself),
+/// whichever lies wholly inside `ruler` and clear of every `keep_clear`
+/// mark (the playhead, the phase-end grip); `None` hides the label rather
+/// than clip or cover it.
+#[must_use]
+pub fn ruler_label_left(x: f32, width: f32, ruler: Rect, keep_clear: &[f32]) -> Option<f32> {
+    let step = RULER_KEEP_CLEAR + 1.0;
+    [x + 3.0, x - 3.0 - width, x + step, x - step - width]
+        .into_iter()
+        .find(|left| {
+            let right = left + width;
+            *left >= ruler.left() + 1.0
+                && right <= ruler.right() - 1.0
+                && keep_clear.iter().all(|mark| {
+                    right <= mark - RULER_KEEP_CLEAR || *left >= mark + RULER_KEEP_CLEAR
+                })
+        })
+}
+
 fn paint_ruler<T: Copy + Ord>(
     painter: &Painter,
     document: &AnimDocument<T>,
@@ -850,6 +874,12 @@ fn paint_ruler<T: Copy + Ord>(
     let (first, last) = view.visible_range(geometry.track_width());
     let painter = painter.with_clip_rect(ruler);
     let font = FontId::new(legible(9.5), FontFamily::Monospace);
+    // Labels keep clear of the playhead's line and head, and of the
+    // phase-end grip.
+    let keep_clear = [
+        geometry.x_of(view, document.playhead()),
+        geometry.x_of(view, document.phase_frames()),
+    ];
     let mut frame = first - first % minor;
     while frame <= last {
         let x = geometry.x_of(view, frame);
@@ -858,13 +888,11 @@ fn paint_ruler<T: Copy + Ord>(
                 [pos2(x, ruler.bottom() - 10.0), pos2(x, ruler.bottom())],
                 Stroke::new(1.0, text_dim_color()),
             );
-            painter.text(
-                pos2(x + 3.0, ruler.top() + 2.0),
-                Align2::LEFT_TOP,
-                ruler_label(frame, fps),
-                font.clone(),
-                text_dim_color(),
-            );
+            let galley =
+                painter.layout_no_wrap(ruler_label(frame, fps), font.clone(), text_dim_color());
+            if let Some(left) = ruler_label_left(x, galley.size().x, ruler, &keep_clear) {
+                painter.galley(pos2(left, ruler.top() + 2.0), galley, text_dim_color());
+            }
         } else if minor_visible {
             painter.line_segment(
                 [pos2(x, ruler.bottom() - 4.0), pos2(x, ruler.bottom())],
@@ -1504,6 +1532,32 @@ fn dashed_line(painter: &Painter, x: f32, top: f32, bottom: f32, color: Color32)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression (round 7): the playhead covered `0:20` and the last
+    /// label (`1:00`, by the phase-end grip) was cut at the ruler's end.
+    #[test]
+    fn ruler_labels_stay_whole_and_clear_of_the_playhead() {
+        let ruler = Rect::from_min_max(pos2(100.0, 0.0), pos2(600.0, 20.0));
+        let width = 28.0;
+        // Clear of everything: right of the tick.
+        assert_eq!(ruler_label_left(200.0, width, ruler, &[]), Some(203.0));
+        // At the ruler's end: left of the tick, never cut.
+        let left = ruler_label_left(598.0, width, ruler, &[]).unwrap();
+        assert!(left + width <= ruler.right());
+        // The first label at the very start stays inside.
+        assert_eq!(ruler_label_left(100.0, width, ruler, &[]), Some(103.0));
+        // The playhead just right of a tick pushes its label to the left.
+        let left = ruler_label_left(300.0, width, ruler, &[315.0]).unwrap();
+        assert!(left + width <= 315.0 - RULER_KEEP_CLEAR);
+        // A mark on the tick itself (the phase-end grip): stepped clear.
+        let left = ruler_label_left(400.0, width, ruler, &[400.0]).unwrap();
+        assert!(left >= 400.0 + RULER_KEEP_CLEAR);
+        // No room on either side: hidden rather than covered.
+        assert_eq!(
+            ruler_label_left(300.0, width, ruler, &[290.0, 310.0, 330.0]),
+            None
+        );
+    }
 
     #[test]
     fn ruler_steps_stay_readable_at_every_zoom() {

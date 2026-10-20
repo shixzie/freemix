@@ -374,7 +374,7 @@ pub(super) fn scopes(
     let Some((key, scopes)) = &view.scopes else {
         return;
     };
-    let graticule = Stroke::new(1.0, Color32::from_gray(48));
+    let graticule = Stroke::new(1.0, GRATICULE);
     match kind {
         ScopeKind::Histogram => paint_histogram(&painter, inner, scopes),
         ScopeKind::Waveform | ScopeKind::Parade | ScopeKind::Vectorscope => {
@@ -401,11 +401,11 @@ pub(super) fn scopes(
                 paint_vectorscope_graticule(&painter, square, graticule);
                 painter.image(texture.id(), square, full, Color32::WHITE);
             } else {
-                for step in 0..=4_u8 {
-                    let y = inner.max.y - inner.height() * f32::from(step) / 4.0;
-                    painter.line_segment([pos2(inner.min.x, y), pos2(inner.max.x, y)], graticule);
-                }
-                painter.image(texture.id(), inner, full, Color32::WHITE);
+                // A level scale down the left edge, the trace beside it.
+                let trace_rect =
+                    Rect::from_min_max(pos2(inner.min.x + SCALE_WIDTH, inner.min.y), inner.max);
+                paint_level_graticule(&painter, trace_rect, graticule);
+                painter.image(texture.id(), trace_rect, full, Color32::WHITE);
             }
         }
     }
@@ -417,7 +417,18 @@ pub(super) fn scopes(
     );
 }
 
-/// Hit counts as glowing traces: square-root scaled so faint detail shows.
+/// The scopes' graticule lines: visible against the trace's black, below
+/// the trace's brightness.
+const GRATICULE: Color32 = Color32::from_gray(72);
+/// The scopes' scale labels.
+const GRATICULE_TEXT: Color32 = Color32::from_gray(150);
+/// Width of the waveform and parade level scale.
+const SCALE_WIDTH: f32 = 24.0;
+
+/// Hit counts as glowing traces, like a phosphor scope: a gamma of 0.4
+/// lifts sparse detail, every hit is at least half bright, and each hit
+/// blooms into its neighbours so a few pixels of a flat colour read as a
+/// solid dot rather than a speck.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
@@ -425,19 +436,76 @@ pub(super) fn scopes(
 )]
 fn trace(grid: &ScopeGrid, color: [u8; 3], out: &mut ColorImage, x0: usize) {
     let max = grid.max().max(1) as f32;
-    let height = grid.height();
+    let (width, height) = (grid.width(), grid.height());
+    let mut glow = vec![0.0_f32; width * height];
     for y in 0..height {
-        for x in 0..grid.width() {
+        for x in 0..width {
             let count = grid.get(x, y);
             if count == 0 {
                 continue;
             }
-            let level = (count as f32 / max).sqrt().max(0.25);
-            let alpha = (level * 255.0) as u8;
+            let level = (count as f32 / max).powf(0.4).max(0.5);
+            for (dx, dy, weight) in [
+                (0, 0, 1.0),
+                (-1, 0, 0.55),
+                (1, 0, 0.55),
+                (0, -1, 0.55),
+                (0, 1, 0.55),
+                (-1, -1, 0.3),
+                (1, -1, 0.3),
+                (-1, 1, 0.3),
+                (1, 1, 0.3),
+            ] {
+                let (Some(nx), Some(ny)) = (x.checked_add_signed(dx), y.checked_add_signed(dy))
+                else {
+                    continue;
+                };
+                if nx >= width || ny >= height {
+                    continue;
+                }
+                let cell = &mut glow[ny * width + nx];
+                *cell = cell.max(level * weight);
+            }
+        }
+    }
+    for y in 0..height {
+        for x in 0..width {
+            let level = glow[y * width + x];
+            if level <= 0.0 {
+                continue;
+            }
+            let alpha = (level.min(1.0) * 255.0) as u8;
             let row = height - 1 - y;
             out.pixels[row * out.size[0] + x0 + x] =
                 Color32::from_rgba_unmultiplied(color[0], color[1], color[2], alpha);
         }
+    }
+}
+
+/// The waveform and parade graticule over `trace`: lines at 0, 25, 50,
+/// 75, and 100 % with their values in the scale to the left, and dashed
+/// lines at the 10 and 90 % legal-range guides.
+fn paint_level_graticule(painter: &egui::Painter, trace: Rect, stroke: Stroke) {
+    let font = FontId::monospace(legible(9.0));
+    for percent in [0_u8, 25, 50, 75, 100] {
+        let y = trace.max.y - trace.height() * f32::from(percent) / 100.0;
+        painter.line_segment([pos2(trace.min.x, y), pos2(trace.max.x, y)], stroke);
+        painter.text(
+            pos2(trace.min.x - 4.0, y),
+            egui::Align2::RIGHT_CENTER,
+            percent.to_string(),
+            font.clone(),
+            GRATICULE_TEXT,
+        );
+    }
+    for percent in [10_u8, 90] {
+        let y = trace.max.y - trace.height() * f32::from(percent) / 100.0;
+        painter.add(Shape::dashed_line(
+            &[pos2(trace.min.x, y), pos2(trace.max.x, y)],
+            Stroke::new(1.0, GRATICULE.gamma_multiply(0.8)),
+            4.0,
+            4.0,
+        ));
     }
 }
 
@@ -463,24 +531,32 @@ fn scope_image(scopes: &Scopes, kind: ScopeKind) -> ColorImage {
         ScopeKind::Vectorscope => {
             let grid = &scopes.vectorscope;
             let mut image = ColorImage::filled([grid.width(), grid.height()], Color32::TRANSPARENT);
-            trace(grid, [210, 255, 200], &mut image, 0);
+            trace(grid, [225, 255, 215], &mut image, 0);
             image
         }
         _ => {
             let grid = &scopes.waveform;
             let mut image = ColorImage::filled([grid.width(), grid.height()], Color32::TRANSPARENT);
-            trace(grid, [170, 255, 180], &mut image, 0);
+            trace(grid, [190, 255, 200], &mut image, 0);
             image
         }
     }
 }
+
+/// The scope's names for the 75 % bar targets after white, in
+/// [`BARS_75`] order (yellow, cyan, green, magenta, red, blue).
+const TARGET_NAMES: [&str; 6] = ["YL", "CY", "G", "MG", "R", "B"];
 
 fn paint_vectorscope_graticule(painter: &egui::Painter, square: Rect, stroke: Stroke) {
     let centre = square.center();
     let radius = square.width() / 2.0;
     painter.circle_filled(centre, radius, Color32::from_gray(16));
     painter.circle_stroke(centre, radius, stroke);
-    painter.circle_stroke(centre, radius * 0.5, stroke);
+    painter.circle_stroke(
+        centre,
+        radius * 0.5,
+        Stroke::new(1.0, stroke.color.gamma_multiply(0.7)),
+    );
     painter.line_segment(
         [centre - vec2(radius, 0.0), centre + vec2(radius, 0.0)],
         stroke,
@@ -489,18 +565,33 @@ fn paint_vectorscope_graticule(painter: &egui::Painter, square: Rect, stroke: St
         [centre - vec2(0.0, radius), centre + vec2(0.0, radius)],
         stroke,
     );
-    // 75% bar targets (white sits at the centre).
-    for rgb in &BARS_75[1..] {
+    // The skin tone line, 123 degrees from the Cb axis.
+    let skin = 123.0_f32.to_radians();
+    painter.add(Shape::dashed_line(
+        &[centre, centre + vec2(skin.cos(), -skin.sin()) * radius],
+        Stroke::new(1.0, Color32::from_rgb(200, 150, 110).gamma_multiply(0.7)),
+        3.0,
+        3.0,
+    ));
+    // 75% bar targets (white sits at the centre), each named outside it.
+    let font = FontId::monospace(legible(9.0));
+    for (rgb, name) in BARS_75[1..].iter().zip(TARGET_NAMES) {
         let [cb, cr] = chroma(rgb.map(|code| f32::from(code) / 255.0));
-        let at = centre + vec2(cb, -cr) * 2.0 * radius;
+        let offset = vec2(cb, -cr) * 2.0 * radius;
+        let at = centre + offset;
+        let tint = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
         painter.rect_stroke(
-            Rect::from_center_size(at, Vec2::splat(9.0)),
+            Rect::from_center_size(at, Vec2::splat(11.0)),
             CornerRadius::ZERO,
-            Stroke::new(
-                1.0,
-                Color32::from_rgb(rgb[0], rgb[1], rgb[2]).gamma_multiply(0.9),
-            ),
+            Stroke::new(1.5, tint),
             StrokeKind::Middle,
+        );
+        painter.text(
+            at + offset.normalized() * 14.0,
+            egui::Align2::CENTER_CENTER,
+            name,
+            font.clone(),
+            tint.lerp_to_gamma(Color32::WHITE, 0.35),
         );
     }
 }

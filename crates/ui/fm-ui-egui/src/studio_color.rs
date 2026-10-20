@@ -31,7 +31,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use egui::{ComboBox, Frame, Key, Margin, Modifiers, RichText, ScrollArea, Stroke, TextEdit, Ui};
+use egui::{ComboBox, Key, Modifiers, RichText, ScrollArea, TextEdit, Ui};
 use fm_protocol::{MonitorImage, MonitorTap, WireInputId, WireSceneLayerSource};
 use fm_ui_model::GradingStatus;
 use fm_ui_model::grade_editor::{
@@ -47,10 +47,7 @@ use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::monitors::MONITOR_STALE_AFTER;
 use crate::preset_files::{ExportLut, PendingLutReplace, PresetFileRequest};
-use crate::theme::{
-    AMBER, Tone, border_strong_color, caption, close_key, muted_color, raised_color, section_label,
-    small_button, status_chip,
-};
+use crate::theme::{AMBER, Tone, caption, muted_color, section_label, small_button, status_chip};
 use crate::toasts::ToastKind;
 use crate::{StudioIntent, StudioShell, StudioUiState, workspace};
 
@@ -419,6 +416,17 @@ fn input_label(state: &StudioUiState, input: fm_types::InputId) -> String {
         .unwrap_or_else(|| format!("Input {input}"))
 }
 
+/// The inputs a grade can target, in bank order: every input with a
+/// picture. A system audio input has none, so it is left out.
+fn picture_inputs(state: &StudioUiState) -> impl Iterator<Item = fm_types::InputId> + '_ {
+    state.view.iter().flat_map(|view| {
+        view.inputs
+            .iter()
+            .copied()
+            .filter(|input| view.system_audio_input(*input).is_none())
+    })
+}
+
 /// Every scene layer target: each replicated project scene's layers
 /// (Protocol 2.35: whether or not a Scene input shows the scene), in scene
 /// then scene (stacking list) order.
@@ -708,48 +716,67 @@ impl StudioShell {
             self.color.refresh_source(state, now);
             let l = self.locale;
             let mut open = true;
-            let max_height = (context.viewport_rect().height() - 60.0).max(240.0);
+            let close_hover = l10n::with_key(l, l.text(Msg::ColorClose), COLOR_SHORTCUT);
             if let Some(geometry) = self.layout.tool_popped(ToolWindow::Color) {
                 let (id, builder) = self.tool_viewport(ToolWindow::Color, geometry);
-                let outcome = context.show_viewport_immediate(id, builder, |ui, class| {
-                    workspace::tool_popout_frame(ui, l, ToolWindow::Color, class, |ui| {
-                        ScrollArea::vertical()
-                            .id_salt("studio-color-scroll")
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                self.draw_color_contents(ui, state, intents, &mut open);
-                            });
-                    })
+                let (outcome, close) = context.show_viewport_immediate(id, builder, |ui, class| {
+                    workspace::tool_popout_frame(
+                        ui,
+                        l,
+                        ToolWindow::Color,
+                        class,
+                        &close_hover,
+                        |ui| {
+                            ScrollArea::vertical()
+                                .id_salt("studio-color-scroll")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    self.draw_color_contents(ui, state, intents);
+                                });
+                        },
+                    )
                 });
+                open &= !close;
                 self.finish_tool_popout(ToolWindow::Color, outcome);
             } else {
-                egui::Window::new(l.text(Msg::GradeTitle))
-                .id(egui::Id::new("studio-color-window"))
-                .title_bar(false)
-                .auto_sized()
-                .collapsible(false)
-                // Bottom left, over the input bank: the Program monitor stays
-                // in view to show the grade the server applied.
-                .pivot(egui::Align2::LEFT_BOTTOM)
-                .default_pos(egui::pos2(12.0, context.viewport_rect().bottom() - 30.0))
-                .frame(
-                    Frame::new()
-                        .fill(raised_color())
-                        .stroke(Stroke::new(
-                            crate::theme::line_width(),
-                            border_strong_color(),
-                        ))
-                        .corner_radius(egui::CornerRadius::same(8))
-                        .inner_margin(Margin::same(12)),
-                )
-                .show(context, |ui| {
-                    ScrollArea::vertical()
-                        .id_salt("studio-color-scroll")
-                        .max_height(max_height)
-                        .show(ui, |ui| {
-                            self.draw_color_contents(ui, state, intents, &mut open);
-                        });
-                });
+                // Inside the work area, never over the top bar: the header
+                // and the window's frame stay in view, and the body scrolls.
+                let area = workspace::tool_area(self, context);
+                let max_height = (area.height() - workspace::TOOL_HEADER_HEIGHT - 48.0).max(200.0);
+                let shown = egui::Window::new(l.text(Msg::GradeTitle))
+                    .id(egui::Id::new("studio-color-window"))
+                    .title_bar(false)
+                    .auto_sized()
+                    .collapsible(false)
+                    .constrain_to(area)
+                    // Bottom left, over the input bank: the Program monitor
+                    // stays in view to show the grade the server applied.
+                    .pivot(egui::Align2::LEFT_BOTTOM)
+                    .default_pos(egui::pos2(area.left() + 4.0, area.bottom() - 4.0))
+                    .frame(workspace::tool_window_frame())
+                    .show(context, |ui| {
+                        workspace::floating_tool_frame(
+                            ui,
+                            l,
+                            ToolWindow::Color,
+                            &close_hover,
+                            |ui| {
+                                ScrollArea::vertical()
+                                    .id_salt("studio-color-scroll")
+                                    .max_height(max_height)
+                                    .show(ui, |ui| {
+                                        self.draw_color_contents(ui, state, intents);
+                                    });
+                            },
+                        )
+                        .0
+                    });
+                if let Some(header) = shown.and_then(|shown| shown.inner) {
+                    open &= !header.close;
+                    if header.pop_out {
+                        self.layout.set_tool_popped(ToolWindow::Color, true);
+                    }
+                }
             }
             if !open {
                 self.color.open = false;
@@ -773,7 +800,6 @@ impl StudioShell {
         ui: &mut Ui,
         state: &StudioUiState,
         intents: &mut Vec<StudioIntent>,
-        open: &mut bool,
     ) {
         let l = self.locale;
         let target = self.color.target;
@@ -800,9 +826,7 @@ impl StudioShell {
             ui.label(section_label(l.text(Msg::ColorTarget)))
                 .on_hover_text(l.text(Msg::ColorTargetHover));
             let mut targets = vec![GradeTarget::Program];
-            if let Some(view) = &state.view {
-                targets.extend(view.inputs.iter().map(|input| GradeTarget::Input(*input)));
-            }
+            targets.extend(picture_inputs(state).map(GradeTarget::Input));
             targets.extend(layer_targets(state));
             let label = |candidate: GradeTarget| {
                 let name = target_label(l, state, candidate);
@@ -859,16 +883,6 @@ impl StudioShell {
                 }
             }
             self.draw_copy_menu(ui, state, intents, &targets, &label);
-            // In the row, not right-aligned: an auto-sized window would grow
-            // to the whole screen to push a trailing key to its edge.
-            ui.separator();
-            if ui
-                .add(close_key(14.0))
-                .on_hover_text(l10n::with_key(l, l.text(Msg::ColorClose), COLOR_SHORTCUT))
-                .clicked()
-            {
-                *open = false;
-            }
         });
         if let Some(reason) = lock {
             ui.label(caption(l10n::unavailable(l, reason)).color(AMBER));
@@ -1442,6 +1456,18 @@ mod tests {
 
     fn input(value: u128) -> InputId {
         InputId::new(NonZeroU128::new(value).unwrap())
+    }
+
+    /// Regression (round 7): the target list offered an audio-only input
+    /// (a system audio capture), which has no picture to grade.
+    #[test]
+    fn grade_targets_leave_out_inputs_without_video() {
+        let state = crate::hover_audit::bank_fixture();
+        let view = state.view.as_ref().unwrap();
+        assert!(view.system_audio_input(input(5)).is_some());
+        let targets: Vec<InputId> = picture_inputs(&state).collect();
+        assert!(!targets.contains(&input(5)), "{targets:?}");
+        assert_eq!(targets.len(), view.inputs.len() - 1);
     }
 
     fn wire(value: u128) -> WireInputId {

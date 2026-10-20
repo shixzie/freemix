@@ -653,18 +653,26 @@ pub(crate) fn draw_mixer(
             if meters_stale {
                 stale_badge(ui, &stale_meter_label(l, ballistics.message_age_ms()));
             }
-            // The key gives way first in a narrow mixer: it ends in an
-            // ellipsis (or goes) rather than run under the title, and its
-            // tooltip spells it out.
-            if ui.available_width() > 24.0 {
+            // The key gives way first in a narrow mixer: it shows whole or
+            // not at all, rather than run under the title or end in a cut
+            // word.
+            let legend = RichText::new(l.text(Msg::MeterLegend))
+                .size(crate::theme::legible(10.0))
+                .color(muted_color());
+            let legend_width = egui::WidgetText::from(legend.clone())
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::FontSelection::Default,
+                )
+                .size()
+                .x;
+            if ui.available_width() >= legend_width + 4.0 {
                 ui.add(
-                    egui::Label::new(
-                        RichText::new(l.text(Msg::MeterLegend))
-                            .size(crate::theme::legible(10.0))
-                            .color(muted_color()),
-                    )
-                    .truncate()
-                    .sense(Sense::hover()),
+                    egui::Label::new(legend)
+                        .wrap_mode(egui::TextWrapMode::Extend)
+                        .sense(Sense::hover()),
                 )
                 .on_hover_text(format!(
                     "{}\n{}",

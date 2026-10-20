@@ -576,6 +576,11 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::DockRestoreHover,
         t("Vuelve a mostrar todos los paneles  [Esc]"),
     ),
+    (Msg::DockMoreTabs, t("Más pestañas")),
+    (
+        Msg::DockMoreTabsHover,
+        t("Paneles de este grupo sin sitio para su pestaña: elija uno para mostrarlo"),
+    ),
     (Msg::DockPopoutGrip, t("Arrastrar para acoplar")),
     (
         Msg::DockPopoutGripHover,
@@ -1299,6 +1304,18 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::MonitorNoPreviewTapNote,
         t(
             "El motor nativo solo renderiza Programa; este monitor muestra el estado de enrutamiento.",
+        ),
+    ),
+    (
+        Msg::MonitorMetersProgramHover,
+        t(
+            "Audio de Programa: la mezcla máster, izquierda y derecha, en una escala de 60 dB (barras RMS, marcas pico)",
+        ),
+    ),
+    (
+        Msg::MonitorMetersPreviewHover,
+        t(
+            "Audio de Previo: el nivel propio de la fuente en previo, izquierda y derecha, en una escala de 60 dB (barras RMS, marcas pico)",
         ),
     ),
     (

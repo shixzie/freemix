@@ -313,6 +313,8 @@ messages! {
     DockTabMaximizeHover => t("Double-click to maximise this tile; double-click again or press Esc to restore."),
     DockRestore => t("Restore tiles"),
     DockRestoreHover => t("Show every tile again  [Esc]"),
+    DockMoreTabs => t("More tabs"),
+    DockMoreTabsHover => t("Panels of this group with no room for their tab: pick one to show it"),
     DockPopoutGrip => t("Drag to dock"),
     DockPopoutGripHover => t("Drag over the console window to dock {panel} where the blue preview shows; Dock back to… lists the same places"),
     DockBackTo => t("Dock back to…"),
@@ -634,6 +636,8 @@ messages! {
     // Monitors.
     MonitorNoPreviewTap => t("NO PREVIEW TAP · native Preview image not produced"),
     MonitorNoPreviewTapNote => t("The native runtime renders Program only; this well shows routing state."),
+    MonitorMetersProgramHover => t("Program audio: the master mix, left and right, on a 60 dB scale (bars RMS, ticks peak)"),
+    MonitorMetersPreviewHover => t("Preview audio: the previewed source's own level, left and right, on a 60 dB scale (bars RMS, ticks peak)"),
     MonitorNoFeed => t("NO VIDEO FEED · waiting for encoded preview"),
     MonitorNoFeedNote => t("Routing state only; no encoded {bus} frame has arrived."),
     MonitorSimulated => t("SIMULATED RENDER · {width}×{height} encoded preview"),

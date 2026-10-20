@@ -654,28 +654,44 @@ fn the_transition_column_follows_its_tile_within_its_range() {
     }
 }
 
+/// Regression (round 7): at 1280x720 the meter key was cut to `RMS ·
+/// PEAK HOL…`. The key shows whole right of the mixer's title, or not at
+/// all where it does not fit (its words stay in the strips' help).
 #[test]
-fn the_mixer_key_ends_in_an_ellipsis_rather_than_run_under_its_title() {
+fn the_mixer_key_shows_whole_or_not_at_all_and_never_under_its_title() {
     let state = crate::hover_audit::bank_fixture();
-    let context = egui::Context::default();
-    let mut shell = StudioShell::default();
-    let size = vec2(1_280.0, 720.0);
-    frame_at(&context, &mut shell, &state, size, Vec::new());
-    let (_, output) = frame_at(&context, &mut shell, &state, size, Vec::new());
-    // The key is laid out right of the section title and elided.
-    let texts = painted_galleys(&output);
-    let title = texts
-        .iter()
-        .filter(|(text, _, _)| text == "AUDIO MIXER")
-        .map(|(_, rect, _)| *rect)
-        .max_by(|a, b| a.top().total_cmp(&b.top()))
-        .expect("the mixer's section title");
-    let (_, legend, elided) = texts
-        .iter()
-        .find(|(text, _, _)| text == Msg::MeterLegend.en())
-        .expect("the meter key");
-    assert!(*elided, "the key fits at 1280 wide only elided");
-    assert!(legend.left() >= title.right(), "{legend:?} over {title:?}");
+    for (size, shown) in [
+        (vec2(1_920.0, 1_080.0), true),
+        (vec2(1_280.0, 720.0), false),
+    ] {
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        frame_at(&context, &mut shell, &state, size, Vec::new());
+        let (_, output) = frame_at(&context, &mut shell, &state, size, Vec::new());
+        let texts = painted_galleys(&output);
+        let title = texts
+            .iter()
+            .filter(|(text, _, _)| text == "AUDIO MIXER")
+            .map(|(_, rect, _)| *rect)
+            .max_by(|a, b| a.top().total_cmp(&b.top()))
+            .expect("the mixer's section title");
+        assert!(
+            !texts.iter().any(|(text, _, elided)| *elided
+                && text.starts_with("RMS")
+                && Msg::MeterLegend
+                    .en()
+                    .starts_with(text.trim_end_matches('…'))),
+            "{size:?}: the meter key is cut"
+        );
+        let legend = texts
+            .iter()
+            .find(|(text, _, _)| text == Msg::MeterLegend.en());
+        assert_eq!(legend.is_some(), shown, "{size:?}");
+        if let Some((_, legend, elided)) = legend {
+            assert!(!*elided);
+            assert!(legend.left() >= title.right(), "{legend:?} over {title:?}");
+        }
+    }
 }
 
 fn pointer_click(pos: Pos2, pressed: bool) -> Event {
@@ -1494,4 +1510,192 @@ fn showing_a_popped_out_panel_brings_its_window_to_the_front() {
     shell.layout.dock.dock_back(PanelId::Mixer);
     frame(&context, &mut shell, &state, Vec::new());
     assert!(shell.dock_ui.focus.is_empty());
+}
+
+/// The area id of `tool`'s floating window.
+fn tool_window_id(tool: ToolWindow) -> Id {
+    Id::new(match tool {
+        ToolWindow::Color => "studio-color-window",
+        ToolWindow::Animation => "studio-animation-window",
+        ToolWindow::Designer => "studio-designer-window",
+    })
+}
+
+fn open_tool(shell: &mut StudioShell, tool: ToolWindow) {
+    match tool {
+        ToolWindow::Color => shell.open_color(None),
+        ToolWindow::Animation => shell.open_animation(None),
+        ToolWindow::Designer => shell.open_designer(None),
+    }
+}
+
+/// Regression (round 7): the Colour and Animation windows had no title
+/// bar, their close key sat mid-row after the last key, and the Animation
+/// window opened over the top bar's padlock. Every floating tool window
+/// opens inside the work area below the top bar, with a header whose Pop
+/// out and Close keys sit side by side at its right end.
+#[test]
+fn floating_tool_windows_open_below_the_top_bar_with_their_keys_at_the_right() {
+    let state = crate::hover_audit::bank_fixture();
+    for size in [vec2(1_920.0, 1_080.0), vec2(1_280.0, 720.0)] {
+        for tool in ToolWindow::ALL {
+            let context = egui::Context::default();
+            let mut shell = StudioShell::default();
+            open_tool(&mut shell, tool);
+            for _ in 0..3 {
+                frame_at(&context, &mut shell, &state, size, Vec::new());
+            }
+            let area = shell.work_area.expect("the work area is known");
+            // Below the 26-point menu bar and the 46-point top bar.
+            assert!(area.top() >= 72.0, "{area:?}");
+            let window = context
+                .memory(|memory| memory.area_rect(tool_window_id(tool)))
+                .unwrap_or_else(|| panic!("{tool:?} has no window"));
+            assert!(
+                window.top() >= area.top() - 0.5 && window.bottom() <= area.bottom() + 0.5,
+                "{tool:?} at {size:?}: {window:?} leaves {area:?}"
+            );
+            let key = |name: &str| {
+                context
+                    .read_response(Id::new(name).with(tool.key()))
+                    .unwrap_or_else(|| panic!("{tool:?} has no {name}"))
+                    .rect
+            };
+            let (close, pop) = (key("studio-tool-close"), key("studio-tool-popout"));
+            assert!(
+                window.right() - close.right() <= 16.0,
+                "{tool:?}: close {close:?} is not at the right of {window:?}"
+            );
+            assert!(close.top() - window.top() <= 12.0, "{tool:?}: {close:?}");
+            assert!(pop.right() <= close.left() && close.left() - pop.right() <= 4.0);
+            assert!((pop.center().y - close.center().y).abs() < 0.5);
+        }
+    }
+}
+
+#[test]
+fn a_floating_tool_window_header_closes_and_pops_out_the_tool() {
+    let state = crate::hover_audit::bank_fixture();
+    let size = vec2(1_920.0, 1_080.0);
+    for (name, pops) in [("studio-tool-close", false), ("studio-tool-popout", true)] {
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        open_tool(&mut shell, ToolWindow::Color);
+        for _ in 0..3 {
+            frame_at(&context, &mut shell, &state, size, Vec::new());
+        }
+        let at = context
+            .read_response(Id::new(name).with(ToolWindow::Color.key()))
+            .unwrap()
+            .rect
+            .center();
+        frame_at(
+            &context,
+            &mut shell,
+            &state,
+            size,
+            vec![Event::PointerMoved(at)],
+        );
+        frame_at(&context, &mut shell, &state, size, press(at));
+        frame_at(&context, &mut shell, &state, size, release(at));
+        if pops {
+            assert!(shell.color.open);
+            assert!(shell.layout.tool_popped(ToolWindow::Color).is_some());
+        } else {
+            assert!(!shell.color.open);
+            assert!(shell.layout.tool_popped(ToolWindow::Color).is_none());
+        }
+    }
+}
+
+#[test]
+fn tabs_fit_whole_or_fold_into_more_tabs() {
+    // All fit: every tab at its natural width, no More tabs key.
+    let fit = fit_tabs(&[80.0, 80.0, 60.0], 0, 400.0, 24.0);
+    assert_eq!(fit.widths, vec![Some(80.0), Some(80.0), Some(60.0)]);
+    assert!(!fit.overflow);
+    // Too many: the active tab always shows, the others in order while
+    // they fit whole, the rest under More tabs.
+    let fit = fit_tabs(&[90.0, 90.0, 70.0, 80.0, 70.0, 60.0], 5, 300.0, 24.0);
+    assert!(fit.overflow);
+    assert_eq!(fit.widths[5], Some(60.0));
+    assert_eq!(fit.widths[0], Some(90.0));
+    assert_eq!(fit.widths[1], Some(90.0));
+    assert!(fit.widths[2..5].iter().all(Option::is_none), "{fit:?}");
+    let shown: f32 = fit.widths.iter().flatten().map(|width| width + 2.0).sum();
+    assert!(shown + 24.0 <= 300.0, "{fit:?}");
+    // An active tab wider than the room is the only one narrowed.
+    let fit = fit_tabs(&[400.0, 50.0], 0, 200.0, 24.0);
+    assert_eq!(fit.widths[1], None);
+    assert!(fit.widths[0].unwrap() <= 200.0 - 24.0);
+}
+
+/// Regression (round 7): at 1280x720 the side group's six tabs were cut
+/// to `OVE…`, `STI…`, `PLA…`, `ME…`. Tabs show whole, and those with no
+/// room are listed under More tabs.
+#[test]
+fn a_narrow_tab_group_folds_tabs_into_more_tabs_instead_of_cutting_them() {
+    let state = crate::hover_audit::bank_fixture();
+    let side = [
+        PanelId::Overlays,
+        PanelId::Stingers,
+        PanelId::Titles,
+        PanelId::Playlist,
+        PanelId::Media,
+        PanelId::Cues,
+    ];
+    for language in [
+        fm_ui_model::i18n::Language::English,
+        fm_ui_model::i18n::Language::Spanish,
+    ] {
+        for (size, folds) in [
+            (vec2(1_920.0, 1_080.0), false),
+            (vec2(1_280.0, 720.0), true),
+        ] {
+            let context = egui::Context::default();
+            let mut shell = StudioShell::default();
+            let locale = crate::l10n::Locale::new(language);
+            shell.set_locale(locale);
+            frame_at(&context, &mut shell, &state, size, Vec::new());
+            let (_, output) = frame_at(&context, &mut shell, &state, size, Vec::new());
+            let words = painted_text(&output);
+            for panel in side {
+                let title = locale.text(panel.title()).to_uppercase();
+                assert!(
+                    !words
+                        .iter()
+                        .any(|word| word.ends_with('…')
+                            && title.starts_with(word.trim_end_matches('…'))),
+                    "{language:?} {size:?}: {title} is cut in {words:?}"
+                );
+            }
+            let more = side.iter().any(|panel| {
+                context
+                    .read_response(Id::new("studio-dock-more").with(panel.key()))
+                    .is_some()
+            });
+            assert_eq!(more, folds, "{language:?} {size:?}");
+        }
+    }
+}
+
+/// Regression (round 7): at 1920x1080 the monitors left a bare band above
+/// and below the 16:9 picture. A tall enough tile shows the bus's audio
+/// levels under the picture; a short one keeps all its height for it.
+#[test]
+fn tall_monitor_tiles_show_audio_levels_under_the_picture() {
+    let state = crate::hover_audit::bank_fixture();
+    for (size, strips) in [(vec2(1_920.0, 1_080.0), 2), (vec2(1_280.0, 720.0), 0)] {
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        frame_at(&context, &mut shell, &state, size, Vec::new());
+        let (_, output) = frame_at(&context, &mut shell, &state, size, Vec::new());
+        let marks = painted_text(&output)
+            .iter()
+            .filter(|word| *word == "-50")
+            .count();
+        assert_eq!(marks, strips, "{size:?}");
+    }
+    assert!(monitor_meters_fit(vec2(520.0, 440.0), 293.0));
+    assert!(!monitor_meters_fit(vec2(334.0, 250.0), 188.0));
 }

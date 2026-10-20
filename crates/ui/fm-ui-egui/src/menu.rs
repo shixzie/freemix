@@ -1730,20 +1730,46 @@ fn shortcut_group(ui: &mut Ui, l: Locale, group: ShortcutGroup, column: f32) {
         });
 }
 
+/// The least width of a key cap, and of a single-character cap (`C`, `,`),
+/// which is drawn square like a letter key on a keyboard.
+const KEY_CAP_MIN_WIDTH: f32 = 28.0;
+const SINGLE_KEY_CAP_WIDTH: f32 = 34.0;
+
+/// Whether `keys` is one punctuation key (`,`, `.`), whose glyph is a
+/// speck at the size of a letter.
+fn lone_mark(keys: &str) -> bool {
+    let mut chars = keys.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some(mark), None) if mark.is_ascii_punctuation()
+    )
+}
+
+/// The font of a key cap's legend: a lone punctuation key is drawn
+/// larger.
+fn key_cap_font(keys: &str) -> egui::FontId {
+    egui::FontId::new(
+        if lone_mark(keys) { 20.0 } else { 11.5 },
+        egui::FontFamily::Monospace,
+    )
+}
+
 /// The width of a key cap for `keys`: the text plus padding, at least
-/// 28 px. A long combination widens its cap (and so the grid's key column)
-/// instead of overflowing it.
+/// [`KEY_CAP_MIN_WIDTH`] ([`SINGLE_KEY_CAP_WIDTH`] for one character). A
+/// long combination widens its cap (and so the grid's key column) instead
+/// of overflowing it.
 fn key_cap_width(ui: &Ui, keys: &str) -> f32 {
     let text = ui
         .painter()
-        .layout_no_wrap(
-            keys.to_owned(),
-            egui::FontId::new(11.5, egui::FontFamily::Monospace),
-            text_color(),
-        )
+        .layout_no_wrap(keys.to_owned(), key_cap_font(keys), text_color())
         .size()
         .x;
-    (text + 16.0).max(28.0)
+    let least = if keys.chars().count() == 1 {
+        SINGLE_KEY_CAP_WIDTH
+    } else {
+        KEY_CAP_MIN_WIDTH
+    };
+    (text + 16.0).max(least)
 }
 
 /// The width of the reference's key column: the widest key cap of every
@@ -1794,13 +1820,17 @@ fn key_cap(ui: &mut Ui, keys: &str, column: f32) {
         ),
         egui::StrokeKind::Inside,
     );
-    painter.text(
-        cap.center() - Vec2::new(0.0, 1.0),
-        egui::Align2::CENTER_CENTER,
-        keys,
-        egui::FontId::new(11.5, egui::FontFamily::Monospace),
-        text_color(),
-    );
+    let galley = painter.layout_no_wrap(keys.to_owned(), key_cap_font(keys), text_color());
+    if lone_mark(keys) {
+        // Centred on the ink, not the line box (a comma sits low in it),
+        // and drawn twice a hair apart so the thin mark reads as a key.
+        let at = (cap.center() - Vec2::new(0.0, 1.0)) - galley.mesh_bounds.center().to_vec2();
+        painter.galley(at, galley.clone(), text_color());
+        painter.galley(at + Vec2::new(0.8, 0.0), galley, text_color());
+    } else {
+        let at = cap.center() - Vec2::new(0.0, 1.0) - galley.size() / 2.0;
+        painter.galley(at, galley, text_color());
+    }
 }
 
 /// Whether the global keys currently act, and why not when they do not.
@@ -1907,6 +1937,21 @@ fn history_menu_items(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<Stud
 mod tests {
     use super::*;
     use crate::StudioConnectionStatus;
+
+    /// Regression (round 7): the `,` and `.` caps were specks. A
+    /// one-character cap is square-ish and a lone mark is drawn larger.
+    #[test]
+    fn single_character_key_caps_have_a_minimum_width() {
+        let context = egui::Context::default();
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            for keys in [",", ".", "G", "C"] {
+                assert!(key_cap_width(ui, keys) >= SINGLE_KEY_CAP_WIDTH, "{keys}");
+            }
+            assert!(key_cap_width(ui, "Esc") >= KEY_CAP_MIN_WIDTH);
+            assert!(key_cap_font(",").size > key_cap_font("G").size);
+            assert!(lone_mark(".") && !lone_mark("G") && !lone_mark("? · F1"));
+        });
+    }
 
     #[test]
     fn shortcut_reference_takes_two_columns_where_they_fit() {

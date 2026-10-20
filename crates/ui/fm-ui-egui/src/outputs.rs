@@ -289,8 +289,27 @@ fn extras_layout(key_rect: Rect, text_left: f32, inline_width: f32) -> (Rect, bo
     )
 }
 
+/// The longest leading run of `detail`'s ` · ` clauses that is at most
+/// `width` wide (as `measure` reads it), so a narrow row reads `Started`
+/// rather than `Started · no …`; the first clause when none fits (the
+/// caller elides it).
+fn whole_clauses(detail: &str, width: f32, measure: impl Fn(&str) -> f32) -> &str {
+    let mut end = detail.len();
+    loop {
+        let shown = &detail[..end];
+        if measure(shown) <= width {
+            return shown;
+        }
+        match shown.rfind(" · ") {
+            Some(cut) if cut > 0 => end = cut,
+            _ => return shown,
+        }
+    }
+}
+
 /// Paints one fixed-height row, with any `extras` keys inside it, and
 /// returns whether its key was clicked.
+#[allow(clippy::too_many_lines)] // one painter pass: lamp, title, chip, detail, keys
 fn draw_row(
     ui: &mut Ui,
     id: egui::Id,
@@ -357,14 +376,21 @@ fn draw_row(
             _ => muted_color(),
         };
         let detail_left = chip_rect.max.x + 7.0;
+        let detail_font = FontId::new(10.0, FontFamily::Proportional);
+        let detail = whole_clauses(&row.detail, text_right - detail_left, |text: &str| {
+            painter
+                .layout_no_wrap(text.to_owned(), detail_font.clone(), detail_color)
+                .size()
+                .x
+        });
         let detail_galley = elided(
             painter,
-            &row.detail,
-            FontId::new(10.0, FontFamily::Proportional),
+            detail,
+            detail_font,
             detail_color,
             text_right - detail_left,
         );
-        detail_cut = detail_galley.elided;
+        detail_cut = detail_galley.elided || detail.len() < row.detail.len();
         painter.galley(
             pos2(
                 detail_left,
@@ -734,6 +760,23 @@ mod tests {
     use fm_protocol::StreamLocalStatus;
 
     use super::*;
+
+    /// Regression (round 7): at 1280x720 a stream row read `Started · no
+    /// …`; it drops whole clauses instead.
+    #[test]
+    #[allow(clippy::cast_precision_loss)] // short strings
+    fn a_narrow_row_detail_drops_whole_clauses() {
+        let measure = |text: &str| text.chars().count() as f32;
+        let detail = "Started · no stats";
+        assert_eq!(whole_clauses(detail, 40.0, measure), detail);
+        assert_eq!(whole_clauses(detail, 12.0, measure), "Started");
+        // Not even the first clause fits: it is kept (and elided).
+        assert_eq!(whole_clauses(detail, 3.0, measure), "Started");
+        assert_eq!(
+            whole_clauses("Live · 6.0 Mb/s · 0 drops", 18.0, measure),
+            "Live · 6.0 Mb/s"
+        );
+    }
 
     fn stream(desired_running: bool, realized: StreamRealizedState) -> StreamStatus {
         StreamStatus {

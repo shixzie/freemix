@@ -436,6 +436,33 @@ pub(crate) fn monitor_offset(size: Vec2, (width, video_height): (f32, f32)) -> (
     )
 }
 
+/// Whether a monitor body `size` has room under a well `video_height`
+/// tall for the level strip, with some band left over.
+pub(crate) fn monitor_meters_fit(size: Vec2, video_height: f32) -> bool {
+    size.y - monitors::MONITOR_HEADER_HEIGHT - video_height >= monitors::MONITOR_METER_HEIGHT + 24.0
+}
+
+/// The meter channels a monitor's level strip shows: Program's master mix,
+/// or the realized Preview source's own level; `None` without a feed.
+fn bus_meters(
+    state: &StudioUiState,
+    bus: monitors::Bus,
+) -> Option<&[fm_protocol::AudioMeterChannel]> {
+    let meters = state.audio_meters.as_ref()?;
+    match bus {
+        monitors::Bus::Program => Some(&meters.master),
+        monitors::Bus::Preview => {
+            let input = state.view.as_ref()?.switcher.realized.preview;
+            let wire = fm_protocol::WireInputId::from_domain(input);
+            meters
+                .inputs
+                .iter()
+                .find(|entry| entry.input == wire)
+                .map(|entry| entry.channels.as_slice())
+        }
+    }
+}
+
 /// What a frame's panels share: the monitor pictures and gates.
 pub(crate) struct PanelFrame {
     pub(crate) manual: ManualTransitionAvailability,
@@ -472,6 +499,52 @@ fn transition_column(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     });
 }
 
+/// The tabs a group's tab bar shows: each tab's width, or `None` for a tab
+/// with no room (listed under More tabs).
+#[derive(Clone, Debug, PartialEq)]
+struct TabFit {
+    widths: Vec<Option<f32>>,
+    /// Whether some tab has no room, so the More tabs key shows.
+    overflow: bool,
+}
+
+/// Fits tabs of `natural` widths into `room`: every tab at its natural
+/// width when they all fit; otherwise the active tab and, in order, as
+/// many others as fit whole beside it and a `more`-wide More tabs key.
+/// A label is never cut to a few letters; only an active tab wider than
+/// the whole room is narrowed.
+fn fit_tabs(natural: &[f32], active: usize, room: f32, more: f32) -> TabFit {
+    const TAB_GAP: f32 = 2.0;
+    let total: f32 = natural.iter().map(|width| width + TAB_GAP).sum();
+    if total <= room {
+        return TabFit {
+            widths: natural.iter().copied().map(Some).collect(),
+            overflow: false,
+        };
+    }
+    let room = (room - more - TAB_GAP).max(0.0);
+    let mut widths = vec![None; natural.len()];
+    let Some(active_width) = natural.get(active) else {
+        return TabFit {
+            widths,
+            overflow: !natural.is_empty(),
+        };
+    };
+    let active_width = active_width.min(room).max(24.0);
+    widths[active] = Some(active_width);
+    let mut left = room - active_width - TAB_GAP;
+    for (index, width) in natural.iter().enumerate() {
+        if index != active && width + TAB_GAP <= left {
+            widths[index] = Some(*width);
+            left -= width + TAB_GAP;
+        }
+    }
+    TabFit {
+        widths,
+        overflow: true,
+    }
+}
+
 /// A painted icon key's glyph.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Icon {
@@ -479,12 +552,19 @@ enum Icon {
     DockBack,
     Close,
     Restore,
+    /// Three dots: more of the same in a menu.
+    More,
 }
 
 fn paint_icon(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
     let stroke = Stroke::new(1.4, color);
     let r = rect.shrink(5.0);
     match icon {
+        Icon::More => {
+            for step in [-1.0, 0.0, 1.0] {
+                painter.circle_filled(r.center() + vec2(step * 4.0, 0.0), 1.5, color);
+            }
+        }
         Icon::Restore => {
             // Two stacked windows: the tiles come back.
             let back = Rect::from_min_max(
@@ -761,6 +841,7 @@ impl StudioShell {
         self.draw_panel_body(&mut child, panel, state, frame, intents);
     }
 
+    #[allow(clippy::too_many_lines)] // one bar: grip, tabs or More tabs, and keys
     fn draw_tab_bar(&self, ui: &mut Ui, tile: &Tile, bar: Rect, actions: &mut Vec<DockAction>) {
         let l = self.locale;
         let active = tile.active_panel();
@@ -787,24 +868,44 @@ impl StudioShell {
         );
         let tabs_left = grip_rect.right() + 3.0;
         let tabs_width = (bar.right() - tabs_left - icons_width - 4.0).max(0.0);
-        #[allow(clippy::cast_precision_loss)] // a handful of tabs
-        let share = (tabs_width / tile.panels.len() as f32).floor();
-        let mut x = tabs_left;
         let font = FontId::proportional(crate::theme::legible(10.5));
-        for panel in &tile.panels {
-            let panel = *panel;
-            let label = l.text(panel.title()).to_uppercase();
-            let natural = ui
-                .painter()
-                .layout_no_wrap(label.clone(), font.clone(), text_color())
-                .size()
-                .x
-                + 16.0;
-            let width = natural.min(share).max(24.0);
+        let tabs: Vec<(PanelId, String, f32)> = tile
+            .panels
+            .iter()
+            .map(|panel| {
+                let label = l.text(panel.title()).to_uppercase();
+                let natural = ui
+                    .painter()
+                    .layout_no_wrap(label.clone(), font.clone(), text_color())
+                    .size()
+                    .x
+                    + 16.0;
+                (*panel, label, natural)
+            })
+            .collect();
+        let widths: Vec<f32> = tabs.iter().map(|(_, _, natural)| *natural).collect();
+        let active_index = tile
+            .panels
+            .iter()
+            .position(|panel| *panel == active)
+            .unwrap_or(0);
+        let fit = fit_tabs(&widths, active_index, tabs_width, ICON_SIZE + 4.0);
+        let mut x = tabs_left;
+        for (index, (panel, label, _)) in tabs.iter().enumerate() {
+            let Some(width) = fit.widths[index] else {
+                continue;
+            };
             let rect =
                 Rect::from_min_size(pos2(x, bar.top() + 2.0), vec2(width, TAB_BAR_HEIGHT - 2.0));
             x += width + 2.0;
-            self.draw_tab(ui, panel, rect, panel == active, &label, &font, actions);
+            self.draw_tab(ui, *panel, rect, *panel == active, label, &font, actions);
+        }
+        if fit.overflow {
+            let more_rect = Rect::from_center_size(
+                pos2(x + ICON_SIZE / 2.0, bar.center().y + 1.0),
+                Vec2::splat(ICON_SIZE),
+            );
+            self.draw_more_tabs(ui, active, &tabs, &fit.widths, more_rect, actions);
         }
         let name = l.text(active.title());
         if maximized
@@ -942,6 +1043,43 @@ impl StudioShell {
             {
                 actions.push(DockAction::Close(panel));
                 ui.close();
+            }
+        });
+    }
+
+    /// The More tabs key after a group's tabs: lists the panels with no
+    /// room for a tab, and shows the one picked.
+    fn draw_more_tabs(
+        &self,
+        ui: &mut Ui,
+        active: PanelId,
+        tabs: &[(PanelId, String, f32)],
+        shown: &[Option<f32>],
+        rect: Rect,
+        actions: &mut Vec<DockAction>,
+    ) {
+        let l = self.locale;
+        let response = icon_key(
+            ui,
+            Id::new("studio-dock-more").with(active.key()),
+            rect,
+            Icon::More,
+            l.text(Msg::DockMoreTabs),
+            l.text(Msg::DockMoreTabsHover),
+        );
+        egui::Popup::menu(&response).show(|ui| {
+            for ((panel, _, _), width) in tabs.iter().zip(shown) {
+                if width.is_some() {
+                    continue;
+                }
+                if ui
+                    .button(l.text(panel.title()))
+                    .on_hover_text(l.text(panel.hover()))
+                    .clicked()
+                {
+                    actions.push(DockAction::Activate(*panel));
+                    ui.close();
+                }
             }
         });
     }
@@ -1212,23 +1350,37 @@ impl StudioShell {
         let canvas = self.canvas;
         let size = ui.available_size();
         let (width, video_height) = monitor_fit(size, canvas);
+        // A tile taller than the picture needs shows the bus's audio under
+        // it rather than a bare band; the two are centred together.
+        let meters = monitor_meters_fit(size, video_height);
+        let strip = if meters {
+            monitors::MONITOR_METER_HEIGHT + 4.0
+        } else {
+            0.0
+        };
         // Letterboxed in the tile: centred both ways.
-        let (left, top) = monitor_offset(size, (width, video_height));
+        let (left, top) = monitor_offset(size, (width, video_height + strip));
         ui.add_space(top);
         ui.horizontal_top(|ui| {
             ui.add_space(left);
-            monitors::draw_monitor(
-                ui,
-                bus,
-                state.view.as_ref(),
-                monitors::WellShape {
-                    width,
-                    video_height,
-                    canvas,
-                },
-                frame.pictures[bus.tap().index()],
-                frame.native_runtime,
-            );
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                monitors::draw_monitor(
+                    ui,
+                    bus,
+                    state.view.as_ref(),
+                    monitors::WellShape {
+                        width,
+                        video_height,
+                        canvas,
+                    },
+                    frame.pictures[bus.tap().index()],
+                    frame.native_runtime,
+                );
+                if meters {
+                    monitors::draw_monitor_meters(ui, bus, width, bus_meters(state, bus));
+                }
+            });
         });
     }
 
@@ -1826,9 +1978,18 @@ impl StudioShell {
     }
 }
 
-/// The strip along the top of a native window: its title and Dock back.
-fn popout_header(ui: &mut Ui, l: Locale, title: &str, hover: Msg, dock_back: &mut bool) {
-    Panel::top(Id::new("studio-popout-header").with(title))
+/// The strip along the top of a tool's native window: its title, and Dock
+/// back and Close aligned right. Returns whether Close was clicked.
+fn popout_header(
+    ui: &mut Ui,
+    l: Locale,
+    tool: ToolWindow,
+    close_hover: &str,
+    dock_back: &mut bool,
+) -> bool {
+    let title = l.text(tool.title());
+    let mut close = false;
+    Panel::top(Id::new("studio-popout-header").with(tool.key()))
         .exact_size(30.0)
         .frame(
             Frame::new()
@@ -1839,12 +2000,23 @@ fn popout_header(ui: &mut Ui, l: Locale, title: &str, hover: Msg, dock_back: &mu
         .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.label(crate::theme::section_label(title))
-                    .on_hover_text(l.text(hover));
+                    .on_hover_text(l.text(tool.hover()));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    let rect = ui.allocate_space(Vec2::splat(ICON_SIZE)).1;
+                    close = icon_key(
+                        ui,
+                        Id::new("studio-popout-close").with(tool.key()),
+                        rect,
+                        Icon::Close,
+                        l.text(Msg::DockClosePanel),
+                        close_hover,
+                    )
+                    .clicked();
                     let rect = ui.allocate_space(Vec2::splat(ICON_SIZE)).1;
                     if icon_key(
                         ui,
-                        Id::new("studio-popout-dock").with(title),
+                        Id::new("studio-popout-dock").with(tool.key()),
                         rect,
                         Icon::DockBack,
                         l.text(Msg::DockBack),
@@ -1857,6 +2029,131 @@ fn popout_header(ui: &mut Ui, l: Locale, title: &str, hover: Msg, dock_back: &mu
                 });
             });
         });
+    close
+}
+
+/// Height of a floating tool window's header strip.
+pub(crate) const TOOL_HEADER_HEIGHT: f32 = 28.0;
+
+/// What a floating tool window's header asked for this frame.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ToolHeader {
+    /// Close the tool (the header's close key).
+    pub(crate) close: bool,
+    /// Move the tool into its own native window (the Pop out key).
+    pub(crate) pop_out: bool,
+}
+
+/// The frame of a floating tool window: the console's raised card.
+pub(crate) fn tool_window_frame() -> Frame {
+    Frame::new()
+        .fill(raised_color())
+        .stroke(Stroke::new(line_width(), border_strong_color()))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin {
+            left: 12,
+            right: 12,
+            top: 4,
+            bottom: 12,
+        })
+}
+
+/// The rect a floating tool window keeps inside: the work area below the
+/// top bar, as last drawn (or the window below the bars before then).
+pub(crate) fn tool_area(shell: &StudioShell, context: &egui::Context) -> Rect {
+    shell.work_area.unwrap_or_else(|| {
+        let viewport = context.viewport_rect();
+        Rect::from_min_max(pos2(viewport.left(), viewport.top() + 72.0), viewport.max)
+    })
+}
+
+/// Draws a floating tool window's body: a header strip (a grip, the
+/// tool's title, and Pop out and Close aligned right, like a docked
+/// panel's tab bar) above `add_contents`, as wide as what the contents
+/// drew. The strip senses no drag, so dragging it moves the window.
+pub(crate) fn floating_tool_frame<R>(
+    ui: &mut Ui,
+    l: Locale,
+    tool: ToolWindow,
+    close_hover: &str,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> (ToolHeader, R) {
+    let top = ui.cursor().min;
+    ui.allocate_exact_size(vec2(0.0, TOOL_HEADER_HEIGHT + 6.0), Sense::hover());
+    let inner = add_contents(ui);
+    let width = (ui.min_rect().right() - top.x).max(4.0 * ICON_SIZE + GRIP_WIDTH);
+    let header = Rect::from_min_size(top, vec2(width, TOOL_HEADER_HEIGHT));
+    (tool_header(ui, l, tool, header, close_hover), inner)
+}
+
+/// Paints the header strip of a floating tool window in `rect`.
+fn tool_header(
+    ui: &mut Ui,
+    l: Locale,
+    tool: ToolWindow,
+    rect: Rect,
+    close_hover: &str,
+) -> ToolHeader {
+    let mut asked = ToolHeader::default();
+    let painter = ui.painter();
+    painter.line_segment(
+        [rect.left_bottom(), rect.right_bottom()],
+        Stroke::new(line_width(), border_color()),
+    );
+    let grip_rect = Rect::from_min_size(
+        pos2(rect.left(), rect.top() + 5.0),
+        vec2(GRIP_WIDTH, TOOL_HEADER_HEIGHT - 10.0),
+    );
+    paint_grip(painter, grip_rect, text_dim_color());
+    let title = l.text(tool.title());
+    let close_rect = Rect::from_center_size(
+        pos2(rect.right() - ICON_SIZE / 2.0, rect.center().y),
+        Vec2::splat(ICON_SIZE),
+    );
+    let pop_rect = close_rect.translate(vec2(-(ICON_SIZE + 2.0), 0.0));
+    let title_rect = Rect::from_min_max(
+        pos2(grip_rect.right() + 6.0, rect.top()),
+        pos2(pop_rect.left() - 6.0, rect.bottom()),
+    );
+    let mut title_ui = ui.new_child(
+        UiBuilder::new()
+            .id_salt(("studio-tool-title", tool.key()))
+            .max_rect(title_rect)
+            .layout(Layout::left_to_right(Align::Center)),
+    );
+    title_ui.set_clip_rect(title_rect.intersect(ui.clip_rect()));
+    title_ui
+        .add(
+            egui::Label::new(crate::theme::section_label(title).color(text_color()))
+                .selectable(false)
+                .truncate(),
+        )
+        .on_hover_text(l.text(tool.hover()));
+    if icon_key(
+        ui,
+        Id::new("studio-tool-popout").with(tool.key()),
+        pop_rect,
+        Icon::PopOut,
+        l.text(Msg::DockPopOut),
+        &l.format(Msg::DockPopOutNamed, &[("panel", Arg::Str(title))]),
+    )
+    .clicked()
+    {
+        asked.pop_out = true;
+    }
+    if icon_key(
+        ui,
+        Id::new("studio-tool-close").with(tool.key()),
+        close_rect,
+        Icon::Close,
+        l.text(Msg::DockClosePanel),
+        close_hover,
+    )
+    .clicked()
+    {
+        asked.close = true;
+    }
+    asked
 }
 
 /// What a popped-out panel's header asked for this frame.
@@ -1906,17 +2203,20 @@ fn rounded_rect(rect: Rect) -> [i32; 4] {
     ]
 }
 
-/// Draws a popped-out tool window's frame (its title and Dock back key)
-/// around `add_contents`, inside [`egui::Context::show_viewport_immediate`].
+/// Draws a popped-out tool window's frame (its title, and Dock back and
+/// Close keys) around `add_contents`, inside
+/// [`egui::Context::show_viewport_immediate`]; also returns whether Close
+/// was clicked.
 pub(crate) fn tool_popout_frame(
     ui: &mut Ui,
     l: Locale,
     tool: ToolWindow,
     class: ViewportClass,
+    close_hover: &str,
     add_contents: impl FnOnce(&mut Ui),
-) -> WindowOutcome {
+) -> (WindowOutcome, bool) {
     let mut dock_back = false;
-    popout_header(ui, l, l.text(tool.title()), tool.hover(), &mut dock_back);
+    let close = popout_header(ui, l, tool, close_hover, &mut dock_back);
     CentralPanel::default()
         .frame(
             Frame::new()
@@ -1924,7 +2224,7 @@ pub(crate) fn tool_popout_frame(
                 .inner_margin(Margin::same(12)),
         )
         .show(ui, add_contents);
-    window_outcome(ui, class, dock_back)
+    (window_outcome(ui, class, dock_back), close)
 }
 
 /// Reads a native window's close request and place. A minimised window

@@ -905,11 +905,11 @@ then put on Preview.
 
 | File | What it shows |
 | --- | --- |
-| `studio-round7-workspace.png` | 1920x1080, the docked Default workspace: Preview (Guest Cam bars) and Program (Anchor Close) with their tally headers and `SIMULATED` badges, the transition column, the input bank as a multiview of live thumbnails (`PGM TAP` / `PVW TAP` / `FEED`, the `audio only` tile, the title's lower-third thumbnail), the audio mixer with moving meters (Field Return latched `CLIP`, Master at -1.0) and the `MON` headphone strip, Recording & streams (`1 / 2 RECORDING`, two destinations `NOT LIVE · Started · no stats`, Web HLS Archive `OFF · Not started`), the top bar's `REC` and amber `LIVE`, and the Cues tab with `Standby: Guest interview` and its `GO will:` box: `Put Guest Cam on Preview (now Guest Cam)` marked `already on Preview: no change`, the wipe, `Overlay 1: take title Guest Lower Third`, `Wait 150 frames (2.5 s), then:` and the title off. |
-| `studio-round7-workspace-720.png` | The same show and steps at 1280x720: the side group keeps the Cues panel (GO, standby, `GO will:`) without a sideways scroll, the stream rows fold their keys into `···`, the mixer keeps one input strip beside `MON` and Master, and the side tabs are cut to `OVE…`, `STI…` (see the issues below). |
-| `studio-round7-colour.png` | Ctrl+G, target `03 · Guest Cam`, the Warm look, then `Advanced` and `Vectorscope`: the green `APPLIED` chip (Guest Cam is on Preview, not on air), the basics with pivot, the Lift/Gamma/Gain/Offset wheels, the curves, the LUT slot (`No LUT`, strength track empty at 0 %), the graded preview, and the bars on the vectorscope's 75 % targets. Preview shows the server-applied grade. |
-| `studio-round7-animation.png` | Titles tab, Guest Lower Third's `Animate…`: `Fit`, `Stagger…` › `Apply stagger` (Bar, Accent, Name, Role 5 frames apart, IN grew from 15 to 30 frames, one auto-saved undo step), `Fit` again, and the ruler clicked at frame 21: the server's exact preview there (bar and accent in, the name in, the role still arriving), with the element outlines and onion skins. |
-| `studio-round7-shortcuts.png` | `?`: the keyboard reference with the `CUE LIST` group (`G` GO, `,` / `.` standby back and forward, `Ctrl+Shift+M` arm, `Ctrl+Shift+D` disarm, `Ctrl+Shift+X` stop, `Ctrl+Shift+E` reset) beside Recording and streaming, Windows, and Console, all in view without scrolling. |
+| `studio-round7-workspace.png` | 1920x1080, the docked Default workspace: Preview (Guest Cam bars) and Program (Anchor Close) with their tally headers and `SIMULATED` badges, each with its audio level strip under the picture (Program: the master mix; Preview: Guest Cam's own level), the transition column, the input bank as a multiview of live thumbnails (`PGM TAP` / `PVW TAP` / `FEED` tags along the top beside the number keys, the `audio only` tile, the title's lower-third thumbnail in full), the audio mixer with moving meters (Field Return latched `CLIP`, Master at -1.0) and the `MON` headphone strip, Recording & streams (`1 / 2 RECORDING`, two destinations `NOT LIVE · Started · no stats`, Web HLS Archive `OFF · Not started`), the top bar's `REC` and amber `LIVE`, and the Cues tab with `Standby: Guest interview` and its `GO will:` box: `Put Guest Cam on Preview (now Guest Cam)` marked `already on Preview: no change`, the wipe, `Overlay 1: take title Guest Lower Third`, `Wait 150 frames (2.5 s), then:` and the title off. |
+| `studio-round7-workspace-720.png` | The same show and steps at 1280x720: the side group keeps the Cues panel (GO, standby, `GO will:`) without a sideways scroll, its tabs whole (`OVERLAYS`, `STINGERS`, `CUES`) with the rest under the `···` More tabs key (Cues was picked there), the stream rows fold their keys into `···` and read `Started`, the mixer header keeps `AUDIO MIXER` whole and drops its meter key, the mixer keeps one input strip beside `MON` and Master, and the monitors give all their height to the picture (no level strip). |
+| `studio-round7-colour.png` | Ctrl+G, target `03 · Guest Cam` (the picker lists no audio-only input), the Warm look, then `Advanced` and `Vectorscope`: the window's `COLOUR GRADE` header with its grip and the Pop out and Close keys at the right, inside the work area below the top bar, the green `APPLIED` chip (Guest Cam is on Preview, not on air), the basics with pivot, the Lift/Gamma/Gain/Offset wheels, the curves, the LUT slot (`No LUT`, strength track empty at 0 %), the graded preview, and the bars as bright dots on the vectorscope's named 75 % targets (`R`, `MG`, `B`, `CY`, `G`, `YL`) with the skin tone line. Preview shows the server-applied grade. |
+| `studio-round7-animation.png` | Titles tab, Guest Lower Third's `Animate…`: the window opens below the top bar with its `ANIMATION` header (grip, Pop out, Close), then `Fit`, `Stagger…` › `Apply stagger` (Bar, Accent, Name, Role 5 frames apart, IN grew from 15 to 30 frames, one auto-saved undo step), `Fit` again, and the ruler clicked at frame 21: the server's exact preview there (bar and accent in, the name in, the role still arriving), with the element outlines and onion skins; the ruler's `0:20` label steps left of the playhead and `1:00` sits whole past the phase-end grip. |
+| `studio-round7-shortcuts.png` | `?`: the keyboard reference with the `CUE LIST` group (`G` GO, the square `,` / `.` caps for standby back and forward, `Ctrl+Shift+M` arm, `Ctrl+Shift+D` disarm, `Ctrl+Shift+X` stop, `Ctrl+Shift+E` reset) beside Recording and streaming, Windows, and Console, all in view without scrolling. |
 | `studio-round7-workspace-es.png` | The 1920x1080 workspace with `--lang es`: `PREVIO` / `PROGRAMA`, `CORTE`, `FUNDIDO`, `MÁS`, `BANCO DE ENTRADAS`, `MEZCLADOR DE AUDIO`, `GRABACIÓN Y TRANSMISIONES` (`Iniciado · sin datos`, `Sin iniciar`), `En espera: Guest interview`, and `GO hará:` with `Poner Guest Cam en Previo (ahora Guest Cam)` / `ya está en Previo: sin cambios`. |
 
 Defects found in these captures and fixed in `fm-ui-egui` (the captures
@@ -943,7 +943,42 @@ above are after the fixes):
   body sideways, so the Cues panel scrolled horizontally and its GO key ran
   under the bar; a body sized to its minimum now leaves the bar its width.
 
-Larger issues seen and not fixed here:
+The larger issues these captures first showed, fixed in a second pass (the
+captures above are after it too):
+
+- The Colour, Animation, and layer designer windows had no title bar, their
+  close keys sat mid-row after the last key, and the Animation window
+  opened over the top bar's padlock. A floating tool window now has a
+  header like a docked panel's tab bar (grip, title, and Pop out and Close
+  at the right; drag the header to move it) and stays inside the work area
+  below the top bar; a popped-out tool's native window has Dock back and
+  Close in its header.
+- At 1280x720 the side tab group cut its tabs to `OVE…`, `STI…`, `PLA…`,
+  `ME…`; a tab bar now shows whole tabs (the active one always) and lists
+  the rest under a `···` More tabs key. The mixer header's meter key showed
+  as `RMS · PEAK HOL…`; it shows whole or not at all. The stream detail read
+  `Started · no …`; a narrow row drops whole ` · ` clauses (`Started`).
+- At 1920x1080 the monitors left a bare band above and below the 16:9
+  picture; a tile with the room shows the bus's audio under the picture
+  (Program: the master mix; Preview: the previewed source), stereo bars on
+  a 60 dB scale, centred with the picture.
+- The Colour window offered the audio-only input (Studio Playback) as a
+  grade target; inputs without video are left out of Target and Copy to….
+- The vectorscope trace of colour bars was a few faint pixels per bar and
+  the waveform was dim; traces now bloom and are at least half bright, the
+  graticule is brighter, the vectorscope names its 75 % targets and draws
+  the skin tone line, and the waveform and parade have a 0–100 scale with
+  10 / 90 % guides.
+- The animation ruler's playhead covered labels and the last label was cut
+  at the ruler's end; a label sits right or left of its tick, wholly inside
+  the ruler and clear of the playhead and the phase-end grip, or is hidden.
+- The `,` and `.` key caps in the keyboard reference were specks; a
+  one-character cap is at least 34 points wide and a lone mark is drawn
+  larger and centred on its ink.
+- The title tile's `FEED · SIM` tag sat exactly where a lower third is
+  drawn; a thumbnail's source tag sits along the top, after its number key.
+
+Still open:
 
 - There is no dedicated multiview: the input bank's thumbnails stand in for
   one, without Program/Preview tiles in the grid, labels in a broadcast
@@ -951,25 +986,6 @@ Larger issues seen and not fixed here:
 - The scene input's tile (Two-Shot + Remote) reads `no thumbnail` for the
   whole session on the simulated daemon, although Program shows simulated
   renders.
-- The title tile's `FEED · SIM` tag sits exactly where a lower third is drawn,
-  hiding the picture it labels.
-- At 1280x720 the side tab group truncates its tabs (`OVE…`, `STI…`,
-  `PLA…`, `ME…`) instead of scrolling or folding them into a menu, the mixer
-  header cuts `RMS · PEAK HOL…`, and the stream detail is still `Started ·
-  no …`.
-- The monitors leave a band of empty panel above and below the 16:9 well in
-  the 1920x1080 Default layout.
-- The Colour and Animation windows have no title bar; their close keys sit
-  mid-row after the last key, and the Animation window opens over the top
-  bar's padlock.
-- The Colour window offers the audio-only input (Studio Playback) as a
-  grade target.
-- The vectorscope trace of colour bars is a few faint pixels per bar; the
-  waveform is similarly dim.
-- The animation ruler's playhead and the first and last time labels overlap
-  or clip (`0:00`, `1:00`).
-- The `,` and `.` key caps in the keyboard reference are tiny and hard to
-  read at a glance.
 
 ## Reproducing
 
@@ -1617,7 +1633,8 @@ colour (`#0B3D91F0`), and the elements Bar (a rectangle at 120,820,
 (DejaVu Sans Bold 54 px), and Role (DejaVu Sans 34 px). With Studio up and
 its window sized to the screen, `remote-go 127.0.0.1:<port> 1` three times
 (a few seconds apart, so the recorder starts), `remote-preview … 3`, a
-click on the side group's `CUES` tab, and the pointer parked on the status
+click on the side group's `CUES` tab (at 1280x720 its `···` More tabs key,
+then `Cues`), and the pointer parked on the status
 bar give the workspace captures. The colour capture then presses Ctrl+G,
 picks `03 · Guest Cam` in Target, and clicks `Warm`, `Advanced`, and
 `Vectorscope`. The animation capture closes that window, clicks `TITLES`

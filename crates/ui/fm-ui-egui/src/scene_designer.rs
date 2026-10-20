@@ -28,8 +28,8 @@ use std::collections::BTreeMap;
 
 use egui::{
     Align, Align2, Color32, ColorImage, ComboBox, CornerRadius, CursorIcon, DragValue, Event,
-    FontId, Frame, Key, Layout, Margin, Modifiers, Pos2, Rect, RichText, Sense, Shape, Stroke,
-    TextureHandle, TextureOptions, Ui, Vec2, pos2, vec2,
+    FontId, Key, Layout, Modifiers, Pos2, Rect, RichText, Sense, Shape, Stroke, TextureHandle,
+    TextureOptions, Ui, Vec2, pos2, vec2,
 };
 use fm_protocol::{TitlePreviewImage, WireLayerKey, WireSceneLayerId, WireSceneLayerSource};
 use fm_types::{InputId, SceneId};
@@ -53,8 +53,8 @@ use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::theme::{
     AMBER, KeyIcon, MONITOR_BLACK, Tone, accent_color, add_icon_button, border_strong_color,
-    caption, close_key, field_label, muted_color, raised_color, section_label, small_button,
-    status_chip, text_color, text_dim_color,
+    caption, field_label, muted_color, section_label, small_button, status_chip, text_color,
+    text_dim_color,
 };
 use crate::toasts::ToastKind;
 use crate::{StudioIntent, StudioShell, StudioUiState, workspace};
@@ -545,6 +545,7 @@ impl StudioShell {
     }
 
     /// Draws the layer designer when open and asks for its pictures.
+    #[allow(clippy::too_many_lines)] // one window: popped out or floating, then its sends
     pub(crate) fn draw_designer_window(
         &mut self,
         context: &egui::Context,
@@ -568,22 +569,32 @@ impl StudioShell {
         }
         let l = self.locale;
         let mut open = true;
-        let viewport = context.viewport_rect();
-        let max = Vec2::new(viewport.width() - 24.0, viewport.height() - 60.0).max(MIN_WINDOW_SIZE);
+        // Inside the work area, never over the top bar.
+        let area = workspace::tool_area(self, context);
+        let max = Vec2::new(area.width() - 32.0, area.height() - 24.0).max(MIN_WINDOW_SIZE);
+        let close_hover = l10n::with_key(l, l.text(Msg::DesignClose), SCENE_DESIGNER_SHORTCUT);
         let mut copied = None;
         let mut history = Vec::new();
         if let Some(geometry) = self.layout.tool_popped(ToolWindow::Designer) {
             let (id, builder) = self.tool_viewport(ToolWindow::Designer, geometry);
             let designer = &mut self.designer;
-            let outcome = context.show_viewport_immediate(id, builder, |ui, class| {
-                workspace::tool_popout_frame(ui, l, ToolWindow::Designer, class, |ui| {
-                    ui.set_min_size(ui.available_size());
-                    copied = draw_contents(ui, l, designer, state, &mut open, &mut history);
-                })
+            let (outcome, close) = context.show_viewport_immediate(id, builder, |ui, class| {
+                workspace::tool_popout_frame(
+                    ui,
+                    l,
+                    ToolWindow::Designer,
+                    class,
+                    &close_hover,
+                    |ui| {
+                        ui.set_min_size(ui.available_size());
+                        copied = draw_contents(ui, l, designer, state, &mut history);
+                    },
+                )
             });
+            open &= !close;
             self.finish_tool_popout(ToolWindow::Designer, outcome);
         } else {
-            egui::Window::new(l.text(Msg::DesignTitle))
+            let shown = egui::Window::new(l.text(Msg::DesignTitle))
                 .id(egui::Id::new("studio-designer-window"))
                 .title_bar(false)
                 .collapsible(false)
@@ -591,23 +602,29 @@ impl StudioShell {
                 .default_size(DEFAULT_WINDOW_SIZE.min(max))
                 .min_size(MIN_WINDOW_SIZE)
                 .max_size(max)
+                .constrain_to(area)
                 .pivot(Align2::CENTER_TOP)
-                .default_pos(pos2(viewport.center().x, 36.0))
-                .frame(
-                    Frame::new()
-                        .fill(raised_color())
-                        .stroke(Stroke::new(
-                            crate::theme::line_width(),
-                            border_strong_color(),
-                        ))
-                        .corner_radius(CornerRadius::same(8))
-                        .inner_margin(Margin::same(12)),
-                )
+                .default_pos(pos2(area.center().x, area.top() + 4.0))
+                .frame(workspace::tool_window_frame())
                 .show(context, |ui| {
                     ui.set_min_size(ui.available_size());
-                    copied =
-                        draw_contents(ui, l, &mut self.designer, state, &mut open, &mut history);
+                    workspace::floating_tool_frame(
+                        ui,
+                        l,
+                        ToolWindow::Designer,
+                        &close_hover,
+                        |ui| {
+                            copied = draw_contents(ui, l, &mut self.designer, state, &mut history);
+                        },
+                    )
+                    .0
                 });
+            if let Some(header) = shown.and_then(|shown| shown.inner) {
+                open &= !header.close;
+                if header.pop_out {
+                    self.layout.set_tool_popped(ToolWindow::Designer, true);
+                }
+            }
         }
         intents.extend(history);
         if let Some(count) = copied {
@@ -656,7 +673,6 @@ fn draw_contents(
     l: Locale,
     window: &mut DesignerWindow,
     state: &StudioUiState,
-    open: &mut bool,
     history: &mut Vec<StudioIntent>,
 ) -> Option<usize> {
     let scenes = scene_choices(l, state);
@@ -674,19 +690,6 @@ fn draw_contents(
         if let Some(document) = window.document() {
             status_and_history(ui, l, document, state, history);
         }
-        ui.with_layout(l10n::trailing_layout(l), |ui| {
-            if ui
-                .add(close_key(14.0))
-                .on_hover_text(l10n::with_key(
-                    l,
-                    l.text(Msg::DesignClose),
-                    SCENE_DESIGNER_SHORTCUT,
-                ))
-                .clicked()
-            {
-                *open = false;
-            }
-        });
     });
     let Some(scene) = window.scene.filter(|_| !scenes.is_empty()) else {
         crate::theme::empty_state(
