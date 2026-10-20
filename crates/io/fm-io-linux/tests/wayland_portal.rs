@@ -9,9 +9,12 @@
 //!
 //! The end-to-end test needs a real headless Wayland desktop with a
 //! screen sharing portal and `PipeWire` (see the IN-011 notes in
-//! `docs/spec/implementation-roadmap.md`) and a `--cfg freemix_pipewire`
-//! build: it runs when `FM_WAYLAND_E2E=1` and the test's session bus
-//! (`DBUS_SESSION_BUS_ADDRESS`) is that desktop's.
+//! `docs/spec/implementation-roadmap.md`), with libpipewire on the
+//! loader's path at run time (nothing `PipeWire` is needed to build): it
+//! runs when `FM_WAYLAND_E2E=1` and the test's session bus
+//! (`DBUS_SESSION_BUS_ADDRESS`) is that desktop's. Where libpipewire
+//! cannot be loaded, the desktop is checked to report itself unsupported
+//! (with the advice to install `PipeWire`) without asking its portal.
 
 #![cfg(target_os = "linux")]
 // The fake portal's methods take what the D-Bus interface macro hands them.
@@ -433,14 +436,63 @@ fn a_dialog_left_open_is_dismissed_when_the_capture_stops() {
     });
 }
 
+/// A share that must never reach the portal's dialog.
+struct Silent;
+impl fm_io_linux::wayland::ShareSink for Silent {
+    fn awaiting_selection(&mut self) {
+        panic!("the portal was asked");
+    }
+    fn granted(&mut self, _: Option<String>, _: Option<&str>) {}
+    fn streaming(&mut self) {}
+    fn frame(&mut self, _: &fm_io_linux::wayland::SourcePicture<'_>) {}
+    fn idle(&mut self) {}
+    fn stopping(&self) -> bool {
+        false
+    }
+}
+
+/// Without libpipewire a Wayland desktop is unsupported, and no share
+/// asks its portal (nothing listens on the bus named here).
+#[test]
+fn a_desktop_without_pipewire_is_unsupported() {
+    use fm_io_linux::wayland::{DesktopPortal, NO_PIPEWIRE, PortalBackend, pipewire_available};
+
+    if pipewire_available() {
+        eprintln!("skipped: libpipewire is installed here");
+        return;
+    }
+    let nowhere = "unix:path=/nonexistent/freemix-no-bus";
+    let inventory = fm_io_linux::wayland::inventory(Some(nowhere));
+    assert!(!inventory.supported, "{inventory:?}");
+    assert_eq!(inventory.error.as_deref(), Some(NO_PIPEWIRE));
+    assert_eq!(
+        fm_io_linux::screen_capture::session_from(
+            None,
+            Some("wayland-0"),
+            None,
+            pipewire_available
+        ),
+        fm_io_linux::screen_capture::Session::Unsupported(NO_PIPEWIRE)
+    );
+    let end = DesktopPortal::with_address(nowhere)
+        .share(&request(SourceKind::Monitor, None), &mut Silent);
+    assert_eq!(
+        end,
+        fm_io_linux::wayland::ShareEnd::Unsupported(NO_PIPEWIRE.into())
+    );
+}
+
 /// A real share of a headless Wayland desktop's screen.
-#[cfg(freemix_pipewire)]
 #[test]
 fn a_real_desktop_screen_is_captured() {
     if std::env::var("FM_WAYLAND_E2E").as_deref() != Ok("1") {
         eprintln!("skipped: set FM_WAYLAND_E2E=1 on a Wayland desktop's session bus");
         return;
     }
+    assert!(
+        fm_io_linux::wayland::pipewire_available(),
+        "libpipewire is not on the loader's path"
+    );
     let inventory = fm_io_linux::wayland::inventory(None);
     assert!(inventory.picks_on_desktop(), "{inventory:?}");
     let token = live_picture(None).expect("the desktop keeps a restore token");
@@ -450,7 +502,6 @@ fn a_real_desktop_screen_is_captured() {
     share_again(token);
 }
 
-#[cfg(freemix_pipewire)]
 fn share_again(token: String) {
     use fm_io_linux::wayland::{CaptureSettings, DesktopPortal, PortalCapture};
     use fm_types::screen_capture::{ScreenCaptureCrop, ScreenCaptureState};
@@ -482,7 +533,6 @@ fn share_again(token: String) {
 
 /// Captures the desktop's screen (with `token`, if any) until a picture
 /// arrives, checks it, and returns the grant's restore token.
-#[cfg(freemix_pipewire)]
 fn live_picture(token: Option<String>) -> Option<String> {
     use fm_io_linux::wayland::{CaptureSettings, DesktopPortal, PortalCapture};
     use fm_types::screen_capture::{ScreenCaptureCrop, ScreenCaptureState};

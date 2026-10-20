@@ -1,0 +1,27 @@
+[package]
+name = "fm-io-pipewire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# The PipeWire video stream reader of Wayland screen capture (IN-011).
+# libpipewire is loaded at run time (`libloading`), so nothing PipeWire is
+# needed to build, and a server without it reports Wayland capture
+# unsupported instead of failing to start.
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libloading = "0.8.9"
+
+# The workspace forbids `unsafe`; this crate is the one narrow FFI boundary
+# to libpipewire, so it denies `unsafe` everywhere except its two audited
+# modules (`sys`, `stream`), and every `unsafe` block needs a `SAFETY`
+# comment.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+multiple_unsafe_ops_per_block = "warn"

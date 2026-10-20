@@ -1,6 +1,6 @@
 //! The real Wayland desktop behind a [`PortalCapture`](super::PortalCapture)
-//! (IN-011): the portal conversation ([`super::portal`]) and, in builds
-//! with `PipeWire`, the shared stream.
+//! (IN-011): the portal conversation ([`super::portal`]) and the shared
+//! `PipeWire` stream.
 
 use std::cell::RefCell;
 
@@ -43,7 +43,7 @@ fn end_of(refusal: Refusal) -> ShareEnd {
 
 impl PortalBackend for DesktopPortal {
     fn share(&mut self, request: &ShareRequest, sink: &mut dyn ShareSink) -> ShareEnd {
-        if !super::PIPEWIRE_BUILT {
+        if !super::pipewire_available() {
             // Asking would show a dialog for a stream nobody can read.
             return ShareEnd::Unsupported(super::NO_PIPEWIRE.into());
         }
@@ -81,7 +81,6 @@ impl PortalBackend for DesktopPortal {
 }
 
 /// Reads the granted stream until the share ends.
-#[cfg(freemix_pipewire)]
 fn stream(grant: super::portal::Grant, portal: &mut Portal, sink: &mut dyn ShareSink) -> ShareEnd {
     super::pipewire::stream(grant.remote, grant.node_id, sink, &mut || {
         portal
@@ -90,20 +89,12 @@ fn stream(grant: super::portal::Grant, portal: &mut Portal, sink: &mut dyn Share
     })
 }
 
-/// Without `PipeWire` nothing reads the stream (never reached: a share
-/// stops before asking).
-#[cfg(not(freemix_pipewire))]
-fn stream(grant: super::portal::Grant, portal: &mut Portal, sink: &mut dyn ShareSink) -> ShareEnd {
-    let _ = (grant, portal, sink);
-    ShareEnd::Unsupported(super::NO_PIPEWIRE.into())
-}
-
 /// What the desktop's portal can share, as an inventory: supported with
 /// the `portal` backend and nothing listed (the dialog picks), or
 /// unsupported and why. `address` names a bus other than the session bus.
 #[must_use]
 pub fn inventory(address: Option<&str>) -> ScreenCaptureInventory {
-    if !super::PIPEWIRE_BUILT {
+    if !super::pipewire_available() {
         return ScreenCaptureInventory::unsupported(super::NO_PIPEWIRE);
     }
     let capabilities = async_io::block_on(async {

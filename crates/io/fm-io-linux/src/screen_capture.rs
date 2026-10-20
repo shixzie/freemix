@@ -3,10 +3,10 @@
 //! - [`session`]: which capture the desktop session allows: an X11
 //!   display (`DISPLAY`) is captured silently; a Wayland session is
 //!   captured through the xdg-desktop-portal's `ScreenCast` and `PipeWire`
-//!   (see [`crate::wayland`]) in builds with `PipeWire`, where the
-//!   desktop's own dialog picks the screen or window; in other builds a
+//!   (see [`crate::wayland`]) where libpipewire is installed, and the
+//!   desktop's own dialog picks the screen or window; without it a
 //!   Wayland session with `XWayland` captures only X11 windows, and one
-//!   without it is unsupported.
+//!   without `XWayland` is unsupported.
 //! - [`X11Lister`] (Linux only): the screens (`RandR` monitors, or the
 //!   whole root window) and the viewable top-level application windows of
 //!   an X11 display, with their class, title, process, and geometry,
@@ -30,14 +30,14 @@ use fm_types::screen_capture::{
 /// The backend token of an X11 desktop.
 pub const X11_BACKEND: &str = "x11";
 
-/// Why a Wayland session without `XWayland` cannot be captured by a build
-/// without `PipeWire`.
+/// Why a Wayland session without `XWayland` cannot be captured where
+/// `PipeWire` is not installed.
 pub const WAYLAND_UNSUPPORTED: &str = crate::wayland::NO_PIPEWIRE;
-/// What a Wayland session with `XWayland` can capture in a build without
-/// `PipeWire`.
+/// What a Wayland session with `XWayland` can capture where `PipeWire` is
+/// not installed.
 pub const XWAYLAND_NOTE: &str = "Wayland session: only XWayland application windows can be \
-     captured; screens and native Wayland windows need an X11 session or a server built with \
-     PipeWire";
+     captured; screens and native Wayland windows need an X11 session or PipeWire installed \
+     on the server";
 /// Why a server without a display cannot be captured.
 pub const NO_DISPLAY: &str = "no desktop session: DISPLAY is not set for the server";
 
@@ -55,17 +55,18 @@ pub enum Session {
 
 /// The session `display` (`DISPLAY`), `wayland_display`
 /// (`WAYLAND_DISPLAY`), and `session_type` (`XDG_SESSION_TYPE`) describe,
-/// for a build that reads `PipeWire` streams (`pipewire`) or not.
+/// where libpipewire can be loaded (`pipewire`, asked only of a Wayland
+/// session) or not.
 #[must_use]
 pub fn session_from(
     display: Option<&str>,
     wayland_display: Option<&str>,
     session_type: Option<&str>,
-    pipewire: bool,
+    pipewire: impl FnOnce() -> bool,
 ) -> Session {
     let wayland = wayland_display.is_some_and(|value| !value.is_empty())
         || session_type.is_some_and(|value| value.eq_ignore_ascii_case("wayland"));
-    if wayland && pipewire {
+    if wayland && pipewire() {
         return Session::Portal;
     }
     match display.filter(|value| !value.trim().is_empty()) {
@@ -86,7 +87,7 @@ pub fn session() -> Session {
         var("DISPLAY").as_deref(),
         var("WAYLAND_DISPLAY").as_deref(),
         var("XDG_SESSION_TYPE").as_deref(),
-        crate::wayland::PIPEWIRE_BUILT,
+        crate::wayland::pipewire_available,
     )
 }
 
@@ -775,35 +776,37 @@ mod tests {
     #[test]
     fn sessions_follow_the_environment() {
         assert_eq!(
-            session_from(Some(":0"), None, Some("x11"), true),
+            session_from(Some(":0"), None, Some("x11"), || {
+                panic!("an X11 session never loads PipeWire")
+            }),
             Session::X11 {
                 display: ":0".into(),
                 wayland: false
             }
         );
         assert_eq!(
-            session_from(Some(":1"), Some("wayland-0"), None, false),
+            session_from(Some(":1"), Some("wayland-0"), None, || false),
             Session::X11 {
                 display: ":1".into(),
                 wayland: true
             }
         );
         assert_eq!(
-            session_from(None, None, Some("wayland"), false),
+            session_from(None, None, Some("wayland"), || false),
             Session::Unsupported(WAYLAND_UNSUPPORTED)
         );
         assert_eq!(
-            session_from(Some(" "), None, None, true),
+            session_from(Some(" "), None, None, || true),
             Session::Unsupported(NO_DISPLAY)
         );
-        // A build with PipeWire captures a Wayland session through its
-        // portal, XWayland or not.
+        // Where PipeWire is installed a Wayland session is captured through
+        // its portal, XWayland or not.
         assert_eq!(
-            session_from(Some(":1"), Some("wayland-0"), None, true),
+            session_from(Some(":1"), Some("wayland-0"), None, || true),
             Session::Portal
         );
         assert_eq!(
-            session_from(None, None, Some("wayland"), true),
+            session_from(None, None, Some("wayland"), || true),
             Session::Portal
         );
     }

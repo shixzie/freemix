@@ -10,9 +10,11 @@
 //!   mode, and `persist_mode` with the restore token of the last grant),
 //!   `Start` (the dialog: the share waits for the operator), and
 //!   `OpenPipeWireRemote` (the `PipeWire` connection the grant opens).
-//! - `pipewire` (Linux, `--cfg freemix_pipewire` builds only): the stream,
-//!   negotiated as `BGRx`, `RGBx`, `xRGB`, or `xBGR` shared-memory pictures
-//!   of any size (DMA-BUF is not offered, so the compositor copies).
+//! - `pipewire` (Linux): the stream, negotiated as `BGRx`, `RGBx`, `xRGB`,
+//!   or `xBGR` shared-memory pictures of any size (DMA-BUF is not offered,
+//!   so the compositor copies), read through libpipewire loaded at run
+//!   time ([`fm_io_pipewire`]): a server without `PipeWire` installed
+//!   reports a Wayland session unsupported and says to install it.
 //! - [`convert`]: a shared picture's crop region into the program picture
 //!   as opaque RGBA, letterboxed like every other capture.
 //! - [`capture`]: [`PortalCapture`], one input's share on a worker thread
@@ -32,7 +34,7 @@ pub mod capture;
 pub mod convert;
 #[cfg(target_os = "linux")]
 mod desktop;
-#[cfg(all(target_os = "linux", freemix_pipewire))]
+#[cfg(target_os = "linux")]
 mod pipewire;
 #[cfg(target_os = "linux")]
 pub mod portal;
@@ -43,13 +45,25 @@ pub use convert::{PixelLayout, SourcePicture, letterbox};
 pub use desktop::{DesktopPortal, inventory};
 use fm_types::screen_capture::ScreenCaptureTarget;
 
-/// Whether this build reads `PipeWire` streams (`--cfg freemix_pipewire` on
-/// Linux), which Wayland capture needs.
-pub const PIPEWIRE_BUILT: bool = cfg!(all(target_os = "linux", freemix_pipewire));
+/// Whether libpipewire (`libpipewire-0.3.so.0`), which Wayland capture
+/// reads its streams through, can be loaded here (Linux only). It is
+/// loaded on the first call.
+#[must_use]
+pub fn pipewire_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        fm_io_pipewire::available().is_ok()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
 
-/// Why a Wayland session cannot be captured by a build without `PipeWire`.
-pub const NO_PIPEWIRE: &str = "Wayland session: this server was built without PipeWire; \
-     rebuild it with RUSTFLAGS=\"--cfg freemix_pipewire\" or run it in an X11 session";
+/// Why a Wayland session cannot be captured where libpipewire cannot be
+/// loaded.
+pub const NO_PIPEWIRE: &str = "Wayland session: PipeWire (libpipewire-0.3.so.0) is not \
+     installed on the server; install PipeWire or run the server in an X11 session";
 /// The operator dismissed the desktop's sharing dialog.
 pub const DENIED_CANCELLED: &str = "sharing was cancelled in the sharing dialog on the server's \
      desktop; pick again to ask once more";
