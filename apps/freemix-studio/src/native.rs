@@ -177,9 +177,11 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
         // request answers every later one.
         (StudioIntent::RequestDisplayInventory, StudioIntent::RequestDisplayInventory)
         | (StudioIntent::RequestCaptureDevices, StudioIntent::RequestCaptureDevices)
-        | (StudioIntent::RequestSystemAudioDevices, StudioIntent::RequestSystemAudioDevices) => {
-            true
-        }
+        | (StudioIntent::RequestSystemAudioDevices, StudioIntent::RequestSystemAudioDevices)
+        | (
+            StudioIntent::WebAccess(fm_protocol::WebAccessAction::Status),
+            StudioIntent::WebAccess(fm_protocol::WebAccessAction::Status),
+        ) => true,
         // The thumbnail feed is latest-wins: the newer on/off replaces one
         // still queued.
         (
@@ -1221,6 +1223,7 @@ fn run_worker(
                 | StudioIntent::RequestDisplayInventory
                 | StudioIntent::RequestCaptureDevices
                 | StudioIntent::RequestSystemAudioDevices
+                | StudioIntent::WebAccess(_)
                 | StudioIntent::InputThumbnails { .. }),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
@@ -1251,7 +1254,8 @@ fn run_worker(
                     | SessionEvent::RecorderStatus { .. }
                     | SessionEvent::DisplayInventory { .. }
                     | SessionEvent::CaptureDevices { .. }
-                    | SessionEvent::SystemAudioDevices { .. },
+                    | SessionEvent::SystemAudioDevices { .. }
+                    | SessionEvent::WebAccess { .. },
                 )) => true,
                 // Lossy monitor parts publish only once a frame completes.
                 Ok(Some(
@@ -1309,6 +1313,7 @@ fn run_worker(
                 | StudioIntent::RequestDisplayInventory
                 | StudioIntent::RequestCaptureDevices
                 | StudioIntent::RequestSystemAudioDevices
+                | StudioIntent::WebAccess(_)
                 | StudioIntent::InputThumbnails { .. }),
             )) => {
                 if !handle_preview_request(&mut runtime, request, publisher, &recovery) {
@@ -1389,6 +1394,16 @@ fn handle_preview_request(
         }
         return true;
     }
+    // So is web access management (RC-007, Protocol 2.70); while the
+    // session recovers only the wish for the status survives.
+    if let StudioIntent::WebAccess(action) = request {
+        if recovery.active() {
+            runtime.want_web_access();
+        } else {
+            runtime.request_web_access(action);
+        }
+        return true;
+    }
     // So are the system audio devices (AU-011, Protocol 2.68).
     if matches!(request, StudioIntent::RequestSystemAudioDevices) {
         if recovery.active() {
@@ -1433,6 +1448,7 @@ fn handle_worker_intent(
         | StudioIntent::RequestDisplayInventory
         | StudioIntent::RequestCaptureDevices
         | StudioIntent::RequestSystemAudioDevices
+        | StudioIntent::WebAccess(_)
         | StudioIntent::InputThumbnails { .. }) => {
             return handle_preview_request(runtime, request, publisher, recovery);
         }
@@ -1736,7 +1752,8 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::RecorderStatus { .. }
                         | SessionEvent::DisplayInventory { .. }
                         | SessionEvent::CaptureDevices { .. }
-                        | SessionEvent::SystemAudioDevices { .. } => Some(true),
+                        | SessionEvent::SystemAudioDevices { .. }
+                        | SessionEvent::WebAccess { .. } => Some(true),
                         SessionEvent::MonitorFrame { complete, .. }
                         | SessionEvent::TitlePreview { complete, .. }
                         | SessionEvent::ScenePreview { complete, .. } => Some(*complete),
@@ -2284,6 +2301,7 @@ fn receive_command_event(
                 | SessionEvent::DisplayInventory { .. }
                 | SessionEvent::CaptureDevices { .. }
                 | SessionEvent::SystemAudioDevices { .. }
+                | SessionEvent::WebAccess { .. }
         ) {
             publication.update(runtime, *deferred_rejections)?;
             continue;
@@ -2769,6 +2787,9 @@ fn intent_payload(
         }
         StudioIntent::RequestSystemAudioDevices => {
             return Err("A system audio devices request is not a command".to_owned());
+        }
+        StudioIntent::WebAccess(_) => {
+            return Err("A web access request is not a command".to_owned());
         }
         StudioIntent::InputThumbnails { .. } => {
             return Err("An input thumbnail subscription is not a command".to_owned());
@@ -4199,6 +4220,7 @@ mod tests {
                         project_bundle,
                         daemon_executable,
                         listen: "127.0.0.1:0".parse().unwrap(),
+                        web_listen: None,
                     }),
                     client_id: "idle-exit-worker-test".to_owned(),
                     desired_role: Role::Operator,
@@ -6278,6 +6300,14 @@ mod tests {
         assert!(intent_payload(StudioIntent::RequestDisplayInventory, None).is_err());
         assert!(intent_payload(StudioIntent::RequestCaptureDevices, None).is_err());
         assert!(intent_payload(StudioIntent::RequestSystemAudioDevices, None).is_err());
+        let status = || StudioIntent::WebAccess(fm_protocol::WebAccessAction::Status);
+        assert!(intent_payload(status(), None).is_err());
+        let mut polls = status();
+        assert!(coalesce_adjacent_intent(&mut polls, status()));
+        assert!(!coalesce_adjacent_intent(
+            &mut polls,
+            StudioIntent::WebAccess(fm_protocol::WebAccessAction::CancelPairing)
+        ));
         let mut system_audio = StudioIntent::RequestSystemAudioDevices;
         assert!(coalesce_adjacent_intent(
             &mut system_audio,

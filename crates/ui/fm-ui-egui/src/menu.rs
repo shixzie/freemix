@@ -1379,6 +1379,14 @@ impl StudioShell {
             self.live_lan.open = true;
             ui.close();
         }
+        if ui
+            .button(l.text(Msg::MenuWebAccess))
+            .on_hover_text(l.text(Msg::MenuWebAccessHover))
+            .clicked()
+        {
+            self.web_access.open = true;
+            ui.close();
+        }
     }
 
     /// Output ▸ Stingers: assign the Preview input to a slot, or clear a slot.

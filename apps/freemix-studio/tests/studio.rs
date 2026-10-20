@@ -1373,6 +1373,7 @@ fn supervised(directory: &TestDirectory, executable: &Path) -> SupervisedConfig 
         project_bundle: directory.path("show.freemix"),
         daemon_executable: executable.to_owned(),
         listen: "127.0.0.1:0".parse().unwrap(),
+        web_listen: None,
     }
 }
 
@@ -1660,7 +1661,7 @@ fn arguments_preserve_supervised_and_existing_configuration_distinction() {
     };
     assert!(matches!(
         supervised.connection,
-        ConnectionConfig::Supervised(SupervisedConfig { project_bundle, daemon_executable, listen })
+        ConnectionConfig::Supervised(SupervisedConfig { project_bundle, daemon_executable, listen, web_listen: None })
             if project_bundle == Path::new("show.freemix")
                 && daemon_executable == Path::new("/opt/freemixd")
                 && listen == "127.0.0.1:0".parse().unwrap()
@@ -1684,6 +1685,48 @@ fn arguments_preserve_supervised_and_existing_configuration_distinction() {
             if address == "127.0.0.1:9000".parse().unwrap()
                 && expected_project_id == project_id()
     ));
+}
+
+#[test]
+fn web_listen_asks_the_supervised_daemon_for_lan_pages() {
+    let Command::Open(supervised) = parse_args(
+        ["--project", "show.freemix", "--web-listen", "0.0.0.0:8443"].map(str::to_owned),
+    )
+    .unwrap() else {
+        panic!("expected open command");
+    };
+    assert!(matches!(
+        supervised.connection,
+        ConnectionConfig::Supervised(SupervisedConfig { web_listen: Some(address), .. })
+            if address == "0.0.0.0:8443".parse().unwrap()
+    ));
+    let existing = parse_args(
+        [
+            "--connect",
+            "127.0.0.1:9000",
+            "--project-id",
+            &PROJECT_VALUE.to_string(),
+            "--web-listen",
+            "0.0.0.0:8443",
+        ]
+        .map(str::to_owned),
+    );
+    assert!(existing.is_err(), "{existing:?}");
+    assert!(
+        parse_args(
+            [
+                "--project",
+                "show.freemix",
+                "--web-listen",
+                "0.0.0.0:8443",
+                "--web-listen",
+                "0.0.0.0:8444",
+            ]
+            .map(str::to_owned),
+        )
+        .is_err()
+    );
+    assert!(freemix_studio::HELP.contains("--web-listen <ADDR>"));
 }
 
 #[test]

@@ -355,6 +355,15 @@ impl DaemonSupervisor {
             .arg("--display-presenter-if-available")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped());
+        // Phones and tablets pair with the web pages over TLS (RC-007);
+        // the daemon keeps its self-signed certificate in its state
+        // directory, so the fingerprint survives restarts.
+        if let Some(address) = self.config.web_listen {
+            command
+                .arg("--web-listen")
+                .arg(address.to_string())
+                .arg("--web-tls");
+        }
         command
     }
 

@@ -82,6 +82,7 @@ mod theme;
 mod titles;
 mod toasts;
 mod transitions;
+mod web_access;
 mod workspace;
 
 pub use cues::{
@@ -141,6 +142,7 @@ pub use transitions::{
     T_BAR_KEY_STEP_BASIS_POINTS, TBarGesture, manual_kind_for, next_overlay_transition,
     t_bar_intents, t_bar_key_gesture,
 };
+pub use web_access::{web_access_block_reason, web_access_intent};
 
 use theme::{border_color, graphite_color, panel_color};
 
@@ -231,6 +233,10 @@ pub enum StudioIntent {
     /// Protocol 2.68); the reply updates
     /// [`fm_ui_model::ClientView::system_audio_inventory`].
     RequestSystemAudioDevices,
+    /// Manages the web gateway's pairing and paired devices (RC-007,
+    /// Protocol 2.70); the answer updates
+    /// [`fm_ui_model::ClientView::web_access`].
+    WebAccess(fm_protocol::WebAccessAction),
     /// Turns the live input thumbnail feed on while the input bank is
     /// shown and off when it is not (Protocol 2.59); the thumbnails arrive
     /// in [`StudioUiState::input_thumbnails`].
@@ -1572,6 +1578,7 @@ pub struct StudioShell {
     display_outputs: display_outputs::DisplayOutputsDialog,
     /// The `LiveLAN` viewers window and the PIN being typed (OR-017).
     live_lan: live_lan::LiveLanWindow,
+    web_access: web_access::WebAccessWindow,
     scripts: scripts::ScriptsWindow,
     /// The Add / Edit destination dialog and Remove confirmation (OR-006).
     stream_targets: stream_targets::StreamTargetsUi,
@@ -1944,6 +1951,7 @@ impl StudioShell {
         self.draw_preferences_window(ui.ctx());
         self.draw_display_outputs_dialog(ui.ctx(), state, &mut intents);
         self.draw_live_lan_window(ui.ctx(), state, &mut intents);
+        self.draw_web_access_window(ui.ctx(), state, &mut intents);
         self.draw_scripts_window(ui.ctx(), state, &mut intents);
         self.draw_catalogue_dialogs(ui.ctx(), state, &mut intents);
         self.draw_stream_target_dialogs(ui.ctx(), state, &mut intents);
@@ -2092,6 +2100,7 @@ impl Default for StudioShell {
             designer: scene_designer::DesignerWindow::default(),
             display_outputs: display_outputs::DisplayOutputsDialog::default(),
             live_lan: live_lan::LiveLanWindow::default(),
+            web_access: web_access::WebAccessWindow::default(),
             scripts: scripts::ScriptsWindow::default(),
             stream_targets: stream_targets::StreamTargetsUi::default(),
             dock_ui: workspace::DockUi::default(),

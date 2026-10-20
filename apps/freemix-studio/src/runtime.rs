@@ -97,6 +97,7 @@ impl From<TcpSessionError> for StudioError {
 /// The server lists the UI has asked for: once it has (or a list is
 /// known), every (re)connect asks for that list again.
 #[derive(Clone, Copy, Debug, Default)]
+#[allow(clippy::struct_excessive_bools)] // one independent wish per server list
 struct WantedLists {
     /// The display inventory (Protocol 2.42).
     display_inventory: bool,
@@ -104,6 +105,8 @@ struct WantedLists {
     capture_devices: bool,
     /// The system audio devices (AU-011, Protocol 2.68).
     system_audio_devices: bool,
+    /// The web gateway status (RC-007, Protocol 2.70).
+    web_access: bool,
 }
 
 /// A synchronous Studio control runtime. All clocks and waits are caller-owned.
@@ -306,6 +309,33 @@ impl StudioRuntime {
                 .is_ok()
     }
 
+    /// Records that the UI wants the web gateway status without asking now
+    /// (the session is recovering); the next (re)connect asks for it.
+    pub(crate) const fn want_web_access(&mut self) {
+        self.wanted.web_access = true;
+    }
+
+    /// Sends one web access request (RC-007, Protocol 2.70): a status
+    /// read, or starting or cancelling pairing, or revoking a device. The
+    /// answer updates the replicated web access state. Returns whether the
+    /// request went out; one that cannot be sent is dropped (a pairing or
+    /// revoke is never replayed), and the next (re)connect asks for the
+    /// status again.
+    pub(crate) fn request_web_access(&mut self, action: fm_protocol::WebAccessAction) -> bool {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.wanted.web_access = true;
+        let request_id = format!(
+            "studio-web-access-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.transport == ControlTransport::Tcp
+            && self.session.is_connected()
+            && self
+                .session
+                .send_web_access_request(fm_protocol::WebAccessRequest { request_id, action })
+                .is_ok()
+    }
+
     /// Turns the live input thumbnail feed on or off (Protocol 2.59) and
     /// remembers the choice, so a (re)connect subscribes again while it is
     /// on. Returns whether the request went out; one that cannot be sent now
@@ -489,6 +519,7 @@ impl StudioRuntime {
         self.requery_display_inventory();
         self.requery_capture_devices();
         self.requery_system_audio_devices();
+        self.requery_web_access();
         self.resubscribe_input_thumbnails();
         Ok(event)
     }
@@ -520,6 +551,14 @@ impl StudioRuntime {
     /// Asks for the system audio devices again after a (re)connect when the
     /// UI wanted them or they were known: devices may have come or gone
     /// while disconnected.
+    /// Asks for the web gateway status again after a (re)connect when the
+    /// UI wanted it: devices may have paired or a code expired meanwhile.
+    fn requery_web_access(&mut self) {
+        if self.wanted.web_access || self.session.client().model().web_access().is_some() {
+            self.request_web_access(fm_protocol::WebAccessAction::Status);
+        }
+    }
+
     fn requery_system_audio_devices(&mut self) {
         if self.wanted.system_audio_devices
             || self

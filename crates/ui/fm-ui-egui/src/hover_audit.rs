@@ -1384,6 +1384,57 @@ fn with_display_inventory(mut state: StudioUiState, presenter: bool) -> StudioUi
     state
 }
 
+/// `state` with the daemon's web access answer `answer`.
+fn with_web_access(
+    mut state: StudioUiState,
+    answer: Option<fm_protocol::WebAccessMessage>,
+) -> StudioUiState {
+    if let Some(view) = state.view.as_mut() {
+        view.web_access = answer;
+    }
+    state
+}
+
+/// A TLS gateway with a pairing under way and two paired devices.
+pub(crate) fn web_access_answer() -> fm_protocol::WebAccessMessage {
+    use fm_protocol::{WebDeviceEntry, WebDeviceRole, WebGatewayStatus, WebPairing};
+    fm_protocol::WebAccessMessage {
+        request_id: "audit".into(),
+        refusal: None,
+        gateway: Some(WebGatewayStatus {
+            url: "https://192.168.1.20:8443".into(),
+            tls: true,
+            fingerprint: Some(
+                "3F:9A:1C:77:0B:E2:54:D8:61:AF:20:C3:9E:4B:7D:15:\
+                 88:02:F6:3B:CA:19:E5:70:4D:A2:6B:31:DE:8C:05:97"
+                    .replace(' ', ""),
+            ),
+            pairing: Some(WebPairing {
+                code: "042137".into(),
+                link_code: "q8Zr2pVfK3mN9xTb7LwYc4".into(),
+                role: WebDeviceRole::Operator,
+                expires_in_ms: 94_200,
+            }),
+            devices: vec![
+                WebDeviceEntry {
+                    id: "dev-1a2b".into(),
+                    name: "Floor manager phone".into(),
+                    role: WebDeviceRole::Operator,
+                    paired_at_ms: 1_792_400_000_000,
+                    last_seen_ms: Some(1_792_403_600_000),
+                },
+                WebDeviceEntry {
+                    id: "dev-9c8d".into(),
+                    name: "Camera 2 tally".into(),
+                    role: WebDeviceRole::Viewer,
+                    paired_at_ms: 1_792_400_100_000,
+                    last_seen_ms: None,
+                },
+            ],
+        }),
+    }
+}
+
 /// `state` with `LiveLAN` configured as `config` and reporting `status`.
 fn with_live_lan(
     mut state: StudioUiState,
@@ -2160,6 +2211,54 @@ fn scenes(language: Language) -> Vec<Scene> {
         ),
     ];
     for (name, open, state) in live_lan {
+        scenes.push(Scene::console(name, shell(open), state));
+    }
+    // RC-007: the Web access window with a TLS gateway, a pairing under
+    // way, and two paired devices; a plain loopback gateway with nothing
+    // paired; refused for a non-admin session; and before any answer.
+    let web_access: Vec<(&str, Configure, StudioUiState)> = vec![
+        (
+            "dialog/web-access",
+            &|shell| shell.web_access.open = true,
+            with_web_access(ready(true, Variant::default()), Some(web_access_answer())),
+        ),
+        (
+            "dialog/web-access-plain",
+            &|shell| shell.web_access.open = true,
+            with_web_access(
+                ready(true, Variant::default()),
+                Some(fm_protocol::WebAccessMessage {
+                    request_id: "audit".into(),
+                    refusal: None,
+                    gateway: Some(fm_protocol::WebGatewayStatus {
+                        url: "http://127.0.0.1:8443".into(),
+                        tls: false,
+                        fingerprint: None,
+                        pairing: None,
+                        devices: Vec::new(),
+                    }),
+                }),
+            ),
+        ),
+        (
+            "dialog/web-access-refused",
+            &|shell| shell.web_access.open = true,
+            with_web_access(
+                ready(true, Variant::default()),
+                Some(fm_protocol::WebAccessMessage {
+                    request_id: "audit".into(),
+                    refusal: Some(fm_protocol::WebAccessRefusal::PermissionDenied),
+                    gateway: None,
+                }),
+            ),
+        ),
+        (
+            "dialog/web-access-waiting",
+            &|shell| shell.web_access.open = true,
+            ready(true, Variant::default()),
+        ),
+    ];
+    for (name, open, state) in web_access {
         scenes.push(Scene::console(name, shell(open), state));
     }
     let scripts: Vec<(&str, Configure, StudioUiState)> = vec![

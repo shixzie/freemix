@@ -13,6 +13,8 @@ fm-preset-file = { path = "../../foundation/fm-preset-file" }
 fm-protocol = { path = "../../foundation/fm-protocol" }
 fm-types = { path = "../../foundation/fm-types" }
 fm-ui-model = { path = "../fm-ui-model" }
+# QR codes for web device pairing (RC-007): MIT, no dependencies.
+qrcodegen = "1.8"
 
 [dev-dependencies]
 # Checks the cue preview's copies of the engine's arithmetic; Studio

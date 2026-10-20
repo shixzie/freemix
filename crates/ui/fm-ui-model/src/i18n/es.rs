@@ -7881,4 +7881,165 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::LiveLanReasonNoAddress,
         t("el servidor no ha informado ninguna dirección"),
     ),
+    // Web access (RC-007, Protocol 2.70).
+    (Msg::MenuWebAccess, t("Acceso web (teléfonos y tabletas)…")),
+    (
+        Msg::MenuWebAccessHover,
+        t(
+            "Empareja teléfonos y tabletas de la red local con las páginas web de tally y de operador, y revócalos",
+        ),
+    ),
+    (Msg::WebAccessTitle, t("Acceso web")),
+    (
+        Msg::WebAccessIntro,
+        t(
+            "Los teléfonos y tabletas de esta red abren la página web de tally o de operador. Cada uno se empareja una vez con un código de un solo uso que se muestra aquí y guarda su propio token, que puede revocar en cualquier momento.",
+        ),
+    ),
+    (Msg::WebAccessAddress, t("Dirección de la página")),
+    (
+        Msg::WebAccessAddressNone,
+        t("Esperando la respuesta del daemon…"),
+    ),
+    (Msg::WebAccessCopy, t("Copiar dirección de la página")),
+    (
+        Msg::WebAccessCopyHover,
+        t(
+            "Copia la dirección de la página web al portapapeles para escribirla o enviarla a un teléfono",
+        ),
+    ),
+    (Msg::WebAccessTls, t("Cifrado de las páginas")),
+    (Msg::WebAccessTlsOn, t("TLS activado")),
+    (
+        Msg::WebAccessTlsOff,
+        t("TLS desactivado: solo este equipo puede abrir las páginas"),
+    ),
+    (
+        Msg::WebAccessTlsHover,
+        t(
+            "Indica si los teléfonos llegan a las páginas por HTTPS. Sin TLS la pasarela solo escucha en este equipo",
+        ),
+    ),
+    (
+        Msg::WebAccessFingerprint,
+        t("Huella del certificado (SHA-256)"),
+    ),
+    (
+        Msg::WebAccessFingerprintHover,
+        t(
+            "Compárela con los detalles del certificado que muestra el navegador del teléfono antes de confiar en él",
+        ),
+    ),
+    (Msg::WebAccessCopyFingerprint, t("Copiar huella")),
+    (
+        Msg::WebAccessCopyFingerprintHover,
+        t("Copia la huella del certificado al portapapeles"),
+    ),
+    (Msg::WebAccessRole, t("Emparejar como")),
+    (
+        Msg::WebAccessRoleHover,
+        t("Elija qué podrá hacer el siguiente dispositivo emparejado"),
+    ),
+    (Msg::WebAccessRoleViewer, t("Espectador (luz de tally)")),
+    (Msg::WebAccessRoleAudio, t("Audio (silencia canales)")),
+    (
+        Msg::WebAccessRoleOperator,
+        t("Operador (conmuta, graba, emite)"),
+    ),
+    (
+        Msg::WebAccessRoleOptionHover,
+        t("Emparejar el siguiente dispositivo como {role}"),
+    ),
+    (Msg::WebAccessStart, t("Iniciar emparejamiento")),
+    (
+        Msg::WebAccessStartHover,
+        t(
+            "Muestra un código de un solo uso y un código QR que emparejan un dispositivo en dos minutos; un código nuevo sustituye al anterior",
+        ),
+    ),
+    (Msg::WebAccessCancel, t("Cancelar emparejamiento")),
+    (
+        Msg::WebAccessCancelHover,
+        t("Retira el código para que nadie pueda emparejarse con él"),
+    ),
+    (
+        Msg::WebAccessScan,
+        t(
+            "Escanee el código QR con la cámara del teléfono, o abra la dirección de la página y escriba este código:",
+        ),
+    ),
+    (
+        Msg::WebAccessQrHover,
+        t(
+            "Abre la página con un código de emparejamiento de un solo uso y la huella del certificado; el código sirve una sola vez",
+        ),
+    ),
+    (
+        Msg::WebAccessCodeHover,
+        t(
+            "Escriba este código en la pantalla de emparejamiento del teléfono; cinco intentos fallidos lo cancelan",
+        ),
+    ),
+    (Msg::WebAccessPairingRole, t("Empareja como: {role}")),
+    (Msg::WebAccessNoPairing, t("Ningún emparejamiento en curso")),
+    (Msg::WebAccessDevices, t("Dispositivos emparejados")),
+    (
+        Msg::WebAccessNoDevices,
+        t("Aún no hay ningún dispositivo emparejado"),
+    ),
+    (Msg::WebAccessColName, t("Dispositivo")),
+    (Msg::WebAccessColRole, t("Acceso")),
+    (Msg::WebAccessColPaired, t("Emparejado")),
+    (Msg::WebAccessColSeen, t("Última conexión")),
+    (Msg::WebAccessNever, t("nunca")),
+    (Msg::WebAccessWhen, t("{date}, {time} UTC")),
+    (Msg::WebAccessRevokeName, t("Revocar {name}")),
+    (
+        Msg::WebAccessRevokeHover,
+        t("Desempareja {name}: su token deja de funcionar y sus páginas abiertas se desconectan"),
+    ),
+    (
+        Msg::WebAccessRefusedPermission,
+        t(
+            "Gestionar dispositivos web requiere el rol de administrador (inicie Studio con --role admin)",
+        ),
+    ),
+    (
+        Msg::WebAccessRefusedWebSession,
+        t(
+            "Los dispositivos web no se pueden gestionar por una conexión web; conecte Studio directamente al daemon",
+        ),
+    ),
+    (
+        Msg::WebAccessRefusedUnavailable,
+        t("Este daemon no sirve ninguna pasarela web (inícielo con --web-listen)"),
+    ),
+    (
+        Msg::WebAccessRefusedUnknownDevice,
+        t("Ese dispositivo ya estaba desemparejado"),
+    ),
+    (
+        Msg::WebAccessRefusedTooMany,
+        t("Todas las plazas de dispositivo están ocupadas; revoque primero un dispositivo"),
+    ),
+    (
+        Msg::WebAccessRefusedStorage,
+        t("El daemon no pudo guardar el cambio; revise su directorio de estado"),
+    ),
+    (
+        Msg::WebAccessReasonNoAnswer,
+        t("el daemon aún no ha respondido"),
+    ),
+    (
+        Msg::WebAccessReasonNoGateway,
+        t("el daemon no sirve ninguna pasarela web"),
+    ),
+    (
+        Msg::WebAccessReasonNoPairing,
+        t("no hay ningún emparejamiento en curso"),
+    ),
+    (
+        Msg::WebAccessExpires,
+        plural("Caduca en {count} segundo", "Caduca en {count} segundos"),
+    ),
 ];

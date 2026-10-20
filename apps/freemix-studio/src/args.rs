@@ -20,6 +20,9 @@ Connection options:
   --project <PATH>       Launch and supervise a daemon for this project bundle
   --daemon <PATH>        Daemon executable [default: freemixd]
   --listen <ADDR>        Supervised daemon listen address [default: 127.0.0.1:0]
+  --web-listen <ADDR>    Let phones and tablets pair with the supervised daemon's
+                         web pages at this address (for example 0.0.0.0:8443),
+                         over TLS with a self-signed certificate
   --connect <ADDR>       Connect to an existing daemon
   --project-id <ID>      Expected full nonzero u128 project ID in existing mode
 
@@ -123,6 +126,10 @@ pub struct SupervisedConfig {
     pub project_bundle: PathBuf,
     pub daemon_executable: PathBuf,
     pub listen: SocketAddr,
+    /// `--web-listen`: the supervised daemon also serves the phone and
+    /// tablet pages here over TLS with its own self-signed certificate
+    /// (RC-007); devices pair from Output > Web access.
+    pub web_listen: Option<SocketAddr>,
 }
 
 impl SupervisedConfig {
@@ -132,6 +139,7 @@ impl SupervisedConfig {
             project_bundle: project_bundle.into(),
             daemon_executable: PathBuf::from(DEFAULT_DAEMON),
             listen: default_listen(),
+            web_listen: None,
         }
     }
 }
@@ -253,6 +261,7 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Command
     let mut osc_listen = None;
     let mut diagnose = None;
     let mut web_connect = None;
+    let mut web_listen = None;
     let mut language = None;
     let mut hour_cycle = None;
     let mut arguments = arguments.into_iter();
@@ -304,6 +313,11 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Command
                 set_once(&mut osc_listen, address, "--osc-listen")?;
             }
             "--diagnose" => set_once(&mut diagnose, (), "--diagnose")?,
+            "--web-listen" => {
+                let value = required(&mut arguments, "--web-listen")?;
+                let address = socket_address("--web-listen", &value)?;
+                set_once(&mut web_listen, address, "--web-listen")?;
+            }
             "--web-connect" => {
                 let value = required(&mut arguments, "--web-connect")?;
                 let address = socket_address("--web-connect", &value)?;
@@ -338,6 +352,18 @@ pub fn parse_args(arguments: impl IntoIterator<Item = String>) -> Result<Command
         })
     } else {
         connection_config(project, daemon, listen, connect, project_id)?
+    };
+    let connection = match (connection, web_listen) {
+        (ConnectionConfig::Supervised(supervised), web_listen) => {
+            ConnectionConfig::Supervised(SupervisedConfig {
+                web_listen,
+                ..supervised
+            })
+        }
+        (existing, None) => existing,
+        (ConnectionConfig::Existing(_), Some(_)) => {
+            return Err(ArgsError::SupervisedOnly("--web-listen"));
+        }
     };
     if diagnose.is_some() && osc_listen.is_some() {
         return Err(ArgsError::OscUnavailableInDiagnose);
@@ -398,6 +424,7 @@ fn connection_config(
                 project_bundle,
                 daemon_executable: daemon.unwrap_or_else(|| PathBuf::from(DEFAULT_DAEMON)),
                 listen,
+                web_listen: None,
             }))
         }
         (None, Some(address)) => {

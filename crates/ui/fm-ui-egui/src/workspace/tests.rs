@@ -1699,3 +1699,74 @@ fn tall_monitor_tiles_show_audio_levels_under_the_picture() {
     assert!(monitor_meters_fit(vec2(520.0, 440.0), 293.0));
     assert!(!monitor_meters_fit(vec2(334.0, 250.0), 188.0));
 }
+
+/// The Web access window (RC-007) asks for the gateway status when it
+/// opens and again about once a second, and a click on Start pairing asks
+/// to pair a device with the chosen role.
+#[test]
+fn the_web_access_window_polls_and_starts_pairing() {
+    let mut state = crate::hover_audit::bank_fixture();
+    if let Some(view) = state.view.as_mut() {
+        view.web_access = Some(crate::hover_audit::web_access_answer());
+    }
+    let size = vec2(1_280.0, 900.0);
+    let context = egui::Context::default();
+    let mut shell = StudioShell::default();
+    shell.web_access.open = true;
+    let status = StudioIntent::WebAccess(fm_protocol::WebAccessAction::Status);
+    let (intents, _) = frame_at(&context, &mut shell, &state, size, Vec::new());
+    assert!(intents.contains(&status), "{intents:?}");
+    // The next frames, at once, do not ask again.
+    let (intents, _) = frame_at(&context, &mut shell, &state, size, Vec::new());
+    assert!(!intents.contains(&status), "{intents:?}");
+    let (_, output) = frame_at(&context, &mut shell, &state, size, Vec::new());
+    let start = chip_rect(&output, "Start pairing").expect("Start pairing is painted");
+    let click = |pressed| Event::PointerButton {
+        pos: start.center(),
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut all = Vec::new();
+    for events in [
+        vec![Event::PointerMoved(start.center())],
+        vec![click(true)],
+        vec![click(false)],
+    ] {
+        let (intents, _) = frame_at(&context, &mut shell, &state, size, events);
+        all.extend(intents);
+    }
+    assert!(
+        all.contains(&StudioIntent::WebAccess(
+            fm_protocol::WebAccessAction::Pair {
+                role: fm_protocol::WebDeviceRole::Operator
+            }
+        )),
+        "{all:?}"
+    );
+}
+
+/// Renders the Web access window with a pairing under way for review
+/// (`FM_WEB_ACCESS_RENDER_DIR=<dir> cargo test -p fm-ui-egui --lib
+/// render_the_web_access_window_for_review -- --ignored`).
+#[test]
+#[ignore = "writes a review screenshot"]
+fn render_the_web_access_window_for_review() {
+    let Ok(dir) = std::env::var("FM_WEB_ACCESS_RENDER_DIR") else {
+        return;
+    };
+    let mut state = crate::hover_audit::bank_fixture();
+    if let Some(view) = state.view.as_mut() {
+        view.web_access = Some(crate::hover_audit::web_access_answer());
+    }
+    let mut shell = StudioShell::default();
+    shell.web_access.open = true;
+    // Empty frames let the modal finish fading in.
+    let settle = vec![Vec::new(); 30];
+    let (width, height, rgba) = render(&mut shell, &state, vec2(1_280.0, 1_000.0), &settle);
+    std::fs::write(
+        format!("{dir}/studio-web-access.png"),
+        crate::offscreen::encode_png(width, height, &rgba),
+    )
+    .unwrap();
+}
