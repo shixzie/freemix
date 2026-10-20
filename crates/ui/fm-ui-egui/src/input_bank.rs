@@ -1088,6 +1088,26 @@ impl StudioShell {
     }
 }
 
+/// The add tile's list of kinds along the bottom of `thumb`: one line when
+/// it fits, else wrapped and centred, its last line where the one line sits.
+fn paint_add_tile_kinds(painter: &egui::Painter, thumb: Rect, kinds: &str, color: Color32) {
+    let font = FontId::new(crate::theme::legible(9.0), FontFamily::Proportional);
+    let mut job =
+        egui::text::LayoutJob::simple(kinds.to_owned(), font, color, thumb.width() - 12.0);
+    job.halign = egui::Align::Center;
+    let galley = painter.layout_job(job);
+    let line = galley
+        .rows
+        .last()
+        .map_or(galley.size().y, |row| row.rect().height());
+    let bottom = thumb.max.y - 10.0 + line / 2.0;
+    painter.galley(
+        pos2(thumb.center().x, bottom - galley.size().y),
+        galley,
+        color,
+    );
+}
+
 #[allow(clippy::fn_params_excessive_bools)] // independent paint states
 #[allow(clippy::too_many_lines)] // one painted tile
 fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: bool, focused: bool) {
@@ -1151,11 +1171,10 @@ fn paint_add_tile(ui: &Ui, rect: Rect, enabled: bool, locked: bool, hovered: boo
     ] {
         painter.line_segment([from, to], Stroke::new(2.0, accent));
     }
-    painter.text(
-        pos2(thumb.center().x, thumb.max.y - 10.0),
-        Align2::CENTER_CENTER,
+    paint_add_tile_kinds(
+        &painter,
+        thumb,
         l.text(Msg::AddTileKinds),
-        FontId::new(crate::theme::legible(9.0), FontFamily::Proportional),
         crate::theme::faded(muted_color(), if enabled { 0.9 } else { 0.6 }),
     );
     painter.rect_filled(

@@ -559,10 +559,10 @@ messages! {
     CancelKey => t("CANCEL"),
     RenameApplyHover => t("Rename this input  [Enter]"),
     RenameCancelHover => t("Discard this rename"),
-    AddTileHover => t("Add input…\nA solid colour, colour bars, a network stream, or a camera, appended to the end of the bank"),
+    AddTileHover => t("Add input…\nA camera, a network stream, a screen or window capture, audio, an image, a document, or a list, appended to the end of the bank"),
     AddingName => t("ADDING {name}…"),
     InputCountHover => t("Inputs in the show / the most a show may hold"),
-    AddTileKinds => t("camera · stream · audio · image · list"),
+    AddTileKinds => t("camera · stream · screen · audio · image · list"),
     NoThumbnail => t("no thumbnail"),
 
     // Tally.

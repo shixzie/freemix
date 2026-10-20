@@ -1154,7 +1154,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::AddTileHover,
         t(
-            "Añadir entrada…\nUn color sólido, barras de color, un flujo de red o una cámara, al final del banco",
+            "Añadir entrada…\nUna cámara, un flujo de red, una captura de pantalla o ventana, audio, una imagen, un documento o una lista, al final del banco",
         ),
     ),
     (Msg::AddingName, t("AÑADIENDO {name}…")),
@@ -1164,7 +1164,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::AddTileKinds,
-        t("cámara · red · audio · imagen · lista"),
+        t("cámara · red · pantalla · audio · imagen · lista"),
     ),
     (Msg::NoThumbnail, t("sin miniatura")),
     // Tally.
