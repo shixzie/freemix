@@ -301,7 +301,10 @@ fn program_frame_showing(
         let WireMessage::MonitorFrame(part) = client.receive() else {
             continue;
         };
-        assert_eq!(part.tap, MonitorTap::Program);
+        // The native daemon also sends a Preview tap; only Program is checked.
+        if part.tap != MonitorTap::Program {
+            continue;
+        }
         if let Some(image) = assembler.push(&part).unwrap()
             && shows_bar(&image, (80, 40, 240, 100), bar, [0, 0, 0])
         {
