@@ -175,6 +175,15 @@ fn export_bundle(
             rewritten_inputs.push(input.id);
         }
     }
+    let mut lists = project.media_lists().clone();
+    for list in lists.values_mut() {
+        for item in &mut list.items {
+            if let Some(bundled) = mapping.get(item.asset_uri.as_str()) {
+                item.asset_uri.clone_from(bundled);
+            }
+        }
+    }
+    project.set_media_lists(lists);
     let project = stored.with_project(project)?;
     rewritten_inputs.sort_unstable();
 
@@ -219,6 +228,12 @@ fn portable_mapping(
     for input in stored.project().inputs() {
         for uri in input.kind.file_asset_uris() {
             uris.insert(uri.to_owned(), String::new());
+        }
+    }
+    // Every file of a media list travels, not only the active one (IN-006).
+    for list in stored.project().media_lists().values() {
+        for item in &list.items {
+            uris.insert(item.asset_uri.clone(), String::new());
         }
     }
     let (titles, media): (Vec<_>, Vec<_>) = uris

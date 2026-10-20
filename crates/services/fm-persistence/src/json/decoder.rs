@@ -90,6 +90,7 @@ struct ProjectDto {
     scripts: Vec<fm_model::Script>,
     script_run: fm_model::ScriptRunState,
     shortcuts: Vec<fm_model::Shortcut>,
+    media_lists: std::collections::BTreeMap<fm_types::InputId, fm_model::MediaList>,
 }
 
 struct EditLocks {
@@ -148,6 +149,7 @@ impl ProjectDto {
             scripts: super::script::parse_scripts(&mut object)?,
             script_run: super::script::parse_script_run(&mut object)?,
             shortcuts: super::shortcut::parse_shortcuts(&mut object)?,
+            media_lists: super::media_list::parse_media_lists(&mut object)?,
         };
         object.finish()?;
         for input in &dto.inputs {
@@ -269,6 +271,9 @@ impl ProjectDto {
         // Shortcut bounds, duplicate ids, keys, and OSC names are reported
         // by project validation.
         project.set_shortcuts(self.shortcuts);
+        // A list that does not fit its input is reported by project
+        // validation.
+        project.set_media_lists(self.media_lists);
         project
     }
 }

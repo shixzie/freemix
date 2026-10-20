@@ -210,6 +210,13 @@ impl ProjectStore {
             .iter()
             .flat_map(|input| input.kind.file_asset_uris())
             .map(str::to_owned)
+            // Every file of a media list travels (IN-006).
+            .chain(
+                incoming
+                    .media_lists()
+                    .values()
+                    .flat_map(|list| list.items.iter().map(|item| item.asset_uri.clone())),
+            )
             // A media URI also used by a title was already placed verbatim.
             .filter(|uri| !title_uris.contains(uri))
             .collect::<BTreeSet<_>>();
@@ -607,6 +614,18 @@ fn append_inputs(
             project.restore_input_audio_label(id, label.to_owned());
         }
     }
+    // Media lists travel with their inputs, their files remapped (IN-006).
+    let mut lists = project.media_lists().clone();
+    for (input, list) in incoming.media_lists() {
+        let mut list = list.clone();
+        for item in &mut list.items {
+            if let Some(uri) = maps.uris.get(&item.asset_uri) {
+                item.asset_uri.clone_from(uri);
+            }
+        }
+        lists.insert(maps.inputs[input], list);
+    }
+    project.set_media_lists(lists);
 
     Ok(())
 }
