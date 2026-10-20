@@ -1,4 +1,4 @@
-//! Live source clock drift telemetry (Protocol 2.75, `AU-004`).
+//! Live source clock drift telemetry (Protocol 2.76, `AU-004`).
 //!
 //! Every live source a native daemon ingests (capture inputs, network
 //! streams, system audio inputs) runs on its own clock. Its receiver converts
@@ -184,7 +184,7 @@ impl SourceSyncSample {
     }
 }
 
-/// Lossy, non-resumable live source drift telemetry (Protocol 2.75).
+/// Lossy, non-resumable live source drift telemetry (Protocol 2.76).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceSyncStatusMessage {
     pub server: crate::ServerIdentity,

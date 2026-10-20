@@ -262,7 +262,7 @@ enum LossySlot {
     /// The input thumbnail being written (Protocol 2.59); the next one waits
     /// in the peer's [`ThumbnailOutbox`] until this slot is empty.
     Thumbnail,
-    /// The latest `source_sync_status` (Protocol 2.75).
+    /// The latest `source_sync_status` (Protocol 2.76).
     SourceSyncStatus,
 }
 
@@ -510,7 +510,7 @@ impl Peer {
     }
 
     /// Coalesces the latest live source drift telemetry in its own slot
-    /// (Protocol 2.75); Web pages do not take it.
+    /// (Protocol 2.76); Web pages do not take it.
     fn replace_source_sync_status(&mut self, bytes: Vec<u8>) {
         if self.phase == Phase::Active && self.web_feed.is_none() && self.recorder_status {
             self.lossy.replace(LossySlot::SourceSyncStatus, bytes);
@@ -2493,7 +2493,7 @@ fn publish_recorder_status(peers: &mut [Peer], status: RecorderStatusMessage) {
     }
 }
 
-/// Live source drift telemetry (Protocol 2.75) goes to raw Studio peers
+/// Live source drift telemetry (Protocol 2.76) goes to raw Studio peers
 /// in its own latest-wins slot.
 fn publish_source_sync_status(peers: &mut [Peer], status: &SourceSyncStatusMessage) {
     let Ok(bytes) =

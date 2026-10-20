@@ -44,7 +44,7 @@ highest-value remaining items, ranked:
    live source the native daemon ingests (V4L2/ALSA capture, network
    streams, system audio) runs its audio through a drift-correcting
    `LiveSourceClock` with pictures following it, and its drift, correction,
-   ratio, backlog, and recovery counts now reach clients (Protocol 2.75
+   ratio, backlog, and recovery counts now reach clients (Protocol 2.76
    `source_sync_status` and `diagnostics_response`), Studio (a `SYNC`
    health lamp and per-strip `SYNC` keys), and `freemix-cli
    remote-diagnostics`. There is still no real-device soak evidence, no
@@ -1400,7 +1400,7 @@ declicked, with no overrun. Remaining for `AU-004`: a wire event and Studio
 view of the telemetry, an `AudioBlock`/`MediaTiming` adapter for non-receiver
 sources, real-device soak evidence, and the Windows/macOS live paths.
 
-Update (Protocol 2.75): the telemetry is on the wire. Native `freemixd`
+Update (Protocol 2.76): the telemetry is on the wire. Native `freemixd`
 sends raw Studio peers a lossy, latest-wins `source_sync_status` record at
 most once a second while any live source has a running loop (and one empty
 record after the last stops): per source its kind, loop state, both sample

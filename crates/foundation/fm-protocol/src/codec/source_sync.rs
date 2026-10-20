@@ -1,4 +1,4 @@
-//! `source_sync_status` samples (Protocol 2.75): `sources` is one
+//! `source_sync_status` samples (Protocol 2.76): `sources` is one
 //! `<input>:<kind>:<state>:<input_hz>:<output_hz>:<drift_mppm>:<correction_mppm>:<buffer_us>:<target_us>:<resyncs>:<underruns>:<overruns>:<picture_drops>:<picture_repeats>:<restarts>`
 //! entry per live source in strictly increasing input order, `;`-separated,
 //! and empty when no live source runs. `diagnostics_response` carries the

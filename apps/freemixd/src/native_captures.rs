@@ -305,7 +305,7 @@ impl NativeCaptures {
         pulled
     }
 
-    /// Every open capture's drift loop as wire samples (Protocol 2.75).
+    /// Every open capture's drift loop as wire samples (Protocol 2.76).
     pub(crate) fn sync_samples(&self) -> Vec<fm_protocol::SourceSyncSample> {
         self.captures
             .iter()

@@ -756,7 +756,7 @@ struct NativeDaemon {
     /// Realized recorder slot bookkeeping behind `recorder_status`
     /// (Protocol 2.66).
     recorder_status: recorder_status::RecorderStatusTracker,
-    /// Live source drift telemetry records (Protocol 2.75, AU-004).
+    /// Live source drift telemetry records (Protocol 2.76, AU-004).
     source_sync_status: native_sync::SourceSyncTracker,
     /// Encoded-fallback Program monitor tap; see [`NativeMonitorTap`].
     monitor: NativeMonitorTap,
@@ -6108,7 +6108,7 @@ impl NativeDaemon {
         self.recorder_status.poll(server, views, Instant::now())
     }
 
-    /// Every running live source's drift loop (Protocol 2.75, AU-004), in
+    /// Every running live source's drift loop (Protocol 2.76, AU-004), in
     /// input order.
     fn source_sync_samples(&self) -> Vec<fm_protocol::SourceSyncSample> {
         native_sync::wire_samples(live_sync_samples(
@@ -6118,7 +6118,7 @@ impl NativeDaemon {
         ))
     }
 
-    /// The live source drift telemetry record (Protocol 2.75), at most every
+    /// The live source drift telemetry record (Protocol 2.76), at most every
     /// [`native_sync::SOURCE_SYNC_STATUS_INTERVAL`] while any live source
     /// runs.
     fn take_source_sync_status(
@@ -8295,7 +8295,7 @@ fn validate_native_audio_modes(stored: &StoredProject) -> AppResult<()> {
     Ok(())
 }
 
-/// Every live source's drift loop, unordered (Protocol 2.75).
+/// Every live source's drift loop, unordered (Protocol 2.76).
 #[cfg(feature = "native-media")]
 fn live_sync_samples(
     network: &native_streams::NativeNetworkStreams,

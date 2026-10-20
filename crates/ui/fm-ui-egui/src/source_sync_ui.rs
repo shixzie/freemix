@@ -2,7 +2,7 @@
 //!
 //! A daemon that ingests live sources (capture inputs, network streams,
 //! system audio) reports each one's drift-correcting loop as
-//! `source_sync_status` (Protocol 2.75). The console shows it twice:
+//! `source_sync_status` (Protocol 2.76). The console shows it twice:
 //!
 //! - a `SYNC` lamp in the status bar's health strip: the largest drift, or
 //!   the number of resyncs, underruns, and overruns once any source has had

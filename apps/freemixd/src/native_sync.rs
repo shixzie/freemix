@@ -13,7 +13,7 @@
 //! drop/repeat counts.
 //!
 //! The same loops reach clients as `source_sync_status` records (Protocol
-//! 2.75): [`SourceSyncTracker`] builds one at most every
+//! 2.76): [`SourceSyncTracker`] builds one at most every
 //! [`SOURCE_SYNC_STATUS_INTERVAL`] while any live source runs (and once
 //! more, empty, after the last one stops), and `diagnostics_response`
 //! carries the current samples.
@@ -94,7 +94,7 @@ pub(crate) fn wire_samples(mut samples: Vec<SourceSyncSample>) -> Vec<SourceSync
     samples
 }
 
-/// Builds the lossy `source_sync_status` records (Protocol 2.75).
+/// Builds the lossy `source_sync_status` records (Protocol 2.76).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SourceSyncTracker {
     sequence: u64,

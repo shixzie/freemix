@@ -2071,7 +2071,7 @@ fn source_sync_status(sequence: u64, inputs: &[u128]) -> fm_protocol::SourceSync
     }
 }
 
-/// Protocol 2.75: `source_sync_status` is lossy, retained latest-wins, and
+/// Protocol 2.76: `source_sync_status` is lossy, retained latest-wins, and
 /// strictly ordered like `recorder_status`; an empty record clears the
 /// sources, and a replayed sequence disconnects and forgets the telemetry.
 #[test]

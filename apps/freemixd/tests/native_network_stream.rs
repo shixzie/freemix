@@ -596,7 +596,7 @@ fn native_daemon_receives_a_network_stream_and_reports_its_status_over_the_wire(
     client.shows("the red picture again", red);
 
     // The stream's drift loop reaches the Studio as `source_sync_status`
-    // (AU-004, Protocol 2.75) and answers diagnostics.
+    // (AU-004, Protocol 2.76) and answers diagnostics.
     let synced = client.wait_for("the stream's drift telemetry", |_, message| {
         let WireMessage::SourceSyncStatus(status) = message else {
             return None;

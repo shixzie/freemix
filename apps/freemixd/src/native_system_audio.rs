@@ -245,7 +245,7 @@ impl NativeSystemAudio {
     }
 
     /// Every open system audio input's drift loop as wire samples
-    /// (Protocol 2.75).
+    /// (Protocol 2.76).
     pub(crate) fn sync_samples(&self) -> Vec<fm_protocol::SourceSyncSample> {
         self.sources
             .iter()

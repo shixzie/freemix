@@ -374,7 +374,7 @@ pub enum SessionEvent {
     RecorderStatus {
         status: RecorderStatusMessage,
     },
-    /// Every running live source's drift loop (Protocol 2.75); the latest
+    /// Every running live source's drift loop (Protocol 2.76); the latest
     /// is retained in [`TcpSession::latest_source_sync_status`].
     SourceSyncStatus {
         status: SourceSyncStatusMessage,
@@ -716,7 +716,7 @@ impl TcpSession {
         self.latest_recorder_status.as_ref()
     }
 
-    /// The latest live source drift telemetry (Protocol 2.75): one sample
+    /// The latest live source drift telemetry (Protocol 2.76): one sample
     /// per running live source. Cleared on disconnect.
     #[must_use]
     pub const fn latest_source_sync_status(&self) -> Option<&SourceSyncStatusMessage> {

@@ -1,4 +1,4 @@
-//! Protocol 2.75 `source_sync_status` and the `diagnostics_response`
+//! Protocol 2.76 `source_sync_status` and the `diagnostics_response`
 //! `source_sync` field: the exact lossy live source drift telemetry record
 //! (AU-004).
 
@@ -58,7 +58,7 @@ const ENTRY: &str = "7%3Acapture%3Arunning%3A44100%3A48000%3A-12345%3A12001%3A81
 
 #[test]
 fn source_sync_status_is_exact() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 75));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 76));
     let stream = SourceSyncSample {
         kind: SourceSyncKind::Stream,
         state: SourceClockState::Priming,

@@ -573,7 +573,7 @@ pub struct StudioUiState {
     /// or failed and why. `None` when the daemon does not report it.
     pub recorder_realized: [Option<RecorderStatusSample>; RECORDER_SLOT_COUNT],
     /// The latest live source drift telemetry (`source_sync_status`,
-    /// Protocol 2.75): one sample per running live source. `None` when the
+    /// Protocol 2.76): one sample per running live source. `None` when the
     /// daemon reports none.
     pub source_sync: Option<fm_protocol::SourceSyncStatusMessage>,
     /// Stream targets whose start/stop command is still unresolved.
