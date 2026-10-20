@@ -10368,8 +10368,8 @@ mod tests {
                     ))
             )
         );
-        assert!(layers[0].enabled());
-        assert!(!layers[1].enabled());
+        // The layer keyed by a Scene input is compiled undrawn.
+        assert_eq!(layers.len(), 1);
     }
 
     #[test]
