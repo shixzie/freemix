@@ -2646,7 +2646,7 @@ messages! {
     CueRunBoundHover => t("The inputs the last GO bound this list's Preview, Program, and Selected roles to. The rest of its run, waits and followed cues included, acts on these inputs until the next GO or Reset"),
     CueArmedBoundNote => t("Armed GO bound: Preview {preview} · Program {program} · Selected {selected}"),
     CueArmedBoundHover => t("The inputs the armed GO bound its Preview, Program, and Selected roles to when it was armed; it acts on these when it fires"),
-    CueBoundNone => t("no input"),
+    CueBoundNone => t("none bound"),
     CueReasonArmDelay => t("type a delay of 1 second to 24 hours as seconds, MM:SS, or HH:MM:SS"),
     CueReasonNotArmed => t("no GO of this list is armed"),
     CueReasonArmed => t("a GO of this cue list is armed for this cue; disarm it first"),

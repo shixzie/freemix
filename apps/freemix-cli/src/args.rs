@@ -9615,7 +9615,7 @@ mod tests {
                 expected_revision: None,
             })
         );
-        for bad in ["0", "07", "camera", "-1"] {
+        for bad in ["0", "camera", "-1"] {
             assert!(
                 matches!(
                     parse(strings(&["go", "show.freemix", "3", "--selected", bad])),

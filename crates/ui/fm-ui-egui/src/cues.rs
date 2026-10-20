@@ -3046,11 +3046,11 @@ mod tests {
         };
         assert_eq!(
             bound_note(Locale::ENGLISH, &state, Msg::CueRunBoundNote, &targets),
-            "Bound at GO: Preview Input 2 · Program Input 1 · Selected no input"
+            "Bound at GO: Preview Input 2 · Program Input 1 · Selected none bound"
         );
         assert_eq!(
             bound_note(Locale::ENGLISH, &state, Msg::CueArmedBoundNote, &targets),
-            "Armed GO bound: Preview Input 2 · Program Input 1 · Selected no input"
+            "Armed GO bound: Preview Input 2 · Program Input 1 · Selected none bound"
         );
         assert!(
             bound_note(
@@ -3060,7 +3060,7 @@ mod tests {
                 &targets
             )
             .starts_with(
-                "Vinculado en GO: Previo Entrada 2 · Programa Entrada 1 · Seleccionada sin entrada"
+                "Vinculado en GO: Previo Entrada 2 · Programa Entrada 1 · Seleccionada sin vincular"
             ),
         );
     }

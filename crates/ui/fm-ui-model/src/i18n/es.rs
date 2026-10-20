@@ -7248,7 +7248,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Las entradas a las que el GO armado vinculó sus papeles Previo, Programa y Seleccionada al armarse; actúa sobre ellas cuando se dispara",
         ),
     ),
-    (Msg::CueBoundNone, t("sin entrada")),
+    (Msg::CueBoundNone, t("sin vincular")),
     (
         Msg::CueReasonArmDelay,
         t("escribe un retardo de 1 segundo a 24 horas en segundos, MM:SS o HH:MM:SS"),

@@ -2362,7 +2362,7 @@ fn web_pages_fire_with_the_input_selected_on_them() {
         &mut page,
         "fire-selected",
         None,
-        "payload=shortcut_fire\tshortcut=1\tselected=3",
+        &format!("payload=shortcut_fire\tshortcut=1\tselected={}", input(3)),
     ) {
         Ok((_, EventPayload::ShortcutFired(change))) => assert!(
             change
@@ -2386,7 +2386,7 @@ fn web_pages_fire_with_the_input_selected_on_them() {
         &mut page,
         "go-selected",
         None,
-        "payload=cue_go\tlist=7\tselected=2",
+        &format!("payload=cue_go\tlist=7\tselected={}", input(2)),
     )
     .unwrap();
     let EventPayload::CueRunChanged(change) = event else {
@@ -2401,7 +2401,10 @@ fn web_pages_fire_with_the_input_selected_on_them() {
         &mut page,
         "arm-selected",
         None,
-        "payload=cue_arm\tlist=7\tcue=20\tin_ms=60000\tselected=3",
+        &format!(
+            "payload=cue_arm\tlist=7\tcue=20\tin_ms=60000\tselected={}",
+            input(3)
+        ),
     )
     .unwrap();
     let EventPayload::CueRunChanged(change) = event else {
