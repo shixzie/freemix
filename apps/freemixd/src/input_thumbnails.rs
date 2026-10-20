@@ -31,7 +31,9 @@
 //!   inputs through the CPU reference (as its monitor tap does), and
 //!   synthesizes a moving test pattern for network stream and capture
 //!   inputs and a card with the playhead's position for media inputs, which
-//!   have no real source there; those records say `origin=simulated`.
+//!   have no real source there; those records say `origin=simulated`. Its
+//!   Scene inputs compose from those same pictures (a remote's synthetic
+//!   card included), so a scene with a live layer still has a thumbnail.
 //! - An audio-only media input (a music bed or sting whose file name says
 //!   audio, [`fm_model::is_audio_file_name`]; IN-005) gets an audio card on
 //!   both daemons: a waveform glyph whose played part lights up with the
@@ -48,6 +50,7 @@
 //! slot only once the previous record was fully written, so a slow peer
 //! holds at most one record per input and never stalls anything else.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
@@ -295,9 +298,22 @@ impl ThumbnailRenderer {
                 .scenes()
                 .iter()
                 .find(|scene| scene.id == *scene_id)?;
+            let simulated;
             let live;
             let sources: &dyn SceneSources = match &work.live {
-                None => pipeline,
+                None => {
+                    simulated = SimulatedLeaves {
+                        leaf: LeafContext {
+                            pipeline,
+                            titles: &self.titles,
+                            documents: &self.documents,
+                            work,
+                            elapsed: now.saturating_duration_since(self.epoch),
+                        },
+                        stills: RefCell::new(&mut self.stills),
+                    };
+                    &simulated
+                }
                 Some(frames) => {
                     live = SampledSources {
                         live: frames,
@@ -336,59 +352,14 @@ impl ThumbnailRenderer {
         let picture = if let Some(live) = &work.live {
             live.thumbnail(id, MAX_INPUT_THUMBNAIL_WIDTH, MAX_INPUT_THUMBNAIL_HEIGHT)?
         } else {
-            let pipeline = pipeline?;
-            let (width, height) = (pipeline.width(), pipeline.height());
-            match &input.kind {
-                InputKind::Simulated(_) => pipeline.render_source(id, work.frame).ok()?,
-                InputKind::Title(title) => {
-                    // As the monitor tap draws a title: its pose on air (or
-                    // Hold), keyed, then over black.
-                    let keyed = title_render::render_title_at(
-                        &self.titles,
-                        id,
-                        title,
-                        TitleTime::now(
-                            work.frame,
-                            work.project.settings().frame_rate,
-                            None,
-                            pose_of(&work.titles, id),
-                        ),
-                        width,
-                        height,
-                    )?;
-                    title_render::flatten_over_black(&keyed)?
-                }
-                InputKind::NetworkStream(_) | InputKind::Device { .. } => {
-                    synthetic_picture(id, width, height, now.saturating_duration_since(self.epoch))?
-                }
-                InputKind::Image(image) => self.stills.image(
-                    self.titles.store()?,
-                    &image.asset_uri,
-                    image.fit,
-                    (width, height),
-                )?,
-                InputKind::Slideshow(_) => {
-                    let shown = work
-                        .slideshows
-                        .iter()
-                        .find(|(slideshow, _)| *slideshow == id)
-                        .map(|(_, shown)| shown)?;
-                    self.stills
-                        .slides(self.titles.store()?, shown, (width, height))?
-                }
-                // A document shows its current page on either daemon's
-                // thumbnail as it does on Program (IN-014).
-                InputKind::Document(document) => {
-                    let page =
-                        self.documents
-                            .render(&document.asset_uri, document.page, width, height)?;
-                    crate::documents::page_over_black(&page)?
-                }
-                InputKind::Media { .. } => {
-                    synthetic_media_picture(id, width, height, media_playhead(work, id))?
-                }
-                _ => return None,
-            }
+            let leaf = LeafContext {
+                pipeline: pipeline?,
+                titles: &self.titles,
+                documents: &self.documents,
+                work,
+                elapsed: now.saturating_duration_since(self.epoch),
+            };
+            leaf.picture(input, work.frame, &mut self.stills, false)?
         };
         let graded = match work.grades.input(id) {
             Some(grade) => fm_compositor::apply_grade(&picture, grade).ok()?,
@@ -396,6 +367,151 @@ impl ThumbnailRenderer {
         };
         Some(over_black(&graded))
     }
+}
+
+/// What a simulated daemon draws an input with: the pipeline at the fitted
+/// thumbnail size, the title assets, and the worker's work.
+struct LeafContext<'a> {
+    pipeline: &'a SimulatedPipeline,
+    titles: &'a TitleAssets,
+    /// The bundle's document pages (IN-014).
+    documents: &'a crate::documents::DocumentPages,
+    work: &'a ThumbnailWork,
+    /// How long the renderer has run, which moves the synthetic live cards.
+    elapsed: Duration,
+}
+
+impl LeafContext<'_> {
+    /// Whether [`Self::picture`] draws `input` on a simulated daemon.
+    fn draws(input: &Input) -> bool {
+        matches!(
+            input.kind,
+            InputKind::Simulated(_)
+                | InputKind::Title(_)
+                | InputKind::NetworkStream(_)
+                | InputKind::Device { .. }
+                | InputKind::Image(_)
+                | InputKind::Slideshow(_)
+                | InputKind::Document(_)
+                | InputKind::Media { .. }
+        )
+    }
+
+    /// The ungraded straight-alpha picture of non-scene `input` at
+    /// `frame`, at the pipeline size: a simulated generator's own picture, a
+    /// title in its pose, a still or the slides shown, and the synthetic
+    /// cards a network stream, capture, or media input stands in with.
+    /// `in_scene` draws it as a scene layer reads it: a title keeps its
+    /// transparency (on its own it is shown over black), and an audio-only
+    /// file is transparent (on its own its audio card stands in instead).
+    fn picture(
+        &self,
+        input: &Input,
+        frame: u64,
+        stills: &mut StillPictures,
+        in_scene: bool,
+    ) -> Option<ImageFrame> {
+        let (id, work) = (input.id, self.work);
+        let (width, height) = (self.pipeline.width(), self.pipeline.height());
+        match &input.kind {
+            InputKind::Simulated(_) => self.pipeline.render_source(id, frame).ok(),
+            InputKind::Title(title) => {
+                // As the monitor tap draws a title: its pose on air (or
+                // Hold), keyed.
+                let keyed = title_render::render_title_at(
+                    self.titles,
+                    id,
+                    title,
+                    TitleTime::now(
+                        frame,
+                        work.project.settings().frame_rate,
+                        None,
+                        pose_of(&work.titles, id),
+                    ),
+                    width,
+                    height,
+                )?;
+                if in_scene {
+                    straight(&keyed)
+                } else {
+                    title_render::flatten_over_black(&keyed)
+                }
+            }
+            InputKind::NetworkStream(_) | InputKind::Device { .. } => {
+                synthetic_picture(id, width, height, self.elapsed)
+            }
+            InputKind::Image(image) => stills.image(
+                self.titles.store()?,
+                &image.asset_uri,
+                image.fit,
+                (width, height),
+            ),
+            InputKind::Slideshow(_) => {
+                let shown = work
+                    .slideshows
+                    .iter()
+                    .find(|(slideshow, _)| *slideshow == id)
+                    .map(|(_, shown)| shown)?;
+                stills.slides(self.titles.store()?, shown, (width, height))
+            }
+            // A document shows its current page, opaque, as it does on
+            // Program (IN-014).
+            InputKind::Document(document) => {
+                let page =
+                    self.documents
+                        .render(&document.asset_uri, document.page, width, height)?;
+                crate::documents::page_over_black(&page)
+            }
+            InputKind::Media { asset_uri, .. } if fm_model::is_audio_file_name(asset_uri) => {
+                let bytes = usize::try_from(width).ok()?.checked_mul(4)?;
+                let rows = usize::try_from(height).ok()?;
+                ImageFrame::new(width, height, bytes, vec![0; bytes.checked_mul(rows)?]).ok()
+            }
+            InputKind::Media { .. } => {
+                synthetic_media_picture(id, width, height, media_playhead(work, id))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// A simulated daemon's Scene thumbnail leaves: every layer input drawn as
+/// its own thumbnail draws it, the synthetic cards of live sources and
+/// media files included, so a scene of cameras and a remote shows its
+/// layout instead of no picture at all (its record says
+/// `origin=simulated`).
+struct SimulatedLeaves<'a> {
+    leaf: LeafContext<'a>,
+    stills: RefCell<&'a mut StillPictures>,
+}
+
+impl SceneSources for SimulatedLeaves<'_> {
+    fn draws(&self, input: &Input) -> bool {
+        LeafContext::draws(input)
+    }
+
+    fn leaf(
+        &self,
+        input: &Input,
+        frame_number: u64,
+        width: u32,
+        height: u32,
+    ) -> Option<ImageFrame> {
+        if (self.leaf.pipeline.width(), self.leaf.pipeline.height()) != (width, height) {
+            return None;
+        }
+        let mut stills = self.stills.try_borrow_mut().ok()?;
+        self.leaf.picture(input, frame_number, &mut stills, true)
+    }
+}
+
+/// A premultiplied picture as straight alpha.
+fn straight(picture: &ImageFrame) -> Option<ImageFrame> {
+    let mut pixels = picture.pixels().to_vec();
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        *pixel = fm_title_render::unpremultiply(*pixel);
+    }
+    ImageFrame::new(picture.width(), picture.height(), picture.stride(), pixels).ok()
 }
 
 /// Media input `input`'s playhead and the end of its playable range.
@@ -1361,6 +1477,92 @@ mod tests {
         assert_eq!(pixel(&sent[0].1, 50, 25), [200, 40, 20, 255]);
         assert_eq!(pixel(&sent[0].1, 5, 5), [0, 0, 0, 255]);
         assert_eq!(pixel(&sent[0].1, 120, 70), [0, 0, 0, 255]);
+    }
+
+    /// A simulated daemon composes a Scene input's thumbnail from what each
+    /// layer input's own thumbnail draws, so a scene with a network stream
+    /// layer (which only has a synthetic card there) still has a picture: a
+    /// solid on the left half, the stream's card on the right half, and a
+    /// title on top whose transparent parts show the layers under it.
+    #[test]
+    fn simulated_scene_inputs_compose_their_layers_synthetic_cards_included() {
+        use fm_model::{Layer, LayerGeometry, Rotation, SourceRef};
+        let layer = |id: u32, source: u128, geometry: LayerGeometry, z_order: i32| Layer {
+            id: fm_model::LayerId::new(id).unwrap(),
+            name: format!("Layer {id}"),
+            source: SourceRef::Input(input_id(source)),
+            enabled: true,
+            geometry,
+            crop: None,
+            mask: None,
+            key: None,
+            effects: Vec::new(),
+            opacity: 255,
+            z_order,
+        };
+        let start = Instant::now();
+        let mut renderer = ThumbnailRenderer::new(server(), start, title_assets([200, 40, 20]));
+        let stream = input(
+            3,
+            InputKind::NetworkStream(fm_types::network_stream::NetworkStreamConfig::new(
+                "rtsp://camera.example/live",
+            )),
+        );
+        let title = input(
+            5,
+            InputKind::Title(fm_model::TitleInput {
+                template_uri: TITLE_URI.into(),
+                field_revision: 0,
+                fields: Vec::new(),
+            }),
+        );
+        let mut project = project(vec![solid(1, 200), stream, title]);
+        let scene = fm_types::SceneId::new(NonZeroU128::new(1).unwrap());
+        project.add_scene(fm_model::Scene {
+            id: scene,
+            name: "Two-shot + remote".into(),
+            background: fm_model::Rgba8::new(60, 60, 60, 255),
+            layers: vec![
+                layer(1, 1, LayerGeometry::new(0, 0, 960, 1080, Rotation::Deg0), 1),
+                layer(
+                    2,
+                    3,
+                    LayerGeometry::new(960, 0, 960, 1080, Rotation::Deg0),
+                    1,
+                ),
+                layer(
+                    3,
+                    5,
+                    LayerGeometry::new(0, 0, 1920, 1080, Rotation::Deg0),
+                    2,
+                ),
+            ],
+            animation: fm_model::SceneAnimation::default(),
+        });
+        project.add_input(input(
+            7,
+            InputKind::Scene {
+                scene_id: scene,
+                audio_source: None,
+            },
+        ));
+        let sent = step(&mut renderer, &work(project, 1), start, false);
+        let scene = sent
+            .iter()
+            .find(|(input, _)| *input == input_id(7))
+            .map(|(_, message)| message)
+            .expect("the scene has a thumbnail");
+        assert_eq!(scene.origin, MonitorFrameOrigin::Simulated);
+        assert_eq!((scene.width, scene.height), (160, 90));
+        // The title's bar covers (25..75, 12..38); outside it the title is
+        // transparent and the solid shows.
+        assert_eq!(pixel(scene, 50, 25), [200, 40, 20, 255]);
+        assert_eq!(pixel(scene, 10, 80), [200, 0, 0, 255]);
+        // The right half is the stream's card, not the scene's background.
+        let card = pixel(scene, 120, 60);
+        assert_ne!(card, [60, 60, 60, 255]);
+        assert_ne!(card, [0, 0, 0, 255]);
+        assert_eq!(card[3], 255);
     }
 
     /// A simulated daemon draws a media input as a card whose bottom bar
