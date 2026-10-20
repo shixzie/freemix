@@ -237,8 +237,8 @@ commands = ["cargo test -p fm-grade --test reference", "cargo test -p fm-grade -
 [[tests]]
 id = "accept-gx-001"
 state = "present"
-paths = ["crates/features/fm-titles/tests/image_render.rs", "crates/features/fm-titles/tests/title_scene.rs", "crates/features/fm-titles/tests/text_render.rs", "crates/features/fm-titles/tests/image_fit.rs", "crates/features/fm-titles/tests/field_set.rs", "crates/services/fm-persistence/tests/title_templates.rs", "crates/services/fm-engine/tests/titles.rs"]
-commands = ["cargo test -p fm-titles --test image_render", "cargo test -p fm-titles --test title_scene", "cargo test -p fm-titles --test text_render", "cargo test -p fm-titles --test image_fit", "cargo test -p fm-titles --test field_set", "cargo test -p fm-persistence --test title_templates", "cargo test -p fm-engine --test titles"]
+paths = ["crates/features/fm-titles/tests/image_render.rs", "crates/features/fm-titles/tests/title_scene.rs", "crates/features/fm-titles/tests/text_render.rs", "crates/features/fm-titles/tests/image_fit.rs", "crates/features/fm-titles/tests/field_set.rs", "crates/services/fm-persistence/tests/title_templates.rs", "crates/services/fm-engine/tests/titles.rs", "crates/services/fm-engine/tests/title_timeline.rs", "crates/services/fm-persistence/tests/title_timelines.rs"]
+commands = ["cargo test -p fm-titles --test image_render", "cargo test -p fm-titles --test title_scene", "cargo test -p fm-titles --test text_render", "cargo test -p fm-titles --test image_fit", "cargo test -p fm-titles --test field_set", "cargo test -p fm-persistence --test title_templates", "cargo test -p fm-engine --test titles", "cargo test -p fm-engine --test title_timeline", "cargo test -p fm-persistence --test title_timelines"]
 [[tests]]
 id = "accept-gx-002"
 state = "present"
@@ -262,8 +262,8 @@ commands = ["cargo test -p fm-data --test title_binding_preview"]
 [[tests]]
 id = "accept-gx-006"
 state = "present"
-paths = ["apps/freemix-web/tests/title_editor.rs", "apps/freemix-web/tests/title_bridge.rs"]
-commands = ["cargo test -p freemix-web --test title_editor", "cargo test -p freemix-web --test title_bridge"]
+paths = ["apps/freemix-web/tests/title_editor.rs", "apps/freemix-web/tests/title_bridge.rs", "apps/freemixd/tests/web_tally.rs"]
+commands = ["cargo test -p freemix-web --test title_editor", "cargo test -p freemix-web --test title_bridge", "cargo test -p freemixd --test web_tally titles_page_edits_and_takes_a_title_within_the_session_role -- --exact"]
 [[tests]]
 id = "accept-gx-007"
 state = "present"

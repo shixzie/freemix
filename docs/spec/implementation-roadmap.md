@@ -60,10 +60,13 @@ highest-value remaining items, ranked:
    (its Windows `gdigrab` and macOS ScreenCaptureKit backends are
    compile-checked, never run); the roadmap requires the vertical slice on all Tier-1 OSes
    before more breadth.
-9. **Titles that start at the take, with a browser title editor (`GX-001`,
-   `GX-006`).** Tickers and scene clocks still run from frame zero, and the
-   gateway pages have no title UI even though Protocol 2.24 title commands
-   exist.
+9. **Finish titles that start at the take and the browser title editor
+   (`GX-001`, `GX-006`).** Title timelines now start on the frame a title is
+   taken to Program, an overlay, or Preview, replay deterministically, and
+   persist (schema 65); `/titles` edits, takes, updates, and clears titles
+   from a browser paired as Graphics. Still missing: per-field exposure
+   flags, rendered previews in the browser, a Studio view of the timeline,
+   and live `title_state` updates between snapshots.
 
 Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
 since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
@@ -3573,10 +3576,22 @@ on-air state, which the server re-checks atomically. Every value-carrying
 command carries the title's base revision; a conflict keeps the user's drafts,
 marks the title stale, shows base, server, and draft values per field, and
 requires an explicit rebase or discard, so nothing is silently overwritten.
-Remaining gaps: templates have no per-field exposure flag, revisions are per
-title rather than per field, previews render no image, and the browser pages
-served by freemixd have no title editor UI, request timeout, or reconnect
-resync (Protocol 2.24 title commands and daemon-hosted titles exist). `GX-006` remains planned.
+freemixd serves that editor as `/titles` (Protocol 2.75): a self-contained
+page that lists every title input with its air state (Program, overlay
+channel, or Preview), edits text, number, colour, and image fields with the
+server's bounds, shows the exact change list a preview fixes, and sends
+`title_fields` (`require=off_air` to save, `on_air` to update live),
+`title_take` on a chosen overlay channel, and `title_off_air`. A device
+paired as Graphics (`view_status` + `edit_project`) edits; Operator takes
+and clears; the static token's producer role does both. Commands
+unanswered after eight seconds reconnect, and every reconnect resynchronizes
+from the snapshot while keeping drafts; a stale draft shows the server's
+value and needs Keep my edits or Discard. English and Spanish strings follow
+Studio's catalog. Remaining gaps: templates have no per-field exposure flag,
+revisions are per title rather than per field, previews render no image,
+`title_state` is sent only with snapshots (field values follow
+`title_changed`, phases do not), and the page has no image asset picker.
+`GX-006` remains planned.
 
 
 Current implementation boundary for item 3: `fm-browser-input` provides a
@@ -4156,15 +4171,18 @@ UTC instant that holds at zero or overruns negative, and a stopwatch since
 the title's take. freemixd builds a registry from those definitions for every
 title render: the monotonic clock is the rendered engine frame on the project
 frame grid, time of day and countdowns read the system wall clock, and the
-take is the first frame the title is on Program or a realized overlay
-(projected frames in native mode, monitor polls in simulated mode); clock
-titles refresh at the bounded title rate. `freemix-cli title-input-add`
+take is the engine's title timeline (Protocol 2.75, schema 65): the frame
+a title was taken to Program, an overlay, or Preview, which tickers, scene
+clocks, and the In/Out bus animation count from; it restarts when the title
+moves between air and Preview or is taken again, is identical under journal
+replay because it is derived from realized engine state per frame, and is
+saved in `project.json` `title_timelines` so a restored daemon continues it;
+clock titles refresh at the bounded title rate. `freemix-cli title-input-add`
 imports clock templates. Remaining gaps: no shared project or engine clock
 registry, so title clocks are per title, not operator-controllable timers,
 and not exposed through the protocol, CLI commands, or UI; no project-level
 time zone (each time-of-day clock names its zone); templates cannot show
-media remaining, session, or playlist clocks; the simulated take is dated at
-monitor-poll granularity; designer compositions and crawls take no clock
+media remaining, session, or playlist clocks; designer compositions and crawls take no clock
 source; no IANA tz database, leap seconds, drop-frame timecode,
 playback-speed-aware media remaining, or locale formats. `SW-013` remains
 planned.

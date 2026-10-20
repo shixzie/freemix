@@ -58,8 +58,8 @@ the server selects only `freemix.control.v1`. Every request (pages, pairing,
 upgrades) must name an IP literal, `localhost`, or a `--web-host` name in
 `Host`, or it is refused `421 Misdirected Request` (DNS-rebinding defence). A present
 but wrong Bearer header is rejected even if the subprotocol credential is
-correct. The same listener serves the self-contained `/tally` and `/operator`
-pages for `GET` and `HEAD`; roles and permissions still come from the protocol
+correct. The same listener serves the self-contained `/tally`, `/operator`,
+and `/titles` pages for `GET` and `HEAD`; roles and permissions still come from the protocol
 handshake. Up to 16 WebSocket clients may be connected at once; each is a
 separate control session with its own handshake, granted role, heartbeat,
 subscription, rate limits, and outbound queue, exactly like a raw TCP peer
@@ -2507,7 +2507,8 @@ Protocol 2.71 pairs phones and tablets with the web gateway and lets an
 admin console list and revoke them (RC-007, RC-014).
 
 - A console sends `web_access_request` with `request_id` and `action`:
-  `status`, `pair` with `role` (`viewer`, `audio`, or `operator`),
+  `status`, `pair` with `role` (`viewer`, `audio`, `operator`, or
+  `graphics`; Protocol 2.76),
   `cancel_pairing`, or `revoke` with `device` (`[a-z][a-z0-9-]{0,31}`). It
   receives `web_access` with the same `request_id`, an optional `refusal`
   (`permission_denied`, `web_session`, `unavailable`, `unknown_device`,
@@ -2531,7 +2532,8 @@ admin console list and revoke them (RC-007, RC-014).
   spent by one successful redemption, and die after 5 wrong codes (both
   codes share that budget). The QR link a console shows is
   `<url><page>#pair=<link code>&fp=<fingerprint without colons>`, with
-  `/tally` for a Viewer pairing and `/operator` otherwise; browsers never
+  `/tally` for a Viewer pairing, `/titles` for a Graphics one, and
+  `/operator` otherwise; browsers never
   send the fragment to the server, and the page removes it at once.
 - The page redeems a code with `POST /v1/pair`
   (`application/x-www-form-urlencoded` `code` and `name`). The request must
@@ -2958,6 +2960,37 @@ captured on the server.
   details. The CLI adds `input-add-screen-capture`,
   `input-screen-capture-status`, their `remote-` forms, and
   `remote-screen-capture-targets`.
+
+Protocol 2.80 starts title timelines at the take and adds a browser title
+editor (GX-001, GX-006, schema 69):
+
+- The engine keeps one timeline per shown title input: `air` while the
+  title is on Program (including either side of a manual transition or a
+  transition leaving it) or on a realized overlay, `preview` while it is
+  only on Preview, with `since_frame`, the engine frame it became shown
+  there. It restarts when the title moves between air and Preview, when a
+  `title_take` starts its In phase, and when a transition leaving Program
+  is cancelled back onto it; it ends when the title is no longer shown.
+  It is derived from realized state on every engine frame, so journal
+  replay rebuilds it exactly. Tickers, scene clocks, the since-take
+  stopwatch, and the In/Out bus animation of a title cut or mixed to
+  Program count from it.
+- `title_state` carries `shown` (`none|air|preview`) and `since_frame`
+  right after `phase_frames`; `none` carries `since_frame=0`. A title
+  shown on Program or Preview without a title command reports its bus
+  In/Hold/Out phase there (a Preview title plays In from its timeline).
+- Durability (schema 69): the project gains required `"title_timelines":
+  [{"input", "on": "air"|"preview", "since_frame"}]` after `media_lists`,
+  strictly ascending by input; validation refuses one on an unknown or
+  non-title input. A restore refuses a timeline at or after the restored
+  frame cursor.
+- The web gateway pairs a `graphics` device (`web_access_request`
+  `role=graphics`; the device may ask for Graphics and Viewer). Its QR
+  link opens `/titles`, a self-contained page served like `/tally` and
+  `/operator` that edits title fields with `title_fields`
+  (`require=off_air` to save, `on_air` to update live) and takes or clears
+  titles with `title_take` and `title_off_air`, each refused by the server
+  outside the session's role.
 - 2.77 is refused.
 
 Protocol 2.79 lets an undo journal the exact place and active item it
