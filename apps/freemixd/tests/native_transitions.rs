@@ -1109,10 +1109,10 @@ fn a_stinger_runs_on_the_frame_loop_and_cuts_at_its_cut_point() {
 }
 
 /// A title's Out phase runs on the frame loop: taking it off air is
-/// answered on the phase's first frame (its switcher realization arrives
-/// then, as the overlay goes off), Studio's Program frames show the fade
-/// after the answer, another client's edit is answered on a frame inside
-/// the phase, and Program is clear of the title only once it has ended.
+/// answered on the phase's first frame, Studio's Program frames show the
+/// fade after the answer, another client's edit is answered on a frame
+/// inside the phase, Program is clear of the title only once it has ended,
+/// and the off-air's switcher realization arrives once, when it ends.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn a_title_out_phase_runs_on_the_frame_loop() {
@@ -1163,11 +1163,12 @@ fn a_title_out_phase_runs_on_the_frame_loop() {
             input: wire(3),
             name: "Renamed mid Out phase".into(),
         });
+        let renamed_at = Instant::now();
         let deadline = Instant::now() + FRAME_TIMEOUT;
         while Instant::now() < deadline {
             cli.receive();
         }
-        renamed
+        (renamed, renamed_at)
     });
     let sent = Instant::now();
     let (revision, off) = studio.accepted_revision(CommandPayload::TitleOffAir { input: wire(5) });
@@ -1229,21 +1230,36 @@ fn a_title_out_phase_runs_on_the_frame_loop() {
         "during the Out phase Studio got {preview} Preview frames"
     );
 
-    let renamed = other.join().unwrap();
+    let (renamed, renamed_at) = other.join().unwrap();
     assert!(
         renamed > off && renamed < end,
         "the other client's edit was realized on frame {renamed}, not inside {off}..{end}"
     );
-    // The off-air command itself is realized on its first frame.
+    // The off-air command is realized once, when its Out phase ends: after
+    // the edit answered inside it, once the phase has played in wall time,
+    // with Program past the phase's middle.
     let realized: Vec<_> = studio
         .realized
         .iter()
         .filter(|(realized, _, _)| *realized == revision)
         .collect();
-    assert_eq!(realized.len(), 1, "{:?}", studio.realized);
+    let [(_, realized_at, seen)] = realized.as_slice() else {
+        panic!("the off-air was realized {} times", realized.len());
+    };
     assert!(
-        realized[0].2.is_some_and(|seen| seen < end),
-        "the off-air command was realized after its Out phase: {realized:?}"
+        *realized_at > renamed_at,
+        "the off-air was realized before the edit answered mid Out phase"
+    );
+    let phase = Duration::from_secs(u64::from(OUT_FRAMES - 3)) / FRAME_RATE;
+    assert!(
+        realized_at.duration_since(sent) >= phase,
+        "the off-air was realized {:?} after it was sent, inside its {OUT_FRAMES}-frame Out phase",
+        realized_at.duration_since(sent)
+    );
+    assert!(
+        seen.is_some_and(|seen| seen > off + u64::from(OUT_FRAMES / 2)),
+        "the off-air was realized when Program had reached frame {seen:?}, \
+         not near the end of its Out phase ending on {end}"
     );
     drop(studio);
     daemon.stop();
