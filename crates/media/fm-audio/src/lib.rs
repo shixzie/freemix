@@ -1082,6 +1082,9 @@ struct InputStrip {
 #[derive(Clone, Debug)]
 struct StripDspSlot {
     live: LiveStripDsp,
+    /// `live` as a render found it, restored when the render is rejected
+    /// after the chain ran (preallocated: the copy never allocates).
+    checkpoint: LiveStripDsp,
     /// Processed samples, channel-major with stride `capacity`.
     scratch: Vec<f32>,
     capacity: usize,
@@ -1093,6 +1096,7 @@ impl StripDspSlot {
     fn new(live: LiveStripDsp, capacity: usize) -> Self {
         let channels = live.channels();
         Self {
+            checkpoint: live.clone(),
             live,
             scratch: vec![0.0; channels * capacity],
             capacity,
@@ -1462,6 +1466,9 @@ pub struct MasterMixer {
     retained_delay_bytes: usize,
     /// The Master bus DSP chain (AU-005), after the strips are summed.
     master_dsp: Option<Box<LiveStripDsp>>,
+    /// The Master chain as a render found it, restored when the render is
+    /// rejected; present exactly when `master_dsp` is.
+    master_checkpoint: Option<Box<LiveStripDsp>>,
     /// Samples each strip DSP scratch holds without growing.
     dsp_block_capacity: usize,
 }
@@ -1484,6 +1491,7 @@ impl MasterMixer {
             clipping_policy: ClippingPolicy::default(),
             retained_delay_bytes: 0,
             master_dsp: None,
+            master_checkpoint: None,
             dsp_block_capacity: DEFAULT_DSP_BLOCK_CAPACITY,
         })
     }
@@ -1579,6 +1587,7 @@ impl MasterMixer {
                     settings,
                 )
                 .map_err(AudioError::Dsp)?;
+                self.master_checkpoint = Some(Box::new(live.clone()));
                 self.master_dsp = Some(Box::new(live));
                 Ok(())
             }
@@ -2314,12 +2323,76 @@ impl MasterMixer {
         })
     }
 
+    /// Renders like [`Self::render_block_views_into`], transactionally for
+    /// the DSP chains too: a render rejected after the strip or Master
+    /// chains ran (a non-finite sample found later) restores them, so a
+    /// rejected block never advances their filter and dynamics state.
+    #[allow(clippy::too_many_arguments)]
+    fn mix_block_views_into<B: MixerBlockView, S: MixerSubmission<B>>(
+        &mut self,
+        samples: usize,
+        blocks: &[S],
+        active_video_inputs: &[InputId],
+        output: &mut [Vec<f32>],
+        measure_output: bool,
+        meter_output: Option<(&mut [ChannelMeter], &mut [ChannelMeter])>,
+        monitor: Option<MonitorTarget<'_>>,
+        extras: RenderExtras<'_>,
+    ) -> Result<Option<RenderMeters>, AudioError> {
+        self.checkpoint_dsp();
+        let rendered = self.render_block_views_into(
+            samples,
+            blocks,
+            active_video_inputs,
+            output,
+            measure_output,
+            meter_output,
+            monitor,
+            extras,
+        );
+        if rendered.is_err() {
+            self.restore_dsp();
+        }
+        rendered
+    }
+
+    /// Saves every DSP chain's state into its preallocated checkpoint.
+    fn checkpoint_dsp(&mut self) {
+        for strip in self.inputs.values_mut() {
+            if let Some(slot) = &mut strip.dsp {
+                let StripDspSlot {
+                    live, checkpoint, ..
+                } = &mut **slot;
+                // Same channel count by construction: never fails.
+                let _ = checkpoint.copy_state_from(live);
+            }
+        }
+        if let (Some(live), Some(checkpoint)) = (&self.master_dsp, &mut self.master_checkpoint) {
+            let _ = checkpoint.copy_state_from(live);
+        }
+    }
+
+    /// Restores every DSP chain from its checkpoint.
+    fn restore_dsp(&mut self) {
+        for strip in self.inputs.values_mut() {
+            if let Some(slot) = &mut strip.dsp {
+                let StripDspSlot {
+                    live, checkpoint, ..
+                } = &mut **slot;
+                let _ = live.copy_state_from(checkpoint);
+            }
+        }
+        if let (Some(live), Some(checkpoint)) = (&mut self.master_dsp, &self.master_checkpoint) {
+            let _ = live.copy_state_from(checkpoint);
+        }
+    }
+
     #[allow(
         clippy::needless_range_loop,
         clippy::too_many_arguments,
         clippy::too_many_lines
     )]
-    fn mix_block_views_into<B: MixerBlockView, S: MixerSubmission<B>>(
+    fn render_block_views_into<B: MixerBlockView, S: MixerSubmission<B>>(
         &mut self,
         samples: usize,
         blocks: &[S],

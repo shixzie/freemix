@@ -320,3 +320,73 @@ fn the_transactional_mixer_pair_carries_dsp_state() {
     let mut bare = mixer_with(&[id]);
     assert!(bare.copy_runtime_state_from(&mixer).is_err());
 }
+
+/// A block the mixer rejects for a non-finite mixed sample, found only
+/// after the strip chains ran, leaves their state as it was: the next
+/// block renders exactly as on a mixer that never saw the rejected one.
+#[test]
+fn a_rejected_block_does_not_advance_the_dsp_state() {
+    let id = input(1);
+    let mut chain = StripDsp::DEFAULT;
+    chain.high_pass.enabled = true;
+    chain.high_pass.frequency_hz = 120;
+    let build = || {
+        let mut mixer = mixer_with(&[id, input(2), input(3)]);
+        mixer.set_input_dsp(id, &chain).unwrap();
+        mixer
+            .set_master_dsp(&StripDspPreset::Master.chain())
+            .unwrap();
+        mixer
+    };
+    let (mut mixer, mut reference) = (build(), build());
+    let mut tone = Tone::new(220.0, 0.5);
+    let mut output = vec![vec![0.0; BLOCK]; 2];
+    let mut expected = vec![vec![0.0; BLOCK]; 2];
+    let mut input_meters = vec![ChannelMeter::default(); 6];
+    for _ in 0..3 {
+        let planes = tone.next_block();
+        render(&mut mixer, &[(id, &planes)], &mut output, &mut input_meters);
+        render(
+            &mut reference,
+            &[(id, &planes)],
+            &mut expected,
+            &mut input_meters,
+        );
+    }
+    // Finite samples so large that two strips' sum overflows: the mixer
+    // finds it only after the strip chain processed them.
+    let mut poisoned = tone.next_block();
+    for plane in &mut poisoned {
+        for sample in &mut plane[BLOCK - 8..] {
+            *sample = f32::MAX;
+        }
+    }
+    let layout = ChannelLayout::stereo();
+    let rejected = mixer.mix_planar_timed_into_with_meters(
+        timing(BLOCK),
+        BLOCK,
+        &[id, input(2), input(3)].map(|input| PlanarAudioSource {
+            input,
+            sample_rate: SampleRate::new(RATE).unwrap(),
+            channel_layout: &layout,
+            planes: &poisoned,
+            samples: BLOCK,
+            source_gain: SourceGain::UNITY,
+        }),
+        &[],
+        &mut output,
+        (&mut [ChannelMeter::default(); 2], &mut input_meters),
+    );
+    assert!(rejected.is_err(), "{rejected:?}");
+    for _ in 0..3 {
+        let planes = tone.next_block();
+        render(&mut mixer, &[(id, &planes)], &mut output, &mut input_meters);
+        render(
+            &mut reference,
+            &[(id, &planes)],
+            &mut expected,
+            &mut input_meters,
+        );
+        assert_eq!(output, expected);
+    }
+}
