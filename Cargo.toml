@@ -108,6 +108,9 @@ version = "0.1.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+# `--cfg freemix_pipewire` builds Wayland screen capture's PipeWire stream
+# reader against the system libpipewire (see crates/io/fm-io-linux).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(freemix_pipewire)"] }
 
 [workspace.lints.clippy]
 all = "warn"

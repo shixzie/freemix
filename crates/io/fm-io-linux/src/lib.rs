@@ -22,6 +22,8 @@
 //!   capture: the system output's monitor, an application's own
 //!   `PulseAudio`/`PipeWire` streams, or a platform helper, served to the
 //!   capture child on a private socket (IN-011).
+//! - [`wayland`]: screen and window capture on a Wayland desktop through
+//!   the xdg-desktop-portal `ScreenCast` interface and `PipeWire` (IN-011).
 //!
 //! Everything but [`v4l2`] is portable, so the state machines are tested
 //! without hardware on every platform.
@@ -40,6 +42,7 @@ pub mod sysfs;
 pub mod system_audio;
 #[cfg(target_os = "linux")]
 pub mod v4l2;
+pub mod wayland;
 
 pub use acquire::{AcquireRequest, AcquiredFrame, Acquirer, Acquisition, AcquisitionHealth};
 pub use fake::{FakeAcquirer, FakeCaptureWorld, FakeDevice, FakeProvider};

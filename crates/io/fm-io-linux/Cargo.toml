@@ -12,6 +12,20 @@ fm-types = { path = "../../foundation/fm-types" }
 [target.'cfg(target_os = "linux")'.dependencies]
 linuxvideo = "0.3.5"
 x11rb = { version = "0.13.2", features = ["randr"] }
+# Wayland screen and window capture (IN-011): the xdg-desktop-portal
+# ScreenCast interface over D-Bus, in pure Rust.
+async-io = "2.3.2"
+futures-lite = "2.6.0"
+zbus = "5.19.0"
+
+# The PipeWire stream a Wayland desktop shares is read through libpipewire,
+# which only machines with its development files can build. It is enabled
+# by a `--cfg freemix_pipewire` build flag rather than a Cargo feature so
+# that `--all-features` builds (CI, the macOS cross-check) stay free of the
+# system library:
+#   RUSTFLAGS="--cfg freemix_pipewire" cargo build -p freemixd --features native-media
+[target.'cfg(all(target_os = "linux", freemix_pipewire))'.dependencies]
+pipewire = "0.10.1"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 x11rb = { version = "0.13.2", features = ["randr"] }
