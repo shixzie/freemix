@@ -64,7 +64,7 @@ impl MediaListDraft {
     /// The list's items, read from the pasted lines (playlists expanded),
     /// or why they cannot be.
     pub(crate) fn items(&self) -> Result<Vec<MediaListItemSpec>, &'static str> {
-        expand_items(&self.text, 1, &read_playlist)
+        expand_items(&self.text, &[], &read_playlist)
     }
 
     /// The list's options; a shuffled list's seed follows its files.
@@ -87,8 +87,8 @@ fn read_playlist(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
-/// Expands pasted lines into list items numbered from `first_id`: a media
-/// file is one item; an M3U playlist (read with `read`) is each of its
+/// Expands pasted lines into list items numbered with the smallest ids not
+/// in `taken` (the list's own), in order: a media file is one item; an M3U playlist (read with `read`) is each of its
 /// media entries, relative ones resolved against the playlist's folder and
 /// titled by `#EXTINF`.
 ///
@@ -99,7 +99,7 @@ fn read_playlist(path: &Path) -> Option<String> {
 /// list text beyond the wire bounds.
 pub(crate) fn expand_items(
     text: &str,
-    first_id: u32,
+    taken: &[u32],
     read: &dyn Fn(&Path) -> Option<String>,
 ) -> Result<Vec<MediaListItemSpec>, &'static str> {
     let mut files: Vec<(String, Option<String>)> = Vec::new();
@@ -137,7 +137,7 @@ pub(crate) fn expand_items(
     }
     let items: Vec<MediaListItemSpec> = files
         .into_iter()
-        .zip(first_id..)
+        .zip(free_item_ids(taken))
         .map(|((uri, title), id)| MediaListItemSpec {
             id,
             uri,
@@ -150,6 +150,13 @@ pub(crate) fn expand_items(
         return Err(Msg::MlReasonTooMuchText.en());
     }
     Ok(items)
+}
+
+/// The item ids not in `taken`, ascending: there are always more than a
+/// list can hold, since `MAX_MEDIA_LIST_ITEM_ID` far exceeds
+/// `MAX_MEDIA_LIST_ITEMS`.
+fn free_item_ids(taken: &[u32]) -> impl Iterator<Item = u32> + '_ {
+    (1..=fm_protocol::MAX_MEDIA_LIST_ITEM_ID).filter(move |id| !taken.contains(id))
 }
 
 /// `text` cut to at most `bytes` bytes on a character boundary.
@@ -541,8 +548,8 @@ pub(crate) fn draw_list(
         .unwrap_or_default();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        let first = list.items.iter().map(|item| item.id).max().unwrap_or(0) + 1;
-        let added = expand_items(&paths, first, &read_playlist);
+        let taken: Vec<u32> = list.items.iter().map(|item| item.id).collect();
+        let added = expand_items(&paths, &taken, &read_playlist);
         let problem = edit.or_else(|| {
             added.as_ref().err().copied().or_else(|| {
                 added.as_ref().ok().and_then(|added| {
@@ -645,7 +652,7 @@ mod tests {
         };
         let items = expand_items(
             "/media/a.mp4\n\"/shows/walk-in.m3u\"\n\n/media/a.mp4\n",
-            5,
+            &[1, 2, 3, 4, 6],
             &playlist,
         )
         .unwrap();
@@ -657,17 +664,28 @@ mod tests {
             summary,
             [
                 (5, "/media/a.mp4", None),
-                (6, "/shows/clips/opener.mov", Some("Opener")),
-                (7, "/abs/bed.wav", None),
+                (7, "/shows/clips/opener.mov", Some("Opener")),
+                (8, "/abs/bed.wav", None),
             ]
         );
-        assert_eq!(expand_items("", 1, &none), Err(Msg::MlReasonNoItems.en()));
+        // A list whose ids reached the bound still takes new items.
+        let ids: Vec<u32> = expand_items(
+            "/m/a.mov\n/m/b.mov",
+            &[fm_protocol::MAX_MEDIA_LIST_ITEM_ID, 2],
+            &none,
+        )
+        .unwrap()
+        .iter()
+        .map(|item| item.id)
+        .collect();
+        assert_eq!(ids, [1, 3]);
+        assert_eq!(expand_items("", &[], &none), Err(Msg::MlReasonNoItems.en()));
         assert_eq!(
-            expand_items("/media/notes.txt", 1, &none),
+            expand_items("/media/notes.txt", &[], &none),
             Err(Msg::MlReasonNotMedia.en())
         );
         assert_eq!(
-            expand_items("/media/gone.m3u8", 1, &none),
+            expand_items("/media/gone.m3u8", &[], &none),
             Err(Msg::MlReasonPlaylistUnreadable.en())
         );
         let many = (0..=MAX_MEDIA_LIST_ITEMS).fold(String::new(), |mut text, index| {
@@ -676,14 +694,14 @@ mod tests {
             text
         });
         assert_eq!(
-            expand_items(&many, 1, &none),
+            expand_items(&many, &[], &none),
             Err(Msg::MlReasonTooManyItems.en())
         );
     }
 
     #[test]
     fn search_reorder_and_shuffle_seeds_are_pure() {
-        let items = expand_items("/m/Opener.mov\n/m/bed.wav\n/m/closer.mkv", 1, &none).unwrap();
+        let items = expand_items("/m/Opener.mov\n/m/bed.wav\n/m/closer.mkv", &[], &none).unwrap();
         assert_eq!(filtered_items(&items, "  OPEN "), [0]);
         assert_eq!(filtered_items(&items, "/m/"), [0, 1, 2]);
         assert_eq!(filtered_items(&items, ""), [0, 1, 2]);
