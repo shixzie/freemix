@@ -223,6 +223,7 @@ impl StudioShell {
         let pending = binding.is_pending();
         let mut chain = shown;
         let mut header = HeaderOutcome::default();
+        let mut reset_loudness = false;
         egui::Window::new(title.clone())
             .id(egui::Id::new("studio-strip-fx"))
             .title_bar(false)
@@ -249,11 +250,18 @@ impl StudioShell {
                         ui.separator();
                         draw_dynamics(ui, &mut chain, (enabled, reason), gr);
                         ui.separator();
-                        draw_loudness(ui, loudness.as_ref());
+                        reset_loudness = draw_loudness(ui, loudness.as_ref(), (enabled, reason));
                     },
                 );
                 header.close |= close;
             });
+        if reset_loudness {
+            intents.push(StudioIntent::AudioMixer(
+                fm_protocol::AudioMixerOperation::ResetLoudness {
+                    target: fm_ui_model::strip_dsp::wire_target(target),
+                },
+            ));
+        }
         if header.copy {
             self.strip_fx.copy(shown);
             context.copy_text(shown.code());
@@ -1073,12 +1081,18 @@ fn draw_dynamics(
     });
 }
 
-/// The chain's BS.1770 loudness and true peak (AU-005), as `audio_meters`
-/// last reported it: one readout box per value, the scale and unit dim
-/// beside a bright figure.
-fn draw_loudness(ui: &mut Ui, meter: Option<&fm_protocol::AudioLoudnessMeter>) {
+/// The chain's BS.1770 loudness, EBU Tech 3342 loudness range, and true
+/// peak (AU-005), as `audio_meters` last reported it: one readout box per
+/// value, the scale and unit dim beside a bright figure, then the reset key.
+/// Returns whether the operator asked to reset the measurement.
+fn draw_loudness(
+    ui: &mut Ui,
+    meter: Option<&fm_protocol::AudioLoudnessMeter>,
+    (enabled, reason): (bool, &str),
+) -> bool {
     let l = l10n::locale(ui.ctx());
     let row = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
+    let mut reset = false;
     ui.with_layout(row, |ui| {
         ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
         ui.label(
@@ -1110,6 +1124,12 @@ fn draw_loudness(ui: &mut Ui, meter: Option<&fm_protocol::AudioLoudnessMeter>) {
                 Msg::FxLoudnessIntegratedHover,
             ),
             (
+                "LRA",
+                value(|meter| meter.loudness_range_millilu),
+                "LU",
+                Msg::FxLoudnessRangeHover,
+            ),
+            (
                 "TP",
                 format!(
                     "{} / {}",
@@ -1122,7 +1142,12 @@ fn draw_loudness(ui: &mut Ui, meter: Option<&fm_protocol::AudioLoudnessMeter>) {
         ] {
             loudness_readout(ui, scale, &text, unit).on_hover_text(l.text(hover));
         }
+        reset = ui
+            .add_enabled(enabled, small_button(l.text(Msg::FxLoudnessReset)))
+            .hint(l.text(Msg::FxLoudnessResetHover), reason)
+            .clicked();
     });
+    reset
 }
 
 /// One loudness readout box: `scale` and `unit` dim around the bright
@@ -1297,6 +1322,92 @@ mod tests {
         }
         frame(&context, &mut shell, &state, Vec::new());
         assert_eq!(shell.strip_fx.target(), None);
+    }
+
+    /// Where `wanted` is painted in the last frame of `context`'s shell.
+    fn painted_at(
+        context: &egui::Context,
+        shell: &mut StudioShell,
+        state: &StudioUiState,
+        events: Vec<egui::Event>,
+        wanted: &str,
+    ) -> (Vec<StudioIntent>, Option<egui::Pos2>) {
+        fn find(shape: &egui::Shape, wanted: &str) -> Option<egui::Pos2> {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text() == wanted => Some(text.pos),
+                egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| find(shape, wanted)),
+                _ => None,
+            }
+        }
+        context.begin_pass(egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(
+                pos2(0.0, 0.0),
+                Vec2::new(1600.0, 1000.0),
+            )),
+            events,
+            ..egui::RawInput::default()
+        });
+        let mut ui = Ui::new(
+            context.clone(),
+            egui::Id::new("fm-ui-egui-strip-fx-test"),
+            egui::UiBuilder::new()
+                .layer_id(egui::LayerId::background())
+                .max_rect(context.viewport_rect()),
+        );
+        let intents = StudioShell::without_thumbnail_subscription(shell.draw(&mut ui, state));
+        drop(ui);
+        let output = context.end_pass();
+        let at = output
+            .shapes
+            .iter()
+            .find_map(|clipped| find(&clipped.shape, wanted));
+        (intents, at)
+    }
+
+    #[test]
+    fn the_loudness_reset_key_resets_the_open_bus_and_shows_the_range() {
+        let state = crate::hover_audit::bank_fixture();
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        shell.strip_fx.open(StripDspTarget::Master);
+        // A new window is laid out invisibly on its first frame and settles
+        // against its bottom-right pivot over the next.
+        for _ in 0..3 {
+            painted_at(&context, &mut shell, &state, Vec::new(), "");
+        }
+        // The fixture's Master range (7.4 LU) is shown beside I / S / M.
+        let (_, range) = painted_at(&context, &mut shell, &state, Vec::new(), "7.4");
+        assert!(range.is_some(), "the loudness range is painted");
+        let (intents, at) = painted_at(&context, &mut shell, &state, Vec::new(), "Reset meter");
+        assert!(!intents.iter().any(|intent| matches!(
+            intent,
+            StudioIntent::AudioMixer(fm_protocol::AudioMixerOperation::ResetLoudness { .. })
+        )));
+        let at = at.expect("the reset key is painted") + Vec2::new(4.0, 4.0);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let mut sent = Vec::new();
+        for events in [
+            vec![egui::Event::PointerMoved(at)],
+            vec![button(true)],
+            vec![button(false)],
+        ] {
+            sent.extend(painted_at(&context, &mut shell, &state, events, "Reset meter").0);
+        }
+        let resets: Vec<_> = sent
+            .iter()
+            .filter_map(|intent| match intent {
+                StudioIntent::AudioMixer(fm_protocol::AudioMixerOperation::ResetLoudness {
+                    target,
+                }) => Some(*target),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(resets, vec![fm_protocol::AudioDspTarget::Master]);
     }
 
     #[test]

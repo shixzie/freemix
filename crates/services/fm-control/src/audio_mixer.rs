@@ -1,7 +1,8 @@
 //! Mixer labels, strip groups, the solo mode, the monitor output, and the
 //! Fade-to-Black output selection between the engine and the wire
 //! (Protocols 2.40, 2.44, and 2.53, AU-001 and SW-004), and the strip and
-//! Master DSP chains (Protocol 2.75, AU-005).
+//! Master DSP chains (Protocol 2.75, AU-005) and the loudness reset
+//! (Protocol 2.92).
 
 use fm_engine::{
     Engine, EngineAudioGroupState, EngineAudioMixerEdit, EngineCommand, EngineEvent, ShowState,
@@ -136,6 +137,9 @@ pub(super) fn engine_command(operation: &AudioMixerOperation) -> EngineCommand {
             chain: chain.clone(),
             gesture: gesture.map(domain_gesture),
         },
+        AudioMixerOperation::ResetLoudness { target } => EngineAudioMixerEdit::ResetLoudness {
+            target: dsp_target(*target),
+        },
     })
 }
 
@@ -191,6 +195,9 @@ pub(super) fn wire_operation(edit: &EngineAudioMixerEdit) -> AudioMixerOperation
             target: wire_dsp_target(*target),
             chain: chain.clone(),
             gesture: gesture.map(wire_gesture),
+        },
+        EngineAudioMixerEdit::ResetLoudness { target } => AudioMixerOperation::ResetLoudness {
+            target: wire_dsp_target(*target),
         },
     }
 }

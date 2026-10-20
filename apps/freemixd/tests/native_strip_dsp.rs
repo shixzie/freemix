@@ -4,7 +4,8 @@
 //! native daemon applies a clip strip's EQ, gate, and compressor and the
 //! Master limiter to the rendered Program bus, reports their gain reduction
 //! in `audio_meters`, and hands a reconnecting client the chains in its
-//! snapshot.
+//! snapshot. The loudness reset (Protocol 2.92) restarts one bus's
+//! integrated loudness, loudness range, and maximum true peak.
 //!
 //! The test needs `FFmpeg` and a native GPU adapter (a software Vulkan
 //! driver such as lavapipe suffices). Without them it is skipped, unless
@@ -565,5 +566,124 @@ fn native_daemon_applies_strip_and_master_dsp_and_meters_gain_reduction() {
         dynamics(meters, AudioDspTarget::Master)
             .and_then(|meter| meter.limiter_millidb)
             .is_some_and(|reduction| reduction > 10_000)
+    });
+}
+
+fn loudness(
+    meters: &AudioMetersMessage,
+    target: AudioDspTarget,
+) -> Option<fm_protocol::AudioLoudnessMeter> {
+    meters
+        .loudness
+        .iter()
+        .find(|meter| meter.target == target)
+        .copied()
+}
+
+/// Imports the clip, takes it to Program, and plays it.
+fn play_clip(client: &mut Client, clip: &Path) {
+    client.accept(CommandPayload::InputLifecycle(
+        InputLifecycleOperation::Import {
+            items: vec![ImportItemSpec {
+                input: wire(11),
+                name: Some("Clip".into()),
+                uri: clip.to_str().unwrap().to_owned(),
+            }],
+        },
+    ));
+    client.accept(CommandPayload::SelectPreview { input: wire(11) });
+    client.accept(CommandPayload::Cut);
+    client.shows_red_program();
+    client.accept(CommandPayload::Media {
+        input: wire(11),
+        operation: MediaOperation::Play,
+    });
+}
+
+#[test]
+fn a_loudness_reset_restarts_one_bus_measurement_on_a_running_daemon() {
+    if !tools_available() {
+        eprintln!("native loudness reset integration skipped: FFmpeg tools unavailable");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let clip = directory.path().join("clip.mkv");
+    generate_clip(&clip);
+    let project_path = directory.path().join("native-loudness-reset.freemix");
+    save_project(&project_path);
+    let daemon = match start_native(&project_path) {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            assert!(
+                std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+            );
+            eprintln!("native loudness reset integration skipped: {error}");
+            return;
+        }
+    };
+    let (mut client, _) = Client::connect(daemon.address);
+    play_clip(&mut client, &clip);
+    let strip = AudioDspTarget::Input(wire(11));
+
+    // A +12 dB boost raises the highest true peak on Master and the strip;
+    // the flat tone that follows leaves it there until a reset.
+    client.settled("integrated loudness on Master", 3, |meters| {
+        loudness(meters, AudioDspTarget::Master)
+            .is_some_and(|meter| meter.integrated_millilufs.is_some())
+    });
+    client.dsp(strip, tone_boost());
+    let boosted = client.settled("the boosted true peak", 3, |meters| {
+        loudness(meters, AudioDspTarget::Master)
+            .and_then(|meter| meter.true_peak_millidbtp)
+            .is_some_and(|peak| peak > -12_000)
+    });
+    let high = loudness(&boosted, AudioDspTarget::Master)
+        .and_then(|meter| meter.max_true_peak_millidbtp)
+        .unwrap();
+    client.dsp(strip, StripDsp::DEFAULT);
+    client.settled("the flat tone again", 5, |meters| {
+        loudness(meters, AudioDspTarget::Master)
+            .and_then(|meter| meter.true_peak_millidbtp)
+            .is_some_and(|peak| peak < high - 9_000)
+    });
+
+    // Resetting Master restarts its maximum true peak at the flat tone and
+    // its integrated loudness and range from the flat tone alone; the
+    // strip's own measurement still holds the boost.
+    client.accept(CommandPayload::AudioMixer(
+        AudioMixerOperation::ResetLoudness {
+            target: AudioDspTarget::Master,
+        },
+    ));
+    let meters = client.settled("Master's measurement restarted", 3, |meters| {
+        loudness(meters, AudioDspTarget::Master).is_some_and(|meter| {
+            meter
+                .max_true_peak_millidbtp
+                .is_some_and(|peak| peak < high - 9_000)
+                && meter
+                    .loudness_range_millilu
+                    .is_some_and(|range| range < 1_000)
+        })
+    });
+    let master = loudness(&meters, AudioDspTarget::Master).unwrap();
+    let short_term = master.short_term_millilufs.unwrap();
+    assert!(
+        (master.integrated_millilufs.unwrap() - short_term).abs() < 1_000,
+        "{master:?}"
+    );
+    let held = loudness(&meters, strip)
+        .and_then(|meter| meter.max_true_peak_millidbtp)
+        .unwrap();
+    assert!(held > high - 3_000, "{held} after {high}");
+
+    // Resetting the strip restarts its own measurement too.
+    client.accept(CommandPayload::AudioMixer(
+        AudioMixerOperation::ResetLoudness { target: strip },
+    ));
+    client.settled("the strip's measurement restarted", 3, |meters| {
+        loudness(meters, strip)
+            .and_then(|meter| meter.max_true_peak_millidbtp)
+            .is_some_and(|peak| peak < high - 9_000)
     });
 }

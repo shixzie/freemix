@@ -949,6 +949,10 @@ pub(crate) fn loudness_hover(
                 "max",
                 Arg::Str(&format_loudness(l, meter.max_true_peak_millidbtp)),
             ),
+            (
+                "range",
+                Arg::Str(&format_loudness(l, meter.loudness_range_millilu)),
+            ),
         ],
     )
 }

@@ -9713,13 +9713,13 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::LoudnessStripHover,
         t(
-            "Sonoridad de la aportación de este canal al Programa (ITU-R BS.1770 / EBU R128): corto plazo {short} LUFS (3 s), momentánea {momentary} LUFS (400 ms), integrada {integrated} LUFS; pico real {peak} dBTP, máximo {max} dBTP",
+            "Sonoridad de la aportación de este canal al Programa (ITU-R BS.1770 / EBU R128): corto plazo {short} LUFS (3 s), momentánea {momentary} LUFS (400 ms), integrada {integrated} LUFS, rango de sonoridad {range} LU; pico real {peak} dBTP, máximo {max} dBTP. Reinicie la medición en la ventana FX del canal",
         ),
     ),
     (
         Msg::LoudnessMasterHover,
         t(
-            "Sonoridad del Programa (ITU-R BS.1770 / EBU R128): integrada {integrated} LUFS desde que empezó la medición (objetivo de emisión -23 LUFS), corto plazo {short} LUFS, momentánea {momentary} LUFS; pico real {peak} dBTP, máximo {max} dBTP (manténgalo por debajo de -1 dBTP)",
+            "Sonoridad del Programa (ITU-R BS.1770 / EBU R128): integrada {integrated} LUFS desde que empezó o se reinició la medición (objetivo de emisión -23 LUFS), rango de sonoridad {range} LU, corto plazo {short} LUFS, momentánea {momentary} LUFS; pico real {peak} dBTP, máximo {max} dBTP (manténgalo por debajo de -1 dBTP). Reinicie la medición en la ventana FX de Master",
         ),
     ),
     (Msg::FxLoudnessLabel, t("Sonoridad")),
@@ -9734,13 +9734,26 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::FxLoudnessIntegratedHover,
         t(
-            "Sonoridad integrada: el promedio con compuerta desde que empezó la medición, en LUFS (objetivo de emisión EBU R128 -23 LUFS)",
+            "Sonoridad integrada: el promedio con compuerta desde que empezó o se reinició por última vez la medición, en LUFS (objetivo de emisión EBU R128 -23 LUFS)",
         ),
     ),
     (
         Msg::FxTruePeakHover,
         t(
-            "Pico real en dBTP: el pico entre muestras más alto ahora mismo y desde que empezó la medición (EBU R128 admite como máximo -1 dBTP)",
+            "Pico real en dBTP: el pico entre muestras más alto ahora mismo y desde que empezó o se reinició por última vez la medición (EBU R128 admite como máximo -1 dBTP)",
+        ),
+    ),
+    (
+        Msg::FxLoudnessRangeHover,
+        t(
+            "Rango de sonoridad (EBU Tech 3342): cuánto varió la sonoridad de corto plazo desde que empezó o se reinició por última vez la medición, en LU; la distancia entre sus percentiles 10 y 95 tras descartar los pasajes silenciosos",
+        ),
+    ),
+    (Msg::FxLoudnessReset, t("Reiniciar medición")),
+    (
+        Msg::FxLoudnessResetHover,
+        t(
+            "Reinicia desde ahora la sonoridad integrada, el rango de sonoridad y el pico real máximo de este bus, por ejemplo al comenzar un programa. La sonoridad momentánea y la de corto plazo siguen midiéndose; todas las consolas ven el reinicio",
         ),
     ),
     (

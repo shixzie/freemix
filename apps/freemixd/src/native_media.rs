@@ -4210,22 +4210,24 @@ impl NativeMasterRuntime {
         Ok(())
     }
 
-    /// Resets the integrated loudness and maximum true peak of Master
-    /// (`None`) or one strip; `false` when that meter does not exist yet.
+    /// The operator reset (AU-005): restarts the integrated loudness,
+    /// loudness range, and maximum true peak of Master (`None`) or one
+    /// strip, leaving momentary and short-term loudness running; `false`
+    /// when that meter does not exist yet (nothing measured to restart).
     pub fn reset_loudness(&mut self, target: Option<InputId>) -> bool {
         match target {
             None => self
                 .scratch
                 .master_loudness
                 .as_mut()
-                .map(LoudnessMeter::reset),
+                .map(LoudnessMeter::reset_measurement),
             Some(input) => self
                 .scratch
                 .loudness_inputs
                 .iter()
                 .position(|candidate| *candidate == input)
                 .and_then(|index| self.scratch.input_loudness.get_mut(index))
-                .map(LoudnessMeter::reset),
+                .map(LoudnessMeter::reset_measurement),
         }
         .is_some()
     }
@@ -4294,6 +4296,14 @@ impl NativeMasterRuntime {
         &mut self,
         update: &fm_engine::EngineAudioMixerUpdate,
     ) -> Result<(), NativeMasterError> {
+        // A loudness reset restarts a meter and touches no mixer (AU-005).
+        if let fm_engine::EngineAudioMixerUpdate::LoudnessReset { target } = *update {
+            self.reset_loudness(match target {
+                fm_types::strip_dsp::StripDspTarget::Master => None,
+                fm_types::strip_dsp::StripDspTarget::Input(input) => Some(input),
+            });
+            return Ok(());
+        }
         // The Master DSP chain runs on the ordinary Program bus only; a
         // clip-local stinger mixer's strips follow their strip chains.
         let apply = |mixer: &mut MasterMixer, master: bool| -> Result<(), NativeMasterError> {
@@ -4327,7 +4337,8 @@ impl NativeMasterRuntime {
                 // The monitor output plays the rendered bus; the mixers
                 // never see its device or level.
                 fm_engine::EngineAudioMixerUpdate::MonitorDevice(_)
-                | fm_engine::EngineAudioMixerUpdate::MonitorLevel(_) => {}
+                | fm_engine::EngineAudioMixerUpdate::MonitorLevel(_)
+                | fm_engine::EngineAudioMixerUpdate::LoudnessReset { .. } => {}
                 // A chain glides or crossfades from the next rendered sample
                 // (AU-005).
                 fm_engine::EngineAudioMixerUpdate::StripDsp { target, ref chain } => match target {

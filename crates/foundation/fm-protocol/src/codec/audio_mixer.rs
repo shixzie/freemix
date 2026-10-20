@@ -612,11 +612,12 @@ pub(super) fn decode_dynamics(value: &str) -> Result<Vec<crate::AudioDynamicsMet
 }
 
 /// Encodes `audio_meters` `loudness`: comma-separated
-/// `<target>~<momentary>~<short_term>~<integrated>~<true_peak>~<max_true_peak>`
-/// entries, each value a canonical signed decimal in
+/// `<target>~<momentary>~<short_term>~<integrated>~<true_peak>~<max_true_peak>~<range>`
+/// entries, each loudness or peak a canonical signed decimal in
 /// [`crate::MIN_LOUDNESS_MILLI`]`..=`[`crate::MAX_LOUDNESS_MILLI`] (milli-LUFS
-/// or milli-dBTP) or `-` for none, at least one value present, strictly
-/// ascending by target (Master first).
+/// or milli-dBTP), the range (2.92) a canonical decimal in
+/// `0..=`[`crate::MAX_LOUDNESS_RANGE_MILLILU`] (milli-LU), each `-` for none,
+/// at least one value present, strictly ascending by target (Master first).
 pub(super) fn encode_loudness(meters: &[crate::AudioLoudnessMeter]) -> Result<String, CodecError> {
     if meters.len() > MAX_LIST_ITEMS + 1 {
         return Err(CodecError::TooManyItems("loudness"));
@@ -626,16 +627,19 @@ pub(super) fn encode_loudness(meters: &[crate::AudioLoudnessMeter]) -> Result<St
     for meter in meters {
         let values = meter.values();
         if previous.is_some_and(|previous| previous >= meter.target)
-            || values.iter().all(Option::is_none)
+            || (values.iter().all(Option::is_none) && meter.loudness_range_millilu.is_none())
             || values.iter().flatten().any(|value| {
                 !(crate::MIN_LOUDNESS_MILLI..=crate::MAX_LOUDNESS_MILLI).contains(value)
             })
+            || meter
+                .loudness_range_millilu
+                .is_some_and(|range| !(0..=crate::MAX_LOUDNESS_RANGE_MILLILU).contains(&range))
         {
             return Err(invalid("loudness", encode_target(meter.target)));
         }
         previous = Some(meter.target);
         let mut entry = encode_target(meter.target);
-        for value in values {
+        for value in values.into_iter().chain([meter.loudness_range_millilu]) {
             match value {
                 Some(value) => write!(entry, "~{value}"),
                 None => write!(entry, "~-"),
@@ -656,20 +660,18 @@ pub(super) fn decode_loudness(value: &str) -> Result<Vec<crate::AudioLoudnessMet
     if value.split(',').take(MAX_LIST_ITEMS + 2).count() > MAX_LIST_ITEMS + 1 {
         return Err(CodecError::TooManyItems("loudness"));
     }
-    let level = |value: &str| -> Result<Option<i32>, CodecError> {
+    let bounded = |value: &str, low: i32, high: i32| -> Result<Option<i32>, CodecError> {
         if value == "-" {
             return Ok(None);
         }
         value
             .parse::<i32>()
             .ok()
-            .filter(|level| {
-                (crate::MIN_LOUDNESS_MILLI..=crate::MAX_LOUDNESS_MILLI).contains(level)
-                    && level.to_string() == value
-            })
+            .filter(|level| (low..=high).contains(level) && level.to_string() == value)
             .map(Some)
             .ok_or_else(|| invalid("loudness", value))
     };
+    let level = |value: &str| bounded(value, crate::MIN_LOUDNESS_MILLI, crate::MAX_LOUDNESS_MILLI);
     let mut previous: Option<AudioDspTarget> = None;
     value
         .split(',')
@@ -682,6 +684,7 @@ pub(super) fn decode_loudness(value: &str) -> Result<Vec<crate::AudioLoudnessMet
                 integrated,
                 true_peak,
                 max_true_peak,
+                range,
             ] = parts.as_slice()
             else {
                 return Err(invalid("loudness", entry));
@@ -693,9 +696,11 @@ pub(super) fn decode_loudness(value: &str) -> Result<Vec<crate::AudioLoudnessMet
                 integrated_millilufs: level(integrated)?,
                 true_peak_millidbtp: level(true_peak)?,
                 max_true_peak_millidbtp: level(max_true_peak)?,
+                loudness_range_millilu: bounded(range, 0, crate::MAX_LOUDNESS_RANGE_MILLILU)?,
             };
             if previous.is_some_and(|previous| previous >= meter.target)
-                || meter.values().iter().all(Option::is_none)
+                || (meter.values().iter().all(Option::is_none)
+                    && meter.loudness_range_millilu.is_none())
             {
                 return Err(invalid("loudness", entry));
             }
@@ -810,6 +815,7 @@ pub(super) fn encode_operation(
             }
             Ok(())
         }
+        AudioMixerOperation::ResetLoudness { target } => push("target", encode_target(*target)),
     }
 }
 
@@ -875,6 +881,9 @@ pub(super) fn decode_operation(
             target: decode_target("target", &fields.required("target")?)?,
             chain: Box::new(decode_chain("chain", &fields.required("chain")?)?),
             gesture: decode_gesture(fields)?,
+        },
+        "audio_loudness_reset" => AudioMixerOperation::ResetLoudness {
+            target: decode_target("target", &fields.required("target")?)?,
         },
         _ => return Ok(None),
     }))

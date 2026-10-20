@@ -2608,6 +2608,77 @@ fn strip_labels_and_group_mute_replicate_to_members_and_survive_restart() {
     assert_eq!(project.audio_solo_mode(), fm_model::AudioSoloMode::Pfl);
 }
 
+/// The loudness reset (Protocol 2.92, AU-005) is an operator's live
+/// audio command: accepted and announced for Master and an input, refused
+/// for an unknown input without moving the revision, and journaled, so a
+/// restarted daemon replays it to the same revision and show state.
+#[test]
+fn loudness_resets_are_journaled_and_replay_to_the_same_revision() {
+    let directory = TestDirectory::new("loudness-reset");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut client = daemon.connect();
+    client.handshake_as(Role::Operator, None);
+    let before = client.receive_snapshot();
+
+    let operations = [
+        fm_protocol::AudioMixerOperation::ResetLoudness {
+            target: fm_protocol::AudioDspTarget::Master,
+        },
+        fm_protocol::AudioMixerOperation::ResetLoudness {
+            target: fm_protocol::AudioDspTarget::Input(input(2)),
+        },
+    ];
+    for (index, operation) in operations.iter().enumerate() {
+        let id = format!("loudness-{index}");
+        client.send(&command(
+            &id,
+            &format!("{id}-key"),
+            CommandPayload::AudioMixer(operation.clone()),
+        ));
+        let revision = u64::try_from(index + 1).unwrap();
+        assert!(matches!(
+            client.next_result(),
+            CommandResult::Accepted { id: accepted, revision: got, .. }
+                if accepted == id && got == revision
+        ));
+        assert_eq!(
+            next_event_payload(&mut client),
+            fm_protocol::EventPayload::AudioMixerChanged(operation.clone())
+        );
+    }
+    client.send(&command(
+        "loudness-unknown",
+        "loudness-unknown-key",
+        CommandPayload::AudioMixer(fm_protocol::AudioMixerOperation::ResetLoudness {
+            target: fm_protocol::AudioDspTarget::Input(input(9)),
+        }),
+    ));
+    assert!(matches!(
+        client.next_result(),
+        CommandResult::Rejected {
+            current_revision: 2,
+            ..
+        }
+    ));
+    drop(client);
+    daemon.stop();
+
+    // Replay accepts both resets exactly as the live show did: the same
+    // revision, and a show the resets left unchanged.
+    let daemon = Daemon::start(&project_path);
+    let mut restarted = daemon.connect();
+    restarted.handshake_as(Role::Viewer, None);
+    let after = restarted.receive_snapshot();
+    assert_eq!(after.revision, 2);
+    assert_eq!(after.audio_mixer, before.audio_mixer);
+    assert_eq!(after.input_audio_strips, before.input_audio_strips);
+    drop(restarted);
+    daemon.wait_success();
+}
+
 /// `StreamStart` is an authorized transition-class command: its acceptance
 /// publishes a durable event, an unknown target is rejected without state
 /// change, and the desired running flag survives a kill plus journal recovery.

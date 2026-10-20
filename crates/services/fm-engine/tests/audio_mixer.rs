@@ -863,3 +863,55 @@ fn the_monitor_device_is_an_undoable_padlocked_edit_and_its_level_is_live() {
     );
     accept(&mut engine, "locked-level", level(0, false));
 }
+
+/// AU-005: the loudness reset is a live operation that changes no show
+/// state: never recorded, never blocked by a padlock, refused only for an
+/// unknown input, and realized on its frame for the media plane.
+#[test]
+fn loudness_resets_are_live_unrecorded_and_realized_on_their_frame() {
+    use fm_types::strip_dsp::StripDspTarget;
+    let mut engine = engine();
+    accept(
+        &mut engine,
+        "lock",
+        EngineCommand::SetEditLock {
+            scope: EditLockScope::Project,
+            locked: true,
+        },
+    );
+    let show = engine.show().clone();
+    let undo_entries = engine.undo_entries().len();
+    for (key, target) in [
+        ("master", StripDspTarget::Master),
+        ("strip", StripDspTarget::Input(input(2))),
+    ] {
+        let edit = EngineAudioMixerEdit::ResetLoudness { target };
+        assert!(edit.is_live());
+        assert_eq!(edit.locked_input(), None);
+        accept(&mut engine, key, mixer(edit));
+    }
+    assert_eq!(engine.show(), &show);
+    assert_eq!(engine.undo_entries().len(), undo_entries);
+    let frame = engine.tick().unwrap();
+    assert_eq!(
+        frame.audio_mixer_updates,
+        vec![
+            EngineAudioMixerUpdate::LoudnessReset {
+                target: StripDspTarget::Master,
+            },
+            EngineAudioMixerUpdate::LoudnessReset {
+                target: StripDspTarget::Input(input(2)),
+            },
+        ]
+    );
+    let revision = engine.revision();
+    let outcome = execute(
+        &mut engine,
+        "unknown",
+        mixer(EngineAudioMixerEdit::ResetLoudness {
+            target: StripDspTarget::Input(input(9)),
+        }),
+    );
+    assert_eq!(rejection(&outcome).code, RejectionCode::NotFound);
+    assert_eq!(engine.revision(), revision);
+}

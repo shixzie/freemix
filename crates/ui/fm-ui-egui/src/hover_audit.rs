@@ -2176,6 +2176,7 @@ fn meters() -> AudioMetersMessage {
                 integrated_millilufs: Some(-23_000),
                 true_peak_millidbtp: Some(-2_300),
                 max_true_peak_millidbtp: Some(-800),
+                loudness_range_millilu: Some(7_400),
             },
             fm_protocol::AudioLoudnessMeter {
                 target: fm_protocol::AudioDspTarget::Input(wire(1)),
@@ -2184,6 +2185,7 @@ fn meters() -> AudioMetersMessage {
                 integrated_millilufs: None,
                 true_peak_millidbtp: Some(-9_000),
                 max_true_peak_millidbtp: Some(-9_000),
+                loudness_range_millilu: None,
             },
         ],
     }

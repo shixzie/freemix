@@ -663,7 +663,8 @@ fn decode_command_payload(
         | "audio_solo_mode"
         | "audio_monitor_device"
         | "audio_monitor_level"
-        | "audio_strip_dsp") => CommandPayload::AudioMixer(
+        | "audio_strip_dsp"
+        | "audio_loudness_reset") => CommandPayload::AudioMixer(
             super::audio_mixer::decode_operation(mixer, fields)?
                 .expect("every listed payload is a mixer operation"),
         ),

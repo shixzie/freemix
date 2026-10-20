@@ -126,6 +126,10 @@ pub enum AudioMixerArgs {
         input: Option<u128>,
         chain: fm_types::strip_dsp::StripDsp,
     },
+    /// `audio-loudness-reset <input|master>`: restarts a strip's or the
+    /// Master's integrated loudness, loudness range, and maximum true peak
+    /// (AU-005); `input` is `None` for the Master.
+    LoudnessReset { input: Option<u128> },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2140,6 +2144,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "audio-monitor-device"
         | "audio-monitor-level"
         | "audio-strip-dsp"
+        | "audio-loudness-reset"
         | "remote-audio-label"
         | "remote-audio-group"
         | "remote-audio-group-name"
@@ -2149,7 +2154,8 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-audio-solo-mode"
         | "remote-audio-monitor-device"
         | "remote-audio-monitor-level"
-        | "remote-audio-strip-dsp") => parse_audio_mixer(mixer, arguments),
+        | "remote-audio-strip-dsp"
+        | "remote-audio-loudness-reset") => parse_audio_mixer(mixer, arguments),
         output @ ("ftb-output" | "remote-ftb-output") => {
             parse_fade_to_black_output(output, arguments)
         }
@@ -3124,16 +3130,24 @@ fn audio_group_number(value: &str) -> Result<u8, ArgsError> {
     }
 }
 
+/// `<input|master>` of `audio-strip-dsp` and `audio-loudness-reset`
+/// (AU-005): `None` for the Master.
+fn parse_dsp_target(
+    arguments: &mut impl Iterator<Item = String>,
+) -> Result<Option<u128>, ArgsError> {
+    let target = required(arguments, "input or master")?;
+    Ok(if target == "master" {
+        None
+    } else {
+        Some(number(&target, "input")?)
+    })
+}
+
 /// `<input|master> <preset|chain code>` of `audio-strip-dsp` (AU-005).
 fn parse_strip_dsp(
     arguments: &mut impl Iterator<Item = String>,
 ) -> Result<AudioMixerArgs, ArgsError> {
-    let target = required(arguments, "input or master")?;
-    let input = if target == "master" {
-        None
-    } else {
-        Some(number(&target, "input")?)
-    };
+    let input = parse_dsp_target(arguments)?;
     let chain = required(arguments, "DSP preset or chain code")?;
     Ok(AudioMixerArgs::StripDsp {
         input,
@@ -3220,6 +3234,9 @@ fn parse_audio_mixer(
             muted: boolean_choice(&required(&mut arguments, "muted")?, "muted")?,
         },
         "audio-strip-dsp" => parse_strip_dsp(&mut arguments)?,
+        "audio-loudness-reset" => AudioMixerArgs::LoudnessReset {
+            input: parse_dsp_target(&mut arguments)?,
+        },
         _ => AudioMixerArgs::GroupLevel {
             group: audio_group_number(&required(&mut arguments, "group")?)?,
             gain_millidb: number(&required(&mut arguments, "gain millidB")?, "gain millidB")?,
@@ -9115,6 +9132,39 @@ mod tests {
             &["audio-monitor-level", "show.freemix", "-6000"],
             &["audio-monitor-level", "show.freemix", "loud", "on"],
             &["audio-monitor-level", "show.freemix", "0", "yes"],
+        ] {
+            assert!(parse(strings(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn loudness_reset_commands_parse() {
+        assert_eq!(
+            parse(strings(&[
+                "remote-audio-loudness-reset",
+                "127.0.0.1:9123",
+                "master",
+            ])),
+            Ok(Command::RemoteAudioMixer {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                edit: AudioMixerArgs::LoudnessReset { input: None },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&["audio-loudness-reset", "show.freemix", "3"])),
+            Ok(Command::AudioMixer {
+                path: PathBuf::from("show.freemix"),
+                edit: AudioMixerArgs::LoudnessReset { input: Some(3) },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        for bad in [
+            &["audio-loudness-reset", "show.freemix"][..],
+            &["audio-loudness-reset", "show.freemix", "Master"],
+            &["audio-loudness-reset", "show.freemix", "3", "4"],
         ] {
             assert!(parse(strings(bad)).is_err(), "{bad:?}");
         }

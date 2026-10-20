@@ -5792,6 +5792,10 @@ fn validate_audio_mixer_change(
                     fm_protocol::AudioDspTarget::Input(input) => known(input),
                 }
         }
+        fm_protocol::AudioMixerOperation::ResetLoudness { target } => match target {
+            fm_protocol::AudioDspTarget::Master => true,
+            fm_protocol::AudioDspTarget::Input(input) => known(input),
+        },
     };
     if valid {
         Ok(())

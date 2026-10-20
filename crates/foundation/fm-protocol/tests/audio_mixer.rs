@@ -1001,3 +1001,45 @@ fn strip_dsp_state_records_and_snapshot_fields_round_trip_strictly() {
     });
     assert_eq!(status.master_dsp, music);
 }
+
+/// Protocol 2.92 (AU-005): an operator restarts one bus's integrated
+/// loudness, loudness range, and maximum true peak. A live operation that
+/// changes no mixer status; strict about its target.
+#[test]
+fn loudness_reset_round_trips_strictly_and_is_live() {
+    use fm_protocol::AudioDspTarget;
+    for (target, suffix) in [
+        (
+            AudioDspTarget::Master,
+            "\tpayload=audio_loudness_reset\ttarget=master\n",
+        ),
+        (
+            AudioDspTarget::Input(input(12)),
+            "\tpayload=audio_loudness_reset\ttarget=12\n",
+        ),
+    ] {
+        let operation = AudioMixerOperation::ResetLoudness { target };
+        assert!(operation.is_live());
+        assert_eq!(operation.payload(), "audio_loudness_reset");
+        let line = round_trip(&command(CommandPayload::AudioMixer(operation.clone())));
+        assert_eq!(line, format!("{PREFIX}{suffix}"));
+        let line = round_trip(&event(EventPayload::AudioMixerChanged(operation.clone())));
+        assert!(
+            line.contains("\tevent=audio_mixer_changed\toperation=audio_loudness_reset\ttarget="),
+            "{line}"
+        );
+        let mut status = AudioMixerStatus::default();
+        status.apply(&operation);
+        assert_eq!(status, AudioMixerStatus::default());
+    }
+    for bad in [
+        "\tpayload=audio_loudness_reset",
+        "\tpayload=audio_loudness_reset\ttarget=",
+        "\tpayload=audio_loudness_reset\ttarget=Master",
+        "\tpayload=audio_loudness_reset\ttarget=0",
+        "\tpayload=audio_loudness_reset\ttarget=012",
+        "\tpayload=audio_loudness_reset\ttarget=master\textra=1",
+    ] {
+        assert!(decode_line(&format!("{PREFIX}{bad}\n")).is_err(), "{bad}");
+    }
+}

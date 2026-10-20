@@ -8337,6 +8337,7 @@ mod scripts {
 
 mod automation_authority;
 mod list_order_journal;
+mod loudness_reset_journal;
 mod media_lists;
 mod shortcut_authority;
 

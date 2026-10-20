@@ -49,6 +49,16 @@
 //! BS.1770 loudness and true peak in `audio_meters` `loudness`
 //! ([`AudioLoudnessMeter`]).
 //!
+//! Since 2.92 a loudness entry also carries the EBU Tech 3342 loudness
+//! range, and an operator restarts one bus's integrated loudness, loudness
+//! range, and maximum true peak:
+//!
+//! | [`AudioMixerOperation::ResetLoudness`] | `audio_loudness_reset` | `target` (`master` or an input) | live operation |
+//!
+//! The reset changes no show state: it is journaled like every accepted
+//! command and realized by the media plane on its frame, so a replay
+//! accepts it exactly as the live show did.
+//!
 //! Every accepted operation, undo and redo included, is announced by
 //! `event=audio_mixer_changed` carrying the operation (`operation=<payload>`
 //! and the same fields). `payload=fade_to_black_output` with `output` and
@@ -103,14 +113,19 @@ pub struct AudioDynamicsMeter {
 /// in milli-LUFS or milli-dBTP; a quieter measurement is reported as none.
 pub const MIN_LOUDNESS_MILLI: i32 = -100_000;
 pub const MAX_LOUDNESS_MILLI: i32 = 30_000;
+/// Largest loudness range `audio_meters` carries, in milli-LU: the span of
+/// the meter's -70 to +10 LUFS short-term histogram (2.92).
+pub const MAX_LOUDNESS_RANGE_MILLILU: i32 = 80_000;
 
 /// One bus's ITU-R BS.1770 / EBU R128 loudness over an `audio_meters`
 /// interval (AU-005): momentary (400 ms), short-term (3 s), and gated
 /// integrated loudness in milli-LUFS, and the true peak over the interval
-/// and since the meter started in milli-dBTP. Each is `None` while its
-/// window is not yet full, the bus is silent, or the value is below
-/// [`MIN_LOUDNESS_MILLI`]. A strip's loudness hears its post-fader
-/// contribution to Program; Master's hears Program as it leaves.
+/// and since the meter started or was last reset in milli-dBTP, and (since
+/// 2.92) the EBU Tech 3342 loudness range since the meter started or was
+/// last reset in milli-LU. Each is `None` while its window is not yet
+/// full, the bus is silent, or the value is below [`MIN_LOUDNESS_MILLI`].
+/// A strip's loudness hears its post-fader contribution to Program;
+/// Master's hears Program as it leaves.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct AudioLoudnessMeter {
     pub target: AudioDspTarget,
@@ -119,10 +134,13 @@ pub struct AudioLoudnessMeter {
     pub integrated_millilufs: Option<i32>,
     pub true_peak_millidbtp: Option<i32>,
     pub max_true_peak_millidbtp: Option<i32>,
+    /// `0..=`[`MAX_LOUDNESS_RANGE_MILLILU`] (2.92).
+    pub loudness_range_millilu: Option<i32>,
 }
 
 impl AudioLoudnessMeter {
-    /// The five values in wire order.
+    /// The five loudness and true-peak values in wire order (the loudness
+    /// range follows them on the wire).
     #[must_use]
     pub const fn values(&self) -> [Option<i32>; 5] {
         [
@@ -350,7 +368,9 @@ impl AudioMixerStatus {
                     );
                 }
             }
-            AudioMixerOperation::SetGroup { .. } => {}
+            // Membership lives in the strip records; a loudness reset changes
+            // no status (2.92).
+            AudioMixerOperation::SetGroup { .. } | AudioMixerOperation::ResetLoudness { .. } => {}
             AudioMixerOperation::RenameGroup { group, name } => {
                 if audio_group_is_valid(*group) {
                     self.groups[usize::from(*group) - 1].name.clone_from(name);
@@ -434,6 +454,9 @@ pub enum AudioMixerOperation {
         chain: Box<StripDsp>,
         gesture: Option<crate::GradeGesture>,
     },
+    /// Restarts a bus's integrated loudness, loudness range, and maximum
+    /// true peak (2.92).
+    ResetLoudness { target: AudioDspTarget },
 }
 
 impl AudioMixerOperation {
@@ -451,6 +474,7 @@ impl AudioMixerOperation {
             Self::SetMonitorDevice { .. } => "audio_monitor_device",
             Self::SetMonitorLevel { .. } => "audio_monitor_level",
             Self::SetStripDsp { .. } => "audio_strip_dsp",
+            Self::ResetLoudness { .. } => "audio_loudness_reset",
         }
     }
 
@@ -459,7 +483,10 @@ impl AudioMixerOperation {
     pub const fn is_live(&self) -> bool {
         matches!(
             self,
-            Self::SetGroupLevel { .. } | Self::SetGroupSolo { .. } | Self::SetMonitorLevel { .. }
+            Self::SetGroupLevel { .. }
+                | Self::SetGroupSolo { .. }
+                | Self::SetMonitorLevel { .. }
+                | Self::ResetLoudness { .. }
         )
     }
 }

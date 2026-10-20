@@ -33,6 +33,13 @@
 //!   or mute. Like a strip fader or solo they are live operations: never
 //!   recorded, never reverted by undo, and never blocked by a padlock.
 //!
+//! - [`EngineAudioMixerEdit::ResetLoudness`] restarts one input strip's or
+//!   the Master bus's integrated loudness, loudness range, and maximum true
+//!   peak (AU-005). A live operation that changes no show state: it is
+//!   refused only for an unknown input, so a journal replay accepts it
+//!   exactly as the live show did, and the media plane realizes it on the
+//!   command's frame.
+//!
 //! - [`EngineAudioMixerEdit::SetStripDsp`] replaces one input strip's or the
 //!   Master bus's DSP chain (AU-005). It is a project edit: refused while
 //!   the project padlock (and, for a strip, the input's padlock) is
@@ -159,6 +166,9 @@ pub enum EngineAudioMixerEdit {
         chain: Box<StripDsp>,
         gesture: Option<crate::GradeGesture>,
     },
+    /// Restarts a strip's or the Master bus's integrated loudness, loudness
+    /// range, and maximum true peak. A live operation.
+    ResetLoudness { target: StripDspTarget },
 }
 
 impl EngineAudioMixerEdit {
@@ -194,7 +204,10 @@ impl EngineAudioMixerEdit {
     pub const fn is_live(&self) -> bool {
         matches!(
             self,
-            Self::SetGroupLevel { .. } | Self::SetGroupSolo { .. } | Self::SetMonitorLevel { .. }
+            Self::SetGroupLevel { .. }
+                | Self::SetGroupSolo { .. }
+                | Self::SetMonitorLevel { .. }
+                | Self::ResetLoudness { .. }
         )
     }
 
@@ -218,7 +231,8 @@ impl EngineAudioMixerEdit {
             | Self::SetGroupParent { .. }
             | Self::SetSoloMode { .. }
             | Self::SetMonitorDevice { .. }
-            | Self::SetMonitorLevel { .. } => None,
+            | Self::SetMonitorLevel { .. }
+            | Self::ResetLoudness { .. } => None,
         }
     }
 
@@ -264,6 +278,9 @@ pub enum EngineAudioMixerUpdate {
         target: StripDspTarget,
         chain: StripDsp,
     },
+    /// A strip's or the Master bus's integrated loudness, loudness range,
+    /// and maximum true peak start over (AU-005).
+    LoudnessReset { target: StripDspTarget },
 }
 
 impl EngineAudioMixerUpdate {
@@ -296,6 +313,9 @@ impl EngineAudioMixerUpdate {
                 target: *target,
                 chain: **chain,
             }),
+            EngineAudioMixerEdit::ResetLoudness { target } => {
+                Some(Self::LoudnessReset { target: *target })
+            }
             EngineAudioMixerEdit::SetLabel { .. } | EngineAudioMixerEdit::RenameGroup { .. } => {
                 None
             }
@@ -450,11 +470,22 @@ pub(crate) fn apply(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Resul
             }
             Ok(())
         }
+        EngineAudioMixerEdit::ResetLoudness { target } => loudness_target(state, *target),
+    }
+}
+
+/// Validates a loudness reset's target: Master, or an input of the show.
+fn loudness_target(state: &ShowState, target: StripDspTarget) -> Result<(), Rejection> {
+    match target {
+        StripDspTarget::Master => Ok(()),
+        StripDspTarget::Input(input) if state.inputs().contains(&input) => Ok(()),
+        StripDspTarget::Input(input) => Err(unknown_input(input)),
     }
 }
 
 /// The exact edit that reverts project edit `edit` on `state`, or `None` for
-/// a live group level, solo, or monitor level, or an unknown input.
+/// a live group level, solo, monitor level, or loudness reset, or an unknown
+/// input.
 pub(crate) fn inverse(
     state: &ShowState,
     edit: &EngineAudioMixerEdit,
@@ -520,6 +551,7 @@ pub(crate) fn inverse(
         },
         EngineAudioMixerEdit::SetGroupLevel { .. }
         | EngineAudioMixerEdit::SetGroupSolo { .. }
-        | EngineAudioMixerEdit::SetMonitorLevel { .. } => None,
+        | EngineAudioMixerEdit::SetMonitorLevel { .. }
+        | EngineAudioMixerEdit::ResetLoudness { .. } => None,
     }
 }

@@ -87,6 +87,7 @@ fn loudness(target: AudioDspTarget, base: f64, rms: f64, peak: f64) -> AudioLoud
         integrated_millilufs: Some(milli(base + 1.5)),
         true_peak_millidbtp: Some(milli((peak + 0.3).min(1.0))),
         max_true_peak_millidbtp: Some(milli((peak + 0.3).max(base + 12.0).min(1.0))),
+        loudness_range_millilu: Some(milli((rms - base).abs().clamp(4.0, 20.0))),
     }
 }
 

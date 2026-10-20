@@ -4756,6 +4756,12 @@ fn engine_audio_mixer_edit(edit: AudioMixerArgs) -> AppResult<fm_engine::EngineA
             chain: Box::new(chain),
             gesture: None,
         },
+        AudioMixerArgs::LoudnessReset { input } => fm_engine::EngineAudioMixerEdit::ResetLoudness {
+            target: match input {
+                Some(input) => fm_types::strip_dsp::StripDspTarget::Input(input_id(input)?),
+                None => fm_types::strip_dsp::StripDspTarget::Master,
+            },
+        },
     })
 }
 
@@ -4831,6 +4837,20 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
                 },
                 chain,
                 gesture: None,
+            }
+        }
+        fm_engine::EngineAudioMixerEdit::ResetLoudness { target } => {
+            fm_protocol::AudioMixerOperation::ResetLoudness {
+                target: match target {
+                    fm_types::strip_dsp::StripDspTarget::Master => {
+                        fm_protocol::AudioDspTarget::Master
+                    }
+                    fm_types::strip_dsp::StripDspTarget::Input(input) => {
+                        fm_protocol::AudioDspTarget::Input(fm_protocol::WireInputId::from_domain(
+                            input,
+                        ))
+                    }
+                },
             }
         }
     })
@@ -6220,6 +6240,7 @@ Usage:
   freemix-cli audio-monitor-device <show.freemix> <alsa-device|none> [--key <key>] [--expect <revision>]
   freemix-cli audio-monitor-level <show.freemix> <gain-millidb> <muted:on|off> [--key <key>] [--expect <revision>]
   freemix-cli audio-strip-dsp <show.freemix> <input|master> <flat|voice|podcast|music|master|chain-code> [--key <key>] [--expect <revision>]
+  freemix-cli audio-loudness-reset <show.freemix> <input|master> [--key <key>] [--expect <revision>]
   freemix-cli rename <show.freemix> <input> <name> [--key <key>] [--expect <revision>]
   freemix-cli input-reorder <show.freemix> <input> [<input>...] [--key <key>] [--expect <revision>]
   freemix-cli preview <show.freemix> <input> [--key <key>] [--expect <revision>]
@@ -6278,7 +6299,7 @@ Usage:
   freemix-cli remote-diagnostics <127.0.0.1:port>
     also prints one SourceSync line per live source clock: drift, ratio, buffer, and recovery counts
   freemix-cli remote-audio-strip <127.0.0.1:port> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp>] [--key <key>] [--expect <revision>]
-  freemix-cli remote-audio-label|remote-audio-group|remote-audio-group-name|remote-audio-group-level|remote-audio-group-solo|remote-audio-group-parent|remote-audio-solo-mode|remote-audio-monitor-device|remote-audio-monitor-level|remote-audio-strip-dsp <127.0.0.1:port> <arguments as above> [--key <key>] [--expect <revision>]
+  freemix-cli remote-audio-label|remote-audio-group|remote-audio-group-name|remote-audio-group-level|remote-audio-group-solo|remote-audio-group-parent|remote-audio-solo-mode|remote-audio-monitor-device|remote-audio-monitor-level|remote-audio-strip-dsp|remote-audio-loudness-reset <127.0.0.1:port> <arguments as above> [--key <key>] [--expect <revision>]
   freemix-cli remote-rename <127.0.0.1:port> <input> <name> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-add <127.0.0.1:port> solid <input> <name> <red:0..=255> <green:0..=255> <blue:0..=255> <alpha:0..=255> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-add <127.0.0.1:port> bars <input> <name> [--key <key>] [--expect <revision>]

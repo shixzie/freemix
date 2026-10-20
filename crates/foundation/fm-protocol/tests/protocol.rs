@@ -290,7 +290,8 @@ fn audio_meter_codec_is_bounded_and_exact() {
             },
         ],
         // BS.1770 loudness (AU-005): Master first, then ascending inputs;
-        // a strip whose 3 s window has not filled has no short-term value.
+        // a strip whose 3 s window has not filled has no short-term value
+        // nor (2.92) loudness range.
         loudness: vec![
             fm_protocol::AudioLoudnessMeter {
                 target: fm_protocol::AudioDspTarget::Master,
@@ -299,6 +300,7 @@ fn audio_meter_codec_is_bounded_and_exact() {
                 integrated_millilufs: Some(-23_100),
                 true_peak_millidbtp: Some(-1_500),
                 max_true_peak_millidbtp: Some(-1_000),
+                loudness_range_millilu: Some(6_200),
             },
             fm_protocol::AudioLoudnessMeter {
                 target: fm_protocol::AudioDspTarget::Input(fm_protocol::WireInputId::new(
@@ -309,13 +311,14 @@ fn audio_meter_codec_is_bounded_and_exact() {
                 integrated_millilufs: None,
                 true_peak_millidbtp: Some(-12_000),
                 max_true_peak_millidbtp: Some(-12_000),
+                loudness_range_millilu: None,
             },
         ],
     });
     let encoded = encode_line(&message).unwrap();
     assert_eq!(
         encoded,
-        "audio_meters\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=9\tframe=42\tstart_sample=80000\tend_sample=81920\tmaster=4000000%3A500000%2C250000%3A125000\tinputs=3%7E500000%3A250000%2C0%3A0\tmonitor=solo%7Eplaying%7E500000%3A250000%2C500000%3A250000\tdynamics=master%7E-%7E2000%7E3500%7E120%2C3%7E40000%7E-%7E-%7E-\tloudness=master%7E-23000%7E-22500%7E-23100%7E-1500%7E-1000%2C3%7E-30000%7E-%7E-%7E-12000%7E-12000\n"
+        "audio_meters\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=9\tframe=42\tstart_sample=80000\tend_sample=81920\tmaster=4000000%3A500000%2C250000%3A125000\tinputs=3%7E500000%3A250000%2C0%3A0\tmonitor=solo%7Eplaying%7E500000%3A250000%2C500000%3A250000\tdynamics=master%7E-%7E2000%7E3500%7E120%2C3%7E40000%7E-%7E-%7E-\tloudness=master%7E-23000%7E-22500%7E-23100%7E-1500%7E-1000%7E6200%2C3%7E-30000%7E-%7E-%7E-12000%7E-12000%7E-\n"
     );
     assert_eq!(decode_line(&encoded).unwrap(), message);
 
@@ -361,19 +364,26 @@ fn audio_meter_codec_is_bounded_and_exact() {
             "",
         ),
         // Loudness is ascending by target, each with a value, canonical,
-        // and within -100000..=30000.
+        // and within -100000..=30000; the loudness range (2.92) within
+        // 0..=80000, and the 2.82 entry without it is refused.
         (
-            "loudness=master%7E-23000%7E-22500%7E-23100%7E-1500%7E-1000%2C3%7E-30000%7E-%7E-%7E-12000%7E-12000",
-            "loudness=3%7E-30000%7E-%7E-%7E-12000%7E-12000%2Cmaster%7E-23000%7E-22500%7E-23100%7E-1500%7E-1000",
+            "loudness=master%7E-23000%7E-22500%7E-23100%7E-1500%7E-1000%7E6200%2C3%7E-30000%7E-%7E-%7E-12000%7E-12000%7E-",
+            "loudness=3%7E-30000%7E-%7E-%7E-12000%7E-12000%7E-%2Cmaster%7E-23000%7E-22500%7E-23100%7E-1500%7E-1000%7E6200",
         ),
         (
-            "3%7E-30000%7E-%7E-%7E-12000%7E-12000",
-            "3%7E-%7E-%7E-%7E-%7E-",
+            "3%7E-30000%7E-%7E-%7E-12000%7E-12000%7E-",
+            "3%7E-%7E-%7E-%7E-%7E-%7E-",
         ),
         ("3%7E-30000%7E", "3%7E-030000%7E"),
         ("3%7E-30000%7E", "3%7E-100001%7E"),
         ("master%7E-23000", "master%7E30001"),
-        ("%7E-12000%7E-12000\n", "%7E-12000\n"),
+        ("%7E-12000%7E-12000%7E-\n", "%7E-12000%7E-\n"),
+        ("%7E-12000%7E-12000%7E-\n", "%7E-12000%7E-12000\n"),
+        ("%7E-1000%7E6200%2C", "%7E-1000%2C"),
+        ("%7E-1000%7E6200%2C", "%7E-1000%7E-1%2C"),
+        ("%7E-1000%7E6200%2C", "%7E-1000%7E80001%2C"),
+        ("%7E-1000%7E6200%2C", "%7E-1000%7E06200%2C"),
+        ("%7E-1000%7E6200%2C", "%7E-1000%7E6200%7E-%2C"),
         ("\tloudness=master%7E", "\tloudness=main%7E"),
         (
             "\tmonitor=solo%7Eplaying%7E500000%3A250000%2C500000%3A250000",
