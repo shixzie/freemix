@@ -6,14 +6,16 @@
 //! rate (MJPEG is decoded), deinterlaces interlaced pictures with the
 //! reported field order, scales to the program size, resamples to the
 //! program rate, and reads the audio device beside it. The receiver keeps
-//! a short jitter buffer, cuts audio on program frame boundaries, and
+//! a short jitter buffer, converts the sound card's audio into the engine
+//! clock with drift correction (AU-004; the pictures follow it), and
 //! reopens the device when it stops delivering; an audio device that keeps
 //! the node from opening is dropped. Like every `FFmpeg` path, it needs
 //! `ffmpeg` on `PATH` (or an explicit executable).
 
 use fm_codec_ffmpeg::Executable;
 use fm_codec_ffmpeg::network_input::{
-    DeviceAudioInput, DeviceInput, NetworkInputConfig, NetworkReceiver, Picture,
+    DeviceAudioInput, DeviceInput, LiveSourceTelemetry, NetworkInputConfig, NetworkReceiver,
+    Picture,
 };
 use fm_types::capture::{CapturePixelFormat, CaptureScan};
 use fm_types::network_stream::{
@@ -173,5 +175,9 @@ impl Acquisition for FfmpegAcquisition {
 
     fn last_error(&self) -> Option<String> {
         self.receiver.status().last_error
+    }
+
+    fn sync_telemetry(&self) -> Option<LiveSourceTelemetry> {
+        self.receiver.sync_telemetry()
     }
 }

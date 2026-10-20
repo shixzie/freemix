@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+fm-audio = { path = "../../media/fm-audio" }
 fm-frame = { path = "../../media/fm-frame" }
 fm-playback = { path = "../../media/fm-playback" }
 fm-record = { path = "../../media/fm-record" }

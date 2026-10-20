@@ -1,6 +1,7 @@
 //! Acquisition contracts: what a capture backend opens for one device and
 //! format, and what it hands the supervisor each program frame.
 
+use fm_codec_ffmpeg::network_input::LiveSourceTelemetry;
 use fm_types::FrameRate;
 use fm_types::capture::{CaptureDevice, CaptureFormat};
 
@@ -54,6 +55,11 @@ pub trait Acquisition: Send {
     fn audio_active(&self) -> bool;
     /// The last device error, if any.
     fn last_error(&self) -> Option<String>;
+    /// The audio's clock drift telemetry (AU-004), if the acquisition
+    /// corrects its audio into the engine clock.
+    fn sync_telemetry(&self) -> Option<LiveSourceTelemetry> {
+        None
+    }
 }
 
 /// Opens acquisitions.

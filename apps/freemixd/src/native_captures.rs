@@ -42,6 +42,7 @@ use fm_types::{FrameRate, InputId, SampleRate};
 use crate::native_files::blank_picture;
 use crate::native_files::output_timing;
 use crate::native_streams::{Format, PulledStream};
+use crate::native_sync::{SourceKind, SyncLog};
 
 /// Longest a changed-but-same-state status waits before it is reported.
 const STATUS_INTERVAL: Duration = Duration::from_secs(1);
@@ -81,6 +82,8 @@ struct Capture {
     /// The input closed and its blank picture is still to be presented.
     blank_pending: bool,
     reported: Option<(CaptureStatus, Instant)>,
+    /// When its clock drift was last logged (AU-004).
+    sync_log: SyncLog,
 }
 
 /// The capture inputs of one native daemon and their device backend.
@@ -186,6 +189,7 @@ impl NativeCaptures {
                 closed: input.closed,
                 blank_pending: false,
                 reported: None,
+                sync_log: SyncLog::default(),
             },
         );
     }
@@ -306,6 +310,12 @@ impl NativeCaptures {
     pub(crate) fn statuses(&mut self, now: Instant) -> Vec<(InputId, CaptureStatus)> {
         let mut due = Vec::new();
         for (&input, capture) in &mut self.captures {
+            capture.sync_log.report(
+                SourceKind::Capture,
+                input,
+                capture.supervisor.sync_telemetry().as_ref(),
+                now,
+            );
             let status = capture.supervisor.status().clone();
             let report = match &capture.reported {
                 None => true,

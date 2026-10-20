@@ -639,6 +639,16 @@ fn native_daemon_receives_a_network_stream_and_reports_its_status_over_the_wire(
         logged.iter().all(|line| !line.contains(SECRET)),
         "{logged:?}"
     );
+    // The stream's audio ran through its drift-correcting loop (AU-004),
+    // which reported itself once running.
+    assert!(
+        logged.iter().any(|line| {
+            line.starts_with(&format!("FREEMIXD_SOURCE_SYNC\tv=1\tinput={}\t", input(2)))
+                && line.contains("\tkind=stream\tstate=running\t")
+                && line.contains("\tresyncs=0\t")
+        }),
+        "{logged:?}"
+    );
 }
 
 #[test]

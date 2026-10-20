@@ -30,13 +30,29 @@
 //!
 //! Decoded pictures queue in a bounded jitter buffer. A connection buffers
 //! until the queue holds the target (`jitter_buffer_ms` of frames), then goes
-//! live; the queue holds at most twice the target, and a full queue drops its
-//! oldest picture (`dropped_frames`). The target and capacity are also capped
-//! so the queued pictures never exceed [`NetworkInputConfig::max_buffer_bytes`].
-//! Audio queues beside the pictures and is cut in lockstep with them: the
-//! `n`th pull takes exactly the samples of engine frame `n` at the program
-//! rate, so audio stays locked to the engine clock and the picture it was
-//! decoded with. A picture dropped for overflow drops its audio too.
+//! live; the queue holds at most twice the target (and at least three frames
+//! more than it), and a full queue drops its oldest picture
+//! (`dropped_frames`). The target and capacity are also capped so the queued
+//! pictures never exceed [`NetworkInputConfig::max_buffer_bytes`].
+//!
+//! # Source clock drift (AU-004)
+//!
+//! The source runs on its own clock (the sender's, a capture card's, or a
+//! sound card's crystal), a few hundred ppm off the engine's. Its audio
+//! feeds a [`LiveSourceClock`]: the connection's samples are pushed with
+//! their arrival time, and each pull renders exactly the samples of engine
+//! frame `n` through a windowed-sinc converter whose ratio a smoothed PI
+//! loop trims (within ±1000 ppm) to hold the audio backlog at the jitter
+//! target, so a long show neither drifts out of lip sync nor clicks when a
+//! backlog would overflow or drain. Only a backlog more than one target
+//! beyond the target is skipped back (declicked), and only a source that
+//! stops delivering underruns; both are counted
+//! ([`NetworkReceiver::sync_telemetry`]). The pictures follow the audio: one
+//! is popped per pull, and one extra is dropped, or the current one
+//! repeated, whenever the picture queue's latency strays more than
+//! three-quarters of a frame from the audio's. While the stream is not live
+//! its audio is still pulled (and discarded), so the backlog stays at the
+//! target and the drift estimate survives a stall or a reconnect.
 //!
 //! A live pull that finds no picture is late (`late_frames`) and repeats the
 //! previous picture; a run of them stalls the stream, which buffers again
@@ -116,14 +132,18 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use fm_types::FrameRate;
+use fm_audio::{LiveSourceClock, LiveSourceConfig, PictureAction};
 use fm_types::network_stream::{
     MAX_STREAM_ERROR_BYTES, NetworkStreamConfig, NetworkStreamError, NetworkStreamSettings,
     NetworkStreamState, NetworkStreamStatus, REDACTED, RtspTransport, StallSlate, StreamMode,
     StreamProtocol, redact_stream_url, scrub_stream_text,
 };
 
+use fm_types::{FrameRate, SampleRate};
+
 use crate::config::Executable;
+
+pub use fm_audio::LiveSourceTelemetry;
 
 /// Default cap on the decoded pictures one receiver queues.
 pub const DEFAULT_MAX_BUFFER_BYTES: usize = 256 * 1024 * 1024;
@@ -341,7 +361,12 @@ impl NetworkInputConfig {
             .max(1);
         let wanted = usize::try_from(wanted).unwrap_or(usize::MAX);
         let affordable = (self.max_buffer_bytes / frame_bytes).max(2);
-        let capacity = wanted.saturating_mul(2).min(affordable);
+        // Room for the pictures to follow audio buffered a frame or two
+        // deeper than a short target (see `LiveSourceClock`).
+        let capacity = wanted
+            .saturating_mul(2)
+            .max(wanted.saturating_add(3))
+            .min(affordable);
         Ok(BufferBounds {
             target_frames: wanted.min(capacity / 2).max(1),
             capacity_frames: capacity,
@@ -375,7 +400,8 @@ impl fmt::Debug for NetworkInputConfig {
 pub struct BufferBounds {
     /// Frames a connection buffers before it goes live.
     pub target_frames: usize,
-    /// Most frames the buffer holds; a full buffer drops its oldest.
+    /// Most frames the buffer holds; a full buffer drops its oldest. Twice
+    /// the target, and at least three frames more than it.
     pub capacity_frames: usize,
 }
 
@@ -431,7 +457,9 @@ struct Inner {
     /// Bumped per connection; a reader of an older connection stops.
     generation: u64,
     frames: VecDeque<Vec<u8>>,
-    audio: Vec<VecDeque<f32>>,
+    /// The connection's audio, drift-corrected into the engine clock;
+    /// `None` only in unit tests that exercise the pictures alone.
+    clock: Option<LiveSourceClock>,
     /// The stream has no audio: connect without an audio output.
     audio_absent: bool,
     /// The child refused an output without streams.
@@ -578,11 +606,18 @@ impl BitrateMeter {
 struct Shared {
     inner: Mutex<Inner>,
     wake: Condvar,
+    /// The epoch of the arrival and pull times the drift loop sees.
+    origin: Instant,
 }
 
 impl Shared {
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Seconds since [`Self::origin`].
+    fn now(&self) -> f64 {
+        self.origin.elapsed().as_secs_f64()
     }
 }
 
@@ -611,14 +646,6 @@ impl Plan {
                 / u128::from(self.config.frame_rate.numerator()).max(1)
         };
         usize::try_from(at(n + 1) - at(n)).unwrap_or(0)
-    }
-
-    /// Most audio samples queued per channel: one more frame than the
-    /// picture capacity.
-    fn audio_capacity(&self) -> usize {
-        self.samples_of(0)
-            .saturating_add(1)
-            .saturating_mul(self.bounds.capacity_frames.saturating_add(1))
     }
 
     fn stall_after(&self) -> usize {
@@ -720,6 +747,17 @@ impl NetworkReceiver {
             return Err(NetworkInputError::InvalidFormat);
         }
         let bounds = config.buffer_bounds()?;
+        let clock = SampleRate::new(config.sample_rate)
+            .map(|rate| {
+                LiveSourceConfig::new(
+                    rate,
+                    usize::from(config.channels),
+                    config.frame_rate,
+                    bounds.target_frames,
+                )
+            })
+            .and_then(|live| LiveSourceClock::new(live).ok())
+            .ok_or(NetworkInputError::InvalidFormat)?;
         let frame_bytes = config
             .frame_bytes()
             .ok_or(NetworkInputError::InvalidFormat)?;
@@ -746,7 +784,7 @@ impl NetworkReceiver {
             inner: Mutex::new(Inner {
                 state,
                 audio_absent,
-                audio: vec![VecDeque::new(); channels],
+                clock: Some(clock),
                 last_samples: vec![0.0; channels],
                 // The consumer starts on a blank picture: no black slate is
                 // due before the first stall.
@@ -754,6 +792,7 @@ impl NetworkReceiver {
                 ..Inner::default()
             }),
             wake: Condvar::new(),
+            origin: Instant::now(),
         });
         let supervisor = {
             let shared = Arc::clone(&shared);
@@ -779,46 +818,19 @@ impl NetworkReceiver {
     /// Takes the next program frame: never blocks on the network.
     #[must_use]
     pub fn pull(&self) -> PulledFrame {
-        let plan = &*self.plan;
-        let mut inner = self.shared.lock();
-        let samples = plan.samples_of(inner.pulled);
-        inner.pulled = inner.pulled.wrapping_add(1);
-        let mut picture = None;
-        let mut taken = 0;
-        let mut planes = vec![vec![0.0_f32; samples]; plan.channels];
-        if inner.state == NetworkStreamState::Live {
-            if let Some(frame) = inner.frames.pop_front() {
-                inner.empty_pulls = 0;
-                inner.slate_shown = false;
-                picture = Some(Picture::New(frame));
-                taken = samples.min(inner.audio.first().map_or(0, VecDeque::len));
-                for (plane, queue) in planes.iter_mut().zip(&mut inner.audio) {
-                    for (sample, value) in plane.iter_mut().zip(queue.drain(..taken)) {
-                        *sample = value;
-                    }
-                }
-            } else {
-                inner.late_frames = inner.late_frames.saturating_add(1);
-                inner.empty_pulls += 1;
-                if inner.empty_pulls >= plan.stall_after() {
-                    inner.state = NetworkStreamState::Stalled;
-                }
-            }
+        let at = self.shared.now();
+        pull_frame(&mut self.shared.lock(), &self.plan, at)
+    }
+
+    /// The source's drift telemetry: estimated clock drift, audio backlog,
+    /// and hard resyncs (AU-004). `None` while the receiver has no audio.
+    #[must_use]
+    pub fn sync_telemetry(&self) -> Option<LiveSourceTelemetry> {
+        let inner = self.shared.lock();
+        if inner.audio_absent {
+            return None;
         }
-        let picture = picture.unwrap_or_else(|| {
-            let live = inner.state == NetworkStreamState::Live;
-            if !live && plan.config.settings.stall == StallSlate::Black && !inner.slate_shown {
-                inner.slate_shown = true;
-                Picture::Black
-            } else {
-                Picture::Hold
-            }
-        });
-        shape_audio(&mut inner, &mut planes, taken);
-        PulledFrame {
-            picture,
-            audio: planes,
-        }
+        inner.clock.as_ref().map(LiveSourceClock::telemetry)
     }
 
     /// The receiver's status now.
@@ -879,6 +891,72 @@ impl Drop for NetworkReceiver {
             // Bounded: the supervisor kills its child within one poll.
             let _ = supervisor.join();
         }
+    }
+}
+
+/// Takes program frame `inner.pulled` at `at` seconds: the frame's
+/// drift-corrected audio and, while live, the picture the audio says.
+fn pull_frame(inner: &mut Inner, plan: &Plan, at: f64) -> PulledFrame {
+    let samples = plan.samples_of(inner.pulled);
+    inner.pulled = inner.pulled.wrapping_add(1);
+    let mut planes = vec![vec![0.0_f32; samples]; plan.channels];
+    let live = inner.state == NetworkStreamState::Live;
+    let mut action = PictureAction::Advance { skip: 0 };
+    let mut rendered = 0;
+    if let Some(clock) = inner.clock.as_mut() {
+        let queued = live.then_some(inner.frames.len());
+        let mut output: Vec<&mut [f32]> = planes.iter_mut().map(Vec::as_mut_slice).collect();
+        // Pulled even while not live, so the backlog stays at its target.
+        if let Ok(pull) = clock.pull(&mut output, queued, at) {
+            action = pull.picture;
+            rendered = pull.audio.rendered_samples;
+        }
+    }
+    let mut picture = None;
+    let mut taken = 0;
+    if live {
+        if action == PictureAction::Hold && !inner.frames.is_empty() {
+            // The pictures lead the audio: show this one a frame longer.
+            inner.empty_pulls = 0;
+            picture = Some(Picture::Hold);
+            taken = rendered;
+        } else {
+            if let PictureAction::Advance { skip } = action {
+                for _ in 0..skip.min(inner.frames.len().saturating_sub(1)) {
+                    inner.frames.pop_front();
+                    inner.dropped_frames = inner.dropped_frames.saturating_add(1);
+                }
+            }
+            if let Some(frame) = inner.frames.pop_front() {
+                inner.empty_pulls = 0;
+                inner.slate_shown = false;
+                picture = Some(Picture::New(frame));
+                taken = rendered;
+            } else {
+                inner.late_frames = inner.late_frames.saturating_add(1);
+                inner.empty_pulls += 1;
+                if inner.empty_pulls >= plan.stall_after() {
+                    inner.state = NetworkStreamState::Stalled;
+                } else {
+                    // A late picture keeps its audio playing.
+                    taken = rendered;
+                }
+            }
+        }
+    }
+    let picture = picture.unwrap_or_else(|| {
+        let live = inner.state == NetworkStreamState::Live;
+        if !live && plan.config.settings.stall == StallSlate::Black && !inner.slate_shown {
+            inner.slate_shown = true;
+            Picture::Black
+        } else {
+            Picture::Hold
+        }
+    });
+    shape_audio(inner, &mut planes, taken);
+    PulledFrame {
+        picture,
+        audio: planes,
     }
 }
 
@@ -1300,7 +1378,11 @@ fn device_arguments(
             "-map".into(),
             "1:a:0".into(),
             "-af".into(),
-            format!("aresample={}:async=1:first_pts=0", config.sample_rate),
+            // No timestamp compensation: the sample count stays on the
+            // sound card's own clock, which the receiver's drift loop
+            // follows (AU-004) instead of `ffmpeg` padding and trimming
+            // against the host clock.
+            format!("aresample={}", config.sample_rate),
             "-ac".into(),
             config.channels.to_string(),
             "-c:a".into(),
@@ -1359,7 +1441,8 @@ fn audio_device_arguments(
             "-map".into(),
             "0:a:0".into(),
             "-af".into(),
-            format!("aresample={}:async=1:first_pts=0", config.sample_rate),
+            // As for a capture device's audio: the device's own clock.
+            format!("aresample={}", config.sample_rate),
             "-ac".into(),
             config.channels.to_string(),
             "-c:a".into(),
@@ -1543,8 +1626,8 @@ fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>) -> Ended {
         }
         inner.generation = inner.generation.wrapping_add(1);
         inner.frames.clear();
-        for queue in &mut inner.audio {
-            queue.clear();
+        if let Some(clock) = inner.clock.as_mut() {
+            clock.restart();
         }
         inner.delivered = false;
         inner.last_data = None;
@@ -1724,8 +1807,9 @@ fn read_video(shared: &Shared, plan: &Plan, generation: u64, mut stdout: ChildSt
     }
 }
 
-/// Queues one decoded picture: drops the oldest (and its audio) from a full
-/// buffer, and goes live once the buffer holds its target.
+/// Queues one decoded picture: drops the oldest from a full buffer, and
+/// goes live once the buffer holds its target. The audio is not touched:
+/// the pictures follow it at the next pulls.
 fn admit_picture(inner: &mut Inner, plan: &Plan, frame: Vec<u8>) {
     inner.last_data = Some(Instant::now());
     inner.delivered = true;
@@ -1733,12 +1817,6 @@ fn admit_picture(inner: &mut Inner, plan: &Plan, frame: Vec<u8>) {
     if inner.frames.len() > plan.bounds.capacity_frames {
         inner.frames.pop_front();
         inner.dropped_frames = inner.dropped_frames.saturating_add(1);
-        // The dropped picture's audio goes with it.
-        let samples = plan.samples_of(0);
-        for queue in &mut inner.audio {
-            let drop = samples.min(queue.len());
-            queue.drain(..drop);
-        }
     }
     match inner.state {
         NetworkStreamState::Connecting
@@ -1756,22 +1834,6 @@ fn admit_picture(inner: &mut Inner, plan: &Plan, frame: Vec<u8>) {
     {
         inner.state = NetworkStreamState::Live;
         inner.empty_pulls = 0;
-        align_audio(inner, plan);
-    }
-}
-
-/// Drops the audio queued beyond the queued pictures' samples, oldest
-/// first, so the next pull's audio is the audio of its picture. Audio that
-/// kept arriving while the pictures stalled would otherwise lag the
-/// pictures for the rest of the connection.
-fn align_audio(inner: &mut Inner, plan: &Plan) {
-    let pictures = u64::try_from(inner.frames.len()).unwrap_or(u64::MAX);
-    let wanted = (0..pictures)
-        .map(|offset| plan.samples_of(inner.pulled.wrapping_add(offset)))
-        .fold(0_usize, usize::saturating_add);
-    for queue in &mut inner.audio {
-        let excess = queue.len().saturating_sub(wanted);
-        queue.drain(..excess);
     }
 }
 
@@ -2029,29 +2091,18 @@ fn receive_audio(
     }
     let mut pending = buffer.split_off(body_start);
     let frame = plan.channels * 4;
+    let mut planes = vec![Vec::new(); plan.channels];
     loop {
         let whole = pending.len() / frame * frame;
         if whole > 0 {
+            deinterleave(&pending[..whole], &mut planes);
+            let at = shared.now();
             let mut inner = shared.lock();
             if inner.generation != generation {
                 return true;
             }
             inner.last_data = Some(Instant::now());
-            for sample in pending[..whole].chunks_exact(frame) {
-                for (channel, bytes) in sample.as_chunks::<4>().0.iter().enumerate() {
-                    let value = f32::from_le_bytes(*bytes);
-                    inner.audio[channel].push_back(if value.is_finite() {
-                        value.clamp(-1.0, 1.0)
-                    } else {
-                        0.0
-                    });
-                }
-            }
-            let capacity = plan.audio_capacity();
-            for queue in &mut inner.audio {
-                let excess = queue.len().saturating_sub(capacity);
-                queue.drain(..excess);
-            }
+            push_audio(&mut inner, &planes, at);
             drop(inner);
             pending.drain(..whole);
         }
@@ -2064,6 +2115,34 @@ fn receive_audio(
             Err(error) if is_timeout(&error) => {}
             Err(_) => return true,
         }
+    }
+}
+
+/// Splits interleaved little-endian `f32` samples into `planes` (one per
+/// channel), clamped to ±1 with non-finite samples zeroed.
+fn deinterleave(bytes: &[u8], planes: &mut [Vec<f32>]) {
+    let channels = planes.len().max(1);
+    for plane in planes.iter_mut() {
+        plane.clear();
+    }
+    for sample in bytes.chunks_exact(channels * 4) {
+        for (plane, bytes) in planes.iter_mut().zip(sample.as_chunks::<4>().0) {
+            let value = f32::from_le_bytes(*bytes);
+            plane.push(if value.is_finite() {
+                value.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            });
+        }
+    }
+}
+
+/// Pushes one received block of planar audio, which arrived at `at`.
+fn push_audio(inner: &mut Inner, planes: &[Vec<f32>], at: f64) {
+    if let Some(clock) = inner.clock.as_mut() {
+        let planes: Vec<&[f32]> = planes.iter().map(Vec::as_slice).collect();
+        // Shapes are the receiver's own and samples are finite: no error.
+        let _ = clock.push(&planes, at);
     }
 }
 
@@ -2281,7 +2360,7 @@ mod tests {
         assert!(joined.contains(
             "[0:a:0]showwaves=s=2x2:rate=30000/1001:mode=point,format=rgba[pace] -map [pace]"
         ));
-        assert!(joined.contains("-map 0:a:0 -af aresample=48000:async=1:first_pts=0 -ac 2"));
+        assert!(joined.contains("-map 0:a:0 -af aresample=48000 -ac 2"));
         assert!(!joined.contains("framecrc"));
         assert!(!joined.contains("scale="));
         // Audio is never dropped: an audio-only device always reads it.
@@ -2411,7 +2490,6 @@ mod tests {
     #[test]
     fn audio_fades_out_when_it_runs_short_and_back_in() {
         let mut inner = Inner {
-            audio: vec![VecDeque::new(); 1],
             last_samples: vec![0.0],
             gain: 1.0,
             ..Inner::default()
@@ -2428,30 +2506,137 @@ mod tests {
         assert_eq!(planes[0], [0.25, 0.5, 0.75, 1.0]);
     }
 
-    #[test]
-    fn audio_that_ran_on_through_a_stall_is_cut_back_to_the_pictures() {
-        let plan = plan("udp://@:9000", RtspTransport::Auto);
-        let per_frame = plan.samples_of(0);
-        let mut inner = Inner {
-            state: NetworkStreamState::Stalled,
-            audio: vec![VecDeque::new(); 2],
-            last_samples: vec![0.0; 2],
+    /// A receiver's state with its drift-corrected audio, as `start` makes.
+    fn live_inner(plan: &Plan) -> Inner {
+        let config = &plan.config;
+        let clock = LiveSourceClock::new(LiveSourceConfig::new(
+            SampleRate::new(config.sample_rate).unwrap(),
+            usize::from(config.channels),
+            config.frame_rate,
+            plan.bounds.target_frames,
+        ))
+        .unwrap();
+        Inner {
+            clock: Some(clock),
+            last_samples: vec![0.0; plan.channels],
             ..Inner::default()
-        };
-        // The pictures stalled while audio kept arriving up to its cap; the
-        // newest sample is 1.0, the older ones 0.0.
-        for queue in &mut inner.audio {
-            queue.extend(core::iter::repeat_n(0.0, plan.audio_capacity() - 1));
-            queue.push_back(1.0);
         }
-        for _ in 0..plan.bounds.target_frames {
-            admit_picture(&mut inner, &plan, vec![0; plan.frame_bytes]);
+    }
+
+    /// A source `ppm` off the engine clock feeding `inner` for `frames`
+    /// engine frames: 1024-sample audio bursts and one picture per source
+    /// frame, each stamped with its arrival time; the engine pulls once a
+    /// frame. Returns the frames whose audio was silent after going live.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss
+    )]
+    fn run_source(
+        inner: &mut Inner,
+        plan: &Plan,
+        ppm: f64,
+        frames: u64,
+        deliver: impl Fn(u64) -> bool,
+    ) -> u64 {
+        const BURST: usize = 1_024;
+        let frame = plan.samples_of(0) as f64;
+        let fps = f64::from(plan.config.sample_rate) / frame;
+        let mut source = inner.pulled as f64 * frame;
+        let mut produced = (source as u64 / BURST as u64) * BURST as u64;
+        let mut pictures = (source / frame) as u64;
+        let mut silent = 0;
+        let mut planes = vec![vec![0.0_f32; BURST]; plan.channels];
+        for _ in 0..frames {
+            let n = inner.pulled;
+            let start = source;
+            source += frame * (1.0 + ppm * 1e-6);
+            let at = |index: f64| {
+                (n as f64 + ((index - start) / (source - start)).clamp(0.0, 1.0)) / fps
+            };
+            if deliver(n) {
+                while (produced + BURST as u64) as f64 <= source {
+                    for (channel, plane) in planes.iter_mut().enumerate() {
+                        for (offset, sample) in plane.iter_mut().enumerate() {
+                            let index = (produced + offset as u64) as f64;
+                            *sample = (0.25 * (index * 0.05 + channel as f64).sin()) as f32;
+                        }
+                    }
+                    produced += BURST as u64;
+                    push_audio(inner, &planes, at(produced as f64));
+                }
+                while ((pictures + 1) as f64) * frame <= source {
+                    pictures += 1;
+                    admit_picture(inner, plan, vec![0; plan.frame_bytes]);
+                }
+            } else {
+                // Nothing arrives: the source's time still passes.
+                produced = (source as u64 / BURST as u64) * BURST as u64;
+                pictures = (source / frame) as u64;
+            }
+            let was_live = inner.state == NetworkStreamState::Live;
+            let pulled = pull_frame(inner, plan, (n + 1) as f64 / fps);
+            if was_live && pulled.audio.iter().flatten().all(|sample| *sample == 0.0) {
+                silent += 1;
+            }
         }
+        silent
+    }
+
+    #[test]
+    fn a_drifting_source_stays_live_and_audible_with_its_pictures_following_it() {
+        for ppm in [800.0, -800.0] {
+            let plan = plan("udp://@:9000", RtspTransport::Auto);
+            let mut inner = live_inner(&plan);
+            inner.state = NetworkStreamState::Connecting;
+            // Four minutes at 25 fps.
+            let silent = run_source(&mut inner, &plan, ppm, 6_000, |_| true);
+            let telemetry = inner.clock.as_ref().unwrap().telemetry();
+            assert_eq!(inner.state, NetworkStreamState::Live, "{ppm}");
+            assert_eq!(silent, 0, "{ppm}");
+            assert_eq!(telemetry.hard_resyncs(), 0, "{ppm}");
+            assert_eq!(telemetry.sync.underruns, 0, "{ppm}");
+            assert!(
+                (telemetry.sync.estimated_drift_ppm - ppm).abs() < 2.0,
+                "{ppm}: {}",
+                telemetry.sync.estimated_drift_ppm
+            );
+            // About 0.08 % of 6 000 frames: 5 pictures dropped (fast) or
+            // repeated (slow), and never late.
+            let (corrections, overflow) = if ppm > 0.0 {
+                (
+                    telemetry.picture_drops,
+                    inner.dropped_frames - telemetry.picture_drops,
+                )
+            } else {
+                (telemetry.picture_repeats, inner.dropped_frames)
+            };
+            assert!((3..=7).contains(&corrections), "{ppm}: {corrections}");
+            assert_eq!(overflow, 0, "{ppm}");
+            assert_eq!(inner.late_frames, 0, "{ppm}");
+        }
+    }
+
+    #[test]
+    fn a_stalled_source_fades_out_and_comes_back_with_its_drift_estimate() {
+        let plan = plan("udp://@:9000", RtspTransport::Auto);
+        let mut inner = live_inner(&plan);
+        inner.state = NetworkStreamState::Connecting;
+        run_source(&mut inner, &plan, 300.0, 7_500, |_| true);
+        let before = inner.clock.as_ref().unwrap().telemetry();
+        // Two seconds without media: the stream stalls and its audio fades.
+        run_source(&mut inner, &plan, 300.0, 50, |_| false);
+        assert_eq!(inner.state, NetworkStreamState::Stalled);
+        let at = f64::from(u32::try_from(inner.pulled + 1).unwrap()) / 25.0;
+        let pulled = pull_frame(&mut inner, &plan, at);
+        assert!(pulled.audio.iter().flatten().all(|sample| *sample == 0.0));
+        let silent = run_source(&mut inner, &plan, 300.0, 1_500, |_| true);
+        let after = inner.clock.as_ref().unwrap().telemetry();
         assert_eq!(inner.state, NetworkStreamState::Live);
-        for queue in &inner.audio {
-            assert_eq!(queue.len(), plan.bounds.target_frames * per_frame);
-            assert_eq!(queue.back(), Some(&1.0));
-        }
+        assert!(silent <= 1, "{silent}");
+        assert_eq!(after.hard_resyncs(), 0);
+        assert_eq!(after.sync.underruns, before.sync.underruns + 1);
+        assert!((after.sync.estimated_drift_ppm - 300.0).abs() < 5.0);
     }
 
     #[test]

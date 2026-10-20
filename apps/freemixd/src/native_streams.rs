@@ -43,6 +43,7 @@ use fm_types::network_stream::{NetworkStreamConfig, NetworkStreamState, NetworkS
 use fm_types::{FrameRate, InputId, PixelFormat, VideoDimensions};
 
 use crate::native_files::{blank_picture, output_timing};
+use crate::native_sync::{SourceKind, SyncLog};
 
 /// Longest a changed-but-same-state status waits before it is reported.
 const STATUS_INTERVAL: Duration = Duration::from_secs(1);
@@ -72,6 +73,8 @@ struct Stream {
     /// The input closed and its blank picture is still to be presented.
     blank_pending: bool,
     reported: Option<(NetworkStreamStatus, Instant)>,
+    /// When its clock drift was last logged (AU-004).
+    sync_log: SyncLog,
 }
 
 /// The network stream inputs of one native daemon and their receivers.
@@ -115,6 +118,7 @@ impl NativeNetworkStreams {
                 closed,
                 blank_pending: false,
                 reported: None,
+                sync_log: SyncLog::default(),
             };
             if !closed {
                 streams.connect(input, &mut stream);
@@ -174,6 +178,7 @@ impl NativeNetworkStreams {
                 closed: true,
                 blank_pending: false,
                 reported: None,
+                sync_log: SyncLog::default(),
             });
             let changed = stream.config != *config;
             if changed {
@@ -333,6 +338,16 @@ fn statuses(
 ) -> Vec<(InputId, NetworkStreamStatus)> {
     let mut due = Vec::new();
     for (&input, stream) in streams {
+        stream.sync_log.report(
+            SourceKind::Stream,
+            input,
+            stream
+                .receiver
+                .as_ref()
+                .and_then(NetworkReceiver::sync_telemetry)
+                .as_ref(),
+            now,
+        );
         let status = match (&stream.receiver, &stream.start_error) {
             _ if stream.closed => NetworkStreamStatus::default(),
             (Some(receiver), _) => receiver.status(),
@@ -439,6 +454,7 @@ mod tests {
                 closed: false,
                 blank_pending: false,
                 reported: None,
+                sync_log: SyncLog::default(),
             },
         );
         let start = Instant::now();

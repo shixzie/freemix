@@ -1235,6 +1235,7 @@ dependencies = [
 name = "fm-codec-ffmpeg"
 version = "0.1.0"
 dependencies = [
+ "fm-audio",
  "fm-frame",
  "fm-playback",
  "fm-record",

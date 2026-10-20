@@ -158,6 +158,12 @@ impl CaptureSupervisor {
         &self.key
     }
 
+    /// The open acquisition's audio clock drift telemetry (AU-004).
+    #[must_use]
+    pub fn sync_telemetry(&self) -> Option<fm_codec_ffmpeg::network_input::LiveSourceTelemetry> {
+        self.acquisition.as_ref()?.sync_telemetry()
+    }
+
     /// The settings this supervisor applies.
     #[must_use]
     pub const fn settings(&self) -> &CaptureSettings {

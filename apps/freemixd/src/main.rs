@@ -120,6 +120,8 @@ mod native_live_lan;
 #[cfg(feature = "native-media")]
 mod native_streams;
 #[cfg(feature = "native-media")]
+mod native_sync;
+#[cfg(feature = "native-media")]
 mod native_system_audio;
 #[cfg(feature = "native-media")]
 mod native_titles;

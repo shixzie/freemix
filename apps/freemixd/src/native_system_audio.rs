@@ -35,6 +35,7 @@ use fm_types::network_stream::{
 use fm_types::{FrameRate, InputId};
 
 use crate::native_streams::{Format, PulledStream};
+use crate::native_sync::{SourceKind, SyncLog};
 
 /// Longest a changed error text waits before it is reported.
 const STATUS_INTERVAL: Duration = Duration::from_secs(1);
@@ -60,6 +61,8 @@ struct Source {
     start_error: Option<String>,
     closed: bool,
     reported: Option<(SystemAudioStatus, Instant)>,
+    /// When its clock drift was last logged (AU-004).
+    sync_log: SyncLog,
     /// The reopen count of the receiver connection last seen live: that
     /// connection's brief stalls and rebuffering stay live (see
     /// [`system_audio_status`]).
@@ -120,6 +123,7 @@ impl NativeSystemAudio {
                 start_error: None,
                 closed,
                 reported: None,
+                sync_log: SyncLog::default(),
                 live_connection: None,
             };
             if !closed {
@@ -184,6 +188,7 @@ impl NativeSystemAudio {
                 start_error: None,
                 closed: true,
                 reported: None,
+                sync_log: SyncLog::default(),
                 live_connection: None,
             });
             let changed = source.config != *config;
@@ -244,6 +249,16 @@ impl NativeSystemAudio {
     pub(crate) fn statuses(&mut self, now: Instant) -> Vec<(InputId, SystemAudioStatus)> {
         let mut due = Vec::new();
         for (&input, source) in &mut self.sources {
+            source.sync_log.report(
+                SourceKind::SystemAudio,
+                input,
+                source
+                    .receiver
+                    .as_ref()
+                    .and_then(NetworkReceiver::sync_telemetry)
+                    .as_ref(),
+                now,
+            );
             let status = match (&source.receiver, &source.start_error) {
                 _ if source.closed => SystemAudioStatus::default(),
                 (Some(receiver), _) => {
