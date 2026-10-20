@@ -6,7 +6,9 @@
 //! and per-input audio strips travel with their inputs. Name clashes are
 //! resolved with ` (2)`, ` (3)`, ... suffixes and reported. Referenced media
 //! is copied into the target bundle's assets, reusing identical files and
-//! renaming keys that would clash with different contents. Title templates,
+//! renaming keys that would clash with different contents. A folder
+//! slideshow's pictures are copied into a folder that did not exist in the
+//! target (`slides`, else `slides-2`, ...). Title templates,
 //! their fonts, and title images keep their exact keys: a clash with
 //! different contents, or a title asset missing from the source, refuses the
 //! append before anything is copied.
@@ -157,11 +159,12 @@ impl ProjectStore {
             report.scenes.push((scene.id, id));
         }
 
-        let assets = self.append_assets(incoming, source)?;
+        let mut assets = self.append_assets(incoming, source)?;
         let uri_map = assets
             .iter()
             .map(|asset| (asset.source_uri.clone(), asset.target_uri.clone()))
             .collect::<BTreeMap<_, _>>();
+        let folder_map = self.append_slideshow_folders(incoming, source, &mut assets)?;
         report.assets = assets;
 
         append_scenes(&mut project, incoming, &input_map, &scene_map, &mut report)?;
@@ -172,6 +175,7 @@ impl ProjectStore {
                 inputs: &input_map,
                 scenes: &scene_map,
                 uris: &uri_map,
+                folders: &folder_map,
             },
             &mut report,
         )?;
@@ -183,6 +187,7 @@ impl ProjectStore {
                 inputs: &input_map,
                 scenes: &scene_map,
                 uris: &uri_map,
+                folders: &folder_map,
             },
             &mut report,
         )?;
@@ -278,6 +283,75 @@ impl ProjectStore {
         }
         assets.sort_by(|left, right| left.source_uri.cmp(&right.source_uri));
         Ok(assets)
+    }
+
+    /// Copies each folder slideshow's pictures (IN-009) into a folder of
+    /// this bundle that did not exist before (the source key, else
+    /// `key-2`, `key-3`, ...), so the appended slideshow never shows the
+    /// target's unrelated folder of the same name; returns the folder map
+    /// and reports each copied picture in `assets`. A source folder that is
+    /// missing still gets a fresh, empty folder.
+    fn append_slideshow_folders(
+        &self,
+        incoming: &Project,
+        source: &ProjectStore,
+        assets: &mut Vec<AppendedAsset>,
+    ) -> Result<BTreeMap<String, String>, BundleError> {
+        let assets_root = self.assets_root();
+        let mut folders = BTreeMap::new();
+        for folder in crate::asset::folder_slideshow_uris(incoming) {
+            let Ok(base) = asset_uri_key(&folder).map(str::to_owned) else {
+                continue;
+            };
+            let pictures = source.folder_picture_uris(&folder);
+            let mut created = None;
+            for attempt in 1..=MAX_NAME_SUFFIX {
+                let key = suffixed_key(&base, attempt);
+                let prefix = format!("{key}/");
+                // Keys handed to missing source assets exist only in the
+                // project, so they are checked as well as the disk.
+                if asset_uri_key(&asset_uri(&key)).is_err()
+                    || assets.iter().any(|asset| {
+                        asset_uri_key(&asset.target_uri)
+                            .is_ok_and(|taken| taken == key || taken.starts_with(&prefix))
+                    })
+                {
+                    continue;
+                }
+                let directory = assets_root.join(&key);
+                if let Some(parent) = directory.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                match fs::create_dir(&directory) {
+                    Ok(()) => {
+                        created = Some((key, directory));
+                        break;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            let (key, directory) =
+                created.ok_or_else(|| BundleError::NoAvailableKey { key: base.clone() })?;
+            let copy = asset_uri(&key);
+            for picture in pictures {
+                let resolved = source
+                    .resolve_asset_uri(&picture)
+                    .map_err(|_| BundleError::UnresolvedAssets(source.audit_assets_of(incoming)))?;
+                let name = picture.rsplit('/').next().unwrap_or_default();
+                let bytes = fsutil::copy_new_file(&resolved, &directory.join(name))?;
+                assets.push(AppendedAsset {
+                    target_uri: format!("{copy}/{name}"),
+                    source_uri: picture,
+                    disposition: AppendedAssetDisposition::Placed(AssetDisposition::Copied {
+                        bytes,
+                    }),
+                });
+            }
+            folders.insert(folder, copy);
+        }
+        assets.sort_by(|left, right| left.source_uri.cmp(&right.source_uri));
+        Ok(folders)
     }
 
     /// Copies every title template, font, and image under its exact source
@@ -504,6 +578,8 @@ struct IdMaps<'a> {
     inputs: &'a BTreeMap<InputId, InputId>,
     scenes: &'a BTreeMap<SceneId, SceneId>,
     uris: &'a BTreeMap<String, String>,
+    /// Source slideshow folder URI to its copy's URI.
+    folders: &'a BTreeMap<String, String>,
 }
 
 fn append_scenes(
@@ -576,6 +652,13 @@ fn append_inputs(
             InputKind::Media { .. } | InputKind::Image(_) | InputKind::Slideshow(_) => {
                 let mut kind = input.kind.clone();
                 kind.map_file_asset_uris(|uri| maps.uris.get(uri).cloned());
+                if let InputKind::Slideshow(config) = &mut kind
+                    && let fm_types::still::SlideshowSource::Folder { asset_uri } =
+                        &mut config.source
+                    && let Some(copy) = maps.folders.get(asset_uri.as_str())
+                {
+                    asset_uri.clone_from(copy);
+                }
                 kind
             }
             InputKind::Scene {

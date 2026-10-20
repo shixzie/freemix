@@ -756,6 +756,71 @@ fn append_remaps_ids_resolves_name_clashes_and_carries_media() {
     assert_eq!(reopened.position(), target.position());
 }
 
+/// An appended folder slideshow (IN-009) shows its own pictures: the
+/// folder is copied under a fresh folder key, never bound to the target's
+/// unrelated folder of the same name.
+#[test]
+fn append_copies_a_folder_slideshows_pictures_into_a_fresh_folder() {
+    use fm_types::still::{SlideshowConfig, SlideshowSource};
+
+    let slideshow = |id: u128, folder: &str| Input {
+        id: input_id(id),
+        name: format!("Slides {id}"),
+        kind: InputKind::Slideshow(SlideshowConfig::new(SlideshowSource::Folder {
+            asset_uri: folder.into(),
+        })),
+        required_capabilities: Vec::new(),
+    };
+    let folder_of = |project: &StoredProject, input: u128| match &project
+        .project()
+        .inputs()
+        .iter()
+        .find(|candidate| candidate.id == input_id(input))
+        .unwrap()
+        .kind
+    {
+        InputKind::Slideshow(config) => match &config.source {
+            SlideshowSource::Folder { asset_uri } => asset_uri.clone(),
+            SlideshowSource::List(_) => panic!("not a folder"),
+        },
+        other => panic!("not a slideshow: {other:?}"),
+    };
+
+    let temp = TestDirectory::new("append-folder-slideshow");
+    let target_store = temp.store("target.freemix");
+    let mut target = empty_project(1, "Target");
+    target.add_input(slideshow(1, "asset://slides"));
+    target_store.save(&stored(target)).unwrap();
+    write_asset(&target_store, "slides/target.png", b"target picture");
+
+    let source_store = temp.store("source.freemix");
+    let mut source = empty_project(2, "Source");
+    source.add_input(slideshow(10, "asset://slides"));
+    source_store.save(&stored(source)).unwrap();
+    write_asset(&source_store, "slides/a.png", b"source a");
+    write_asset(&source_store, "slides/b.jpg", b"source b");
+    write_asset(&source_store, "slides/readme.txt", b"not a picture");
+
+    let (appended, _report) = target_store
+        .append_project(&target_store.load().unwrap(), &source_store)
+        .unwrap();
+    // The target's own slideshow is untouched.
+    assert_eq!(folder_of(&appended, 1), "asset://slides");
+    let folder = folder_of(&appended, 2);
+    assert_ne!(folder, "asset://slides");
+    let key = folder.strip_prefix("asset://").unwrap();
+    let mut names = fs::read_dir(target_store.assets_root().join(key))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["a.png", "b.jpg"]);
+    assert_eq!(
+        fs::read(target_store.assets_root().join(key).join("b.jpg")).unwrap(),
+        b"source b"
+    );
+}
+
 #[test]
 fn append_never_binds_a_missing_source_asset_to_another_appended_asset() {
     let temp = TestDirectory::new("append-claimed-keys");

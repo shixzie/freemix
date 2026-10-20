@@ -55,49 +55,48 @@ impl ProjectStore {
         Ok(candidate)
     }
 
-    /// The pictures every folder slideshow of `project` shows (IN-009):
-    /// each regular file with a picture extension directly inside the
-    /// slideshow's asset folder, as the daemon lists it, that resolves
-    /// within the assets. Sorted and distinct; a missing folder, or one that
-    /// leads out of the assets, contributes nothing.
+    /// The pictures every folder slideshow of `project` shows (IN-009); see
+    /// [`Self::folder_picture_uris`]. Sorted and distinct.
     pub(crate) fn folder_slideshow_picture_uris(
         &self,
         project: &Project,
     ) -> std::collections::BTreeSet<String> {
-        let mut pictures = std::collections::BTreeSet::new();
-        for input in project.inputs() {
-            let InputKind::Slideshow(config) = &input.kind else {
-                continue;
-            };
-            let fm_types::still::SlideshowSource::Folder { asset_uri: folder } = &config.source
-            else {
-                continue;
-            };
-            let Ok(key) = asset_uri_key(folder) else {
-                continue;
-            };
-            let (Ok(root), Ok(directory)) = (
-                fs::canonicalize(self.assets_root()),
-                fs::canonicalize(self.assets_root().join(key)),
-            ) else {
-                continue;
-            };
-            if !directory.starts_with(&root) {
-                continue;
-            }
-            let Ok(entries) = fs::read_dir(&directory) else {
-                continue;
-            };
-            pictures.extend(
-                entries
-                    .filter_map(Result::ok)
-                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
-                    .filter_map(|entry| entry.file_name().into_string().ok())
-                    .filter(|name| fm_types::still::is_image_file_name(name))
-                    .map(|name| format!("{folder}/{name}"))
-                    .filter(|uri| self.resolve_asset_uri(uri).is_ok()),
-            );
+        folder_slideshow_uris(project)
+            .iter()
+            .flat_map(|folder| self.folder_picture_uris(folder))
+            .collect()
+    }
+
+    /// The pictures a folder slideshow showing `folder` (`asset://<key>`)
+    /// shows: each regular file with a picture extension directly inside
+    /// the folder, as the daemon lists it, that resolves within the assets.
+    /// Sorted; a missing folder, or one that leads out of the assets, has
+    /// none.
+    pub(crate) fn folder_picture_uris(&self, folder: &str) -> Vec<String> {
+        let Ok(key) = asset_uri_key(folder) else {
+            return Vec::new();
+        };
+        let (Ok(root), Ok(directory)) = (
+            fs::canonicalize(self.assets_root()),
+            fs::canonicalize(self.assets_root().join(key)),
+        ) else {
+            return Vec::new();
+        };
+        if !directory.starts_with(&root) {
+            return Vec::new();
         }
+        let Ok(entries) = fs::read_dir(&directory) else {
+            return Vec::new();
+        };
+        let mut pictures = entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| fm_types::still::is_image_file_name(name))
+            .map(|name| format!("{folder}/{name}"))
+            .filter(|uri| self.resolve_asset_uri(uri).is_ok())
+            .collect::<Vec<_>>();
+        pictures.sort();
         pictures
     }
 
@@ -164,6 +163,21 @@ pub enum AssetAuditReason {
     NotRegularFile,
     /// A title template resolves but is not a valid stored template.
     UnreadableTitleTemplate,
+}
+
+/// The distinct asset folders `project`'s folder slideshows show, sorted.
+pub(crate) fn folder_slideshow_uris(project: &Project) -> std::collections::BTreeSet<String> {
+    project
+        .inputs()
+        .iter()
+        .filter_map(|input| match &input.kind {
+            InputKind::Slideshow(config) => match &config.source {
+                fm_types::still::SlideshowSource::Folder { asset_uri } => Some(asset_uri.clone()),
+                fm_types::still::SlideshowSource::List(_) => None,
+            },
+            _ => None,
+        })
+        .collect()
 }
 
 /// Validates the strict syntax of a project `asset://` URI without filesystem access.
