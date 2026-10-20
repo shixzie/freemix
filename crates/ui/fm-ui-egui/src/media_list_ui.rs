@@ -95,8 +95,9 @@ fn read_playlist(path: &Path) -> Option<String> {
 /// # Errors
 ///
 /// The reason the lines make no list: none, too many, a line that is not a
-/// media file or playlist, a playlist that cannot be read, or a path or
-/// list text beyond the wire bounds.
+/// media file or playlist, a playlist that cannot be read, a file that is
+/// neither an absolute path nor an `asset://` URI, or a path or list text
+/// beyond the wire bounds.
 pub(crate) fn expand_items(
     text: &str,
     taken: &[u32],
@@ -134,6 +135,14 @@ pub(crate) fn expand_items(
         .any(|(file, _)| file.len() > MAX_ITEM_PATH_BYTES)
     {
         return Err(Msg::LcReasonPathTooLong.en());
+    }
+    // The server copies an absolute path on its computer into the project;
+    // anything else but an `asset://` URI already there it refuses.
+    if files
+        .iter()
+        .any(|(file, _)| !fm_types::still::request_uri_is_valid(file, MAX_ITEM_PATH_BYTES))
+    {
+        return Err(Msg::MlReasonPathInvalid.en());
     }
     let items: Vec<MediaListItemSpec> = files
         .into_iter()
@@ -689,6 +698,15 @@ mod tests {
         assert_eq!(
             expand_items("/media/notes.txt", &[], &none),
             Err(Msg::MlReasonNotMedia.en())
+        );
+        assert_eq!(
+            expand_items("/media/a.mp4\nclips/b.mp4", &[], &none),
+            Err(Msg::MlReasonPathInvalid.en())
+        );
+        assert_eq!(
+            expand_items("asset://media/a.mp4\nC:\\clips\\b.mov", &[], &none)
+                .map(|items| items.len()),
+            Ok(2)
         );
         assert_eq!(
             expand_items("/media/gone.m3u8", &[], &none),

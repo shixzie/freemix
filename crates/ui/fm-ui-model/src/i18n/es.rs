@@ -6374,7 +6374,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::MlFilesHover,
         t(
-            "Un archivo de vídeo o audio por línea, o una lista M3U (.m3u, .m3u8) cuyos archivos se añaden en su orden con sus títulos #EXTINF; rutas en el ordenador del servidor",
+            "Un archivo de vídeo o audio por línea, o una lista M3U (.m3u, .m3u8) cuyos archivos se añaden en su orden con sus títulos #EXTINF; cada archivo es una ruta absoluta en el ordenador del servidor (se copia al proyecto) o una URI asset:// que ya esté en él",
         ),
     ),
     (Msg::MlFilesCount, t("Elementos: {count}")),
@@ -6409,6 +6409,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::MlReasonNotMedia,
         t("una línea no es un archivo de vídeo o audio ni una lista M3U"),
+    ),
+    (
+        Msg::MlReasonPathInvalid,
+        t("usa rutas absolutas en el ordenador del servidor o URI asset://"),
     ),
     (
         Msg::MlReasonPlaylistUnreadable,
@@ -6482,7 +6486,9 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (
         Msg::MlAddPathsHover,
-        t("Archivos que añadir al final de la lista: rutas en líneas separadas o una lista M3U"),
+        t(
+            "Archivos que añadir al final de la lista: rutas absolutas en el ordenador del servidor (se copian al proyecto) o URI asset://, en líneas separadas, o una lista M3U",
+        ),
     ),
     (Msg::MlAdd, t("Añadir al final")),
     (

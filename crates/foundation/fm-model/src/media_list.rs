@@ -256,7 +256,9 @@ impl fmt::Display for MediaListError {
             Self::InvalidAsset(id) => {
                 write!(
                     formatter,
-                    "media list item {id} does not name a project asset"
+                    "media list item {id} is not a project asset: name an asset:// file \
+                     or an absolute path to a file on the server's computer, which is \
+                     copied in"
                 )
             }
             Self::UnsupportedType(id) => write!(

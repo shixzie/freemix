@@ -507,3 +507,85 @@ fn a_journaled_auto_next_advance_replays_after_a_crash() {
     assert_eq!(states[0].status.order, first.order);
     daemon.stop();
 }
+
+/// Whether a file named `name` is anywhere under `directory`.
+fn holds_file(directory: &Path, name: &str) -> bool {
+    fs::read_dir(directory).unwrap().any(|entry| {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            holds_file(&path, name)
+        } else {
+            path.file_name().is_some_and(|file| file == name)
+        }
+    })
+}
+
+/// A media list's items may name files by their absolute path on the
+/// server's computer, as the Studio's hint says: the daemon copies each into
+/// the bundle and the list holds its `asset://` URI. A path that names no
+/// file there is refused with a reason that says what an item may name.
+#[test]
+fn a_media_list_imports_host_files_into_the_bundle() {
+    let directory = TestDirectory::new("host-files");
+    let project = directory.project();
+    save_project(&project);
+    let clips = directory.0.join("clips");
+    fs::create_dir(&clips).unwrap();
+    let opener = clips.join("opener.mov");
+    let bed = clips.join("bed.wav");
+    fs::write(&opener, b"not really a movie").unwrap();
+    fs::write(&bed, b"not really a sound").unwrap();
+    let daemon = Daemon::start(&project);
+    let (mut client, _, _) = Client::connect(&daemon);
+
+    let host_item = |id, path: &Path| MediaListItemSpec {
+        id,
+        uri: path.to_str().unwrap().to_owned(),
+        title: None,
+        mark_in: 0,
+        mark_out: None,
+    };
+    let created = client.list(MediaListOperation::Create {
+        name: "Host files".into(),
+        items: vec![host_item(1, &opener), host_item(2, &bed)],
+        options: MediaListOptionsSpec::default(),
+    });
+    let uris: Vec<&str> = created.items.iter().map(|item| item.uri.as_str()).collect();
+    assert_eq!(uris, ["asset://opener.mov", "asset://bed.wav"]);
+    assert!(
+        holds_file(&project, "opener.mov"),
+        "the opener was not copied"
+    );
+    assert!(holds_file(&project, "bed.wav"), "the bed was not copied");
+
+    // A host path that names no file is refused, with what to name instead.
+    client.commands += 1;
+    let id = format!("command-{}", client.commands);
+    client.send(&WireMessage::Command(CommandMessage {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        id: id.clone(),
+        idempotency_key: id,
+        expected_revision: None,
+        deadline_ms: None,
+        payload: CommandPayload::MediaList {
+            input: wire(LIST),
+            operation: MediaListOperation::Set {
+                items: vec![host_item(1, &clips.join("missing.mov"))],
+                options: MediaListOptionsSpec::default(),
+            },
+        },
+    }));
+    let (code, message) = client.wait_for("the refusal", |message| match message {
+        WireMessage::CommandResult(CommandResult::Rejected { code, message, .. }) => {
+            Some((code, message))
+        }
+        WireMessage::CommandResult(result) => panic!("expected a refusal: {result:?}"),
+        _ => None,
+    });
+    assert_eq!(code, "invalid_command", "{message}");
+    assert!(
+        message.contains("asset://") && message.contains("absolute path"),
+        "{message}"
+    );
+    daemon.stop();
+}
