@@ -534,19 +534,20 @@ impl StudioApp {
     }
 
     /// Sends an OSC fire's intent with its selected input (RC-004): the
-    /// input the message numbers, or else this console's selection. A fire
-    /// this session cannot send, or one numbering no input, counts as
-    /// rejected.
+    /// input the message numbers, in place of this console's selection
+    /// (which the shell's OSC intents already carry). A fire this session
+    /// cannot send, or one numbering no input, counts as rejected.
     fn enqueue_osc_fire(&mut self, intent: Option<StudioIntent>, selected: OscSelected) {
-        let selection = match selected {
-            None => Some(self.shell.selected_input()),
-            Some(number) => osc_input(&self.state, number).map(Some),
-        };
-        match (intent, selection) {
-            (Some(intent), Some(selection)) => {
-                self.enqueue_intent(intent.with_selected_input(selection));
+        let intent = match (intent, selected) {
+            (Some(intent), None) => Some(intent),
+            (Some(intent), Some(number)) => {
+                osc_input(&self.state, number).map(|input| intent.with_selected_input(input))
             }
-            _ => self.osc_rejected = self.osc_rejected.saturating_add(1),
+            (None, _) => None,
+        };
+        match intent {
+            Some(intent) => self.enqueue_intent(intent),
+            None => self.osc_rejected = self.osc_rejected.saturating_add(1),
         }
     }
 

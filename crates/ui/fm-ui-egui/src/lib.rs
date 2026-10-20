@@ -472,14 +472,22 @@ pub enum StudioIntent {
 
 impl StudioIntent {
     /// The intent with `selected` as its fire's selected input (RC-004),
-    /// when it is a shortcut fire or a cue GO or arm that names none yet.
-    /// Other intents are unchanged.
+    /// in place of any it names, when it is a shortcut fire or a cue GO or
+    /// arm (an OSC message naming its own selection). Other intents are
+    /// unchanged.
     #[must_use]
-    pub fn with_selected_input(self, selected: Option<InputId>) -> Self {
-        let mut intents = [self];
-        selection::bind(selected, &mut intents);
-        let [intent] = intents;
-        intent
+    pub fn with_selected_input(mut self, selected: InputId) -> Self {
+        if let Self::Shortcut(ShortcutIntent::Fire { targets, .. })
+        | Self::Cue(CueIntent::Control {
+            operation:
+                fm_protocol::CueOperation::Go { targets, .. }
+                | fm_protocol::CueOperation::Arm { targets, .. },
+            ..
+        }) = &mut self
+        {
+            targets.selected = Some(fm_protocol::WireInputId::from_domain(selected));
+        }
+        self
     }
 
     /// The title-editor request this intent carries, if any.
