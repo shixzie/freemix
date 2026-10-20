@@ -535,6 +535,3 @@ fn spill_strength(outside: &[Sample], channel: usize) -> u8 {
     let extra = (127 * tinted + total / 2) / total;
     128_u8.saturating_add(u8::try_from(extra).unwrap_or(127))
 }
-
-#[cfg(test)]
-mod tests;

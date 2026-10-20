@@ -1,10 +1,13 @@
-//! Synthetic green and blue screens: flat, noisy, unevenly lit, with a
+//! SW-008 auto key through the public `fm_ui_model::auto_key` API, on
+//! synthetic green and blue screens: flat, noisy, unevenly lit, with a
 //! subject in front, with spill on the subject, and big enough to be
 //! subsampled.
 
 use fm_protocol::{WireKeyDespill, WireKeyRefinement, WireLayerKey, WireLumaKey};
-
-use super::*;
+use fm_ui_model::auto_key::{
+    AutoKey, AutoKeyBacking, AutoKeyError, AutoKeyPicture, AutoKeySample, SIMILARITY_MARGIN,
+    auto_key,
+};
 
 const SKIN: [u8; 3] = [214, 160, 128];
 const SHIRT: [u8; 3] = [40, 44, 52];
@@ -54,8 +57,16 @@ impl Frame {
     }
 
     fn pixel(&self, x: u32, y: u32) -> [u8; 3] {
-        self.picture().pixel(x, y)
+        let index = ((y * self.width + x) * 4) as usize;
+        [self.rgba[index], self.rgba[index + 1], self.rgba[index + 2]]
     }
+}
+
+/// The chroma key's distance: the largest per-channel difference.
+fn distance(a: [u8; 3], b: [u8; 3]) -> u8 {
+    a[0].abs_diff(b[0])
+        .max(a[1].abs_diff(b[1]))
+        .max(a[2].abs_diff(b[2]))
 }
 
 /// A fixed linear congruential generator: noise in `-amplitude..=amplitude`.

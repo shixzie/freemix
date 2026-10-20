@@ -175,8 +175,8 @@ commands = ["cargo test -p fm-compositor --test effects", "cargo test -p fm-comp
 [[tests]]
 id = "accept-sw-008"
 state = "present"
-paths = ["crates/gpu/fm-compositor/tests/keying.rs", "crates/gpu/fm-compositor/tests/keys.rs", "crates/gpu/fm-compositor/tests/native_keys.rs", "crates/foundation/fm-protocol/tests/scene_layer.rs", "crates/services/fm-persistence/tests/current_model.rs", "crates/services/fm-engine/tests/scene_layer.rs", "crates/ui/fm-ui-model/tests/scene_designer.rs"]
-commands = ["cargo test -p fm-compositor --test keying", "cargo test -p fm-compositor --test keys", "cargo test -p fm-compositor --test native_keys", "cargo test -p fm-protocol --test scene_layer", "cargo test -p fm-persistence --test current_model", "cargo test -p fm-engine --test scene_layer", "cargo test -p fm-ui-model --test scene_designer"]
+paths = ["crates/gpu/fm-compositor/tests/keying.rs", "crates/gpu/fm-compositor/tests/keys.rs", "crates/gpu/fm-compositor/tests/native_keys.rs", "crates/foundation/fm-protocol/tests/scene_layer.rs", "crates/services/fm-persistence/tests/current_model.rs", "crates/services/fm-engine/tests/scene_layer.rs", "crates/ui/fm-ui-model/tests/scene_designer.rs", "crates/ui/fm-ui-model/tests/auto_key.rs", "apps/freemix-cli/tests/e2e.rs"]
+commands = ["cargo test -p fm-compositor --test keying", "cargo test -p fm-compositor --test keys", "cargo test -p fm-compositor --test native_keys", "cargo test -p fm-protocol --test scene_layer", "cargo test -p fm-persistence --test current_model", "cargo test -p fm-engine --test scene_layer", "cargo test -p fm-ui-model --test scene_designer", "cargo test -p fm-ui-model --test auto_key", "cargo test -p freemix-cli --test e2e"]
 [[tests]]
 id = "accept-sw-009"
 state = "present"

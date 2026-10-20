@@ -35,11 +35,13 @@ highest-value remaining items, ranked:
    Studio); it still lacks next-item prefetch, per-item thumbnails,
    transitions between items, and Windows/macOS evidence. (The slideshow,
    `IN-009`, is now wired end to end; see its boundary below.)
-6. **Auto key and the remaining keyer refinements (`SW-008`).** Key/fill
-   (luma or alpha), clip, choke, edge softness, and despill now run natively,
-   persist, and are edited in Studio; auto key is still CPU-only and unwired,
-   distance is per RGB channel, and light wrap and non-rectangular garbage
-   mattes are absent.
+6. **The remaining keyer refinements (`SW-008`).** Key/fill (luma or
+   alpha), clip, choke, edge softness, and despill now run natively, persist,
+   and are edited in Studio, and one-click auto key (Studio's Auto key button
+   and eyedropper, `scene-layer-auto-key`) sets a whole chroma key from the
+   input's picture; auto key samples the 160x90 input thumbnail rather than
+   a full frame, distance is per RGB channel, and light wrap and
+   non-rectangular garbage mattes are absent.
 7. **Source clock drift on real devices and other OSes (`AU-004`).** Every
    live source the native daemon ingests (V4L2/ALSA capture, network
    streams, system audio) runs its audio through a drift-correcting
@@ -2046,9 +2048,29 @@ values (`fm-compositor` `tests/native_keys.rs`). Since Protocol 2.70 and
 schema 61 each persisted layer key carries its refinement and a layer may
 carry a key/fill key naming a non-Scene key input; the engine, both daemon
 renderers, the CLI, and Studio's layer designer handle them, and a key/fill
-layer whose key input draws no picture is not drawn. Remaining gaps: auto key
-is a one-shot CPU sample assuming an opaque backing and is not wired to the
-engine, protocol, or Studio; key/fill is not tied to paired SDI or NDI fill
+layer whose key input draws no picture is not drawn. One-click auto key is a
+client-side computation applied through the existing key edit, so it needs
+no wire change: `fm_ui_model::auto_key` reads a layer input's picture
+deterministically (integer-only, subsampled to at most 65,536 pixels),
+finds the dominant green or blue backing from a chroma histogram (or seeds
+from a 5x5 window under a picked point), gathers the backing by chroma
+direction so an unevenly lit screen stays one cluster, and derives the key
+colour (cluster median), similarity (95th-percentile distance plus 8),
+smoothness, spill, and a green or blue despill whose strength follows how
+much of the rest of the picture is backing-tinted. Studio's layer designer
+shows the selected layer's input thumbnail in the KEY section with an Auto
+key button and a Pick colour eyedropper; either applies one
+`scene_layer_key_set` (one designer undo step, padlocked, undoable, and
+journaled on the server) that keeps the layer's clip, choke, and edge
+softness. `freemix-cli scene-layer-auto-key` samples a layer's simulated
+input at the project size or a saved PPM, and `remote-scene-layer-auto-key`
+sends the key derived from a saved PPM as one live edit. Remaining gaps:
+Studio's auto key samples the 160x90 input thumbnail, not a full-resolution
+frame, and the CLI cannot fetch a picture from a daemon (no frame channel
+for CLI peers), so the remote command needs a saved picture and replaces
+the clip, choke, and edge softness with the ones it is given; the
+`fm-compositor` border/region auto key remains a separate CPU reference;
+key/fill is not tied to paired SDI or NDI fill
 and key inputs, and a Scene cannot be a key input; distance is per RGB
 channel rather than perceptual; garbage mattes are the one rectangular mask;
 and light wrap is absent. `SW-008` remains planned.
