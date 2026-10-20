@@ -865,29 +865,32 @@ pub(crate) const ROW_MENU_WIDTH: f32 = 30.0;
 
 /// Width the Retry / Edit / Remove keys take side by side in a row.
 pub(crate) fn row_keys_width(ui: &Ui) -> f32 {
-    let l = l10n::locale(ui.ctx());
-    let padding = ui.spacing().button_padding.x * 2.0;
-    let text = |msg: Msg| {
-        ui.painter()
-            .layout_no_wrap(
-                l.text(msg).to_owned(),
-                egui::FontId::proportional(crate::theme::legible(11.0)),
-                text_color(),
-            )
-            .size()
-            .x
-            + padding
-    };
-    (text(Msg::StreamRetryKey)
-        + text(Msg::StreamEditKey)
+    (row_key_width(ui, Msg::StreamRetryKey)
+        + row_key_width(ui, Msg::StreamEditKey)
         + crate::theme::MIN_TARGET
         + ROW_KEY_GAP * 2.0)
         .ceil()
 }
 
+/// Width of one text key in a destination's row.
+fn row_key_width(ui: &Ui, msg: Msg) -> f32 {
+    let l = l10n::locale(ui.ctx());
+    ui.painter()
+        .layout_no_wrap(
+            l.text(msg).to_owned(),
+            egui::FontId::proportional(crate::theme::legible(11.0)),
+            text_color(),
+        )
+        .size()
+        .x
+        + ui.spacing().button_padding.x * 2.0
+}
+
 /// The Retry / Edit / Remove keys inside one destination's row, laid out
 /// left to right in `ui` (`height` points tall); `collapsed` puts them
-/// behind one `···` menu key for a narrow panel.
+/// behind one `···` menu key for a narrow panel. A destination that is off
+/// has nothing to retry, so its row shows no Retry key (its place stays
+/// empty, keeping every row's Edit and Remove keys in one column).
 pub(crate) fn draw_row_keys(
     ui: &mut Ui,
     state: &StudioUiState,
@@ -913,13 +916,14 @@ pub(crate) fn draw_row_keys(
             small_button("···").min_size(Vec2::new(ROW_MENU_WIDTH, height)),
         )
         .ui(ui, |ui| {
-            if ui
-                .add_enabled(retry.is_some(), Button::new(l.text(Msg::StreamRetryKey)))
-                .hint(
-                    &l.format(Msg::StreamRetryHover, &name_arg),
-                    retry_unavailable_reason(state, stream),
-                )
-                .clicked()
+            if stream.desired_running
+                && ui
+                    .add_enabled(retry.is_some(), Button::new(l.text(Msg::StreamRetryKey)))
+                    .hint(
+                        &l.format(Msg::StreamRetryHover, &name_arg),
+                        retry_unavailable_reason(state, stream),
+                    )
+                    .clicked()
                 && let Some(action) = retry
             {
                 intents.push(StudioIntent::Stream(action));
@@ -953,7 +957,9 @@ pub(crate) fn draw_row_keys(
     }
     ui.spacing_mut().item_spacing.x = ROW_KEY_GAP;
     let key = |text: &str| small_button(text).min_size(Vec2::new(0.0, height));
-    if ui
+    if !stream.desired_running {
+        ui.add_space(row_key_width(ui, Msg::StreamRetryKey) + ROW_KEY_GAP);
+    } else if ui
         .add_enabled(retry.is_some(), key(l.text(Msg::StreamRetryKey)))
         .hint(
             &l.format(Msg::StreamRetryHover, &name_arg),
