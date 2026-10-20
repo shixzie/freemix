@@ -23,8 +23,8 @@ use core::num::NonZeroU128;
 use crate::{
     CodecError, MAX_LIST_ITEMS, MAX_TITLE_CONTENT_BYTES, MAX_TITLE_FIELD_NAMES_BYTES,
     MAX_TITLE_FIELDS, MAX_TITLE_NAME_BYTES, MAX_TITLE_TEXT_CHARS, TitleAirRequirement,
-    TitleFieldUpdate, TitleFieldValue, TitlePhase, TitleShownOn, TitleSummary,
-    TitleTimelineStatus, WireInputId, WireTitleFieldId,
+    TitleFieldUpdate, TitleFieldValue, TitlePhase, TitleShownOn, TitleSummary, TitleTimelineStatus,
+    WireInputId, WireTitleFieldId,
 };
 
 use super::value::{parse_canonical_input, parse_canonical_u64};
@@ -190,7 +190,7 @@ pub(super) const fn encode_title_phase(phase: TitlePhase) -> &'static str {
     }
 }
 
-/// The wire token of where a title is shown (Protocol 2.75).
+/// The wire token of where a title is shown (Protocol 2.77).
 pub(super) const fn encode_title_shown(timeline: Option<TitleTimelineStatus>) -> &'static str {
     match timeline {
         None => "none",

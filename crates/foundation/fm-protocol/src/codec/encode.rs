@@ -44,8 +44,7 @@ use super::scene_layout::{
 };
 use super::title::{
     encode_title_field_names, encode_title_fields, encode_title_phase, encode_title_shown,
-    encode_title_summaries,
-    title_air_requirement, validate_title_name, validate_title_phase,
+    encode_title_summaries, title_air_requirement, validate_title_name, validate_title_phase,
 };
 use super::transition::{encode_favorite, encode_favorites, validate_favorite_slot};
 use super::value::{

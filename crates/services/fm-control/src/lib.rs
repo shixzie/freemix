@@ -3296,7 +3296,7 @@ fn title_states(engine: &Engine) -> Vec<TitleStateMessage> {
         .map(|(input, title)| {
             let shown = shown.iter().find(|shown| shown.input == *input);
             // A title take animates the title on its channel; otherwise it
-            // plays on Program or Preview (GX-001, Protocol 2.75).
+            // plays on Program or Preview (GX-001, Protocol 2.77).
             let air = on_air
                 .iter()
                 .find(|air| air.input == *input)

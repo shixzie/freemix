@@ -1,4 +1,4 @@
-//! Title timelines in `project.json` (GX-001, schema 65).
+//! Title timelines in `project.json` (GX-001, schema 66).
 //!
 //! ```text
 //! "title_timelines": [
@@ -48,18 +48,22 @@ pub(crate) fn write_title_timelines(output: &mut String, project: &Project) {
 pub(crate) fn parse_title_timelines(
     object: &mut Object,
 ) -> Result<BTreeMap<InputId, TitleTimeline>, DecodeError> {
-    let entries = parse_array(object.take("title_timelines")?, "title_timelines", |value| {
-        let mut entry = Object::new(value, "title timeline")?;
-        let input = InputId::new(entry.nonzero_u128("input")?);
-        let on = match entry.string("on")?.as_str() {
-            "air" => TitleShownOn::Air,
-            "preview" => TitleShownOn::Preview,
-            _ => return Err(syntax("title timeline `on` must be \"air\" or \"preview\"")),
-        };
-        let since_frame = entry.u64("since_frame")?;
-        entry.finish()?;
-        Ok((input, TitleTimeline { on, since_frame }))
-    })?;
+    let entries = parse_array(
+        object.take("title_timelines")?,
+        "title_timelines",
+        |value| {
+            let mut entry = Object::new(value, "title timeline")?;
+            let input = InputId::new(entry.nonzero_u128("input")?);
+            let on = match entry.string("on")?.as_str() {
+                "air" => TitleShownOn::Air,
+                "preview" => TitleShownOn::Preview,
+                _ => return Err(syntax("title timeline `on` must be \"air\" or \"preview\"")),
+            };
+            let since_frame = entry.u64("since_frame")?;
+            entry.finish()?;
+            Ok((input, TitleTimeline { on, since_frame }))
+        },
+    )?;
     if entries.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
         return Err(syntax(
             "title_timelines entries must be in strictly ascending input order",

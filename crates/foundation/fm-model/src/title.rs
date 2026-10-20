@@ -213,7 +213,7 @@ impl fmt::Display for SetTitleFieldsError {
 
 impl std::error::Error for SetTitleFieldsError {}
 
-/// Where a title input is shown, for its timeline (GX-001, schema 65).
+/// Where a title input is shown, for its timeline (GX-001, schema 66).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum TitleShownOn {
     /// On air: on Program (either side of a transition) or on an overlay
@@ -223,7 +223,7 @@ pub enum TitleShownOn {
     Preview,
 }
 
-/// The frame a shown title's timeline started on (GX-001, schema 65).
+/// The frame a shown title's timeline started on (GX-001, schema 66).
 ///
 /// A title's tickers, scene clocks, and since-take clocks count from the
 /// engine frame it was taken to Program, an overlay channel, or Preview,

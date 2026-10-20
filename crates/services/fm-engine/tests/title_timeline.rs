@@ -11,9 +11,7 @@ use std::collections::BTreeMap;
 
 use fm_clock::ClockDomainId;
 use fm_command::{CommandEnvelope, IdempotencyKey};
-use fm_engine::{
-    Engine, EngineCommand, EngineTitle, EngineTitleShown, ShowState, SnapshotError,
-};
+use fm_engine::{Engine, EngineCommand, EngineTitle, EngineTitleShown, ShowState, SnapshotError};
 use fm_model::{TitleShownOn, TitleTimeline};
 use fm_switcher::OverlayChannelId;
 use fm_titles::fm_animation::{Easing, Keyframe, Phase, Property, Track, TrackKey, Value};
@@ -138,15 +136,25 @@ fn timeline(on: TitleShownOn, since_frame: u64) -> TitleTimeline {
 fn a_title_is_dated_to_the_frame_it_reaches_preview_then_program() {
     let mut engine = engine();
     assert_eq!(tick_to(&mut engine, 30), None, "not shown: no timeline");
-    accept(&mut engine, "preview", EngineCommand::SelectPreview(input(TITLE)));
+    accept(
+        &mut engine,
+        "preview",
+        EngineCommand::SelectPreview(input(TITLE)),
+    );
     let first = tick_by(&mut engine, 1).unwrap();
     let preview_frame = first.timeline.since_frame;
     assert_eq!(first.timeline.on, TitleShownOn::Preview);
     // The In phase plays on Preview from that frame.
     let bus = first.bus.unwrap();
-    assert_eq!((bus.phase, bus.phase_frame, bus.phase_frames), (TitleAirPhase::In, 0, 20));
+    assert_eq!(
+        (bus.phase, bus.phase_frame, bus.phase_frames),
+        (TitleAirPhase::In, 0, 20)
+    );
     let held = tick_to(&mut engine, preview_frame + 25).unwrap();
-    assert_eq!(held.timeline, timeline(TitleShownOn::Preview, preview_frame));
+    assert_eq!(
+        held.timeline,
+        timeline(TitleShownOn::Preview, preview_frame)
+    );
     assert_eq!(held.bus.unwrap().phase, TitleAirPhase::Hold);
 
     // A cut takes it to air: the timeline restarts there and In plays again.
@@ -165,7 +173,11 @@ fn a_title_is_dated_to_the_frame_it_reaches_preview_then_program() {
 #[test]
 fn a_transition_off_program_plays_out_and_a_plain_overlay_take_holds() {
     let mut engine = engine();
-    accept(&mut engine, "preview", EngineCommand::SelectPreview(input(TITLE)));
+    accept(
+        &mut engine,
+        "preview",
+        EngineCommand::SelectPreview(input(TITLE)),
+    );
     tick_to(&mut engine, 5);
     accept(&mut engine, "cut", EngineCommand::Cut);
     tick_to(&mut engine, 40);
@@ -179,10 +191,16 @@ fn a_transition_off_program_plays_out_and_a_plain_overlay_take_holds() {
     );
     let leaving = tick_by(&mut engine, 1).unwrap();
     let bus = leaving.bus.unwrap();
-    assert_eq!((bus.phase, bus.phase_frame, bus.phase_frames), (TitleAirPhase::Out, 0, 12));
+    assert_eq!(
+        (bus.phase, bus.phase_frame, bus.phase_frames),
+        (TitleAirPhase::Out, 0, 12)
+    );
     // An Out shorter than the transition holds its last frame.
     let ended = tick_by(&mut engine, 14).unwrap();
-    assert_eq!((ended.bus.unwrap().phase, ended.bus.unwrap().phase_frames), (TitleAirPhase::Out, 0));
+    assert_eq!(
+        (ended.bus.unwrap().phase, ended.bus.unwrap().phase_frames),
+        (TitleAirPhase::Out, 0)
+    );
     tick_by(&mut engine, 30);
 
     // Shown only on an overlay by a plain take: on air, no bus phase.
@@ -203,7 +221,11 @@ fn a_transition_off_program_plays_out_and_a_plain_overlay_take_holds() {
 #[test]
 fn a_title_take_restarts_the_timeline_on_its_frame() {
     let mut engine = engine();
-    accept(&mut engine, "preview", EngineCommand::SelectPreview(input(TITLE)));
+    accept(
+        &mut engine,
+        "preview",
+        EngineCommand::SelectPreview(input(TITLE)),
+    );
     tick_to(&mut engine, 10);
     accept(
         &mut engine,
@@ -223,7 +245,11 @@ fn a_title_take_restarts_the_timeline_on_its_frame() {
 #[test]
 fn a_snapshot_carries_the_timeline_and_a_restored_engine_continues_it() {
     let mut engine = engine();
-    accept(&mut engine, "preview", EngineCommand::SelectPreview(input(TITLE)));
+    accept(
+        &mut engine,
+        "preview",
+        EngineCommand::SelectPreview(input(TITLE)),
+    );
     tick_to(&mut engine, 3);
     accept(&mut engine, "cut", EngineCommand::Cut);
     tick_to(&mut engine, 200);

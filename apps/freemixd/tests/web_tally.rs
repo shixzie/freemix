@@ -1741,7 +1741,10 @@ fn pages_carry_complete_english_and_spanish_string_tables() {
     let titles: &[(&str, &str)] = &[
         ("titles: \"Títulos\"", "t(\"Títulos\")"),
         ("take: \"Tomar\"", "t(\"Tomar\")"),
-        ("update: \"Actualizar en vivo\"", "t(\"Actualizar en vivo\")"),
+        (
+            "update: \"Actualizar en vivo\"",
+            "t(\"Actualizar en vivo\")",
+        ),
         ("offAir: \"Retirar del aire\"", "t(\"Retirar del aire\")"),
         ("save: \"Guardar\"", "t(\"Guardar\")"),
         ("channel: \"Canal\"", "t(\"Canal\")"),
@@ -1962,7 +1965,10 @@ fn titles_page_edits_and_takes_a_title_within_the_session_role() {
     }
     // The other pages pair a Graphics device too and link the editor.
     for (path, needle) in [
-        ("/operator", "<a href=\"/titles\" data-i18n=\"titlesLink\">Titles</a>"),
+        (
+            "/operator",
+            "<a href=\"/titles\" data-i18n=\"titlesLink\">Titles</a>",
+        ),
         ("/tally", "\"operator\", \"graphics\"]"),
     ] {
         let (_, _, body) = http(
@@ -1983,7 +1989,11 @@ fn titles_page_edits_and_takes_a_title_within_the_session_role() {
     let take = |base: u64, text: &str| {
         format!(
             "payload=title_take\tinput={title}\tchannel=1\tbase_revision={base}\tfields={}",
-            if text.is_empty() { String::new() } else { fields(text) }
+            if text.is_empty() {
+                String::new()
+            } else {
+                fields(text)
+            }
         )
     };
     let off_air = format!("payload=title_off_air\tinput={title}");
@@ -1994,8 +2004,13 @@ fn titles_page_edits_and_takes_a_title_within_the_session_role() {
     assert_eq!(snapshot.titles.len(), 1);
     assert_eq!(snapshot.titles[0].input, title);
     assert_eq!(snapshot.titles[0].field_revision, 0);
-    let (_, event) =
-        page_command(&mut graphics, "graphics-save", None, &edit(0, "off_air", "Ana")).unwrap();
+    let (_, event) = page_command(
+        &mut graphics,
+        "graphics-save",
+        None,
+        &edit(0, "off_air", "Ana"),
+    )
+    .unwrap();
     let EventPayload::TitleChanged {
         input: changed,
         field_revision,
@@ -2007,9 +2022,14 @@ fn titles_page_edits_and_takes_a_title_within_the_session_role() {
     assert_eq!((changed, field_revision), (title, 1));
     // A save on the old revision is refused, not applied over the newer one.
     assert_eq!(
-        page_command(&mut graphics, "graphics-stale", None, &edit(0, "off_air", "Old"))
-            .unwrap_err()
-            .0,
+        page_command(
+            &mut graphics,
+            "graphics-stale",
+            None,
+            &edit(0, "off_air", "Old")
+        )
+        .unwrap_err()
+        .0,
         "conflict"
     );
     // Nor may it take the title to air or update it as if live.
@@ -2020,9 +2040,14 @@ fn titles_page_edits_and_takes_a_title_within_the_session_role() {
         "permission_denied"
     );
     assert_eq!(
-        page_command(&mut graphics, "graphics-live", None, &edit(1, "on_air", "Bea"))
-            .unwrap_err()
-            .0,
+        page_command(
+            &mut graphics,
+            "graphics-live",
+            None,
+            &edit(1, "on_air", "Bea")
+        )
+        .unwrap_err()
+        .0,
         "conflict"
     );
 
@@ -2038,10 +2063,21 @@ fn titles_page_edits_and_takes_a_title_within_the_session_role() {
     page_command(&mut operator, "operator-take", None, &take(1, "")).unwrap();
 
     // On air, the Graphics page updates it live and still cannot clear it.
-    let (_, event) =
-        page_command(&mut graphics, "graphics-update", None, &edit(1, "on_air", "Bea")).unwrap();
+    let (_, event) = page_command(
+        &mut graphics,
+        "graphics-update",
+        None,
+        &edit(1, "on_air", "Bea"),
+    )
+    .unwrap();
     assert!(
-        matches!(event, EventPayload::TitleChanged { field_revision: 2, .. }),
+        matches!(
+            event,
+            EventPayload::TitleChanged {
+                field_revision: 2,
+                ..
+            }
+        ),
         "{event:?}"
     );
     assert_eq!(

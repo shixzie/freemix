@@ -44,7 +44,7 @@ pub enum WebDeviceRole {
     Viewer,
     Audio,
     Operator,
-    /// Edits title fields from the title editor page (Protocol 2.75,
+    /// Edits title fields from the title editor page (Protocol 2.77,
     /// GX-006).
     Graphics,
 }

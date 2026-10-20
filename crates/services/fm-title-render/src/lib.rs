@@ -118,9 +118,10 @@ impl LoadedTitleTemplate {
                 ElementKind::Clock(_) | ElementKind::Ticker(_) | ElementKind::ProductionClock(_)
             )
         });
-        let scene_timed = template.elements.iter().any(|element| {
-            matches!(element.kind, ElementKind::Clock(_) | ElementKind::Ticker(_))
-        });
+        let scene_timed = template
+            .elements
+            .iter()
+            .any(|element| matches!(element.kind, ElementKind::Clock(_) | ElementKind::Ticker(_)));
         Self {
             template: Mutex::new(Arc::new(template)),
             images: Mutex::new(TitleImages {

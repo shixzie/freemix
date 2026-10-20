@@ -4005,7 +4005,7 @@ mod titles {
             "title_state\trevision=9\tinput=2\tname=Lower%20third\tfield_revision=4\tphase=in\tphase_frame=3\tphase_frames=20\tshown=none\tsince_frame=0\tfields=1%3At%3A3%3AAna%2C2%3An%3A3\tfield_names=11%3AName%2C%20first%2C5%3AScore\n"
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
-        // Protocol 2.75: where the title is shown and the frame its
+        // Protocol 2.77: where the title is shown and the frame its
         // timeline started on (GX-001).
         for (shown, token) in [
             (fm_protocol::TitleShownOn::Air, "air"),

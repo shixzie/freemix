@@ -2023,10 +2023,7 @@ mod tests {
         let key = |frame, taken| {
             title_render::title_key(&assets, title, frame, taken, AnimSample::Hold).unwrap()
         };
-        assert_eq!(
-            key(9, realized.taken_frame(input_id(22))),
-            key(9, Some(4))
-        );
+        assert_eq!(key(9, realized.taken_frame(input_id(22))), key(9, Some(4)));
         // The take frame is part of a scene-timed title's key: the same
         // frame on another timeline is another picture.
         assert_ne!(key(9, Some(4)), key(9, Some(5)));

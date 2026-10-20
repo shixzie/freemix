@@ -6409,6 +6409,20 @@ fn assert_title_state(
     field_revision: u64,
     color: (u8, u8, u8),
 ) {
+    // The title rests on Preview (GX-001): once the engine has realized a
+    // frame, its timeline runs there from frame 0 and its bus pose holds
+    // (the template has no In phase); before that it is not yet shown.
+    let shown = fm_protocol::TitleTimelineStatus {
+        shown: fm_protocol::TitleShownOn::Preview,
+        since_frame: 0,
+    };
+    let (phase, timeline) = match state.timeline {
+        None => (fm_protocol::TitlePhase::Idle, None),
+        Some(timeline) => {
+            assert_eq!(timeline, shown);
+            (fm_protocol::TitlePhase::Hold, Some(shown))
+        }
+    };
     assert_eq!(
         state,
         &fm_protocol::TitleStateMessage {
@@ -6416,10 +6430,10 @@ fn assert_title_state(
             input: input(4),
             name: "Process title".into(),
             field_revision,
-            phase: fm_protocol::TitlePhase::Idle,
+            phase,
             phase_frame: 0,
             phase_frames: 0,
-            timeline: None,
+            timeline,
             fields: vec![fm_protocol::TitleFieldStatus {
                 field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(1).unwrap()),
                 name: "Bar".into(),

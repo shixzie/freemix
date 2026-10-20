@@ -314,10 +314,9 @@ fn validate_playlist(project: &Project, errors: &mut Vec<ValidationError>) {
 
 fn validate_title_timelines(project: &Project, errors: &mut Vec<ValidationError>) {
     for input in project.title_timelines().keys() {
-        let is_title = project
-            .inputs()
-            .iter()
-            .any(|candidate| candidate.id == *input && matches!(candidate.kind, crate::InputKind::Title(_)));
+        let is_title = project.inputs().iter().any(|candidate| {
+            candidate.id == *input && matches!(candidate.kind, crate::InputKind::Title(_))
+        });
         if !is_title {
             errors.push(ValidationError {
                 entity: Some(EntityRef::Input(*input)),

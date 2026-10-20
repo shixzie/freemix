@@ -78,7 +78,6 @@ pub use slideshow::{
     EngineSlide, EngineSlideCrop, EngineSlideView, EngineSlideshowError, EngineSlideshowFrame,
     EngineSlideshowStatus, KEN_BURNS_SPACE,
 };
-pub use title_timeline::EngineTitleShown;
 pub use state::{
     EngineInputAudioStripState, EngineInputSource, EngineTitle, MAX_SHOW_INPUTS, ShowState,
 };
@@ -87,6 +86,7 @@ pub use title_animation::{
     EngineTitleAnimationEdit, EngineTitleTemplate, TitleAnimationChange, TitleClipBound,
     title_template_inputs,
 };
+pub use title_timeline::EngineTitleShown;
 
 // Persisted title inputs (`fm_model`) and live title field sets (`fm_titles`)
 // must agree on every bound, or a project could hold values the engine

@@ -48,8 +48,7 @@ use super::scene_layout::{
 };
 use super::title::{
     decode_title_field_names, decode_title_fields, decode_title_phase, decode_title_summaries,
-    decode_title_timeline,
-    parse_title_air_requirement, validate_title_name, validate_title_phase,
+    decode_title_timeline, parse_title_air_requirement, validate_title_name, validate_title_phase,
 };
 use super::transition::{
     decode_auto_transition_kind, decode_favorite, decode_favorite_slot, decode_favorites,

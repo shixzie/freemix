@@ -1,6 +1,6 @@
 //! GX-001: title timelines (the engine frame each shown title's tickers and
 //! clocks count from) round-trip exactly and strictly in `project.json`
-//! (schema 65); whether one names a title input is project validation.
+//! (schema 66); whether one names a title input is project validation.
 
 use std::{
     collections::BTreeMap,
@@ -140,7 +140,10 @@ fn title_timelines_round_trip_exactly_and_strictly() {
             "\"since_frame\": 18446744073709551615",
             "\"since_frame\": 18446744073709551616",
         ),
-        ("\"since_frame\": 0}", "\"since_frame\": 0, \"phase\": \"in\"}"),
+        (
+            "\"since_frame\": 0}",
+            "\"since_frame\": 0, \"phase\": \"in\"}",
+        ),
         // Entries are strictly ascending by input.
         ("{\"input\": 5, ", "{\"input\": 3, "),
     ] {
@@ -173,7 +176,11 @@ fn a_timeline_must_name_a_title_input() {
     let mut project = self::project();
     project.remove_input(input(5)).unwrap();
     assert_eq!(
-        project.title_timelines().keys().copied().collect::<Vec<_>>(),
+        project
+            .title_timelines()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
         vec![input(3)]
     );
     stored(project).unwrap();
