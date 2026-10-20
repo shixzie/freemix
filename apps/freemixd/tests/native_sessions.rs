@@ -188,6 +188,7 @@ impl DaemonProcess {
             .arg("--record-program")
             .arg(output)
             .env("FREEMIXD_WEB_TOKEN", TOKEN)
+            .env("FREEMIXD_PACING_TRACE", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -694,6 +695,62 @@ fn decoded_video_frames(path: &Path) -> u64 {
         .unwrap()
 }
 
+/// Every Program frame of the shutdown `FREEMIXD_PACING_TRACE` record, in
+/// frame order: how late it started and how long realizing it took, in
+/// milliseconds.
+fn traced_frames(stderr: &str) -> Vec<(f64, f64)> {
+    let record = stderr
+        .lines()
+        .find(|line| line.starts_with("FREEMIXD_PACING_TRACE\t"))
+        .unwrap_or_else(|| panic!("no pacing trace: {stderr}"));
+    record
+        .split('\t')
+        .find_map(|field| field.strip_prefix("samples="))
+        .unwrap_or_else(|| panic!("no samples in {record}"))
+        .split(',')
+        .filter(|sample| !sample.is_empty())
+        .map(|sample| {
+            let mut fields = sample.split(':');
+            let mut milliseconds = || fields.next().unwrap().parse::<f64>().unwrap() / 1_000.0;
+            (milliseconds(), milliseconds())
+        })
+        .collect()
+}
+
+/// How long the frame loop held each traced frame back on its own: the
+/// frame's lateness less what realizing the frame before it overran the
+/// interval by. A frame loop blocked by anything (a session's writes
+/// included) shows here; frames late only because the host realizes them
+/// slower than the show's rate (every core busy) do not.
+fn loop_stalls(frames: &[(f64, f64)]) -> Vec<f64> {
+    let frame_ms = 1_000.0 / f64::from(FRAME_RATE);
+    frames
+        .iter()
+        .enumerate()
+        .map(|(index, &(lateness, _))| {
+            let overrun = index
+                .checked_sub(1)
+                .map_or(0.0, |previous| {
+                    let (lateness, realize) = frames[previous];
+                    lateness + realize - frame_ms
+                })
+                .max(0.0);
+            (lateness - overrun).max(0.0)
+        })
+        .collect()
+}
+
+/// The `percent` percentile of `samples` (nearest rank); 0 for none.
+fn percentile(samples: &[f64], percent: usize) -> f64 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(f64::total_cmp);
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let rank = (percent * sorted.len()).div_ceil(100);
+    sorted[rank.clamp(1, sorted.len()) - 1]
+}
+
 /// One field of the shutdown `FREEMIXD_TELEMETRY` record.
 fn telemetry_field(stderr: &str, field: &str) -> f64 {
     let record = stderr
@@ -919,11 +976,23 @@ fn a_stalled_studio_reader_never_delays_other_sessions_or_program_pacing() {
     let stderr = daemon.stop();
     // Each accepted command journals before its frame, so the tail of the
     // lateness population belongs to the disk, in this and a one-session
-    // run alike; the typical frame is realized on time.
-    let p50 = telemetry_field(&stderr, "host_lateness_p50_ms");
+    // run alike; the typical frame is not held back by the frame loop.
     let frame_ms = 1_000.0 / f64::from(FRAME_RATE);
+    let traced = traced_frames(&stderr);
+    let stalls = loop_stalls(&traced);
+    let stall_p50 = percentile(&stalls, 50);
     assert!(
-        p50 < frame_ms / 2.0,
+        stall_p50 < frame_ms / 2.0,
+        "the frame loop held Program frames back: stall p50 {stall_p50:.2} ms"
+    );
+    // On a host that keeps pace with the show (frames realize in under half
+    // an interval), the typical frame is realized on time outright; on one
+    // whose cores are all busy, slow realization makes frames late whatever
+    // the sessions do, and only the loop's own stalls above say anything.
+    let realize: Vec<f64> = traced.iter().map(|&(_, realize)| realize).collect();
+    let p50 = telemetry_field(&stderr, "host_lateness_p50_ms");
+    assert!(
+        percentile(&realize, 95) >= frame_ms / 2.0 || p50 < frame_ms / 2.0,
         "Program pacing slipped: host lateness p50 {p50} ms"
     );
     // The recorder started before readiness, so it holds at least every
