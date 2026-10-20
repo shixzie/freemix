@@ -264,23 +264,22 @@ impl Client {
         // The native daemon also sends a Preview tap; only Program is checked.
         if let WireMessage::MonitorFrame(part) = &message
             && part.tap == MonitorTap::Program
+            && let Some(image) = self.assembler.push(part).unwrap()
         {
-            if let Some(image) = self.assembler.push(part).unwrap() {
-                let width = usize::from(image.width);
-                let centre = (usize::from(image.height) / 2 * width + width / 2) * 4;
-                let pixel = &image.rgba[centre..centre + 3];
-                let color = [RED, BLUE].into_iter().find(|expected| {
-                    pixel
-                        .iter()
-                        .zip(expected)
-                        .all(|(actual, expected)| actual.abs_diff(*expected) <= 2)
-                });
-                self.samples.push(Sample {
-                    frame: image.frame,
-                    input: image.input,
-                    color,
-                });
-            }
+            let width = usize::from(image.width);
+            let centre = (usize::from(image.height) / 2 * width + width / 2) * 4;
+            let pixel = &image.rgba[centre..centre + 3];
+            let color = [RED, BLUE].into_iter().find(|expected| {
+                pixel
+                    .iter()
+                    .zip(expected)
+                    .all(|(actual, expected)| actual.abs_diff(*expected) <= 2)
+            });
+            self.samples.push(Sample {
+                frame: image.frame,
+                input: image.input,
+                color,
+            });
         }
         message
     }
