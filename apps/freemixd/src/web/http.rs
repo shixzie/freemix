@@ -2,7 +2,7 @@
 //! allowlist (DNS-rebinding defence), the same-origin rule, and the JSON
 //! answers of `/v1/pair` and `/v1/whoami`.
 
-use std::net::IpAddr;
+use std::{fmt::Write as _, net::IpAddr};
 
 /// The longest request head the gateway reads.
 pub(super) const MAX_REQUEST_HEAD: usize = 8 * 1024;
@@ -116,9 +116,7 @@ pub(super) fn allowed_host(host: &str, extra: &[String]) -> bool {
         return false;
     };
     let name = name.trim_end_matches('.').to_ascii_lowercase();
-    name.parse::<IpAddr>().is_ok()
-        || name == "localhost"
-        || extra.iter().any(|allowed| *allowed == name)
+    name.parse::<IpAddr>().is_ok() || name == "localhost" || extra.contains(&name)
 }
 
 /// Whether a browser request came from the page the gateway served:
@@ -174,7 +172,7 @@ pub(super) fn json_string(text: &str) -> String {
             '\\' => escaped.push_str("\\\\"),
             '<' => escaped.push_str("\\u003c"),
             character if character.is_control() => {
-                escaped.push_str(&format!("\\u{:04x}", u32::from(character)));
+                let _ = write!(escaped, "\\u{:04x}", u32::from(character));
             }
             character => escaped.push(character),
         }

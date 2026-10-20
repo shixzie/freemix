@@ -65,7 +65,7 @@ fn pairing_expires() {
             .unwrap_err(),
         RedeemError::Pairing(PairingError::Expired)
     );
-    assert!(registry.devices().is_empty());
+    assert_eq!(registry.devices(), []);
     assert_eq!(
         registry
             .start_pairing(code("1"), code("2"), DeviceRole::Viewer, 0, 600_001)
@@ -105,7 +105,7 @@ fn wrong_codes_share_one_budget_and_exhaust_the_pairing() {
             .unwrap_err(),
         RedeemError::Pairing(PairingError::Expired)
     );
-    assert!(registry.devices().is_empty());
+    assert_eq!(registry.devices(), []);
 }
 
 #[test]

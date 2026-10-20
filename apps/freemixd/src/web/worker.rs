@@ -392,10 +392,9 @@ pub(super) fn serve_connection(socket: TcpStream, gateway: &Gateway) {
                     deadline,
                     &gateway.cancel,
                 )
-                .map_or_else(
-                    || bad_request(),
-                    |body| pair(&request, &body, peer, tls, &gateway.access),
-                ),
+                .map_or_else(bad_request, |body| {
+                    pair(&request, &body, peer, tls, &gateway.access)
+                }),
                 Some(_) => json_response("413 Content Too Large", r#"{"error":"bad_request"}"#, ""),
                 None => bad_request(),
             };

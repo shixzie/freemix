@@ -3,6 +3,7 @@
 //! identified to operators by its SHA-256 fingerprint.
 
 use std::{
+    fmt::Write as _,
     fs,
     io::Write,
     net::IpAddr,
@@ -26,7 +27,7 @@ pub(super) const KEY_FILE: &str = "web-tls-key.pem";
 const VALIDITY_DAYS: u64 = 800;
 /// A generated certificate this close to its expiry is replaced at startup.
 const RENEW_BEFORE_DAYS: u64 = 30;
-const DAY: Duration = Duration::from_secs(86_400);
+const DAY: Duration = Duration::from_hours(24);
 
 /// The rustls server configuration and the certificate's fingerprint.
 pub(crate) struct TlsMaterial {
@@ -207,7 +208,7 @@ pub(crate) fn fingerprint(der: &[u8]) -> String {
         if index > 0 {
             text.push(':');
         }
-        text.push_str(&format!("{byte:02X}"));
+        let _ = write!(text, "{byte:02X}");
     }
     text
 }

@@ -103,7 +103,6 @@ impl WebSettings {
             _ => return Ok(false),
         }
         self.tls = match (self.self_signed, &self.cert, &self.key) {
-            (false, None, None) => WebTls::Off,
             (true, None, None) => WebTls::SelfSigned,
             (false, Some(cert), Some(key)) => WebTls::Files {
                 cert: cert.clone(),

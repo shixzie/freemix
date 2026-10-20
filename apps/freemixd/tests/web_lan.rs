@@ -597,7 +597,7 @@ fn a_phone_pairs_over_tls_within_its_role_until_revoked() {
         device: device.clone(),
     });
     assert_eq!(revoked.refusal, None);
-    assert!(revoked.gateway.unwrap().devices.is_empty());
+    assert_eq!(revoked.gateway.unwrap().devices, []);
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         match phone.read() {

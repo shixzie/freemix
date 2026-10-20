@@ -104,8 +104,10 @@ impl Daemon {
         let fingerprint = lines[2]
             .trim_end()
             .rsplit_once("\tfingerprint=")
-            .map(|(_, fingerprint)| fingerprint.to_owned())
-            .unwrap_or_else(|| panic!("invalid TLS readiness {:?}", lines[2]));
+            .map_or_else(
+                || panic!("invalid TLS readiness {:?}", lines[2]),
+                |(_, fingerprint)| fingerprint.to_owned(),
+            );
         assert!(
             lines[2].starts_with(&format!("FREEMIXD_WEB_TLS\tv=1\turl=https://{web}\t")),
             "{:?}",

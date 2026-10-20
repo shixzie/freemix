@@ -162,7 +162,7 @@ impl core::fmt::Debug for WebPairing {
             .field("codes", &"[redacted]")
             .field("role", &self.role)
             .field("expires_in_ms", &self.expires_in_ms)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

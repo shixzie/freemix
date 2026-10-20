@@ -26,7 +26,7 @@ pub(super) fn page_for(path: &str) -> Option<&'static str> {
 /// A page answer for an allowed `host`.
 ///
 /// The page only ever connects back to its own gateway. `'self'` covers
-/// same-origin WebSockets in current browsers; the explicit `ws://` or
+/// same-origin `WebSockets` in current browsers; the explicit `ws://` or
 /// `wss://` source keeps older engines that predate that rule working.
 pub(super) fn page_response(host: Option<&str>, tls: bool, page: &str, body: bool) -> Vec<u8> {
     let scheme = if tls { "wss" } else { "ws" };

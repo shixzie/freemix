@@ -219,7 +219,7 @@ impl fmt::Debug for DevicePairing {
             .field("role", &self.role)
             .field("expires_at_ms", &self.expires_at_ms)
             .field("failed_attempts", &self.failed_attempts)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -380,11 +380,12 @@ impl DeviceRegistry {
             last_seen_ms: None,
             digest,
         })
-        .map_err(RedeemError::Device)?;
-        Ok(self.devices.last().expect("just inserted"))
+        .map_err(RedeemError::Device)
+        .map(|index| &self.devices[index])
     }
 
-    fn insert(&mut self, device: PairedDevice) -> Result<(), DeviceError> {
+    /// Stores `device` and returns its index.
+    fn insert(&mut self, device: PairedDevice) -> Result<usize, DeviceError> {
         device.validate()?;
         if self.devices.len() >= MAX_PAIRED_DEVICES {
             return Err(DeviceError::TooManyDevices);
@@ -393,7 +394,7 @@ impl DeviceRegistry {
             return Err(DeviceError::DuplicateId);
         }
         self.devices.push(device);
-        Ok(())
+        Ok(self.devices.len() - 1)
     }
 
     /// The device whose token has `digest`, checked against every stored

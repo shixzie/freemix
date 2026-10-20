@@ -8,6 +8,7 @@
 //! directory. Neither tokens nor pairing codes are ever logged.
 
 use std::{
+    fmt::Write as _,
     fs,
     net::IpAddr,
     path::{Path, PathBuf},
@@ -364,7 +365,7 @@ fn new_token() -> (String, TokenDigest) {
 fn new_device_id() -> String {
     let mut id = String::from("dev-");
     for byte in random::<6>() {
-        id.push_str(&format!("{byte:02x}"));
+        let _ = write!(id, "{byte:02x}");
     }
     id
 }
@@ -390,10 +391,11 @@ fn encode_devices(devices: &[PairedDevice]) -> String {
     for device in devices {
         let mut hex = String::with_capacity(64);
         for byte in device.digest.as_bytes() {
-            hex.push_str(&format!("{byte:02x}"));
+            let _ = write!(hex, "{byte:02x}");
         }
-        text.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{hex}\t{}\n",
+        let _ = writeln!(
+            text,
+            "{}\t{}\t{}\t{}\t{hex}\t{}",
             device.id,
             device.role.token(),
             device.paired_at_ms,
@@ -401,7 +403,7 @@ fn encode_devices(devices: &[PairedDevice]) -> String {
                 .last_seen_ms
                 .map_or_else(|| "-".to_owned(), |at| at.to_string()),
             device.name,
-        ));
+        );
     }
     text
 }
@@ -529,7 +531,7 @@ mod tests {
             device: device.id.clone(),
         });
         assert_eq!(refusal, None);
-        assert!(status.devices.is_empty());
+        assert_eq!(status.devices, []);
         assert!(!access.is_current(&identity));
         assert_eq!(access.authenticate(device.token.as_bytes()), None);
         let (refusal, _) = access.handle(&WebAccessAction::Revoke { device: device.id });
