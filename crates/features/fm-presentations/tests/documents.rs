@@ -103,6 +103,29 @@ fn rendering_is_deterministic() {
 }
 
 #[test]
+fn a_pdf_that_panics_the_parser_is_malformed_and_never_unwinds() {
+    // A page tree whose `Kids` array holds a broken reference: the
+    // parser's array iterator panics on it.
+    let pdf = String::from_utf8(three_pages()).unwrap();
+    let crafted = pdf.replacen("/Kids [4 0 R", "/Kids [4 + R", 1);
+    assert_ne!(crafted, pdf, "the sample names its first page 4 0 R");
+    let outcome = std::panic::catch_unwind(|| {
+        PdfDocument::open(crafted.into_bytes()).map(|pdf| {
+            let info = pdf.info();
+            for page in 0..pdf.page_count() {
+                let _ = pdf.render_page(page, 64, 36);
+            }
+            info
+        })
+    });
+    let result = outcome.expect("a damaged PDF never panics out of the document reader");
+    assert!(
+        matches!(result, Err(DocumentError::Malformed(_))),
+        "{result:?}"
+    );
+}
+
+#[test]
 fn damaged_and_empty_pdfs_fail_with_a_reason() {
     let error = PdfDocument::open(b"not a pdf at all".to_vec()).unwrap_err();
     assert_eq!(error.state(), DocumentState::Failed);

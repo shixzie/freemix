@@ -179,17 +179,33 @@ impl RenderedPage {
 }
 
 /// A parsed PDF that renders pages on demand.
+///
+/// The parser and renderer read untrusted bytes, and a damaged file can
+/// make them panic; every call into them is contained, so such a file
+/// reads as [`DocumentError::Malformed`] instead of unwinding into the
+/// caller (a document is probed on the daemon's session loop).
 pub struct PdfDocument {
     pdf: Pdf,
+    page_count: u32,
+    title: Option<String>,
 }
 
 impl fmt::Debug for PdfDocument {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("PdfDocument")
-            .field("pages", &self.pdf.pages().len())
+            .field("pages", &self.page_count)
             .finish_non_exhaustive()
     }
+}
+
+/// `read`'s result, or `damage` when the PDF library panics on the file.
+fn contained<T>(
+    damage: &str,
+    read: impl FnOnce() -> Result<T, DocumentError>,
+) -> Result<T, DocumentError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(read))
+        .unwrap_or_else(|_| Err(DocumentError::Malformed(damage.to_owned())))
 }
 
 impl PdfDocument {
@@ -204,34 +220,42 @@ impl PdfDocument {
         if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
             return Err(DocumentError::TooLarge);
         }
-        let pdf = Pdf::new(bytes).map_err(|error| match error {
-            LoadPdfError::Decryption(_) => DocumentError::Encrypted,
-            LoadPdfError::Invalid => DocumentError::Malformed("not a readable PDF".into()),
-        })?;
-        let count = pdf.pages().len();
-        if count == 0 {
-            return Err(DocumentError::Malformed("the PDF has no pages".into()));
-        }
-        let count = u32::try_from(count).unwrap_or(u32::MAX);
-        if count > MAX_PAGED_PAGES {
-            return Err(DocumentError::TooManyPages(count));
-        }
-        Ok(Self { pdf })
+        contained("not a readable PDF", || {
+            let pdf = Pdf::new(bytes).map_err(|error| match error {
+                LoadPdfError::Decryption(_) => DocumentError::Encrypted,
+                LoadPdfError::Invalid => DocumentError::Malformed("not a readable PDF".into()),
+            })?;
+            let count = pdf.pages().len();
+            if count == 0 {
+                return Err(DocumentError::Malformed("the PDF has no pages".into()));
+            }
+            let page_count = u32::try_from(count).unwrap_or(u32::MAX);
+            if page_count > MAX_PAGED_PAGES {
+                return Err(DocumentError::TooManyPages(page_count));
+            }
+            let title = pdf.metadata().title.as_deref().and_then(|raw| {
+                let text = decode_pdf_text(raw);
+                let title = bounded_paged_text(text.trim(), MAX_PAGED_TITLE_BYTES, false);
+                (!title.is_empty()).then_some(title)
+            });
+            Ok(Self {
+                pdf,
+                page_count,
+                title,
+            })
+        })
     }
 
     /// The number of pages (at least one).
     #[must_use]
     pub fn page_count(&self) -> u32 {
-        u32::try_from(self.pdf.pages().len()).unwrap_or(u32::MAX)
+        self.page_count
     }
 
     /// The document information dictionary's title, if it has one.
     #[must_use]
     pub fn title(&self) -> Option<String> {
-        let raw = self.pdf.metadata().title.as_deref()?;
-        let text = decode_pdf_text(raw);
-        let title = bounded_paged_text(text.trim(), MAX_PAGED_TITLE_BYTES, false);
-        (!title.is_empty()).then_some(title)
+        self.title.clone()
     }
 
     /// The page count and title (a PDF carries no presenter notes).
@@ -260,26 +284,31 @@ impl PdfDocument {
         if width == 0 || height == 0 || width > MAX_RENDER_SIDE || height > MAX_RENDER_SIDE {
             return Err(DocumentError::InvalidSize);
         }
-        let pages = self.pdf.pages();
-        let source = pages
-            .get(usize::try_from(page).map_err(|_| DocumentError::NoSuchPage(page))?)
-            .ok_or(DocumentError::NoSuchPage(page))?;
-        let (page_width, page_height) = source.render_dimensions();
-        let (fit_width, fit_height) = fit(page_width, page_height, width, height)?;
-        #[allow(clippy::cast_precision_loss)]
-        let settings = PixmapSettings {
-            x_scale: fit_width as f32 / page_width,
-            y_scale: fit_height as f32 / page_height,
-            bg_color: WHITE,
-        };
-        let cache = RenderCache::new();
-        let pixmap = hayro::render(
-            source,
-            &cache,
-            &InterpreterSettings::default(),
-            &RenderSettings::default(),
-            &settings,
-        );
+        if page >= self.page_count {
+            return Err(DocumentError::NoSuchPage(page));
+        }
+        let pixmap = contained("the page cannot be drawn", || {
+            let pages = self.pdf.pages();
+            let source = pages
+                .get(usize::try_from(page).map_err(|_| DocumentError::NoSuchPage(page))?)
+                .ok_or(DocumentError::NoSuchPage(page))?;
+            let (page_width, page_height) = source.render_dimensions();
+            let (fit_width, fit_height) = fit(page_width, page_height, width, height)?;
+            #[allow(clippy::cast_precision_loss)]
+            let settings = PixmapSettings {
+                x_scale: fit_width as f32 / page_width,
+                y_scale: fit_height as f32 / page_height,
+                bg_color: WHITE,
+            };
+            let cache = RenderCache::new();
+            Ok(hayro::render(
+                source,
+                &cache,
+                &InterpreterSettings::default(),
+                &RenderSettings::default(),
+                &settings,
+            ))
+        })?;
         let (rendered_width, rendered_height) =
             (u32::from(pixmap.width()), u32::from(pixmap.height()));
         let rendered = pixmap.data_as_u8_slice();
