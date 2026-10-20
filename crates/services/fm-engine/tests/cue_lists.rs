@@ -1671,3 +1671,64 @@ fn a_go_binds_dynamic_targets_for_its_whole_run() {
     assert_eq!(overlay_on(&replay, 1), Some(input(4)));
     assert_eq!(program_changes(&frames), vec![(fired + 5, input(3))]);
 }
+
+/// RC-004: a list edited to name a dynamic target while a run (or an
+/// armed GO) that bound none is under way still resolves Preview and
+/// Program when the advance runs the edited cue, as the show has them on
+/// that frame; they are never unbound, so the run does not fault.
+#[test]
+fn an_advance_into_a_cue_edited_to_a_dynamic_target_binds_preview_and_program() {
+    use fm_model::InputTarget;
+    let overlay = |channel| CueAction::OverlayOn {
+        channel,
+        input: InputTarget::Preview,
+    };
+
+    // A run waiting in cue 10, whose follower is edited to show Preview.
+    let mut live = engine();
+    let waiting = cue(10, vec![CueAction::Wait { frames: 5 }], true);
+    accepted(&submit(
+        &mut live,
+        "set",
+        set(1, vec![waiting.clone(), cue(20, vec![cut(2)], false)]),
+    ));
+    live.tick().unwrap();
+    let fired = accepted(&submit(&mut live, "go", control(1, GO)));
+    assert_eq!(live.show().cue_list(1).unwrap().state.targets, None);
+    drive(&mut live, 2);
+    accepted(&submit(
+        &mut live,
+        "edit",
+        set(1, vec![waiting, cue(20, vec![overlay(1)], false)]),
+    ));
+    let ahead = fired + 8 - live.frame_cursor().get();
+    drive(&mut live, ahead);
+    let state = &live.show().cue_list(1).unwrap().state;
+    assert_eq!(state.fault, None, "{state:?}");
+    assert_eq!(state.live, Some(20));
+    assert_eq!(overlay_on(&live, 1), Some(input(4)));
+
+    // An armed GO whose cue is edited to show Preview before it fires.
+    let mut armed = engine();
+    accepted(&submit(
+        &mut armed,
+        "set",
+        set(1, vec![cue(10, vec![cut(2)], false)]),
+    ));
+    armed.tick().unwrap();
+    let armed_at = accepted(&submit(&mut armed, "arm", control(1, arm(Some(10), 200))));
+    let state = &armed.show().cue_list(1).unwrap().state;
+    assert_eq!(state.armed.unwrap().targets, None);
+    accepted(&submit(
+        &mut armed,
+        "edit",
+        set(1, vec![cue(10, vec![overlay(2)], false)]),
+    ));
+    assert!(armed.show().cue_list(1).unwrap().state.armed.is_some());
+    let ahead = armed_at + 8 - armed.frame_cursor().get();
+    drive(&mut armed, ahead);
+    let state = &armed.show().cue_list(1).unwrap().state;
+    assert_eq!(state.fault, None, "{state:?}");
+    assert_eq!(state.live, Some(10));
+    assert_eq!(overlay_on(&armed, 2), Some(input(4)));
+}

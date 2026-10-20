@@ -2070,16 +2070,26 @@ impl Engine {
                     &crate::cue::stack_state(&list.state),
                 )
                 .map(|(_, due)| due);
+                // A run (or armed GO) started while the list named no
+                // dynamic target bound none; an edit since may have added
+                // one, which resolves Preview and Program as the show has
+                // them on this frame and keeps them for the rest of the
+                // run. Only a selection stays unbound.
+                let bind = |bound: Option<TargetBindings>| {
+                    bound.unwrap_or_else(|| self.bind_targets(TargetBindings::default()))
+                };
                 if due == Some(fm_automation::CueDue::Armed) {
+                    let bound = bind(armed);
                     CueTargets {
-                        frame: armed.unwrap_or_default(),
-                        run: armed,
+                        frame: bound,
+                        run: Some(bound),
                         armed: None,
                     }
                 } else {
+                    let bound = bind(run);
                     CueTargets {
-                        frame: run.unwrap_or_default(),
-                        run,
+                        frame: bound,
+                        run: Some(bound),
                         armed,
                     }
                 }
