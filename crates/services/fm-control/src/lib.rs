@@ -1848,7 +1848,7 @@ impl<A: AuthorizationHook> ControlService<A> {
     }
 
     /// Returns the `media_list_state` records a session writes after
-    /// [`Self::script_states`], one per media list input ascending by input
+    /// [`Self::shortcut_states`], one per media list input ascending by input
     /// (IN-006).
     #[must_use]
     pub fn media_list_states(&self) -> Vec<fm_protocol::MediaListStateMessage> {

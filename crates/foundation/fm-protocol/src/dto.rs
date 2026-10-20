@@ -2457,7 +2457,7 @@ pub struct SnapshotMessage {
     /// ascending input order, at most [`crate::MAX_STILL_STATES`].
     pub still_states: u16,
     /// How many [`crate::MediaListStateMessage`] records follow this
-    /// snapshot (after its script states), one per media list input in
+    /// snapshot (after its shortcut states), one per media list input in
     /// ascending input order, at most [`crate::MAX_MEDIA_LIST_STATES`]
     /// (IN-006).
     pub media_list_states: u16,
