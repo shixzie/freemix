@@ -229,3 +229,85 @@ fn media_lists_are_authorized_replicated_and_auto_advanced_exactly() {
     assert_eq!(changed(&undo).3.items, items());
     assert_eq!(control.media_list_states()[0].status.items, items());
 }
+
+/// A list whose files and titles are written in a non-Latin script: every
+/// byte is escaped twice on the wire (once in the item, once in the line).
+fn escaped_items(count: u32, stem_chars: usize, title_chars: usize) -> Vec<MediaListItemSpec> {
+    (0..count)
+        .map(|index| MediaListItemSpec {
+            id: fm_protocol::MAX_MEDIA_LIST_ITEM_ID - index,
+            uri: format!("asset://media/{index}{}.mp4", "動".repeat(stem_chars)),
+            title: (title_chars > 0).then(|| "題".repeat(title_chars)),
+            mark_in: fm_model::MAX_MEDIA_FRAME - 1,
+            mark_out: Some(fm_model::MAX_MEDIA_FRAME),
+        })
+        .collect()
+}
+
+#[test]
+fn every_accepted_list_fits_its_wire_records_and_one_that_cannot_is_refused() {
+    // 100 items of 40-character Japanese names hold under 16 KiB of text
+    // but escape to far more than one protocol line.
+    let mut control = service(64, 256);
+    let oversized = escaped_items(100, 40, 0);
+    let text: usize = oversized.iter().map(|item| item.uri.len()).sum();
+    assert!(text <= fm_protocol::MAX_MEDIA_LIST_TEXT_BYTES, "{text}");
+    let refused = submit(
+        &mut control,
+        Role::Graphics,
+        "oversized",
+        payload(MediaListOperation::Create {
+            name: "Walk-in".to_owned(),
+            items: oversized,
+            options: MediaListOptionsSpec::default(),
+        }),
+    );
+    let CommandResult::Rejected { fields, .. } = &refused.output.result else {
+        panic!(
+            "accepted a list whose state record cannot be encoded: {:?}",
+            control
+                .media_list_states()
+                .into_iter()
+                .map(|state| fm_protocol::encode_line(&WireMessage::MediaListState(state)))
+                .collect::<Vec<_>>()
+        );
+    };
+    assert_eq!(fields[0].code, "invalid_items");
+
+    // The largest list the model accepts, with the longest name, ids, and
+    // marks, still encodes as its event and its state record.
+    let largest = escaped_items(256, 3, 5);
+    let wire: usize = largest
+        .iter()
+        .map(|item| {
+            fm_model::media_list_wire_text_bytes(&item.uri)
+                + fm_model::media_list_wire_text_bytes(item.title.as_deref().unwrap_or_default())
+        })
+        .sum();
+    assert!(
+        (fm_model::MAX_MEDIA_LIST_WIRE_TEXT_BYTES - 1024
+            ..=fm_model::MAX_MEDIA_LIST_WIRE_TEXT_BYTES)
+            .contains(&wire),
+        "{wire}"
+    );
+    let created = submit(
+        &mut control,
+        Role::Graphics,
+        "largest",
+        payload(MediaListOperation::Create {
+            name: "é".repeat(fm_types::MAX_INPUT_NAME_BYTES / 2),
+            items: largest,
+            options: MediaListOptionsSpec {
+                shuffle_seed: Some(u64::MAX),
+                ..MediaListOptionsSpec::default()
+            },
+        }),
+    );
+    assert!(created.is_accepted(), "{:?}", created.output.result);
+    assert_wire_exact(&control, &created);
+    for state in control.media_list_states() {
+        let message = WireMessage::MediaListState(state);
+        let line = fm_protocol::encode_line(&message).unwrap();
+        assert_eq!(fm_protocol::decode_line(&line).unwrap(), message);
+    }
+}

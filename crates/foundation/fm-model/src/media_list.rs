@@ -25,6 +25,13 @@ pub const MAX_MEDIA_LIST_ITEMS: usize = 256;
 /// Most UTF-8 bytes of every item's file and title together, so a whole
 /// list fits one protocol record.
 pub const MAX_MEDIA_LIST_TEXT_BYTES: usize = 16 * 1024;
+/// Most bytes every item's file and title together take once escaped for
+/// the wire ([`media_list_wire_text_bytes`]). The protocol escapes an
+/// item's text inside its `items` field and then the field inside its line,
+/// so a byte other than an ASCII letter, digit, `-`, `_`, or `.` costs five
+/// bytes; this bound keeps a whole list, with every item's id and marks and
+/// its play order, inside one protocol line.
+pub const MAX_MEDIA_LIST_WIRE_TEXT_BYTES: usize = 40 * 1024;
 /// Most media list inputs one project holds.
 pub const MAX_MEDIA_LISTS: usize = 64;
 /// Longest item title, in UTF-8 bytes.
@@ -269,7 +276,8 @@ impl fmt::Display for MediaListError {
             }
             Self::TooMuchText => write!(
                 formatter,
-                "a media list's file names and titles hold at most {MAX_MEDIA_LIST_TEXT_BYTES} bytes"
+                "a media list's file names and titles hold at most {MAX_MEDIA_LIST_TEXT_BYTES} bytes, \
+                 and at most {MAX_MEDIA_LIST_WIRE_TEXT_BYTES} once escaped for the wire"
             ),
         }
     }
@@ -282,6 +290,21 @@ impl std::error::Error for MediaListError {}
 #[must_use]
 pub fn is_media_list_file_name(path: &str) -> bool {
     crate::is_media_file_name(path) && fm_types::media_list_files::is_media_list_file_name(path)
+}
+
+/// The bytes `text` (an item's file or title) takes on the wire, escaped
+/// twice: once inside the `items` field and once inside the protocol line.
+#[must_use]
+pub fn media_list_wire_text_bytes(text: &str) -> usize {
+    text.bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') {
+                1
+            } else {
+                5
+            }
+        })
+        .sum()
 }
 
 /// Checks a title's bounds.
@@ -309,7 +332,21 @@ pub fn validate_media_list_items(items: &[MediaListItem]) -> Result<(), MediaLis
         .iter()
         .map(|item| item.asset_uri.len() + item.title.as_ref().map_or(0, String::len))
         .sum();
-    if text > MAX_MEDIA_LIST_TEXT_BYTES {
+    let wire: usize = items
+        .iter()
+        .map(|item| {
+            media_list_wire_text_bytes(&item.asset_uri)
+                + item.title.as_deref().map_or(0, |title| {
+                    // A title of exactly `-` is written escaped (`%2D`).
+                    if title == "-" {
+                        5
+                    } else {
+                        media_list_wire_text_bytes(title)
+                    }
+                })
+        })
+        .sum();
+    if text > MAX_MEDIA_LIST_TEXT_BYTES || wire > MAX_MEDIA_LIST_WIRE_TEXT_BYTES {
         return Err(MediaListError::TooMuchText);
     }
     for (index, item) in items.iter().enumerate() {
