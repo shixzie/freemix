@@ -17,8 +17,10 @@
 //!   order; its notes are the paragraphs of its `presentation:notes`. The
 //!   title is `meta.xml`'s `dc:title`.
 //!
-//! Every part read is bounded ([`MAX_PART_BYTES`]), so a hostile package
-//! cannot exhaust memory.
+//! Every part read is bounded ([`MAX_PART_BYTES`]), the whole package is
+//! bounded ([`MAX_PACKAGE_BYTES`]), a slide is read only as far as its
+//! root element, and a slide named more than once is read once, so a
+//! hostile package can exhaust neither memory nor time.
 
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
@@ -34,6 +36,12 @@ use crate::document::{DocumentError, DocumentInfo};
 
 /// Largest uncompressed XML part read from a package.
 pub const MAX_PART_BYTES: u64 = 16 * 1024 * 1024;
+/// Most uncompressed bytes read from one package in all: every slide may
+/// name its own parts, so a per-part bound alone lets a small hostile
+/// package inflate to hundreds of gigabytes of XML.
+pub const MAX_PACKAGE_BYTES: u64 = 256 * 1024 * 1024;
+/// How much of a slide part is read for its root element.
+const ROOT_HEAD_BYTES: u64 = 8 * 1024;
 
 /// Reads the slide count, title, and notes of a `.pptx` or `.odp` package.
 ///
@@ -46,7 +54,16 @@ pub fn probe_presentation(
     format: DocumentFormat,
     bytes: &[u8],
 ) -> Result<DocumentInfo, DocumentError> {
-    let mut package = Package::open(bytes)?;
+    probe_presentation_within(format, bytes, MAX_PACKAGE_BYTES)
+}
+
+/// [`probe_presentation`] reading at most `budget` uncompressed bytes.
+fn probe_presentation_within(
+    format: DocumentFormat,
+    bytes: &[u8],
+    budget: u64,
+) -> Result<DocumentInfo, DocumentError> {
+    let mut package = Package::open(bytes, budget)?;
     let (title, notes) = match format {
         DocumentFormat::Pptx => (
             package
@@ -82,29 +99,62 @@ pub fn probe_presentation(
 
 struct Package<'a> {
     archive: zip::ZipArchive<Cursor<&'a [u8]>>,
+    /// Uncompressed bytes the package may still inflate to.
+    remaining: u64,
 }
 
 impl<'a> Package<'a> {
-    fn open(bytes: &'a [u8]) -> Result<Self, DocumentError> {
+    fn open(bytes: &'a [u8], budget: u64) -> Result<Self, DocumentError> {
         zip::ZipArchive::new(Cursor::new(bytes))
-            .map(|archive| Self { archive })
+            .map(|archive| Self {
+                archive,
+                remaining: budget,
+            })
             .map_err(|error| {
                 DocumentError::Malformed(format!("not a presentation package: {error}"))
             })
     }
 
-    fn optional(&mut self, name: &str) -> Result<Option<String>, DocumentError> {
+    /// At most the first `limit` bytes of part `name`, charged to the
+    /// package's budget.
+    fn read(&mut self, name: &str, limit: u64) -> Result<Option<Vec<u8>>, DocumentError> {
         let Ok(file) = self.archive.by_name(name) else {
             return Ok(None);
         };
-        let mut text = String::new();
-        file.take(MAX_PART_BYTES + 1)
-            .read_to_string(&mut text)
+        let allowed = limit.min(self.remaining);
+        let mut bytes = Vec::new();
+        file.take(allowed.saturating_add(1))
+            .read_to_end(&mut bytes)
             .map_err(|error| DocumentError::Malformed(format!("{name} cannot be read: {error}")))?;
-        if text.len() as u64 > MAX_PART_BYTES {
+        let read = bytes.len() as u64;
+        if read > allowed && allowed < limit {
+            return Err(DocumentError::Malformed(format!(
+                "the presentation inflates past {} MiB",
+                MAX_PACKAGE_BYTES / (1024 * 1024)
+            )));
+        }
+        bytes.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        self.remaining = self.remaining.saturating_sub(read.min(limit));
+        Ok(Some(bytes))
+    }
+
+    fn optional(&mut self, name: &str) -> Result<Option<String>, DocumentError> {
+        let Some(bytes) = self.read(name, MAX_PART_BYTES.saturating_add(1))? else {
+            return Ok(None);
+        };
+        if bytes.len() as u64 > MAX_PART_BYTES {
             return Err(DocumentError::Malformed(format!("{name} is too large")));
         }
-        Ok(Some(text))
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|error| DocumentError::Malformed(format!("{name} cannot be read: {error}")))
+    }
+
+    /// The start of part `name`, enough to read its root element.
+    fn head(&mut self, name: &str) -> Result<Option<String>, DocumentError> {
+        Ok(self
+            .read(name, ROOT_HEAD_BYTES)?
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()))
     }
 
     fn required(&mut self, name: &str) -> Result<String, DocumentError> {
@@ -277,14 +327,24 @@ fn pptx_notes(package: &mut Package<'_>) -> Result<Vec<String>, DocumentError> {
         Ok(())
     })?;
     let mut notes = Vec::with_capacity(slide_ids.len());
+    // The notes of each slide part read (`None` when it is hidden): a part
+    // named again is not read again.
+    let mut read: BTreeMap<&str, Option<String>> = BTreeMap::new();
     for id in slide_ids {
         let Some((_, slide)) = rels.get(&id) else {
             return Err(DocumentError::Malformed(format!(
                 "slide relationship {id} names no part"
             )));
         };
-        let xml = package.required(slide)?;
-        if slide_hidden(&xml)? {
+        if let Some(seen) = read.get(slide.as_str()) {
+            notes.extend(seen.clone());
+            continue;
+        }
+        let head = package
+            .head(slide)?
+            .ok_or_else(|| DocumentError::Malformed(format!("the package has no {slide}")))?;
+        if slide_hidden(&head)? {
+            read.insert(slide, None);
             continue;
         }
         let notes_part = package
@@ -303,6 +363,7 @@ fn pptx_notes(package: &mut Package<'_>) -> Result<Vec<String>, DocumentError> {
             },
             None => String::new(),
         };
+        read.insert(slide, Some(text.clone()));
         notes.push(text);
     }
     Ok(notes)
@@ -323,18 +384,25 @@ fn relationship_id(element: &BytesStart<'_>) -> Option<String> {
     })
 }
 
-/// Whether a slide part is hidden (`<p:sld show="0">`).
+/// Whether a slide part is hidden (`<p:sld show="0">`), read from its
+/// root element (`xml` may be only the start of the part).
 fn slide_hidden(xml: &str) -> Result<bool, DocumentError> {
-    let mut hidden = false;
-    let mut seen_root = false;
-    walk("a slide", xml, |event| {
-        if !seen_root && let Event::Start(element) | Event::Empty(element) = event {
-            seen_root = true;
-            hidden = matches!(attribute(element, b"show").as_deref(), Some("0" | "false"));
+    let mut reader = Reader::from_str(xml);
+    loop {
+        match reader
+            .read_event()
+            .map_err(|error| malformed("a slide", error))?
+        {
+            Event::Start(element) | Event::Empty(element) => {
+                return Ok(matches!(
+                    attribute(&element, b"show").as_deref(),
+                    Some("0" | "false")
+                ));
+            }
+            Event::Eof => return Err(malformed("a slide", "it has no root element")),
+            _ => {}
         }
-        Ok(())
-    })?;
-    Ok(hidden)
+    }
 }
 
 /// The text of the body placeholders of a notes slide, one line per
@@ -492,5 +560,77 @@ mod tests {
             pptx_body_text(xml).unwrap(),
             "Welcome & thanks\nSecond\nline"
         );
+    }
+
+    const SLIDE_REL: &str =
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide";
+    const NOTES_REL: &str =
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide";
+
+    /// A `.pptx` whose `slide_ids` entries name its `slide_parts` slides in
+    /// turn, each slide and its notes padded with `padding` spaces.
+    fn padded_pptx(slide_ids: usize, slide_parts: usize, padding: usize) -> Vec<u8> {
+        use std::fmt::Write as _;
+        let pad = " ".repeat(padding);
+        let mut parts = Vec::new();
+        let mut ids = String::new();
+        let mut rels = String::new();
+        for index in 0..slide_ids {
+            let part = index % slide_parts + 1;
+            let _ = write!(ids, r#"<p:sldId id="{}" r:id="rId{part}"/>"#, 256 + index);
+        }
+        for part in 1..=slide_parts {
+            let _ = write!(
+                rels,
+                r#"<Relationship Id="rId{part}" Type="{SLIDE_REL}" Target="slides/slide{part}.xml"/>"#
+            );
+            parts.push((
+                format!("ppt/slides/slide{part}.xml"),
+                format!(r#"<p:sld xmlns:p="p"><p:cSld>{pad}</p:cSld></p:sld>"#),
+            ));
+            parts.push((
+                format!("ppt/slides/_rels/slide{part}.xml.rels"),
+                format!(
+                    r#"<Relationships><Relationship Id="rId1" Type="{NOTES_REL}" Target="../notesSlides/notes{part}.xml"/></Relationships>"#
+                ),
+            ));
+            parts.push((
+                format!("ppt/notesSlides/notes{part}.xml"),
+                format!(
+                    r#"<p:notes xmlns:p="p" xmlns:a="a"><p:sp><p:nvPr><p:ph type="body"/></p:nvPr><p:txBody><a:p><a:t>Notes {part}</a:t></a:p></p:txBody>{pad}</p:sp></p:notes>"#
+                ),
+            ));
+        }
+        parts.push((
+            "ppt/presentation.xml".to_owned(),
+            format!(
+                r#"<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst>{ids}</p:sldIdLst></p:presentation>"#
+            ),
+        ));
+        parts.push((
+            "ppt/_rels/presentation.xml.rels".to_owned(),
+            format!("<Relationships>{rels}</Relationships>"),
+        ));
+        crate::sample::zip_package(&parts)
+    }
+
+    #[test]
+    fn a_package_inflating_past_its_budget_is_refused() {
+        // 64 distinct slides whose parts inflate to 64 MiB in all.
+        let bytes = padded_pptx(64, 64, 512 * 1024);
+        assert!(bytes.len() < 1024 * 1024, "{}", bytes.len());
+        let error = probe_presentation_within(DocumentFormat::Pptx, &bytes, 16 * 1024 * 1024)
+            .expect_err("over budget");
+        assert!(matches!(error, DocumentError::Malformed(_)), "{error:?}");
+    }
+
+    #[test]
+    fn slides_named_many_times_are_read_once() {
+        // 2000 slide ids naming the same slide: its parts are read once.
+        let bytes = padded_pptx(2_000, 1, 1024 * 1024);
+        let info = probe_presentation_within(DocumentFormat::Pptx, &bytes, 16 * 1024 * 1024)
+            .expect("within budget");
+        assert_eq!(info.page_count, 2_000);
+        assert_eq!(info.notes(1_999), Some("Notes 1"));
     }
 }

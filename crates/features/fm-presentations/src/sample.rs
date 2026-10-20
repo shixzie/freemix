@@ -88,7 +88,7 @@ fn xml_escape(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn zip_package(parts: &[(String, String)]) -> Vec<u8> {
+pub(crate) fn zip_package(parts: &[(String, String)]) -> Vec<u8> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
