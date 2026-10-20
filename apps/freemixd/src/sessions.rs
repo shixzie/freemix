@@ -1163,6 +1163,7 @@ pub(super) fn run(
                 &mut control.borrow_mut(),
                 authority,
                 durable.project().settings().frame_rate,
+                durable.position().frames_rendered,
                 Instant::now(),
             ),
         };
@@ -1325,32 +1326,42 @@ pub(super) fn run(
 /// so every session keeps being served and the switcher realization is
 /// published when the work ends. A command committed meanwhile lands on
 /// the frame the work has reached, which its journal record names.
+///
+/// A scene's In or Out phase is not work in flight (the native pacer plays
+/// it on idle frames), but the command's durable project settles after it
+/// (`settled`, its frames rendered), so this realizes it too.
 #[derive(Debug, Default)]
-struct SimulatedPacer {
+pub(super) struct SimulatedPacer {
     /// The frame cursor and the instant the work in flight was first seen.
     anchor: Option<(u64, Instant)>,
 }
 
 impl SimulatedPacer {
     /// Realizes the frames wall time has reached since the work in flight
-    /// was first seen, stopping as soon as it settles.
-    fn poll(
+    /// was first seen, stopping as soon as it settles: no work is in flight
+    /// and the engine has reached `settled`, the frame the durable project
+    /// says the commands end on.
+    pub(super) fn poll(
         &mut self,
         control: &mut fm_control::ControlService<fm_auth::Policy>,
         server: &fm_protocol::ServerIdentity,
         rate: fm_types::FrameRate,
+        settled: u64,
         now: Instant,
     ) -> crate::AppResult<()> {
-        if !control.work_in_flight() {
+        let busy = |control: &fm_control::ControlService<fm_auth::Policy>| {
+            control.work_in_flight() || control.frame_cursor() < settled
+        };
+        if !busy(control) {
             self.anchor = None;
             return Ok(());
         }
         let (frame, at) = *self.anchor.get_or_insert((control.frame_cursor(), now));
         let target = crate::playlist_clock::wall_frame(frame, at, now, rate);
-        while control.frame_cursor() < target && control.work_in_flight() {
+        while control.frame_cursor() < target && busy(control) {
             control.tick(server)?;
         }
-        if !control.work_in_flight() {
+        if !busy(control) {
             self.anchor = None;
         }
         Ok(())

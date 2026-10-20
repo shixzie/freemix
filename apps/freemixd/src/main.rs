@@ -23883,6 +23883,118 @@ mod tests {
         assert_eq!(replayed.project().playlist(), durable.project().playlist());
     }
 
+    /// The simulated daemon's frame loop realizes every frame a command is
+    /// durable past, a scene's In phase as well as a timed transition,
+    /// although the phase is no work in flight: the scene plays to the end
+    /// of its phase at wall time instead of holding its first frame until
+    /// the next command.
+    #[test]
+    fn the_simulated_pacer_plays_a_scene_phase_to_where_the_command_settles() {
+        use fm_model::{Rgba8 as TestRgba8, Scene as TestScene};
+        use fm_types::SceneId as TestSceneId;
+
+        let mut project = test_project().project().clone();
+        let scene_id = TestSceneId::new(NonZeroU128::new(1).unwrap());
+        project.add_input(Input {
+            id: test_input_id(3),
+            name: "Scene".into(),
+            kind: InputKind::Scene {
+                scene_id,
+                audio_source: None,
+            },
+            required_capabilities: Vec::new(),
+        });
+        project.add_scene(TestScene {
+            id: scene_id,
+            name: "Animated".into(),
+            background: TestRgba8::OPAQUE_BLACK,
+            layers: Vec::new(),
+            animation: fm_model::SceneAnimation {
+                clip: fm_model::SceneClip::new(fm_model::default_scene_timebase(), 12, 0).unwrap(),
+                revision: 0,
+            },
+        });
+        project.set_main_mix(MainMix::new(test_input_id(1), test_input_id(3)));
+        let manifest = StoredProject::from_project(
+            project,
+            RuntimeRouting {
+                desired_program_id: Some(test_input_id(1)),
+                realized_program_id: Some(test_input_id(1)),
+                desired_preview_id: Some(test_input_id(3)),
+                realized_preview_id: Some(test_input_id(3)),
+            },
+            ProjectPosition::default(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut control = test_control(&manifest);
+        let server = test_server(&control);
+        let mut durable = manifest.clone();
+        let cut = execute_durable_command_with_ticks(
+            &mut control,
+            &CountingSaver::default(),
+            &mut durable,
+            &operator(),
+            &server,
+            &test_command("cut", "cut-key", CommandPayload::Cut),
+            0,
+            None,
+            Realize::First,
+            |control, server| Ok(control.tick(server)?.runtime_events),
+        )
+        .unwrap();
+        assert!(matches!(
+            cut.submission.output.result,
+            CommandResult::Accepted { .. }
+        ));
+        // The Cut realized its first frame; the scene's In phase runs on.
+        let settled = durable.position().frames_rendered;
+        assert_eq!(control.frame_cursor(), 1);
+        assert!(settled > 2, "{settled}");
+        assert!(!control.work_in_flight());
+        assert!(control.scenes_in_motion());
+
+        let rate = durable.project().settings().frame_rate;
+        let mut pacer = sessions::SimulatedPacer::default();
+        let start = std::time::Instant::now();
+        pacer
+            .poll(&mut control, &server, rate, settled, start)
+            .unwrap();
+        // Wall time paces it: one frame (40 ms at 25 fps) at a time.
+        pacer
+            .poll(
+                &mut control,
+                &server,
+                rate,
+                settled,
+                start + Duration::from_millis(40),
+            )
+            .unwrap();
+        assert_eq!(control.frame_cursor(), 2);
+        pacer
+            .poll(
+                &mut control,
+                &server,
+                rate,
+                settled,
+                start + Duration::from_secs(10),
+            )
+            .unwrap();
+        assert_eq!(control.frame_cursor(), settled);
+        assert!(!control.scenes_in_motion());
+        // Settled, it renders no idle frames.
+        pacer
+            .poll(
+                &mut control,
+                &server,
+                rate,
+                settled,
+                start + Duration::from_secs(20),
+            )
+            .unwrap();
+        assert_eq!(control.frame_cursor(), settled);
+    }
+
     /// A native command realizes its first frame and leaves the rest of a
     /// timed transition to the frame loop: it is durable as the project the
     /// transition ends on, a command committed while the transition runs is
