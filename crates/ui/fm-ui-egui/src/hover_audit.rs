@@ -487,6 +487,7 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
             },
         ],
         transition_favorites: fm_protocol::TransitionFavoriteStatus::defaults(),
+        transitions_in_flight: Vec::new(),
     };
     let mut model = ClientModel::new(project);
     model

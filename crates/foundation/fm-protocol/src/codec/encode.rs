@@ -1905,7 +1905,35 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
     record.field_string(
         "live_lan_status",
         super::live_lan::encode_snapshot_status(&message.live_lan_status)?,
+    )?;
+    record.field_string(
+        "transitions_in_flight",
+        encode_transitions_in_flight(&message.transitions_in_flight, message.revision)?,
     )
+}
+
+/// Encodes a snapshot's in-flight timed Program operations (Protocol
+/// 2.94): comma-separated revisions, strictly ascending, each nonzero and
+/// at most the snapshot's revision; empty when none is in flight.
+fn encode_transitions_in_flight(revisions: &[u64], revision: u64) -> Result<String, CodecError> {
+    if revisions.len() > MAX_LIST_ITEMS {
+        return Err(CodecError::TooManyItems("transitions_in_flight"));
+    }
+    if revisions.windows(2).any(|pair| pair[0] >= pair[1])
+        || revisions
+            .iter()
+            .any(|in_flight| *in_flight == 0 || *in_flight > revision)
+    {
+        return Err(CodecError::InvalidField {
+            field: "transitions_in_flight",
+            value: format!("{revisions:?}"),
+        });
+    }
+    Ok(revisions
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(","))
 }
 
 /// Writes a grade source as `library=<id>` or `grade=<grade>`.

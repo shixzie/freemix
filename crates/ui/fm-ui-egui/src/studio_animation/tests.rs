@@ -164,6 +164,7 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
         stream_targets: Vec::new(),
         live_lan: fm_protocol::LiveLanEntry::default(),
         live_lan_status: fm_protocol::LiveLanStatus::default(),
+        transitions_in_flight: Vec::new(),
     };
     let mut model = ClientModel::new(project);
     model
@@ -782,6 +783,7 @@ mod scenes {
             stream_targets: Vec::new(),
             live_lan: fm_protocol::LiveLanEntry::default(),
             live_lan_status: fm_protocol::LiveLanStatus::default(),
+            transitions_in_flight: Vec::new(),
         };
         let mut model = ClientModel::new(project);
         model

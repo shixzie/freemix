@@ -3800,6 +3800,26 @@ auto key pictures.
   <x:y,...>` to the key commands and lists both.
 - 2.96 is refused.
 
+Protocol 2.98 names a snapshot's in-flight timed Program operations
+(`SW-001`, `SW-002`). No schema change.
+
+- `snapshot` gains required `transitions_in_flight`, its last field: the
+  revisions of the timed Program operations (a transition or Stinger, or a
+  playlist, cue, script, or shortcut run) accepted at or before the
+  snapshot's revision and not yet realized, comma-separated, strictly
+  ascending, each canonical, nonzero, and at most the snapshot's revision,
+  at most 256; empty when none is in flight. One the engine has not applied
+  yet is listed too. Fade to Black is not: it moves no bus.
+- Each listed operation publishes its own `runtime_event` `realized` in
+  domain `switcher` when the switcher settles. Until all have (or a later
+  revision that changes Program or Preview is realized), a client keeps
+  the snapshot's realized Program and Preview: a command committed before
+  the snapshot and realized on the operations' frames (an overlay, a title
+  Out phase ending) has a revision up to the snapshot's too, and no longer
+  ends the hold early. Studio keeps Cut, the transitions, and Preview
+  selection disabled meanwhile, as the authority refuses them.
+- 2.97 is refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision

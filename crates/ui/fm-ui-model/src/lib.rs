@@ -519,6 +519,10 @@ pub struct ProjectSnapshot {
     pub live_lan: fm_protocol::LiveLanEntry,
     /// The `LiveLAN` stream's latest status (Protocol 2.57).
     pub live_lan_status: fm_protocol::LiveLanStatus,
+    /// The revisions of the timed Program operations still in flight,
+    /// strictly ascending (Protocol 2.94): the realized buses hold until
+    /// each is realized.
+    pub transitions_in_flight: Vec<Revision>,
 }
 
 impl ProjectSnapshot {
@@ -632,6 +636,11 @@ impl ProjectSnapshot {
             stream_targets: message.stream_targets,
             live_lan: message.live_lan,
             live_lan_status: message.live_lan_status,
+            transitions_in_flight: message
+                .transitions_in_flight
+                .into_iter()
+                .map(Revision::new)
+                .collect(),
         }
     }
 }
@@ -2636,14 +2645,26 @@ fn write_recording_message(
 
 /// A Program/Preview change whose realization is still outstanding (see
 /// [`ClientModel::apply_runtime_realization`]).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct BusHold {
-    /// The revision that changed the buses, or for a snapshot taken mid
-    /// transition, the snapshot's revision.
-    revision: Revision,
-    /// The hold came from a snapshot whose realized buses lag its desired
-    /// ones: the completion of any revision up to it ends it.
-    from_snapshot: bool,
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum BusHold {
+    /// The revision that changed the buses, still unrealized when a later
+    /// one was realized.
+    Revision(Revision),
+    /// The timed Program operations a snapshot reported in flight,
+    /// strictly ascending and never empty (Protocol 2.94). Each completes
+    /// with its own realization; another revision up to the snapshot's
+    /// realized meanwhile was only realized on their frames.
+    Snapshot(Vec<Revision>),
+}
+
+impl BusHold {
+    /// The oldest revision the hold waits for.
+    fn oldest(&self) -> Option<Revision> {
+        match self {
+            Self::Revision(revision) => Some(*revision),
+            Self::Snapshot(in_flight) => in_flight.first().copied(),
+        }
+    }
 }
 
 /// Project-bound replicated client state and reducer.
@@ -3222,14 +3243,12 @@ impl ClientModel {
             self.realized_revision = None;
         }
         // A snapshot taken while a transition runs realizes the buses it
-        // leaves; the transition's completion (of a revision up to this
-        // one) moves them.
+        // leaves; only the realizations of the timed operations it reports
+        // in flight move them (Protocol 2.94).
         self.snapshot_revision = Some(snapshot.cursor.revision);
+        let transitions_in_flight = snapshot.transitions_in_flight;
         self.bus_hold =
-            (snapshot.switcher.realized != snapshot.switcher.desired).then_some(BusHold {
-                revision: snapshot.cursor.revision,
-                from_snapshot: true,
-            });
+            (!transitions_in_flight.is_empty()).then_some(BusHold::Snapshot(transitions_in_flight));
         self.desired_by_revision.insert(
             snapshot.cursor.revision,
             (
@@ -4173,7 +4192,9 @@ impl ClientModel {
         };
         let held = self
             .bus_hold
-            .and_then(|hold| hold.revision.get().checked_sub(1))
+            .as_ref()
+            .and_then(BusHold::oldest)
+            .and_then(|hold| hold.get().checked_sub(1))
             .map(Revision::new);
         let oldest = held.map_or(realized, |held| held.min(realized));
         if self.pruned_before.is_some_and(|pruned| pruned >= oldest) {
@@ -4198,14 +4219,17 @@ impl ClientModel {
         if known && self.changes_buses(revision) {
             return None;
         }
-        match self.bus_hold {
-            Some(hold)
-                if hold.revision == revision
-                    || (hold.from_snapshot && revision <= hold.revision) =>
-            {
-                return None;
+        match &self.bus_hold {
+            Some(BusHold::Revision(held)) if *held == revision => return None,
+            Some(BusHold::Snapshot(in_flight)) => {
+                let rest = in_flight
+                    .iter()
+                    .copied()
+                    .filter(|held| *held != revision)
+                    .collect::<Vec<_>>();
+                return (!rest.is_empty()).then_some(BusHold::Snapshot(rest));
             }
-            Some(hold) => return Some(hold),
+            Some(hold) => return Some(hold.clone()),
             None => {}
         }
         if !known {
@@ -4216,10 +4240,7 @@ impl ClientModel {
         (after.get().saturating_add(1)..revision.get())
             .map(Revision::new)
             .find(|candidate| self.changes_buses(*candidate))
-            .map(|revision| BusHold {
-                revision,
-                from_snapshot: false,
-            })
+            .map(BusHold::Revision)
     }
 
     /// Whether `revision` changed the desired Program or Preview from the

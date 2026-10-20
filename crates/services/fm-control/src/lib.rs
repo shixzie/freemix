@@ -664,6 +664,7 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                 if !control.engine.show().live_lan().enabled {
                     control.live_lan_status = fm_protocol::LiveLanStatus::default();
                 }
+                let transitions_in_flight = control.transitions_in_flight();
                 control.snapshot = snapshot_record(
                     &control.engine,
                     &control.identity,
@@ -674,6 +675,7 @@ impl<A: AuthorizationHook> PreparedSubmission<'_, A> {
                     &control.system_audio_states,
                     &control.screen_capture_states,
                     &control.live_lan_status,
+                    transitions_in_flight,
                 );
 
                 let live_events = submission
@@ -1067,6 +1069,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &fm_protocol::LiveLanStatus::default(),
+            Vec::new(),
         );
         Self {
             engine,
@@ -2756,6 +2759,7 @@ impl<A: AuthorizationHook> ControlService<A> {
         if !self.engine.show().live_lan().enabled {
             self.live_lan_status = fm_protocol::LiveLanStatus::default();
         }
+        let transitions_in_flight = self.transitions_in_flight();
         self.snapshot = snapshot_record(
             &self.engine,
             &self.identity,
@@ -2766,7 +2770,33 @@ impl<A: AuthorizationHook> ControlService<A> {
             &self.system_audio_states,
             &self.screen_capture_states,
             &self.live_lan_status,
+            transitions_in_flight,
         );
+    }
+
+    /// The revisions of the timed Program operations accepted but not yet
+    /// realized, ascending (Protocol 2.94): those running on the frame loop
+    /// and those the engine has not applied yet. A command realized on
+    /// their frames does not complete them, so a client subscribing now
+    /// holds its realized buses until each publishes its own realization.
+    fn transitions_in_flight(&self) -> Vec<u64> {
+        let mut revisions = self
+            .active_transitions
+            .iter()
+            .map(|transition| transition.revision)
+            .chain(
+                self.pending_runtime_actions
+                    .iter()
+                    .filter(|pending| is_program_transition(&pending.command))
+                    .map(|pending| pending.revision),
+            )
+            .collect::<Vec<_>>();
+        revisions.sort_unstable();
+        revisions.dedup();
+        // Running ones settle together; past the wire's list bound the
+        // newest are left out.
+        revisions.truncate(fm_protocol::MAX_LIST_ITEMS);
+        revisions
     }
 
     fn tick_with_realizer_inner<E>(
@@ -4672,6 +4702,7 @@ fn snapshot_record(
     system_audio_states: &BTreeMap<InputId, fm_protocol::SystemAudioStatus>,
     screen_capture_states: &BTreeMap<InputId, fm_protocol::ScreenCaptureStatus>,
     live_lan_status: &fm_protocol::LiveLanStatus,
+    transitions_in_flight: Vec<u64>,
 ) -> SnapshotRecord {
     let snapshot = SnapshotMessage {
         engine: identity.clone(),
@@ -4757,6 +4788,7 @@ fn snapshot_record(
         stream_targets: stream_target::wire_entries(engine.show()),
         live_lan: live_lan::wire_entry(engine.show()),
         live_lan_status: live_lan::wire_status(engine.show(), live_lan_status),
+        transitions_in_flight,
     };
 
     SnapshotRecord {

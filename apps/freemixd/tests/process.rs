@@ -3943,6 +3943,154 @@ fn simulated_daemon_realizes_a_title_off_air_when_its_out_phase_ends() {
         "Renamed mid Out phase"
     );
 }
+/// A Studio client subscribing while a fade runs holds its realized buses
+/// until the fade itself completes (Protocol 2.97): its snapshot names the
+/// fade in flight, and a title off-air committed before the snapshot whose
+/// Out phase ends first is realized with a revision up to the snapshot's
+/// without ending the hold.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn a_studio_subscribing_mid_fade_holds_until_the_fade_completes() {
+    use fm_titles::fm_animation::{AnimationPreset, Phase, Timebase};
+
+    let directory = TestDirectory::new("simulated-mid-fade-subscribe");
+    let project_path = directory.project_path();
+    let mut template = process_title_template();
+    // Keyed at the show's 25 fps: a one-second Out phase.
+    template.animation =
+        fm_titles::TitleAnimation::empty(Timebase::new(FrameRate::new(25, 1).unwrap()));
+    template
+        .apply_animation_preset(
+            fm_titles::ElementId::new(NonZeroU128::new(1).unwrap()),
+            Phase::Out,
+            AnimationPreset::Fade,
+            25,
+        )
+        .unwrap();
+    create_title_project_with(&project_path, template);
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut operator = daemon.connect();
+    operator
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    operator.handshake_as(Role::Admin, None);
+    operator.receive_snapshot();
+
+    operator.send(&command(
+        "take",
+        "take-key",
+        CommandPayload::TakeTitle {
+            input: input(4),
+            channel: fm_protocol::WireOverlayChannelId::new(2).unwrap(),
+            base_revision: 3,
+            fields: Vec::new(),
+        },
+    ));
+    assert_eq!(accepted_revision(&mut operator, "take"), 1);
+    await_switcher_realized(&mut operator, 1);
+    operator.send(&command(
+        "preview",
+        "preview-key",
+        CommandPayload::SelectPreview { input: input(2) },
+    ));
+    assert_eq!(accepted_revision(&mut operator, "preview"), 2);
+    await_switcher_realized(&mut operator, 2);
+    // Let the channel's take transition settle into the Hold pose.
+    std::thread::sleep(Duration::from_millis(500));
+
+    // 100 frames at 25 fps: four seconds of fade, then the off-air inside.
+    operator.send(&command(
+        "fade",
+        "fade-key",
+        CommandPayload::Fade {
+            duration_frames: 100,
+        },
+    ));
+    assert_eq!(accepted_revision(&mut operator, "fade"), 3);
+    operator.send(&command(
+        "off",
+        "off-key",
+        CommandPayload::TitleOffAir { input: input(4) },
+    ));
+    assert_eq!(accepted_revision(&mut operator, "off"), 4);
+
+    let mid = snapshot_of(&daemon, Role::Viewer);
+    assert_eq!(mid.revision, 4);
+    assert_eq!(mid.transitions_in_flight, [3]);
+    assert_eq!(mid.realized_program, input(1));
+    assert_eq!(mid.desired_program, input(2));
+
+    let mut studio_client = ProtocolClient::new(ClientConfig::new(
+        "process-test",
+        ClientType::Studio,
+        Role::Viewer,
+        "mid-fade-studio",
+        project_id(),
+    ))
+    .unwrap();
+    studio_client.start_connect().unwrap();
+    let mut studio = connect_current_client(&daemon, &mut studio_client);
+    studio
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let held = |client: &ProtocolClient| {
+        let switcher = client.model().state().unwrap().switcher();
+        assert!(switcher.bus_change_in_flight(), "{switcher:?}");
+        assert_eq!(switcher.realized.program, domain_input(1));
+        assert_eq!(switcher.desired.program, domain_input(2));
+    };
+    held(&studio_client);
+
+    // The off-air's Out phase ends first: a revision up to the snapshot's,
+    // realized while the fade still runs.
+    let mut realized = Vec::new();
+    while !realized.contains(&3) {
+        let message = studio.receive();
+        // Monitor frames and title phases are the TCP session's, not the
+        // protocol client's.
+        if matches!(
+            message,
+            WireMessage::MonitorFrame(_) | WireMessage::TitlePhases(_)
+        ) {
+            continue;
+        }
+        let switcher_revision = match &message {
+            WireMessage::RuntimeEvent(runtime)
+                if matches!(
+                    &runtime.event,
+                    RuntimeLifecycleEvent::Realized { domain, .. } if domain == "switcher"
+                ) =>
+            {
+                Some(runtime.revision)
+            }
+            _ => None,
+        };
+        studio_client
+            .intake(message.clone())
+            .unwrap_or_else(|error| panic!("{error:?}: {message:?}"));
+        if let Some(revision) = switcher_revision {
+            realized.push(revision);
+            if revision != 3 {
+                held(&studio_client);
+            }
+        }
+    }
+    assert_eq!(realized, [4, 3], "the Out phase ends inside the fade");
+    let switcher = studio_client.model().state().unwrap().switcher();
+    assert!(!switcher.bus_change_in_flight(), "{switcher:?}");
+    assert_eq!(switcher.realized.program, domain_input(2));
+    assert_eq!(
+        snapshot_of(&daemon, Role::Viewer).transitions_in_flight,
+        Vec::<u64>::new()
+    );
+    drop(studio);
+    drop(operator);
+    daemon.stop();
+}
 
 /// A title take with an In phase is answered on the phase's first frame
 /// and realized once the phase has played at the show's frame rate, after

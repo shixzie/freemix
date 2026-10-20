@@ -208,6 +208,7 @@ fn snapshot(inputs: Vec<InputStatus>) -> WireMessage {
         stream_targets: Vec::new(),
         live_lan: fm_protocol::LiveLanEntry::default(),
         live_lan_status: fm_protocol::LiveLanStatus::default(),
+        transitions_in_flight: Vec::new(),
     })
 }
 
@@ -1160,7 +1161,7 @@ fn snapshot_stream_targets_carry_srt_latency_and_passphrase_presence() {
     assert!(encoded.contains("%7E0%7E300%7E1%2C2%7E"), "{encoded}");
     assert!(
         encoded.ends_with(
-            "%7E1%7E0%7E%7E0\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
+            "%7E1%7E0%7E%7E0\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\ttransitions_in_flight=\n"
         ),
         "{encoded}"
     );
@@ -3098,7 +3099,7 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
     );
     let encoded = encode_line(&message).unwrap();
     assert!(encoded.ends_with(
-        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tpaged_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__2PAB9AAAAPoAAGGoAAATiD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUAAAAAA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
+        "\tproject_locked=1\tlocked_inputs=1%2C2\tundo_depth=2\tundo_edit=9\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tpaged_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__2PAB9AAAAPoAAGGoAAATiD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUAAAAAA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\ttransitions_in_flight=\n"
     ));
     assert_eq!(decode_line(&encoded).unwrap(), message);
 
@@ -3106,7 +3107,7 @@ fn snapshot_edit_locks_and_history_round_trip_and_are_strict() {
     let encoded_unlocked = encode_line(&unlocked).unwrap();
     assert!(
         encoded_unlocked
-            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tpaged_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__2PAB9AAAAPoAAGGoAAATiD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUAAAAAA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n")
+            .ends_with("\tproject_locked=0\tlocked_inputs=\tundo_depth=0\tredo_depth=0\ttitles=\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tpaged_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__2PAB9AAAAPoAAGGoAAATiD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUAAAAAA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\ttransitions_in_flight=\n")
     );
     assert_eq!(decode_line(&encoded_unlocked).unwrap(), unlocked);
 
@@ -3974,7 +3975,7 @@ mod titles {
         let encoded = encode_line(&message).unwrap();
         assert!(
             encoded.ends_with(
-                "\ttitles=2%3A0%2C3%3A17\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tpaged_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__2PAB9AAAAPoAAGGoAAATiD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUAAAAAA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
+                "\ttitles=2%3A0%2C3%3A17\tscenes=\tlayout_scenes=\tframe_rate=30000%2F1001\tplaylist=0\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tpaged_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__2PAB9AAAAPoAAGGoAAATiD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUAAAAAA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\ttransitions_in_flight=\n"
             ),
             "{encoded}"
         );
@@ -4893,7 +4894,7 @@ mod playlists {
         let encoded = encode_line(&message).unwrap();
         assert!(
             encoded.ends_with(
-                "\tframe_rate=50%2F1\tplaylist=1\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tpaged_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__2PAB9AAAAPoAAGGoAAATiD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUAAAAAA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
+                "\tframe_rate=50%2F1\tplaylist=1\tgrade_states=0\tanimation_preset_states=0\ttransition_favorites=fade%3A30%3Bwipe%3A30%3Bfly%3A30%3Bcube%3A30\tmedia_states=0\tpaged_states=0\tcue_list_states=0\tscript_states=0\tshortcut_states=0\tstill_states=0\tmedia_list_states=0\tinput_categories=\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CGroup%25202%7E0%7E0%7E0%7E-%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=sip\taudio_monitor=%7E0%7E0\tinput_audio_labels=\taudio_master_dsp=APgAUAAAZAAAAsMBAPoAAAPoAQPoAAAD6AEPoAAAA-gCJxAAAALD__88sAAAnEAAAAPoAADDUAADDUD__2PAB9AAAAPoAAGGoAAATiD__7mwC7gAACcQAAJJ8BdwAAD___wYAADDUAAAAAA\taudio_strip_dsp_states=0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\ttransitions_in_flight=\n"
             ),
             "{encoded}"
         );
@@ -4953,4 +4954,64 @@ mod playlists {
             );
         }
     }
+}
+
+/// Protocol 2.97: a snapshot names the timed Program operations still in
+/// flight, strictly ascending and at most its own revision, so a client can
+/// tell their completion from a command realized on their frames.
+#[test]
+fn snapshot_transitions_in_flight_round_trip_strictly() {
+    let mut message = snapshot(input_statuses(&[(1, "camera"), (2, "slides")]));
+    let WireMessage::Snapshot(snapshot_message) = &mut message else {
+        unreachable!();
+    };
+    snapshot_message.transitions_in_flight = vec![4, 7, 9];
+    let encoded = encode_line(&message).unwrap();
+    assert!(
+        encoded.ends_with("\ttransitions_in_flight=4%2C7%2C9\n"),
+        "{encoded}"
+    );
+    assert_eq!(decode_line(&encoded).unwrap(), message);
+
+    for to in [
+        "\ttransitions_in_flight=4%2C9%2C7\n",
+        "\ttransitions_in_flight=4%2C7%2C7\n",
+        "\ttransitions_in_flight=4%2C7%2C10\n",
+        "\ttransitions_in_flight=0%2C7%2C9\n",
+        "\ttransitions_in_flight=04%2C7%2C9\n",
+        "\ttransitions_in_flight=4%2C%2C9\n",
+        "\ttransitions_in_flight=4%2C7%2C9%2C\n",
+        "\ttransitions_in_flight=%2B4%2C7%2C9\n",
+        "\ttransitions_in_flight=-\n",
+        "\n",
+    ] {
+        let malformed = encoded.replacen("\ttransitions_in_flight=4%2C7%2C9\n", to, 1);
+        assert_ne!(malformed, encoded, "{to}");
+        assert!(decode_line(&malformed).is_err(), "{to}");
+    }
+
+    for invalid in [vec![7, 4], vec![4, 4], vec![0], vec![10]] {
+        let mut refused = message.clone();
+        let WireMessage::Snapshot(snapshot_message) = &mut refused else {
+            unreachable!();
+        };
+        snapshot_message.transitions_in_flight = invalid;
+        assert!(matches!(
+            encode_line(&refused),
+            Err(CodecError::InvalidField {
+                field: "transitions_in_flight",
+                ..
+            })
+        ));
+    }
+    let mut too_many = message;
+    let WireMessage::Snapshot(snapshot_message) = &mut too_many else {
+        unreachable!();
+    };
+    snapshot_message.revision = 1_000;
+    snapshot_message.transitions_in_flight = (1..=257).collect();
+    assert!(matches!(
+        encode_line(&too_many),
+        Err(CodecError::TooManyItems("transitions_in_flight"))
+    ));
 }

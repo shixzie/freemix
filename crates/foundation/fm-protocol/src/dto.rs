@@ -2613,6 +2613,14 @@ pub struct SnapshotMessage {
     pub live_lan: crate::LiveLanEntry,
     /// The `LiveLAN` stream's latest runtime status (Protocol 2.57).
     pub live_lan_status: crate::LiveLanStatus,
+    /// The revisions of the timed Program operations (a transition, or a
+    /// playlist, cue, script, or shortcut run) accepted at or before
+    /// `revision` and not yet realized, strictly ascending, at most
+    /// [`crate::MAX_LIST_ITEMS`] (Protocol 2.94). Each publishes its own
+    /// `realized` runtime event once the switcher settles; until then the
+    /// realized buses stay where the snapshot leaves them, whatever else is
+    /// realized meanwhile.
+    pub transitions_in_flight: Vec<u64>,
 }
 
 /// The complete playlist at a snapshot's revision.

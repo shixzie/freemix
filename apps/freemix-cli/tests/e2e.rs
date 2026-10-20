@@ -822,6 +822,7 @@ fn serve_streams_snapshot_peer(
             stream_targets: Vec::new(),
             live_lan: fm_protocol::LiveLanEntry::default(),
             live_lan_status: fm_protocol::LiveLanStatus::default(),
+            transitions_in_flight: Vec::new(),
         }),
     );
 }
@@ -1730,6 +1731,7 @@ fn write_handshake_snapshot(
             stream_targets: SNAPSHOT_STREAM_TARGETS.with(|cell| cell.borrow().clone()),
             live_lan: fm_protocol::LiveLanEntry::default(),
             live_lan_status: fm_protocol::LiveLanStatus::default(),
+            transitions_in_flight: Vec::new(),
         }),
     );
     for (scene, layout) in SNAPSHOT_LAYOUTS.with(|cell| cell.borrow().clone()) {
@@ -1849,6 +1851,7 @@ fn write_handshake_version_with_fade_to_black(
             stream_targets: Vec::new(),
             live_lan: fm_protocol::LiveLanEntry::default(),
             live_lan_status: fm_protocol::LiveLanStatus::default(),
+            transitions_in_flight: Vec::new(),
         }),
     );
 }

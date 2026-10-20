@@ -151,6 +151,7 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
         stream_targets: Vec::new(),
         live_lan: fm_protocol::LiveLanEntry::default(),
         live_lan_status: fm_protocol::LiveLanStatus::default(),
+        transitions_in_flight: Vec::new(),
     }
 }
 
@@ -754,6 +755,7 @@ fn runtime_realization_after_a_mid_transition_snapshot_holds_until_completion() 
     let mut mid = snapshot(project_id, 7);
     let target = BusSelection::new(input(2), input(1));
     mid.switcher.desired = target;
+    mid.transitions_in_flight = vec![Revision::new(6)];
     model.install_snapshot(mid).unwrap();
     let identity = model.reconnect_cursor().unwrap().engine.clone();
     let before = BusSelection::new(input(1), input(2));
@@ -773,6 +775,84 @@ fn runtime_realization_after_a_mid_transition_snapshot_holds_until_completion() 
     let switcher = model.state().unwrap().switcher();
     assert_eq!(switcher.realized, target);
     assert!(!switcher.bus_change_in_flight());
+}
+
+/// A snapshot taken after a command committed but before it was realized,
+/// while an earlier transition runs: the command's realization (a revision
+/// up to the snapshot's) arrives first. Without the snapshot's in-flight
+/// transitions it cannot be told from the transition's completion and the
+/// hold ends early; with them (Protocol 2.94) the buses hold until the
+/// transition itself completes.
+#[test]
+fn a_command_realized_after_a_mid_transition_snapshot_keeps_the_hold() {
+    let project_id = project(10);
+    let target = BusSelection::new(input(2), input(1));
+    let before = BusSelection::new(input(1), input(2));
+    let subscribe = |in_flight: Vec<Revision>| {
+        let mut model = ClientModel::new(project_id);
+        // Revision 6 started a fade to input 2; revision 8 (an overlay
+        // take) committed while it runs and is not realized yet.
+        let mut mid = snapshot(project_id, 8);
+        mid.switcher.desired = target;
+        mid.transitions_in_flight = in_flight;
+        model.install_snapshot(mid).unwrap();
+        let identity = model.reconnect_cursor().unwrap().engine.clone();
+        model
+            .apply_runtime_realization(realization(project_id, identity.clone(), 8, 5, 1))
+            .unwrap();
+        (model, identity)
+    };
+
+    // Unreported, the overlay's realization ends the hold early.
+    let (early, _) = subscribe(Vec::new());
+    let switcher = early.state().unwrap().switcher();
+    assert_eq!(switcher.realized, target);
+    assert!(!switcher.bus_change_in_flight());
+
+    // Reported, the buses hold through it and an unrelated realization.
+    let (mut model, identity) = subscribe(vec![Revision::new(6)]);
+    let switcher = model.state().unwrap().switcher();
+    assert_eq!(switcher.realized, before);
+    assert!(switcher.bus_change_in_flight());
+    model
+        .apply_runtime_realization(realization(project_id, identity.clone(), 7, 5, 2))
+        .unwrap();
+    assert_eq!(model.state().unwrap().switcher().realized, before);
+
+    // The transition's own completion ends it.
+    model
+        .apply_runtime_realization(realization(project_id, identity, 6, 6, 1))
+        .unwrap();
+    let switcher = model.state().unwrap().switcher();
+    assert_eq!(switcher.realized, target);
+    assert!(!switcher.bus_change_in_flight());
+}
+
+/// Every timed operation a snapshot reports holds the buses: they settle
+/// together, and the hold ends with the last of their realizations.
+#[test]
+fn a_snapshot_hold_ends_with_its_last_in_flight_transition() {
+    let project_id = project(10);
+    let mut model = ClientModel::new(project_id);
+    let target = BusSelection::new(input(2), input(1));
+    let before = BusSelection::new(input(1), input(2));
+    let mut mid = snapshot(project_id, 9);
+    mid.switcher.desired = target;
+    mid.transitions_in_flight = vec![Revision::new(6), Revision::new(8)];
+    model.install_snapshot(mid).unwrap();
+    let identity = model.reconnect_cursor().unwrap().engine.clone();
+
+    model
+        .apply_runtime_realization(realization(project_id, identity.clone(), 9, 5, 1))
+        .unwrap();
+    model
+        .apply_runtime_realization(realization(project_id, identity.clone(), 6, 6, 1))
+        .unwrap();
+    assert_eq!(model.state().unwrap().switcher().realized, before);
+    model
+        .apply_runtime_realization(realization(project_id, identity, 8, 6, 2))
+        .unwrap();
+    assert_eq!(model.state().unwrap().switcher().realized, target);
 }
 
 /// The desired states kept for realizations are pruned as revisions
@@ -1939,6 +2019,7 @@ mod titles {
             stream_targets: Vec::new(),
             live_lan: fm_protocol::LiveLanEntry::default(),
             live_lan_status: fm_protocol::LiveLanStatus::default(),
+            transitions_in_flight: Vec::new(),
         }
     }
 

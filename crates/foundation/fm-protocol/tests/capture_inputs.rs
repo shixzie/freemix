@@ -514,7 +514,7 @@ fn snapshot_entries_round_trip_and_are_bounded() {
     assert_eq!(decoded.capture_inputs, entries);
     assert!(
         line.ends_with(
-            "~-~paired~hold~idle~-~-~-~0~0~0~0~0\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\n"
+            "~-~paired~hold~idle~-~-~-~0~0~0~0~0\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\ttransitions_in_flight=\n"
                 .replace('~', "%7E")
                 .as_str()
         ),
@@ -630,5 +630,6 @@ fn snapshot(capture_inputs: Vec<CaptureInputEntry>) -> WireMessage {
         stream_targets: Vec::new(),
         live_lan: fm_protocol::LiveLanEntry::default(),
         live_lan_status: fm_protocol::LiveLanStatus::default(),
+        transitions_in_flight: Vec::new(),
     })
 }

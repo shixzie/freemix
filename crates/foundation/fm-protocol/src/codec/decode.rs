@@ -1962,7 +1962,38 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         live_lan_status: super::live_lan::decode_snapshot_status(
             &fields.required("live_lan_status")?,
         )?,
+        transitions_in_flight: decode_transitions_in_flight(
+            &fields.required("transitions_in_flight")?,
+            revision,
+        )?,
     })
+}
+
+/// Decodes a snapshot's in-flight timed Program operations (Protocol
+/// 2.94), the exact inverse of their encoding.
+fn decode_transitions_in_flight(value: &str, revision: u64) -> Result<Vec<u64>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    if value.split(',').take(MAX_LIST_ITEMS + 1).count() > MAX_LIST_ITEMS {
+        return Err(CodecError::TooManyItems("transitions_in_flight"));
+    }
+    let invalid = || CodecError::InvalidField {
+        field: "transitions_in_flight",
+        value: value.to_owned(),
+    };
+    let revisions = value
+        .split(',')
+        .map(|entry| {
+            parse_canonical_u64(entry)
+                .filter(|in_flight| (1..=revision).contains(in_flight))
+                .ok_or_else(invalid)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if revisions.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(invalid());
+    }
+    Ok(revisions)
 }
 
 /// Decodes `library=<id>` or `grade=<grade>`: exactly one of them, or, when

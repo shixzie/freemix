@@ -137,6 +137,7 @@ fn control() -> FakeControl {
         stream_targets: Vec::new(),
         live_lan: fm_protocol::LiveLanEntry::default(),
         live_lan_status: fm_protocol::LiveLanStatus::default(),
+        transitions_in_flight: Vec::new(),
     };
     let events = [3, 4]
         .map(|revision| EventMessage {

@@ -1814,6 +1814,93 @@ fn shutdown_ticks_settle_fade_without_claiming_runtime_realization() {
     assert_eq!(control.runtime_sequence, 0);
 }
 
+/// The snapshot names each timed Program operation not yet realized, from
+/// its commit (before the engine applies it) to its completion (Protocol
+/// 2.94); a command committed and realized on its frames is not one, nor
+/// is Fade to Black.
+#[test]
+fn snapshot_reports_the_transitions_in_flight_until_they_complete() {
+    let mut control = service(8, 8);
+    let server = server_identity();
+    let in_flight =
+        |control: &ControlService| control.snapshot().snapshot.transitions_in_flight.clone();
+    assert_eq!(in_flight(&control), Vec::<u64>::new());
+    control
+        .submit(
+            &principal(Role::Operator),
+            command(
+                "fade",
+                "fade-key",
+                CommandPayload::Fade { duration_frames: 4 },
+            ),
+            0,
+        )
+        .unwrap();
+    // Committed, not applied yet.
+    assert_eq!(in_flight(&control), [1]);
+    assert_eq!(control.tick(&server).unwrap().runtime_events.len(), 0);
+    assert_eq!(in_flight(&control), [1]);
+
+    // An overlay take commits mid transition: the snapshot refreshed then
+    // still lists only the fade, and so does the one after the overlay is
+    // realized on the fade's frames.
+    control
+        .submit(
+            &principal(Role::Operator),
+            command(
+                "overlay",
+                "overlay-key",
+                CommandPayload::TakeOverlay {
+                    channel: fm_protocol::WireOverlayChannelId::new(1).unwrap(),
+                    source: WireInputId::from_domain(input(3)),
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    control
+        .submit(
+            &principal(Role::Operator),
+            command(
+                "ftb",
+                "ftb-key",
+                CommandPayload::FadeToBlack {
+                    active: true,
+                    duration_frames: 2,
+                },
+            ),
+            0,
+        )
+        .unwrap();
+    assert_eq!(control.snapshot().snapshot.revision, 3);
+    assert_eq!(in_flight(&control), [1]);
+    let overlay = control.tick(&server).unwrap();
+    assert!(
+        overlay
+            .runtime_events
+            .iter()
+            .any(|event| event.revision == 2)
+    );
+    assert_ne!(
+        control.snapshot().snapshot.realized_program,
+        control.snapshot().snapshot.desired_program
+    );
+    assert_eq!(in_flight(&control), [1]);
+
+    // The fade's completion empties the list.
+    let mut completed = false;
+    for _ in 0..8 {
+        let tick = control.tick(&server).unwrap();
+        if tick.runtime_events.iter().any(|event| event.revision == 1) {
+            completed = true;
+            break;
+        }
+        assert_eq!(in_flight(&control), [1]);
+    }
+    assert!(completed);
+    assert_eq!(in_flight(&control), Vec::<u64>::new());
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct RealizerFailure;
 
