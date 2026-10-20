@@ -446,7 +446,7 @@ mod tests {
     /// the port comes from a probe socket that is closed before the
     /// receiver binds it; on a busy host another test can take the port in
     /// between, and then another free port is tried.
-    fn bind_free_port(repaint: egui::Context) -> OscReceiver {
+    fn bind_free_port(repaint: &egui::Context) -> OscReceiver {
         let mut attempts = 0;
         loop {
             let address = UdpSocket::bind("127.0.0.1:0")
@@ -468,7 +468,7 @@ mod tests {
     #[test]
     fn a_dead_listener_is_reported() {
         let repaint = egui::Context::default();
-        let receiver = bind_free_port(repaint);
+        let receiver = bind_free_port(&repaint);
         assert!(receiver.is_listening());
         let counters = Arc::clone(&receiver.counters);
         receiver.shutdown().unwrap();
@@ -496,7 +496,7 @@ mod tests {
         repaint.set_request_repaint_callback(move |_| {
             counted.fetch_add(1, Ordering::SeqCst);
         });
-        let receiver = bind_free_port(repaint);
+        let receiver = bind_free_port(&repaint);
         let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
         sender
             .send_to(&message("/freemix/switcher/cut"), receiver.local_addr())
