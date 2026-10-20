@@ -1878,7 +1878,7 @@ fn failed_realizer_is_fatal_without_false_publication_or_control_updates() {
 
     let before_snapshot = control.snapshot().clone();
     let before_pending = control.pending_runtime_actions.clone();
-    let before_active_transition = control.active_transition;
+    let before_active_transitions = control.active_transitions.clone();
     let before_runtime_generation = control.runtime_sequence_generation;
     let before_runtime_sequence = control.runtime_sequence;
     let mut projected = control.engine.clone();
@@ -1905,7 +1905,7 @@ fn failed_realizer_is_fatal_without_false_publication_or_control_updates() {
     );
     assert_eq!(control.snapshot(), &before_snapshot);
     assert_eq!(control.pending_runtime_actions, before_pending);
-    assert_eq!(control.active_transition, before_active_transition);
+    assert_eq!(control.active_transitions, before_active_transitions);
     assert_eq!(
         control.runtime_sequence_generation,
         before_runtime_generation

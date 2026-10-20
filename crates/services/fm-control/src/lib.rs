@@ -919,7 +919,13 @@ pub struct ControlService<A = Policy> {
     subscribers: HashMap<SubscriberId, Subscriber>,
     next_subscriber_id: u64,
     pending_runtime_actions: VecDeque<PendingRuntimeAction>,
-    active_transition: Option<ActiveTransition>,
+    /// Program operations (a timed transition, or a playlist, cue, script,
+    /// or shortcut run) realized once the switcher settles, oldest first.
+    /// A cue GO, script run, or shortcut fire accepted while a transition
+    /// runs on the frame loop settles with it, and each publishes its own
+    /// realization then: a client holding its realized buses for the
+    /// transition's revision must see that revision complete.
+    active_transitions: Vec<ActiveTransition>,
     active_fade_to_black: Option<ActiveTransition>,
     runtime_sequence_generation: u64,
     runtime_sequence: u64,
@@ -1038,7 +1044,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             subscribers: HashMap::new(),
             next_subscriber_id: 1,
             pending_runtime_actions: VecDeque::new(),
-            active_transition: None,
+            active_transitions: Vec::new(),
             active_fade_to_black: None,
             runtime_sequence_generation,
             runtime_sequence: 0,
@@ -1100,7 +1106,7 @@ impl<A: AuthorizationHook> ControlService<A> {
                 .collect(),
             next_subscriber_id: self.next_subscriber_id,
             pending_runtime_actions: self.pending_runtime_actions.clone(),
-            active_transition: self.active_transition,
+            active_transitions: self.active_transitions.clone(),
             active_fade_to_black: self.active_fade_to_black,
             runtime_sequence_generation: self.runtime_sequence_generation,
             runtime_sequence: self.runtime_sequence,
@@ -2140,7 +2146,7 @@ impl<A: AuthorizationHook> ControlService<A> {
     #[must_use]
     pub fn work_in_flight(&self) -> bool {
         !self.pending_runtime_actions.is_empty()
-            || self.active_transition.is_some()
+            || !self.active_transitions.is_empty()
             || self.active_fade_to_black.is_some()
             || self.engine.work_in_flight()
     }
@@ -2153,7 +2159,7 @@ impl<A: AuthorizationHook> ControlService<A> {
     /// transition is pending, including an unpublished control realization.
     pub fn idle_engine_snapshot(&self) -> Result<EngineSnapshot, SnapshotError> {
         if !self.pending_runtime_actions.is_empty()
-            || self.active_transition.is_some()
+            || !self.active_transitions.is_empty()
             || self.active_fade_to_black.is_some()
         {
             return Err(SnapshotError::WorkInFlight);
@@ -2659,7 +2665,7 @@ impl<A: AuthorizationHook> ControlService<A> {
                 .ok_or(ControlError::RuntimeGenerationOutOfOrder)
                 .map_err(TickWithRealizerError::Tick)?;
             if is_program_transition(&pending.command) {
-                self.active_transition = Some(ActiveTransition {
+                self.active_transitions.push(ActiveTransition {
                     revision: pending.revision,
                     generation,
                 });
@@ -2732,21 +2738,21 @@ impl<A: AuthorizationHook> ControlService<A> {
     }
 
     fn take_completed_switcher_operations(&mut self) -> Vec<ActiveTransition> {
-        let transition = (self.engine.realized_switcher().transition().is_none()
+        let settled = self.engine.realized_switcher().transition().is_none()
             && self.engine.realized_switcher().program()
                 == self.engine.show().desired_switcher().program()
             && self.engine.realized_switcher().preview()
-                == self.engine.show().desired_switcher().preview())
-        .then(|| self.active_transition.take())
-        .flatten();
+                == self.engine.show().desired_switcher().preview();
+        let mut completed = if settled {
+            std::mem::take(&mut self.active_transitions)
+        } else {
+            Vec::new()
+        };
         let fade_to_black = (!self.engine.realized_switcher().fade_to_black_is_automatic()
             && self.engine.realized_fade_to_black() == self.engine.desired_fade_to_black())
         .then(|| self.active_fade_to_black.take())
         .flatten();
-        let mut completed = [transition, fade_to_black]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
+        completed.extend(fade_to_black);
         completed.sort_by_key(|operation| operation.generation);
         completed
     }

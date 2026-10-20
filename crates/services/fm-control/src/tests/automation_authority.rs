@@ -1326,3 +1326,67 @@ fn concurrent_runs_are_authorized_reported_and_stopped_each() {
     );
     assert_eq!(control.cue_advance_frame(), None);
 }
+
+/// A cue GO accepted while a timed transition runs (its actions are free
+/// of the transition) is a Program operation too, realized once the
+/// switcher settles: both the transition's and the GO's realizations are
+/// published when the transition ends, so a client holding its realized
+/// buses for the transition's revision sees it complete.
+#[test]
+fn a_cue_go_accepted_mid_transition_keeps_the_transition_realization() {
+    let mut control = granted(TRANSITION_AND_AUDIO);
+    submit(
+        &mut control,
+        &admin(),
+        "set",
+        set_list(vec![cue(10, false, vec![mute(3)])]),
+    );
+    let fade = control
+        .submit(
+            &admin(),
+            command("fade", "fade", CommandPayload::Fade { duration_frames: 6 }),
+            0,
+        )
+        .unwrap();
+    let CommandResult::Accepted {
+        revision: fade_revision,
+        ..
+    } = fade.output.result
+    else {
+        panic!("{:?}", fade.output.result);
+    };
+    let mut realized = Vec::new();
+    let mut collect = |outcome: TickOutcome| {
+        realized.extend(outcome.runtime_events.into_iter().filter_map(|event| {
+            matches!(
+                &event.event,
+                RuntimeLifecycleEvent::Realized { domain, .. } if domain == "switcher"
+            )
+            .then_some(event.revision)
+        }));
+    };
+    collect(control.tick(&server_identity()).unwrap());
+    collect(control.tick(&server_identity()).unwrap());
+    assert!(control.work_in_flight());
+
+    let go = control
+        .submit(&session(), command("go", "go", go(Some(10))), 0)
+        .unwrap();
+    let CommandResult::Accepted {
+        revision: go_revision,
+        ..
+    } = go.output.result
+    else {
+        panic!("{:?}", go.output.result);
+    };
+    for _ in 0..32 {
+        if !control.work_in_flight() {
+            break;
+        }
+        collect(control.tick(&server_identity()).unwrap());
+    }
+    assert!(!control.work_in_flight());
+    assert!(strip(&control, 3).muted);
+    assert_eq!(program(&control), input(2));
+    assert_eq!(realized, [fade_revision, go_revision]);
+}
