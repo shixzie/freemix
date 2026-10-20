@@ -8550,13 +8550,6 @@ impl NativeDaemon {
     }
 
     #[allow(clippy::unused_self)]
-    fn take_screen_capture_restore_tokens(
-        &mut self,
-    ) -> Option<std::collections::BTreeMap<InputId, String>> {
-        None
-    }
-
-    #[allow(clippy::unused_self)]
     fn take_recorder_status(&mut self, _server: &ServerIdentity) -> Option<RecorderStatusMessage> {
         None
     }
@@ -11585,7 +11578,8 @@ impl NativeProgress {
     }
 
     /// Folds the durable project on the next pass that can, whatever the
-    /// cadence says.
+    /// cadence says. Only a native daemon's screen capture grants ask.
+    #[cfg(feature = "native-media")]
     pub(crate) fn request_fold(&mut self) {
         self.fold_requested = true;
     }
