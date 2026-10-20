@@ -7316,8 +7316,10 @@ impl NativeDaemon {
             }
             due => due,
         };
-        if display_due || preview_tap_frame.is_some() {
+        if preview_composite_due(shows_preview, display_due, preview_tap_frame.is_some()) {
             self.render_display_preview(preview_source, preview);
+        } else if !shows_preview {
+            self.latest_preview = None;
         }
         if let Some(frame) = preview_tap_frame {
             self.monitor.capture(
@@ -7998,9 +8000,10 @@ fn validate_native_video_dimensions(
 /// GPU work falls on different frames. Its picture is the Preview composite
 /// display outputs show (see [`preview_frame`]): the Preview source cut in.
 /// During a transition that is the incoming source, as on most switchers. A
-/// Preview composite is rendered for the tap only on its due frames. Once the
-/// loop falls behind its deadlines it is paced like display outputs: the next
-/// Preview capture waits until the loop has spent several times the last
+/// Preview composite is rendered for the tap only on the due frames it
+/// captures (see [`preview_composite_due`]). Once the loop falls behind its
+/// deadlines it is paced like display outputs: the next Preview capture, and
+/// its composite, waits until the loop has spent several times the last
 /// one's cost on everything else, so a costly Preview composite lowers the
 /// Preview rate rather than the Program rate.
 ///
@@ -8265,6 +8268,18 @@ impl NativeTapSlot {
         self.pending = Some(bytes);
         true
     }
+}
+
+/// Whether a realized frame renders the Preview composite: only for a
+/// consumer that takes it this frame, a display output showing Preview
+/// (`shows_preview`) that presents it (`display_due`), or the Preview tap's
+/// capture (`tap_captures`). Without a presenting display `display_due` holds
+/// on every frame, so it alone must not render the composite of a due tap
+/// frame that a late loop paced out: that blocking composite is most of what
+/// pacing the tap saves.
+#[cfg(feature = "native-media")]
+const fn preview_composite_due(shows_preview: bool, display_due: bool, tap_captures: bool) -> bool {
+    (shows_preview && display_due) || tap_captures
 }
 
 /// The source the Preview monitor shows with `frame`: during a transition
@@ -20580,6 +20595,22 @@ mod tests {
         ] {
             assert!(parse_args(arguments).is_err());
         }
+    }
+
+    /// A Preview composite is rendered for a presenting display output that
+    /// shows Preview or for the Preview tap's capture, and for nothing else:
+    /// not for a tap frame a late loop paced out, however due display
+    /// outputs (none presenting) are.
+    #[cfg(feature = "native-media")]
+    #[test]
+    fn a_paced_out_preview_tap_frame_renders_no_preview_composite() {
+        // No display shows Preview: only the tap's capture renders one.
+        assert!(!super::preview_composite_due(false, true, false));
+        assert!(super::preview_composite_due(false, true, true));
+        assert!(super::preview_composite_due(false, false, true));
+        // A display showing Preview renders it when it presents.
+        assert!(super::preview_composite_due(true, true, false));
+        assert!(!super::preview_composite_due(true, false, false));
     }
 
     /// A command dispatches while more of the frame interval is left than
