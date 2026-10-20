@@ -3254,6 +3254,60 @@ timing of command results and what a session may send meanwhile do.
   project schema is unchanged.
 - 2.85 is refused.
 
+Protocol 2.87 tells a managing console how phones trust and reach the web
+gateway (RC-007). No schema change: trust material and the mDNS name live in
+the daemon's web state directory and options, never in the project.
+
+- With `gateway=1`, `web_access` gains, after `fingerprint`: a required
+  `trust=plain|local_ca|operator` (`plain` exactly with `tls=0`;
+  `local_ca`: a leaf issued by the daemon's per-install root, `--web-tls`;
+  `operator`: the operator's `--web-tls-cert`/`--web-tls-key`), a
+  `ca_fingerprint` exactly with `local_ca` (the root's SHA-256 in the
+  fingerprint form), a `cert_not_after_ms` exactly with TLS (the served
+  leaf's expiry, Unix ms), an optional `cert_problem` only with TLS
+  (`reload_failed`: the operator's changed files did not validate and the
+  previous certificate is still served; `host_mismatch`: the leaf does not
+  name the `url` host; `expiring`: it expires within 30 days), a required
+  `urls` (a comma-separated list, possibly empty, of at most 8 other
+  distinct origins that reach the gateway, never `url` itself, such as the
+  mDNS origin and other LAN addresses), and an optional `mdns`
+  (`<label>.local`, one lowercase `[a-z0-9-]` label, advertised over
+  mDNS / DNS-SD). Records that disagree (trust against `tls`, a missing or
+  extra `ca_fingerprint` or `cert_not_after_ms`, a repeated or path-carrying
+  origin) are refused.
+- The gateway serves its root certificate (DER,
+  `application/x-x509-ca-cert`, `attachment`) without a credential at
+  `/freemix-ca.crt` with `local_ca`, `404` otherwise, and a script-free
+  start page at `/` linking the pages and, with `local_ca`, the root and
+  its install steps. The console's install link is `<url>/freemix-ca.crt`.
+- The root (ten years, path length 0) and the leaf (397 days, `serverAuth`,
+  subject alternative names for every LAN address, `localhost`, `127.0.0.1`,
+  `::1`, the `--web-host` names, and the mDNS name) live in the state
+  directory with mode 0600; the leaf is reused across restarts while it
+  covers those names and is more than 30 days from expiry, and is reissued
+  by the same root when the LAN addresses change (looked at every 15 s).
+  The operator's chain must parse, be valid now, name a host, carry
+  `serverAuth` when it has an extended key usage, be signed link by link,
+  and match its key; its key must not be readable by other users. Changed
+  files are reloaded about a second after they settle; a replacement that
+  fails validation keeps the served certificate. The daemon prints
+  `FREEMIXD_WEB_TLS\tv=1\turl=...\tfingerprint=...\ttrust=...` with
+  `ca_fingerprint=...` and `mdns=...` when present, and logs
+  `FREEMIXD_WEB_CA`, `FREEMIXD_WEB_TLS_RELOAD` (`state=ok|failed`),
+  `FREEMIXD_WEB_REACH`, and `FREEMIXD_WEB_MDNS`
+  (`state=advertised|unavailable`) with fingerprints and file names only,
+  never key material.
+- On a LAN address the gateway advertises `_freemix._tcp` and `_https._tcp`
+  on `freemix-<computer name>.local` (or `--web-mdns-name NAME`;
+  `--no-web-mdns` advertises nothing) with TXT `path=/`, `tally`,
+  `operator`, `titles`, and `ca` paths, and answers address queries for that
+  name (IPv4 only on `0.0.0.0`, never loopback); requests may name it in
+  `Host`. Where no multicast socket opens, the gateway serves by address.
+- The windowed program daemon (`--fullscreen-program`, `--display-output`,
+  `--display-presenter`, and Studio's `--display-presenter-if-available`)
+  serves the gateway with the same options.
+- 2.86 is refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision

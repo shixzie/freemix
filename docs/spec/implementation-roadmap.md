@@ -9,11 +9,19 @@ Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
 highest-value remaining items, ranked:
 
 1. **Web gateway on the LAN: trust and reach (`RC-007`, `RC-014`, `RC-008`).**
-   `freemixd serve` now serves the pages over TLS on LAN addresses with
-   Studio-driven device pairing (Protocol 2.71), but trust is a
-   self-signed certificate checked by fingerprint, the windowed program
-   daemon still does not serve the gateway, and the pairing flow is proven
-   in headless Chromium, not on real phones.
+   `freemixd serve` serves the pages over TLS on LAN addresses with
+   Studio-driven device pairing (Protocol 2.71), and the windowed program
+   daemon Studio supervises serves them too. Trust (Protocol 2.87) is a
+   per-install local CA whose root phones install from `/freemix-ca.crt`
+   (Studio shows it with a QR code, fingerprint, and iOS / Android steps;
+   the leaf is reissued for new LAN addresses and the mDNS name), or the
+   operator's own validated, hot-reloaded certificate, with the leaf
+   fingerprint kept as the fallback check; the gateway advertises
+   `_freemix._tcp` / `_https._tcp` over mDNS as `<name>.local`, and Studio
+   lists every address with a QR code. Still missing: proof on real phones
+   (the pairing flow and the CA install are proven in headless Chromium and
+   rustls clients only, and mDNS by unit-level records), name constraints
+   on the root, and HSTS.
 2. ~~**Native Preview monitor tap (`SW-001`, `SW-002`).**~~ Landed: the native
    daemon publishes a Preview `monitor_frame` tap (the incoming source during a
    transition) through nonblocking readbacks, and Studio shows it with a
@@ -4431,11 +4439,48 @@ handshake against the generated certificate, refusal of plain HTTP on
 refusal, and that no token or code reaches the logs; the tally tests run
 over TLS; screenshots show headless Chromium pairing over `wss` in
 `docs/progress/`.
-Remaining gaps: trust is trust-on-first-use of a self-signed certificate
-(the operator compares the fingerprint; no HSTS on IP origins), the
-certificate is not reissued when the LAN address changes, the gateway is not
-served by the windowed program daemon, pairing expiry is tested with an
-injected clock, and no real phone or tablet has been tried; Web peers
+Trust and reach (Protocol 2.87, no schema change): `--web-tls` now creates a
+per-install local CA (ECDSA P-256 root, ten years, path length 0, a random
+suffix in its name) in the web state directory and serves a 397-day leaf it
+issues for every LAN interface address, `localhost`, the `--web-host`
+names, and the mDNS name; the leaf is kept across restarts and reissued by
+the same root when the addresses change (checked every 15 s) or it nears
+expiry, so phones that installed the root keep trusting the gateway. The
+root downloads without a credential from `/freemix-ca.crt`, and a
+script-free start page at `/` links the pages and the root with iOS and
+Android steps. `--web-tls-cert`/`--web-tls-key` (mkcert, a company CA) are
+validated before use (parse, validity window, a named host, `serverAuth`,
+each link signed by the next, key match) and reloaded about a second after
+the files change; a broken replacement keeps the served certificate and is
+reported as `reload_failed`. Key files are written 0600 in a 0700
+directory, keys other users can read are refused, and neither keys nor
+their parse errors are ever printed. On a LAN address the gateway
+advertises `_freemix._tcp` and `_https._tcp` on `freemix-<computer
+name>.local` (`--web-mdns-name`, `--no-web-mdns`) through the pure-Rust
+`mdns-sd` responder and accepts that name in `Host`. The `web_access`
+answer carries the trust, the root's fingerprint, the leaf's expiry, a
+certificate problem, the other origins, and the mDNS name; Studio's Web
+access window shows the trust and any problem, lists every address with a
+QR code of the chosen one (the mDNS name first), and offers the root with a
+QR code, its fingerprint, and install steps (English and Spanish hover help,
+in the hover audit). Studio's `--web-tls-cert`, `--web-tls-key`,
+`--web-mdns-name`, and `--no-web-mdns` reach its supervised daemon, and the
+windowed program daemon (`--display-presenter-if-available` and the other
+presenter options) serves the gateway. Process tests cover a client that
+trusts only the downloaded root (WebPKI name checks, no pin), the root and
+leaf surviving restarts, private file modes, operator certificate reload
+and refusal, the mDNS name served (or the fallback where multicast is
+unavailable), and pairing through the windowed daemon under Xvfb; unit
+tests cover chain validation, CA issuance and reissue, and the DNS-SD
+records.
+Remaining gaps: no real phone or tablet has installed the root, resolved
+the `.local` name, or paired (on this development VM multicast does not
+loop back on the LAN interface, so the advertisement is checked by record
+contents and process state, not by a second resolver); the root carries no
+name constraints, there is no HSTS, Android Chrome may not resolve `.local`
+names, the fingerprint in the QR link is that of the current leaf (a
+reissue changes it), and pairing expiry is tested with an injected clock;
+Web peers
 receive no monitor frames, so there is no low-latency web preview; the page's
 JavaScript duplicates the Rust model and is checked by page-source, wire, and
 `node --check` tests and screenshots, not an automated browser test; and FTB, audio
