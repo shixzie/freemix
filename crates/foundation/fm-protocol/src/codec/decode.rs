@@ -3638,36 +3638,7 @@ fn decode_audio_meters(fields: &mut Fields) -> Result<AudioMetersMessage, CodecE
             })
             .collect::<Result<Vec<_>, _>>()?
     };
-    let monitor_value = fields.required("monitor")?;
-    let monitor = if monitor_value == "-" {
-        None
-    } else {
-        let invalid = || CodecError::InvalidField {
-            field: "monitor",
-            value: monitor_value.clone(),
-        };
-        let mut parts = monitor_value.splitn(3, '~');
-        let (Some(source), Some(output), Some(channels)) =
-            (parts.next(), parts.next(), parts.next())
-        else {
-            return Err(invalid());
-        };
-        let solo = match source {
-            "master" => false,
-            "solo" => true,
-            _ => return Err(invalid()),
-        };
-        let output = crate::AudioMonitorOutputState::from_token(output).ok_or_else(invalid)?;
-        let channels = decode_meter_channels(channels, "monitor")?;
-        if channels.len() != master.len() {
-            return Err(invalid());
-        }
-        Some(crate::AudioMonitorMeters {
-            solo,
-            output,
-            channels,
-        })
-    };
+    let monitor = decode_monitor_meters(&fields.required("monitor")?, master.len())?;
     Ok(AudioMetersMessage {
         server,
         sequence,
@@ -3680,6 +3651,41 @@ fn decode_audio_meters(fields: &mut Fields) -> Result<AudioMetersMessage, CodecE
         dynamics: super::audio_mixer::decode_dynamics(&fields.required("dynamics")?)?,
         loudness: super::audio_mixer::decode_loudness(&fields.required("loudness")?)?,
     })
+}
+
+/// The `audio_meters` `monitor` field: `-`, or
+/// `<master|solo>~<output>~<channels>` with Master's channel count.
+fn decode_monitor_meters(
+    monitor_value: &str,
+    channel_count: usize,
+) -> Result<Option<crate::AudioMonitorMeters>, CodecError> {
+    if monitor_value == "-" {
+        return Ok(None);
+    }
+    let invalid = || CodecError::InvalidField {
+        field: "monitor",
+        value: monitor_value.to_owned(),
+    };
+    let mut parts = monitor_value.splitn(3, '~');
+    let (Some(source), Some(output), Some(channels)) = (parts.next(), parts.next(), parts.next())
+    else {
+        return Err(invalid());
+    };
+    let solo = match source {
+        "master" => false,
+        "solo" => true,
+        _ => return Err(invalid()),
+    };
+    let output = crate::AudioMonitorOutputState::from_token(output).ok_or_else(invalid)?;
+    let channels = decode_meter_channels(channels, "monitor")?;
+    if channels.len() != channel_count {
+        return Err(invalid());
+    }
+    Ok(Some(crate::AudioMonitorMeters {
+        solo,
+        output,
+        channels,
+    }))
 }
 
 fn decode_meter_channels(
