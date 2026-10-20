@@ -146,7 +146,8 @@ const STREAM_ID: u128 = ID_BASE + 400;
 
 const TITLE_TEMPLATE_KEY: &str = "titles/tally-title.fmtitle";
 
-/// Writes the stored template of a lower third with one text field.
+/// Writes the stored template of a lower third with two text fields: the
+/// name, and a producer note hidden from browsers (GX-006).
 fn write_title_template(store: &ProjectStore) {
     use fm_titles::{FieldDefinition, FieldId, FieldValue, TemplateId, TitleTemplate};
 
@@ -156,12 +157,20 @@ fn write_title_template(store: &ProjectStore) {
         width: 1_280,
         height: 720,
         background: fm_titles::Color::TRANSPARENT,
-        fields: vec![FieldDefinition {
-            id: FieldId::new(NonZeroU128::new(1).unwrap()),
-            name: "Name".into(),
-            default: FieldValue::Text("Name".into()),
-            exposed: true,
-        }],
+        fields: vec![
+            FieldDefinition {
+                id: FieldId::new(NonZeroU128::new(1).unwrap()),
+                name: "Name".into(),
+                default: FieldValue::Text("Name".into()),
+                exposed: true,
+            },
+            FieldDefinition {
+                id: FieldId::new(NonZeroU128::new(2).unwrap()),
+                name: "Producer note".into(),
+                default: FieldValue::Text("Note".into()),
+                exposed: false,
+            },
+        ],
         elements: Vec::new(),
         animation: fm_titles::TitleAnimation::default(),
     };
@@ -220,10 +229,16 @@ fn create_project_with(path: &Path, title: bool, stream: bool) {
             kind: InputKind::Title(fm_model::TitleInput {
                 template_uri: format!("asset://{TITLE_TEMPLATE_KEY}"),
                 field_revision: 0,
-                fields: vec![fm_model::TitleFieldEntry {
-                    id: fm_model::TitleFieldId::new(NonZeroU128::new(1).unwrap()),
-                    value: fm_model::TitleFieldValue::Text("Name".into()),
-                }],
+                fields: vec![
+                    fm_model::TitleFieldEntry {
+                        id: fm_model::TitleFieldId::new(NonZeroU128::new(1).unwrap()),
+                        value: fm_model::TitleFieldValue::Text("Name".into()),
+                    },
+                    fm_model::TitleFieldEntry {
+                        id: fm_model::TitleFieldId::new(NonZeroU128::new(2).unwrap()),
+                        value: fm_model::TitleFieldValue::Text("secret-note".into()),
+                    },
+                ],
             }),
             required_capabilities: Vec::new(),
         });
@@ -536,10 +551,13 @@ impl RawOperator {
             let mut line = String::new();
             assert_ne!(self.reader.read_line(&mut line).unwrap(), 0);
             let message = decode_line(&line).unwrap();
-            // Studio peers also receive lossy monitor telemetry; skip it.
+            // Studio peers also receive lossy monitor telemetry and title
+            // phases; skip them.
             if !matches!(
                 message,
-                WireMessage::MonitorFrame(_) | WireMessage::AudioMeters(_)
+                WireMessage::MonitorFrame(_)
+                    | WireMessage::AudioMeters(_)
+                    | WireMessage::TitlePhases(_)
             ) {
                 return message;
             }
@@ -2010,6 +2028,15 @@ fn titles_page_edits_and_takes_a_title_within_the_session_role() {
         "name === \"title_changed\"",
         "issue === \"title_revision_conflict\"",
         "const COMMAND_TIMEOUT_MS = 8000;",
+        // Protocol 2.90: the rendered preview, live phases, exposure, and
+        // the image picker.
+        "[\"phase\", \"hold\"], [\"frame\", \"0\"],\n      [\"width\", String(PREVIEW_WIDTH)], [\"height\", String(PREVIEW_HEIGHT)]",
+        "if (list.length) fields.push([\"fields\", changesKey(list)]);",
+        "case \"title_preview_frame\":",
+        "case \"title_phases\":",
+        "name === \"title_exposure_changed\"",
+        "fetch(\"/v1/assets/images?name=\" + encodeURIComponent(file.name)",
+        "headers: authorized({ \"Content-Type\": file.type }), body: file,",
     ] {
         assert!(page.contains(source), "{source}");
     }
@@ -2559,4 +2586,291 @@ fn title_editor_images_upload_into_the_bundle_and_list() {
         assert_eq!(status, "HTTP/1.1 404 Not Found", "{target}");
     }
     assert!(project.join("project.json").is_file());
+}
+
+/// Connects and handshakes as a `role` page, returning every record of its
+/// initial sync (snapshot through the scene layouts) as written.
+fn web_sync(address: SocketAddr, role: Role) -> (Browser, Vec<String>) {
+    let mut socket = browser_connect(address).expect("gateway connection");
+    send(&mut socket, &hello(role));
+    let mut lines = Vec::new();
+    let read = |socket: &mut Browser| loop {
+        match socket.read().unwrap() {
+            Message::Text(text) => return text.as_str().to_owned(),
+            Message::Ping(_) | Message::Pong(_) => {}
+            other => panic!("unexpected WebSocket message {other:?}"),
+        }
+    };
+    let WireMessage::HandshakeResponse(response) = decode_line(&read(&mut socket)).unwrap() else {
+        panic!("expected a handshake response");
+    };
+    assert_eq!(response.granted_role, role);
+    let snapshot = read(&mut socket);
+    let WireMessage::Snapshot(decoded) = decode_line(&snapshot).unwrap() else {
+        panic!("expected a snapshot");
+    };
+    lines.push(snapshot);
+    let mut layouts = decoded.layout_scenes.len();
+    while layouts > 0 {
+        let line = read(&mut socket);
+        if matches!(
+            decode_line(&line).unwrap(),
+            WireMessage::SceneLayoutState(_)
+        ) {
+            layouts -= 1;
+        }
+        lines.push(line);
+    }
+    (socket, lines)
+}
+
+/// The `title_state` of input 4 among `lines`.
+fn title_state_of(lines: &[String]) -> fm_protocol::TitleStateMessage {
+    lines
+        .iter()
+        .find_map(|line| match decode_line(line).unwrap() {
+            WireMessage::TitleState(state) if state.input == input(4) => Some(state),
+            _ => None,
+        })
+        .expect("a title_state for the title")
+}
+
+/// Reads `socket` until `found` picks a record, failing after 5 s.
+fn web_until<T>(socket: &mut Browser, mut found: impl FnMut(&str, WireMessage) -> Option<T>) -> T {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(Instant::now() < deadline, "the record never arrived");
+        match socket.read().unwrap() {
+            Message::Text(text) => {
+                if let Some(value) = found(text.as_str(), decode_line(text.as_str()).unwrap()) {
+                    return value;
+                }
+            }
+            Message::Ping(_) | Message::Pong(_) => {}
+            other => panic!("unexpected WebSocket message {other:?}"),
+        }
+    }
+}
+
+fn preview_request(id: &str, width: u16, height: u16, fields: &[(u128, &str)]) -> String {
+    encode_line(&WireMessage::TitlePreviewRequest(
+        fm_protocol::TitlePreviewRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id: id.into(),
+            input: input(4),
+            sample: fm_protocol::TitlePreviewSample::Hold,
+            width,
+            height,
+            clip: None,
+            fields: fields
+                .iter()
+                .map(|(field, text)| fm_protocol::TitleFieldUpdate {
+                    field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(*field).unwrap()),
+                    value: fm_protocol::TitleFieldValue::Text((*text).into()),
+                })
+                .collect(),
+        },
+    ))
+    .unwrap()
+}
+
+/// The rendered preview answering `id` (its size and draft flag), or the
+/// error code it met.
+fn preview_answer(socket: &mut Browser, id: &str) -> Result<(u16, u16, bool), String> {
+    let mut data = Vec::new();
+    web_until(socket, |_, message| match message {
+        WireMessage::TitlePreviewFrame(frame) if frame.request_id == id => {
+            data.extend_from_slice(&frame.data);
+            (frame.part + 1 == frame.parts).then(|| {
+                let pixels = fm_protocol::decode_qoi_rgba(frame.width, frame.height, &data)
+                    .expect("a whole QOI image");
+                assert_eq!(
+                    pixels.len(),
+                    usize::from(frame.width) * usize::from(frame.height) * 4
+                );
+                Ok((frame.width, frame.height, frame.draft))
+            })
+        }
+        WireMessage::Error(error) if error.request_id.as_deref() == Some(id) => {
+            Some(Err(error.error.code))
+        }
+        _ => None,
+    })
+}
+
+/// GX-006 through the gateway: a browser never receives a field its
+/// template hides (not in its `title_state`, not in a `title_changed`), may
+/// not name one or change exposure, previews its unsaved drafts as a small
+/// server-rendered image, and follows title phases live; Studio changes
+/// exposure, which survives a restart.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn web_title_editor_hides_fields_previews_drafts_and_follows_phases() {
+    let directory = TestDirectory::new("web-title-editor");
+    let project = directory.0.join("show.freemix");
+    create_project_with(&project, true, false);
+    let mut daemon = Daemon::start(&project);
+    let title = input(4);
+
+    // Studio (raw) sees both fields; a Graphics page only the exposed one.
+    let mut studio = RawOperator::connect_as(daemon.control, Role::Admin);
+    let (mut graphics, sync) = web_sync(daemon.web, Role::Graphics);
+    for line in &sync {
+        assert!(
+            !line.contains("secret-note") && !line.contains("Producer"),
+            "a hidden field reached the browser: {line}"
+        );
+    }
+    let state = title_state_of(&sync);
+    assert_eq!(state.fields.len(), 1);
+    assert_eq!(state.fields[0].name, "Name");
+    assert!(state.fields[0].exposed);
+
+    // The page may not name the hidden field nor change exposure.
+    let note = |text: &str| format!("2%3At%3A{}%3A{text}", text.len());
+    assert_eq!(
+        page_command(
+            &mut graphics,
+            "web-hidden",
+            None,
+            &format!(
+                "payload=title_fields\tinput={title}\tbase_revision=0\trequire=off_air\tfields={}",
+                note("x")
+            ),
+        )
+        .unwrap_err()
+        .0,
+        "not_found"
+    );
+    assert_eq!(
+        page_command(
+            &mut graphics,
+            "web-expose",
+            None,
+            &format!("payload=title_field_exposure\tinput={title}\tfield=2\texposed=1"),
+        )
+        .unwrap_err()
+        .0,
+        "permission_denied"
+    );
+
+    // Studio edits both fields; the page's event carries only the name.
+    studio.send(&command(
+        "studio-edit",
+        CommandPayload::SetTitleFields {
+            input: title,
+            base_revision: 0,
+            require: fm_protocol::TitleAirRequirement::OffAir,
+            fields: [(1, "Ana"), (2, "new-secret")]
+                .map(|(field, text)| fm_protocol::TitleFieldUpdate {
+                    field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(field).unwrap()),
+                    value: fm_protocol::TitleFieldValue::Text(text.into()),
+                })
+                .to_vec(),
+        },
+    ));
+    studio.accepted("studio-edit");
+    let changed = web_until(&mut graphics, |line, message| match message {
+        WireMessage::Event(EventMessage {
+            payload: EventPayload::TitleChanged { fields, .. },
+            ..
+        }) => Some((line.to_owned(), fields)),
+        _ => None,
+    });
+    assert!(!changed.0.contains("new-secret"), "{}", changed.0);
+    assert_eq!(changed.1.len(), 1);
+
+    // A draft renders as a small image without saving anything.
+    graphics
+        .send(Message::text(preview_request(
+            "p1",
+            320,
+            180,
+            &[(1, "Draft")],
+        )))
+        .unwrap();
+    assert_eq!(preview_answer(&mut graphics, "p1"), Ok((320, 180, true)));
+    graphics
+        .send(Message::text(preview_request("p2", 160, 90, &[])))
+        .unwrap();
+    assert_eq!(preview_answer(&mut graphics, "p2"), Ok((160, 90, false)));
+    // Larger than a browser preview, or a hidden draft, is refused.
+    graphics
+        .send(Message::text(preview_request("p3", 640, 360, &[])))
+        .unwrap();
+    assert_eq!(
+        preview_answer(&mut graphics, "p3"),
+        Err("invalid_request".into())
+    );
+    graphics
+        .send(Message::text(preview_request("p4", 320, 180, &[(2, "x")])))
+        .unwrap();
+    assert_eq!(preview_answer(&mut graphics, "p4"), Err("not_found".into()));
+    // The request exactly as the titles page writes it.
+    graphics
+        .send(Message::text(format!(
+            "title_preview_request\tprotocol={CURRENT_PROTOCOL_VERSION}\trequest_id=preview-page-1\t\
+             input={title}\tphase=hold\tframe=0\twidth=320\theight=180\tfields=1%3At%3A5%3ADraft\n"
+        )))
+        .unwrap();
+    assert_eq!(
+        preview_answer(&mut graphics, "preview-page-1"),
+        Ok((320, 180, true))
+    );
+
+    // Taking the title reaches the page as a live phase record.
+    studio.send(&command(
+        "studio-take",
+        CommandPayload::TakeTitle {
+            input: title,
+            channel: fm_protocol::WireOverlayChannelId::new(1).unwrap(),
+            base_revision: 1,
+            fields: Vec::new(),
+        },
+    ));
+    studio.accepted("studio-take");
+    web_until(&mut graphics, |_, message| match message {
+        WireMessage::TitlePhases(phases) => phases
+            .titles
+            .iter()
+            .any(|status| {
+                status.input == title
+                    && status.phase != fm_protocol::TitlePhase::Idle
+                    && status.timeline.is_some()
+            })
+            .then_some(()),
+        _ => None,
+    });
+
+    // Studio exposes the note: the page is told, and after a restart the
+    // template still exposes it.
+    studio.send(&command(
+        "studio-expose",
+        CommandPayload::SetTitleFieldExposure {
+            input: title,
+            field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(2).unwrap()),
+            exposed: true,
+        },
+    ));
+    studio.accepted("studio-expose");
+    let exposed = web_until(&mut graphics, |_, message| match message {
+        WireMessage::Event(EventMessage {
+            payload: EventPayload::TitleExposureChanged { inputs, fields },
+            ..
+        }) => Some((inputs, fields)),
+        _ => None,
+    });
+    assert_eq!(exposed.0, [title]);
+    assert_eq!(exposed.1.len(), 2);
+    assert!(exposed.1.iter().all(|item| item.exposed));
+    drop((studio, graphics));
+    drop(daemon);
+    daemon = Daemon::start(&project);
+    let (_graphics, sync) = web_sync(daemon.web, Role::Graphics);
+    let state = title_state_of(&sync);
+    assert_eq!(state.fields.len(), 2, "{state:?}");
+    assert_eq!(
+        state.fields[1].value,
+        fm_protocol::TitleFieldValue::Text("new-secret".into())
+    );
 }

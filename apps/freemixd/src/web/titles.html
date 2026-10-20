@@ -111,6 +111,40 @@
   #token-option summary { min-height: 48px; padding: .75rem 0; cursor: pointer; }
   #status { padding: .5rem .75rem; padding-bottom: max(.5rem, env(safe-area-inset-bottom)); font-size: .9rem;
     color: #ddd; background: var(--panel); border-top: 1px solid var(--line); }
+  /* Rendered preview (Protocol 2.90): the server's image of the edits. */
+  #render { display: grid; gap: .3rem; margin: 0 0 .6rem; justify-items: start; }
+  #render-canvas { width: 100%; max-width: 32rem; aspect-ratio: 16 / 9; border-radius: 8px; border: 1px solid var(--line);
+    background: repeating-conic-gradient(#2c2c2c 0 25%, #1a1a1a 0 50%) 0 0 / 16px 16px; }
+  #render[data-state="pending"] #render-canvas { opacity: .65; }
+  #render-caption { margin: 0; }
+  #render[data-state="draft"] #render-caption { color: #cfe3ff; }
+  #render[data-state="failed"] #render-caption { color: var(--warn); }
+  /* Live phase of the shown title (title_phases). */
+  #phase { display: flex; align-items: center; gap: .5rem; margin: 0 0 .6rem; font-size: .85rem; font-weight: 700;
+    color: #ffd0d5; font-variant-numeric: tabular-nums; }
+  #phase .bar { flex: 1; max-width: 16rem; height: 6px; border-radius: 3px; background: #2a2a2a; overflow: hidden; }
+  #phase-fill { height: 100%; width: 0; background: var(--program); }
+  #phase[data-shown="preview"] { color: #c8f5d3; }
+  #phase[data-shown="preview"] #phase-fill { background: var(--preview); }
+  /* Image picker: the show's images and uploads (GX-006). */
+  .field .pick { min-height: 36px; padding: 0 .6rem; font-size: .85rem; }
+  #images { display: grid; gap: .5rem; margin-top: .6rem; padding: .6rem; border-radius: 10px; background: #0b1724;
+    border: 1px solid #1f3b57; }
+  #images .head { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+  #images h3 { flex: 1; margin: 0; font-size: .85rem; letter-spacing: .06em; text-transform: uppercase; color: #cfe3ff; }
+  #images .upload { position: relative; display: inline-flex; align-items: center; min-height: 44px; padding: 0 .9rem;
+    border-radius: 10px; border: 1px solid var(--line); background: var(--idle); font-weight: 650; cursor: pointer; }
+  #images .upload:focus-within { outline: 3px solid var(--focus); outline-offset: 2px; }
+  #images .upload[data-busy="1"] { opacity: .45; }
+  #upload { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; }
+  #images-status { margin: 0; }
+  #images-status[data-tone="warn"] { color: var(--warn); }
+  #image-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(7rem, 1fr)); gap: .4rem; }
+  .image-choice { display: grid; gap: .25rem; padding: .3rem; min-height: 0; text-align: left; font-size: .72rem;
+    font-weight: 500; background: var(--panel-2); overflow-wrap: anywhere; }
+  .image-choice canvas { width: 100%; aspect-ratio: 16 / 9; border-radius: 4px;
+    background: repeating-conic-gradient(#2c2c2c 0 25%, #1a1a1a 0 50%) 0 0 / 12px 12px; }
+  .image-choice[aria-pressed="true"] { border-color: var(--edit); box-shadow: inset 0 0 0 2px var(--edit); }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -172,6 +206,15 @@
       <h2 id="editor-name"></h2>
       <div id="editor-badges" class="badges"></div>
     </div>
+    <div id="phase" role="status" hidden>
+      <span id="phase-text"></span>
+      <div class="bar" aria-hidden="true"><div id="phase-fill"></div></div>
+    </div>
+    <div id="render" hidden>
+      <canvas id="render-canvas" width="320" height="180" role="img" data-i18n-label="renderLabel"
+        aria-label="Rendered preview of the title"></canvas>
+      <p id="render-caption" class="hint" aria-live="polite"></p>
+    </div>
     <div id="banner" role="alert" hidden>
       <span id="banner-text"></span>
       <div class="actions">
@@ -180,6 +223,16 @@
       </div>
     </div>
     <div id="fields"></div>
+    <div id="images" role="group" aria-labelledby="images-heading" hidden>
+      <div class="head">
+        <h3 id="images-heading"></h3>
+        <label class="upload" id="upload-label"><span data-i18n="uploadImage">Upload image</span>
+          <input type="file" id="upload" accept="image/png,image/jpeg"></label>
+        <button type="button" id="images-close" data-i18n="close">Close</button>
+      </div>
+      <p id="images-status" class="hint" aria-live="polite"></p>
+      <div id="image-grid"></div>
+    </div>
     <div id="changes" hidden aria-live="polite">
       <h3 id="changes-heading"></h3>
       <ul id="changes-list"></ul>
@@ -378,6 +431,35 @@
       reasonNotPermitted: "this session's role may not do that",
       reasonRevisionExhausted: "the title's revision counter is exhausted",
       reasonOther: "the server refused the command ({code})",
+      renderLabel: "Rendered preview of the title",
+      renderSaved: "Rendered by the server with the saved values",
+      renderDraft: "Rendered by the server with your edits (not saved yet)",
+      renderPending: "Rendering…",
+      renderFailed: "The server could not render the preview ({code})",
+      phaseIn: "IN {frame}/{frames}",
+      phaseHold: "HOLD",
+      phaseOut: "OUT {frame}/{frames}",
+      phaseOnAir: "{phase} · on air",
+      phaseOnPreview: "{phase} · on Preview",
+      chooseImage: "Choose…",
+      chooseImageLabel: "Choose or upload an image for {field}",
+      imagesHeading: "Images for {field}",
+      uploadImage: "Upload image",
+      close: "Close",
+      imagesLoading: "Loading the show's images…",
+      imagesEmpty: "The show has no images yet; upload a PNG or JPEG",
+      imagesCount: "{count} images. Uploads: PNG or JPEG up to {mb} MB, {uploaded} of {max} used",
+      imagesFailed: "Could not list the show's images (HTTP {status})",
+      imagePick: "Use {uri}",
+      uploading: "Uploading {name}…",
+      uploaded: "{name} uploaded and chosen",
+      uploadTooLarge: "The image is larger than {mb} MB",
+      uploadType: "Only PNG and JPEG images can be uploaded",
+      uploadInvalid: "The file is not a readable image, or it has too many pixels",
+      uploadLimit: "The show already holds the most uploads allowed",
+      uploadExists: "Another image already has that name; rename the file and try again",
+      uploadBusy: "The server is busy with other uploads; try again in a moment",
+      uploadFailed: "Upload failed (HTTP {status})",
     },
     es: {
       title: "Títulos de FreeMix",
@@ -526,6 +608,35 @@
       reasonNotPermitted: "el rol de esta sesión no lo permite",
       reasonRevisionExhausted: "el contador de revisiones del título se agotó",
       reasonOther: "el servidor rechazó el comando ({code})",
+      renderLabel: "Vista previa renderizada del título",
+      renderSaved: "Renderizado por el servidor con los valores guardados",
+      renderDraft: "Renderizado por el servidor con sus ediciones (aún sin guardar)",
+      renderPending: "Renderizando…",
+      renderFailed: "El servidor no pudo renderizar la vista previa ({code})",
+      phaseIn: "ENTRADA {frame}/{frames}",
+      phaseHold: "EN AIRE",
+      phaseOut: "SALIDA {frame}/{frames}",
+      phaseOnAir: "{phase} · al aire",
+      phaseOnPreview: "{phase} · en Previo",
+      chooseImage: "Elegir…",
+      chooseImageLabel: "Elegir o subir una imagen para {field}",
+      imagesHeading: "Imágenes para {field}",
+      uploadImage: "Subir imagen",
+      close: "Cerrar",
+      imagesLoading: "Cargando las imágenes del show…",
+      imagesEmpty: "El show aún no tiene imágenes; suba un PNG o JPEG",
+      imagesCount: "{count} imágenes. Subidas: PNG o JPEG de hasta {mb} MB, {uploaded} de {max} usadas",
+      imagesFailed: "No se pudieron listar las imágenes del show (HTTP {status})",
+      imagePick: "Usar {uri}",
+      uploading: "Subiendo {name}…",
+      uploaded: "{name} subida y elegida",
+      uploadTooLarge: "La imagen supera {mb} MB",
+      uploadType: "Solo se pueden subir imágenes PNG y JPEG",
+      uploadInvalid: "El archivo no es una imagen legible o tiene demasiados píxeles",
+      uploadLimit: "El show ya tiene el máximo de subidas permitido",
+      uploadExists: "Ya hay otra imagen con ese nombre; cambie el nombre del archivo e inténtelo de nuevo",
+      uploadBusy: "El servidor está ocupado con otras subidas; inténtelo de nuevo en un momento",
+      uploadFailed: "La subida falló (HTTP {status})",
     },
   };
   const LANGUAGE_KEY = "freemix.web.language";
@@ -542,7 +653,10 @@
     rebase: $("rebase"), discardAll: $("discard-all"), fields: $("fields"), changes: $("changes"),
     changesHeading: $("changes-heading"), changesList: $("changes-list"), preview: $("preview"), revert: $("revert"),
     save: $("save"), channel: $("channel"), take: $("take"), update: $("update"), offAir: $("off-air"),
-    whyEditor: $("why-editor"),
+    whyEditor: $("why-editor"), phase: $("phase"), phaseText: $("phase-text"), phaseFill: $("phase-fill"),
+    render: $("render"), renderCanvas: $("render-canvas"), renderCaption: $("render-caption"),
+    images: $("images"), imagesHeading: $("images-heading"), imagesStatus: $("images-status"),
+    imageGrid: $("image-grid"), upload: $("upload"), uploadLabel: $("upload-label"), imagesClose: $("images-close"),
   };
 
   const store = window.sessionStorage;
@@ -630,6 +744,16 @@
   // Revisions of this page's accepted title commands whose events have not
   // arrived yet.
   const ownChanges = new Set();
+  // Each title's animation phase (title_state, then title_phases records):
+  // id -> { phase, phaseFrame, phaseFrames, shown, at }.
+  const phases = new Map();
+  // The server-rendered preview (Protocol 2.90): one request in flight at
+  // a time, the next sent only after its answer and a short pause.
+  const preview = { inFlight: null, shownKey: "", wantedKey: "", timer: 0, state: "", code: "" };
+  const PREVIEW_DEBOUNCE_MS = 300;
+  const PREVIEW_TIMEOUT_MS = 6000;
+  const PREVIEW_WIDTH = 320;
+  const PREVIEW_HEIGHT = 180;
   let selected = "";
   let commandCounter = 0;
   const sessionNonce = Array.from(crypto.getRandomValues(new Uint8Array(8)),
@@ -1034,6 +1158,11 @@
     if (pending.size) note(tr("noteLost", { count: pending.size }));
     pending.clear();
     ownChanges.clear();
+    // A preview in flight is never answered on a new connection.
+    preview.inFlight = null;
+    preview.wantedKey = "";
+    preview.shownKey = "";
+    phases.clear();
     if (link.phase === "stopped" || link.phase === "idle") { render(); return; }
     link.attempt += 1;
     if (!link.everLive || link.attempt >= 3) checkCredential();
@@ -1100,6 +1229,7 @@
       case "snapshot": {
         if (!sameServer(record)) throw new Error("foreign snapshot");
         show.name = required(record, "show_name");
+        show.frameRate = frameRate(record.fields.get("frame_rate"));
         show.inputs = parseInputs(required(record, "inputs"));
         link.revision = Number(required(record, "revision"));
         applySwitcher(record, true);
@@ -1130,6 +1260,36 @@
         title.fieldRevision = Number(required(record, "field_revision"));
         title.fields = fields.map((field, index) => ({ ...field, name: names[index] }));
         settleDraft(title);
+        setPhase(id, required(record, "phase"), record.fields.get("phase_frame"), record.fields.get("phase_frames"),
+          record.fields.get("shown"));
+        return;
+      }
+      case "title_phases": {
+        // Lossy and latest-wins: `<input>:<phase>:<frame>:<frames>:<shown>:<since>`.
+        if (link.phase !== "live") return;
+        const list = required(record, "titles");
+        for (const item of list ? list.split(",") : []) {
+          const [id, phase, phaseFrame, phaseFrames, shown] = item.split(":");
+          if (titles.has(id)) setPhase(id, phase, phaseFrame, phaseFrames, shown);
+        }
+        return;
+      }
+      case "title_preview_frame": {
+        const sent = preview.inFlight;
+        if (!sent || required(record, "request_id") !== sent.id) return;
+        const part = Number(required(record, "part"));
+        const parts = Number(required(record, "parts"));
+        if (part !== sent.parts.length) { previewDone("failed", "parts"); return; }
+        sent.parts.push(fromBase64Url(required(record, "data")));
+        if (part + 1 < parts) return;
+        const width = Number(required(record, "width"));
+        const height = Number(required(record, "height"));
+        try {
+          drawPreview(decodeQoi(concatBytes(sent.parts), width, height), width, height);
+          previewDone(sent.draft ? "draft" : "saved", "");
+        } catch (error) {
+          previewDone("failed", "decode");
+        }
         return;
       }
       case "event": {
@@ -1182,7 +1342,12 @@
         return;
       }
       case "error":
-        // Includes server_shutting_down: reconnect after backoff.
+        // A refused preview is answered by request id; anything else
+        // (server_shutting_down included) reconnects after backoff.
+        if (preview.inFlight && record.fields.get("request_id") === preview.inFlight.id) {
+          previewDone("failed", record.fields.get("code") || "error");
+          return;
+        }
         closeSocket();
         return;
       default:
@@ -1221,6 +1386,313 @@
     } else if (name === "input_added") {
       // A new title input brings its values only with a snapshot.
       closeSocket();
+    } else if (name === "title_exposure_changed") {
+      // The fields each title now shows this page (the server names only
+      // exposed ones). A newly exposed field's value comes with a snapshot.
+      const list = required(record, "fields");
+      const exposed = new Set((list ? list.split(",") : []).filter((item) => item.endsWith(":1"))
+        .map((item) => item.split(":")[0]));
+      const inputs = required(record, "inputs");
+      for (const id of inputs ? inputs.split(",") : []) {
+        const title = titles.get(id);
+        if (!title || !title.fields) continue;
+        if ([...exposed].some((field) => !title.fields.some((known) => known.id === field))) { closeSocket(); return; }
+        title.fields = title.fields.filter((field) => exposed.has(field.id));
+        const draft = drafts.get(id);
+        if (draft) {
+          for (const field of [...draft.values.keys()]) if (!exposed.has(field)) draft.values.delete(field);
+          draft.previewed = null;
+          if (!draft.values.size) drafts.delete(id);
+        }
+        if (picker.title === id && !exposed.has(picker.field)) closePicker();
+      }
+    }
+  }
+
+  // ---- Live phases (title_state, title_phases). ----
+  function frameRate(text) {
+    const [numerator, denominator] = String(text || "").split("/").map(Number);
+    return numerator > 0 && denominator > 0 ? numerator / denominator : 0;
+  }
+  function setPhase(id, phase, phaseFrame, phaseFrames, shown) {
+    phases.set(id, { phase, phaseFrame: Number(phaseFrame) || 0, phaseFrames: Number(phaseFrames) || 0,
+      shown: shown || "none", at: Date.now() });
+  }
+  // The In or Out frame now, extrapolated from the last record at the
+  // show's frame rate (records arrive about once a second while shown).
+  function phaseFrameNow(state) {
+    if (state.phase !== "in" && state.phase !== "out") return 0;
+    const elapsed = show.frameRate ? Math.floor((Date.now() - state.at) / 1000 * show.frameRate) : 0;
+    return Math.min(state.phaseFrames, state.phaseFrame + elapsed);
+  }
+  function renderPhase(title) {
+    const state = phases.get(title.id);
+    const visible = Boolean(state && (state.phase !== "idle" || state.shown !== "none"));
+    ui.phase.hidden = !visible;
+    if (!visible) return;
+    const frame = phaseFrameNow(state);
+    const label = state.phase === "in" ? tr("phaseIn", { frame, frames: state.phaseFrames })
+      : state.phase === "out" ? tr("phaseOut", { frame, frames: state.phaseFrames }) : tr("phaseHold");
+    ui.phaseText.textContent = state.shown === "preview" ? tr("phaseOnPreview", { phase: label })
+      : tr("phaseOnAir", { phase: label });
+    ui.phase.dataset.shown = state.shown;
+    const fraction = state.phase === "in" || state.phase === "out"
+      ? (state.phaseFrames ? frame / state.phaseFrames : 1) : state.phase === "hold" || state.phase === "idle" ? 1 : 0;
+    ui.phaseFill.style.width = Math.round((state.phase === "out" ? 1 - fraction : fraction) * 100) + "%";
+  }
+
+  // ---- Server-rendered preview (Protocol 2.90). ----
+  function canRender(title) {
+    return link.phase === "live" && link.permissions.includes("edit_project") && title && title.fields;
+  }
+  function previewKey(title) {
+    return title.id + "@" + title.fieldRevision + ":" + changesKey(changes(title));
+  }
+  // Asks for a new image once the edits rest, never while one is pending.
+  function schedulePreview(title) {
+    if (!canRender(title) || invalid(title)) return;
+    const key = previewKey(title);
+    if (key === preview.shownKey || key === preview.wantedKey) return;
+    preview.wantedKey = key;
+    clearTimeout(preview.timer);
+    preview.timer = setTimeout(requestPreview, PREVIEW_DEBOUNCE_MS);
+  }
+  function requestPreview() {
+    if (preview.inFlight) return; // asked again when the answer lands
+    const title = current();
+    if (!canRender(title) || invalid(title)) { preview.wantedKey = ""; return; }
+    const list = changes(title);
+    commandCounter += 1;
+    const id = "preview-" + sessionNonce + "-" + commandCounter;
+    const fields = [["protocol", PROTOCOL], ["request_id", id], ["input", title.id], ["phase", "hold"], ["frame", "0"],
+      ["width", String(PREVIEW_WIDTH)], ["height", String(PREVIEW_HEIGHT)]];
+    if (list.length) fields.push(["fields", changesKey(list)]);
+    send(encodeRecord("title_preview_request", fields));
+    preview.inFlight = { id, key: previewKey(title), title: title.id, draft: list.length > 0, parts: [], at: Date.now() };
+    preview.state = preview.state || "pending";
+    render();
+  }
+  function previewDone(state, code) {
+    const sent = preview.inFlight;
+    preview.inFlight = null;
+    if (sent) preview.shownKey = sent.key;
+    preview.state = state;
+    preview.code = code;
+    preview.wantedKey = "";
+    render();
+  }
+  function fromBase64Url(text) {
+    const binary = atob(text.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((text.length + 3) % 4));
+    return Uint8Array.from(binary, (ch) => ch.charCodeAt(0));
+  }
+  function concatBytes(parts) {
+    const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+    let at = 0;
+    for (const part of parts) { out.set(part, at); at += part.length; }
+    return out;
+  }
+  // A four-channel QOI stream (straight RGBA8) of exactly width x height.
+  function decodeQoi(bytes, width, height) {
+    const u32 = (at) => ((bytes[at] << 24) >>> 0) + (bytes[at + 1] << 16) + (bytes[at + 2] << 8) + bytes[at + 3];
+    if (bytes.length < 22 || bytes[0] !== 0x71 || bytes[1] !== 0x6f || bytes[2] !== 0x69 || bytes[3] !== 0x66
+      || u32(4) !== width || u32(8) !== height || bytes[12] !== 4) throw new Error("not a QOI image");
+    const out = new Uint8ClampedArray(width * height * 4);
+    const seen = new Uint8Array(256);
+    let r = 0, g = 0, b = 0, a = 255, at = 14, run = 0;
+    const end = bytes.length - 8;
+    for (let o = 0; o < out.length; o += 4) {
+      if (run > 0) {
+        run -= 1;
+      } else {
+        if (at >= end) throw new Error("truncated QOI image");
+        const op = bytes[at++];
+        if (op === 0xfe) { r = bytes[at++]; g = bytes[at++]; b = bytes[at++]; }
+        else if (op === 0xff) { r = bytes[at++]; g = bytes[at++]; b = bytes[at++]; a = bytes[at++]; }
+        else if ((op & 0xc0) === 0x00) { const i = (op & 0x3f) * 4; r = seen[i]; g = seen[i + 1]; b = seen[i + 2]; a = seen[i + 3]; }
+        else if ((op & 0xc0) === 0x40) {
+          r = (r + ((op >> 4) & 3) - 2) & 255; g = (g + ((op >> 2) & 3) - 2) & 255; b = (b + (op & 3) - 2) & 255;
+        } else if ((op & 0xc0) === 0x80) {
+          const next = bytes[at++];
+          const dg = (op & 0x3f) - 32;
+          r = (r + dg - 8 + ((next >> 4) & 15)) & 255; g = (g + dg) & 255; b = (b + dg - 8 + (next & 15)) & 255;
+        } else {
+          run = op & 0x3f;
+        }
+        const i = ((r * 3 + g * 5 + b * 7 + a * 11) % 64) * 4;
+        seen[i] = r; seen[i + 1] = g; seen[i + 2] = b; seen[i + 3] = a;
+      }
+      out[o] = r; out[o + 1] = g; out[o + 2] = b; out[o + 3] = a;
+    }
+    return out;
+  }
+  function drawPreview(pixels, width, height) {
+    ui.renderCanvas.width = width;
+    ui.renderCanvas.height = height;
+    ui.renderCanvas.getContext("2d").putImageData(new ImageData(pixels, width, height), 0, 0);
+  }
+  function renderPreview(title) {
+    const allowed = canRender(title);
+    ui.render.hidden = !allowed || (!preview.state && !preview.inFlight);
+    if (!allowed) return;
+    if (preview.inFlight && Date.now() - preview.inFlight.at > PREVIEW_TIMEOUT_MS) previewDone("failed", "timeout");
+    const key = previewKey(title);
+    const fresh = preview.shownKey === key;
+    const state = !fresh || preview.inFlight ? "pending" : preview.state;
+    ui.render.dataset.state = state;
+    ui.renderCaption.textContent = state === "pending" ? tr("renderPending")
+      : state === "failed" ? tr("renderFailed", { code: preview.code }) : tr(state === "draft" ? "renderDraft" : "renderSaved");
+    if (!preview.inFlight && preview.wantedKey === "" && !fresh) schedulePreview(title);
+    else if (!preview.inFlight && preview.wantedKey && preview.wantedKey !== key) schedulePreview(title);
+  }
+
+  // ---- Image picker: the show's images and uploads over HTTPS with this
+  // session's credential (GX-006). The server checks the role again. ----
+  const picker = { title: "", field: "", list: null, limits: null, status: "", tone: "", busy: false, loads: 0 };
+  function authorized(extra) { return Object.assign({ Authorization: "Bearer " + token() }, extra || {}); }
+  function openPicker(title, field) {
+    picker.title = title.id;
+    picker.field = field.id;
+    picker.list = null;
+    picker.status = tr("imagesLoading");
+    picker.tone = "";
+    ui.images.hidden = false;
+    render();
+    loadImages();
+  }
+  function closePicker() {
+    picker.title = picker.field = "";
+    picker.loads += 1;
+    ui.images.hidden = true;
+    ui.imageGrid.replaceChildren();
+  }
+  async function loadImages() {
+    const load = ++picker.loads;
+    let status = 0;
+    let answer = null;
+    try {
+      const response = await fetch("/v1/assets/images", {
+        credentials: "omit", cache: "no-store", redirect: "error", headers: authorized(),
+      });
+      status = response.status;
+      if (status === 200) answer = await response.json();
+    } catch (error) {
+      status = 0;
+    }
+    if (load !== picker.loads) return;
+    if (!answer || !Array.isArray(answer.images)) {
+      picker.status = tr("imagesFailed", { status });
+      picker.tone = "warn";
+      render();
+      return;
+    }
+    picker.limits = answer;
+    picker.list = answer.images.filter((image) => typeof image.uri === "string" && image.uri.startsWith("asset://"));
+    picker.status = picker.list.length ? imagesSummary() : tr("imagesEmpty");
+    picker.tone = "";
+    ui.imageGrid.replaceChildren(...picker.list.map((image) => imageChoice(image.uri)));
+    render();
+    // Thumbnails one at a time, drawn into canvases (the page loads no
+    // image URLs).
+    for (const button of [...ui.imageGrid.children]) {
+      if (load !== picker.loads) return;
+      await drawThumbnail(button.querySelector("canvas"), button.dataset.uri);
+    }
+  }
+  function imagesSummary() {
+    const limits = picker.limits || {};
+    return tr("imagesCount", { count: picker.list.length, mb: Math.round((limits.max_bytes || 0) / 1048576),
+      uploaded: limits.uploaded || 0, max: limits.max_count || 0 });
+  }
+  function imageChoice(uri) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "image-choice";
+    button.dataset.uri = uri;
+    const canvas = document.createElement("canvas");
+    canvas.width = 160;
+    canvas.height = 90;
+    const name = document.createElement("span");
+    name.textContent = uri.slice("asset://".length);
+    button.append(canvas, name);
+    button.title = tr("imagePick", { uri });
+    button.addEventListener("click", () => pickImage(uri));
+    return button;
+  }
+  async function drawThumbnail(canvas, uri) {
+    try {
+      const response = await fetch("/v1/assets/image?uri=" + encodeURIComponent(uri), {
+        credentials: "omit", cache: "no-store", redirect: "error", headers: authorized(),
+      });
+      if (response.status !== 200) return;
+      const bitmap = await createImageBitmap(await response.blob());
+      const scale = Math.min(canvas.width / bitmap.width, canvas.height / bitmap.height);
+      const width = Math.max(1, Math.round(bitmap.width * scale));
+      const height = Math.max(1, Math.round(bitmap.height * scale));
+      canvas.getContext("2d").drawImage(bitmap, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+      if (bitmap.close) bitmap.close();
+    } catch (error) {
+      /* a thumbnail that cannot load stays blank */
+    }
+  }
+  function pickImage(uri) {
+    const title = titles.get(picker.title);
+    const field = title && title.fields && title.fields.find((candidate) => candidate.id === picker.field);
+    if (!field) { closePicker(); render(); return; }
+    setDraft(title, field, uri);
+    const row = [...ui.fields.children].find((child) => child.dataset.key === field.id);
+    if (row) row.dataset.refresh = "1";
+    render();
+  }
+  const UPLOAD_ERRORS = { 413: "uploadTooLarge", 415: "uploadType", 422: "uploadInvalid", 503: "uploadBusy" };
+  async function uploadImage(file) {
+    const limits = picker.limits || {};
+    const mb = Math.round((limits.max_bytes || 8388608) / 1048576);
+    const fail = (key, values) => { picker.status = tr(key, values); picker.tone = "warn"; render(); };
+    if (file.type !== "image/png" && file.type !== "image/jpeg") { fail("uploadType"); return; }
+    if (limits.max_bytes && file.size > limits.max_bytes) { fail("uploadTooLarge", { mb }); return; }
+    picker.busy = true;
+    picker.status = tr("uploading", { name: file.name });
+    picker.tone = "";
+    render();
+    let status = 0;
+    let answer = null;
+    try {
+      const response = await fetch("/v1/assets/images?name=" + encodeURIComponent(file.name), {
+        method: "POST", credentials: "omit", cache: "no-store", redirect: "error",
+        headers: authorized({ "Content-Type": file.type }), body: file,
+      });
+      status = response.status;
+      try { answer = await response.json(); } catch (error) { answer = null; }
+    } catch (error) {
+      status = 0;
+    }
+    picker.busy = false;
+    if ((status === 200 || status === 201) && answer && typeof answer.uri === "string") {
+      pickImage(answer.uri);
+      await loadImages();
+      picker.status = tr("uploaded", { name: file.name });
+      render();
+      return;
+    }
+    if (status === 409) fail(answer && answer.error === "limit" ? "uploadLimit" : "uploadExists");
+    else if (UPLOAD_ERRORS[status]) fail(UPLOAD_ERRORS[status], { mb });
+    else fail("uploadFailed", { status });
+  }
+  function renderPicker(title) {
+    const field = picker.title === title.id && title.fields
+      && title.fields.find((candidate) => candidate.id === picker.field);
+    if (!field || !link.permissions.includes("edit_project")) { if (picker.title) closePicker(); return; }
+    ui.images.hidden = false;
+    ui.imagesHeading.textContent = tr("imagesHeading", { field: field.name });
+    ui.imagesStatus.textContent = picker.status;
+    ui.imagesStatus.dataset.tone = picker.tone;
+    ui.upload.disabled = picker.busy;
+    ui.uploadLabel.dataset.busy = picker.busy ? "1" : "0";
+    ui.imagesClose.title = tr("close");
+    const chosen = draftText(title, field);
+    for (const button of ui.imageGrid.children) {
+      button.setAttribute("aria-pressed", String(button.dataset.uri === chosen));
+      button.title = tr("imagePick", { uri: button.dataset.uri });
     }
   }
 
@@ -1280,6 +1752,10 @@
       }
     }
     if (link.phase === "waiting") render();
+    else if (link.phase === "live" && current()) {
+      renderPhase(current());
+      if (preview.inFlight && Date.now() - preview.inFlight.at > PREVIEW_TIMEOUT_MS) previewDone("failed", "timeout");
+    }
   }
 
   // ---- Air state: mirrors fm-ui-model's ProjectState::title_on_air. ----
@@ -1536,7 +2012,12 @@
       button.className = "title-row";
       button.setAttribute("role", "listitem");
       button.innerHTML = "<span class=\"lamp\"></span><span class=\"name\"></span><span class=\"badges\"></span>";
-      button.addEventListener("click", () => { selected = id; ui.fields.replaceChildren(); render(); });
+      button.addEventListener("click", () => {
+        if (selected !== id) closePicker();
+        selected = id;
+        ui.fields.replaceChildren();
+        render();
+      });
       return button;
     }, (button, id) => {
       const title = titles.get(id);
@@ -1612,6 +2093,9 @@
     // air, Save off air) is unavailable.
     const primary = onAir(title.id) ? reasons.update : reasons.save;
     ui.whyEditor.textContent = link.phase !== "live" ? tr("notLive") : list.length ? primary : "";
+    renderPhase(title);
+    renderPreview(title);
+    renderPicker(title);
   }
 
   function fieldRow(title, id) {
@@ -1639,7 +2123,19 @@
       row.dataset.refresh = "1";
       render();
     });
-    top.append(label, kind, revert);
+    top.append(label, kind);
+    if (field.kind === "i") {
+      const pick = document.createElement("button");
+      pick.type = "button";
+      pick.className = "pick";
+      pick.addEventListener("click", () => {
+        const current = titles.get(title.id);
+        const currentField = current && current.fields && current.fields.find((candidate) => candidate.id === id);
+        if (currentField) openPicker(current, currentField);
+      });
+      top.append(pick);
+    }
+    top.append(revert);
     row.append(top);
     let control;
     if (field.kind === "t") {
@@ -1709,6 +2205,15 @@
     revert.hidden = !dirty;
     revert.setAttribute("aria-label", tr("revertFieldLabel", { field: field.name }));
     revert.title = tr("revertFieldLabel", { field: field.name });
+    const pick = row.querySelector(".pick");
+    if (pick) {
+      pick.textContent = tr("chooseImage");
+      pick.title = tr("chooseImageLabel", { field: field.name });
+      pick.setAttribute("aria-label", tr("chooseImageLabel", { field: field.name }));
+      const allowed = link.phase === "live" && link.permissions.includes("edit_project");
+      pick.disabled = !allowed;
+      if (!allowed) pick.title = tr("permission", { name: "edit_project" });
+    }
     const control = row.querySelector(".value");
     // Never rewrite what the operator is typing. Server colours read as
     // Studio writes them, #RRGGBBAA.
@@ -1742,6 +2247,12 @@
   ui.discardAll.addEventListener("click", () => { if (current()) revertAll(current()); });
   ui.channel.addEventListener("change", () => { store.setItem("freemix.titles.channel", ui.channel.value); render(); });
   ui.language.addEventListener("click", toggleLanguage);
+  ui.imagesClose.addEventListener("click", () => { closePicker(); render(); });
+  ui.upload.addEventListener("change", () => {
+    const file = ui.upload.files && ui.upload.files[0];
+    ui.upload.value = "";
+    if (file && !picker.busy) uploadImage(file);
+  });
   ui.reconnect.addEventListener("click", () => { if (link.phase === "waiting") link.retryAt = Date.now(); });
   ui.signout.addEventListener("click", signOut);
   ui.pair.addEventListener("submit", submitPairing);
