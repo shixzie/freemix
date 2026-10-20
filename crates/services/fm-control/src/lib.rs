@@ -41,7 +41,7 @@ mod system_audio;
 mod title_animation;
 mod title_layout;
 mod transition;
-pub use cue::{cue_engine_command, wire_list as wire_cue_list};
+pub use cue::{client_fire_payload, cue_engine_command, wire_list as wire_cue_list};
 pub use input_lifecycle::{
     engine_edit as engine_input_lifecycle_edit, media_offline_reason, model_color, model_source,
     wire_color, wire_lifecycle, wire_operation as wire_input_lifecycle_operation, wire_source,

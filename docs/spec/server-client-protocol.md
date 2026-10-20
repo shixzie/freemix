@@ -3336,8 +3336,9 @@ Protocol 2.88 adds dynamic input targets to shortcut and cue actions
   `selected`, `bound_preview`, and `bound_program`, each a canonical input
   id, in that order. A client sends `selected`, its console's selection;
   the authority binds Preview and Program and writes them into the
-  journaled command, so a replay resolves to the same inputs. A field a
-  client sends wins over the live switcher.
+  journaled command, so a replay resolves to the same inputs. The
+  `bound_preview` and `bound_program` a client sends with a live fire are
+  ignored: only a journal replay carries them.
 - A role resolves when fired: a shortcut fire binds Preview and Program as
   they stand before its actions; a GO binds once for its whole run (a step
   after a wait or an auto-follow acts on the inputs bound at GO); an arm

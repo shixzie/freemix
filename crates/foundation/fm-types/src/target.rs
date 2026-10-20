@@ -1,14 +1,18 @@
 //! Dynamic input targets (RC-004): an action names a fixed input or the
-//! input that holds a role when the action is fired.
+//! input that holds a role when its fire binds it.
 //!
 //! A shortcut or cue action that acts on an input names it with an
 //! [`InputTarget`]: a fixed input id, or "the input on Preview", "the input
 //! on Program", or "the selected input" (the input selected on the console
-//! that fires it). A dynamic target is resolved once, when the action is
-//! fired, against [`TargetBindings`]: Preview and Program are read from the
-//! show on the authority, and the selected input is resolved by the client
-//! into a fixed id before it sends the fire. The authority journals the ids
-//! it resolved, so a replay of the journal acts on the same inputs.
+//! that fires it). A dynamic target resolves against [`TargetBindings`]
+//! bound once per fire: a shortcut fire binds them for its actions, a cue
+//! GO for its whole run (a step after a wait or an auto-follow acts on the
+//! inputs bound at GO), and an armed GO when it is armed. Preview and
+//! Program are read from the show on the authority; the Preview and
+//! Program a client sends with a live fire are ignored. Only the selected
+//! input comes from the client, which resolves it into a fixed id before it
+//! sends the fire. The authority journals all three ids it bound, so a
+//! replay of the journal acts on the same inputs.
 //!
 //! The type is generic over the id so the protocol can use its own wire id.
 
@@ -114,9 +118,10 @@ impl<I: fmt::Display> fmt::Display for InputTarget<I> {
     }
 }
 
-/// The inputs the dynamic targets of one fire resolve to. A role left
-/// `None` on a command is read by the authority (Preview and Program) or is
-/// unbound (no input selected on the firing console).
+/// The inputs the dynamic targets of one fire resolve to. A client's fire
+/// carries only `selected` (`None` when no input is selected on its
+/// console); the authority binds Preview and Program on its show, and its
+/// journal carries all three so a replay binds the same inputs.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TargetBindings<I = InputId> {
     pub preview: Option<I>,

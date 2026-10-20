@@ -13546,6 +13546,14 @@ fn execute_session_command(
     native: Option<&mut NativeDaemon>,
     process_shutdown: Option<&ProcessShutdown>,
 ) -> AppResult<CommandDelivery> {
+    // A live fire's Preview and Program are the authority's to bind
+    // (RC-004); only the console's selection comes from the client.
+    let stripped =
+        fm_control::client_fire_payload(&command.payload).map(|payload| CommandMessage {
+            payload,
+            ..command.clone()
+        });
+    let command = stripped.as_ref().unwrap_or(command);
     let now = now_millis()?;
     if let Some(result) = admit_session_command(session, &control.borrow(), command, now)? {
         return Ok(CommandDelivery::answer(result));
@@ -21719,6 +21727,113 @@ mod tests {
         assert!(failed.is_err());
         assert_eq!(session.accounting().inbound_commands_admitted_total, 1);
         assert_eq!(session.accounting().inbound_commands_inflight, 0);
+    }
+
+    /// RC-004: a live client's GO binds Preview and Program on the
+    /// authority, whatever `bound_preview` and `bound_program` it sends;
+    /// only its selection is its own. (A journal replay keeps them: it
+    /// never passes through a session.)
+    #[test]
+    fn a_live_fire_binds_preview_and_program_on_the_authority() {
+        use fm_protocol::{CueListSpec, CueOperation, WireCue, WireCueAction, WireInputId};
+        let mut durable = test_project();
+        let project_id = durable.project().id();
+        let control = Rc::new(RefCell::new(test_control(&durable)));
+        let config = ServerConfig::new(
+            ServerMode::Development,
+            AuthenticationMode::Development,
+            std::net::IpAddr::from([127, 0, 0, 1]),
+            CAPABILITIES_DIGEST,
+        );
+        let mut server = Server::new(config, ControlHandle(Rc::clone(&control))).unwrap();
+        server.mark_ready().unwrap();
+        let principal = development_principal().unwrap();
+        let (hello, _) = current_handshake(
+            &HandshakeRequest {
+                protocol: PROTOCOL_VERSION,
+                build: "live-fire-test".into(),
+                client_type: ClientType::Integration,
+                desired_role: Role::Admin,
+                resume_cursor: None,
+            },
+            &control,
+            project_id,
+        );
+        let mut session = server
+            .handshake(&hello, &principal, now_millis().unwrap())
+            .unwrap()
+            .session;
+        let server_identity = control_server_identity(&control.borrow(), project_id);
+        let wire = |value| WireInputId::from_domain(test_input_id(value));
+        let spec = CueListSpec {
+            name: "Show".into(),
+            cues: vec![WireCue {
+                id: 10,
+                name: "Key Preview".into(),
+                auto_follow: false,
+                actions: vec![WireCueAction::OverlayOn {
+                    channel: fm_protocol::WireOverlayChannelId::new(1).unwrap(),
+                    input: fm_types::InputTarget::Preview,
+                }],
+            }],
+        };
+        let commands = [
+            test_command(
+                "set-cues",
+                "set-cues-key",
+                CommandPayload::SetCueList {
+                    list: 7,
+                    spec: Box::new(spec),
+                    position: None,
+                },
+            ),
+            // The client claims Program (1) is on Preview and Preview (2)
+            // on Program.
+            test_command(
+                "go",
+                "go-key",
+                CommandPayload::CueControl {
+                    list: 7,
+                    operation: CueOperation::Go {
+                        cue: None,
+                        targets: fm_protocol::WireTargetBindings {
+                            preview: Some(wire(1)),
+                            program: Some(wire(2)),
+                            selected: Some(wire(1)),
+                        },
+                    },
+                },
+            ),
+        ];
+        for command in &commands {
+            let delivery = execute_session_command(
+                &mut session,
+                &control,
+                &CountingSaver::default(),
+                &mut durable,
+                &principal,
+                &server_identity,
+                command,
+                None,
+                None,
+            )
+            .unwrap();
+            assert!(
+                matches!(delivery.result, CommandResult::Accepted { .. }),
+                "{}: {:?}",
+                command.id,
+                delivery.result
+            );
+        }
+        let list = durable.project().cue_lists()[0].clone();
+        assert_eq!(
+            list.state.targets,
+            Some(fm_model::TargetBindings {
+                preview: Some(test_input_id(2)),
+                program: Some(test_input_id(1)),
+                selected: Some(test_input_id(1)),
+            })
+        );
     }
 
     #[test]

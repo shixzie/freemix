@@ -333,8 +333,9 @@ pub fn domain_targets(targets: WireTargetBindings) -> TargetBindings {
 /// naming a dynamic target: a `shortcut_fire` whose actions (or the cue
 /// list its GO fires) name one, and a `cue_go` or `cue_arm` of a list
 /// naming one. Preview and Program are bound to the show's, unless the
-/// payload (a journal replay) carries them; the console's selected input
-/// is the payload's own. The authority executes and journals the bound
+/// payload (a journal replay) carries them: a live client's fire is
+/// stripped of them first ([`client_fire_payload`]). The console's
+/// selected input is the payload's own. The authority executes and journals the bound
 /// payload, so a replay acts on the same inputs.
 #[must_use]
 pub fn bind_fire_targets(engine: &Engine, payload: &CommandPayload) -> Option<CommandPayload> {
@@ -399,6 +400,54 @@ pub fn bind_fire_targets(engine: &Engine, payload: &CommandPayload) -> Option<Co
                 cue: *cue,
                 in_ms: *in_ms,
                 targets: bind(*targets),
+            },
+        }),
+        _ => None,
+    }
+}
+
+/// `payload` without the Preview and Program bindings a client sent with a
+/// live fire (RC-004), or `None` when it carries none: the authority binds
+/// them itself on the show the fire is prepared on (see
+/// [`bind_fire_targets`]), so a console cannot steer a role to an input
+/// that is no longer on Preview or Program. Only the selection is the
+/// client's; the bound fields are the journal's, which replays them.
+#[must_use]
+pub fn client_fire_payload(payload: &CommandPayload) -> Option<CommandPayload> {
+    let selection = |targets: &WireTargetBindings| {
+        (targets.preview.is_some() || targets.program.is_some()).then_some(WireTargetBindings {
+            selected: targets.selected,
+            ..WireTargetBindings::NONE
+        })
+    };
+    match payload {
+        CommandPayload::FireShortcut { shortcut, targets } => {
+            selection(targets).map(|targets| CommandPayload::FireShortcut {
+                shortcut: *shortcut,
+                targets,
+            })
+        }
+        CommandPayload::CueControl {
+            list,
+            operation: CueOperation::Go { cue, targets },
+        } => selection(targets).map(|targets| CommandPayload::CueControl {
+            list: *list,
+            operation: CueOperation::Go { cue: *cue, targets },
+        }),
+        CommandPayload::CueControl {
+            list,
+            operation:
+                CueOperation::Arm {
+                    cue,
+                    in_ms,
+                    targets,
+                },
+        } => selection(targets).map(|targets| CommandPayload::CueControl {
+            list: *list,
+            operation: CueOperation::Arm {
+                cue: *cue,
+                in_ms: *in_ms,
+                targets,
             },
         }),
         _ => None,
@@ -634,4 +683,55 @@ pub(crate) fn media_transports(
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(value: u128) -> WireInputId {
+        WireInputId::from_domain(fm_types::InputId::new(
+            core::num::NonZeroU128::new(value).expect("nonzero"),
+        ))
+    }
+
+    /// A live fire keeps only the console's selection (RC-004); a fire
+    /// binding nothing else, and any other payload, is left as sent.
+    #[test]
+    fn a_client_fire_keeps_only_its_selection() {
+        let sent = WireTargetBindings {
+            preview: Some(id(1)),
+            program: Some(id(2)),
+            selected: Some(id(3)),
+        };
+        let selection = WireTargetBindings {
+            selected: Some(id(3)),
+            ..WireTargetBindings::NONE
+        };
+        let go = |targets| CommandPayload::CueControl {
+            list: 1,
+            operation: CueOperation::Go { cue: None, targets },
+        };
+        let arm = |targets| CommandPayload::CueControl {
+            list: 1,
+            operation: CueOperation::Arm {
+                cue: Some(2),
+                in_ms: 500,
+                targets,
+            },
+        };
+        let fire = |targets| CommandPayload::FireShortcut {
+            shortcut: 4,
+            targets,
+        };
+        let payloads: [&dyn Fn(WireTargetBindings) -> CommandPayload; 3] = [&go, &arm, &fire];
+        for payload in payloads {
+            assert_eq!(
+                client_fire_payload(&payload(sent)),
+                Some(payload(selection))
+            );
+            assert_eq!(client_fire_payload(&payload(selection)), None);
+        }
+        assert_eq!(client_fire_payload(&CommandPayload::Cut), None);
+    }
 }
