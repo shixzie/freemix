@@ -35,11 +35,15 @@ use std::collections::VecDeque;
 
 use fm_observability::{
     AlertEngine, AlertEngineLimits, AlertNotification, AlertPolicy, AlertRule, AlertSeverity,
-    RuleCondition, RuleId, RuleReading, RuleState, ThresholdDirection,
+    NotificationKind, RuleCondition, RuleId, RuleReading, RuleState, ThresholdDirection,
 };
 use fm_observability::{
     HistogramBuckets, LabelSet, MetricDescriptor, MetricId, MetricRegistry, RegistryLimits,
     SeriesKey, SeriesValue, StatisticsError, StatisticsSnapshot,
+};
+use fm_protocol::{
+    DaemonHealth, HealthAlert, HealthAlertRule, HealthNotification, HealthNotificationKind,
+    HealthSeverity, HealthStatusMessage, MAX_UTILIZATION_PERMILLE, ServerIdentity,
 };
 
 /// The shortest spacing of two statistics samples.
@@ -319,6 +323,30 @@ const fn gauge_value(value: u64) -> f64 {
     value as f64
 }
 
+/// A `0..=1` share in permille.
+fn permille(share: f64) -> u16 {
+    // Clamped to 0..=1000 first, so the cast is exact.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let value = (share * 1_000.0)
+        .round()
+        .clamp(0.0, f64::from(MAX_UTILIZATION_PERMILLE)) as u16;
+    value
+}
+
+/// A reading times 1000, saturating (the cast saturates; NaN reads 0).
+#[allow(clippy::cast_possible_truncation)]
+fn milli(value: f64) -> i64 {
+    (value * 1_000.0).round() as i64
+}
+
+const fn wire_severity(severity: AlertSeverity) -> HealthSeverity {
+    match severity {
+        AlertSeverity::Info => HealthSeverity::Info,
+        AlertSeverity::Warning => HealthSeverity::Warning,
+        AlertSeverity::Critical => HealthSeverity::Critical,
+    }
+}
+
 /// GPU pass time over `wall_ms`, clamped to `0..=1`; `None` without wall
 /// time to divide by.
 fn gpu_utilization(passes_ms: &[f64], wall_ms: f64) -> Option<f64> {
@@ -340,6 +368,8 @@ pub(crate) struct DaemonStatistics {
     alerts: AlertEngine,
     /// The most recent notifications, oldest first.
     recent: VecDeque<AlertNotification>,
+    /// The last `health_status` sequence sent (Protocol 2.99).
+    health_sequence: u64,
 }
 
 impl DaemonStatistics {
@@ -389,6 +419,7 @@ impl DaemonStatistics {
             origin,
             alerts,
             recent: VecDeque::with_capacity(MAX_RECENT_NOTIFICATIONS),
+            health_sequence: 0,
             registry,
             sampled_at: None,
             errors: 0,
@@ -399,13 +430,11 @@ impl DaemonStatistics {
     }
 
     /// The latest process CPU utilization, `0..=1`; `None` while unavailable.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const fn cpu_utilization(&self) -> Option<f64> {
         self.cpu_utilization
     }
 
     /// The latest GPU utilization proxy, `0..=1`; `None` while unavailable.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const fn gpu_utilization(&self) -> Option<f64> {
         self.gpu_utilization
     }
@@ -424,7 +453,6 @@ impl DaemonStatistics {
     }
 
     /// Every firing alert, in rule order.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn active_alerts(&self) -> Vec<ActiveAlert> {
         self.alerts
             .statuses()
@@ -441,9 +469,64 @@ impl DaemonStatistics {
     }
 
     /// The most recent notifications, oldest first.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn recent_notifications(&self) -> impl ExactSizeIterator<Item = &AlertNotification> {
         self.recent.iter()
+    }
+
+    /// The wire health sample at `now` (Protocol 2.99).
+    pub(crate) fn health(&self, now: Instant) -> DaemonHealth {
+        let uptime_ms = self.millis(now);
+        let alerts = self
+            .active_alerts()
+            .into_iter()
+            .filter_map(|alert| {
+                Some(HealthAlert {
+                    rule: HealthAlertRule::from_token(alert.rule.as_str())?,
+                    severity: wire_severity(alert.severity),
+                    since_ms: alert.since_ms.min(uptime_ms),
+                    value_milli: alert.value.map(milli),
+                })
+            })
+            .collect();
+        let notifications = self
+            .recent_notifications()
+            .filter_map(|notification| {
+                Some(HealthNotification {
+                    sequence: notification.sequence,
+                    rule: HealthAlertRule::from_token(notification.rule.as_str())?,
+                    severity: wire_severity(notification.severity),
+                    kind: match notification.kind {
+                        NotificationKind::Firing => HealthNotificationKind::Firing,
+                        NotificationKind::Resolved => HealthNotificationKind::Resolved,
+                        NotificationKind::Reminder => HealthNotificationKind::Reminder,
+                    },
+                    at_ms: notification.at_millis.min(uptime_ms),
+                    value_milli: notification.value.map(milli),
+                })
+            })
+            .collect();
+        DaemonHealth {
+            uptime_ms,
+            cpu_permille: self.cpu_utilization().map(permille),
+            gpu_permille: self.gpu_utilization().map(permille),
+            alerts,
+            notifications,
+        }
+    }
+
+    /// The next `health_status` record (Protocol 2.99) for the sample just
+    /// taken at `now`.
+    pub(crate) fn health_status(
+        &mut self,
+        server: &ServerIdentity,
+        now: Instant,
+    ) -> Option<HealthStatusMessage> {
+        self.health_sequence = self.health_sequence.checked_add(1)?;
+        Some(HealthStatusMessage {
+            server: server.clone(),
+            sequence: self.health_sequence,
+            health: self.health(now),
+        })
     }
 
     /// Evaluates every rule at `at` and keeps what it notified.
@@ -764,6 +847,81 @@ mod tests {
 
     fn rule_ids(alerts: &[ActiveAlert]) -> Vec<&str> {
         alerts.iter().map(|alert| alert.rule.as_str()).collect()
+    }
+
+    #[test]
+    fn health_reports_utilization_alerts_and_notifications_on_the_wire() {
+        let origin = Instant::now();
+        let mut statistics = DaemonStatistics::new(origin);
+        let server = ServerIdentity {
+            engine_id: "engine".into(),
+            project_id: "project".into(),
+            state_epoch: 1,
+            log_id: "log".into(),
+        };
+        statistics.record_sample(origin, ControlSample::default(), None, None);
+        let quiet = statistics.health_status(&server, origin).unwrap();
+        assert_eq!(quiet.sequence, 1);
+        assert_eq!(quiet.health, DaemonHealth::default());
+
+        let mut sample = native(vec![1.0]);
+        sample.outputs_failed = 2;
+        statistics.record_sample(
+            origin + STATISTICS_INTERVAL,
+            ControlSample::default(),
+            Some(sample),
+            Some(0.4567),
+        );
+        let now = origin + Duration::from_millis(1_500);
+        let status = statistics.health_status(&server, now).unwrap();
+        assert_eq!(status.sequence, 2);
+        let health = status.health;
+        assert!(health.is_valid());
+        assert_eq!(health.uptime_ms, 1_500);
+        assert_eq!(health.cpu_permille, Some(457));
+        // 5 ms of passes over one second, on a native daemon.
+        assert_eq!(health.gpu_permille, Some(5));
+        assert_eq!(
+            health.alerts,
+            [
+                HealthAlert {
+                    rule: HealthAlertRule::DiskLow,
+                    severity: HealthSeverity::Critical,
+                    since_ms: 1_000,
+                    value_milli: Some(4_096_000),
+                },
+                HealthAlert {
+                    rule: HealthAlertRule::OutputFailed,
+                    severity: HealthSeverity::Critical,
+                    since_ms: 1_000,
+                    value_milli: Some(2_000),
+                },
+            ]
+        );
+        let kinds: Vec<_> = health
+            .notifications
+            .iter()
+            .map(|notification| (notification.rule, notification.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                (HealthAlertRule::DiskLow, HealthNotificationKind::Firing),
+                (
+                    HealthAlertRule::OutputFailed,
+                    HealthNotificationKind::Firing
+                ),
+            ]
+        );
+        // Every default rule has a wire token.
+        for rule in DEFAULT_RULES {
+            assert!(
+                HealthAlertRule::from_token(rule.id).is_some(),
+                "{}",
+                rule.id
+            );
+        }
+        assert_eq!(DEFAULT_RULES.len(), HealthAlertRule::ALL.len());
     }
 
     #[test]

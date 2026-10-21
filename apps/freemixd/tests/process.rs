@@ -4618,6 +4618,84 @@ fn non_current_handshake_returns_protocol_mismatch() {
     daemon.wait_success();
 }
 
+/// RC-015: a raw Studio session of the simulated daemon receives a
+/// `health_status` record once a statistics sample, with strictly increasing
+/// sequences, its server identity, no GPU proxy, and (on Linux, from the
+/// second sample) the process CPU utilization; an Integration peer gets none.
+#[test]
+fn simulated_studio_peer_receives_health_status_once_a_second() {
+    let directory = TestDirectory::new("simulated-health-status");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+
+    let mut studio = daemon.connect();
+    studio
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    studio.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        build: "process-test".into(),
+        client_type: ClientType::Studio,
+        desired_role: Role::Operator,
+        resume_cursor: None,
+    }));
+    let WireMessage::HandshakeResponse(response) = studio.receive() else {
+        panic!("expected handshake response");
+    };
+    let server = response.server.clone();
+    studio.receive_snapshot();
+
+    let mut statuses = Vec::new();
+    while statuses.len() < 3 {
+        statuses.push(receive_within(
+            &mut studio,
+            Duration::from_secs(5),
+            "health_status",
+            |message| match message {
+                WireMessage::HealthStatus(status) => Some(status),
+                _ => None,
+            },
+        ));
+    }
+    for pair in statuses.windows(2) {
+        assert!(pair[0].sequence < pair[1].sequence);
+        assert!(pair[0].health.uptime_ms < pair[1].health.uptime_ms);
+    }
+    for status in &statuses {
+        assert_eq!(status.server, server);
+        assert!(status.health.is_valid());
+        assert_eq!(status.health.gpu_permille, None);
+    }
+    if cfg!(target_os = "linux") {
+        assert!(statuses[2].health.cpu_permille.is_some());
+    }
+
+    let mut integration = daemon.connect();
+    integration.handshake(None);
+    integration.receive_snapshot();
+    integration
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_millis(2_500)))
+        .unwrap();
+    loop {
+        let mut line = String::new();
+        match integration.reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => assert!(
+                !matches!(decode_line(&line).unwrap(), WireMessage::HealthStatus(_)),
+                "integration peers must not receive health_status"
+            ),
+        }
+    }
+    drop(studio);
+    drop(integration);
+    daemon.stop();
+}
+
 #[test]
 fn viewer_diagnostics_query_is_read_only_and_correlated() {
     let directory = TestDirectory::new("viewer-diagnostics");
@@ -4644,7 +4722,7 @@ fn viewer_diagnostics_query_is_read_only_and_correlated() {
         subscriber_limit,
         subscriber_queue_limit,
         source_sync,
-        health: _,
+        health,
     }) = response
     else {
         panic!("expected diagnostics response");
@@ -4661,6 +4739,10 @@ fn viewer_diagnostics_query_is_read_only_and_correlated() {
     assert!(subscriber_queue_limit > 0);
     // A daemon without live sources reports no drift loop.
     assert_eq!(source_sync, []);
+    // The simulated daemon's health (RC-015): no GPU proxy, nothing firing.
+    assert!(health.is_valid());
+    assert_eq!(health.gpu_permille, None);
+    assert_eq!(health.alerts, []);
     drop(client);
     let persisted = ProjectStore::new(&project_path).unwrap().load().unwrap();
     assert_eq!(persisted.position().revision, handshake.current_revision);

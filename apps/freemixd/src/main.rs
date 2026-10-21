@@ -13083,6 +13083,7 @@ fn handle_client(
                             native
                                 .as_deref()
                                 .map_or_else(Vec::new, NativeDaemon::source_sync_samples),
+                            fm_protocol::DaemonHealth::default(),
                         )?),
                     )?;
                 }
@@ -16387,6 +16388,7 @@ fn diagnostics_response(
     control: &SharedControl,
     request: DiagnosticsRequest,
     source_sync: Vec<fm_protocol::SourceSyncSample>,
+    health: fm_protocol::DaemonHealth,
 ) -> AppResult<DiagnosticsResponse> {
     let diagnostics = control.borrow().diagnostics();
     Ok(DiagnosticsResponse {
@@ -16401,7 +16403,7 @@ fn diagnostics_response(
         subscriber_limit: u32::try_from(diagnostics.limits.max_subscribers)?,
         subscriber_queue_limit: u32::try_from(diagnostics.limits.subscriber_queue)?,
         source_sync,
-        health: fm_protocol::DaemonHealth::default(),
+        health,
     })
 }
 

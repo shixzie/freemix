@@ -270,10 +270,12 @@ enum LossySlot {
     SourceSyncStatus,
     /// The latest `title_phases` (Protocol 2.90).
     TitlePhases,
+    /// The latest `health_status` (Protocol 2.99).
+    HealthStatus,
 }
 
 impl LossySlot {
-    const COUNT: usize = 9;
+    const COUNT: usize = 10;
 
     const fn index(self) -> usize {
         match self {
@@ -286,6 +288,7 @@ impl LossySlot {
             Self::RecorderStatus => 6,
             Self::SourceSyncStatus => 7,
             Self::TitlePhases => 8,
+            Self::HealthStatus => 9,
         }
     }
 
@@ -521,6 +524,14 @@ impl Peer {
     fn replace_source_sync_status(&mut self, bytes: Vec<u8>) {
         if self.phase == Phase::Active && self.web_feed.is_none() && self.recorder_status {
             self.lossy.replace(LossySlot::SourceSyncStatus, bytes);
+        }
+    }
+
+    /// Coalesces the latest daemon health in its own slot (Protocol 2.99);
+    /// Web pages do not take it.
+    fn replace_health_status(&mut self, bytes: Vec<u8>) {
+        if self.phase == Phase::Active && self.web_feed.is_none() && self.recorder_status {
+            self.lossy.replace(LossySlot::HealthStatus, bytes);
         }
     }
 
@@ -1367,6 +1378,9 @@ pub(super) fn run(
             let mut statistics = runtime.statistics.borrow_mut();
             statistics.sample(now, sample, native_sample);
             process_shutdown.publish_statistics(|| statistics.render());
+            if let Some(status) = statistics.health_status(authority, now) {
+                publish_health_status(&mut peers, &status);
+            }
         }
         let phases_demand = peers.iter().any(Peer::wants_title_phases);
         if let Some(phases) = phase_pacer.poll(Instant::now(), phases_demand, || {
@@ -2175,6 +2189,7 @@ impl Runtime<'_> {
                             native
                                 .as_deref()
                                 .map_or_else(Vec::new, NativeDaemon::source_sync_samples),
+                            self.statistics.borrow().health(Instant::now()),
                         )
                         .map_err(|_| ())?,
                     ),
@@ -3181,6 +3196,18 @@ fn publish_source_sync_status(peers: &mut [Peer], status: &SourceSyncStatusMessa
     };
     for peer in peers {
         peer.replace_source_sync_status(bytes.clone());
+    }
+}
+
+/// Daemon health (Protocol 2.99) goes to raw Studio peers in its own
+/// latest-wins slot, once a statistics sample.
+fn publish_health_status(peers: &mut [Peer], status: &fm_protocol::HealthStatusMessage) {
+    let Ok(bytes) = encode_line(&WireMessage::HealthStatus(status.clone())).map(String::into_bytes)
+    else {
+        return;
+    };
+    for peer in peers {
+        peer.replace_health_status(bytes.clone());
     }
 }
 
