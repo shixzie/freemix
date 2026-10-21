@@ -91,9 +91,14 @@ highest-value remaining items, ranked:
    `source_sync_status` and `diagnostics_response`), Studio (a `SYNC`
    health lamp and per-strip `SYNC` keys), `freemix-cli
    remote-diagnostics`, and (Protocol 2.101) the Web operator page's
-   read-only Source sync section. There is still no real-device soak
-   evidence, no adapter for non-receiver sources, and the Windows/macOS
-   live paths do not exist yet.
+   read-only Source sync section. Sources that deliver timed
+   `AudioBlock`s instead (the `fm-io-api` contract: native capture
+   adapters, browser inputs, WebRTC guests) now have the same loop through
+   `fm-audio`'s `LiveBlockSource` adapter, with pictures following and
+   the same telemetry, tested against jittered, gapped, bursty, ±200 ppm
+   synthetic clocks, plus an ignored hours-long soak harness. There is
+   still no real-device soak evidence, no daemon input realizes a block
+   source yet, and the Windows/macOS live paths do not exist yet.
 8. **Windows and macOS ports of the Linux-only live paths (`IN-001`, `AU-011`,
    `AU-001`, `IN-011`).** Live capture hot-plug, system audio inputs, and device
    listing are Linux-only, and screen/window capture runs only on Linux (X11,
@@ -1646,6 +1651,59 @@ help) and a stale note once records stop for 3.5 s. Remaining for
 `AU-004`: an `AudioBlock`/`MediaTiming` adapter for non-receiver sources,
 real-device soak evidence, and the Windows/macOS live paths; `AU-004`
 remains planned.
+
+Update (2026-10-21, no wire change): the `AudioBlock`/`MediaTiming`
+adapter exists. An audit of the native daemon found every live
+audio-bearing input it realizes (V4L2/ALSA capture, network streams,
+system audio, X11/Windows/macOS screen capture with system or application
+audio, and Wayland portal capture) already behind an `ffmpeg`
+`NetworkReceiver` and its `LiveSourceClock`; the sources that bypass it
+are those behind the `fm-io-api` `MediaSource` contract, which deliver
+timed `AudioBlock`s (`fm-io-macos`'s `MacosAudioSource`, browser inputs,
+WebRTC guests) and which no daemon input realizes yet. `fm-audio`'s
+`LiveBlockSource<P>` wraps a `LiveSourceClock` for them (a new
+`LiveSourceClock::push_at` pushes at an explicit source sample index):
+a block whose sequence number follows the previous one is contiguous
+whatever its timestamp says, so host-stamped jitter and a host clock's
+slow divergence from the device crystal never become gaps; a skipped
+sequence (lost blocks) is placed by the time since the previous block's
+end, so the converter conceals a short gap with silence, trims a short
+overlap, or splices a larger jump on its declick rules; a
+`DISCONTINUITY` flag or a backwards sequence splices; a new clock domain
+restarts the connection and forgets the drift; blocks of another rate or
+channel count are refused. Pictures queue beside the audio (bounded, the
+oldest dropping on overflow), go live once they hold the latency, are
+shown as the clock's picture action says, and stall after two late
+frames. Its `live_telemetry()` is the receivers' `LiveSourceTelemetry`,
+so a block source reaches `FREEMIXD_SOURCE_SYNC`, `source_sync_status`,
+diagnostics, Studio's `SYNC` lamps, the Web Source sync section, and
+`remote-diagnostics` with the same `wire_sample` (a `freemixd` unit test
+checks that it reports exactly as a receiver fed the same audio).
+
+Measured in the sample domain (`fm-audio --test live_block_drift`, 8 kHz
+mono 256-sample blocks stamped with 2 ms of error, 25 fps): ±200 ppm
+devices with 2 ms of delivery jitter settle (minute-averaged correction
+within 5 ppm) after 110–123 s and keep the fill within 1.3× the target
+with no resync, underrun, overrun, gap, or splice, and the pictures within
+1.3 frames of the audio; with no jitter the estimate ends within 0.04 ppm.
+The loop reads drift from the fill (1 ppm is 0.1 ms over 100 s), so
+random arrival jitter moves the estimate by a few ppm per millisecond
+(about ±20 ppm at 12 ms, network-like, still bounded and fault-free) —
+far below audibility. Two runs of three lost blocks each are concealed to
+within 4 samples with no click or resync; 70 ms delivery stalls followed
+by bursts are absorbed without an underrun (the correction swings up to
+~100 ppm for tens of seconds, and the estimate returns within 0.3 ppm); a
+300 ms stall underruns once, declicked, and re-primes keeping its
+estimate; flagged and restarted sequences splice. Every test bounds every
+output sample-to-sample step by a continuous tone's plus one declick ramp,
+and a 48 kHz stereo run is bit-identical twice. The ignored
+`long_drift_soak` (`FM_AU004_SOAK_HOURS`, default 6) wanders the device
+within ±200 ppm with jitter, lost blocks, and bursts every few minutes;
+12 simulated hours run in about 40 s with no resync, underrun, overrun,
+or click, the fill under 1.2× the target, quiet minutes tracking within
+3 ppm, and A/V within 1.6 frames. Remaining for `AU-004`: a daemon input
+realized through a block source, real-device soak evidence, and the
+Windows/macOS live paths; `AU-004` remains planned.
 
 
 Current implementation boundary for item 4: native `freemixd` now realizes

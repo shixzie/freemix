@@ -303,8 +303,8 @@ commands = ["cargo test -p fm-audio --test multichannel", "cargo test -p fm-audi
 [[tests]]
 id = "accept-au-004"
 state = "present"
-paths = ["crates/media/fm-audio/tests/sample_rate_sync.rs", "crates/media/fm-audio/tests/live_source_drift.rs", "apps/freemixd/tests/native_network_stream.rs", "crates/foundation/fm-protocol/tests/source_sync.rs", "crates/services/fm-client/tests/tcp.rs", "apps/freemix-cli/tests/e2e.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
-commands = ["cargo test -p fm-audio --test sample_rate_sync", "cargo test -p fm-audio --test live_source_drift", "cargo test -p freemixd --test native_network_stream", "cargo test -p fm-protocol --test source_sync", "cargo test -p fm-client --test tcp", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-ui-egui --test hover_audit"]
+paths = ["crates/media/fm-audio/tests/sample_rate_sync.rs", "crates/media/fm-audio/tests/live_source_drift.rs", "crates/media/fm-audio/tests/live_block_drift.rs", "apps/freemixd/tests/native_network_stream.rs", "crates/foundation/fm-protocol/tests/source_sync.rs", "crates/services/fm-client/tests/tcp.rs", "apps/freemix-cli/tests/e2e.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+commands = ["cargo test -p fm-audio --test sample_rate_sync", "cargo test -p fm-audio --test live_source_drift", "cargo test -p fm-audio --test live_block_drift", "cargo test -p freemixd --test native_network_stream", "cargo test -p fm-protocol --test source_sync", "cargo test -p fm-client --test tcp", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-au-005"
 state = "present"
