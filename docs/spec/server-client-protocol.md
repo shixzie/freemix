@@ -1222,8 +1222,9 @@ each crop, transform, key, and effect capable.
 - A layer key is a chroma key (`red`, `green`, `blue` key colour,
   `similarity`, `smoothness`, `spill`; every field `0..=255`) or a luma key
   (`low`, `high`, `softness` in `0..=255` with `low < high`, and `invert`).
-  A chroma key keeps pixels whose largest channel distance from the key
-  colour exceeds `similarity`, ramping over `smoothness`, and pulls `spill`
+  A chroma key keeps pixels whose chroma distance from the key colour
+  (since 2.98 the larger of the BT.709 Cb and Cr differences; before, the
+  largest RGB channel difference) exceeds `similarity`, ramping over `smoothness`, and pulls `spill`
   of the key colour out of what it keeps; a luma key (BT.709 luma) keeps
   `low < luma < high` (`high = 255` keeps everything above `low`), ramping
   over `softness`, and `invert` swaps kept and removed.
@@ -3741,6 +3742,63 @@ title editors in step with exposure changes (GX-006, schema 78).
   `"revision"`, its field revision, at most the title's
   `"field_revision"`; restore refuses a field revision ahead of its title.
 - 2.95 is refused.
+
+Protocol 2.98 completes the keyer refinements (SW-008, schema 79): light
+wrap, polygon garbage mattes, a perceptual chroma distance, and larger
+auto key pictures.
+
+- Every key refinement (`scene_layer_key_set`, and each key in the scene
+  layout encoding) gains `light_wrap` (`0..=255`, `0` off) and
+  `light_wrap_width` (`1..=8` pixels while `light_wrap` is on, `0`
+  exactly when it is off), then `matte`: `off`, `inside`, or `outside`.
+  Unless `off`, `matte_points` follows: three to eight `x:y` points joined
+  by commas (escaped like every field value), each coordinate a canonical
+  `0..=1000` normalized to the cropped layer (`0` its left or top edge,
+  `1000` its right or bottom edge). Any field missing, out of range,
+  non-canonical, or present with `off` is refused.
+- In the layout encoding each `refine` gains `light_wrap light_wrap_width`
+  (bytes) and a matte byte: `0` none, else `count << 1 | outside`
+  (`count` 3..=8), followed by the points' `x, y` coordinates as 10-bit
+  values packed least significant bit first into `ceil(20 * count / 8)`
+  bytes whose spare bits are zero. `MAX_SCENE_LAYOUT_BYTES` is now
+  **48,768** bytes raw (the worst case is 48,386) and a field value holds
+  at most **63.5 KiB** encoded, so the worst-case layout still fits one
+  line.
+- Light wrap bleeds what lies behind a keyed layer into its edges: after
+  the layer is placed, each kept pixel takes the mean of 25 background and
+  25 layer-alpha taps at offsets `-w, -w/2, 0, w/2, w` on each axis
+  (clamped to the canvas), weighted by `amount * (255 - mean alpha)`, so
+  pixels far inside the layer are untouched. The garbage matte removes the
+  layer outside its polygon (or inside it with `outside`), tested with the
+  even-odd rule at each pixel centre in exact half-pixel integers, and
+  multiplies with the mask after clip, choke, and edge softness. The CPU
+  reference and the native GPU compositor apply both identically.
+- A chroma key's distance is now the larger of the full-range BT.709
+  fixed-point Cb and Cr differences from the key colour
+  (`cb = (32896 - 29 r - 99 g + 128 b) / 256`,
+  `cr = (32896 + 128 r - 116 g - 12 b) / 256`, clamped), instead of the
+  largest RGB channel difference, so shading on the backing no longer
+  needs a wide similarity. Auto key (Studio and the CLI) measures its
+  similarity and smoothness with the same distance.
+- A `scene_preview_request` may name an input that is not a Scene input:
+  it is answered with that input's own picture at the requested size, as a
+  layer key sees it (ungraded; the native daemon scales its newest
+  full-resolution frame), with `animation_revision` 0 and `draft=false`.
+  It takes no draft clip (`invalid_request`); an unknown input is
+  `not_found`. Studio's layer designer asks for the selected layer's input
+  picture this way (at most one designer preview in flight, refreshed every
+  3 s) and auto key and the eyedropper sample it, up to 640x360, instead of
+  the 160x90 input thumbnail.
+- Durability (schema 79): each stored refinement carries required
+  `"light_wrap"`, `"light_wrap_width"`, and `"garbage_matte"`: `null` or
+  `{"invert": bool, "points": [[x, y], ...]}` with the bounds above.
+- Studio's KEY section edits light wrap (amount and width) and the garbage
+  matte (off, keep inside, keep outside; a numeric point list with add and
+  remove), and the selected layer's matte points are dragged on the
+  canvas; every control has hover help and each edit is one undo step. The
+  CLI adds `--light-wrap <amount> <width>` and `--matte inside|outside
+  <x:y,...>` to the key commands and lists both.
+- 2.97 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

@@ -32,8 +32,8 @@ use egui::{
     TextureOptions, Ui, Vec2, pos2, vec2,
 };
 use fm_protocol::{
-    InputThumbnailImage, TitlePreviewImage, WireInputId, WireKeyDespill, WireLayerKey,
-    WireSceneLayerId, WireSceneLayerSource,
+    TitlePreviewImage, WireInputId, WireKeyDespill, WireLayerKey, WireSceneLayerId,
+    WireSceneLayerSource,
 };
 use fm_types::{InputId, SceneId};
 use fm_ui_model::auto_key::{AutoKeyError, AutoKeyPicture, AutoKeySample, auto_key};
@@ -41,7 +41,7 @@ use fm_ui_model::scene_designer::geometry::{Corner, Edge, Handle, HitTarget, Poi
 use fm_ui_model::scene_designer::gesture::{
     CanvasMetrics, GestureFeedback, GestureModifiers, Readout,
 };
-use fm_ui_model::scene_designer::preview::{PreviewPacer, PreviewSubject};
+use fm_ui_model::scene_designer::preview::{KeyPicturePacer, PreviewPacer, PreviewSubject};
 use fm_ui_model::scene_designer::snapping::{
     ACTION_SAFE, Axis, SNAP_DISTANCE_POINTS, SnapSettings, TITLE_SAFE, safe_area,
 };
@@ -117,6 +117,8 @@ pub(crate) struct DesignerWindow {
     pub(crate) documents: BTreeMap<SceneId, SceneLayoutDocument>,
     pub(crate) snapping: SnapSettings,
     pacer: PreviewPacer,
+    /// The selected layer's input picture auto key samples (SW-008).
+    key_picture: KeyPicturePacer,
     texture: Option<DesignTexture>,
     seen_image: Option<String>,
     seen_failure: Option<String>,
@@ -369,12 +371,15 @@ impl DesignerWindow {
         {
             self.seen_failure = Some(failed.clone());
             self.pacer.failed(failed, now);
+            self.key_picture.failed(failed, now);
         }
         if let Some(image) = &state.title_preview
             && self.seen_image.as_ref() != Some(&image.request_id)
         {
             self.seen_image = Some(image.request_id.clone());
-            self.receive_image(context, state, image);
+            if !self.key_picture.received(image) {
+                self.receive_image(context, state, image);
+            }
         }
     }
 
@@ -430,6 +435,15 @@ impl DesignerWindow {
             layout_stamp: layout_stamp(layout),
             size: preview_size((layout.width, layout.height)),
         })
+    }
+
+    /// The input the single selected layer draws, whose picture auto key
+    /// samples.
+    fn key_picture_input(&self) -> Option<InputId> {
+        match self.document()?.single_selection()?.source {
+            WireSceneLayerSource::Input(input) => Some(input.to_domain()),
+            WireSceneLayerSource::Scene(_) => None,
+        }
     }
 
     /// The draft shown.
@@ -574,11 +588,13 @@ impl StudioShell {
     /// worker.
     pub(crate) fn designer_preview_unsent(&mut self, request_id: &str, now: Duration) {
         self.designer.pacer.failed(request_id, now);
+        self.designer.key_picture.failed(request_id, now);
     }
 
     /// Forgets the designer's preview in flight (the worker stopped).
     pub(crate) fn abandon_designer_requests(&mut self) {
         self.designer.pacer.abandon();
+        self.designer.key_picture.abandon();
     }
 
     /// Draws the layer designer when open and asks for its pictures.
@@ -703,7 +719,22 @@ impl StudioShell {
         let allowed = window
             .scene
             .is_some_and(|scene| picture_block_reason(state, scene).is_none());
-        if let Some(request) = window.pacer.poll(subject, now, held, allowed) {
+        // The server keeps one preview per session: the canvas picture and
+        // the key picture never fly together.
+        if !window.key_picture.in_flight()
+            && let Some(request) = window.pacer.poll(subject, now, held, allowed)
+        {
+            intents.push(StudioIntent::ScenePreview(request));
+        }
+        let key_input = window.key_picture_input();
+        if let Some(size) = subject.map(|subject| subject.size)
+            && let Some(request) = window.key_picture.poll(
+                key_input,
+                size,
+                now,
+                allowed && window.open && !held && !window.pacer.in_flight(),
+            )
+        {
             intents.push(StudioIntent::ScenePreview(request));
         }
         if allowed && window.open {
@@ -844,6 +875,7 @@ fn draw_contents(
                             let mut sampler = KeySampler {
                                 state,
                                 thumbnails,
+                                key_picture: &window.key_picture,
                                 eyedropper: &mut window.eyedropper,
                                 notice: &mut window.notice,
                                 rects: &mut window.auto_key_rects,
@@ -2299,13 +2331,27 @@ fn key_section(
 }
 
 /// What the KEY section's auto key reads (SW-008): the selected layer's
-/// input picture, the latest input thumbnail.
+/// input picture, the latest input thumbnail, shown and picked on; auto
+/// key samples the larger input picture the designer asked the server for
+/// when one has arrived.
 struct KeySampler<'a> {
     state: &'a StudioUiState,
     thumbnails: &'a ThumbnailTextures,
+    key_picture: &'a KeyPicturePacer,
     eyedropper: &'a mut bool,
     notice: &'a mut Option<(ToastKind, String)>,
     rects: &'a mut (Option<Rect>, Option<Rect>),
+}
+
+impl<'a> KeySampler<'a> {
+    /// The larger picture of `source`'s input, once it arrived.
+    fn large_picture(&self, source: Option<WireSceneLayerSource>) -> Option<&'a TitlePreviewImage> {
+        let pacer: &'a KeyPicturePacer = self.key_picture;
+        match source? {
+            WireSceneLayerSource::Input(input) => pacer.picture(input.to_domain()),
+            WireSceneLayerSource::Scene(_) => None,
+        }
+    }
 }
 
 /// The width the KEY section shows the input picture at.
@@ -2355,7 +2401,7 @@ fn auto_key_fields(
             .hint(l.text(Msg::DesignAutoKeyHover), reason.unwrap_or(""));
         sampler.rects.0 = Some(button.rect);
         if button.clicked() {
-            request = Some(AutoKeySample::Dominant);
+            request = Some(None);
         }
         // A key like Auto key beside it, lit in the accent while picking.
         let mut pick = small_button(l.text(Msg::DesignEyedropper));
@@ -2408,11 +2454,20 @@ fn auto_key_fields(
         if response.clicked()
             && let Some(position) = response.interact_pointer_pos()
         {
-            request = Some(picture_point(rect, position, image.width, image.height));
+            request = Some(Some(position));
         }
     }
-    if let Some(sample) = request {
-        apply_auto_key(l, document, id, image, sample, sampler);
+    // Sample the larger picture of the same input when one arrived; a pick
+    // on the shown thumbnail maps onto it by position.
+    if let Some(pick) = request {
+        let large = sampler.large_picture(source);
+        let picture = large.map_or((image.width, image.height, &*image.rgba), |large| {
+            (large.width, large.height, &*large.rgba)
+        });
+        let sample = pick.map_or(AutoKeySample::Dominant, |position| {
+            picture_point(rect, position, picture.0, picture.1)
+        });
+        apply_auto_key(l, document, id, picture, sample, sampler);
     }
 }
 
@@ -2430,17 +2485,18 @@ fn picture_point(rect: Rect, position: Pos2, width: u16, height: u16) -> AutoKey
     }
 }
 
-/// Runs the auto key on `image` and applies it to layer `id`, leaving a
-/// toast that says what it set or why it could not.
+/// Runs the auto key on `picture` (width, height, straight RGBA8) and
+/// applies it to layer `id`, leaving a toast that says what it set or why
+/// it could not.
 fn apply_auto_key(
     l: Locale,
     document: &mut SceneLayoutDocument,
     id: WireSceneLayerId,
-    image: &InputThumbnailImage,
+    (width, height, rgba): (u16, u16, &[u8]),
     sample: AutoKeySample,
     sampler: &mut KeySampler<'_>,
 ) {
-    let result = AutoKeyPicture::new(u32::from(image.width), u32::from(image.height), &image.rgba)
+    let result = AutoKeyPicture::new(u32::from(width), u32::from(height), rgba)
         .and_then(|picture| auto_key(picture, sample));
     *sampler.notice = Some(match result {
         Ok(auto) => {

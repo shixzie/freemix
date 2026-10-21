@@ -847,3 +847,88 @@ fn dragging_a_garbage_matte_point_moves_only_that_point_as_one_step() {
         Some(EditLabel::Field(Field::MattePointX { point: 0 }))
     );
 }
+
+/// SW-008, Protocol 2.98: with a layer selected, the designer asks the
+/// server for its input's own picture (never while its canvas preview
+/// flies), and Auto key samples that larger picture instead of the
+/// thumbnail.
+#[test]
+fn auto_key_samples_the_larger_input_picture_once_it_arrives() {
+    let (mut state, scene) = designer_fixture(true, false);
+    state.input_thumbnails = crate::hover_audit::green_screen_thumbnail(1);
+    let mut shell = StudioShell::default();
+    shell.open_scene_designer(scene);
+    let mut driver = Driver::new();
+    let mut first = scene_previews(&driver.frame(&mut shell, &state, Vec::new()));
+    shell
+        .scene_layout_draft_mut(scene)
+        .unwrap()
+        .select(layer(1), false);
+    first.extend(scene_previews(&driver.frame(
+        &mut shell,
+        &state,
+        Vec::new(),
+    )));
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert!(first[0].request_id.starts_with("design-preview-"));
+    // Nothing else while the canvas preview flies.
+    assert_eq!(
+        scene_previews(&driver.frame(&mut shell, &state, Vec::new())).len(),
+        0
+    );
+    let mut answered = state.clone();
+    answered.title_preview = Some(TitlePreviewImage {
+        request_id: first[0].request_id.clone(),
+        input: first[0].input,
+        animation_revision: 0,
+        draft: false,
+        width: 4,
+        height: 2,
+        rgba: vec![200; 4 * 2 * 4].into(),
+    });
+    let mut requests = Vec::new();
+    for _ in 0..4 {
+        requests.extend(scene_previews(&driver.frame(
+            &mut shell,
+            &answered,
+            Vec::new(),
+        )));
+    }
+    let host = WireInputId::from_domain(InputId::new(core::num::NonZeroU128::new(1).unwrap()));
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    let key_request = &requests[0];
+    assert!(key_request.request_id.starts_with("design-key-picture-"));
+    assert_eq!(key_request.input, host);
+    assert_eq!((key_request.width, key_request.height), (640, 360));
+    assert!(key_request.clip.is_none());
+
+    // The larger picture: an evenly lit green of another shade.
+    let mut picture = answered.clone();
+    picture.title_preview = Some(TitlePreviewImage {
+        request_id: key_request.request_id.clone(),
+        input: host,
+        animation_revision: 0,
+        draft: false,
+        width: 64,
+        height: 36,
+        rgba: [20_u8, 160, 90, 255].repeat(64 * 36).into(),
+    });
+    driver.frame(&mut shell, &picture, Vec::new());
+    driver.frame(&mut shell, &picture, Vec::new());
+    let button = shell
+        .designer
+        .auto_key_rects
+        .0
+        .expect("the Auto key button");
+    let edits = layer_edits(&click_intents(
+        &mut driver,
+        &mut shell,
+        &picture,
+        button.center(),
+    ));
+    assert_eq!(edits.len(), 1, "{edits:?}");
+    let SceneLayerOperation::SetKey(Some(WireLayerKey::Chroma(chroma))) = edits[0].operation else {
+        panic!("auto key sets a chroma key: {edits:?}");
+    };
+    assert_eq!((chroma.red, chroma.green, chroma.blue), (20, 160, 90));
+}

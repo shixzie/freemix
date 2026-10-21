@@ -60,12 +60,15 @@ highest-value remaining items, ranked:
    compositing the two items; it still lacks Windows/macOS evidence. (The slideshow,
    `IN-009`, is now wired end to end; see its boundary below.)
 6. **The remaining keyer refinements (`SW-008`).** Key/fill (luma or
-   alpha), clip, choke, edge softness, and despill now run natively, persist,
-   and are edited in Studio, and one-click auto key (Studio's Auto key button
-   and eyedropper, `scene-layer-auto-key`) sets a whole chroma key from the
-   input's picture; auto key samples the 160x90 input thumbnail rather than
-   a full frame, distance is per RGB channel, and light wrap and
-   non-rectangular garbage mattes are absent.
+   alpha), clip, choke, edge softness, despill, light wrap, and polygon
+   garbage mattes now run natively, persist, and are edited in Studio (the
+   matte's points dragged on the canvas), chroma keys measure a perceptual
+   BT.709 Cb/Cr distance, and one-click auto key (Studio's Auto key button
+   and eyedropper, `scene-layer-auto-key`) sets a whole chroma key from a
+   picture of the input up to 640x360 that Studio asks the server for
+   (Protocol 2.98). What remains: the CLI's remote auto key still needs a
+   saved picture, key/fill is not tied to paired SDI/NDI fill and key
+   inputs, and mattes are not animatable or feathered.
 7. **Source clock drift on real devices and other OSes (`AU-004`).** Every
    live source the native daemon ingests (V4L2/ALSA capture, network
    streams, system audio) runs its audio through a drift-correcting
@@ -2402,16 +2405,33 @@ key button and a Pick colour eyedropper; either applies one
 journaled on the server) that keeps the layer's clip, choke, and edge
 softness. `freemix-cli scene-layer-auto-key` samples a layer's simulated
 input at the project size or a saved PPM, and `remote-scene-layer-auto-key`
-sends the key derived from a saved PPM as one live edit. Remaining gaps:
-Studio's auto key samples the 160x90 input thumbnail, not a full-resolution
-frame, and the CLI cannot fetch a picture from a daemon (no frame channel
-for CLI peers), so the remote command needs a saved picture and replaces
-the clip, choke, and edge softness with the ones it is given; the
-`fm-compositor` border/region auto key remains a separate CPU reference;
-key/fill is not tied to paired SDI or NDI fill
-and key inputs, and a Scene cannot be a key input; distance is per RGB
-channel rather than perceptual; garbage mattes are the one rectangular mask;
-and light wrap is absent. `SW-008` remains planned.
+sends the key derived from a saved PPM as one live edit. Since Protocol 2.98
+and schema 79 every refinement also carries a light wrap (amount and a
+1..=8 pixel width: each kept pixel near the layer's edge takes the mean
+background of 25 taps around it, weighted by how transparent the layer is
+there, after placement and before opacity, so the CPU reference composes
+everything beneath the layer first and the native compositor splits its
+pass at the layer to read a copy of the background) and an optional polygon
+garbage matte (three to eight points normalized to `0..=1000` of the cropped
+layer, keeping the inside or the outside, tested exactly in half-pixel
+integers shared by `fm_types::GarbageMatte` so CPU and GPU agree bit for
+bit); both persist, travel in key edits and layouts, render in both daemons
+and the CLI, and are edited in Studio's KEY section with hover help (the
+matte's points as a numeric list and by dragging them on the canvas, each
+edit one undo step). The chroma key distance is the larger of the BT.709
+fixed-point Cb and Cr differences (on the CPU reference, natively, and in
+both auto keys), and Studio's designer asks the server for the selected
+layer's input picture at up to 640x360 (a `scene_preview_request` naming a
+non-Scene input) and auto key samples it instead of the 160x90 thumbnail
+when it has arrived. Remaining gaps: the CLI cannot fetch a picture from a
+daemon (no frame channel for CLI peers), so the remote command needs a saved
+picture and replaces the clip, choke, and edge softness with the ones it is
+given; the `fm-compositor` border/region auto key remains a separate CPU
+reference; key/fill is not tied to paired SDI or NDI fill and key inputs,
+and a Scene cannot be a key input; garbage mattes are hard-edged (only edge
+softness softens them) and not animatable; light wrap on a tilted layer
+matches the CPU reference only within the bilinear sampling difference.
+`SW-008` remains planned.
 
 Current implementation boundary for freeze and snapshot (`SW-016`): `fm-video`
 provides a per-input freeze controller that latches the first source frame at

@@ -799,6 +799,78 @@ fn previews_are_paced_held_during_gestures_and_refreshed() {
     );
 }
 
+/// SW-008, Protocol 2.98: the selected layer's input picture is asked for
+/// once per input, kept, refreshed, retried after a refusal only once the
+/// refresh passes, and never while the designer's own preview flies.
+#[test]
+fn key_pictures_are_paced_per_input_and_kept() {
+    use super::preview::{KEY_PICTURE_REFRESH, KeyPicturePacer};
+    use fm_protocol::{TitlePreviewImage, WireInputId};
+
+    let image = |request_id: &str, input_id: u128| TitlePreviewImage {
+        request_id: request_id.into(),
+        input: WireInputId::from_domain(input(input_id)),
+        animation_revision: 0,
+        draft: false,
+        width: 2,
+        height: 1,
+        rgba: vec![0; 8].into(),
+    };
+    let mut pacer = KeyPicturePacer::default();
+    let start = Duration::from_secs(10);
+    assert!(pacer.poll(None, (640, 360), start, true).is_none());
+    assert!(
+        pacer
+            .poll(Some(input(7)), (640, 360), start, false)
+            .is_none()
+    );
+    let first = pacer.poll(Some(input(7)), (640, 360), start, true).unwrap();
+    assert_eq!(first.request_id, "design-key-picture-1");
+    assert_eq!(first.input, WireInputId::from_domain(input(7)));
+    assert_eq!(
+        (first.width, first.height, first.clip.is_none()),
+        (640, 360, true)
+    );
+    assert!(KeyPicturePacer::owns(&first.request_id));
+    assert!(!PreviewPacer::owns(&first.request_id));
+    assert!(pacer.in_flight());
+    // A designer preview is not this pacer's.
+    assert!(!pacer.received(&image("design-preview-4", 7)));
+    assert!(pacer.picture(input(7)).is_none());
+    assert!(pacer.received(&image(&first.request_id, 7)));
+    assert_eq!(pacer.picture(input(7)).unwrap().width, 2);
+    assert!(pacer.picture(input(8)).is_none());
+
+    // Fresh: nothing until the refresh passes; another input asks at once.
+    let later = start + PREVIEW_MIN_INTERVAL;
+    assert!(
+        pacer
+            .poll(Some(input(7)), (640, 360), later, true)
+            .is_none()
+    );
+    let other = pacer.poll(Some(input(8)), (640, 360), later, true).unwrap();
+    pacer.failed(&other.request_id, later);
+    assert!(!pacer.in_flight());
+    // The older picture stays until another arrives.
+    assert!(pacer.picture(input(7)).is_some());
+    let soon = later + PREVIEW_MIN_INTERVAL;
+    assert!(pacer.poll(Some(input(8)), (640, 360), soon, true).is_none());
+    let retry = pacer
+        .poll(
+            Some(input(8)),
+            (640, 360),
+            later + KEY_PICTURE_REFRESH,
+            true,
+        )
+        .unwrap();
+    // A lost answer is given up after the timeout.
+    let lost = later + KEY_PICTURE_REFRESH + PREVIEW_TIMEOUT;
+    let again = pacer.poll(Some(input(8)), (640, 360), lost, true).unwrap();
+    assert_ne!(retry.request_id, again.request_id);
+    pacer.abandon();
+    assert!(!pacer.in_flight());
+}
+
 #[test]
 fn the_layout_stamp_follows_every_layout_change() {
     let base = layout();

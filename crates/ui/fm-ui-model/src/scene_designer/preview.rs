@@ -8,10 +8,20 @@
 //! outlines follow the pointer locally), at most one is in flight, issues
 //! are at least [`PREVIEW_MIN_INTERVAL`] apart, and an unanswered request
 //! is given up after [`PREVIEW_TIMEOUT`].
+//!
+//! [`KeyPicturePacer`] asks for the selected layer's input picture the same
+//! way (Protocol 2.98: a `scene_preview_request` naming a non-Scene input
+//! answers with its own picture), so auto key samples a picture as large as
+//! the preview cap instead of the input thumbnail. The server keeps one
+//! preview per session (latest wins), so the designer never has both kinds
+//! in flight: each pacer asks only while the other is idle.
 
 use core::time::Duration;
 
-use fm_protocol::{CURRENT_PROTOCOL_VERSION, ScenePreviewRequest, TitlePreviewSample, WireInputId};
+use fm_protocol::{
+    CURRENT_PROTOCOL_VERSION, ScenePreviewRequest, TitlePreviewImage, TitlePreviewSample,
+    WireInputId,
+};
 use fm_types::InputId;
 
 pub use crate::title_animation::{PREVIEW_MIN_INTERVAL, PREVIEW_TIMEOUT};
@@ -146,5 +156,137 @@ impl PreviewPacer {
     /// Forgets the request in flight (the worker stopped).
     pub fn abandon(&mut self) {
         self.in_flight = None;
+    }
+
+    /// Whether a request is in flight.
+    #[must_use]
+    pub const fn in_flight(&self) -> bool {
+        self.in_flight.is_some()
+    }
+}
+
+/// How often the selected layer's input picture is asked for again.
+pub const KEY_PICTURE_REFRESH: Duration = Duration::from_secs(3);
+/// The request id prefix of the designer's input pictures.
+pub const KEY_PICTURE_PREFIX: &str = "design-key-picture-";
+
+/// Paces the requests for the selected layer's input picture that auto key
+/// samples (SW-008, see the module documentation): one at a time, at least
+/// [`PREVIEW_MIN_INTERVAL`] apart, given up after [`PREVIEW_TIMEOUT`], and
+/// again every [`KEY_PICTURE_REFRESH`] (also after a refusal) while the
+/// same input stays selected.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeyPicturePacer {
+    issued: u64,
+    in_flight: Option<(String, InputId, Duration)>,
+    /// The newest picture and when it was asked for.
+    picture: Option<(TitlePreviewImage, Duration)>,
+    /// The input last refused and when.
+    refused: Option<(InputId, Duration)>,
+    last_issue: Option<Duration>,
+}
+
+impl KeyPicturePacer {
+    /// The request to send now for `input`'s picture at `size`, if one is
+    /// due; `allowed` is false when previews cannot be asked for (or the
+    /// designer's own preview is in flight).
+    pub fn poll(
+        &mut self,
+        input: Option<InputId>,
+        size: (u16, u16),
+        now: Duration,
+        allowed: bool,
+    ) -> Option<ScenePreviewRequest> {
+        if let Some((_, _, sent)) = &self.in_flight
+            && now.saturating_sub(*sent) >= PREVIEW_TIMEOUT
+        {
+            self.in_flight = None;
+        }
+        let input = input?;
+        if !allowed || self.in_flight.is_some() {
+            return None;
+        }
+        if self
+            .last_issue
+            .is_some_and(|last| now.saturating_sub(last) < PREVIEW_MIN_INTERVAL)
+        {
+            return None;
+        }
+        let fresh = |at: Duration| now.saturating_sub(at) < KEY_PICTURE_REFRESH;
+        let wire = WireInputId::from_domain(input);
+        if self
+            .picture
+            .as_ref()
+            .is_some_and(|(image, at)| image.input == wire && fresh(*at))
+            || self
+                .refused
+                .is_some_and(|(refused, at)| refused == input && fresh(at))
+        {
+            return None;
+        }
+        self.issued += 1;
+        let request_id = format!("{KEY_PICTURE_PREFIX}{}", self.issued);
+        self.in_flight = Some((request_id.clone(), input, now));
+        self.last_issue = Some(now);
+        Some(ScenePreviewRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id,
+            input: wire,
+            sample: TitlePreviewSample::Static,
+            width: size.0,
+            height: size.1,
+            clip: None,
+        })
+    }
+
+    /// `image` arrived: keeps it and returns whether it answers this
+    /// pacer's request.
+    pub fn received(&mut self, image: &TitlePreviewImage) -> bool {
+        match self
+            .in_flight
+            .take_if(|(request_id, _, _)| *request_id == image.request_id)
+        {
+            Some((_, _, sent)) => {
+                self.picture = Some((image.clone(), sent));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `request_id` was refused, lost, or never sent.
+    pub fn failed(&mut self, request_id: &str, now: Duration) {
+        if let Some((_, input, _)) = self
+            .in_flight
+            .take_if(|(pending, _, _)| pending == request_id)
+        {
+            self.refused = Some((input, now));
+        }
+    }
+
+    /// Forgets the request in flight (the worker stopped).
+    pub fn abandon(&mut self) {
+        self.in_flight = None;
+    }
+
+    /// Whether a request is in flight.
+    #[must_use]
+    pub const fn in_flight(&self) -> bool {
+        self.in_flight.is_some()
+    }
+
+    /// The newest picture of `input`, if one arrived.
+    #[must_use]
+    pub fn picture(&self, input: InputId) -> Option<&TitlePreviewImage> {
+        self.picture
+            .as_ref()
+            .map(|(image, _)| image)
+            .filter(|image| image.input == WireInputId::from_domain(input))
+    }
+
+    /// Whether `request_id` is a designer input picture.
+    #[must_use]
+    pub fn owns(request_id: &str) -> bool {
+        request_id.starts_with(KEY_PICTURE_PREFIX)
     }
 }

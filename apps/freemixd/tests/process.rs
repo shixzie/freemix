@@ -8569,7 +8569,8 @@ fn scene_preview(
 
 /// GX-011, Protocol 2.32: an exact scene preview needs `EditProject`,
 /// composes the engine's scene (or an unsaved draft clip) at the requested
-/// size, and refuses inputs that are not scenes and frames past the phase.
+/// size, answers another input with its own picture (2.98), and refuses
+/// unknown inputs and frames past the phase.
 #[test]
 #[allow(clippy::too_many_lines)]
 fn scene_previews_compose_the_scene_or_a_draft_exactly() {
@@ -8668,12 +8669,51 @@ fn scene_previews_compose_the_scene_or_a_draft_exactly() {
     assert_eq!((draft.animation_revision, draft.draft), (0, true));
     assert_ne!(draft.rgba, saved.rgba);
 
-    let not_scene = scene_preview(
+    // Protocol 2.98: another input answers with its own picture (what a
+    // layer key samples), without a draft clip; an unknown input is
+    // refused.
+    let picture = scene_preview(
         &mut graphics,
-        request("not-scene", 2, TitlePreviewSample::Hold, None),
+        request("input-picture", 2, TitlePreviewSample::Hold, None),
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            picture.input,
+            picture.animation_revision,
+            picture.draft,
+            picture.width,
+            picture.height
+        ),
+        (input(2), 0, false, 64, 36)
+    );
+    assert!(
+        picture
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| pixel[3] == u8::MAX)
+    );
+    let drafted = scene_preview(
+        &mut graphics,
+        request(
+            "input-draft",
+            2,
+            TitlePreviewSample::Hold,
+            Some(Box::new(fm_control::scene_clip_to_wire(
+                &faded.animation.clip,
+            ))),
+        ),
     )
     .unwrap_err();
-    assert_eq!(not_scene.error.code, "not_found");
+    assert_eq!(drafted.error.code, "invalid_request");
+    let unknown = scene_preview(
+        &mut graphics,
+        request("unknown", 99, TitlePreviewSample::Hold, None),
+    )
+    .unwrap_err();
+    assert_eq!(unknown.error.code, "not_found");
     let past = scene_preview(
         &mut graphics,
         request("past", 4, TitlePreviewSample::In { frame: 1_000 }, None),

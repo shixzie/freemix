@@ -47,6 +47,17 @@
 //! reference compositor cannot draw honestly (a layer naming a source with
 //! no picture, nesting past the bounds, an effect it rejects) is refused
 //! with `render_failed` rather than approximated.
+//!
+//! # Input pictures (Protocol 2.98)
+//!
+//! A request naming an input that is not a Scene input asks for that
+//! input's own picture, as a layer key sees it (before any grade): the
+//! same leaf picture a scene layer of it would read, drawn directly at the
+//! requested size (a native daemon's newest frame scaled nearest-neighbor
+//! from its full resolution). It is how Studio's auto key samples a
+//! picture larger than the input thumbnail. Such a request carries no
+//! draft clip (`invalid_request`), its `sample` is ignored, and its frames
+//! report `animation_revision` 0.
 
 #[cfg(feature = "native-media")]
 use std::collections::BTreeMap;
@@ -291,8 +302,9 @@ pub(crate) struct ScenePreviewJob {
     input: InputId,
     /// The project whose inputs feed the layers.
     project: Project,
-    /// The scene as the engine holds it, with any draft clip.
-    scene: fm_model::Scene,
+    /// The scene as the engine holds it, with any draft clip; `None` for
+    /// an input picture (see the module documentation).
+    scene: Option<fm_model::Scene>,
     pose: ClipState,
     frame: u64,
     /// The engine's compiled grades when the request was resolved.
@@ -355,9 +367,28 @@ impl ScenePreviewJob {
                 &live
             }
         };
+        let Some(scene) = &self.scene else {
+            let picture = self
+                .project
+                .inputs()
+                .iter()
+                .find(|candidate| candidate.id == input)
+                .filter(|candidate| sources.draws(candidate))
+                .and_then(|candidate| sources.leaf(candidate, self.frame, size.0, size.1))
+                .ok_or_else(|| {
+                    refusal(
+                        "render_failed",
+                        format!("input {input} has no picture on this daemon"),
+                    )
+                })?;
+            let rgba = packed_rgba(picture.pixels(), picture.stride(), self.width, self.height)
+                .ok_or_else(unrenderable)?;
+            return encode_qoi_rgba(self.width, self.height, &rgba)
+                .map_err(|error| refusal("render_failed", error.to_string()));
+        };
         let image = scene_render::render_scene_model(
             &self.project,
-            &self.scene,
+            scene,
             sources,
             size,
             self.frame,
@@ -371,6 +402,16 @@ impl ScenePreviewJob {
         encode_qoi_rgba(self.width, self.height, &rgba)
             .map_err(|error| refusal("render_failed", error.to_string()))
     }
+}
+
+/// A straight RGBA8 picture's rows, tightly packed.
+fn packed_rgba(pixels: &[u8], stride: usize, width: u16, height: u16) -> Option<Vec<u8>> {
+    let row_bytes = usize::from(width) * 4;
+    let mut rgba = Vec::with_capacity(row_bytes * usize::from(height));
+    for row in pixels.chunks(stride).take(usize::from(height)) {
+        rgba.extend_from_slice(row.get(..row_bytes)?);
+    }
+    (rgba.len() == row_bytes * usize::from(height)).then_some(rgba)
 }
 
 /// The composed premultiplied picture as tightly packed straight RGBA8
@@ -409,9 +450,9 @@ fn straight_rgba(pixels: &[u8], stride: usize, width: u16, height: u16) -> Optio
 ///
 /// # Errors
 ///
-/// A `not_found` refusal for an input that is not a Scene input, and
-/// `invalid_request` for a draft clip the scene refuses or a frame past its
-/// phase.
+/// A `not_found` refusal for an unknown input, and `invalid_request` for a
+/// draft clip the scene refuses (or any draft clip for an input picture)
+/// or a frame past its phase.
 pub(crate) fn prepare_scene_preview(
     control: &ControlService<Policy>,
     project: &Project,
@@ -421,9 +462,40 @@ pub(crate) fn prepare_scene_preview(
     live: Option<LiveSourceFrames>,
 ) -> Result<ScenePreviewJob, StructuredError> {
     let input = request.input.to_domain();
-    let engine = control
-        .scene_input(input)
-        .ok_or_else(|| refusal("not_found", format!("input {input} is not a Scene input")))?;
+    let Some(engine) = control.scene_input(input) else {
+        if !project
+            .inputs()
+            .iter()
+            .any(|candidate| candidate.id == input)
+        {
+            return Err(refusal(
+                "not_found",
+                format!("input {input} does not exist"),
+            ));
+        }
+        if request.clip.is_some() {
+            return Err(refusal(
+                "invalid_request",
+                format!("input {input} is not a Scene input: its picture takes no draft clip"),
+            ));
+        }
+        return Ok(ScenePreviewJob {
+            server: server.clone(),
+            request_id: request.request_id.clone(),
+            wire_input: request.input,
+            input,
+            project: project.clone(),
+            scene: None,
+            pose: ClipState::Static,
+            frame: control.frame_cursor(),
+            grades,
+            live,
+            animation_revision: 0,
+            draft: false,
+            width: request.width,
+            height: request.height,
+        });
+    };
     let animation_revision = engine.animation().revision;
     let mut scene = (*engine.scene).clone();
     if let Some(draft) = &request.clip {
@@ -443,7 +515,7 @@ pub(crate) fn prepare_scene_preview(
         wire_input: request.input,
         input,
         project: project.clone(),
-        scene,
+        scene: Some(scene),
         pose,
         frame: control.frame_cursor(),
         grades,

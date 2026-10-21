@@ -6,7 +6,7 @@
 use fm_client::Client;
 use fm_protocol::{CommandPayload, CommandResult, ErrorMessage};
 use fm_ui_egui::{StudioShell, StudioUiState, TitleAnimationRefusal};
-use fm_ui_model::scene_designer::preview::PreviewPacer;
+use fm_ui_model::scene_designer::preview::{KeyPicturePacer, PreviewPacer};
 use fm_ui_model::title_animation::{TitleDesign, preview_request_id};
 
 /// The refusal of a title or scene animation edit, naming its input and
@@ -38,12 +38,12 @@ pub(crate) fn animation_refusal(
 }
 
 /// The exact preview a server error answers, if it answers one: the
-/// Animation window's or the layer designer's.
+/// Animation window's or the layer designer's (its canvas picture or the
+/// selected layer's input picture).
 pub(crate) fn preview_error_id(error: &ErrorMessage) -> Option<&str> {
-    error
-        .request_id
-        .as_deref()
-        .filter(|id| preview_request_id(id).is_some() || PreviewPacer::owns(id))
+    error.request_id.as_deref().filter(|id| {
+        preview_request_id(id).is_some() || PreviewPacer::owns(id) || KeyPicturePacer::owns(id)
+    })
 }
 
 /// Hands every replicated title layout to the Animation window as its
@@ -88,6 +88,8 @@ mod tests {
         assert_eq!(preview_error_id(&animation), Some("anim-preview-4"));
         let designer = error(Some("design-preview-2"));
         assert_eq!(preview_error_id(&designer), Some("design-preview-2"));
+        let key_picture = error(Some("design-key-picture-3"));
+        assert_eq!(preview_error_id(&key_picture), Some("design-key-picture-3"));
         assert_eq!(preview_error_id(&error(Some("cmd-7"))), None);
         assert_eq!(preview_error_id(&error(None)), None);
     }
