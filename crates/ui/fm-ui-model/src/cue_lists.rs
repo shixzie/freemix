@@ -209,10 +209,16 @@ pub(crate) fn apply_effects(state: &mut ProjectState, update: CueRunUpdate) {
                 .iter_mut()
                 .find(|field| field.field == text.field)
             {
-                field.value = match text.value {
+                let value = match text.value {
                     fm_protocol::CueTitleValue::Text(text) => TitleFieldValue::Text(text),
                     fm_protocol::CueTitleValue::Number(number) => TitleFieldValue::Number(number),
                 };
+                // A field's revision is the title revision that last changed
+                // its value (Protocol 2.96), as `title_changed` applies it.
+                if field.value != value {
+                    field.value = value;
+                    field.revision = text.field_revision;
+                }
             }
         }
     }

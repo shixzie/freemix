@@ -2124,6 +2124,74 @@ mod titles {
     }
 
     #[test]
+    fn live_operation_title_values_move_the_field_revision() {
+        let mut model = completed();
+        let engine_a = engine("engine-a", 1, "log-a");
+        model
+            .apply_event(event(
+                project(1),
+                engine_a.clone(),
+                11,
+                DurableChange::ScriptChanged(Box::new(fm_protocol::ScriptStatus {
+                    id: 1,
+                    spec: fm_protocol::ScriptSpec {
+                        name: "Script".into(),
+                        source: "cut 2".into(),
+                    },
+                })),
+            ))
+            .unwrap();
+        let text = |field_id, value| fm_protocol::CueTitleText {
+            input: WireInputId::from_domain(input(TITLE)),
+            field_revision: 5,
+            field: field(field_id),
+            value,
+        };
+        let state = model.state().unwrap();
+        let ran = ScriptRunUpdate {
+            run: fm_protocol::ScriptRunStatus::Idle,
+            script: 1,
+            frame: 30,
+            actions: 2,
+            instructions: 2,
+            effects: CueRunUpdate {
+                list: 0,
+                frame: 30,
+                state: fm_protocol::CueRunStatus::default(),
+                fired: Vec::new(),
+                selection: state.switcher.desired,
+                manual_transition: ManualTransitionStatus::Inactive,
+                fade_to_black: fade_to_black(false, 0),
+                overlays: state.desired_overlays.clone(),
+                input_audio_strips: state.input_audio_strips.clone(),
+                streams: Vec::new(),
+                recordings: recordings(),
+                playlist: fm_protocol::PlaylistRunState::Stopped,
+                titles: vec![
+                    text(1, fm_protocol::CueTitleValue::Text("Bea".into())),
+                    // An unchanged value keeps its field's revision.
+                    text(2, fm_protocol::CueTitleValue::Number(0)),
+                ],
+                media: Vec::new(),
+                scripts: Vec::new(),
+            },
+        };
+        model
+            .apply_event(event(
+                project(1),
+                engine_a,
+                12,
+                DurableChange::ScriptRan(Box::new(ran)),
+            ))
+            .unwrap();
+        let state = model.state().unwrap();
+        let title = state.title(input(TITLE)).unwrap();
+        assert_eq!(title.field_revision, 5);
+        assert_eq!(title.fields[0].value, TitleFieldValue::Text("Bea".into()));
+        assert_eq!((title.fields[0].revision, title.fields[1].revision), (5, 0));
+    }
+
+    #[test]
     fn invalid_title_changes_are_refused_atomically() {
         let engine_a = engine("engine-a", 1, "log-a");
         let mut regressed = completed();
