@@ -1094,6 +1094,11 @@ impl LiveStripDsp {
             }
             start += length;
         }
+        // A delay faded out here may never run another sub-block that marks
+        // its history stale: the mixer skips a chain once it is transparent.
+        if self.fades[CHAIN].is_off() || self.fades[DELAY].is_off() {
+            self.delay.stale = true;
+        }
         let on = |stage: usize| self.fades[CHAIN].target > 0.0 && self.fades[stage].target > 0.0;
         self.dynamics = DspDynamicsReading {
             gate_db: on(GATE).then_some(reading[0]),
@@ -1565,6 +1570,35 @@ mod delay_tests {
         let mut planes = vec![vec![0.0_f32; 4_800]];
         dsp.process(4_800, &mut InPlacePlanes(&mut planes));
         assert!(planes[0].iter().all(|sample| *sample == 0.0));
+    }
+
+    /// The chain is skipped once transparent, so the render whose fade
+    /// reaches off must itself drop the history.
+    #[test]
+    fn a_fade_that_ends_on_the_last_sub_block_still_drops_the_history() {
+        for turn_off in [
+            |settings: &mut StripDspSettings| settings.bypass = true,
+            |settings: &mut StripDspSettings| settings.delay.enabled = false,
+        ] {
+            let mut dsp = LiveStripDsp::new(48_000.0, 1, &delayed(50_000)).unwrap();
+            dsp.process(4_800, &mut InPlacePlanes(&mut [vec![0.25; 4_800]]));
+            let mut off = delayed(50_000);
+            turn_off(&mut off);
+            dsp.set_settings(&off).unwrap();
+            // Rendered sub-block by sub-block, as a mixer that stops
+            // calling the chain the moment it is transparent.
+            while !dsp.is_transparent() {
+                dsp.process(SUB_BLOCK, &mut InPlacePlanes(&mut [vec![0.25; SUB_BLOCK]]));
+            }
+            dsp.set_settings(&delayed(50_000)).unwrap();
+            let mut planes = vec![vec![0.0_f32; 4_800]];
+            dsp.process(4_800, &mut InPlacePlanes(&mut planes));
+            assert!(
+                planes[0].iter().all(|sample| *sample == 0.0),
+                "{:?}",
+                planes[0].iter().find(|sample| **sample != 0.0)
+            );
+        }
     }
 
     #[test]

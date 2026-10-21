@@ -501,3 +501,57 @@ fn strip_and_master_delays_add_up_to_the_sample_through_a_rejected_block() {
         .collect();
     assert_eq!(loud, vec![10 + 336], "{heard:?}");
 }
+
+/// A strip's delay bypassed under short renders, which skip the chain the
+/// moment its fade-out finishes, drops its history: un-bypassed, it fades
+/// into silence, not into the audio from before the bypass.
+#[test]
+fn a_delay_bypassed_under_short_renders_returns_without_old_audio() {
+    const SHORT: usize = 32;
+    let id = input(1);
+    let mut chain = StripDsp::DEFAULT;
+    chain.delay.enabled = true;
+    chain.delay.delay_us = 50_000;
+    let mut mixer = mixer_with(&[id]);
+    mixer.set_input_dsp(id, &chain).unwrap();
+    let layout = ChannelLayout::stereo();
+    let mut output = vec![vec![0.0; SHORT]; 2];
+    let mut input_meters = vec![ChannelMeter::default(); 2];
+    let mut run = |mixer: &mut MasterMixer, value: f32, renders: usize| {
+        let planes = vec![vec![value; SHORT]; 2];
+        let mut heard = Vec::new();
+        for _ in 0..renders {
+            mixer
+                .mix_planar_timed_into_with_meters(
+                    timing(SHORT),
+                    SHORT,
+                    &[PlanarAudioSource {
+                        input: id,
+                        sample_rate: SampleRate::new(RATE).unwrap(),
+                        channel_layout: &layout,
+                        planes: &planes,
+                        samples: SHORT,
+                        source_gain: SourceGain::UNITY,
+                    }],
+                    &[],
+                    &mut output,
+                    (&mut [ChannelMeter::default(); 2], &mut input_meters),
+                )
+                .unwrap();
+            heard.extend_from_slice(&output[0]);
+        }
+        heard
+    };
+    run(&mut mixer, 0.25, 150);
+    chain.bypass = true;
+    mixer.set_input_dsp(id, &chain).unwrap();
+    run(&mut mixer, 0.25, 30);
+    chain.bypass = false;
+    mixer.set_input_dsp(id, &chain).unwrap();
+    let heard = run(&mut mixer, 0.0, 150);
+    assert!(
+        heard.iter().all(|sample| *sample == 0.0),
+        "{:?}",
+        heard.iter().position(|sample| *sample != 0.0)
+    );
+}
