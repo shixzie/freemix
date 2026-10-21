@@ -55,7 +55,7 @@ highest-value remaining items, ranked:
    Studio), and the native daemon prefetches each list's next item so Auto
    Next and Next switch files gaplessly, Studio's list card shows each
    item's own picture, and each list has its own transition between items
-   (cut, fade, dip to black, or wipe, with a length; Protocol 2.96, schema
+   (cut, fade, dip to black, or wipe, with a length; Protocol 2.95, schema
    77) that both daemons run on Auto Next and Next, the native one
    compositing the two items; it still lacks Windows/macOS evidence. (The slideshow,
    `IN-009`, is now wired end to end; see its boundary below.)
@@ -4000,7 +4000,7 @@ the simulated daemon by the synthetic source's length), so each row's out
 field shows where the item really ends and the card header totals the
 list; the Web operator page and the CLI (`remote-status`,
 `input-media-list`) show the same lengths, totals, and current item.
-Each list carries a transition (Protocol 2.96, schema 77: `cut`, `fade`,
+Each list carries a transition (Protocol 2.95, schema 77: `cut`, `fade`,
 `dip`, or `wipe`, 1 to 600 frames, an undoable list edit) that a playing
 list's step to another item runs: the engine keeps the outgoing item's
 transport playing under the incoming one for the transition's frames and

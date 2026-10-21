@@ -693,7 +693,7 @@ fn simulated_item_lengths_are_probed_published_and_restored() {
     daemon.stop();
 }
 
-/// Protocol 2.96 on the simulated runtime: under Auto Next a list fade
+/// Protocol 2.95 on the simulated runtime: under Auto Next a list fade
 /// steps its transition's frames before the opener's out mark, so the
 /// opener never reports its end; the transition is an undoable list edit
 /// that persists in `project.json` and reaches a reconnecting client.

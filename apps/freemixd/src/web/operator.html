@@ -274,7 +274,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.94";
+  const PROTOCOL = "2.95";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -991,7 +991,7 @@
   // `runtime_event` `event=media_list`): `items` as
   // `id~uri~title|-~in~out|-` (uri and title escaped once more), `lengths`
   // one `<frames>@<num>/<den>` or `-` per item (Protocol 2.91), and the
-  // list transition (Protocol 2.96).
+  // list transition (Protocol 2.95).
   function parseMediaList(record) {
     const items = required(record, "items").split(",").map((entry) => {
       const parts = entry.split("~");

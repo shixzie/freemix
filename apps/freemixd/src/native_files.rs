@@ -53,7 +53,7 @@
 //! ([`NativeMediaFiles::adopt`]) before the step's frame is projected, so
 //! the switch frame presents the new item instead of holding the last one.
 //!
-//! A list's transition between items (IN-006, Protocol 2.96) composites
+//! A list's transition between items (IN-006, Protocol 2.95) composites
 //! the two items on the CPU. The replaced worker is not retired at once: it
 //! becomes the input's *outgoing* worker, presenting the outgoing item's
 //! ticks the engine projects ([`fm_engine::EngineMediaOutgoing`]) into a

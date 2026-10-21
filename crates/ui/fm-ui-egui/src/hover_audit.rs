@@ -757,7 +757,7 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
                     auto_first: false,
                     loop_list: true,
                     shuffle_seed: Some(7),
-                    // Protocol 2.96: the items cross-fade.
+                    // Protocol 2.95: the items cross-fade.
                     transition: fm_protocol::MediaListTransitionSpec {
                         kind: fm_protocol::MediaListTransitionKind::Fade,
                         duration_frames: 12,

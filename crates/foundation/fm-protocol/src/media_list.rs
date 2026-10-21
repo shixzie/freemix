@@ -33,7 +33,7 @@ pub const MAX_MEDIA_LIST_TITLE_BYTES: usize = 128;
 pub const MAX_MEDIA_LIST_TEXT_BYTES: usize = 16 * 1024;
 /// Largest item id.
 pub const MAX_MEDIA_LIST_ITEM_ID: u32 = 1_000_000;
-/// Longest transition between two items, in output frames (Protocol 2.96).
+/// Longest transition between two items, in output frames (Protocol 2.95).
 pub const MAX_MEDIA_LIST_TRANSITION_FRAMES: u32 = 600;
 /// The transition length a new list starts with, in output frames.
 pub const DEFAULT_MEDIA_LIST_TRANSITION_FRAMES: u32 = 15;
@@ -89,7 +89,7 @@ impl MediaListItemLength {
     }
 }
 
-/// How one item gives way to the next (Protocol 2.96).
+/// How one item gives way to the next (Protocol 2.95).
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum MediaListTransitionKind {
     /// The next item replaces the active one on the step's frame.
@@ -126,7 +126,7 @@ impl MediaListTransitionKind {
     }
 }
 
-/// The transition a playing list plays between two items (Protocol 2.96):
+/// The transition a playing list plays between two items (Protocol 2.95):
 /// the outgoing and incoming items are composited for `duration_frames`
 /// output frames, and under Auto Next the step comes that many frames
 /// before the outgoing item's out point. A cut keeps, but does not use,
@@ -166,7 +166,7 @@ pub struct MediaListOptionsSpec {
     pub loop_list: bool,
     /// Play order is the seeded permutation of each cycle.
     pub shuffle_seed: Option<u64>,
-    /// How a playing list steps between items (Protocol 2.96).
+    /// How a playing list steps between items (Protocol 2.95).
     pub transition: MediaListTransitionSpec,
 }
 

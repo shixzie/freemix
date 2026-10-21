@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.94 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.95 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -3646,7 +3646,7 @@ on the Web operator page (AU-005, schema 76).
   beside the polarity key, with hover help.
 - 2.93 is refused.
 
-Protocol 2.96 adds per-list transitions between media list items (IN-006,
+Protocol 2.95 adds per-list transitions between media list items (IN-006,
 schema 77).
 
 - A list's options (the `create` and `set` operations and every status:
@@ -3695,7 +3695,7 @@ schema 77).
   CLI prints each list (`remote-status`, and `input-media-list` for a
   local project, whose lengths are unknown) with its transition, every
   item's file length and played duration, and the total.
-- 2.95 is refused.
+- 2.94 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

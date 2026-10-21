@@ -6,7 +6,7 @@
 //!   loop cycle; `position`: the active item's zero-based play-order
 //!   position.
 //! * Options: `auto_next`, `auto_first`, and `loop` (`0|1`),
-//!   `shuffle_seed` (`<u64>` or `-`), and (2.96) `transition`
+//!   `shuffle_seed` (`<u64>` or `-`), and (2.95) `transition`
 //!   (`cut|fade|dip|wipe`) with `transition_frames`
 //!   (`1..=MAX_MEDIA_LIST_TRANSITION_FRAMES`).
 //! * `items`: a comma-separated list (1 to [`MAX_MEDIA_LIST_ITEMS`]) of

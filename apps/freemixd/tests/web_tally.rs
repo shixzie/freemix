@@ -1252,7 +1252,7 @@ fn operator_page_is_served_with_the_tally_security_model() {
     // snapshot records, its events, and the runtime lengths (Protocol 2.91,
     // taken only while the items are the same); the page shows every
     // item's played length through its marks, the list total, the current
-    // item, and the list transition (Protocol 2.96), with hover help in
+    // item, and the list transition (Protocol 2.95), with hover help in
     // English and Spanish.
     for source in [
         "case \"media_list_state\":",

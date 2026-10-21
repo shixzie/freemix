@@ -1522,7 +1522,7 @@ fn format_seconds(micros: u64) -> String {
     format!("{}.{:03}s", micros / 1_000_000, micros % 1_000_000 / 1_000)
 }
 
-/// One media list (IN-006): its options and transition (Protocol 2.96),
+/// One media list (IN-006): its options and transition (Protocol 2.95),
 /// the total it plays through its marks (`>=` while some lengths are
 /// unknown), and each item `id:"name" in..out file_frames@rate played`,
 /// the active item starred; a length the authority has not probed is `?`.

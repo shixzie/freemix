@@ -510,7 +510,7 @@ fn ticks_to_end(control: &mut ControlService) -> (u32, u32) {
     panic!("no item ended");
 }
 
-/// Two ten-frame items cross-fading over four frames (Protocol 2.96): the
+/// Two ten-frame items cross-fading over four frames (Protocol 2.95): the
 /// transition rides the wire, and Auto Next steps four frames before the
 /// opener's out mark so the items overlap, except at the end of a list
 /// that does not play on (Auto First cues the first item only once the

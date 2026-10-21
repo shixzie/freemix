@@ -6,7 +6,7 @@
 //! and the play position, a search filter, Previous and Next, a key that
 //! makes any item active, drag (or Up / Down) reordering, per-item in and
 //! out marks, removal, appending files, the Auto Next, Auto First, Loop,
-//! and Shuffle options, and (Protocol 2.96) the transition a playing list
+//! and Shuffle options, and (Protocol 2.95) the transition a playing list
 //! plays between items with its length in frames. Stepping through the list is an operator
 //! control (`can_transition`); every other change is a project edit sent as
 //! one `media_list` `set` with the whole list, padlocks honoured.
@@ -525,7 +525,7 @@ pub(crate) fn draw_list(
         }
     });
 
-    // The transition between items (Protocol 2.96).
+    // The transition between items (Protocol 2.95).
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
         let options = options_of(list);

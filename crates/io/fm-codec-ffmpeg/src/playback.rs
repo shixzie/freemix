@@ -1706,7 +1706,7 @@ mod tests {
     fn showinfo_parser_reads_padded_and_compact_timestamps() {
         let stderr = b"[Parsed_showinfo_3 @ 0x1] config in time_base: 1/90000\n\
 [Parsed_showinfo_3 @ 0x1] n:   0 pts: 262800 pts_time:2.92 duration: 3600\n\
-[Parsed_showinfo_3 @ 0x1] n:   1 pts: 266400 pts_time:2.96 duration: 3600\n\
+[Parsed_showinfo_3 @ 0x1] n:   1 pts: 266400 pts_time:2.95 duration: 3600\n\
 [Parsed_ashowinfo_5 @ 0x2] n:0 pts:48000 pts_time:1 fmt:flt\n";
         assert_eq!(showinfo_pts(stderr, "showinfo"), [262_800, 266_400]);
         assert_eq!(showinfo_pts(stderr, "ashowinfo"), [48_000]);

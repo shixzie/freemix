@@ -2,7 +2,7 @@
 //! navigate, advance), the `media_list_changed` event, the snapshot's
 //! `media_list_states` count, the `media_list_state` follow-on record, and
 //! (Protocol 2.91) each item's probed length with the `media_list` runtime
-//! event that republishes it, and (Protocol 2.96) the transition between
+//! event that republishes it, and (Protocol 2.95) the transition between
 //! items — exactly, and strictly.
 
 use core::num::NonZeroU128;
@@ -245,7 +245,7 @@ fn malformed_media_list_commands_are_refused() {
     );
 }
 
-/// Every transition kind rides a `set` (Protocol 2.96), and the default
+/// Every transition kind rides a `set` (Protocol 2.95), and the default
 /// is a cut that keeps a 15-frame duration for a later blend.
 #[test]
 fn every_list_transition_round_trips() {

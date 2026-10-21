@@ -896,7 +896,7 @@ fn a_native_media_list_reports_every_items_probed_length() {
     assert_eq!(lists[0].lengths, [length(25), length(75), None]);
 }
 
-/// Protocol 2.96 list transitions on the native runtime: under Auto Next a
+/// Protocol 2.95 list transitions on the native runtime: under Auto Next a
 /// wipe steps eight frames before the first item's out mark, and Program,
 /// recorded frame by frame, shows the two prefetched items composited, the
 /// outgoing one still playing: on the k-th of the eight frames the left
