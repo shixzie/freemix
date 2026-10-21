@@ -234,7 +234,6 @@ impl TlsState {
     }
 
     /// Whether the served leaf names `host`.
-    #[cfg(test)]
     pub(crate) fn covers(&self, host: &str) -> bool {
         self.served().info.covers(host)
     }

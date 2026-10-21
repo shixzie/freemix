@@ -426,6 +426,21 @@ pub(super) fn serve_connection(socket: TcpStream, gateway: &Gateway) {
         );
         return;
     }
+    // HSTS: only over TLS, for a DNS name the served certificate names.
+    let strict = tls
+        && gateway.access.tls().is_some_and(|served| {
+            request
+                .header("host")
+                .and_then(http::strict_transport_host)
+                .is_some_and(|name| served.covers(&name))
+        });
+    let finish = |response: Vec<u8>| {
+        if strict {
+            http::with_header(response, http::STRICT_TRANSPORT)
+        } else {
+            response
+        }
+    };
     if request.path == page::INDEX_PATH || request.path == fm_protocol::WEB_CA_PATH {
         let ca = gateway.access.tls().and_then(|tls| tls.ca());
         let body = request.method == "GET";
@@ -440,7 +455,7 @@ pub(super) fn serve_connection(socket: TcpStream, gateway: &Gateway) {
             ("GET" | "HEAD", _, None) => http::empty_response("404 Not Found", ""),
             _ => http::empty_response("405 Method Not Allowed", "Allow: GET, HEAD\r\n"),
         };
-        respond(&mut stream, &response);
+        respond(&mut stream, &finish(response));
         return;
     }
     if let Some(page) = page::page_for(&request.path) {
@@ -449,7 +464,7 @@ pub(super) fn serve_connection(socket: TcpStream, gateway: &Gateway) {
             "HEAD" => page::page_response(request.header("host"), tls, page, false),
             _ => http::empty_response("405 Method Not Allowed", "Allow: GET, HEAD\r\n"),
         };
-        respond(&mut stream, &response);
+        respond(&mut stream, &finish(response));
         return;
     }
     match request.path.as_str() {
@@ -457,7 +472,10 @@ pub(super) fn serve_connection(socket: TcpStream, gateway: &Gateway) {
             if request.method != "POST" {
                 respond(
                     &mut stream,
-                    &http::empty_response("405 Method Not Allowed", "Allow: POST\r\n"),
+                    &finish(http::empty_response(
+                        "405 Method Not Allowed",
+                        "Allow: POST\r\n",
+                    )),
                 );
                 return;
             }
@@ -475,7 +493,7 @@ pub(super) fn serve_connection(socket: TcpStream, gateway: &Gateway) {
                 Some(_) => json_response("413 Content Too Large", r#"{"error":"bad_request"}"#, ""),
                 None => bad_request(),
             };
-            respond(&mut stream, &response);
+            respond(&mut stream, &finish(response));
         }
         "/v1/whoami" => {
             let response = if request.method == "GET" {
@@ -483,15 +501,18 @@ pub(super) fn serve_connection(socket: TcpStream, gateway: &Gateway) {
             } else {
                 http::empty_response("405 Method Not Allowed", "Allow: GET\r\n")
             };
-            respond(&mut stream, &response);
+            respond(&mut stream, &finish(response));
         }
         assets::IMAGES_PATH | assets::IMAGE_PATH => {
             let response =
                 serve_assets(&mut stream, &request, &buffer[head_length..], tls, gateway);
-            respond_within(&mut stream, &response, assets::TRANSFER_TIMEOUT);
+            respond_within(&mut stream, &finish(response), assets::TRANSFER_TIMEOUT);
         }
         _ if request.is_upgrade() => upgrade(stream, buffer, gateway),
-        _ => respond(&mut stream, &http::empty_response("404 Not Found", "")),
+        _ => respond(
+            &mut stream,
+            &finish(http::empty_response("404 Not Found", "")),
+        ),
     }
 }
 
@@ -1477,5 +1498,30 @@ mod tests {
             Err(StatusCode::FORBIDDEN),
             "an Origin without a Host cannot be verified"
         );
+    }
+
+    /// Plain HTTP never carries HSTS, even for a DNS name: the gateway pins
+    /// a name to HTTPS only from a trusted HTTPS answer.
+    #[test]
+    fn plain_http_never_sends_hsts() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let (mut gateway, _events) = gateway();
+        gateway.hosts = Arc::new(vec!["studio.lan".to_owned()]);
+        for path in ["/", "/tally", "/missing"] {
+            let (mut client, worker) = accept(&listener, &gateway);
+            client
+                .write_all(format!("GET {path} HTTP/1.1\r\nHost: studio.lan\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            worker.join().unwrap();
+            assert!(response.starts_with("HTTP/1.1 "), "{response}");
+            assert!(
+                !response
+                    .to_ascii_lowercase()
+                    .contains("strict-transport-security"),
+                "{path}: {response}"
+            );
+        }
     }
 }

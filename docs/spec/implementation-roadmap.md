@@ -18,14 +18,17 @@ highest-value remaining items, ranked:
    operator's own validated, hot-reloaded certificate, with the leaf
    fingerprint kept as the fallback check; the gateway advertises
    `_freemix._tcp` / `_https._tcp` over mDNS as `<name>.local`, and Studio
-   lists every address with a QR code. Still missing: proof on real phones
-   (the pairing flow and the CA install are proven in headless Chromium and
-   rustls clients only, and mDNS by unit-level records) and HSTS. New roots
-   carry critical name constraints (private, CGNAT, link-local, and
-   loopback ranges, `.local` / `localhost` / `home.arpa` / `.internal`,
-   and the gateway's own names when the root was made), so a stolen root
-   cannot mint a certificate for a public site; a root made earlier is
-   kept unconstrained until the operator removes it.
+   lists every address with a QR code. New roots carry critical name
+   constraints (private, CGNAT, link-local, and loopback ranges, `.local` /
+   `localhost` / `home.arpa` / `.internal`, and the gateway's own names
+   when the root was made), so a stolen root cannot mint a certificate for
+   a public site; a root made earlier is kept unconstrained until the
+   operator removes it. HTTPS answers for a DNS name the served certificate
+   names (the `.local` name, a `--web-host`) carry a one-week
+   `Strict-Transport-Security` for that host only (none for addresses,
+   `localhost`, or plain HTTP). Still missing: proof on real phones (the
+   pairing flow and the CA install are proven in headless Chromium and
+   rustls clients only, and mDNS by unit-level records).
 2. ~~**Native Preview monitor tap (`SW-001`, `SW-002`).**~~ Landed: the native
    daemon publishes a Preview `monitor_frame` tap (the incoming source during a
    transition) through nonblocking readbacks, and Studio shows it with a
@@ -4698,7 +4701,8 @@ loop back on the LAN interface, so the advertisement is checked by record
 contents and process state, not by a second resolver); the root carries
 name constraints only when made after they landed (an older root is kept
 unconstrained, and a public address or a `--web-host` added after the root
-was made is left out of the leaf), there is no HSTS, Android Chrome may not resolve `.local`
+was made is left out of the leaf), HSTS covers names only (browsers
+ignore it for addresses), Android Chrome may not resolve `.local`
 names, the fingerprint in the QR link is that of the current leaf (a
 reissue changes it), and pairing expiry is tested with an injected clock;
 Web peers

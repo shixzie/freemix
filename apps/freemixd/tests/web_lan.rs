@@ -906,6 +906,63 @@ fn a_phone_that_installs_the_local_root_trusts_the_gateway() {
     assert_eq!(again.fingerprint, leaf);
 }
 
+fn hsts(headers: &[(String, String)]) -> Option<&str> {
+    headers
+        .iter()
+        .find(|(name, _)| name == "strict-transport-security")
+        .map(|(_, value)| value.as_str())
+}
+
+/// RC-007 hardening: HTTPS answers for a DNS name the served certificate
+/// names (here a `--web-host` under `home.arpa`, inside the local root's
+/// name constraints) carry a one-week HSTS for that host only; answers for
+/// an address (which browsers ignore HSTS for) or `localhost` (HSTS would
+/// pin every port on this computer) carry none.
+#[test]
+fn hsts_pins_only_names_the_certificate_covers() {
+    let directory = TestDirectory::new("hsts");
+    let project = directory.0.join("show.freemix");
+    create_project(&project);
+    let daemon = Daemon::start_with(
+        &directory.0,
+        &project,
+        "hsts",
+        &["--no-web-mdns", "--web-host", "studio.home.arpa"],
+    );
+    let port = daemon.web.port();
+    for path in [
+        "/",
+        "/tally",
+        "/operator",
+        "/titles",
+        "/freemix-ca.crt",
+        "/v1/whoami",
+    ] {
+        let (status, headers, _) = web_tls::https(
+            daemon.web,
+            &format!("GET {path} HTTP/1.1\r\nHost: studio.home.arpa:{port}\r\n\r\n"),
+            TIMEOUT,
+        );
+        assert!(status.starts_with("HTTP/1.1 "), "{path}: {status}");
+        assert_eq!(hsts(&headers), Some("max-age=604800"), "{path}");
+    }
+    for host in [daemon.web.to_string(), format!("localhost:{port}")] {
+        let (status, headers, _) = https(
+            &daemon,
+            &format!("GET /tally HTTP/1.1\r\nHost: {host}\r\n\r\n"),
+        );
+        assert_eq!(status, "HTTP/1.1 200 OK", "{host}");
+        assert_eq!(hsts(&headers), None, "{host}");
+    }
+    // A refused host learns nothing, HSTS included.
+    let (status, headers, _) = https(
+        &daemon,
+        &format!("GET /tally HTTP/1.1\r\nHost: evil.example:{port}\r\n\r\n"),
+    );
+    assert_eq!(status, "HTTP/1.1 421 Misdirected Request");
+    assert_eq!(hsts(&headers), None);
+}
+
 /// An mkcert-like certificate for `names`, signed by a fresh root.
 fn operator_certificate(names: &[&str]) -> (String, String) {
     let key = rcgen::KeyPair::generate().unwrap();
@@ -953,6 +1010,7 @@ fn await_status(
 /// before use, reloaded when the files change (no restart), kept when a
 /// replacement is broken, and refused when the key is readable by others.
 #[test]
+#[allow(clippy::too_many_lines)] // one daemon walks load, HSTS, reload, and refusal
 fn the_operators_certificate_is_validated_and_hot_reloaded() {
     let directory = TestDirectory::new("operator-cert");
     let project = directory.0.join("show.freemix");
@@ -969,6 +1027,8 @@ fn the_operators_certificate_is_validated_and_hot_reloaded() {
         "--web-tls-key",
         key_arg,
         "--no-web-mdns",
+        "--web-host",
+        "cam.lan",
     ];
     let daemon = Daemon::launch(&directory.0, &project, "operator", &options);
     assert_eq!(
@@ -1007,11 +1067,20 @@ fn the_operators_certificate_is_validated_and_hot_reloaded() {
     });
     assert_eq!(status.trust, fm_protocol::WebTrust::Operator);
     web_tls::pin(daemon.web, &second);
-    let (status_line, _, _) = https(
+    let (status_line, headers, _) = https(
         &daemon,
         &format!("HEAD /tally HTTP/1.1\r\nHost: {host}\r\n\r\n"),
     );
     assert_eq!(status_line, "HTTP/1.1 200 OK");
+    assert_eq!(hsts(&headers), None, "no HSTS for an address");
+    // The operator's validated certificate names `cam.lan`: HSTS pins it.
+    let port = daemon.web.port();
+    let (status_line, headers, _) = https(
+        &daemon,
+        &format!("HEAD /tally HTTP/1.1\r\nHost: cam.lan:{port}\r\n\r\n"),
+    );
+    assert_eq!(status_line, "HTTP/1.1 200 OK");
+    assert_eq!(hsts(&headers), Some("max-age=604800"));
 
     // A broken replacement keeps the served certificate and is reported.
     fs::write(

@@ -146,6 +146,48 @@ pub(super) fn allowed_host(host: &str, extra: &[String]) -> bool {
     name.parse::<IpAddr>().is_ok() || name == "localhost" || extra.contains(&name)
 }
 
+/// The HSTS header: one week, this host only (no `includeSubDomains`, no
+/// `preload`), so a mistake costs little and never reaches other hosts.
+pub(super) const STRICT_TRANSPORT: &str = "Strict-Transport-Security: max-age=604800\r\n";
+
+/// The DNS name an HTTPS answer to `host` (the `Host` header) may pin to
+/// HTTPS with HSTS, if any.
+///
+/// Browsers ignore HSTS for IP literals, so none is named for them; and
+/// `localhost` (with any name under it) is never pinned, since HSTS covers
+/// every port and would break other plain HTTP services on this computer.
+/// The caller sends the header only over TLS and only when the served
+/// certificate names the host, so the client trusts it long term (the
+/// operator's validated chain or the installed local root); a browser
+/// that does not yet trust the certificate ignores the header anyway.
+pub(super) fn strict_transport_host(host: &str) -> Option<String> {
+    let name = host_name(sanitized_host(host)?)?
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let pinnable = !name.is_empty()
+        && name.parse::<IpAddr>().is_err()
+        && name != "localhost"
+        && !name.ends_with(".localhost");
+    pinnable.then_some(name)
+}
+
+/// `response` with `header` (one `Name: value\r\n` line) after its status
+/// line.
+pub(super) fn with_header(response: Vec<u8>, header: &str) -> Vec<u8> {
+    let Some(end) = response
+        .windows(2)
+        .position(|pair| pair == b"\r\n")
+        .map(|index| index + 2)
+    else {
+        return response;
+    };
+    let mut combined = Vec::with_capacity(response.len() + header.len());
+    combined.extend_from_slice(&response[..end]);
+    combined.extend_from_slice(header.as_bytes());
+    combined.extend_from_slice(&response[end..]);
+    combined
+}
+
 /// Whether a browser request came from the page the gateway served:
 /// `Origin` must be `<scheme>://<Host>`. A request without `Origin` is not
 /// browser-originated and passes (`require` makes it mandatory).
@@ -235,7 +277,10 @@ pub(super) fn empty_response(status: &str, extra_headers: &str) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Request, allowed_host, form_field, json_string, same_origin, sanitized_host};
+    use super::{
+        Request, STRICT_TRANSPORT, allowed_host, empty_response, form_field, json_string,
+        same_origin, sanitized_host, strict_transport_host, with_header,
+    };
 
     fn request(head: &str) -> Request {
         Request::parse(head.as_bytes()).unwrap()
@@ -325,5 +370,35 @@ mod tests {
         assert_eq!(form_field("code=1", "name"), None);
         assert_eq!(form_field("name=%zz", "name"), None);
         assert_eq!(json_string("a\"<b>\n"), "\"a\\\"\\u003cb>\\u000a\"");
+    }
+
+    #[test]
+    fn hsts_pins_only_dns_names_other_than_localhost() {
+        for (host, name) in [
+            ("freemix-studio.local:8443", "freemix-studio.local"),
+            ("Studio.Example.Lan.", "studio.example.lan"),
+        ] {
+            assert_eq!(strict_transport_host(host).as_deref(), Some(name), "{host}");
+        }
+        for host in [
+            "192.168.1.20:8443",
+            "[fd00::20]:8443",
+            "127.0.0.1",
+            "localhost:8443",
+            "app.localhost",
+            "a b",
+            "",
+        ] {
+            assert_eq!(strict_transport_host(host), None, "{host:?}");
+        }
+        assert!(!STRICT_TRANSPORT.contains("includeSubDomains"));
+        assert!(!STRICT_TRANSPORT.contains("preload"));
+        let headed = String::from_utf8(with_header(
+            empty_response("404 Not Found", ""),
+            STRICT_TRANSPORT,
+        ))
+        .unwrap();
+        assert!(headed.starts_with(&format!("HTTP/1.1 404 Not Found\r\n{STRICT_TRANSPORT}")));
+        assert!(headed.ends_with("Connection: close\r\n\r\n"));
     }
 }

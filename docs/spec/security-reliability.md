@@ -37,7 +37,10 @@ gateway had when the root was made. A phone that installed the root
 therefore rejects any certificate a stolen root key mints for a public site
 (WebPKI-verified in unit tests). Roots made before the constraints are kept,
 never silently replaced, and stay unconstrained until the operator removes
-them.
+them. Over HTTPS the gateway sends a one-week `Strict-Transport-Security`
+(this host only, no `includeSubDomains` or `preload`) for DNS names its
+certificate names, never for addresses, `localhost`, or plain HTTP, and its
+pages forbid framing, MIME sniffing, and referrers.
 
 Network-facing listeners bound their abuse. An RTMP ingest listener locks out
 a peer address (an IPv6 peer by its `/64` prefix) that presents a wrong stream

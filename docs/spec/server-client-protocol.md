@@ -3370,6 +3370,14 @@ the daemon's web state directory and options, never in the project.
   `FREEMIXD_WEB_REACH`, and `FREEMIXD_WEB_MDNS`
   (`state=advertised|unavailable`) with fingerprints and file names only,
   never key material.
+- Every HTTPS answer to an allowed `Host` that is a DNS name the served
+  certificate names (not an address literal, which browsers ignore HSTS
+  for, and not `localhost` or a name under it, since HSTS covers every
+  port) carries `Strict-Transport-Security: max-age=604800` (no
+  `includeSubDomains`, no `preload`); plain HTTP never does. Pages also
+  carry `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+  `X-Frame-Options: DENY`, and a CSP with `frame-ancestors 'none'` (inline
+  scripts and styles allowed, everything else same-origin or none).
 - On a LAN address the gateway advertises `_freemix._tcp` and `_https._tcp`
   on `freemix-<computer name>.local` (or `--web-mdns-name NAME`;
   `--no-web-mdns` advertises nothing) with TXT `path=/`, `tally`,
