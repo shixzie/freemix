@@ -848,6 +848,57 @@ fn dragging_a_garbage_matte_point_moves_only_that_point_as_one_step() {
     );
 }
 
+/// The compositors cut a layer's garbage matte before its effects, so on a
+/// flipped layer the matte's points show (and drag) mirrored with it.
+#[test]
+fn a_flipped_layers_garbage_matte_mirrors_with_it() {
+    use fm_ui_model::scene_designer::Field;
+    let (mut driver, mut shell, state, scene) = opened(true, false);
+    let document = shell.scene_layout_draft_mut(scene).unwrap();
+    document.select(layer(1), false);
+    let _ = document.set_key_kind(Some(true));
+    assert!(document.set_field(Field::Matte, 1.0));
+    assert!(document.add_effect("flip"));
+    let added = document.layer(layer(1)).unwrap().effects.len() - 1;
+    assert!(document.set_field(
+        Field::EffectParameter {
+            effect: u8::try_from(added).unwrap(),
+            parameter: 0
+        },
+        1.0
+    ));
+    // A point left of the matte's centre shows right of the layer's.
+    let flipped = document.layer(layer(1)).unwrap().clone();
+    let shown = matte_point_world(&flipped, fm_types::MattePoint::new(100, 500));
+    let centre = flipped.placement.frame().to_world(Point::new(0.0, 0.0));
+    assert!(shown.x > centre.x, "{shown:?} {centre:?}");
+    assert!((shown.y - centre.y).abs() < 1e-6, "{shown:?} {centre:?}");
+    // Upside down too, a point near the top shows near the bottom.
+    let mut both = flipped.clone();
+    both.effects[added].parameters = vec![1, 1];
+    let shown = matte_point_world(&both, fm_types::MattePoint::new(100, 100));
+    assert!(shown.x > centre.x && shown.y > centre.y, "{shown:?}");
+
+    driver.frame(&mut shell, &state, Vec::new());
+    driver.frame(&mut shell, &state, Vec::new());
+    // Host fills (0, 270)-(960, 810); the default matte's first point
+    // (100, 100) shows a tenth in from its top-right corner. Drag it to
+    // three quarters across the layer, halfway down.
+    let from = on_canvas(&shell, 864.0, 324.0);
+    let to = on_canvas(&shell, 720.0, 540.0);
+    driver.drag(&mut shell, &state, from, to, Modifiers::NONE);
+    let document = shell.designer.document().unwrap();
+    let matte = document
+        .layer(layer(1))
+        .and_then(|layer| layer.key)
+        .and_then(|key| key.refinement().garbage_matte)
+        .expect("the matte stays on");
+    let moved = matte.points()[0];
+    assert!(moved.x.abs_diff(250) <= 3, "{moved:?}");
+    assert!(moved.y.abs_diff(500) <= 3, "{moved:?}");
+    assert_eq!(matte.points()[1], fm_types::MattePoint::new(900, 100));
+}
+
 /// SW-008, Protocol 2.97: with a layer selected, the designer asks the
 /// server for its input's own picture (never while its canvas preview
 /// flies), and Auto key samples that larger picture instead of the

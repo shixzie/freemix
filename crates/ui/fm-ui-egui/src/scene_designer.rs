@@ -1607,9 +1607,12 @@ fn paint_layer(
         let sx = w / f64::from(cropped.0.max(1));
         let sy = h / f64::from(cropped.1.max(1));
         let local = |x: u32, y: u32| {
-            Point::new(
-                f64::from(x).mul_add(sx, -frame.half_width),
-                f64::from(y).mul_add(sy, -frame.half_height),
+            after_flips(
+                layer,
+                Point::new(
+                    f64::from(x).mul_add(sx, -frame.half_width),
+                    f64::from(y).mul_add(sy, -frame.half_height),
+                ),
             )
         };
         let points: Vec<Pos2> = [
@@ -1654,14 +1657,41 @@ fn garbage_matte(layer: &DesignLayer) -> Option<fm_types::GarbageMatte> {
     layer.key.and_then(|key| key.refinement().garbage_matte)
 }
 
+/// Where `local`, a point over `layer`'s (cropped) box as its key and
+/// mask see it, shows once its effects ran: the compositors key and mask a
+/// layer before its effects, whose `flip`s mirror the picture about the
+/// box's centre. A mirror is its own inverse, so this maps back too.
+fn after_flips(layer: &DesignLayer, local: Point) -> Point {
+    let (horizontal, vertical) = layer
+        .effects
+        .iter()
+        .filter(|effect| effect.name == "flip")
+        .fold((false, false), |(horizontal, vertical), effect| {
+            let on = |index: usize| {
+                effect
+                    .parameters
+                    .get(index)
+                    .is_some_and(|value| *value != 0)
+            };
+            (horizontal != on(0), vertical != on(1))
+        });
+    Point::new(
+        if horizontal { -local.x } else { local.x },
+        if vertical { -local.y } else { local.y },
+    )
+}
+
 /// Garbage matte point `point` of `layer` on the canvas: its normalized
-/// position over the layer's (cropped) box.
+/// position over the layer's (cropped) box, mirrored with the layer.
 fn matte_point_world(layer: &DesignLayer, point: fm_types::MattePoint) -> Point {
     let frame = layer.placement.frame();
     let unit = f64::from(fm_types::GARBAGE_MATTE_UNIT);
-    frame.to_world(Point::new(
-        (f64::from(point.x) / unit).mul_add(2.0 * frame.half_width, -frame.half_width),
-        (f64::from(point.y) / unit).mul_add(2.0 * frame.half_height, -frame.half_height),
+    frame.to_world(after_flips(
+        layer,
+        Point::new(
+            (f64::from(point.x) / unit).mul_add(2.0 * frame.half_width, -frame.half_width),
+            (f64::from(point.y) / unit).mul_add(2.0 * frame.half_height, -frame.half_height),
+        ),
     ))
 }
 
@@ -1687,7 +1717,7 @@ fn drag_matte_point(document: &mut SceneLayoutDocument, point: u8, at: Point) {
         return;
     };
     let frame = layer.placement.frame();
-    let local = frame.to_local(at);
+    let local = after_flips(layer, frame.to_local(at));
     let unit = f64::from(fm_types::GARBAGE_MATTE_UNIT);
     let along = |offset: f64, half: f64| {
         if half > 0.0 {
