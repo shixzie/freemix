@@ -2349,6 +2349,204 @@ fn operator_page_strip_dsp_codec_matches_the_rust_codec() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "ok\n");
 }
 
+/// The operator page's Strip FX gain reduction block (AU-005, Protocol
+/// 2.104), which uses nothing else on the page.
+fn page_fx_gain_reduction(page: &str) -> &str {
+    let begin = "  // ---- Strip FX gain reduction (AU-005) begin ----\n";
+    let start = page.find(begin).expect("gain reduction block begin");
+    let end = page[start..]
+        .find("  // ---- Strip FX gain reduction (AU-005) end ----")
+        .expect("gain reduction block end");
+    &page[start..start + end]
+}
+
+/// The Web `audio_meters` `dynamics` (Protocol 2.104) on the operator
+/// page: each FX disclosure shows its switched-on dynamics stages' gain
+/// reduction as a bar with the value in dB and hover help, dimmed while the
+/// meters are stale; the page's parser reads exactly what the Rust codec
+/// renders and refuses malformed entries (checked under Node.js when it is
+/// on the `PATH`).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn operator_page_shows_strip_fx_gain_reduction_from_the_meter_feed() {
+    use std::fmt::Write as _;
+
+    use fm_protocol::{AudioDspTarget, AudioDynamicsMeter, AudioMetersMessage, ServerIdentity};
+    let page = include_str!("../src/web/operator.html");
+    for source in [
+        "telemetry.dynamics = FX_GR.parse(required(record, \"dynamics\"));",
+        "telemetry.dynamics = new Map();",
+        "    paintLoudness();\n    paintFxDynamics();\n",
+        "function paintFxDynamics() { for (const panel of fxPanels.values()) panel.paintGr(); }",
+        "const stale = !live || !telemetry.metersAt || Date.now() - telemetry.metersAt > METER_STALE_MS;\n      const reading = live ? telemetry.dynamics.get(target) : undefined;",
+        "gr.element.hidden = chain.bypass || !fxGet(chain, gr.toggle);",
+        "gr.element.dataset.stale = view.dim ? \"1\" : \"0\";",
+        ".fx .gr[data-stale=\"1\"] .fill, .fx .gr[data-stale=\"1\"] output { opacity: .35; }",
+        "data-i18n=\"fxGainReductionNote\"",
+    ] {
+        assert!(page.contains(source), "{source}");
+    }
+    for language in ["en", "es"] {
+        let table = strings_table(page, language);
+        for key in [
+            "fxGainReductionNote",
+            "fxGrLegend",
+            "fxGrNone",
+            "fxGrHover",
+            "fxGrIdleHover",
+            "fxGrStaleHover",
+        ] {
+            assert!(
+                table.iter().any(|(name, _)| name == key),
+                "{language} {key}"
+            );
+        }
+    }
+    assert!(!page.contains("fxNoGainReduction"));
+    let block = page_fx_gain_reduction(page);
+    for outside in [
+        "tr(",
+        "show.",
+        "link.",
+        "ui.",
+        "telemetry.",
+        "document",
+        "send(",
+    ] {
+        assert!(
+            !block.contains(outside),
+            "the gain reduction block uses {outside}"
+        );
+    }
+
+    // A record as a native daemon's Web feed renders it.
+    let meter = |target, gate, expander, compressor, limiter| AudioDynamicsMeter {
+        target,
+        gate_millidb: gate,
+        expander_millidb: expander,
+        compressor_millidb: compressor,
+        limiter_millidb: limiter,
+    };
+    let record = AudioMetersMessage {
+        server: ServerIdentity {
+            engine_id: "engine".to_owned(),
+            project_id: "project".to_owned(),
+            state_epoch: 1,
+            log_id: "log".to_owned(),
+        },
+        sequence: 3,
+        frame: 4,
+        start_sample: 0,
+        end_sample: 480,
+        master: vec![fm_protocol::AudioMeterChannel {
+            peak_millionths: 1,
+            rms_millionths: 1,
+        }],
+        inputs: Vec::new(),
+        monitor: None,
+        dynamics: vec![
+            meter(AudioDspTarget::Master, None, None, Some(4_250), Some(0)),
+            meter(
+                AudioDspTarget::Input(input(1)),
+                Some(30_000),
+                Some(1),
+                None,
+                None,
+            ),
+            meter(
+                AudioDspTarget::Input(input(2)),
+                None,
+                None,
+                Some(200_000),
+                None,
+            ),
+        ],
+        loudness: Vec::new(),
+    };
+    let line = fm_protocol::encode_line(&WireMessage::AudioMeters(record)).unwrap();
+    // The field's value as the page's record decoder unescapes it.
+    let escaped = line
+        .trim_end()
+        .split('\t')
+        .find_map(|field| field.strip_prefix("dynamics="))
+        .expect("dynamics field");
+    let mut dynamics = String::new();
+    let mut rest = escaped;
+    while let Some((before, after)) = rest.split_once('%') {
+        dynamics.push_str(before);
+        dynamics.push(char::from(u8::from_str_radix(&after[..2], 16).unwrap()));
+        rest = &after[2..];
+    }
+    dynamics.push_str(rest);
+
+    let mut script = String::from(block);
+    script.push_str(
+        "\nconst failures = [];\n\
+         const check = (ok, what) => { if (!ok) failures.push(what); };\n\
+         const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);\n",
+    );
+    let _ = writeln!(
+        script,
+        "const read = FX_GR.parse(\"{dynamics}\");\n\
+         check(same([...read.keys()], [\"master\", \"{one}\", \"{two}\"]), \"targets\");\n\
+         check(same(read.get(\"master\"), {{ gate: null, expander: null, compressor: 4.25, limiter: 0 }}), \"master\");\n\
+         check(same(read.get(\"{one}\"), {{ gate: 30, expander: 0.001, compressor: null, limiter: null }}), \"strip\");\n\
+         check(same(FX_GR.view(read.get(\"master\"), \"compressor\", false), {{ db: 4.25, fraction: 4.25 / 24, dim: false }}), \"bar\");\n\
+         check(same(FX_GR.view(read.get(\"master\"), \"limiter\", false), {{ db: 0, fraction: 0, dim: false }}), \"zero\");\n\
+         check(same(FX_GR.view(read.get(\"{one}\"), \"gate\", false), {{ db: 30, fraction: 1, dim: false }}), \"full\");\n\
+         check(same(FX_GR.view(read.get(\"{two}\"), \"compressor\", true), {{ db: 200, fraction: 1, dim: true }}), \"stale\");\n\
+         check(same(FX_GR.view(read.get(\"master\"), \"gate\", false), {{ db: null, fraction: 0, dim: false }}), \"off\");\n\
+         check(same(FX_GR.view(undefined, \"gate\", true), {{ db: null, fraction: 0, dim: true }}), \"absent\");\n\
+         check(FX_GR.parse(\"\").size === 0, \"empty\");\n\
+         check(same(FX_GR.STAGES, [\"gate\", \"expander\", \"compressor\", \"limiter\"]), \"stages\");",
+        one = input(1),
+        two = input(2),
+    );
+    for (index, malformed) in [
+        "master~1~2~3",
+        "master~1~2~3~4~5",
+        "~1~-~-~-",
+        "master~01~-~-~-",
+        "master~200001~-~-~-",
+        "master~-1~-~-~-",
+        "master~1.5~-~-~-",
+        "master~~-~-~-",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let _ = writeln!(
+            script,
+            "try {{ FX_GR.parse(\"{malformed}\"); failures.push(\"accepted {index}\"); }} catch (error) {{}}"
+        );
+    }
+    script.push_str(
+        "if (failures.length) { console.error(failures.join(\"\\n\")); process.exit(1); }\n\
+         console.log(\"ok\");\n",
+    );
+
+    if ProcessCommand::new("node")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_err()
+    {
+        eprintln!("node unavailable: the page's gain reduction check skipped");
+        return;
+    }
+    let directory = TestDirectory::new("fx-gain-reduction");
+    let path = directory.0.join("gain_reduction.js");
+    fs::write(&path, script).unwrap();
+    let output = ProcessCommand::new("node").arg(&path).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ok\n");
+}
+
 /// AU-005 Web chain editing end to end: the operator page's exact
 /// `audio_strip_dsp` records set a strip's and Master's chains within the
 /// session's role, a drag's sets share one gesture (one undo step), a set

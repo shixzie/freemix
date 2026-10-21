@@ -172,6 +172,14 @@
   .fx .band { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .6rem; padding-top: .35rem;
     border-top: 1px solid #ffffff10; }
   .fx .band .params { flex: 1 0 100%; }
+  /* A dynamics stage's gain reduction (Protocol 2.104): a bar growing from
+     the right, full at 24 dB, and the value; dimmed while meters are stale. */
+  .fx .gr { display: inline-flex; align-items: center; gap: .35rem; margin-left: auto; font-size: .8rem; }
+  .fx .gr small { color: var(--muted); font-weight: 700; letter-spacing: .04em; }
+  .fx .gr .bar { position: relative; width: 5rem; height: 8px; border-radius: 4px; background: #ffffff14; overflow: hidden; }
+  .fx .gr .fill { position: absolute; top: 0; right: 0; bottom: 0; width: 0; background: #ffb347; }
+  .fx .gr output { min-width: 4.4rem; text-align: right; font-variant-numeric: tabular-nums; }
+  .fx .gr[data-stale="1"] .fill, .fx .gr[data-stale="1"] output { opacity: .35; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   [hidden] { display: none !important; }
 </style>
@@ -302,7 +310,7 @@
   <section id="fx-panel" aria-labelledby="fx-heading">
     <h2 id="fx-heading" data-i18n="fxHeading">Strip FX</h2>
     <div id="fx-strips"></div>
-    <p id="fx-note" class="why" style="color:var(--muted)" data-i18n="fxNoGainReduction"></p>
+    <p id="fx-note" class="why" style="color:var(--muted)" data-i18n="fxGainReductionNote"></p>
     <p id="why-fx" class="why" aria-live="polite"></p>
   </section>
 
@@ -564,7 +572,7 @@
       notInShow: "No longer in the show",
       noAudioStrip: "Waiting for this input's audio state",
       fxHeading: "Strip FX",
-      fxNoGainReduction: "Gain reduction readouts are in FreeMix Studio's FX window: the Web status feed carries no dynamics meters.",
+      fxGainReductionNote: "Each running gate, expander, compressor, and limiter shows its gain reduction (GR); the bars dim when the daemon's meters stop arriving.",
       fxMasterName: "Master bus",
       fxSummary: "{strip} FX",
       fxSummaryHover: "Show or hide {strip}'s FX chain: delay, polarity, high-pass, EQ, gate, expander, compressor, and limiter, in that order",
@@ -637,6 +645,11 @@
       fxMakeupHover: "Gain added after compression to restore the level",
       fxCeilingHover: "The limiter keeps peaks below this level",
       fxControlLabel: "{strip}: {control}",
+      fxGrLegend: "GR",
+      fxGrNone: "—",
+      fxGrHover: "{stage} gain reduction on {strip}: {value} at the deepest point of the last meter interval (the bar is full at 24 dB)",
+      fxGrIdleHover: "No gain reduction reported for {stage} on {strip}: the Web page receives the Master bus's and the first 32 strips' while their chain runs",
+      fxGrStaleHover: "Stale: the daemon has not sent meters for over a second; the last {stage} gain reduction on {strip} was {value}",
       fxReleaseToSend: "{hover}. Changes are sent while you drag, at most ten times a second, and on release",
       commandFx: "FX on {strip}",
       noteFxChanged: "FX change not applied: {strip}'s chain changed first; check it and change it again",
@@ -901,7 +914,7 @@
       notInShow: "Ya no está en el show",
       noAudioStrip: "Esperando el estado de audio de esta entrada",
       fxHeading: "FX de canales",
-      fxNoGainReduction: "La reducción de ganancia se ve en la ventana FX de FreeMix Studio: el estado web no lleva medidores de dinámica.",
+      fxGainReductionNote: "Cada puerta, expansor, compresor y limitador en marcha muestra su reducción de ganancia (GR); las barras se atenúan cuando dejan de llegar los medidores del servidor.",
       fxMasterName: "Bus máster",
       fxSummary: "FX de {strip}",
       fxSummaryHover: "Muestra u oculta la cadena FX de {strip}: retardo, polaridad, paso alto, EQ, puerta, expansor, compresor y limitador, en ese orden",
@@ -974,6 +987,11 @@
       fxMakeupHover: "Ganancia añadida tras la compresión para recuperar el nivel",
       fxCeilingHover: "El limitador mantiene los picos por debajo de este nivel",
       fxControlLabel: "{strip}: {control}",
+      fxGrLegend: "GR",
+      fxGrNone: "—",
+      fxGrHover: "Reducción de ganancia de {stage} en {strip}: {value} en el punto más profundo del último intervalo de medición (la barra se llena a 24 dB)",
+      fxGrIdleHover: "No hay reducción de ganancia de {stage} en {strip}: la página web recibe la del bus máster y la de los primeros 32 canales mientras su cadena funciona",
+      fxGrStaleHover: "Desactualizado: el servidor no envía medidores desde hace más de un segundo; la última reducción de ganancia de {stage} en {strip} fue {value}",
       fxReleaseToSend: "{hover}. Los cambios se envían mientras arrastra, como mucho diez veces por segundo, y al soltar",
       commandFx: "FX de {strip}",
       noteFxChanged: "Cambio de FX no aplicado: la cadena de {strip} cambió antes; revísela y vuelva a cambiarla",
@@ -1185,6 +1203,9 @@
     // `audio_meters` `loudness` (Protocol 2.94 on the Web): target
     // ("master" or an input id) -> its readings.
     loudness: new Map(),
+    // `audio_meters` `dynamics` (Protocol 2.104 on the Web): target ->
+    // each running dynamics stage's gain reduction (FX_GR.parse).
+    dynamics: new Map(),
     // `source_sync_status` `sources` (Protocol 2.101 on the Web): one
     // sample per live source, in input order.
     sync: [], syncAt: 0, syncSequence: -1,
@@ -1714,6 +1735,7 @@
     telemetry.metersAt = 0;
     telemetry.meterSequence = -1;
     telemetry.loudness = new Map();
+    telemetry.dynamics = new Map();
     telemetry.sync = [];
     telemetry.syncAt = 0;
     telemetry.syncSequence = -1;
@@ -1887,6 +1909,7 @@
         if (sequence < 0) return LOSSY;
         telemetry.meters = parseMeterChannels(required(record, "master"));
         telemetry.loudness = parseLoudness(required(record, "loudness"));
+        telemetry.dynamics = FX_GR.parse(required(record, "dynamics"));
         telemetry.metersAt = Date.now();
         telemetry.meterSequence = sequence;
         paintMeters();
@@ -2674,6 +2697,7 @@
     ui.meters.dataset.stale = stale ? "1" : "0";
     ui.meterScale.hidden = channels.length === 0;
     paintLoudness();
+    paintFxDynamics();
     const noteText = !live ? "" : !telemetry.meters ? tr("meterWaiting") : stale ? tr("meterStale") : tr("meterLegend");
     if (ui.meterNote.textContent !== noteText) ui.meterNote.textContent = noteText;
     if (ui.meters.children.length !== channels.length) {
@@ -2937,6 +2961,44 @@
   // catches up, only while the server chain is still the one it was based
   // on; otherwise the page shows the server's chain and says why.
   const FX_SEND_INTERVAL_MS = 100;
+  // ---- Strip FX gain reduction (AU-005) begin ----
+  // `audio_meters` `dynamics` (Protocol 2.104 on the Web): comma-separated
+  // `<target>~<gate>~<expander>~<compressor>~<limiter>` entries for Master
+  // and at most 32 strips whose chain has a running dynamics stage, each a
+  // canonical reduction in millidecibels (at most 200 dB) or `-` for a
+  // stage that is off. `parse` maps target -> { gate, expander,
+  // compressor, limiter } in dB (null while off) and throws on a malformed
+  // entry; `view` is one stage's bar: the reduction (null for none), its
+  // fill fraction (full at FULL_DB), and whether it is dimmed as stale.
+  // This block uses nothing else on the page: the daemon's tests run it
+  // under Node.js against records the Rust codec renders.
+  const FX_GR = (() => {
+    const STAGES = ["gate", "expander", "compressor", "limiter"];
+    const FULL_DB = 24;
+    const MAX_MILLIDB = 200000;
+    function parse(value) {
+      const readings = new Map();
+      for (const item of value ? value.split(",") : []) {
+        const parts = item.split("~");
+        if (parts.length !== 5 || !parts[0]) throw new Error("malformed dynamics");
+        const reading = {};
+        STAGES.forEach((stage, index) => {
+          const part = parts[index + 1];
+          if (part === "-") { reading[stage] = null; return; }
+          if (!/^(0|[1-9][0-9]{0,5})$/.test(part) || Number(part) > MAX_MILLIDB) throw new Error("malformed dynamics");
+          reading[stage] = Number(part) / 1000;
+        });
+        readings.set(parts[0], reading);
+      }
+      return readings;
+    }
+    function view(reading, stage, stale) {
+      const db = reading && typeof reading[stage] === "number" ? reading[stage] : null;
+      return { db, fraction: db === null ? 0 : Math.min(1, db / FULL_DB), dim: Boolean(stale) };
+    }
+    return { STAGES, FULL_DB, parse, view };
+  })();
+  // ---- Strip FX gain reduction (AU-005) end ----
   const FX_RETRY_TIMEOUT_MS = 2000;
   const FX_DEFAULT_CODE = STRIP_DSP.encode(STRIP_DSP.defaults());
   ui.fxStrips = $("fx-strips");
@@ -3254,6 +3316,8 @@
     summary.append(title, badge);
     details.append(summary);
     const paints = [];
+    // The dynamics stages' gain reduction bars, painted per meter record.
+    const grs = [];
     const add = (parent, control, paint) => { parent.append(control.element); paints.push(paint); };
     const head = document.createElement("div");
     head.className = "head";
@@ -3292,6 +3356,16 @@
         toggle.update(chain, reason, strip);
         box.dataset.on = fxGet(chain, stage.toggle) ? "1" : "0";
       });
+      if (FX_GR.STAGES.includes(stage.key)) {
+        const element = document.createElement("span");
+        element.className = "gr";
+        element.setAttribute("role", "img");
+        element.innerHTML = "<small></small><span class=\"bar\" aria-hidden=\"true\"><span class=\"fill\"></span></span><output></output>";
+        stageHead.append(element);
+        grs.push({ key: stage.key, stage: stage.stage, toggle: stage.toggle, element,
+          legend: element.querySelector("small"), fill: element.querySelector(".fill"),
+          value: element.querySelector("output") });
+      }
       if (stage.params.length) {
         const params = document.createElement("div");
         params.className = "params";
@@ -3329,6 +3403,35 @@
       if (details.open) fx.open.add(target); else fx.open.delete(target);
       if (details.open) render();
     });
+    // Shows each switched-on dynamics stage's newest gain reduction, dimmed
+    // when meters are stale; a closed disclosure paints when it opens.
+    function paintGr() {
+      if (!details.open) return;
+      const live = link.phase === "live";
+      const stale = !live || !telemetry.metersAt || Date.now() - telemetry.metersAt > METER_STALE_MS;
+      const reading = live ? telemetry.dynamics.get(target) : undefined;
+      const chain = fxChain(target);
+      const strip = fxTargetName(target);
+      for (const gr of grs) {
+        gr.element.hidden = chain.bypass || !fxGet(chain, gr.toggle);
+        if (gr.element.hidden) continue;
+        const view = FX_GR.view(reading, gr.key, stale);
+        const value = view.db === null ? tr("fxGrNone")
+          : fxFormat("db", view.db === 0 ? 0 : -Math.round(view.db * 1000));
+        const values = { stage: tr(gr.stage), strip, value };
+        const hover = view.dim ? tr("fxGrStaleHover", values)
+          : tr(view.db === null ? "fxGrIdleHover" : "fxGrHover", values);
+        const width = (view.fraction * 100).toFixed(1) + "%";
+        if (gr.fill.style.width !== width) gr.fill.style.width = width;
+        if (gr.value.textContent !== value) gr.value.textContent = value;
+        gr.legend.textContent = tr("fxGrLegend");
+        gr.element.dataset.stale = view.dim ? "1" : "0";
+        if (gr.element.title !== hover) {
+          gr.element.title = hover;
+          gr.element.setAttribute("aria-label", hover);
+        }
+      }
+    }
     return { details, update() {
       const strip = fxTargetName(target);
       const chain = fxChain(target);
@@ -3346,8 +3449,10 @@
       if (!details.open) return;
       const reason = fxGate(target);
       for (const paint of paints) paint(chain, reason, strip);
-    } };
+      paintGr();
+    }, paintGr };
   }
+  function paintFxDynamics() { for (const panel of fxPanels.values()) panel.paintGr(); }
   const fxPanels = new Map();
   function renderFx(ids) {
     const live = link.phase === "live";

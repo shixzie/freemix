@@ -24,6 +24,11 @@
 //! replaces one that has not started. The session's title preview rate
 //! bounds them (a 320x180 preview is at most nine 32 KiB parts).
 //!
+//! Protocol 2.104 adds the gain reduction of Master and at most
+//! [`WEB_LOUDNESS_INPUTS`] strips to the meter record, only for chains
+//! with a running dynamics stage (gate, expander, compressor, or limiter),
+//! which the operator page's Strip FX section shows.
+//!
 //! Protocol 2.101 adds the live source drift telemetry
 //! (`source_sync_status`, AU-004), paced like a status; the daemon builds
 //! it at most once a second, so it rarely waits for its interval (at most
@@ -160,16 +165,37 @@ pub(crate) const WEB_LOUDNESS_INPUTS: usize = 32;
 /// and Master channels, without per-input or monitor meters, so the record
 /// stays small however many inputs the show has. Loudness (Protocol 2.94)
 /// is kept for Master and the first [`WEB_LOUDNESS_INPUTS`] metered strips,
-/// which the operator page shows with each bus's loudness reset.
+/// which the operator page shows with each bus's loudness reset; gain
+/// reduction (Protocol 2.104) likewise for Master and the first
+/// [`WEB_LOUDNESS_INPUTS`] strips whose chain has a running dynamics stage
+/// (a bypassed chain or one with every dynamics stage off has no entry).
 pub(crate) fn web_meters(meters: &AudioMetersMessage) -> AudioMetersMessage {
+    use fm_protocol::AudioDspTarget;
     let master = meters
         .loudness
         .iter()
-        .filter(|meter| meter.target == fm_protocol::AudioDspTarget::Master);
+        .filter(|meter| meter.target == AudioDspTarget::Master);
     let strips = meters
         .loudness
         .iter()
-        .filter(|meter| meter.target != fm_protocol::AudioDspTarget::Master)
+        .filter(|meter| meter.target != AudioDspTarget::Master)
+        .take(WEB_LOUDNESS_INPUTS);
+    let running = |meter: &&fm_protocol::AudioDynamicsMeter| {
+        meter.gate_millidb.is_some()
+            || meter.expander_millidb.is_some()
+            || meter.compressor_millidb.is_some()
+            || meter.limiter_millidb.is_some()
+    };
+    let master_dynamics = meters
+        .dynamics
+        .iter()
+        .filter(running)
+        .filter(|meter| meter.target == AudioDspTarget::Master);
+    let strip_dynamics = meters
+        .dynamics
+        .iter()
+        .filter(running)
+        .filter(|meter| meter.target != AudioDspTarget::Master)
         .take(WEB_LOUDNESS_INPUTS);
     AudioMetersMessage {
         server: meters.server.clone(),
@@ -180,7 +206,7 @@ pub(crate) fn web_meters(meters: &AudioMetersMessage) -> AudioMetersMessage {
         master: meters.master.clone(),
         inputs: Vec::new(),
         monitor: None,
-        dynamics: Vec::new(),
+        dynamics: master_dynamics.chain(strip_dynamics).copied().collect(),
         loudness: master.chain(strips).copied().collect(),
     }
 }
@@ -243,6 +269,85 @@ mod tests {
         assert_eq!(web.loudness, all[..=WEB_LOUDNESS_INPUTS]);
         // The record still encodes as a valid wire line.
         assert!(fm_protocol::encode_line(&fm_protocol::WireMessage::AudioMeters(web)).is_ok());
+    }
+
+    /// Gain reduction (Protocol 2.104) reaches a Web page only for chains
+    /// with a running dynamics stage: Master and at most
+    /// [`WEB_LOUDNESS_INPUTS`] strips, the lowest input ids first.
+    #[test]
+    fn web_meters_keep_running_dynamics_of_master_and_capped_strips() {
+        use fm_protocol::{AudioDspTarget, AudioDynamicsMeter, ServerIdentity, WireInputId};
+        let strip = |value: u128| {
+            AudioDspTarget::Input(WireInputId::new(
+                core::num::NonZeroU128::new(value).unwrap(),
+            ))
+        };
+        let meter = |target, compressor: Option<u32>| AudioDynamicsMeter {
+            target,
+            gate_millidb: None,
+            expander_millidb: None,
+            compressor_millidb: compressor,
+            limiter_millidb: None,
+        };
+        let record = |dynamics: Vec<AudioDynamicsMeter>| AudioMetersMessage {
+            server: ServerIdentity {
+                engine_id: "engine".to_owned(),
+                project_id: "project".to_owned(),
+                state_epoch: 1,
+                log_id: "log".to_owned(),
+            },
+            sequence: 1,
+            frame: 1,
+            start_sample: 0,
+            end_sample: 480,
+            master: vec![fm_protocol::AudioMeterChannel {
+                peak_millionths: 1,
+                rms_millionths: 1,
+            }],
+            inputs: Vec::new(),
+            monitor: None,
+            dynamics,
+            loudness: Vec::new(),
+        };
+        // Master with every stage running, then 50 strips of which every
+        // fifth has no running stage (as a bypassed chain would read).
+        let master = AudioDynamicsMeter {
+            target: AudioDspTarget::Master,
+            gate_millidb: Some(0),
+            expander_millidb: Some(1_500),
+            compressor_millidb: Some(4_250),
+            limiter_millidb: Some(200_000),
+        };
+        let mut all = vec![master];
+        all.extend((1..=50).map(|value| {
+            meter(
+                strip(value),
+                (value % 5 != 0).then_some(u32::try_from(value).unwrap() * 100),
+            )
+        }));
+        let web = web_meters(&record(all.clone()));
+        let running: Vec<_> = all
+            .iter()
+            .filter(|meter| {
+                meter.target == AudioDspTarget::Master || meter.compressor_millidb.is_some()
+            })
+            .copied()
+            .collect();
+        assert_eq!(web.dynamics.len(), 1 + WEB_LOUDNESS_INPUTS);
+        assert_eq!(web.dynamics, running[..=WEB_LOUDNESS_INPUTS]);
+        assert!(web.dynamics[1..].iter().all(|meter| {
+            meter.target != AudioDspTarget::Master && meter.compressor_millidb.is_some()
+        }));
+        assert!(fm_protocol::encode_line(&fm_protocol::WireMessage::AudioMeters(web)).is_ok());
+
+        // Without a running Master chain only strips are sent, and a show
+        // with no running dynamics sends none.
+        let web = web_meters(&record(vec![
+            meter(AudioDspTarget::Master, None),
+            meter(strip(3), Some(2_000)),
+        ]));
+        assert_eq!(web.dynamics, [meter(strip(3), Some(2_000))]);
+        assert_eq!(web_meters(&record(Vec::new())).dynamics, Vec::new());
     }
 
     #[test]
