@@ -16,9 +16,11 @@
 //! encoded and [`fm_titles::MAX_IMAGE_ASSET_BYTES`] decoded, decoded by
 //! `fm-codec-image` (PNG or JPEG), premultiplied, and kept in the template's
 //! catalog. At most [`fm_titles::MAX_IMAGE_ASSETS`] images are kept per
-//! template and at most [`MAX_TITLE_IMAGE_ATTEMPTS`] distinct URIs are ever
-//! tried; an image that does not resolve, read, or decode, or that misses
-//! those bounds, keeps the reference renderer's placeholder. Decoding needs
+//! template: a new image past that evicts the least recently drawn one a
+//! render does not need, so an operator may keep uploading new pictures.
+//! An image that does not resolve, read, or decode, or that misses those
+//! bounds, keeps the reference renderer's placeholder, and is not tried
+//! again while it is among the last [`MAX_TITLE_IMAGE_ATTEMPTS`] failures. Decoding needs
 //! the `images` feature (`freemixd` enables it with `native-media`,
 //! `freemix-cli` always): a build without it decodes nothing, and every image
 //! element draws the placeholder.
@@ -57,7 +59,7 @@
 //! render, the CLI takes an explicit instant), resolved through the clock's
 //! POSIX zone rules.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::File;
 use std::io::Read as _;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -77,8 +79,9 @@ use fm_video::ImageFrame;
 /// Largest encoded image file a title loads.
 pub const MAX_TITLE_IMAGE_ENCODED_BYTES: usize = 32 * 1024 * 1024;
 
-/// Most distinct image URIs one template ever tries to load, successful or
-/// not, so a stream of failing runtime URIs cannot keep reading the disk.
+/// Most failed image URIs one template remembers (least recently tried
+/// forgotten first) so it does not read them from disk again on every
+/// render.
 pub const MAX_TITLE_IMAGE_ATTEMPTS: usize = 4 * fm_titles::MAX_IMAGE_ASSETS;
 
 /// One loaded template and the assets it renders with.
@@ -103,10 +106,17 @@ pub struct LoadedTitleTemplate {
     scene_timed: bool,
 }
 
-/// A template's catalog and every image URI it already tried to decode.
+/// A template's catalog, when each of its images was last needed, and the
+/// image URIs that recently failed to decode.
 struct TitleImages {
     catalog: AssetCatalog,
-    attempted: BTreeSet<String>,
+    /// The render tick each catalog image was last needed at (a name never
+    /// needed yet counts as tick zero, so it goes first).
+    used: BTreeMap<String, u64>,
+    tick: u64,
+    /// Failed URIs, least recently tried first, at most
+    /// [`MAX_TITLE_IMAGE_ATTEMPTS`].
+    failed: VecDeque<String>,
 }
 
 impl LoadedTitleTemplate {
@@ -126,7 +136,9 @@ impl LoadedTitleTemplate {
             template: Mutex::new(Arc::new(template)),
             images: Mutex::new(TitleImages {
                 catalog,
-                attempted: BTreeSet::new(),
+                used: BTreeMap::new(),
+                tick: 0,
+                failed: VecDeque::new(),
             }),
             time_dependent,
             clocks: Vec::new(),
@@ -171,8 +183,14 @@ impl LoadedTitleTemplate {
                 TitleFieldValue::Image { asset_uri } => Some(asset_uri.as_str()),
                 _ => None,
             });
-            for uri in defaults.chain(values) {
-                images.load(store, uri);
+            let needed: BTreeSet<&str> = defaults.chain(values).collect();
+            images.tick += 1;
+            let tick = images.tick;
+            for uri in &needed {
+                images.used.insert((*uri).to_owned(), tick);
+            }
+            for uri in &needed {
+                images.load(store, uri, &needed);
             }
         }
         images.catalog.clone()
@@ -180,15 +198,33 @@ impl LoadedTitleTemplate {
 }
 
 impl TitleImages {
-    /// Decodes `uri` into the catalog once, within the image bounds.
-    fn load(&mut self, store: &ProjectStore, uri: &str) {
-        if self.attempted.contains(uri) || self.attempted.len() >= MAX_TITLE_IMAGE_ATTEMPTS {
+    /// Decodes `uri` into the catalog unless it is there or recently
+    /// failed, within the image bounds, evicting the least recently needed
+    /// image this render does not need (`needed`) when the catalog is full.
+    fn load(&mut self, store: &ProjectStore, uri: &str, needed: &BTreeSet<&str>) {
+        if self.catalog.image(uri).is_some() || self.failed.iter().any(|failed| failed == uri) {
             return;
         }
-        self.attempted.insert(uri.to_owned());
         let Some(frame) = decode_image_asset(store, uri) else {
+            if self.failed.len() >= MAX_TITLE_IMAGE_ATTEMPTS {
+                self.failed.pop_front();
+            }
+            self.failed.push_back(uri.to_owned());
             return;
         };
+        if !self.catalog.has_image(uri) && self.catalog.image_count() >= fm_titles::MAX_IMAGE_ASSETS
+        {
+            let evicted = self
+                .catalog
+                .image_names()
+                .filter(|name| !needed.contains(name))
+                .min_by_key(|name| self.used.get(*name).copied().unwrap_or(0))
+                .map(str::to_owned);
+            if let Some(evicted) = evicted {
+                self.catalog = std::mem::take(&mut self.catalog).without_image(&evicted);
+                self.used.remove(&evicted);
+            }
+        }
         // `with_decoded_image` consumes the catalog; a clone shares every
         // font and pixel buffer, so a refusal never loses loaded assets.
         if let Ok(catalog) = self.catalog.clone().with_decoded_image(uri, frame) {
@@ -995,7 +1031,55 @@ mod tests {
         let images = loaded.images.lock().unwrap();
         assert!(images.catalog.image("asset://images/runtime.png").is_some());
         assert!(images.catalog.image("asset://images/corrupt.png").is_none());
-        assert_eq!(images.attempted.len(), 4);
+        assert!(
+            images
+                .failed
+                .iter()
+                .any(|uri| uri == "asset://images/corrupt.png")
+        );
+        assert!(
+            !images
+                .failed
+                .iter()
+                .any(|uri| uri == "asset://images/runtime.png")
+        );
+    }
+
+    /// An operator may keep uploading pictures: past the catalog's
+    /// [`fm_titles::MAX_IMAGE_ASSETS`] images each new one evicts the least
+    /// recently drawn, so every picture draws (and an evicted one reloads).
+    #[test]
+    fn new_images_keep_drawing_past_the_catalog_bound() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(directory.path().join("show.freemix")).unwrap();
+        let images = store.assets_root().join("images");
+        std::fs::create_dir_all(&images).unwrap();
+        let count = u8::try_from(fm_titles::MAX_IMAGE_ASSETS + 6).unwrap();
+        for index in 0..count {
+            image::RgbaImage::from_pixel(4, 2, image::Rgba([index, 255 - index, 7, 255]))
+                .save(images.join(format!("picture-{index}.png")))
+                .unwrap();
+        }
+        let mut assets = TitleAssets::default().with_store(store);
+        assets.insert(
+            URI,
+            LoadedTitleTemplate::new(template(), AssetCatalog::new()),
+        );
+        let input = InputId::new(NonZeroU128::MIN);
+        let draw = |index: u8| {
+            let uri = format!("asset://images/picture-{index}.png");
+            let rendered =
+                render_title_at(&assets, input, &title(&uri), frame_zero(), 64, 36).unwrap();
+            pixel(&rendered, 8, 8)
+        };
+        for index in 0..count {
+            assert_eq!(draw(index), [index, 255 - index, 7, 255], "picture {index}");
+        }
+        // The first pictures were evicted; drawn again, they reload.
+        assert_eq!(draw(0), [0, 255, 7, 255]);
+        let loaded = assets.template(URI).unwrap();
+        let held = loaded.images.lock().unwrap().catalog.image_count();
+        assert!(held <= fm_titles::MAX_IMAGE_ASSETS, "{held}");
     }
 }
 

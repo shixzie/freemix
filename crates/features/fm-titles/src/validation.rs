@@ -160,6 +160,27 @@ impl AssetCatalog {
         Ok(self)
     }
 
+    /// The catalog without asset `asset` (its pixels and its name), so a
+    /// bounded cache may make room for another image.
+    #[must_use]
+    pub fn without_image(mut self, asset: &str) -> Self {
+        self.images.remove(asset);
+        self
+    }
+
+    /// Every registered image asset name, decoded or name-only, in name
+    /// order.
+    pub fn image_names(&self) -> impl Iterator<Item = &str> {
+        self.images.keys().map(String::as_str)
+    }
+
+    /// How many image assets are registered, decoded or name-only (at most
+    /// [`MAX_IMAGE_ASSETS`] through [`Self::with_decoded_image`]).
+    #[must_use]
+    pub fn image_count(&self) -> usize {
+        self.images.len()
+    }
+
     #[must_use]
     pub fn has_font(&self, family: &str) -> bool {
         self.fonts.contains_key(family)

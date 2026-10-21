@@ -4116,7 +4116,9 @@ so a client keeps its placeholder instead of seeing invented video:
   font does not load draws no text. Image assets load on demand when a render
   first needs them, including an image URI first set at runtime: at most
   32 MiB encoded and the `fm_titles` decoded-image bound, PNG or JPEG decoded
-  by `fm-codec-image`, at most 64 kept per template. Only `native-media`
+  by `fm-codec-image`, at most 64 kept per template (a new one past that
+  evicts the least recently drawn image the render does not need, which
+  reloads when drawn again). Only `native-media`
   builds link that decoder; any other build, and any image that does not
   resolve, read, or decode within those bounds, draws the renderer's image
   placeholder. Renders are cached per title input, template, field revision, and field
