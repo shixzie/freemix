@@ -20,7 +20,7 @@ const INVERT_CUBE: &str =
 
 /// A slide in from 400 px left with a crop that opens over 20 frames,
 /// measured against a 400x100 box.
-const SWOOSH: &str = r#"{"schema_version": 79, "kind": "animation_preset", "name": "Swoosh",
+const SWOOSH: &str = r#"{"schema_version": 80, "kind": "animation_preset", "name": "Swoosh",
  "phase": "in", "timebase": "30/1", "frames": 20, "width": 400, "height": 100,
  "tracks": [
   {"property": "position_x", "keys": [{"frame": 0, "value": -400, "easing": "cubic-out"},
@@ -226,12 +226,12 @@ fn animation_presets_travel_between_projects_and_apply_to_scene_layers() {
         ],
         "animation preset 9 does not exist",
     );
-    for (schema, expected) in [("47", "schema"), ("78", "schema"), ("80", "schema")] {
+    for (schema, expected) in [("47", "schema"), ("79", "schema"), ("81", "schema")] {
         let old = root.path(&format!("schema-{schema}.fmpreset"));
         fs::write(
             &old,
             SWOOSH.replacen(
-                "\"schema_version\": 79",
+                "\"schema_version\": 80",
                 &format!("\"schema_version\": {schema}"),
                 1,
             ),

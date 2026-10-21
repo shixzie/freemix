@@ -45,7 +45,7 @@ fn command(payload: CommandPayload) -> WireMessage {
     })
 }
 
-const PREFIX: &str = "command\tprotocol=2.98\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.99\tid=a\tidempotency_key=k";
 
 fn round_trip(message: &WireMessage) -> String {
     let line = encode_line(message).unwrap();
@@ -107,7 +107,7 @@ fn clip_bytes() -> Vec<u8> {
 
 #[test]
 fn protocol_is_2_39() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 98));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 99));
 }
 
 #[test]
@@ -537,7 +537,7 @@ fn scene_preview_requests_round_trip_and_are_bounded() {
     let line = round_trip(&preview_request(TitlePreviewSample::In { frame: 4 }, None));
     assert_eq!(
         line,
-        "scene_preview_request\tprotocol=2.98\trequest_id=anim-preview-3\tinput=12\tphase=in\t\
+        "scene_preview_request\tprotocol=2.99\trequest_id=anim-preview-3\tinput=12\tphase=in\t\
          frame=4\twidth=640\theight=360\n"
     );
     let with_clip = round_trip(&preview_request(TitlePreviewSample::Hold, Some(clip())));
@@ -557,7 +557,7 @@ fn scene_preview_requests_round_trip_and_are_bounded() {
         ("phase=in\tframe=0\twidth=641\theight=360", "width"),
         ("phase=in\tframe=0\twidth=64\theight=0", "height"),
     ] {
-        let line = format!("scene_preview_request\tprotocol=2.98\trequest_id=p\tinput=7\t{bad}\n");
+        let line = format!("scene_preview_request\tprotocol=2.99\trequest_id=p\tinput=7\t{bad}\n");
         match decode_line(&line) {
             Err(CodecError::InvalidField { field: actual, .. }) => {
                 assert_eq!(actual, field, "{bad}");
