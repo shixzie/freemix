@@ -747,10 +747,13 @@ impl TitlesPanel {
                     FieldType::Image => l.text(Msg::TitleImageHint),
                     FieldType::Text | FieldType::Number => "",
                 };
+                // As tall as the colour swatch and the console's keys, the
+                // text centred, so a colour row is one even height.
                 let mut edit = TextEdit::singleline(&mut input)
                     .id(id)
                     .hint_text(hint)
-                    .desired_width(ui.available_width());
+                    .desired_width(ui.available_width())
+                    .margin(egui::Margin::symmetric(4, 5));
                 if matches!(field.field_type, FieldType::Number | FieldType::Color) {
                     edit = edit.font(egui::TextStyle::Monospace);
                 }
