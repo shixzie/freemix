@@ -2820,7 +2820,9 @@ fn web_title_command(peer: &Peer, command: &fm_protocol::CommandMessage) -> bool
 /// whenever a Web peer is connected), and its `title_exposure_changed` event
 /// is followed by one `title_state` per title it names, as the Web session
 /// may now see it (`title_states`, Protocol 2.96), so a newly exposed
-/// field's name and value reach the page without a reconnect.
+/// field's name and value reach the page without a reconnect. A cue,
+/// script, or shortcut run that set title fields is followed the same way
+/// by each title it set, so the page's values and field revisions follow.
 fn drain_live(
     peers: &mut [Peer],
     close: &mut [bool],
@@ -2847,18 +2849,18 @@ fn drain_live(
                 {
                     Ok(LiveEvent::Durable(event)) => match hidden {
                         Some(hidden) if peer.transport.is_web() => {
-                            let message = crate::web_titles::web_live_message(
-                                WireMessage::Event(event),
-                                hidden,
-                            );
-                            if let Some(inputs) = crate::web_titles::exposure_inputs(&message) {
+                            let message = WireMessage::Event(event);
+                            // Named before filtering: a run that set only a
+                            // hidden field still moves the field revision.
+                            let inputs = crate::web_titles::resync_inputs(&message);
+                            if !inputs.is_empty() {
                                 peer.deferred_live.extend(
-                                    title_states(inputs)
+                                    title_states(&inputs)
                                         .into_iter()
                                         .map(WireMessage::TitleState),
                                 );
                             }
-                            message
+                            crate::web_titles::web_live_message(message, hidden)
                         }
                         _ => WireMessage::Event(event),
                     },

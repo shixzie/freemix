@@ -3090,3 +3090,99 @@ fn studio_and_browsers_edit_different_fields_of_a_title_without_clobbering() {
         "the note changed at revision 2: {refusal:?}"
     );
 }
+
+/// GX-006: a cue that sets a title's fields reaches a browser title editor
+/// as that title's new state. The page learns title values only from
+/// `title_changed` and `title_state`, so the run's `cue_run_changed` is
+/// followed by a `title_state` of each title it set, holding the new value
+/// and field revision (without the hidden field) the page needs to save on.
+#[test]
+fn a_cue_title_text_resynchronizes_the_web_title_editor() {
+    use fm_protocol::{CueListSpec, CueOperation, WireCue, WireCueAction, WireTitleFieldId};
+
+    let directory = TestDirectory::new("cue-title-resync");
+    let project = directory.0.join("show.freemix");
+    create_project_with(&project, true, false);
+    let daemon = Daemon::start(&project);
+    let field = |value: u128| WireTitleFieldId::new(NonZeroU128::new(value).unwrap());
+    let mut admin = RawOperator::connect_as(daemon.control, Role::Admin);
+    admin.send(&command(
+        "set-cues",
+        CommandPayload::SetCueList {
+            list: 7,
+            spec: Box::new(CueListSpec {
+                name: "Show".into(),
+                cues: vec![WireCue {
+                    id: 1,
+                    name: "Name".into(),
+                    auto_follow: false,
+                    actions: vec![
+                        WireCueAction::TitleText {
+                            input: fm_types::InputTarget::Fixed(input(4)),
+                            field: field(1),
+                            text: "Bea".into(),
+                        },
+                        WireCueAction::TitleText {
+                            input: fm_types::InputTarget::Fixed(input(4)),
+                            field: field(2),
+                            text: "cue-secret".into(),
+                        },
+                    ],
+                }],
+            }),
+            position: None,
+        },
+    ));
+    admin.accepted("set-cues");
+    let (mut page, _, _, _) = web_session(daemon.web, Role::Graphics);
+
+    admin.send(&command(
+        "go",
+        CommandPayload::CueControl {
+            list: 7,
+            operation: CueOperation::Go {
+                cue: Some(1),
+                targets: fm_protocol::WireTargetBindings::default(),
+            },
+        },
+    ));
+    admin.accepted("go");
+
+    let mut leaked = Vec::new();
+    let state = web_until(&mut page, |line, message| {
+        // The run's records (a cue list's own spec still names its text).
+        if line.contains("cue-secret")
+            && matches!(message, WireMessage::Event(_) | WireMessage::TitleState(_))
+        {
+            leaked.push(line.to_owned());
+        }
+        match message {
+            WireMessage::TitleState(state) if state.input == input(4) => Some(state),
+            _ => None,
+        }
+    });
+    assert_eq!(leaked, Vec::<String>::new());
+    assert!(state.field_revision > 0);
+    assert_eq!(state.fields.len(), 1, "only the exposed field: {state:?}");
+    assert_eq!(state.fields[0].field, field(1));
+    assert_eq!(
+        state.fields[0].value,
+        fm_protocol::TitleFieldValue::Text("Bea".into())
+    );
+    // Each cue action is its own update: the name changed before the note.
+    assert!(state.fields[0].revision > 0 && state.fields[0].revision < state.field_revision);
+
+    // The page saves on the revision it was sent.
+    page_command(
+        &mut page,
+        "page-name",
+        None,
+        &format!(
+            "payload=title_fields\tinput={}\tbase_revision={}\trequire=off_air\t\
+             fields=1%3At%3A3%3ACyd",
+            input(4),
+            state.field_revision
+        ),
+    )
+    .unwrap();
+}

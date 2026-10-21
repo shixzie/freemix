@@ -111,12 +111,12 @@ pub(crate) fn web_title_state(mut state: TitleStateMessage) -> TitleStateMessage
     state
 }
 
-/// The `title_state` records that resynchronize a Web session after a
-/// `title_exposure_changed` event naming `inputs` (Protocol 2.96): each
-/// named title still in `states`, as the session may now see it, in input
-/// order. They are taken when the event is queued, so they hold every value
-/// up to then; a `title_changed` already queued behind them names an older
-/// field revision, which a client skips.
+/// The `title_state` records that resynchronize a Web session after an
+/// event naming `inputs` (see [`resync_inputs`]): each named title still in
+/// `states`, as the session may now see it, in input order. They are taken
+/// when the event is queued, so they hold every value up to then; a
+/// `title_changed` already queued behind them names an older field
+/// revision, which a client skips.
 pub(crate) fn web_title_states(
     states: Vec<TitleStateMessage>,
     inputs: &[WireInputId],
@@ -128,16 +128,30 @@ pub(crate) fn web_title_states(
         .collect()
 }
 
-/// The titles a Web session's `title_exposure_changed` event names, or
-/// `None` for any other record.
-pub(crate) fn exposure_inputs(message: &WireMessage) -> Option<&[WireInputId]> {
-    match message {
-        WireMessage::Event(event) => match &event.payload {
-            EventPayload::TitleExposureChanged { inputs, .. } => Some(inputs),
-            _ => None,
-        },
-        _ => None,
+/// The titles a Web session resynchronizes after `message`, in first-named
+/// order: those a `title_exposure_changed` event names (Protocol 2.96), so
+/// a newly exposed field's name and value reach the page, and those whose
+/// fields a `cue_run_changed`, `script_ran`, or `shortcut_fired` event set,
+/// since a page learns title values and field revisions only from
+/// `title_changed` and `title_state`. Empty for any other record.
+pub(crate) fn resync_inputs(message: &WireMessage) -> Vec<WireInputId> {
+    let WireMessage::Event(event) = message else {
+        return Vec::new();
+    };
+    let texts = match &event.payload {
+        EventPayload::TitleExposureChanged { inputs, .. } => return inputs.clone(),
+        EventPayload::CueRunChanged(change) => &change.titles,
+        EventPayload::ScriptRan(change) => &change.titles,
+        EventPayload::ShortcutFired(change) => &change.titles,
+        _ => return Vec::new(),
+    };
+    let mut inputs = Vec::new();
+    for text in texts {
+        if !inputs.contains(&text.input) {
+            inputs.push(text.input);
+        }
     }
+    inputs
 }
 
 /// A live record as a Web session sees it: title values (of title changes
@@ -481,11 +495,11 @@ mod tests {
             inputs: vec![input(3), input(4)],
             fields: Vec::new(),
         });
-        let inputs = exposure_inputs(&exposure).unwrap();
+        let inputs = resync_inputs(&exposure);
         assert_eq!(inputs, [input(3), input(4)]);
         let resynced = web_title_states(
             vec![state(3, true), state(4, false), state(5, true)],
-            inputs,
+            &inputs,
         );
         // Each named title, as the session may see it; others not at all.
         assert_eq!(
@@ -500,7 +514,7 @@ mod tests {
             fields: Vec::new(),
             overlays: Vec::new(),
         });
-        assert!(exposure_inputs(&changed).is_none());
+        assert_eq!(resync_inputs(&changed), []);
     }
 
     fn phases(phase: TitlePhase, phase_frame: u64) -> TitlePhasesMessage {

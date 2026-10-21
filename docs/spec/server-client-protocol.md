@@ -3757,8 +3757,11 @@ title editors in step with exposure changes (GX-006, schema 78).
   web-filtered as above and carrying the title's current values and
   revisions (`revision` is the current project revision), so newly
   exposed fields appear and hidden ones disappear without a reconnect.
-  This is the one `title_state` a Web session receives outside a
-  snapshot; a page ignores `title_changed` events older than the title
+  Likewise a `cue_run_changed`, `script_ran`, or `shortcut_fired` whose
+  `titles` set any field (hidden ones included) is followed by one
+  `title_state` per title it set, in first-set order, so a page learns
+  the new values and field revisions. These are the only `title_state`
+  records a Web session receives outside a snapshot; a page ignores `title_changed` events older than the title
   state it holds. Raw sessions see every field and receive no such
   record.
 - Image uploads (`POST /v1/assets/images`) are refused `422` unless the
