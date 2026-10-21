@@ -641,10 +641,26 @@ fn write_layer_key(output: &mut String, key: Option<fm_model::LayerKey>) {
     }
     write!(
         output,
-        ", \"light_wrap\": {}, \"light_wrap_width\": {}}}}}",
+        ", \"light_wrap\": {}, \"light_wrap_width\": {}, \"garbage_matte\": ",
         refinement.light_wrap, refinement.light_wrap_width
     )
     .expect("writing to a string cannot fail");
+    match refinement.garbage_matte {
+        None => output.push_str("null"),
+        Some(matte) => {
+            write!(output, "{{\"invert\": {}, \"points\": [", matte.invert())
+                .expect("writing to a string cannot fail");
+            for (index, point) in matte.points().iter().enumerate() {
+                if index > 0 {
+                    output.push_str(", ");
+                }
+                write!(output, "[{}, {}]", point.x, point.y)
+                    .expect("writing to a string cannot fail");
+            }
+            output.push_str("]}");
+        }
+    }
+    output.push_str("}}");
 }
 
 fn write_scenes(output: &mut String, project: &fm_model::Project) {

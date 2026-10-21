@@ -4810,8 +4810,9 @@ fn parse_scene_layer_effect_clear(
 /// (IN-020), or `fill <key-input> luma|alpha <low> <high> <softness>
 /// <invert:on|off>` (SW-008), then any of the refinement options
 /// `--clip <black> <white>`, `--choke <-8..=8>`, `--edge-softness <0..=8>`,
-/// `--despill green|blue <strength>`, and `--light-wrap <amount> <1..=8>`
-/// (`0 0` off). Returns the key and the arguments
+/// `--despill green|blue <strength>`, `--light-wrap <amount> <1..=8>`
+/// (`0 0` off), and `--matte inside|outside <x:y,...>` (a polygon garbage
+/// matte normalized to `0..=1000`). Returns the key and the arguments
 /// after it. The model checks the band and refinement bounds.
 fn layer_key_spec(
     arguments: &mut impl Iterator<Item = String>,
@@ -4895,10 +4896,33 @@ fn read_byte(
     number(&required(arguments, field)?, field)
 }
 
+/// A polygon garbage matte's `x:y,x:y,...` points (each `0..=1000`, three
+/// to eight of them).
+fn garbage_matte(value: &str, invert: bool) -> Result<fm_types::GarbageMatte, ArgsError> {
+    let mut points = Vec::new();
+    for pair in value.split(',') {
+        let (x, y) = pair
+            .split_once(':')
+            .ok_or_else(|| ArgsError::InvalidChoice {
+                field: "matte point",
+                value: pair.to_owned(),
+            })?;
+        points.push(fm_types::MattePoint::new(
+            number(x, "matte x")?,
+            number(y, "matte y")?,
+        ));
+    }
+    fm_types::GarbageMatte::new(&points, invert).map_err(|_| ArgsError::InvalidChoice {
+        field: "matte points",
+        value: value.to_owned(),
+    })
+}
+
 /// A key's refinement options (SW-008): `--clip <black> <white>`,
 /// `--choke <n>`, `--edge-softness <n>`, `--despill green|blue
-/// <strength>`, and `--light-wrap <amount> <width>`; every other argument
-/// is returned in order.
+/// <strength>`, `--light-wrap <amount> <width>`, and `--matte
+/// inside|outside <x:y,x:y,...>`; every other argument is returned in
+/// order.
 fn key_refinement_options(
     arguments: &mut impl Iterator<Item = String>,
 ) -> Result<(fm_model::KeyRefinement, Vec<String>), ArgsError> {
@@ -4919,6 +4943,21 @@ fn key_refinement_options(
             "--light-wrap" => {
                 refinement.light_wrap = read_byte(arguments, "light wrap")?;
                 refinement.light_wrap_width = read_byte(arguments, "light wrap width")?;
+            }
+            "--matte" => {
+                let side = required(arguments, "matte side")?;
+                let invert = match side.as_str() {
+                    "inside" => false,
+                    "outside" => true,
+                    _ => {
+                        return Err(ArgsError::InvalidChoice {
+                            field: "matte side",
+                            value: side,
+                        });
+                    }
+                };
+                let points = required(arguments, "matte points")?;
+                refinement.garbage_matte = Some(garbage_matte(&points, invert)?);
             }
             "--despill" => {
                 let backing = required(arguments, "despill backing")?;

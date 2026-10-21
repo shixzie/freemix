@@ -13,7 +13,10 @@
 //! fields, then (since 2.70) the refinement's `clip_black`, `clip_white`,
 //! `choke` (signed), `edge_softness`, `despill` (`off`, `green`, or `blue`),
 //! and `despill_strength` (`0` when `despill` is `off`), then (since 2.98)
-//! `light_wrap` and `light_wrap_width` (`0` exactly when `light_wrap` is).
+//! `light_wrap` and `light_wrap_width` (`0` exactly when `light_wrap` is),
+//! and `matte` (`off`, `inside`, or `outside`) with, unless `off`,
+//! `matte_points`: three to eight canonical `x:y` points (each
+//! `0..=1000`) joined by commas.
 
 use core::num::NonZeroU32;
 
@@ -212,7 +215,41 @@ fn push_refinement(push: &mut Push<'_>, refinement: WireKeyRefinement) -> Result
     push("despill", despill.to_owned())?;
     push("despill_strength", strength.to_string())?;
     push("light_wrap", refinement.light_wrap.to_string())?;
-    push("light_wrap_width", refinement.light_wrap_width.to_string())
+    push("light_wrap_width", refinement.light_wrap_width.to_string())?;
+    match refinement.garbage_matte {
+        None => push("matte", "off".to_owned()),
+        Some(matte) => {
+            push(
+                "matte",
+                if matte.invert() { "outside" } else { "inside" }.to_owned(),
+            )?;
+            let points = matte
+                .points()
+                .iter()
+                .map(|point| format!("{}:{}", point.x, point.y))
+                .collect::<Vec<_>>()
+                .join(",");
+            push("matte_points", points)
+        }
+    }
+}
+
+/// A `matte_points` value: canonical `x:y` pairs joined by commas.
+fn matte_points(value: &str, invert: bool) -> Result<fm_types::GarbageMatte, CodecError> {
+    let bad = || invalid("matte_points", value);
+    let mut points = Vec::new();
+    for pair in value.split(',') {
+        let (x, y) = pair.split_once(':').ok_or_else(bad)?;
+        let coordinate = |text: &str| {
+            let parsed = text.parse::<u16>().map_err(|_| bad())?;
+            if parsed.to_string() != text {
+                return Err(bad());
+            }
+            Ok(parsed)
+        };
+        points.push(fm_types::MattePoint::new(coordinate(x)?, coordinate(y)?));
+    }
+    fm_types::GarbageMatte::new(&points, invert).map_err(|_| bad())
 }
 
 /// A key refinement's fields (Protocol 2.70).
@@ -238,6 +275,15 @@ fn refinement_fields(fields: &mut dyn FieldSource) -> Result<WireKeyRefinement, 
     {
         return Err(invalid("light_wrap_width", light_wrap_width.to_string()));
     }
+    let matte = fields.required("matte")?;
+    let garbage_matte = match matte.as_str() {
+        "off" => None,
+        "inside" | "outside" => Some(matte_points(
+            &fields.required("matte_points")?,
+            matte == "outside",
+        )?),
+        _ => return Err(invalid("matte", matte)),
+    };
     Ok(WireKeyRefinement {
         clip_black,
         clip_white,
@@ -246,6 +292,7 @@ fn refinement_fields(fields: &mut dyn FieldSource) -> Result<WireKeyRefinement, 
         despill,
         light_wrap,
         light_wrap_width,
+        garbage_matte,
     })
 }
 

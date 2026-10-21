@@ -315,6 +315,9 @@ fn with_native_layer_key(
             refinement.light_wrap_width,
         ));
     }
+    if let Some(matte) = refinement.garbage_matte {
+        compositor = compositor.with_garbage_matte(matte);
+    }
     match refinement.despill {
         fm_model::KeyDespill::Off => {}
         fm_model::KeyDespill::Green { strength } => {
@@ -10688,6 +10691,7 @@ mod tests {
             despill: fm_model::KeyDespill::Green { strength: 200 },
             light_wrap: 180,
             light_wrap_width: 5,
+            garbage_matte: Some(fm_types::GarbageMatte::inset(100)),
         };
         let keyed = |id: u32, key_input: InputId| Layer {
             key: Some(fm_model::LayerKey::Fill(fm_model::FillLayerKey {
@@ -10738,6 +10742,7 @@ mod tests {
                         200
                     ))
                     .with_light_wrap(fm_compositor::LightWrap::new(180, 5))
+                    .with_garbage_matte(fm_types::GarbageMatte::inset(100))
             )
         );
         // The layer keyed by a Scene input is compiled undrawn.

@@ -29,7 +29,7 @@
 
 use core::fmt;
 
-use fm_types::InputId;
+use fm_types::{GarbageMatte, InputId};
 
 /// Largest choke or spread radius, in pixels.
 pub const MAX_KEY_CHOKE: u8 = 8;
@@ -69,6 +69,11 @@ pub enum KeyDespill {
 /// the background averaged over `light_wrap_width` pixels around it, by up
 /// to `light_wrap / 255` (the compositor's `LightWrap` has the exact
 /// formula).
+///
+/// A polygon [`GarbageMatte`] (normalized to the cropped layer; see
+/// [`fm_types::garbage_matte`]) removes the pixels outside it (or inside
+/// when inverted), multiplied with the matte together with the layer's
+/// rectangular mask.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KeyRefinement {
     pub clip_black: u8,
@@ -84,6 +89,8 @@ pub struct KeyRefinement {
     /// Light wrap reach in pixels: `0` exactly when `light_wrap` is `0`,
     /// otherwise `1..=MAX_KEY_LIGHT_WRAP_WIDTH`.
     pub light_wrap_width: u8,
+    /// The polygon garbage matte, if any.
+    pub garbage_matte: Option<GarbageMatte>,
 }
 
 impl Default for KeyRefinement {
@@ -102,6 +109,7 @@ impl KeyRefinement {
         despill: KeyDespill::Off,
         light_wrap: 0,
         light_wrap_width: 0,
+        garbage_matte: None,
     };
 
     /// The light wrap width a newly enabled light wrap starts with.

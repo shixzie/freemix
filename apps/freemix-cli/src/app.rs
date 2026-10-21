@@ -5813,8 +5813,18 @@ fn format_layer_key(key: Option<fm_model::LayerKey>) -> String {
             refinement.light_wrap, refinement.light_wrap_width
         )
     };
+    let matte = refinement.garbage_matte.map_or_else(String::new, |matte| {
+        let points = matte
+            .points()
+            .iter()
+            .map(|point| format!("{}:{}", point.x, point.y))
+            .collect::<Vec<_>>()
+            .join(",");
+        let side = if matte.invert() { "outside" } else { "inside" };
+        format!(" matte={side}:{points}")
+    });
     format!(
-        "{kind}+refine(clip={},{} choke={} edge_softness={} despill={despill}{light_wrap})",
+        "{kind}+refine(clip={},{} choke={} edge_softness={} despill={despill}{light_wrap}{matte})",
         refinement.clip_black, refinement.clip_white, refinement.choke, refinement.edge_softness
     )
 }
@@ -6218,7 +6228,7 @@ Usage:
   freemix-cli scene-layer-effect-set <show.freemix> <scene-id> <zero-based-layer-index> <zero-based-effect-index> <name> [<i32-parameter>...]
   freemix-cli scene-layer-effect-remove <show.freemix> <scene-id> <zero-based-layer-index> <zero-based-effect-index>
   freemix-cli scene-layer-effect-clear <show.freemix> <scene-id> <zero-based-layer-index>
-  freemix-cli scene-layer-key <show.freemix> <scene-id> <zero-based-layer-index> none|chroma <red> <green> <blue> <similarity> <smoothness> <spill>|luma <low> <high> <softness> <invert:on|off>|fill <key-input-id> luma|alpha <low> <high> <softness> <invert:on|off> [--clip <black> <white>] [--choke <-8..8>] [--edge-softness <0..8>] [--despill green|blue <strength>] [--light-wrap <amount> <1..8>]
+  freemix-cli scene-layer-key <show.freemix> <scene-id> <zero-based-layer-index> none|chroma <red> <green> <blue> <similarity> <smoothness> <spill>|luma <low> <high> <softness> <invert:on|off>|fill <key-input-id> luma|alpha <low> <high> <softness> <invert:on|off> [--clip <black> <white>] [--choke <-8..8>] [--edge-softness <0..8>] [--despill green|blue <strength>] [--light-wrap <amount> <1..8>] [--matte inside|outside <x:y,...>]
   freemix-cli remote-scene-layer-key <127.0.0.1:port> <scene-id> <layer-id> <key spec as above> [--key <key>] [--expect <revision>]
   freemix-cli scene-layer-auto-key <show.freemix> <scene-id> <zero-based-layer-index> [--picture <file.ppm>] [--point <x> <y>]
   freemix-cli remote-scene-layer-auto-key <127.0.0.1:port> <scene-id> <layer-id> --picture <file.ppm> [--point <x> <y>] [--clip <black> <white>] [--choke <-8..8>] [--edge-softness <0..8>] [--light-wrap <amount> <1..8>] [--key <key>] [--expect <revision>]

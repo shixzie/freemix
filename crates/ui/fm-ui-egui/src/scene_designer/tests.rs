@@ -814,3 +814,36 @@ fn write_scene_designer_screenshot() {
     std::fs::write(&path, png).unwrap();
     println!("wrote {} ({width}x{height})", path.display());
 }
+
+#[test]
+fn dragging_a_garbage_matte_point_moves_only_that_point_as_one_step() {
+    use fm_ui_model::scene_designer::Field;
+    let (mut driver, mut shell, state, scene) = opened(true, false);
+    let document = shell.scene_layout_draft_mut(scene).unwrap();
+    document.select(layer(1), false);
+    let _ = document.set_key_kind(Some(true));
+    assert!(document.set_field(Field::Matte, 1.0));
+    driver.frame(&mut shell, &state, Vec::new());
+    driver.frame(&mut shell, &state, Vec::new());
+    let before = placement(&shell, 1);
+    // Host fills (0, 270)-(960, 810); the default matte's first point sits
+    // a tenth in from its top-left corner. Drag it to the layer's centre.
+    let from = on_canvas(&shell, 96.0, 324.0);
+    let to = on_canvas(&shell, 480.0, 540.0);
+    driver.drag(&mut shell, &state, from, to, Modifiers::NONE);
+    let document = shell.designer.document().unwrap();
+    let matte = document
+        .layer(layer(1))
+        .and_then(|layer| layer.key)
+        .and_then(|key| key.refinement().garbage_matte)
+        .expect("the matte stays on");
+    let moved = matte.points()[0];
+    assert!(moved.x.abs_diff(500) <= 3, "{moved:?}");
+    assert!(moved.y.abs_diff(500) <= 3, "{moved:?}");
+    assert_eq!(matte.points()[1], fm_types::MattePoint::new(900, 100));
+    assert_eq!(placement(&shell, 1), before);
+    assert_eq!(
+        document.undo_label(),
+        Some(EditLabel::Field(Field::MattePointX { point: 0 }))
+    );
+}

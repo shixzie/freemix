@@ -785,8 +785,8 @@ fn a_garbage_matte_removes_pixels_outside_its_polygon() {
     let triangle = GarbageMatte::new(
         &[
             MattePoint::new(0, 0),
-            MattePoint::new(10_000, 0),
-            MattePoint::new(0, 10_000),
+            MattePoint::new(1_000, 0),
+            MattePoint::new(0, 1_000),
         ],
         false,
     )

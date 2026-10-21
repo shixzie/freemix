@@ -231,7 +231,7 @@ pub(crate) fn render_scene_at_project_size(
         .scenes()
         .iter()
         .find(|candidate| candidate.id == scene)?;
-    let place = |layer: &fm_model::Layer| Some(Placement::Draw(layer.clone()));
+    let place = |layer: &fm_model::Layer| Some(Placement::Draw(Box::new(layer.clone())));
     let composed = Composer::new(
         project,
         project_pipeline,
@@ -277,7 +277,7 @@ pub(crate) fn simulated_pipeline(
 
 /// Where one project-pixel layer lands on the composition grid.
 enum Placement {
-    Draw(fm_model::Layer),
+    Draw(Box<fm_model::Layer>),
     /// The layer covers no output pixel.
     Skip,
 }
@@ -536,7 +536,7 @@ impl MonitorGrid {
         let geometry = layer.geometry;
         if geometry.width == 0 || geometry.height == 0 {
             // Unmapped, so the compositor refuses it exactly as before.
-            return Some(Placement::Draw(layer.clone()));
+            return Some(Placement::Draw(Box::new(layer.clone())));
         }
         // The transform's footprint on the output: a quarter turn swaps it.
         let quarter_turn = matches!(
@@ -612,7 +612,7 @@ impl MonitorGrid {
                 ..mask
             });
         }
-        Some(Placement::Draw(placed))
+        Some(Placement::Draw(Box::new(placed)))
     }
 
     /// Maps the in-bounds project column span `start..start + length` onto
@@ -785,6 +785,9 @@ fn with_layer_key(
             refinement.light_wrap,
             refinement.light_wrap_width,
         ));
+    }
+    if let Some(matte) = refinement.garbage_matte {
+        compositor = compositor.with_garbage_matte(matte);
     }
     match refinement.despill {
         fm_model::KeyDespill::Off => {}

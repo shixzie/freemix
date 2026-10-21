@@ -163,6 +163,19 @@ fn key_arguments(index: usize, key: Option<WireLayerKey>) -> Vec<String> {
                 refinement.light_wrap_width.to_string(),
             ]);
         }
+        if let Some(matte) = refinement.garbage_matte {
+            let points = matte
+                .points()
+                .iter()
+                .map(|point| format!("{}:{}", point.x, point.y))
+                .collect::<Vec<_>>()
+                .join(",");
+            arguments.extend([
+                "--matte".to_owned(),
+                if matte.invert() { "outside" } else { "inside" }.to_owned(),
+                points,
+            ]);
+        }
     }
     arguments
 }

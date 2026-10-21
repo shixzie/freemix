@@ -2356,6 +2356,7 @@ fn key_fill_keys_and_refinements_are_validated_and_hold_their_key_input() {
             despill: fm_model::KeyDespill::Blue { strength: 200 },
             light_wrap: 255,
             light_wrap_width: fm_model::MAX_KEY_LIGHT_WRAP_WIDTH,
+            garbage_matte: Some(fm_types::GarbageMatte::inset(100).with_invert(true)),
         },
         ..fm_model::FillLayerKey::linear(input_id(96))
     };

@@ -91,6 +91,8 @@ const GUIDE: Color32 = Color32::from_rgb(236, 72, 200);
 const LABEL_BACKING: Color32 = Color32::from_rgba_premultiplied(0, 0, 0, 190);
 /// Mask outline colour.
 const MASK: Color32 = Color32::from_rgb(90, 210, 230);
+/// Garbage matte outline and point colour.
+const MATTE: Color32 = Color32::from_rgb(130, 230, 120);
 /// Anchor mark colour.
 const ANCHOR: Color32 = Color32::from_rgb(255, 196, 64);
 /// Live edits of a running drag or scrub are sent at most this often.
@@ -139,6 +141,8 @@ pub(crate) struct DesignerWindow {
     /// Where the Auto key button and the input picture were laid out last
     /// frame.
     pub(crate) auto_key_rects: (Option<Rect>, Option<Rect>),
+    /// The garbage matte point being dragged on the canvas (SW-008).
+    matte_drag: Option<u8>,
 }
 
 /// Clones what the console compares and the drafts; the picture and the
@@ -1227,8 +1231,19 @@ fn draw_canvas(
                 .input(|input| input.pointer.press_origin())
                 .or(at_pointer)
                 .unwrap_or(rect.center());
-            document.press(map.canvas(origin), held, metrics, window.snapping);
+            window.matte_drag = matte_point_at(document, map.canvas(origin), metrics.tolerance);
+            if let Some(point) = window.matte_drag {
+                document.begin(EditLabel::Field(Field::MattePointX { point }));
+            } else {
+                document.press(map.canvas(origin), held, metrics, window.snapping);
+            }
             response.request_focus();
+        }
+        if response.dragged()
+            && let Some(point) = window.matte_drag
+            && let Some(at) = at_pointer
+        {
+            drag_matte_point(document, point, map.canvas(at));
         }
         if response.dragged()
             && document.gesture_kind().is_some()
@@ -1237,7 +1252,11 @@ fn draw_canvas(
             window.feedback = document.drag(map.canvas(at), held);
         }
         if response.drag_stopped() {
-            document.release();
+            if window.matte_drag.take().is_some() {
+                document.commit();
+            } else {
+                document.release();
+            }
             window.feedback = GestureFeedback::default();
         }
         if response.clicked()
@@ -1249,9 +1268,14 @@ fn draw_canvas(
         }
         if let Some(at) = response.hover_pos()
             && document.gesture_kind().is_none()
-            && let Some(target) = document.hit(map.canvas(at), metrics)
         {
-            ui.ctx().set_cursor_icon(cursor_for(target, held.alt));
+            if window.matte_drag.is_some()
+                || matte_point_at(document, map.canvas(at), metrics.tolerance).is_some()
+            {
+                ui.ctx().set_cursor_icon(CursorIcon::Grab);
+            } else if let Some(target) = document.hit(map.canvas(at), metrics) {
+                ui.ctx().set_cursor_icon(cursor_for(target, held.alt));
+            }
         }
     } else if response.clicked()
         && let Some(at) = at_pointer
@@ -1365,6 +1389,7 @@ fn draw_canvas(
         && let Some(layer) = document.layer(id)
     {
         paint_handles(&painter, map, layer, look.lock.is_none());
+        paint_garbage_matte(&painter, map, layer, look.lock.is_none());
     } else if document.selection().len() > 1 {
         let mut group: Option<fm_ui_model::scene_designer::geometry::Bounds> = None;
         for id in document.selection() {
@@ -1590,6 +1615,99 @@ fn paint_layer(
         LABEL_BACKING,
     );
     painter.galley(origin, galley, color);
+}
+
+/// The garbage matte of `layer`'s key, if any (SW-008).
+fn garbage_matte(layer: &DesignLayer) -> Option<fm_types::GarbageMatte> {
+    layer.key.and_then(|key| key.refinement().garbage_matte)
+}
+
+/// Garbage matte point `point` of `layer` on the canvas: its normalized
+/// position over the layer's (cropped) box.
+fn matte_point_world(layer: &DesignLayer, point: fm_types::MattePoint) -> Point {
+    let frame = layer.placement.frame();
+    let unit = f64::from(fm_types::GARBAGE_MATTE_UNIT);
+    frame.to_world(Point::new(
+        (f64::from(point.x) / unit).mul_add(2.0 * frame.half_width, -frame.half_width),
+        (f64::from(point.y) / unit).mul_add(2.0 * frame.half_height, -frame.half_height),
+    ))
+}
+
+/// The garbage matte point of the single selected layer within
+/// `tolerance` canvas pixels of `at`, if any.
+fn matte_point_at(document: &SceneLayoutDocument, at: Point, tolerance: f64) -> Option<u8> {
+    let layer = document.single_selection()?;
+    let matte = garbage_matte(layer)?;
+    matte
+        .points()
+        .iter()
+        .enumerate()
+        .map(|(index, point)| (index, matte_point_world(layer, *point).distance(at)))
+        .filter(|(_, distance)| *distance <= tolerance)
+        .min_by(|left, right| left.1.total_cmp(&right.1))
+        .and_then(|(index, _)| u8::try_from(index).ok())
+}
+
+/// Moves garbage matte point `point` of the single selected layer under
+/// `at` (clamped to the layer's box), within the open step.
+fn drag_matte_point(document: &mut SceneLayoutDocument, point: u8, at: Point) {
+    let Some(layer) = document.single_selection() else {
+        return;
+    };
+    let frame = layer.placement.frame();
+    let local = frame.to_local(at);
+    let unit = f64::from(fm_types::GARBAGE_MATTE_UNIT);
+    let along = |offset: f64, half: f64| {
+        if half > 0.0 {
+            ((offset + half) / (2.0 * half) * unit).round()
+        } else {
+            0.0
+        }
+    };
+    let x = along(local.x, frame.half_width);
+    let y = along(local.y, frame.half_height);
+    document.set_field(Field::MattePointX { point }, x);
+    document.set_field(Field::MattePointY { point }, y);
+}
+
+/// The selected layer's garbage matte: its outline and numbered points.
+fn paint_garbage_matte(
+    painter: &egui::Painter,
+    map: CanvasMap,
+    layer: &DesignLayer,
+    editable: bool,
+) {
+    let Some(matte) = garbage_matte(layer) else {
+        return;
+    };
+    let mut outline: Vec<Pos2> = matte
+        .points()
+        .iter()
+        .map(|point| map.screen(matte_point_world(layer, *point)))
+        .collect();
+    let first = outline[0];
+    outline.push(first);
+    painter.extend(Shape::dashed_line(
+        &outline,
+        Stroke::new(1.5, MATTE),
+        5.0,
+        3.0,
+    ));
+    let fill = if editable {
+        MATTE
+    } else {
+        Color32::from_gray(120)
+    };
+    for (index, at) in outline.iter().take(matte.points().len()).enumerate() {
+        painter.circle(*at, HANDLE_SIZE, fill, Stroke::new(1.0, Color32::BLACK));
+        painter.text(
+            *at + vec2(HANDLE_SIZE + 2.0, -HANDLE_SIZE - 2.0),
+            egui::Align2::LEFT_BOTTOM,
+            (index + 1).to_string(),
+            FontId::proportional(crate::theme::legible(10.0)),
+            MATTE,
+        );
+    }
 }
 
 /// The selected layer's scale, crop, and rotate handles and its centre.
@@ -2693,6 +2811,139 @@ fn refinement_fields(
         });
     despill_fields(ui, l, document, id, lock);
     light_wrap_fields(ui, l, document, id, lock);
+    garbage_matte_fields(ui, l, document, id, lock);
+}
+
+/// A key's polygon garbage matte (SW-008): off, keeping its inside, or
+/// keeping its outside, and while on its points, each editable here and
+/// by dragging it on the canvas.
+fn garbage_matte_fields(
+    ui: &mut Ui,
+    l: Locale,
+    document: &mut SceneLayoutDocument,
+    id: WireSceneLayerId,
+    lock: Option<&'static str>,
+) {
+    let matte = document.layer(id).and_then(garbage_matte);
+    let current = match matte {
+        None => 0_u8,
+        Some(matte) if matte.invert() => 2,
+        Some(_) => 1,
+    };
+    let choices = [
+        (0_u8, Msg::DesignMatteOff, Msg::DesignMatteOffHover),
+        (1, Msg::DesignMatteInside, Msg::DesignMatteInsideHover),
+        (2, Msg::DesignMatteOutside, Msg::DesignMatteOutsideHover),
+    ];
+    let shown = choices
+        .iter()
+        .find(|(choice, _, _)| *choice == current)
+        .map_or(Msg::DesignMatteOff, |(_, text, _)| *text);
+    let mut chosen = None;
+    ui.horizontal(|ui| {
+        ui.label(field_label(l.text(Msg::DesignMatte)));
+        ui.add_enabled_ui(lock.is_none(), |ui| {
+            ComboBox::from_id_salt("studio-designer-key-garbage-matte")
+                .selected_text(l.text(shown))
+                .width(INSPECTOR_WIDTH - 110.0)
+                .show_ui(ui, |ui| {
+                    for (choice, text, hover) in choices {
+                        if ui
+                            .selectable_label(choice == current, l.text(text))
+                            .on_hover_text(l.text(hover))
+                            .clicked()
+                        {
+                            chosen = Some(choice);
+                        }
+                    }
+                })
+                .response
+                .hint(l.text(Msg::DesignMatteHover), lock.unwrap_or(""));
+        });
+    });
+    if let Some(choice) = chosen.filter(|choice| *choice != current) {
+        document.set_field(Field::Matte, f64::from(choice));
+    }
+    let Some(matte) = matte else {
+        return;
+    };
+    let count = matte.points().len();
+    let mut remove = None;
+    egui::Grid::new("studio-designer-key-garbage-matte-points")
+        .num_columns(4)
+        .spacing(Vec2::new(4.0, 4.0))
+        .show(ui, |ui| {
+            for index in 0..count {
+                let point = u8::try_from(index).unwrap_or(u8::MAX);
+                let hover = l.format(
+                    Msg::DesignMattePointHover,
+                    &[("number", Arg::from(u32::from(point) + 1))],
+                );
+                ui.label(field_label(&(index + 1).to_string()))
+                    .on_hover_text(&hover);
+                for field in [Field::MattePointX { point }, Field::MattePointY { point }] {
+                    matte_coordinate(ui, document, id, field, &hover, lock);
+                }
+                if ui
+                    .add_enabled(
+                        lock.is_none() && count > fm_types::MIN_GARBAGE_MATTE_POINTS,
+                        small_button("×"),
+                    )
+                    .hint(l.text(Msg::DesignMatteRemovePointHover), lock.unwrap_or(""))
+                    .clicked()
+                {
+                    remove = Some(index);
+                }
+                ui.end_row();
+            }
+        });
+    if let Some(index) = remove {
+        document.remove_matte_point(index);
+    }
+    if ui
+        .add_enabled(
+            lock.is_none() && count < fm_types::MAX_GARBAGE_MATTE_POINTS,
+            small_button(l.text(Msg::DesignMatteAddPoint)),
+        )
+        .hint(l.text(Msg::DesignMatteAddPointHover), lock.unwrap_or(""))
+        .clicked()
+    {
+        document.add_matte_point();
+    }
+}
+
+/// One garbage matte coordinate as a percentage of the layer: drag to
+/// scrub (one undo step per drag), click to type.
+fn matte_coordinate(
+    ui: &mut Ui,
+    document: &mut SceneLayoutDocument,
+    id: WireSceneLayerId,
+    field: Field,
+    hover: &str,
+    lock: Option<&'static str>,
+) {
+    let per_cent = f64::from(fm_types::GARBAGE_MATTE_UNIT) / 100.0;
+    let mut value = document.field_value(id, field).unwrap_or(0.0) / per_cent;
+    let response = ui
+        .add_enabled(
+            lock.is_none(),
+            DragValue::new(&mut value)
+                .range(0.0..=100.0)
+                .speed(0.2)
+                .suffix(" %")
+                .max_decimals(2)
+                .update_while_editing(false),
+        )
+        .hint(hover, lock.unwrap_or(""));
+    if response.drag_started() {
+        document.begin(EditLabel::Field(field));
+    }
+    if response.changed() {
+        document.set_field(field, value * per_cent);
+    }
+    if response.drag_stopped() {
+        document.commit();
+    }
 }
 
 /// A key's light wrap amount and, while on, its width.

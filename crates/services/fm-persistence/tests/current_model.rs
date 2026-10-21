@@ -1545,6 +1545,17 @@ fn key_fill_keys_and_refinements_round_trip_at_the_current_schema() {
                     despill: fm_model::KeyDespill::Green { strength: 200 },
                     light_wrap: 150,
                     light_wrap_width: 8,
+                    garbage_matte: Some(
+                        fm_types::GarbageMatte::new(
+                            &[
+                                fm_types::MattePoint::new(100, 200),
+                                fm_types::MattePoint::new(900, 200),
+                                fm_types::MattePoint::new(500, 900),
+                            ],
+                            true,
+                        )
+                        .unwrap(),
+                    ),
                 },
             })),
         )
@@ -1578,7 +1589,8 @@ fn key_fill_keys_and_refinements_round_trip_at_the_current_schema() {
              \"low\": 8, \"high\": 247, \"softness\": 90, \"invert\": true, \"refinement\": \
              {\"clip_black\": 12, \"clip_white\": 230, \"choke\": -8, \"edge_softness\": 8, \
              \"despill\": {\"type\": \"green\", \"strength\": 200}, \"light_wrap\": 150, \
-             \"light_wrap_width\": 8}}"
+             \"light_wrap_width\": 8, \"garbage_matte\": {\"invert\": true, \"points\": \
+             [[100, 200], [900, 200], [500, 900]]}}}"
         ),
         "{encoded}"
     );
@@ -1599,7 +1611,7 @@ fn layer_effect_bounds_are_rejected_at_the_current_schema() {
 
     let refinement = "\"refinement\": {\"clip_black\": 0, \"clip_white\": 255, \"choke\": 0, \
                       \"edge_softness\": 0, \"despill\": {\"type\": \"off\"}, \
-                      \"light_wrap\": 0, \"light_wrap_width\": 0}";
+                      \"light_wrap\": 0, \"light_wrap_width\": 0, \"garbage_matte\": null}";
     let key = format!(
         "\"key\": {{\"type\": \"chroma\", \"red\": 0, \"green\": 255, \"blue\": 0, \
          \"similarity\": 64, \"smoothness\": 32, \"spill\": 128, {refinement}}}"
@@ -1670,6 +1682,52 @@ fn layer_effect_bounds_are_rejected_at_the_current_schema() {
             &key.replace(
                 "\"light_wrap\": 0, \"light_wrap_width\": 0",
                 "\"light_wrap\": 10, \"light_wrap_width\": 9",
+            ),
+            1,
+        ),
+        // The garbage matte is required: null or three to eight in-range
+        // points (schema 79).
+        valid.replacen(key, &key.replace(", \"garbage_matte\": null", ""), 1),
+        valid.replacen(
+            key,
+            &key.replace(
+                "\"garbage_matte\": null",
+                "\"garbage_matte\": {\"invert\": false, \"points\": [[0, 0], [1000, 0]]}",
+            ),
+            1,
+        ),
+        valid.replacen(
+            key,
+            &key.replace(
+                "\"garbage_matte\": null",
+                "\"garbage_matte\": {\"invert\": false, \"points\": \
+                 [[0, 0], [1001, 0], [0, 1000]]}",
+            ),
+            1,
+        ),
+        valid.replacen(
+            key,
+            &key.replace(
+                "\"garbage_matte\": null",
+                "\"garbage_matte\": {\"invert\": false, \"points\": \
+                 [[0, 0], [1000, 0, 1], [0, 1000]]}",
+            ),
+            1,
+        ),
+        valid.replacen(
+            key,
+            &key.replace(
+                "\"garbage_matte\": null",
+                "\"garbage_matte\": {\"points\": [[0, 0], [1000, 0], [0, 1000]]}",
+            ),
+            1,
+        ),
+        valid.replacen(
+            key,
+            &key.replace(
+                "\"garbage_matte\": null",
+                "\"garbage_matte\": {\"invert\": false, \"points\": \
+                 [[0, 0], [1000, 0], [0, 1000]], \"feather\": 1}",
             ),
             1,
         ),

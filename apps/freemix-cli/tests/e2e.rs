@@ -10170,13 +10170,17 @@ fn local_scene_layer_effects_author_render_and_clear_exactly() {
         "--light-wrap",
         "200",
         "3",
+        "--matte",
+        "inside",
+        "0:0,1000:0,1000:1000,0:1000",
     ];
     apply!(&fill);
     let scenes = invoke(&["scenes", path]);
     assert!(
         stdout(&scenes).contains(
             "key=fill(key_input=2 channel=luma low=0 high=255 softness=255 invert=off)\
-             +refine(clip=0,255 choke=0 edge_softness=2 despill=green:255 light_wrap=200:3)"
+             +refine(clip=0,255 choke=0 edge_softness=2 despill=green:255 light_wrap=200:3 \
+             matte=inside:0:0,1000:0,1000:1000,0:1000)"
         ),
         "{}",
         stdout(&scenes)
@@ -15864,6 +15868,7 @@ fn local_scene_layer_auto_key_samples_the_input_and_keys_it() {
 /// SW-008: `remote-scene-layer-auto-key` sends the key derived from a saved
 /// picture as one live `scene_layer_key_set` edit with the given matte
 /// refinement and the auto key's despill.
+#[allow(clippy::too_many_lines)] // one remote session end to end
 #[test]
 fn remote_scene_layer_auto_key_is_one_live_key_edit() {
     use fm_protocol::{
@@ -15904,6 +15909,17 @@ fn remote_scene_layer_auto_key_is_one_live_key_edit() {
             despill: WireKeyDespill::Green { strength: 128 },
             light_wrap: 90,
             light_wrap_width: 4,
+            garbage_matte: Some(
+                fm_types::GarbageMatte::new(
+                    &[
+                        fm_types::MattePoint::new(0, 0),
+                        fm_types::MattePoint::new(1_000, 0),
+                        fm_types::MattePoint::new(500, 1_000),
+                    ],
+                    true,
+                )
+                .unwrap(),
+            ),
         },
     })));
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -15936,6 +15952,9 @@ fn remote_scene_layer_auto_key_is_one_live_key_edit() {
         "--light-wrap",
         "90",
         "4",
+        "--matte",
+        "outside",
+        "0:0,1000:0,500:1000",
         "--key",
         "remote-auto-key",
         "--expect",

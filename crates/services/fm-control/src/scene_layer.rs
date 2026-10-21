@@ -51,6 +51,7 @@ pub const fn domain_refinement(refinement: WireKeyRefinement) -> KeyRefinement {
         },
         light_wrap: refinement.light_wrap,
         light_wrap_width: refinement.light_wrap_width,
+        garbage_matte: refinement.garbage_matte,
     }
 }
 
@@ -69,6 +70,7 @@ pub const fn wire_refinement(refinement: KeyRefinement) -> WireKeyRefinement {
         },
         light_wrap: refinement.light_wrap,
         light_wrap_width: refinement.light_wrap_width,
+        garbage_matte: refinement.garbage_matte,
     }
 }
 

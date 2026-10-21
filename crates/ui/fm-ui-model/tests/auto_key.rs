@@ -368,6 +368,7 @@ fn the_chroma_key_keeps_the_layers_matte_refinement() {
             despill: WireKeyDespill::Blue { strength: 9 },
             light_wrap: 60,
             light_wrap_width: 2,
+            garbage_matte: Some(fm_types::GarbageMatte::inset(200).with_invert(true)),
         },
     });
     let WireLayerKey::Chroma(chroma) = key.layer_key(Some(previous)) else {
@@ -383,6 +384,7 @@ fn the_chroma_key_keeps_the_layers_matte_refinement() {
             despill: key.despill,
             light_wrap: 60,
             light_wrap_width: 2,
+            garbage_matte: Some(fm_types::GarbageMatte::inset(200).with_invert(true)),
         }
     );
     assert_eq!(key.chroma_key(None).refinement.clip_white, 255);

@@ -1120,6 +1120,7 @@ fn transform_is_visible(output_width: u32, output_height: u32, transform: Transf
     left < i64::from(output_width) && top < i64::from(output_height) && right > 0 && bottom > 0
 }
 
+#[allow(clippy::too_many_arguments)] // one argument per uniform field group
 fn encode_composition_uniform(
     transform: Transform,
     crop: CropRect,

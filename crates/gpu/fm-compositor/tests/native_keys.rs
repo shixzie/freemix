@@ -733,12 +733,12 @@ fn refined_key_fill_with_crop_garbage_mask_and_effects_matches_the_cpu_reference
     // scaled layer.
     let polygon = fm_compositor::GarbageMatte::new(
         &[
-            fm_compositor::MattePoint::new(500, 800),
-            fm_compositor::MattePoint::new(9_000, 1_500),
-            fm_compositor::MattePoint::new(7_200, 6_000),
-            fm_compositor::MattePoint::new(9_600, 9_400),
-            fm_compositor::MattePoint::new(2_000, 8_700),
-            fm_compositor::MattePoint::new(4_100, 4_300),
+            fm_compositor::MattePoint::new(50, 80),
+            fm_compositor::MattePoint::new(900, 150),
+            fm_compositor::MattePoint::new(720, 600),
+            fm_compositor::MattePoint::new(960, 940),
+            fm_compositor::MattePoint::new(200, 870),
+            fm_compositor::MattePoint::new(410, 430),
         ],
         false,
     )

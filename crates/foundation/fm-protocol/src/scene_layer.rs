@@ -197,7 +197,9 @@ pub enum WireKeyDespill {
 /// `edge_softness <= MAX_KEY_EDGE_SOFTNESS`. Light wrap (Protocol 2.98)
 /// bleeds the background into the layer's edges: `light_wrap` is its
 /// amount (`0` off) and `light_wrap_width` its reach, `0` exactly when the
-/// amount is `0` and otherwise at most `MAX_KEY_LIGHT_WRAP_WIDTH`.
+/// amount is `0` and otherwise at most `MAX_KEY_LIGHT_WRAP_WIDTH`. A
+/// polygon garbage matte (Protocol 2.98, [`fm_types::GarbageMatte`])
+/// removes the pixels outside it, or inside when inverted.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct WireKeyRefinement {
     pub clip_black: u8,
@@ -207,6 +209,7 @@ pub struct WireKeyRefinement {
     pub despill: WireKeyDespill,
     pub light_wrap: u8,
     pub light_wrap_width: u8,
+    pub garbage_matte: Option<fm_types::GarbageMatte>,
 }
 
 impl Default for WireKeyRefinement {
@@ -225,6 +228,7 @@ impl WireKeyRefinement {
         despill: WireKeyDespill::Off,
         light_wrap: 0,
         light_wrap_width: 0,
+        garbage_matte: None,
     };
 
     /// Whether every bound holds.

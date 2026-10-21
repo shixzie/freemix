@@ -142,6 +142,18 @@ fn fill() -> WireLayerKey {
             despill: fm_protocol::WireKeyDespill::Blue { strength: 90 },
             light_wrap: 200,
             light_wrap_width: fm_protocol::MAX_KEY_LIGHT_WRAP_WIDTH,
+            garbage_matte: Some(
+                fm_types::GarbageMatte::new(
+                    &[
+                        fm_types::MattePoint::new(100, 200),
+                        fm_types::MattePoint::new(900, 200),
+                        fm_types::MattePoint::new(1_000, 1_000),
+                        fm_types::MattePoint::new(0, 900),
+                    ],
+                    false,
+                )
+                .unwrap(),
+            ),
         },
     })
 }
@@ -275,19 +287,20 @@ fn scene_layer_commands_have_an_exact_wire_form() {
         (
             SceneLayerOperation::SetKey(Some(chroma())),
             "payload=scene_layer_key_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\tkind=chroma\t\
-             red=0\tgreen=255\tblue=7\tsimilarity=64\tsmoothness=32\tspill=128\tclip_black=0\tclip_white=255\tchoke=0\tedge_softness=0\tdespill=off\tdespill_strength=0\tlight_wrap=0\tlight_wrap_width=0\n",
+             red=0\tgreen=255\tblue=7\tsimilarity=64\tsmoothness=32\tspill=128\tclip_black=0\tclip_white=255\tchoke=0\tedge_softness=0\tdespill=off\tdespill_strength=0\tlight_wrap=0\tlight_wrap_width=0\tmatte=off\n",
         ),
         (
             SceneLayerOperation::SetKey(Some(luma())),
             "payload=scene_layer_key_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\tkind=luma\t\
-             low=16\thigh=235\tsoftness=8\tinvert=true\tclip_black=0\tclip_white=255\tchoke=0\tedge_softness=0\tdespill=off\tdespill_strength=0\tlight_wrap=0\tlight_wrap_width=0\n",
+             low=16\thigh=235\tsoftness=8\tinvert=true\tclip_black=0\tclip_white=255\tchoke=0\tedge_softness=0\tdespill=off\tdespill_strength=0\tlight_wrap=0\tlight_wrap_width=0\tmatte=off\n",
         ),
         (
             SceneLayerOperation::SetKey(Some(fill())),
             "payload=scene_layer_key_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\tkind=fill\t\
              key_input=9\tchannel=alpha\tlow=4\thigh=250\t\
              softness=60\tinvert=false\tclip_black=12\tclip_white=240\tchoke=-8\t\
-             edge_softness=3\tdespill=blue\tdespill_strength=90\tlight_wrap=200\tlight_wrap_width=8\n",
+             edge_softness=3\tdespill=blue\tdespill_strength=90\tlight_wrap=200\tlight_wrap_width=8\t\
+             matte=inside\tmatte_points=100%3A200%2C900%3A200%2C1000%3A1000%2C0%3A900\n",
         ),
         (
             SceneLayerOperation::SetKey(None),
@@ -311,6 +324,7 @@ fn scene_layer_commands_have_an_exact_wire_form() {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one table of every refused line
 #[test]
 fn scene_layer_commands_are_strict() {
     let geometry_line = round_trip(&command(edit(SceneLayerOperation::SetGeometry(geometry()))));
@@ -375,6 +389,21 @@ fn scene_layer_commands_are_strict() {
         fill_line.replace("light_wrap_width=8", "light_wrap_width=0"),
         fill_line.replace("light_wrap=200", "light_wrap=0"),
         fill_line.replace("\tlight_wrap_width=8", ""),
+        // Garbage mattes (2.98): a known side with three to eight canonical,
+        // in-range points; `off` carries none.
+        fill_line.replace("matte=inside", "matte=both"),
+        fill_line.replace("\tmatte=inside", ""),
+        fill_line.replace(
+            "\tmatte_points=100%3A200%2C900%3A200%2C1000%3A1000%2C0%3A900",
+            "",
+        ),
+        fill_line.replace("1000%3A1000", "1001%3A1000"),
+        fill_line.replace("=100%3A200", "=0100%3A200"),
+        fill_line.replace("=100%3A200", "=100%3B200"),
+        fill_line.replace("%2C1000%3A1000%2C0%3A900", ""),
+        fill_line.replace("%2C0%3A900", &"%2C0%3A900".repeat(6)),
+        fill_line.replace("matte=inside", "matte=off"),
+        key_line.replace("matte=off", "matte=inside"),
         key_line.replace("\tclip_white=255", ""),
         // Effects are a known kind with in-range values, no trailing bytes.
         effects_line.replace("effects=AQAg1gM", "effects=AQUg1gM"),

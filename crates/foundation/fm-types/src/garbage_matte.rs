@@ -27,7 +27,7 @@ pub const MIN_GARBAGE_MATTE_POINTS: usize = 3;
 /// Most points of a garbage matte polygon.
 pub const MAX_GARBAGE_MATTE_POINTS: usize = 8;
 /// The normalized coordinate of a layer's right or bottom edge.
-pub const GARBAGE_MATTE_UNIT: u16 = 10_000;
+pub const GARBAGE_MATTE_UNIT: u16 = 1_000;
 
 /// One garbage matte point, normalized to the keyed layer
 /// (`0..=GARBAGE_MATTE_UNIT` on both axes).
@@ -111,16 +111,18 @@ impl GarbageMatte {
     pub fn inset(margin: u16) -> Self {
         let near = margin.min(GARBAGE_MATTE_UNIT / 2);
         let far = GARBAGE_MATTE_UNIT - near;
-        Self::new(
-            &[
-                MattePoint::new(near, near),
-                MattePoint::new(far, near),
-                MattePoint::new(far, far),
-                MattePoint::new(near, far),
-            ],
-            false,
-        )
-        .expect("an inset quadrilateral is in range")
+        let mut points = [MattePoint::default(); MAX_GARBAGE_MATTE_POINTS];
+        points[..4].copy_from_slice(&[
+            MattePoint::new(near, near),
+            MattePoint::new(far, near),
+            MattePoint::new(far, far),
+            MattePoint::new(near, far),
+        ]);
+        Self {
+            points,
+            len: 4,
+            invert: false,
+        }
     }
 
     /// The polygon's points in order.
@@ -203,7 +205,7 @@ mod tests {
             GarbageMatte::new(&[point; 9], false),
             Err(GarbageMatteError::PointCount(9))
         );
-        let far = MattePoint::new(10_001, 0);
+        let far = MattePoint::new(1_001, 0);
         assert_eq!(
             GarbageMatte::new(&[point, point, far], false),
             Err(GarbageMatteError::OutOfRange(far))
@@ -240,7 +242,7 @@ mod tests {
         assert!(!inverted.keeps(0, 0, 4, 4));
         assert!(inverted.keeps(3, 3, 4, 4));
         // An inset keeps its inside only.
-        let inset = GarbageMatte::inset(2_500);
+        let inset = GarbageMatte::inset(250);
         assert!(inset.keeps(1, 1, 4, 4) && inset.keeps(2, 2, 4, 4));
         assert!(!inset.keeps(0, 1, 4, 4) && !inset.keeps(3, 2, 4, 4));
     }

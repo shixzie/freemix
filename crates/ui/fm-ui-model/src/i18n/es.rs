@@ -5949,6 +5949,43 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Deja que la imagen detrás de la capa brille en sus bordes, de 0 (apagado) a 255, para integrar al sujeto recortado en la escena",
         ),
     ),
+    (Msg::DesignMatte, t("Máscara de recorte")),
+    (
+        Msg::DesignMatteHover,
+        t(
+            "Recorta la capa con una forma de 3 a 8 puntos, para quitar soportes, trípodes y bordes de la pantalla que el recorte no elimina",
+        ),
+    ),
+    (Msg::DesignMatteOff, t("Sin máscara de recorte")),
+    (
+        Msg::DesignMatteOffHover,
+        t("Conservar toda la capa recortada"),
+    ),
+    (Msg::DesignMatteInside, t("Conservar dentro")),
+    (
+        Msg::DesignMatteInsideHover,
+        t("Conservar solo lo que queda dentro de la forma"),
+    ),
+    (Msg::DesignMatteOutside, t("Conservar fuera")),
+    (
+        Msg::DesignMatteOutsideHover,
+        t("Quitar lo que queda dentro de la forma y conservar el resto"),
+    ),
+    (
+        Msg::DesignMattePointHover,
+        t(
+            "Punto {number} de la máscara de recorte, a lo ancho (primero) y a lo alto (segundo) de la capa recortada en porcentaje; arrastra su punto numerado en el lienzo para moverlo",
+        ),
+    ),
+    (Msg::DesignMatteAddPoint, t("Añadir punto")),
+    (
+        Msg::DesignMatteAddPointHover,
+        t("Añadir un punto a mitad del borde que cierra la forma, como mucho 8 puntos"),
+    ),
+    (
+        Msg::DesignMatteRemovePointHover,
+        t("Quitar este punto; la forma conserva al menos 3"),
+    ),
     (Msg::DesignKeyLightWrapWidth, t("Ancho de la envoltura")),
     (
         Msg::DesignKeyLightWrapWidthHover,

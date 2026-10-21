@@ -99,6 +99,9 @@ pub const fn fill_linear(key_input: WireInputId) -> WireFillKey {
 pub const DEFAULT_DESPILL_STRENGTH: u8 = 255;
 /// The width a light wrap turned on in the designer starts with.
 pub const DEFAULT_LIGHT_WRAP_WIDTH: u8 = 3;
+/// The inset, in normalized units, of the quadrilateral a garbage matte
+/// turned on in the designer starts as (a tenth of the layer per side).
+pub const DEFAULT_GARBAGE_MATTE_INSET: u16 = fm_types::GARBAGE_MATTE_UNIT / 10;
 
 /// `key` with `refinement`.
 const fn with_refinement(key: WireLayerKey, refinement: WireKeyRefinement) -> WireLayerKey {
@@ -164,6 +167,8 @@ pub enum EditLabel {
     AutoKey,
     /// An effect was added, removed, or moved.
     Effects,
+    /// A garbage matte point was added or removed (SW-008).
+    GarbageMatte,
 }
 
 /// A numeric or switch property the inspector edits.
@@ -246,6 +251,19 @@ pub enum Field {
     /// Key light wrap width, `1..=MAX_KEY_LIGHT_WRAP_WIDTH` pixels (light
     /// wrap on only).
     KeyLightWrapWidth,
+    /// The key's polygon garbage matte (SW-008): 0 none, 1 keeping its
+    /// inside, 2 keeping its outside; turning it on starts at
+    /// [`DEFAULT_GARBAGE_MATTE`].
+    Matte,
+    /// Garbage matte point `point`'s x, normalized to the cropped layer
+    /// (`0..=GARBAGE_MATTE_UNIT`; matte on only).
+    MattePointX {
+        point: u8,
+    },
+    /// Garbage matte point `point`'s y, normalized like its x.
+    MattePointY {
+        point: u8,
+    },
     /// Parameter `parameter` of the effect at list position `effect`,
     /// within its kind's range (a `levels` black stays below its white).
     EffectParameter {
@@ -958,7 +976,10 @@ impl SceneLayoutDocument {
             | Field::KeyDespill
             | Field::KeyDespillStrength
             | Field::KeyLightWrap
-            | Field::KeyLightWrapWidth => refinement_value(
+            | Field::KeyLightWrapWidth
+            | Field::Matte
+            | Field::MattePointX { .. }
+            | Field::MattePointY { .. } => refinement_value(
                 layer
                     .key
                     .map_or(WireKeyRefinement::NONE, |key| key.refinement()),
@@ -1156,6 +1177,38 @@ impl SceneLayoutDocument {
                     WireLayerKey::Fill(fill_linear(key_input)),
                     other.map_or(WireKeyRefinement::NONE, |key| key.refinement()),
                 ),
+            });
+        })
+    }
+
+    /// Adds a garbage matte point to every selected layer whose key has a
+    /// matte of fewer than [`fm_types::MAX_GARBAGE_MATTE_POINTS`] points,
+    /// as one step: the new last point halves the edge that closes the
+    /// polygon, so the matte keeps its shape.
+    pub fn add_matte_point(&mut self) -> bool {
+        self.edit_selected(EditLabel::GarbageMatte, |layer| {
+            edit_matte(layer, |points| {
+                if points.len() >= fm_types::MAX_GARBAGE_MATTE_POINTS {
+                    return;
+                }
+                let (first, last) = (points[0], points[points.len() - 1]);
+                points.push(fm_types::MattePoint::new(
+                    u16::midpoint(first.x, last.x),
+                    u16::midpoint(first.y, last.y),
+                ));
+            });
+        })
+    }
+
+    /// Removes garbage matte point `index` from every selected layer whose
+    /// matte has more than [`fm_types::MIN_GARBAGE_MATTE_POINTS`] points, as
+    /// one step.
+    pub fn remove_matte_point(&mut self, index: usize) -> bool {
+        self.edit_selected(EditLabel::GarbageMatte, |layer| {
+            edit_matte(layer, |points| {
+                if points.len() > fm_types::MIN_GARBAGE_MATTE_POINTS && index < points.len() {
+                    points.remove(index);
+                }
             });
         })
     }
@@ -1643,7 +1696,10 @@ fn apply_field(layer: &mut DesignLayer, field: Field, value: f64, canvas: (u32, 
         | Field::KeyDespill
         | Field::KeyDespillStrength
         | Field::KeyLightWrap
-        | Field::KeyLightWrapWidth => {
+        | Field::KeyLightWrapWidth
+        | Field::Matte
+        | Field::MattePointX { .. }
+        | Field::MattePointY { .. } => {
             let Some(key) = layer.key else {
                 return;
             };
@@ -1654,6 +1710,23 @@ fn apply_field(layer: &mut DesignLayer, field: Field, value: f64, canvas: (u32, 
         Field::EffectParameter { effect, parameter } => {
             set_effect_parameter(layer, usize::from(effect), usize::from(parameter), value);
         }
+    }
+}
+
+/// Edits the points of `layer`'s garbage matte, if its key has one.
+fn edit_matte(layer: &mut DesignLayer, edit: impl FnOnce(&mut Vec<fm_types::MattePoint>)) {
+    let Some(key) = layer.key else {
+        return;
+    };
+    let mut refinement = key.refinement();
+    let Some(matte) = refinement.garbage_matte else {
+        return;
+    };
+    let mut points = matte.points().to_vec();
+    edit(&mut points);
+    if let Ok(edited) = fm_types::GarbageMatte::new(&points, matte.invert()) {
+        refinement.garbage_matte = Some(edited);
+        layer.key = Some(with_refinement(key, refinement));
     }
 }
 
@@ -1672,6 +1745,21 @@ fn refinement_value(refinement: WireKeyRefinement, field: Field) -> f64 {
         }),
         Field::KeyLightWrap => f64::from(refinement.light_wrap),
         Field::KeyLightWrapWidth => f64::from(refinement.light_wrap_width),
+        Field::Matte => f64::from(match refinement.garbage_matte {
+            None => 0_u8,
+            Some(matte) if matte.invert() => 2,
+            Some(_) => 1,
+        }),
+        Field::MattePointX { point } | Field::MattePointY { point } => refinement
+            .garbage_matte
+            .and_then(|matte| matte.points().get(usize::from(point)).copied())
+            .map_or(0.0, |at| {
+                f64::from(if matches!(field, Field::MattePointX { .. }) {
+                    at.x
+                } else {
+                    at.y
+                })
+            }),
         _ => f64::from(match refinement.despill {
             WireKeyDespill::Off => 0,
             WireKeyDespill::Green { strength } | WireKeyDespill::Blue { strength } => strength,
@@ -1716,6 +1804,39 @@ fn apply_refinement_field(refinement: &mut WireKeyRefinement, field: Field, valu
                 (_, 0) => DEFAULT_LIGHT_WRAP_WIDTH,
                 (_, width) => width,
             };
+        }
+        Field::Matte => {
+            refinement.garbage_matte = match to_u8(value, 0, 2) {
+                0 => None,
+                choice => Some(
+                    refinement
+                        .garbage_matte
+                        .unwrap_or_else(|| {
+                            fm_types::GarbageMatte::inset(DEFAULT_GARBAGE_MATTE_INSET)
+                        })
+                        .with_invert(choice == 2),
+                ),
+            };
+        }
+        Field::MattePointX { point } | Field::MattePointY { point } => {
+            let Some(matte) = refinement.garbage_matte else {
+                return;
+            };
+            let mut points = matte.points().to_vec();
+            let Some(at) = points.get_mut(usize::from(point)) else {
+                return;
+            };
+            let coordinate =
+                u16::try_from(to_i32(value).clamp(0, i32::from(fm_types::GARBAGE_MATTE_UNIT)))
+                    .unwrap_or(0);
+            if matches!(field, Field::MattePointX { .. }) {
+                at.x = coordinate;
+            } else {
+                at.y = coordinate;
+            }
+            if let Ok(moved) = fm_types::GarbageMatte::new(&points, matte.invert()) {
+                refinement.garbage_matte = Some(moved);
+            }
         }
         Field::KeyLightWrapWidth => {
             if refinement.light_wrap != 0 {

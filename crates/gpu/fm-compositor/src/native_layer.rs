@@ -1172,8 +1172,8 @@ mod tests {
         let matte = crate::GarbageMatte::new(
             &[
                 crate::MattePoint::new(0, 0),
-                crate::MattePoint::new(10_000, 2_500),
-                crate::MattePoint::new(5_000, 10_000),
+                crate::MattePoint::new(1_000, 250),
+                crate::MattePoint::new(500, 1_000),
             ],
             true,
         )

@@ -758,7 +758,8 @@ fn parse_layer_key(value: Value) -> Result<fm_model::LayerKey, DecodeError> {
 /// Parses a key refinement (schema 61, SW-008): `{"clip_black",
 /// "clip_white", "choke", "edge_softness", "despill", "light_wrap",
 /// "light_wrap_width"}` where `despill` is `{"type": "off"}` or
-/// `{"type": "green"|"blue", "strength"}` (light wrap since schema 79).
+/// `{"type": "green"|"blue", "strength"}`, and (since schema 79)
+/// `"garbage_matte"`: `null` or `{"invert", "points": [[x, y], ...]}`.
 fn parse_key_refinement(value: Value) -> Result<fm_model::KeyRefinement, DecodeError> {
     let mut object = Object::new(value, "key refinement")?;
     let clip_black = object.u8("clip_black")?;
@@ -781,6 +782,7 @@ fn parse_key_refinement(value: Value) -> Result<fm_model::KeyRefinement, DecodeE
     despill.finish()?;
     let light_wrap = object.u8("light_wrap")?;
     let light_wrap_width = object.u8("light_wrap_width")?;
+    let garbage_matte = parse_optional(object.take("garbage_matte")?, parse_garbage_matte)?;
     object.finish()?;
     Ok(fm_model::KeyRefinement {
         clip_black,
@@ -790,7 +792,30 @@ fn parse_key_refinement(value: Value) -> Result<fm_model::KeyRefinement, DecodeE
         despill: despill_value,
         light_wrap,
         light_wrap_width,
+        garbage_matte,
     })
+}
+
+/// Parses a polygon garbage matte (schema 79, SW-008).
+fn parse_garbage_matte(value: Value) -> Result<fm_types::GarbageMatte, DecodeError> {
+    let mut object = Object::new(value, "garbage matte")?;
+    let invert = object.boolean("invert")?;
+    let points = parse_array(object.take("points")?, "garbage matte points", |point| {
+        let coordinates = parse_array(point, "garbage matte point", |value| {
+            let Value::Number(number) = value else {
+                return Err(syntax("a garbage matte coordinate must be a number"));
+            };
+            u16::try_from(number)
+                .map_err(|_| syntax(format!("garbage matte coordinate {number} is out of range")))
+        })?;
+        let [x, y] = coordinates[..] else {
+            return Err(syntax("a garbage matte point has two coordinates"));
+        };
+        Ok(fm_types::MattePoint::new(x, y))
+    })?;
+    object.finish()?;
+    fm_types::GarbageMatte::new(&points, invert)
+        .map_err(|error| syntax(format!("invalid garbage matte: {error}")))
 }
 
 /// Parses one layer's ordered effect array.

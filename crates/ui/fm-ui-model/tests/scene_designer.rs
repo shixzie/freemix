@@ -887,6 +887,7 @@ fn key_fill_and_matte_refinements_edit_live_and_export() {
             despill: fm_protocol::WireKeyDespill::Blue { strength: 128 },
             light_wrap: 255,
             light_wrap_width: 8,
+            garbage_matte: None,
         }
     );
     assert!(sent.refinement().is_valid());
@@ -899,6 +900,103 @@ fn key_fill_and_matte_refinements_edit_live_and_export() {
     let key = document.layer(layer_id(2)).unwrap().key.unwrap();
     assert!(matches!(key, WireLayerKey::Luma(_)));
     assert_eq!(key.refinement(), sent.refinement());
+}
+
+/// SW-008: a key's polygon garbage matte turns on as an inset
+/// quadrilateral, keeps its inside or outside, moves points within the
+/// layer, adds and removes points within three to eight as one step each,
+/// and reaches the live edit and the exported command.
+#[test]
+fn garbage_matte_points_edit_live_and_export() {
+    use fm_types::{GarbageMatte, MattePoint};
+    let matte = |document: &SceneLayoutDocument| {
+        document
+            .layer(layer_id(2))
+            .unwrap()
+            .key
+            .and_then(|key| key.refinement().garbage_matte)
+    };
+    let mut document = SceneLayoutDocument::new(scene(), &layout());
+    document.select(layer_id(2), false);
+    // Without a key there is no matte to edit.
+    assert!(!document.set_field(Field::Matte, 1.0));
+    assert!(document.set_key_kind(Some(true)));
+    assert_eq!(document.field_value(layer_id(2), Field::Matte), Some(0.0));
+    assert!(!document.set_field(Field::MattePointX { point: 0 }, 10.0));
+    assert!(!document.add_matte_point());
+
+    assert!(document.set_field(Field::Matte, 1.0));
+    let inset = GarbageMatte::inset(fm_ui_model::scene_designer::DEFAULT_GARBAGE_MATTE_INSET);
+    assert_eq!(matte(&document), Some(inset));
+    assert_eq!(
+        document.field_value(layer_id(2), Field::MattePointX { point: 1 }),
+        Some(900.0)
+    );
+    // Keeping the outside keeps the points.
+    assert!(document.set_field(Field::Matte, 2.0));
+    assert_eq!(matte(&document), Some(inset.with_invert(true)));
+    // Points clamp to the layer; a missing point is not edited.
+    assert!(document.set_field(Field::MattePointX { point: 0 }, -40.0));
+    assert!(document.set_field(Field::MattePointY { point: 0 }, 5_000.0));
+    assert_eq!(
+        matte(&document).unwrap().points()[0],
+        MattePoint::new(0, 1_000)
+    );
+    assert!(!document.set_field(Field::MattePointX { point: 4 }, 10.0));
+    assert_eq!(
+        document.undo_label(),
+        Some(EditLabel::Field(Field::MattePointY { point: 0 }))
+    );
+
+    // A new point halves the closing edge; eight is the most.
+    assert!(document.add_matte_point());
+    assert_eq!(document.undo_label(), Some(EditLabel::GarbageMatte));
+    assert_eq!(
+        matte(&document).unwrap().points()[4],
+        MattePoint::new(50, 950)
+    );
+    while matte(&document).unwrap().points().len() < 8 {
+        assert!(document.add_matte_point());
+    }
+    assert!(!document.add_matte_point());
+    // Removal stops at three points and ignores a missing index.
+    assert!(!document.remove_matte_point(8));
+    while matte(&document).unwrap().points().len() > 3 {
+        assert!(document.remove_matte_point(0));
+    }
+    assert!(!document.remove_matte_point(0));
+    let three = matte(&document).unwrap();
+    assert!(three.invert());
+
+    document.take_live_edits();
+    assert!(document.set_field(Field::MattePointX { point: 2 }, 333.0));
+    let live = document.take_live_edits();
+    let Some(SceneLayerOperation::SetKey(Some(sent))) =
+        live.last().map(|edit| edit.operation.clone())
+    else {
+        panic!("a live SetKey");
+    };
+    let sent_matte = sent.refinement().garbage_matte.unwrap();
+    assert_eq!(sent_matte.points()[2].x, 333);
+    assert!(sent.refinement().is_valid());
+    let points = sent_matte
+        .points()
+        .iter()
+        .map(|point| format!("{}:{}", point.x, point.y))
+        .collect::<Vec<_>>()
+        .join(",");
+    let script = document.cli_script("show.freemix");
+    assert!(
+        script
+            .lines()
+            .any(|line| line.ends_with(&format!(" --matte outside {points}"))),
+        "{script}"
+    );
+    // Off drops the matte and undo puts it back.
+    assert!(document.set_field(Field::Matte, 0.0));
+    assert_eq!(matte(&document), None);
+    assert!(document.undo());
+    assert_eq!(matte(&document), Some(sent_matte));
 }
 
 /// IN-020: effect list edits send the whole list as `SetEffects`; a
@@ -1067,6 +1165,7 @@ fn an_auto_key_is_one_step_and_one_set_key() {
         despill: fm_protocol::WireKeyDespill::Off,
         light_wrap: 0,
         light_wrap_width: 0,
+        garbage_matte: Some(fm_types::GarbageMatte::inset(50)),
     };
     keyed.layers[1].key = Some(WireLayerKey::Luma(WireLumaKey {
         low: 16,

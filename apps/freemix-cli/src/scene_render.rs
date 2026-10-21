@@ -389,6 +389,9 @@ fn with_layer_key(
             refinement.light_wrap_width,
         ));
     }
+    if let Some(matte) = refinement.garbage_matte {
+        compositor = compositor.with_garbage_matte(matte);
+    }
     if let Some(despill) = despill {
         compositor = compositor.with_despill(despill);
     }

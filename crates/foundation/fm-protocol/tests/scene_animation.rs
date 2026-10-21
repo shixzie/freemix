@@ -477,6 +477,13 @@ fn the_worst_case_layout_fits_one_line() {
                     despill: fm_protocol::WireKeyDespill::Green { strength: 255 },
                     light_wrap: 255,
                     light_wrap_width: 8,
+                    garbage_matte: Some(
+                        fm_types::GarbageMatte::new(
+                            &[fm_types::MattePoint::new(1_000, 1_000); 8],
+                            true,
+                        )
+                        .unwrap(),
+                    ),
                 },
             })),
             effects: vec![

@@ -25,7 +25,11 @@
 //! refine = clip_black clip_white (bytes) choke(zigzag) edge_softness(byte)
 //!          despill(byte: 0 off, 1 green, 2 blue) strength(byte, 0 when off)
 //!          light_wrap light_wrap_width (bytes, 2.98; width 0 exactly when
-//!          light_wrap is 0)
+//!          light_wrap is 0) matte(byte, 2.98: 0 none, else count << 1 |
+//!          outside, count 3..=8) [points, unless none]
+//! points = the count x, y pairs as 10-bit coordinates (each 0..=1000),
+//!          packed least significant bit first into ceil(20 * count / 8)
+//!          bytes whose spare high bits are zero
 //! effect = kind(byte, index into SCENE_LAYER_EFFECT_KINDS)
 //!          value(zigzag)* (exactly the kind's parameter count)
 //! ```
@@ -244,7 +248,35 @@ fn push_key(out: &mut Vec<u8>, key: WireLayerKey) {
         refinement.light_wrap,
         refinement.light_wrap_width,
     ]);
+    match refinement.garbage_matte {
+        None => out.push(0),
+        Some(matte) => {
+            let count = u8::try_from(matte.points().len()).unwrap_or(0);
+            out.push(count << 1 | u8::from(matte.invert()));
+            let mut bits = 0_u32;
+            let mut pending = 0_u32;
+            for point in matte.points() {
+                for coordinate in [point.x, point.y] {
+                    bits |= u32::from(coordinate & MATTE_COORDINATE_MASK) << pending;
+                    pending += MATTE_COORDINATE_BITS;
+                    while pending >= 8 {
+                        out.push(bits.to_le_bytes()[0]);
+                        bits >>= 8;
+                        pending -= 8;
+                    }
+                }
+            }
+            if pending > 0 {
+                out.push(bits.to_le_bytes()[0]);
+            }
+        }
+    }
 }
+
+/// Bits of one packed garbage matte coordinate (`0..=1000`).
+const MATTE_COORDINATE_BITS: u32 = 10;
+const MATTE_COORDINATE_MASK: u16 = (1 << MATTE_COORDINATE_BITS) - 1;
+const _: () = assert!(fm_types::GARBAGE_MATTE_UNIT <= MATTE_COORDINATE_MASK);
 
 /// Validates and encodes a `scene_layer_effects_set` list.
 ///
@@ -485,7 +517,49 @@ impl Reader<'_> {
             despill,
             light_wrap: self.byte()?,
             light_wrap_width: self.byte()?,
+            garbage_matte: self.garbage_matte()?,
         })
+    }
+
+    /// A refinement's garbage matte (2.98): `Some(None)` for none.
+    #[allow(clippy::option_option)] // malformed, none, or a matte
+    fn garbage_matte(&mut self) -> Option<Option<fm_types::GarbageMatte>> {
+        let header = self.byte()?;
+        if header == 0 {
+            return Some(None);
+        }
+        let count = usize::from(header >> 1);
+        if !(fm_types::MIN_GARBAGE_MATTE_POINTS..=fm_types::MAX_GARBAGE_MATTE_POINTS)
+            .contains(&count)
+        {
+            return None;
+        }
+        let mut coordinates = Vec::with_capacity(count * 2);
+        let mut bits = 0_u32;
+        let mut pending = 0_u32;
+        while coordinates.len() < count * 2 {
+            while pending < MATTE_COORDINATE_BITS {
+                bits |= u32::from(self.byte()?) << pending;
+                pending += 8;
+            }
+            coordinates.push(u16::try_from(bits & u32::from(MATTE_COORDINATE_MASK)).ok()?);
+            bits >>= MATTE_COORDINATE_BITS;
+            pending -= MATTE_COORDINATE_BITS;
+        }
+        // Spare bits of the last byte are zero, so each matte has exactly
+        // one encoding.
+        if bits != 0 {
+            return None;
+        }
+        let points: Vec<_> = coordinates
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&[x, y]| fm_types::MattePoint::new(x, y))
+            .collect();
+        fm_types::GarbageMatte::new(&points, header & 1 == 1)
+            .ok()
+            .map(Some)
     }
 
     fn key(&mut self) -> Option<WireLayerKey> {
@@ -762,4 +836,77 @@ pub(super) fn decode_scene_clip(value: &str) -> Result<WireSceneClip, CodecError
     let clip = super::animation::decode_clip(value)?;
     check_scene_clip(&clip)?;
     Ok(clip)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn matte_refinement(matte: Option<fm_types::GarbageMatte>) -> WireKeyRefinement {
+        WireKeyRefinement {
+            garbage_matte: matte,
+            ..WireKeyRefinement::NONE
+        }
+    }
+
+    fn refinement_bytes(refinement: WireKeyRefinement) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_key(
+            &mut out,
+            WireLayerKey::Luma(crate::WireLumaKey {
+                low: 0,
+                high: 255,
+                softness: 0,
+                invert: false,
+                refinement,
+            }),
+        );
+        out
+    }
+
+    #[allow(clippy::option_option)]
+    fn read_matte(bytes: &[u8]) -> Option<Option<fm_types::GarbageMatte>> {
+        let mut reader = Reader { bytes, position: 0 };
+        let matte = reader.garbage_matte()?;
+        (reader.position == bytes.len()).then_some(matte)
+    }
+
+    #[test]
+    fn garbage_matte_points_pack_into_ten_bit_coordinates() {
+        let matte = fm_types::GarbageMatte::new(
+            &[
+                fm_types::MattePoint::new(1, 2),
+                fm_types::MattePoint::new(1_000, 0),
+                fm_types::MattePoint::new(0, 1_000),
+            ],
+            true,
+        )
+        .unwrap();
+        let none = refinement_bytes(matte_refinement(None));
+        let bytes = refinement_bytes(matte_refinement(Some(matte)));
+        let packed = &bytes[none.len() - 1..];
+        // Header 3 << 1 | outside, then 60 bits of 1, 2, 1000, 0, 0, 1000
+        // least significant bit first, in eight bytes.
+        let bits: u64 = 1 | 2 << 10 | 1_000 << 20 | 1_000 << 50;
+        let mut expected = vec![7];
+        expected.extend_from_slice(&bits.to_le_bytes());
+        assert_eq!(packed, expected);
+        assert_eq!(read_matte(packed), Some(Some(matte)));
+        assert_eq!(read_matte(&[0]), Some(None));
+
+        // Spare bits, a short stream, and bad counts are refused.
+        let mut spare = expected.clone();
+        spare[8] |= 0x10;
+        assert_eq!(read_matte(&spare), None);
+        assert_eq!(read_matte(&expected[..8]), None);
+        let mut few = expected.clone();
+        few[0] = 2 << 1;
+        assert_eq!(read_matte(&few[..6]), None);
+        assert_eq!(read_matte(&[9 << 1]), None);
+        // A coordinate beyond 1000 is refused.
+        let mut far = expected;
+        far[1] = 0xe9;
+        far[2] |= 0x03;
+        assert_eq!(read_matte(&far), None);
+    }
 }
