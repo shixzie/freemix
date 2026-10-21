@@ -4,7 +4,10 @@
 //! Every capture input, network stream, and system audio input runs on its
 //! own clock; its receiver converts its audio into the engine clock with a
 //! drift-correcting loop and keeps its pictures following that audio (see
-//! `fm_codec_ffmpeg::network_input`). Each source's loop is reported on
+//! `fm_codec_ffmpeg::network_input`). A source that delivers timed
+//! `AudioBlock`s instead (the `fm-io-api` contract) runs the same loop
+//! through `fm_audio::LiveBlockSource`, whose `live_telemetry` is reported
+//! here unchanged. Each source's loop is reported on
 //! standard error as a `FREEMIXD_SOURCE_SYNC` record: once when it first
 //! runs, at once whenever it hard-resyncs or underruns, and otherwise every
 //! [`SYNC_INTERVAL`]. A record carries the estimated drift and the applied
@@ -387,6 +390,78 @@ mod tests {
                 Instant::now()
             )
             .is_none()
+        );
+    }
+
+    /// A live source behind the `fm-io-api` contract (timed `AudioBlock`s
+    /// through `fm_audio::LiveBlockSource`, not a receiver) reports exactly
+    /// as a receiver does: the same telemetry, wire sample, and record.
+    #[test]
+    fn a_block_source_reports_like_a_receiver() {
+        use fm_audio::{LiveBlockConfig, LiveBlockSource};
+        use fm_frame::{
+            AudioBlock, Channel, ChannelLayout, ClockDomainId, MediaTimestamp, MediaTiming,
+            NormalizedDuration, NormalizedTimestamp, OriginalTimestamp, SequenceNumber, TimeBase,
+        };
+
+        let mut source: LiveBlockSource<u32> =
+            LiveBlockSource::new(LiveBlockConfig::new(LiveSourceConfig::new(
+                SampleRate::new(48_000).unwrap(),
+                2,
+                FrameRate::new(25, 1).unwrap(),
+                2,
+            )))
+            .unwrap();
+        let domain = ClockDomainId::new(core::num::NonZeroU128::new(5).unwrap());
+        let layout = ChannelLayout::new(vec![Channel::Left, Channel::Right]).unwrap();
+        let mut out = vec![vec![0.0_f32; 1_920]; 2];
+        for frame in 0..10_u32 {
+            let at = f64::from(frame) / 25.0;
+            let nanos = i64::from(frame) * 40_000_000;
+            let timing = MediaTiming::new(
+                OriginalTimestamp::new(
+                    MediaTimestamp::new(nanos),
+                    TimeBase::new(1, 1_000_000_000).unwrap(),
+                ),
+                NormalizedTimestamp::from_nanos(nanos),
+                NormalizedDuration::from_nanos(40_000_000).unwrap(),
+                domain,
+                SequenceNumber::new(u64::from(frame) + 1),
+            )
+            .unwrap();
+            let block = AudioBlock::silence(
+                timing,
+                SampleRate::new(48_000).unwrap(),
+                layout.clone(),
+                1_920,
+            )
+            .unwrap();
+            source.push_audio(&block, at).unwrap();
+            source.push_picture(frame);
+            let mut planes: Vec<&mut [f32]> = out.iter_mut().map(Vec::as_mut_slice).collect();
+            source.pull(&mut planes, at + 0.02).unwrap();
+        }
+        let telemetry = source.live_telemetry();
+        assert_eq!(telemetry.sync.state, SourceSyncState::Running);
+        let sample = wire_sample(SourceKind::Capture, input(4), &telemetry).unwrap();
+        assert_eq!(sample.kind, SourceSyncKind::Capture);
+        assert_eq!(sample.state, SourceClockState::Running);
+        assert_eq!(sample.target_us, 80_000);
+        assert_eq!(
+            sample,
+            wire_sample(SourceKind::Capture, input(4), &running_clock().telemetry()).unwrap()
+        );
+        let mut log = SyncLog::default();
+        let line = log
+            .report(
+                SourceKind::Capture,
+                input(4),
+                Some(&telemetry),
+                Instant::now(),
+            )
+            .unwrap();
+        assert!(
+            line.starts_with("FREEMIXD_SOURCE_SYNC\tv=1\tinput=4\tkind=capture\tstate=running")
         );
     }
 }

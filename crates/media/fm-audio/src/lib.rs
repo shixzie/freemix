@@ -16,6 +16,7 @@ mod clock_recalibration;
 mod dsp;
 mod embedded_audio;
 mod gain_smoother;
+mod live_block;
 mod live_source;
 mod live_strip_dsp;
 mod loudness;
@@ -55,6 +56,11 @@ pub use embedded_audio::{
 pub use gain_smoother::{
     GainSmoother, GainSmootherConfig, GainSmootherError, GainSmootherTelemetry,
     MAX_GAIN_SMOOTHER_RAMP_SAMPLES,
+};
+pub use live_block::{
+    BlockPlacement, BlockPull, BlockPush, LiveBlockConfig, LiveBlockCounters, LiveBlockError,
+    LiveBlockSource, LiveBlockTelemetry, MAX_PICTURE_CAPACITY, MIN_PICTURE_CAPACITY,
+    PICTURE_STALL_FRAMES, PictureShown,
 };
 pub use live_source::{
     AV_SMOOTHING_SECONDS, AV_TOLERANCE_FRAMES, LivePull, LiveSourceClock, LiveSourceConfig,

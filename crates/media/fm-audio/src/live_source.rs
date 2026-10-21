@@ -63,7 +63,8 @@ use fm_types::{FrameRate, SampleRate};
 use crate::resampler::usize_to_f64;
 use crate::source_sync::{
     DriftControlConfig, MAX_SOURCE_SYNC_CAPACITY_SAMPLES, MAX_SOURCE_SYNC_PUSH_SAMPLES, PullReport,
-    SourceSync, SourceSyncConfig, SourceSyncError, SourceSyncState, SourceSyncTelemetry,
+    PushContinuity, PushReport, SourceSync, SourceSyncConfig, SourceSyncError, SourceSyncState,
+    SourceSyncTelemetry,
 };
 
 /// Fewest frames of audio a live source buffers: one frame is pulled at a
@@ -390,19 +391,57 @@ impl LiveSourceClock {
     /// [`MAX_SOURCE_SYNC_PUSH_SAMPLES`], chunks before the failing one stay
     /// pushed.
     pub fn push(&mut self, planes: &[&[f32]], at: f64) -> Result<(), SourceSyncError> {
+        self.push_at(self.next_index, planes, at, false).map(|_| ())
+    }
+
+    /// Pushes a planar block whose first sample has source index
+    /// `first_sample` on the connection's own sample timeline, which arrived
+    /// at `at` seconds (as [`Self::push`]). The converter classifies the
+    /// index against the end of the previous push: a short gap is concealed
+    /// with silence, a short overlap trimmed, and a larger jump (or any
+    /// block flagged `discontinuity`) spliced with declick ramps (see
+    /// [`crate::DiscontinuityPolicy`]). Contiguous pushes continue from the
+    /// end of this one. Returns the report of the first chunk (blocks
+    /// above [`MAX_SOURCE_SYNC_PUSH_SAMPLES`] are pushed in contiguous
+    /// chunks) with the accepted and overrun counts summed.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::push`].
+    pub fn push_at(
+        &mut self,
+        first_sample: u64,
+        planes: &[&[f32]],
+        at: f64,
+        discontinuity: bool,
+    ) -> Result<PushReport, SourceSyncError> {
         self.observe(at);
-        let result = self.push_planes(planes);
+        let result = self.push_planes(first_sample, planes, discontinuity);
         self.settle(false, at);
         result
     }
 
-    fn push_planes(&mut self, planes: &[&[f32]]) -> Result<(), SourceSyncError> {
+    fn push_planes(
+        &mut self,
+        first_sample: u64,
+        planes: &[&[f32]],
+        discontinuity: bool,
+    ) -> Result<PushReport, SourceSyncError> {
+        let push = |sync: &mut SourceSync, index: u64, chunk: &[&[f32]], flagged: bool| {
+            if flagged {
+                sync.push_discontinuity(index, chunk)
+            } else {
+                sync.push(index, chunk)
+            }
+        };
         let samples = planes.first().map_or(0, |plane| plane.len());
+        self.next_index = first_sample;
         if samples <= MAX_SOURCE_SYNC_PUSH_SAMPLES {
-            self.sync.push(self.next_index, planes)?;
+            let report = push(&mut self.sync, first_sample, planes, discontinuity)?;
             self.advance(samples);
-            return Ok(());
+            return Ok(report);
         }
+        let mut first: Option<PushReport> = None;
         let mut start = 0;
         while start < samples {
             let end = samples.min(start + MAX_SOURCE_SYNC_PUSH_SAMPLES);
@@ -410,11 +449,27 @@ impl LiveSourceClock {
                 .iter()
                 .map(|plane| plane.get(start..end).unwrap_or(plane))
                 .collect();
-            self.sync.push(self.next_index, &chunk)?;
+            let report = push(
+                &mut self.sync,
+                self.next_index,
+                &chunk,
+                discontinuity && first.is_none(),
+            )?;
             self.advance(end - start);
+            match &mut first {
+                None => first = Some(report),
+                Some(total) => {
+                    total.accepted_samples += report.accepted_samples;
+                    total.overrun_dropped_samples += report.overrun_dropped_samples;
+                }
+            }
             start = end;
         }
-        Ok(())
+        Ok(first.unwrap_or(PushReport {
+            continuity: PushContinuity::Contiguous,
+            accepted_samples: 0,
+            overrun_dropped_samples: 0,
+        }))
     }
 
     fn advance(&mut self, samples: usize) {
