@@ -1347,9 +1347,13 @@ fn scaled_audio(block: &AudioBlock, gain: f32) -> Option<AudioBlock> {
     .ok()
 }
 
-/// The two items' sound of one transition frame, at their gains: summed
-/// when both blocks share a rate, layout, and length, else the incoming
-/// item's alone (or the outgoing one's while the incoming item is silent).
+/// The two items' sound of one transition frame, at their gains. Blocks of
+/// one rate and layout are summed in the incoming block's length (the two
+/// transports' sample cadences need not be in phase: a missing outgoing
+/// sample is silence). Blocks of differing rates or layouts are never
+/// summed: the item at the larger gain plays alone (the outgoing one over a
+/// dip's first half, the incoming one over its second). A silent item leaves
+/// the other one's sound.
 fn blended_audio(
     outgoing: Option<&AudioBlock>,
     incoming: Option<&AudioBlock>,
@@ -1359,8 +1363,7 @@ fn blended_audio(
     match (outgoing, incoming) {
         (Some(from), Some(to))
             if from.sample_rate() == to.sample_rate()
-                && from.channel_layout() == to.channel_layout()
-                && from.sample_count() == to.sample_count() =>
+                && from.channel_layout() == to.channel_layout() =>
         {
             AudioBlock::new(
                 to.timing(),
@@ -1370,15 +1373,18 @@ fn blended_audio(
                     .iter()
                     .zip(to.planes())
                     .map(|(a, b)| {
-                        a.iter()
-                            .zip(b)
-                            .map(|(a, b)| a * out_gain + b * in_gain)
+                        b.iter()
+                            .enumerate()
+                            .map(|(index, b)| {
+                                a.get(index).copied().unwrap_or(0.0) * out_gain + b * in_gain
+                            })
                             .collect()
                     })
                     .collect(),
             )
             .ok()
         }
+        (Some(from), Some(_)) if out_gain > in_gain => scaled_audio(from, out_gain),
         (_, Some(to)) => scaled_audio(to, in_gain),
         (Some(from), None) => scaled_audio(from, out_gain),
         (None, None) => None,
@@ -2041,6 +2047,84 @@ mod tests {
         assert!(
             gate.acquire(MAX_CONCURRENT_PREFETCHES, &AtomicBool::new(false))
                 .is_some()
+        );
+    }
+
+    /// A block of `samples` samples per channel, every one `value`.
+    fn audio(
+        rate: u32,
+        layout: &fm_types::ChannelLayout,
+        samples: usize,
+        value: f32,
+    ) -> AudioBlock {
+        let timing = timing_at(
+            0,
+            FrameRate::new(25, 1).unwrap(),
+            ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+        )
+        .unwrap();
+        AudioBlock::new(
+            timing,
+            fm_types::SampleRate::new(rate).unwrap(),
+            layout.clone(),
+            vec![vec![value; samples]; layout.channels().len()],
+        )
+        .unwrap()
+    }
+
+    /// At 29.97 fps the two items' blocks alternate 1601 and 1602 samples
+    /// out of phase: a fade still hears the outgoing item over the samples
+    /// both carry, in the incoming block's length.
+    #[test]
+    fn a_fade_sums_blocks_of_differing_lengths() {
+        let stereo = fm_types::ChannelLayout::stereo();
+        let from = audio(48_000, &stereo, 1601, 1.0);
+        let to = audio(48_000, &stereo, 1602, 0.0);
+        let mix = Blend {
+            kind: fm_video::ItemTransition::Mix,
+            weight: 5_000,
+        };
+        let mixed = blended_audio(Some(&from), Some(&to), mix).unwrap();
+        assert_eq!(mixed.sample_count(), 1602);
+        for plane in mixed.planes() {
+            assert!(
+                plane[..1601]
+                    .iter()
+                    .all(|sample| (*sample - 0.5).abs() < f32::EPSILON)
+            );
+            assert!(plane[1601].abs() < f32::EPSILON);
+        }
+    }
+
+    /// Items of differing rates or layouts are never summed, but the
+    /// outgoing item is still heard while it outweighs the incoming one (a
+    /// dip's first half), and the incoming one after.
+    #[test]
+    fn a_dip_across_formats_fades_the_outgoing_item_out() {
+        let mono = fm_types::ChannelLayout::new(vec![fm_types::Channel::Mono]).unwrap();
+        let from = audio(44_100, &mono, 1764, 1.0);
+        let to = audio(48_000, &fm_types::ChannelLayout::stereo(), 1920, 1.0);
+        let dip = |weight| Blend {
+            kind: fm_video::ItemTransition::Dip,
+            weight,
+        };
+        let first = blended_audio(Some(&from), Some(&to), dip(2_500)).unwrap();
+        assert_eq!(first.sample_rate(), from.sample_rate());
+        assert!(
+            first
+                .planes()
+                .iter()
+                .flatten()
+                .all(|sample| (*sample - 0.5).abs() < f32::EPSILON)
+        );
+        let second = blended_audio(Some(&from), Some(&to), dip(7_500)).unwrap();
+        assert_eq!(second.sample_rate(), to.sample_rate());
+        assert!(
+            second
+                .planes()
+                .iter()
+                .flatten()
+                .all(|sample| (*sample - 0.5).abs() < f32::EPSILON)
         );
     }
 
