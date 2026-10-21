@@ -165,7 +165,22 @@ pub(crate) fn load(
             let directory = state_dir.ok_or(
                 "--web-tls needs a state directory: pass --web-state-dir (no home directory is known)",
             )?;
-            let ca = LocalCa::open_or_create(directory, now)?;
+            let ca = LocalCa::open_or_create(directory, now, names)?;
+            let skipped: Vec<&str> = names
+                .iter()
+                .filter(|name| !ca.permits(name))
+                .map(String::as_str)
+                .collect();
+            if !skipped.is_empty() {
+                // Names that arrived after the root was made (a public
+                // address, a new `--web-host`): the leaf leaves them out,
+                // and the console reports a host mismatch for them.
+                eprintln!(
+                    "FREEMIXD_WEB_CA\tv=1\tstate=outside_constraints\tnames={}",
+                    skipped.join(",")
+                );
+            }
+            let names = &permitted_names(&ca, names);
             let served = match load_issued(directory, &ca, names, now) {
                 Some(served) => served,
                 None => issue(directory, &ca, names, now)?,
@@ -290,6 +305,7 @@ impl TlsState {
                 }
             }
             Source::LocalCa { directory, ca } => {
+                let names = &permitted_names(ca, names);
                 let served = self.served();
                 let fresh = names.iter().all(|name| served.info.covers(name))
                     && served.info.not_after_ms.saturating_sub(now_ms) > local_ca::RENEW_BEFORE_MS;
@@ -339,6 +355,16 @@ fn served(
         fingerprint,
         info,
     })
+}
+
+/// The `names` the local root's name constraints let its leaf carry (one
+/// name outside them would make browsers reject the whole leaf).
+fn permitted_names(ca: &LocalCa, names: &[String]) -> Vec<String> {
+    names
+        .iter()
+        .filter(|name| ca.permits(name))
+        .cloned()
+        .collect()
 }
 
 /// The local CA leaf already in `directory`, when it is valid, issued by
@@ -551,6 +577,18 @@ mod tests {
         assert_ne!(second.fingerprint(), first.fingerprint());
         assert_eq!(second.ca().unwrap().fingerprint(), ca);
         assert!(second.covers("10.0.0.9") && second.covers("freemix-a.local"));
+        // A public address that appears after the root was made lies outside
+        // its name constraints: the leaf leaves it out (one such name would
+        // void the whole leaf) and is not reissued over and over for it.
+        let mut public = moved.clone();
+        public.push("198.51.100.4".to_owned());
+        assert!(!second.ca().unwrap().permits("198.51.100.4"));
+        assert_eq!(second.refresh(&public, now_ms()), Ok(false));
+        assert!(!second.covers("198.51.100.4"));
+        assert_eq!(
+            second.problem("198.51.100.4", now_ms()),
+            Some(WebCertProblem::HostMismatch)
+        );
         // And a restart finds the reissued leaf.
         let third = load(&WebTls::LocalCa, Some(directory.path()), &moved)
             .unwrap()

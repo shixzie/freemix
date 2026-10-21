@@ -3342,12 +3342,23 @@ the daemon's web state directory and options, never in the project.
   `/freemix-ca.crt` with `local_ca`, `404` otherwise, and a script-free
   start page at `/` linking the pages and, with `local_ca`, the root and
   its install steps. The console's install link is `<url>/freemix-ca.crt`.
-- The root (ten years, path length 0) and the leaf (397 days, `serverAuth`,
+- The root (ten years, path length 0, critical X.509 name constraints) and
+  the leaf (397 days, `serverAuth`,
   subject alternative names for every LAN address, `localhost`, `127.0.0.1`,
   `::1`, the `--web-host` names, and the mDNS name) live in the state
   directory with mode 0600; the leaf is reused across restarts while it
   covers those names and is more than 30 days from expiry, and is reissued
   by the same root when the LAN addresses change (looked at every 15 s).
+  The root's permitted subtrees are `local`, `localhost`, `home.arpa`,
+  `internal`, 10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16, 127/8,
+  `::1`, `fc00::/7`, `fe80::/10`, and each other host name or address the
+  gateway had when the root was made, so a stolen root vouches for no public
+  site. A name outside them that appears later (a public address, a new
+  `--web-host`) is left out of the leaf, logged once as
+  `FREEMIXD_WEB_CA\tv=1\tstate=outside_constraints\tnames=...`, and shows as
+  `host_mismatch` when it is the `url` host. A root made before the
+  constraints is kept and vouches for any name; removing its two files makes
+  a constrained one (phones then install it again).
   The operator's chain must parse, be valid now, name a host, carry
   `serverAuth` when it has an extended key usage, be signed link by link,
   and match its key; its key must not be readable by other users. Changed

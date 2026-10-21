@@ -29,6 +29,16 @@ media parser, native SDK, plugin, project bundle, and update package.
   untrusted input.
 - Verify signed updates and plugins before load.
 
+The Web gateway's per-install local root CA (`--web-tls`) carries critical
+X.509 name constraints that permit only the private, carrier-grade NAT,
+link-local, and loopback address ranges, the `.local`, `localhost`,
+`home.arpa`, and `.internal` names, and the host names and addresses the
+gateway had when the root was made. A phone that installed the root
+therefore rejects any certificate a stolen root key mints for a public site
+(WebPKI-verified in unit tests). Roots made before the constraints are kept,
+never silently replaced, and stay unconstrained until the operator removes
+them.
+
 Network-facing listeners bound their abuse. An RTMP ingest listener locks out
 a peer address (an IPv6 peer by its `/64` prefix) that presents a wrong stream
 key three times in a row, for 1 s doubling per further failure up to 300 s,
