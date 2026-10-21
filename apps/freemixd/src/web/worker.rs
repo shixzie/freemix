@@ -408,6 +408,7 @@ fn respond_within(stream: &mut Stream, response: &[u8], timeout: Duration) {
 #[allow(clippy::too_many_lines)] // one router over every gateway request
 pub(super) fn serve_connection(socket: TcpStream, gateway: &Gateway) {
     let peer = socket.peer_addr().ok().map(|address| address.ip());
+    let local = socket.local_addr().ok().map(|address| address.ip());
     // Reads and handshakes run on a non-blocking socket against deadlines,
     // so a peer that trickles bytes never holds a thread past them.
     if socket.set_nonblocking(true).is_err() {
@@ -510,7 +511,7 @@ pub(super) fn serve_connection(socket: TcpStream, gateway: &Gateway) {
                     &gateway.cancel,
                 )
                 .map_or_else(bad_request, |body| {
-                    pair(&request, &body, peer, tls, &gateway.access)
+                    pair(&request, &body, (peer, local), tls, &gateway.access)
                 }),
                 Some(_) => json_response("413 Content Too Large", r#"{"error":"bad_request"}"#, ""),
                 None => bad_request(),
@@ -603,7 +604,7 @@ fn bad_request() -> Vec<u8> {
 fn pair(
     request: &http::Request,
     body: &[u8],
-    peer: Option<IpAddr>,
+    (peer, local): (Option<IpAddr>, Option<IpAddr>),
     tls: bool,
     access: &WebAccess,
 ) -> Vec<u8> {
@@ -622,7 +623,7 @@ fn pair(
         return bad_request();
     };
     let name = http::form_field(body, "name").unwrap_or_default();
-    match access.redeem(&code, &name, peer) {
+    match access.redeem(&code, &name, peer, local) {
         Ok(device) => json_response(
             "200 OK",
             &format!(

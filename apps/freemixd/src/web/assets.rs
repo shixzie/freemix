@@ -676,7 +676,7 @@ mod tests {
             let (_, status) = access.handle(&WebAccessAction::Pair { role });
             let code = status.pairing.unwrap().code;
             access
-                .redeem(&code, "Phone", IpAddr::V4(Ipv4Addr::LOCALHOST))
+                .redeem(&code, "Phone", IpAddr::V4(Ipv4Addr::LOCALHOST), None)
                 .unwrap()
         };
         let head = |token: &str, origin: &str| {
