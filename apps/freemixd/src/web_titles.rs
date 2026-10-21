@@ -3,9 +3,10 @@
 //! A title template marks each field exposed to the browser title editor or
 //! hidden from it. A Web session (anything the gateway relays) is never sent
 //! a hidden field at all: its `title_state` records leave hidden fields out
-//! (name, value, and id), its `title_changed` events carry only the exposed
-//! values, and its `title_exposure_changed` events name only the exposed
-//! fields. A Web session may not name a hidden field in `title_fields` or
+//! (name, value, and id), its `title_changed` events and the title values
+//! of its `cue_run_changed`, `script_ran`, and `shortcut_fired` events carry
+//! only the exposed values, and its `title_exposure_changed` events name
+//! only the exposed fields. A Web session may not name a hidden field in `title_fields` or
 //! `title_take` (refused as if the field did not exist) and may not change
 //! exposure itself; Studio does that.
 //!
@@ -139,8 +140,9 @@ pub(crate) fn exposure_inputs(message: &WireMessage) -> Option<&[WireInputId]> {
     }
 }
 
-/// A live record as a Web session sees it: title values and exposure
-/// without hidden fields. Everything else passes unchanged.
+/// A live record as a Web session sees it: title values (of title changes
+/// and of cue, script, and shortcut runs) and exposure without hidden
+/// fields. Everything else passes unchanged.
 pub(crate) fn web_live_message(message: WireMessage, hidden: &HiddenFields) -> WireMessage {
     let WireMessage::Event(mut event) = message else {
         return message;
@@ -152,6 +154,21 @@ pub(crate) fn web_live_message(message: WireMessage, hidden: &HiddenFields) -> W
         }
         EventPayload::TitleExposureChanged { fields, .. } => {
             fields.retain(|item| item.exposed);
+        }
+        EventPayload::CueRunChanged(change) => {
+            change
+                .titles
+                .retain(|text| !hidden.hides(text.input, text.field));
+        }
+        EventPayload::ScriptRan(change) => {
+            change
+                .titles
+                .retain(|text| !hidden.hides(text.input, text.field));
+        }
+        EventPayload::ShortcutFired(change) => {
+            change
+                .titles
+                .retain(|text| !hidden.hides(text.input, text.field));
         }
         _ => {}
     }
@@ -327,6 +344,118 @@ mod tests {
         );
         let line = fm_protocol::encode_line(&exposure).unwrap();
         assert!(line.contains("\tfields=1%3A1\t"), "{line}");
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // one fixture per run event
+    fn cue_script_and_shortcut_runs_leave_hidden_title_values_out() {
+        use fm_protocol::{
+            CueRunChange, CueRunStatus, CueTitleText, CueTitleValue, FadeToBlackPosition,
+            FadeToBlackState, ManualTransitionStatus, OverlayStatus, PlaylistRunState,
+            ScriptRunChange, ShortcutFireChange,
+        };
+        let titles = || {
+            vec![
+                CueTitleText {
+                    input: input(3),
+                    field_revision: 2,
+                    field: field(1),
+                    value: CueTitleValue::Text("Ana".into()),
+                },
+                CueTitleText {
+                    input: input(3),
+                    field_revision: 2,
+                    field: field(2),
+                    value: CueTitleValue::Text("producer note".into()),
+                },
+                // Another title's same field id is not hidden.
+                CueTitleText {
+                    input: input(5),
+                    field_revision: 1,
+                    field: field(2),
+                    value: CueTitleValue::Text("kept".into()),
+                },
+            ]
+        };
+        let fade = FadeToBlackState {
+            target_active: false,
+            position: FadeToBlackPosition::LIVE,
+        };
+        let events = [
+            EventPayload::CueRunChanged(Box::new(CueRunChange {
+                list: 1,
+                frame: 10,
+                state: CueRunStatus::default(),
+                fired: vec![1],
+                program: input(1),
+                preview: input(2),
+                manual_transition: ManualTransitionStatus::Inactive,
+                fade_to_black: fade,
+                overlays: OverlayStatus::empty_channels(),
+                input_audio_strips: Vec::new(),
+                streams: Vec::new(),
+                recordings: Vec::new(),
+                playlist: PlaylistRunState::Stopped,
+                titles: titles(),
+                media: Vec::new(),
+                scripts: Vec::new(),
+            })),
+            EventPayload::ScriptRan(Box::new(ScriptRunChange {
+                script: 1,
+                frame: 10,
+                actions: 2,
+                instructions: 5,
+                run: fm_protocol::ScriptRunStatus::Idle,
+                program: input(1),
+                preview: input(2),
+                manual_transition: ManualTransitionStatus::Inactive,
+                fade_to_black: fade,
+                overlays: OverlayStatus::empty_channels(),
+                input_audio_strips: Vec::new(),
+                streams: Vec::new(),
+                recordings: Vec::new(),
+                playlist: PlaylistRunState::Stopped,
+                titles: titles(),
+                media: Vec::new(),
+            })),
+            EventPayload::ShortcutFired(Box::new(ShortcutFireChange {
+                shortcut: 1,
+                frame: 10,
+                actions: 2,
+                program: input(1),
+                preview: input(2),
+                manual_transition: ManualTransitionStatus::Inactive,
+                fade_to_black: fade,
+                overlays: OverlayStatus::empty_channels(),
+                input_audio_strips: Vec::new(),
+                streams: Vec::new(),
+                recordings: Vec::new(),
+                playlist: PlaylistRunState::Stopped,
+                titles: titles(),
+                media: Vec::new(),
+                scripts: Vec::new(),
+            })),
+        ];
+        for payload in events {
+            let web = web_live_message(event(payload), &hidden());
+            let WireMessage::Event(EventMessage { payload, .. }) = &web else {
+                panic!("{web:?}")
+            };
+            let titles = match payload {
+                EventPayload::CueRunChanged(change) => &change.titles,
+                EventPayload::ScriptRan(change) => &change.titles,
+                EventPayload::ShortcutFired(change) => &change.titles,
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(
+                titles
+                    .iter()
+                    .map(|title| (title.input, title.field))
+                    .collect::<Vec<_>>(),
+                [(input(3), field(1)), (input(5), field(2))]
+            );
+            assert!(!format!("{web:?}").contains("producer"), "{web:?}");
+        }
     }
 
     #[test]

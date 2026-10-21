@@ -3498,8 +3498,9 @@ the title template.
   the animation and the hidden fields.
 - A Web session (anything the gateway relays) never receives a hidden
   field: its `title_state` records leave hidden fields out entirely (value,
-  name, and flag), its `title_changed` events carry only exposed values,
-  and its `title_exposure_changed` events list only the exposed fields of
+  name, and flag), its `title_changed` events and the `titles` of its
+  `cue_run_changed`, `script_ran`, and `shortcut_fired` events carry only
+  exposed values, and its `title_exposure_changed` events list only the exposed fields of
   the template (a page drops fields no longer listed and resynchronizes to
   learn newly listed ones). Its `title_fields` and `title_take` naming a
   hidden field are refused `not_found` as if the field did not exist, and
