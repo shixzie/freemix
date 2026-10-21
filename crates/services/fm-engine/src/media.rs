@@ -317,10 +317,11 @@ pub(crate) struct MediaRuntime {
     /// Whether the next source opened starts playing at once: a media list
     /// stepped to another file while playing (IN-006).
     pub(crate) play_on_open: bool,
-    /// A playing media list stepped with a blending transition (IN-006):
-    /// the transport as the step finds it becomes the outgoing item when
-    /// the step's file opens, or (for an item of the same file) when its
-    /// re-cue is realized.
+    /// A media list stepped (IN-006) with this transition, a cut when it
+    /// does not blend (a cut option, or a stopped list): when the step's
+    /// file opens, or (for an item of the same file) when its re-cue is
+    /// realized, the transport as the step finds it becomes the outgoing
+    /// item of a blending transition, and an earlier outgoing item ends.
     pub(crate) pending_transition: Option<fm_model::MediaListTransition>,
     outgoing: Option<Outgoing>,
 }
@@ -412,11 +413,13 @@ impl MediaRuntime {
 
     /// Makes the transport the outgoing item of the pending media list
     /// transition (IN-006), held at its last frame when it reaches its end.
-    /// A cut, or a step with nothing open, has none.
+    /// A cut, or a step with nothing open, has none; any step ends the
+    /// outgoing item of an earlier one.
     fn begin_outgoing(&mut self) {
         let Some(transition) = self.pending_transition.take() else {
             return;
         };
+        self.outgoing = None;
         let Some(mut playback) = self.playback.clone() else {
             return;
         };

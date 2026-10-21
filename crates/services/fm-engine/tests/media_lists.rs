@@ -1204,3 +1204,60 @@ fn the_transition_is_validated_and_undoable() {
     );
     assert_eq!(options(&engine), faded(MediaListTransitionKind::Fade));
 }
+
+/// Ticks once; returns whether the list composites an outgoing item.
+fn ticks_with_outgoing(engine: &mut Engine) -> bool {
+    let frame = engine.tick().unwrap();
+    frame
+        .media
+        .iter()
+        .filter(|media| media.input == input(LIST))
+        .any(|media| media.outgoing.is_some())
+}
+
+#[test]
+fn a_step_without_a_transition_ends_the_running_one() {
+    // A step made a cut mid-blend drops the earlier outgoing item.
+    let mut engine = engine();
+    create_long(&mut engine, faded(MediaListTransitionKind::Fade));
+    play(&mut engine, "play");
+    blend_step(&mut engine);
+    navigate(&mut engine, "next", EngineMediaListNavigation::Next);
+    assert_eq!(blend_step(&mut engine).1.map(|(_, step, _)| step), Some(1));
+    accept(
+        &mut engine,
+        "cut",
+        EngineMediaListOperation::Set {
+            items: long_items(),
+            options: MediaListOptions {
+                auto_next: true,
+                ..MediaListOptions::default()
+            },
+            active: None,
+        },
+    );
+    navigate(&mut engine, "previous", EngineMediaListNavigation::Previous);
+    assert_eq!(asset(&engine), "asset://media/a.mp4");
+    assert!(!ticks_with_outgoing(&mut engine));
+
+    // So does a stopped step.
+    let mut engine = self::engine();
+    create_long(&mut engine, faded(MediaListTransitionKind::Fade));
+    play(&mut engine, "play");
+    blend_step(&mut engine);
+    navigate(&mut engine, "next", EngineMediaListNavigation::Next);
+    assert_eq!(blend_step(&mut engine).1.map(|(_, step, _)| step), Some(1));
+    let outcome = execute(
+        &mut engine,
+        "stop",
+        EngineCommand::Media(EngineMediaCommand {
+            input: input(LIST),
+            operation: EngineMediaOperation::Stop,
+        }),
+    );
+    assert!(outcome.receipt.accepted().is_some());
+    engine.tick().unwrap();
+    navigate(&mut engine, "previous", EngineMediaListNavigation::Previous);
+    assert_eq!(asset(&engine), "asset://media/a.mp4");
+    assert!(!ticks_with_outgoing(&mut engine));
+}

@@ -2760,13 +2760,15 @@ impl Engine {
                     runtime.play_on_open = activation.play;
                 }
                 // A playing step blends the two items when its transition
-                // does: the transport as the step finds it plays out.
-                runtime.pending_transition = plan
-                    .activation
-                    .as_ref()
-                    .filter(|activation| activation.play)
-                    .map(|_| plan.list.options.transition)
-                    .filter(|transition| transition.blend_frames() > 0);
+                // does: the transport as the step finds it plays out. Any
+                // other step is a cut.
+                runtime.pending_transition = plan.activation.as_ref().map(|activation| {
+                    if activation.play {
+                        plan.list.options.transition
+                    } else {
+                        fm_model::MediaListTransition::CUT
+                    }
+                });
             }
             if !matches!(step, HistoryStep::None) {
                 self.history.commit(step, command, command_id, revision);
