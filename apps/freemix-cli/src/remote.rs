@@ -1460,6 +1460,64 @@ fn print_diagnostics(response: &DiagnosticsResponse) {
     for sample in &response.source_sync {
         println!("{}", format_source_sync(sample));
     }
+    for line in format_health(&response.health) {
+        println!("{line}");
+    }
+}
+
+/// The daemon's health (RC-015): one `Health` line with the utilization,
+/// then one `Alert` line per firing alert and one `AlertNotification` line
+/// per recent notification.
+pub(crate) fn format_health(health: &fm_protocol::DaemonHealth) -> Vec<String> {
+    let mut lines = vec![format!(
+        "Health(uptime_ms={}, cpu={}, gpu={}, alerts={}, notifications={})",
+        health.uptime_ms,
+        utilization(health.cpu_permille),
+        utilization(health.gpu_permille),
+        health.alerts.len(),
+        health.notifications.len(),
+    )];
+    lines.extend(health.alerts.iter().map(|alert| {
+        format!(
+            "Alert(rule={}, severity={}, since_ms={}, value={})",
+            alert.rule.token(),
+            alert.severity.token(),
+            alert.since_ms,
+            milli_value(alert.value_milli),
+        )
+    }));
+    lines.extend(health.notifications.iter().map(|notification| {
+        format!(
+            "AlertNotification(sequence={}, rule={}, severity={}, kind={}, at_ms={}, value={})",
+            notification.sequence,
+            notification.rule.token(),
+            notification.severity.token(),
+            notification.kind.token(),
+            notification.at_ms,
+            milli_value(notification.value_milli),
+        )
+    }));
+    lines
+}
+
+/// Permille as a percentage with one decimal, or `unavailable`.
+fn utilization(permille: Option<u16>) -> String {
+    permille.map_or_else(
+        || "unavailable".to_owned(),
+        |permille| format!("{}.{}%", permille / 10, permille % 10),
+    )
+}
+
+/// An exact reading times 1000 as a decimal: `-0.005`, `1.000`, or `none`.
+fn milli_value(value: Option<i64>) -> String {
+    value.map_or_else(
+        || "none".to_owned(),
+        |value| {
+            let sign = if value < 0 { "-" } else { "" };
+            let magnitude = value.unsigned_abs();
+            format!("{sign}{}.{:03}", magnitude / 1_000, magnitude % 1_000)
+        },
+    )
 }
 
 /// One live source's drift loop (AU-004) on one line.

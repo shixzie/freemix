@@ -6328,6 +6328,7 @@ Usage:
   freemix-cli remote-status <127.0.0.1:port>
   freemix-cli remote-diagnostics <127.0.0.1:port>
     also prints one SourceSync line per live source clock: drift, ratio, buffer, and recovery counts
+    then a Health line (CPU and GPU-proxy utilization) and one Alert and AlertNotification line per firing alert and recent notification
   freemix-cli remote-audio-strip <127.0.0.1:port> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp>] [--key <key>] [--expect <revision>]
   freemix-cli remote-audio-label|remote-audio-group|remote-audio-group-name|remote-audio-group-level|remote-audio-group-solo|remote-audio-group-parent|remote-audio-solo-mode|remote-audio-monitor-device|remote-audio-monitor-level|remote-audio-strip-dsp|remote-audio-loudness-reset <127.0.0.1:port> <arguments as above> [--key <key>] [--expect <revision>]
   freemix-cli remote-rename <127.0.0.1:port> <input> <name> [--key <key>] [--expect <revision>]

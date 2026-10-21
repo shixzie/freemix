@@ -68,8 +68,20 @@ impl FakeRemoteServer {
         response_log_id: &'static str,
         source_sync: Vec<fm_protocol::SourceSyncSample>,
     ) -> Self {
+        Self::start_diagnostics_health(
+            response_log_id,
+            source_sync,
+            fm_protocol::DaemonHealth::default(),
+        )
+    }
+
+    fn start_diagnostics_health(
+        response_log_id: &'static str,
+        source_sync: Vec<fm_protocol::SourceSyncSample>,
+        health: fm_protocol::DaemonHealth,
+    ) -> Self {
         Self::start_test_peer(move |stream| {
-            serve_diagnostics_peer(stream, response_log_id, source_sync);
+            serve_diagnostics_peer(stream, response_log_id, source_sync, health);
         })
     }
 
@@ -327,6 +339,7 @@ fn serve_diagnostics_peer(
     stream: TcpStream,
     response_log_id: &str,
     source_sync: Vec<fm_protocol::SourceSyncSample>,
+    health: fm_protocol::DaemonHealth,
 ) {
     let engine = EngineIdentity {
         engine_id: "diag-engine".into(),
@@ -373,7 +386,7 @@ fn serve_diagnostics_peer(
             subscriber_limit: 8,
             subscriber_queue_limit: 16,
             source_sync,
-            health: fm_protocol::DaemonHealth::default(),
+            health,
         }),
     );
 }
@@ -2180,7 +2193,7 @@ fn remote_diagnostics_reports_exact_identity_and_rejects_mismatched_log_id() {
     let rendered = stdout(&output);
     assert_eq!(
         rendered,
-        "diagnostics=v1 engine_id=diag-engine state_epoch=7 revision=12 retained_oldest=3 retained_newest=12 subscribers=2/8 retained_limit=64 subscriber_queue=16"
+        "diagnostics=v1 engine_id=diag-engine state_epoch=7 revision=12 retained_oldest=3 retained_newest=12 subscribers=2/8 retained_limit=64 subscriber_queue=16\nHealth(uptime_ms=0, cpu=unavailable, gpu=unavailable, alerts=0, notifications=0)"
     );
     assert!(!rendered.contains("log_id"));
 
@@ -2233,10 +2246,62 @@ fn remote_diagnostics_lists_each_live_source_clock() {
     server.finish();
     assert_success(&output);
     assert_eq!(
-        stdout(&output).lines().skip(1).collect::<Vec<_>>(),
+        stdout(&output)
+            .lines()
+            .filter(|line| line.starts_with("SourceSync("))
+            .collect::<Vec<_>>(),
         [
             "SourceSync(input=7, kind=capture, state=running, drift_ppm=-12.345, correction_ppm=+12.001, ratio=0.91876103, rate_hz=44100/48000, buffer_ms=81.250, target_ms=80.000, resyncs=1, underruns=0, overruns=0, picture_drops=4, picture_repeats=5, restarts=1)",
             "SourceSync(input=9, kind=system_audio, state=recovering, drift_ppm=-12.345, correction_ppm=+12.001, ratio=0.91876103, rate_hz=44100/48000, buffer_ms=81.250, target_ms=80.000, resyncs=1, underruns=2, overruns=0, picture_drops=4, picture_repeats=5, restarts=1)",
+        ]
+    );
+}
+
+/// RC-015: `remote-diagnostics` prints the daemon's utilization, every
+/// firing alert, and the recent notifications.
+#[test]
+fn remote_diagnostics_prints_health_and_alerts() {
+    let health = fm_protocol::DaemonHealth {
+        uptime_ms: 60_000,
+        cpu_permille: Some(925),
+        gpu_permille: None,
+        alerts: vec![fm_protocol::HealthAlert {
+            rule: fm_protocol::HealthAlertRule::CpuSaturated,
+            severity: fm_protocol::HealthSeverity::Warning,
+            since_ms: 50_000,
+            value_milli: Some(925),
+        }],
+        notifications: vec![
+            fm_protocol::HealthNotification {
+                sequence: 3,
+                rule: fm_protocol::HealthAlertRule::OutputFailed,
+                severity: fm_protocol::HealthSeverity::Critical,
+                kind: fm_protocol::HealthNotificationKind::Resolved,
+                at_ms: 40_000,
+                value_milli: Some(-5),
+            },
+            fm_protocol::HealthNotification {
+                sequence: 4,
+                rule: fm_protocol::HealthAlertRule::CpuSaturated,
+                severity: fm_protocol::HealthSeverity::Warning,
+                kind: fm_protocol::HealthNotificationKind::Firing,
+                at_ms: 50_000,
+                value_milli: None,
+            },
+        ],
+    };
+    let server = FakeRemoteServer::start_diagnostics_health("secret-log", Vec::new(), health);
+    let address = server.address();
+    let output = invoke_bounded(&["remote-diagnostics", &address]);
+    server.finish();
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output).lines().skip(1).collect::<Vec<_>>(),
+        [
+            "Health(uptime_ms=60000, cpu=92.5%, gpu=unavailable, alerts=1, notifications=2)",
+            "Alert(rule=cpu_saturated, severity=warning, since_ms=50000, value=0.925)",
+            "AlertNotification(sequence=3, rule=output_failed, severity=critical, kind=resolved, at_ms=40000, value=-0.005)",
+            "AlertNotification(sequence=4, rule=cpu_saturated, severity=warning, kind=firing, at_ms=50000, value=none)",
         ]
     );
 }
