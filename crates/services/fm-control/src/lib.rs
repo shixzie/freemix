@@ -966,6 +966,10 @@ pub struct ControlService<A = Policy> {
     /// Media list items that ended under Auto Next since the authority
     /// last took them, oldest first (bounded like the end triggers).
     media_list_ends: Vec<MediaListEnd>,
+    /// Each media list's active item and the output frames it had left on
+    /// the last frame it played, so a blending transition's early Auto
+    /// Next fires once, as the item crosses its lead (IN-006).
+    media_list_leads: BTreeMap<InputId, (u32, u64)>,
     /// Inputs whose source is unavailable, and why (IN-026): runtime state
     /// reported by media faults and by the media plane.
     input_offline: BTreeMap<InputId, fm_protocol::InputOfflineReason>,
@@ -1084,6 +1088,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             media_published: HashMap::new(),
             media_end_triggers: Vec::new(),
             media_list_ends: Vec::new(),
+            media_list_leads: BTreeMap::new(),
             input_offline: BTreeMap::new(),
             display_states: BTreeMap::new(),
             display_inventory: fm_protocol::DisplayInventory::default(),
@@ -1148,6 +1153,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             media_published: self.media_published.clone(),
             media_end_triggers: self.media_end_triggers.clone(),
             media_list_ends: self.media_list_ends.clone(),
+            media_list_leads: self.media_list_leads.clone(),
             input_offline: self.input_offline.clone(),
             display_states: self.display_states.clone(),
             display_inventory: self.display_inventory.clone(),
@@ -2656,12 +2662,7 @@ impl<A: AuthorizationHook> ControlService<A> {
                     frame: frame.frame.get(),
                 });
             }
-            let ended = media_frame.tick.as_ref().is_some_and(|tick| {
-                tick.events
-                    .iter()
-                    .any(|event| matches!(event, fm_engine::fm_playback::MediaEvent::Ended { .. }))
-            });
-            if ended
+            if media_list::item_done(&self.engine, media_frame, &mut self.media_list_leads)
                 && let Some(list) = self.engine.show().media_list(media_frame.input)
                 && list.options.auto_next
             {

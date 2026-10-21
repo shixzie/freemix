@@ -35,9 +35,9 @@ use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProjec
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
     EventPayload, HandshakeRequest, MediaListItemLength, MediaListItemSpec, MediaListNavigation,
-    MediaListOperation, MediaListOptionsSpec, MediaListStatus, MediaOperation,
-    MonitorFrameAssembler, MonitorImage, Role, RuntimeLifecycleEvent, SnapshotMessage, WireInputId,
-    WireMessage, decode_line, encode_line,
+    MediaListOperation, MediaListOptionsSpec, MediaListStatus, MediaListTransitionKind,
+    MediaListTransitionSpec, MediaOperation, MonitorFrameAssembler, MonitorImage, Role,
+    RuntimeLifecycleEvent, SnapshotMessage, WireInputId, WireMessage, decode_line, encode_line,
 };
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
@@ -894,4 +894,133 @@ fn a_native_media_list_reports_every_items_probed_length() {
     // A reconnecting client receives the lengths with the list.
     let (_reconnected, _, lists) = Client::connect(daemon.address);
     assert_eq!(lists[0].lengths, [length(25), length(75), None]);
+}
+
+/// Protocol 2.96 list transitions on the native runtime: under Auto Next a
+/// wipe steps eight frames before the first item's out mark, and Program,
+/// recorded frame by frame, shows the two prefetched items composited, the
+/// outgoing one still playing: on the k-th of the eight frames the left
+/// `floor(320 k / 9)` columns show the incoming item, so the low bit blocks
+/// (`40 b + 20` columns in) read its frame number and the rest the outgoing
+/// item's, before the incoming item plays on alone.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn a_native_media_list_wipes_between_overlapping_items() {
+    if !ffmpeg_available() {
+        eprintln!("native media list integration skipped: FFmpeg tools unavailable");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("native-media-lists.freemix");
+    save_project(&project_path, true);
+    let recorded = directory.path().join("recordings");
+    std::fs::create_dir(&recorded).unwrap();
+    let host = directory.path().join("host");
+    std::fs::create_dir(&host).unwrap();
+    let (first, second) = (host.join("first.mkv"), host.join("second.mkv"));
+    generate_clip(&first, 0);
+    generate_clip(&second, SECOND);
+    let Some(mut daemon) = start_or_skip(&project_path, Some(&recorded.join("program.mp4"))) else {
+        return;
+    };
+    let (mut client, _, _) = Client::connect(daemon.address);
+    let created = client
+        .accept(CommandPayload::MediaList {
+            input: list(),
+            operation: MediaListOperation::Create {
+                name: "Wipes".into(),
+                items: vec![
+                    MediaListItemSpec {
+                        id: 1,
+                        uri: first.to_str().unwrap().into(),
+                        title: None,
+                        mark_in: 10,
+                        mark_out: Some(30),
+                    },
+                    MediaListItemSpec {
+                        id: 2,
+                        uri: second.to_str().unwrap().into(),
+                        title: None,
+                        mark_in: 5,
+                        mark_out: None,
+                    },
+                ],
+                options: MediaListOptionsSpec {
+                    auto_next: true,
+                    transition: MediaListTransitionSpec {
+                        kind: MediaListTransitionKind::Wipe,
+                        duration_frames: 8,
+                    },
+                    ..MediaListOptionsSpec::default()
+                },
+            },
+        })
+        .unwrap();
+    assert_eq!(
+        created.options.transition.kind,
+        MediaListTransitionKind::Wipe
+    );
+    client.accept(CommandPayload::SelectPreview { input: list() });
+    client.accept(CommandPayload::Cut);
+    client.wait_for("the first item's in mark on Program", |client, message| {
+        (client.shown_frame(message)? == 10).then_some(())
+    });
+    // The second file opens in the background while the first is cued.
+    thread::sleep(Duration::from_secs(2));
+    client.accept(CommandPayload::Media {
+        input: list(),
+        operation: MediaOperation::Play,
+    });
+    client.wait_for("the second item under way", |client, message| {
+        (client.shown_frame(message)? >= SECOND + 30).then_some(())
+    });
+    drop(client);
+    let log = daemon.stop();
+    assert_eq!(
+        log.matches("prefetched=1").count(),
+        1,
+        "the step takes the prefetched file: {log}"
+    );
+
+    let segments = recordings(&recorded);
+    assert_eq!(segments.len(), 1, "{segments:?}");
+    let numbers = recorded_numbers(&segments[0]);
+    let start = numbers
+        .iter()
+        .position(|number| *number == 11)
+        .unwrap_or_else(|| panic!("the first item never played: {numbers:?}"));
+    let played = &numbers[start..];
+    // The first item plays on until the transition's first frame.
+    let first_blend = (1..played.len())
+        .find(|at| played[*at] != played[at - 1] + 1)
+        .unwrap_or_else(|| panic!("no transition: {played:?}"));
+    let outgoing_from = played[first_blend - 1] + 1;
+    assert!(
+        outgoing_from <= 24,
+        "the wipe did not start eight frames before the out mark: {played:?}"
+    );
+    // Columns 20, 60, ... 300 of the bit blocks against each step's edge.
+    let edges = (1..=8_u64).map(|step| 320 * step / 9);
+    for (step, edge) in (0_u64..).zip(edges) {
+        let incoming_bits = (0..8).filter(|bit| 40 * bit + 20 < edge).count();
+        let mask = (1_u64 << incoming_bits) - 1;
+        // The outgoing item holds its last frame (29) past its out mark.
+        let outgoing = (outgoing_from + step).min(29);
+        let incoming = SECOND + 5 + step;
+        let expected = (incoming & mask) | (outgoing & !mask & 0xff);
+        let at = first_blend + usize::try_from(step).unwrap();
+        assert_eq!(
+            played.get(at).copied(),
+            Some(expected),
+            "transition frame {} (edge {edge}): {played:?}",
+            step + 1
+        );
+    }
+    // Then the incoming item alone, moving on.
+    let after = first_blend + 8;
+    assert_eq!(
+        played.get(after..after + 3),
+        Some(&[SECOND + 13, SECOND + 14, SECOND + 15][..]),
+        "{played:?}"
+    );
 }

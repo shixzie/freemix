@@ -1517,6 +1517,70 @@ fn format_paged_status(status: &fm_protocol::PagedStatus) -> String {
     line
 }
 
+/// A played duration in seconds with millisecond precision.
+fn format_seconds(micros: u64) -> String {
+    format!("{}.{:03}s", micros / 1_000_000, micros % 1_000_000 / 1_000)
+}
+
+/// One media list (IN-006): its options and transition (Protocol 2.96),
+/// the total it plays through its marks (`>=` while some lengths are
+/// unknown), and each item `id:"name" in..out file_frames@rate played`,
+/// the active item starred; a length the authority has not probed is `?`.
+pub(crate) fn format_media_list(status: &fm_protocol::MediaListStatus) -> String {
+    let options = &status.options;
+    let (total, complete) = status.total_micros();
+    let items = status
+        .items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let length = status.lengths.get(index).copied().flatten();
+            format!(
+                "{}{}:{:?} {}..{} {} {}",
+                item.id,
+                if item.id == status.active { "*" } else { "" },
+                item.title.as_deref().unwrap_or(&item.uri),
+                item.mark_in,
+                item.mark_out
+                    .map_or_else(|| "end".to_owned(), |out| out.to_string()),
+                length.map_or_else(
+                    || "?".to_owned(),
+                    |length| format!(
+                        "{}@{}/{}",
+                        length.frames,
+                        length.rate.numerator(),
+                        length.rate.denominator()
+                    )
+                ),
+                length.map_or_else(
+                    || "?".to_owned(),
+                    |length| format_seconds(length.played_micros(item.mark_in, item.mark_out))
+                ),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "MediaList(input={}, active={}, position={}/{}, cycle={}, auto_next={}, auto_first={}, loop={}, shuffle={}, transition={}/{}, total{}{}, items=[{}])",
+        status.input,
+        status.active,
+        u64::from(status.position) + 1,
+        status.items.len(),
+        status.cycle,
+        options.auto_next,
+        options.auto_first,
+        options.loop_list,
+        options
+            .shuffle_seed
+            .map_or_else(|| "off".to_owned(), |seed| seed.to_string()),
+        options.transition.kind.token(),
+        options.transition.duration_frames,
+        if complete { "=" } else { ">=" },
+        format_seconds(total),
+        items
+    )
+}
+
 pub(crate) fn format_media_status(status: &fm_protocol::MediaStatus) -> String {
     let settings = &status.settings;
     let transport = &status.transport;
@@ -2200,6 +2264,9 @@ impl Remote {
         for status in state.media().values() {
             println!("{}", format_media_status(status));
         }
+        for status in state.media_lists().values() {
+            println!("{}", format_media_list(status));
+        }
         for status in state.paged_statuses() {
             println!("{}", format_paged_status(status));
         }
@@ -2822,5 +2889,64 @@ mod refusal_text_tests {
             super::refusal_text("internal", "boom", None),
             "internal: boom"
         );
+    }
+}
+
+#[cfg(test)]
+mod media_list_tests {
+    use std::num::NonZeroU128;
+
+    use fm_protocol::{
+        MediaListItemLength, MediaListItemSpec, MediaListOptionsSpec, MediaListStatus,
+        MediaListTransitionKind, MediaListTransitionSpec, WireInputId,
+    };
+    use fm_types::FrameRate;
+
+    #[test]
+    fn a_media_list_prints_its_transition_and_every_items_length() {
+        let item = |id: u32, uri: &str, mark_in: u64, mark_out: Option<u64>| MediaListItemSpec {
+            id,
+            uri: uri.into(),
+            title: None,
+            mark_in,
+            mark_out,
+        };
+        let mut status = MediaListStatus {
+            input: WireInputId::new(NonZeroU128::new(7).unwrap()),
+            items: vec![
+                item(1, "a.mkv", 10, Some(40)),
+                item(2, "b.mkv", 0, None),
+                item(3, "c.mkv", 0, None),
+            ],
+            options: MediaListOptionsSpec {
+                auto_next: true,
+                transition: MediaListTransitionSpec {
+                    kind: MediaListTransitionKind::Dip,
+                    duration_frames: 12,
+                },
+                ..MediaListOptionsSpec::default()
+            },
+            active: 2,
+            cycle: 0,
+            order: vec![1, 2, 3],
+            position: 1,
+            lengths: vec![
+                Some(MediaListItemLength {
+                    frames: 300,
+                    rate: FrameRate::new(30, 1).unwrap(),
+                }),
+                Some(MediaListItemLength {
+                    frames: 250,
+                    rate: FrameRate::new(25, 1).unwrap(),
+                }),
+                None,
+            ],
+        };
+        assert_eq!(
+            super::format_media_list(&status),
+            "MediaList(input=7, active=2, position=2/3, cycle=0, auto_next=true, auto_first=false, loop=false, shuffle=off, transition=dip/12, total>=11.000s, items=[1:\"a.mkv\" 10..40 300@30/1 1.000s, 2*:\"b.mkv\" 0..end 250@25/1 10.000s, 3:\"c.mkv\" 0..end ? ?])"
+        );
+        status.lengths[2] = status.lengths[1];
+        assert!(super::format_media_list(&status).contains("total=21.000s"));
     }
 }

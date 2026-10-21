@@ -497,3 +497,74 @@ fn probed_item_lengths_are_published_and_carried() {
     };
     assert_eq!(status.lengths, [None, None]);
 }
+
+/// Ticks until an Auto Next end is queued; returns how many frames it
+/// took and the item that ended.
+fn ticks_to_end(control: &mut ControlService) -> (u32, u32) {
+    for ticks in 1..=40 {
+        control.tick(&server_identity()).unwrap();
+        if let Some(end) = control.take_media_list_ends().first() {
+            return (ticks, end.item);
+        }
+    }
+    panic!("no item ended");
+}
+
+/// Two ten-frame items cross-fading over four frames (Protocol 2.96): the
+/// transition rides the wire, and Auto Next steps four frames before the
+/// opener's out mark so the items overlap, except at the end of a list
+/// that does not play on (Auto First cues the first item only once the
+/// last one ends).
+#[test]
+fn a_blending_transition_steps_auto_next_early_by_its_length() {
+    let transition = fm_protocol::MediaListTransitionSpec {
+        kind: fm_protocol::MediaListTransitionKind::Fade,
+        duration_frames: 4,
+    };
+    let options = MediaListOptionsSpec {
+        auto_next: true,
+        auto_first: true,
+        transition,
+        ..MediaListOptionsSpec::default()
+    };
+    let mut ten = items();
+    ten[0].mark_out = Some(20);
+    ten[1].mark_out = Some(10);
+    let mut control = service(64, 256);
+    let created = submit(
+        &mut control,
+        Role::Graphics,
+        "create",
+        payload(MediaListOperation::Create {
+            name: "Walk-in".to_owned(),
+            items: ten,
+            options,
+        }),
+    );
+    assert!(created.is_accepted(), "{:?}", created.output.result);
+    assert_wire_exact(&control, &created);
+    assert_eq!(changed(&created).3.options.transition, transition);
+    let play = submit(
+        &mut control,
+        Role::Operator,
+        "play",
+        CommandPayload::Media {
+            input: list(),
+            operation: MediaOperation::Play,
+        },
+    );
+    assert!(play.is_accepted(), "{:?}", play.output.result);
+    // Frames 10..=19 play; the step comes on the frame presenting 15, with
+    // four of the opener's frames still to play.
+    assert_eq!(ticks_to_end(&mut control), (6, 1));
+    let advanced = submit(
+        &mut control,
+        Role::Operator,
+        "advance",
+        payload(MediaListOperation::Advance { from: 1 }),
+    );
+    assert!(advanced.is_accepted(), "{:?}", advanced.output.result);
+    // The last item of a list that does not loop ends before Auto First
+    // cues the first: all ten of its frames play.
+    assert_eq!(ticks_to_end(&mut control), (10, 2));
+}

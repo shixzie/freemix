@@ -33,6 +33,10 @@ pub const MAX_MEDIA_LIST_TITLE_BYTES: usize = 128;
 pub const MAX_MEDIA_LIST_TEXT_BYTES: usize = 16 * 1024;
 /// Largest item id.
 pub const MAX_MEDIA_LIST_ITEM_ID: u32 = 1_000_000;
+/// Longest transition between two items, in output frames (Protocol 2.96).
+pub const MAX_MEDIA_LIST_TRANSITION_FRAMES: u32 = 600;
+/// The transition length a new list starts with, in output frames.
+pub const DEFAULT_MEDIA_LIST_TRANSITION_FRAMES: u32 = 15;
 
 /// One item of a media list.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -85,6 +89,72 @@ impl MediaListItemLength {
     }
 }
 
+/// How one item gives way to the next (Protocol 2.96).
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum MediaListTransitionKind {
+    /// The next item replaces the active one on the step's frame.
+    #[default]
+    Cut,
+    /// The two items cross-fade.
+    Fade,
+    /// Through black: the outgoing item fades out over the first half and
+    /// the incoming one fades up over the second.
+    Dip,
+    /// The incoming item wipes in from the left edge.
+    Wipe,
+}
+
+impl MediaListTransitionKind {
+    /// Every kind, in operator order.
+    pub const ALL: [Self; 4] = [Self::Cut, Self::Fade, Self::Dip, Self::Wipe];
+
+    /// `cut`, `fade`, `dip`, or `wipe`.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Cut => "cut",
+            Self::Fade => "fade",
+            Self::Dip => "dip",
+            Self::Wipe => "wipe",
+        }
+    }
+
+    /// The kind a token names.
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.token() == token)
+    }
+}
+
+/// The transition a playing list plays between two items (Protocol 2.96):
+/// the outgoing and incoming items are composited for `duration_frames`
+/// output frames, and under Auto Next the step comes that many frames
+/// before the outgoing item's out point. A cut keeps, but does not use,
+/// its duration.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct MediaListTransitionSpec {
+    pub kind: MediaListTransitionKind,
+    /// `1..=MAX_MEDIA_LIST_TRANSITION_FRAMES`.
+    pub duration_frames: u32,
+}
+
+impl Default for MediaListTransitionSpec {
+    fn default() -> Self {
+        Self {
+            kind: MediaListTransitionKind::Cut,
+            duration_frames: DEFAULT_MEDIA_LIST_TRANSITION_FRAMES,
+        }
+    }
+}
+
+impl MediaListTransitionSpec {
+    /// Whether the duration is within the wire bounds.
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        self.duration_frames >= 1 && self.duration_frames <= MAX_MEDIA_LIST_TRANSITION_FRAMES
+    }
+}
+
 /// How a media list progresses.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct MediaListOptionsSpec {
@@ -96,6 +166,8 @@ pub struct MediaListOptionsSpec {
     pub loop_list: bool,
     /// Play order is the seeded permutation of each cycle.
     pub shuffle_seed: Option<u64>,
+    /// How a playing list steps between items (Protocol 2.96).
+    pub transition: MediaListTransitionSpec,
 }
 
 /// One step through a list's play order.

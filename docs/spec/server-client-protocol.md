@@ -3646,6 +3646,57 @@ on the Web operator page (AU-005, schema 76).
   beside the polarity key, with hover help.
 - 2.93 is refused.
 
+Protocol 2.96 adds per-list transitions between media list items (IN-006,
+schema 77).
+
+- A list's options (the `create` and `set` operations and every status:
+  `media_list_state`, `event=media_list_changed`, and `runtime_event`
+  `event=media_list`) gain required `transition` (`cut`, `fade`, `dip`, or
+  `wipe`) and `transition_frames` (`1..=600`, the program frames it lasts)
+  after `shuffle_seed`. A missing field, another kind, or a length outside
+  the bounds is refused; the authority refuses such options
+  `invalid_transition` (field `options`). A cut keeps its length for when
+  the kind changes back.
+- When a playing list steps to another item (Auto Next, Next, Previous,
+  First, Last, or Go to), a non-cut transition plays the outgoing item on
+  under the incoming one for `transition_frames` frames: on the `k`-th
+  frame the incoming item weighs `k * 10000 / (transition_frames + 1)`
+  basis points. `fade` cross-fades the pictures and the sound; `dip` fades
+  the outgoing item to black (and silence) over the first half and the
+  incoming one up over the second; `wipe` reveals the incoming item from
+  the left edge (the left `floor(width * weight / 10000)` columns) with a
+  sound cross-fade. An outgoing item that reaches its out mark first holds
+  its last frame. A step of a stopped or paused list, and a cut, change
+  items on the step's frame as before.
+- Under Auto Next a list with a non-cut transition journals its `advance`
+  when the active item has `transition_frames` output frames left before
+  its out mark (or end), so the two items overlap for the whole transition
+  and the list keeps its length; an item shorter than its transition steps
+  on its first played frame after the first. The last item of a list that
+  does not loop still plays to its end.
+- The native daemon composites the outgoing and incoming decoders on the
+  CPU into the list input's picture and mixes their sound with the
+  transition's gains; the next item's file is opened ahead (prefetched) so
+  the incoming item presents on the step's frame. A step to a file that
+  was not prefetched cuts, holding the previous picture until the new
+  decoder presents. The simulated daemon runs the same timing (the
+  outgoing transport plays on and the engine reports each frame's weight)
+  without compositing its synthetic pictures.
+- Durability (schema 77): each `"media_lists"` entry gains required
+  `"transition": "cut"|"fade"|"dip"|"wipe"` and `"transition_frames"`
+  (`1..=600`) after `"shuffle_seed"`. Changing the transition is an
+  undoable list edit (`set`), journaled like every list edit.
+- Studio's media list card adds a Transition menu (Cut, Fade, Dip to
+  black, Wipe) and a frames field (disabled for Cut), each with English and
+  Spanish hover help. The Web operator page shows each media list read
+  only: its transition and options, every item's played length through
+  its marks (Protocol 2.91 lengths, `--:--` while unknown), the list total
+  (`At least` while some lengths are unknown), and the current item. The
+  CLI prints each list (`remote-status`, and `input-media-list` for a
+  local project, whose lengths are unknown) with its transition, every
+  item's file length and played duration, and the total.
+- 2.95 is refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision

@@ -634,6 +634,16 @@ pub fn run(command: Command) -> AppResult<()> {
                     remote::format_media_status(&fm_control::wire_media_status(&status))
                 );
             }
+            // A local project probes no files: every length is unknown.
+            let lengths = fm_control::MediaListLengths::new();
+            for status in project.engine.media_list_statuses() {
+                println!(
+                    "{}",
+                    remote::format_media_list(&fm_control::wire_media_list_status(
+                        &status, &lengths
+                    ))
+                );
+            }
         }
         Command::InputLifecycle {
             target,

@@ -8,6 +8,7 @@ mod frame;
 mod freeze;
 mod generate;
 mod geometry;
+mod item_transition;
 mod png;
 mod ppm;
 mod test_signal;
@@ -34,6 +35,7 @@ pub use geometry::{
     CropError, CropRect, Rotation, Transform, TransformError, crop, scale_nearest,
     transform_nearest,
 };
+pub use item_transition::{FULL_ITEM_WEIGHT, ItemTransition, blend_items};
 pub use png::{
     MAX_PNG_DIMENSION, MAX_PNG_RAW_BYTES, PNG_SIGNATURE, PngBitDepth, PngEncodeError,
     STORED_BLOCK_MAX, adler32, crc32, encode_png_rgba8, encode_png_rgba16,

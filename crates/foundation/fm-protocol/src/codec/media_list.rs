@@ -5,8 +5,10 @@
 //! * `input`: the list input; `active`: the active item id; `cycle`: the
 //!   loop cycle; `position`: the active item's zero-based play-order
 //!   position.
-//! * Options: `auto_next`, `auto_first`, and `loop` (`0|1`), and
-//!   `shuffle_seed` (`<u64>` or `-`).
+//! * Options: `auto_next`, `auto_first`, and `loop` (`0|1`),
+//!   `shuffle_seed` (`<u64>` or `-`), and (2.96) `transition`
+//!   (`cut|fade|dip|wipe`) with `transition_frames`
+//!   (`1..=MAX_MEDIA_LIST_TRANSITION_FRAMES`).
 //! * `items`: a comma-separated list (1 to [`MAX_MEDIA_LIST_ITEMS`]) of
 //!   `<id>~<uri>~<title|->~<mark in>~<mark out|->`, the uri and title
 //!   percent-escaped (a title of exactly `-` is written `%2D`).
@@ -31,7 +33,7 @@ use crate::{
     CodecError, MAX_INPUT_SOURCE_BYTES, MAX_MEDIA_LIST_ITEM_ID, MAX_MEDIA_LIST_ITEMS,
     MAX_MEDIA_LIST_STATES, MAX_MEDIA_LIST_TEXT_BYTES, MAX_MEDIA_LIST_TITLE_BYTES,
     MediaListItemLength, MediaListItemSpec, MediaListNavigation, MediaListOperation,
-    MediaListOptionsSpec, MediaListStatus,
+    MediaListOptionsSpec, MediaListStatus, MediaListTransitionKind, MediaListTransitionSpec,
 };
 
 use super::media::{FieldSource, Push};
@@ -167,7 +169,18 @@ fn encode_options(options: MediaListOptionsSpec, push: &mut Push<'_>) -> Result<
     push("auto_next", u8::from(options.auto_next).to_string())?;
     push("auto_first", u8::from(options.auto_first).to_string())?;
     push("loop", u8::from(options.loop_list).to_string())?;
-    push("shuffle_seed", optional(options.shuffle_seed))
+    push("shuffle_seed", optional(options.shuffle_seed))?;
+    if !options.transition.is_valid() {
+        return Err(invalid(
+            "transition_frames",
+            options.transition.duration_frames.to_string(),
+        ));
+    }
+    push("transition", options.transition.kind.token().to_owned())?;
+    push(
+        "transition_frames",
+        options.transition.duration_frames.to_string(),
+    )
 }
 
 fn decode_options(fields: &mut dyn FieldSource) -> Result<MediaListOptionsSpec, CodecError> {
@@ -176,6 +189,24 @@ fn decode_options(fields: &mut dyn FieldSource) -> Result<MediaListOptionsSpec, 
         auto_first: parse_flag("auto_first", &fields.required("auto_first")?)?,
         loop_list: parse_flag("loop", &fields.required("loop")?)?,
         shuffle_seed: parse_optional_u64("shuffle_seed", &fields.required("shuffle_seed")?)?,
+        transition: {
+            let token = fields.required("transition")?;
+            let transition = MediaListTransitionSpec {
+                kind: MediaListTransitionKind::from_token(&token)
+                    .ok_or_else(|| invalid("transition", token))?,
+                duration_frames: parse_u32(
+                    "transition_frames",
+                    &fields.required("transition_frames")?,
+                )?,
+            };
+            if !transition.is_valid() {
+                return Err(invalid(
+                    "transition_frames",
+                    transition.duration_frames.to_string(),
+                ));
+            }
+            transition
+        },
     })
 }
 

@@ -5,8 +5,9 @@
 //! The card shows the items in list order with the active one highlighted
 //! and the play position, a search filter, Previous and Next, a key that
 //! makes any item active, drag (or Up / Down) reordering, per-item in and
-//! out marks, removal, appending files, and the Auto Next, Auto First,
-//! Loop, and Shuffle options. Stepping through the list is an operator
+//! out marks, removal, appending files, the Auto Next, Auto First, Loop,
+//! and Shuffle options, and (Protocol 2.96) the transition a playing list
+//! plays between items with its length in frames. Stepping through the list is an operator
 //! control (`can_transition`); every other change is a project edit sent as
 //! one `media_list` `set` with the whole list, padlocks honoured.
 //!
@@ -26,8 +27,10 @@ use std::sync::Arc;
 
 use egui::{DragValue, Id, RichText, Sense, Stroke, TextureHandle, TextureId, Ui, Vec2};
 use fm_protocol::{
-    MAX_MEDIA_LIST_ITEMS, MAX_MEDIA_LIST_TEXT_BYTES, MediaListItemSpec, MediaListNavigation,
-    MediaListOperation, MediaListOptionsSpec, MediaListStatus, MonitorFrameOrigin, WireInputId,
+    MAX_MEDIA_LIST_ITEMS, MAX_MEDIA_LIST_TEXT_BYTES, MAX_MEDIA_LIST_TRANSITION_FRAMES,
+    MediaListItemSpec, MediaListNavigation, MediaListOperation, MediaListOptionsSpec,
+    MediaListStatus, MediaListTransitionKind, MediaListTransitionSpec, MonitorFrameOrigin,
+    WireInputId,
 };
 use fm_types::InputId;
 
@@ -196,8 +199,36 @@ impl MediaListDraft {
             auto_first: self.auto_first,
             loop_list: self.loop_list,
             shuffle_seed: self.shuffle.then(|| shuffle_seed(items, 0)),
+            transition: MediaListTransitionSpec::default(),
         }
     }
+}
+
+/// The label and hover text of a list transition kind.
+#[must_use]
+pub(crate) const fn transition_texts(kind: MediaListTransitionKind) -> (Msg, Msg) {
+    match kind {
+        MediaListTransitionKind::Cut => (Msg::TransitionCut, Msg::MlTransitionCutHover),
+        MediaListTransitionKind::Fade => (Msg::TransitionFade, Msg::MlTransitionFadeHover),
+        MediaListTransitionKind::Dip => (Msg::MlTransitionDip, Msg::MlTransitionDipHover),
+        MediaListTransitionKind::Wipe => (Msg::TransitionWipe, Msg::MlTransitionWipeHover),
+    }
+}
+
+/// `options` with its transition's kind or length changed; a length is
+/// kept in `1..=MAX_MEDIA_LIST_TRANSITION_FRAMES`.
+#[must_use]
+pub(crate) fn with_transition(
+    options: MediaListOptionsSpec,
+    kind: MediaListTransitionKind,
+    frames: u32,
+) -> MediaListOptionsSpec {
+    let mut next = options;
+    next.transition = MediaListTransitionSpec {
+        kind,
+        duration_frames: frames.clamp(1, MAX_MEDIA_LIST_TRANSITION_FRAMES),
+    };
+    next
 }
 
 /// Reads an M3U playlist from this computer, at most its size bound.
@@ -491,6 +522,60 @@ pub(crate) fn draw_list(
             let mut next = options;
             next.shuffle_seed = Some(shuffle_seed(&list.items, seed.wrapping_add(1)));
             operation = Some(set(list.items.clone(), next));
+        }
+    });
+
+    // The transition between items (Protocol 2.96).
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let options = options_of(list);
+        let transition = options.transition;
+        ui.label(caption(l.text(Msg::TransitionSection)))
+            .on_hover_text(l.text(Msg::MlTransitionHover));
+        let mut kind = transition.kind;
+        ui.add_enabled_ui(edit.is_none(), |ui| {
+            egui::ComboBox::from_id_salt(("studio-media-list-transition", input))
+                .width(110.0)
+                .selected_text(
+                    RichText::new(l.text(transition_texts(kind).0))
+                        .size(crate::theme::legible(11.0)),
+                )
+                .show_ui(ui, |ui| {
+                    for option in MediaListTransitionKind::ALL {
+                        let (label, hover) = transition_texts(option);
+                        ui.selectable_value(&mut kind, option, l.text(label))
+                            .on_hover_text(l.text(hover));
+                    }
+                })
+                .response
+                .hint(l.text(Msg::MlTransitionHover), edit.unwrap_or(""));
+        });
+        if kind != transition.kind {
+            operation = Some(set(
+                list.items.clone(),
+                with_transition(options, kind, transition.duration_frames),
+            ));
+        }
+        let mut frames = transition.duration_frames;
+        let length = ui
+            .add_enabled(
+                edit.is_none() && transition.kind != MediaListTransitionKind::Cut,
+                DragValue::new(&mut frames)
+                    .range(1..=MAX_MEDIA_LIST_TRANSITION_FRAMES)
+                    .suffix(" fr"),
+            )
+            .hint(
+                l.text(Msg::MlTransitionFramesHover),
+                edit.unwrap_or_else(|| Msg::PlaylistReasonCutHasNoLength.en()),
+            );
+        // A drag sends one edit when it ends, typing one per change.
+        if (length.drag_stopped() || (length.changed() && !length.dragged()))
+            && frames != transition.duration_frames
+        {
+            operation = Some(set(
+                list.items.clone(),
+                with_transition(options, transition.kind, frames),
+            ));
         }
     });
 

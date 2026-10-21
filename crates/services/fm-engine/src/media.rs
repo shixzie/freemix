@@ -16,6 +16,16 @@
 //! engine grows and completes it deterministically, one frame per tick, so
 //! transport, events, and growing-file behaviour are exercised without a
 //! decoder).
+//!
+//! A media list (IN-006) that steps while playing with a blending
+//! transition keeps its outgoing item's transport as an *outgoing*
+//! transport for the transition's frames: it is cloned from the transport
+//! as the step finds it (or kept when the step opens another file), held
+//! at its last frame when it reaches its end, and ticked alongside the
+//! incoming one, so every frame reports both items' decisions and the
+//! incoming weight ([`EngineMediaOutgoing`]). The media plane composites
+//! the two pictures; the transition is runtime, never snapshotted, and a
+//! pure function of the frames, so a replay blends identically.
 
 use fm_command::{FieldIssue, Rejection, RejectionCode};
 use fm_model::{MediaAudioSpeedPolicy, MediaEndAction, MediaPlaybackSettings};
@@ -244,6 +254,23 @@ pub struct EngineMediaStatus {
     pub fault: Option<EngineMediaFault>,
 }
 
+/// The outgoing item of a media list transition on one frame (IN-006).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EngineMediaOutgoing {
+    /// The outgoing item's transport decisions for this frame (the source
+    /// frame it presents and its audio).
+    pub tick: MediaTick,
+    /// How the two items are composited.
+    pub kind: fm_model::MediaListTransitionKind,
+    /// This frame's place in the transition, `1..=frames`.
+    pub step: u32,
+    /// The transition's composited frames.
+    pub frames: u32,
+    /// The incoming item's weight, in basis points
+    /// ([`fm_model::MediaListTransition::mix_basis_points`]).
+    pub mix_basis_points: u16,
+}
+
 /// One media input on one engine frame.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineMediaFrame {
@@ -259,6 +286,18 @@ pub struct EngineMediaFrame {
     /// external source: its decoder should finish the file and report the
     /// final frame count.
     pub completion_requested: bool,
+    /// The outgoing item while a media list transition composites it with
+    /// the incoming one (IN-006).
+    pub outgoing: Option<EngineMediaOutgoing>,
+}
+
+/// A media list's outgoing item during a transition (IN-006).
+#[derive(Clone, Debug)]
+struct Outgoing {
+    playback: MediaPlayback,
+    transition: fm_model::MediaListTransition,
+    /// Frames composited so far.
+    step: u32,
 }
 
 /// A media input's runtime transport. Never snapshotted.
@@ -278,6 +317,12 @@ pub(crate) struct MediaRuntime {
     /// Whether the next source opened starts playing at once: a media list
     /// stepped to another file while playing (IN-006).
     pub(crate) play_on_open: bool,
+    /// A playing media list stepped with a blending transition (IN-006):
+    /// the transport as the step finds it becomes the outgoing item when
+    /// the step's file opens, or (for an item of the same file) when its
+    /// re-cue is realized.
+    pub(crate) pending_transition: Option<fm_model::MediaListTransition>,
+    outgoing: Option<Outgoing>,
 }
 
 impl MediaRuntime {
@@ -289,6 +334,11 @@ impl MediaRuntime {
         settings: &MediaPlaybackSettings,
         output_rate: FrameRate,
     ) -> Result<(), MediaControlError> {
+        if source.is_some() {
+            self.begin_outgoing();
+        } else {
+            self.outgoing = None;
+        }
         self.playback = match &source {
             Some(source) => Some(create_playback(source, settings, output_rate)?),
             None => None,
@@ -309,6 +359,8 @@ impl MediaRuntime {
     pub(crate) fn fault(&mut self, fault: EngineMediaFault) {
         self.source = None;
         self.playback = None;
+        self.outgoing = None;
+        self.pending_transition = None;
         self.fault = Some(fault);
         self.fault_reported = false;
     }
@@ -337,8 +389,16 @@ impl MediaRuntime {
     }
 
     /// Releases the source of a closed input (IN-026): the transport is
-    /// gone until the media plane opens the source again.
-    pub(crate) fn release(&mut self) {
+    /// gone until the media plane opens the source again. A replaced
+    /// source (`replaced`) a media list transition is waiting for becomes
+    /// the outgoing item first; a closed input drops it.
+    pub(crate) fn release(&mut self, replaced: bool) {
+        if replaced {
+            self.begin_outgoing();
+        } else {
+            self.outgoing = None;
+            self.pending_transition = None;
+        }
         self.source = None;
         self.playback = None;
         self.idle_ticks = 0;
@@ -350,12 +410,54 @@ impl MediaRuntime {
         self.source.is_some()
     }
 
+    /// Makes the transport the outgoing item of the pending media list
+    /// transition (IN-006), held at its last frame when it reaches its end.
+    /// A cut, or a step with nothing open, has none.
+    fn begin_outgoing(&mut self) {
+        let Some(transition) = self.pending_transition.take() else {
+            return;
+        };
+        let Some(mut playback) = self.playback.clone() else {
+            return;
+        };
+        if transition.blend_frames() == 0 {
+            return;
+        }
+        playback.set_end_action(fm_playback::MediaEndAction::HoldLastFrame);
+        playback.set_end_trigger_lead(None);
+        self.outgoing = Some(Outgoing {
+            playback,
+            transition,
+            step: 0,
+        });
+    }
+
+    /// Advances the outgoing item one frame, or ends the transition after
+    /// its last composited frame.
+    fn tick_outgoing(&mut self) -> Option<EngineMediaOutgoing> {
+        let outgoing = self.outgoing.as_mut()?;
+        let frames = outgoing.transition.blend_frames();
+        outgoing.step = outgoing.step.saturating_add(1);
+        if outgoing.step > frames {
+            self.outgoing = None;
+            return None;
+        }
+        Some(EngineMediaOutgoing {
+            tick: outgoing.playback.tick(),
+            kind: outgoing.transition.kind,
+            step: outgoing.step,
+            frames,
+            mix_basis_points: outgoing.transition.mix_basis_points(outgoing.step),
+        })
+    }
+
     /// Whether the transport changes on the next tick absent commands. A
     /// held (paused or closed) transport changes only by commands and
     /// faults.
     pub(crate) fn advancing(&self, held: bool) -> bool {
         !self.pending.is_empty()
             || (self.fault.is_some() && !self.fault_reported)
+            || (!held && self.outgoing.is_some())
             || !held
                 && self.playback.as_ref().is_some_and(|playback| {
                     matches!(playback.state(), MediaState::Playing | MediaState::Waiting)
@@ -402,16 +504,24 @@ impl MediaRuntime {
     ) -> Option<EngineMediaFrame> {
         let mut realized = Vec::with_capacity(operations);
         let mut completion_requested = false;
+        // A media list's re-cue of the file already open (IN-006): the
+        // transport as the step finds it plays out as the outgoing item.
+        if operations > 0 && !self.pending.is_empty() {
+            self.begin_outgoing();
+        }
         for _ in 0..operations.min(self.pending.len()) {
             let (operation, requested) = self.realize_next();
             realized.push(operation);
             completion_requested |= requested;
         }
-        let tick = if held {
-            None
+        let (tick, outgoing) = if held {
+            (None, None)
         } else {
             self.grow_synthetic(settings);
-            self.playback.as_mut().map(MediaPlayback::tick)
+            (
+                self.playback.as_mut().map(MediaPlayback::tick),
+                self.tick_outgoing(),
+            )
         };
         let faulted = match self.fault {
             Some(fault) if !self.fault_reported => {
@@ -420,7 +530,7 @@ impl MediaRuntime {
             }
             _ => None,
         };
-        if tick.is_none() && realized.is_empty() && faulted.is_none() {
+        if tick.is_none() && realized.is_empty() && faulted.is_none() && outgoing.is_none() {
             return None;
         }
         Some(EngineMediaFrame {
@@ -429,6 +539,7 @@ impl MediaRuntime {
             operations: realized,
             faulted,
             completion_requested,
+            outgoing,
         })
     }
 

@@ -15,7 +15,10 @@ use fm_engine::{
     EngineMediaCommand, EngineMediaListCommand, EngineMediaListNavigation,
     EngineMediaListOperation, EngineMediaOperation, EngineMediaSource, ShowState,
 };
-use fm_model::{InputSourceSpec, MediaListItem, MediaListOptions, media_list_play_order};
+use fm_model::{
+    InputSourceSpec, MediaListItem, MediaListOptions, MediaListTransition, MediaListTransitionKind,
+    media_list_play_order,
+};
 use fm_types::{FrameRate, InputId};
 
 fn input(value: u128) -> InputId {
@@ -973,4 +976,231 @@ fn an_undo_dropping_the_playing_file_restores_the_edited_item() {
     );
     assert_eq!(active(&engine), 2);
     assert_eq!(asset(&engine), "asset://media/b.mov");
+}
+
+/// Ticks once; returns the list's presented source frame and, during a
+/// transition, the outgoing item's presented frame, step, and incoming
+/// weight.
+fn blend_step(engine: &mut Engine) -> (u64, Option<(u64, u32, u16)>) {
+    let frame = engine.tick().unwrap();
+    let media = frame
+        .media
+        .into_iter()
+        .find(|media| media.input == input(LIST))
+        .expect("the list reports every frame");
+    let presented = media
+        .tick
+        .and_then(|tick| tick.frame)
+        .expect("a frame is presented")
+        .get();
+    let outgoing = media.outgoing.map(|outgoing| {
+        assert_eq!(outgoing.frames, 4);
+        (
+            outgoing
+                .tick
+                .frame
+                .expect("the outgoing item presents")
+                .get(),
+            outgoing.step,
+            outgoing.mix_basis_points,
+        )
+    });
+    (presented, outgoing)
+}
+
+fn faded(kind: MediaListTransitionKind) -> MediaListOptions {
+    MediaListOptions {
+        auto_next: true,
+        transition: MediaListTransition {
+            kind,
+            duration_frames: 4,
+        },
+        ..MediaListOptions::default()
+    }
+}
+
+/// Two ten-frame items of two files.
+fn long_items() -> Vec<MediaListItem> {
+    vec![
+        item(1, "a.mp4", (10, Some(20))),
+        item(2, "b.mov", (20, Some(30))),
+    ]
+}
+
+fn create_long(engine: &mut Engine, options: MediaListOptions) {
+    accept(
+        engine,
+        "create",
+        EngineMediaListOperation::Create {
+            name: "Walk-in".into(),
+            items: long_items(),
+            options,
+        },
+    );
+}
+
+#[test]
+fn a_transition_weights_the_incoming_item_by_its_step() {
+    let fade = MediaListTransition {
+        kind: MediaListTransitionKind::Fade,
+        duration_frames: 4,
+    };
+    assert_eq!(
+        (1..=5)
+            .map(|step| fade.mix_basis_points(step))
+            .collect::<Vec<_>>(),
+        [2_000, 4_000, 6_000, 8_000, 10_000]
+    );
+    // A cut keeps its length but composites nothing.
+    let cut = MediaListTransition {
+        kind: MediaListTransitionKind::Cut,
+        duration_frames: 4,
+    };
+    assert_eq!((cut.blend_frames(), cut.mix_basis_points(1)), (0, 10_000));
+    assert_eq!(
+        MediaListOptions::default().transition,
+        MediaListTransition::CUT
+    );
+}
+
+#[test]
+fn a_playing_step_to_another_file_plays_the_outgoing_item_under_the_incoming_one() {
+    let mut engine = engine();
+    create_long(&mut engine, faded(MediaListTransitionKind::Fade));
+    play(&mut engine, "play");
+    for expected in 10..=12 {
+        assert_eq!(blend_step(&mut engine), (expected, None));
+    }
+    navigate(&mut engine, "next", EngineMediaListNavigation::Next);
+    assert_eq!(asset(&engine), "asset://media/b.mov");
+    // The outgoing item keeps playing from where it was for four frames,
+    // its weight falling as the incoming one's rises; then it is gone.
+    assert!(engine.media_advancing());
+    assert_eq!(blend_step(&mut engine), (20, Some((13, 1, 2_000))));
+    assert_eq!(blend_step(&mut engine), (21, Some((14, 2, 4_000))));
+    assert_eq!(blend_step(&mut engine), (22, Some((15, 3, 6_000))));
+    assert_eq!(blend_step(&mut engine), (23, Some((16, 4, 8_000))));
+    assert_eq!(blend_step(&mut engine), (24, None));
+}
+
+#[test]
+fn an_outgoing_item_holds_its_last_frame_when_it_ends_first() {
+    let mut engine = engine();
+    create_long(&mut engine, faded(MediaListTransitionKind::Dip));
+    play(&mut engine, "play");
+    for _ in 10..=17 {
+        blend_step(&mut engine);
+    }
+    navigate(&mut engine, "next", EngineMediaListNavigation::Next);
+    assert_eq!(blend_step(&mut engine), (20, Some((18, 1, 2_000))));
+    assert_eq!(blend_step(&mut engine), (21, Some((19, 2, 4_000))));
+    // Past its out mark the outgoing item holds its last frame.
+    assert_eq!(blend_step(&mut engine), (22, Some((19, 3, 6_000))));
+    assert_eq!(blend_step(&mut engine), (23, Some((19, 4, 8_000))));
+    assert_eq!(blend_step(&mut engine), (24, None));
+}
+
+#[test]
+fn a_step_to_an_item_of_the_open_file_blends_from_the_open_transport() {
+    let mut engine = engine();
+    accept(
+        &mut engine,
+        "create",
+        EngineMediaListOperation::Create {
+            name: "Cuts".into(),
+            items: vec![
+                item(1, "a.mp4", (10, Some(20))),
+                item(2, "a.mp4", (100, Some(110))),
+            ],
+            options: faded(MediaListTransitionKind::Wipe),
+        },
+    );
+    play(&mut engine, "play");
+    for expected in 10..=12 {
+        assert_eq!(blend_step(&mut engine), (expected, None));
+    }
+    navigate(&mut engine, "next", EngineMediaListNavigation::Next);
+    assert!(engine.media_source_open(input(LIST)));
+    assert_eq!(blend_step(&mut engine), (100, Some((13, 1, 2_000))));
+    assert_eq!(blend_step(&mut engine), (101, Some((14, 2, 4_000))));
+    assert_eq!(blend_step(&mut engine), (102, Some((15, 3, 6_000))));
+    assert_eq!(blend_step(&mut engine), (103, Some((16, 4, 8_000))));
+    assert_eq!(blend_step(&mut engine), (104, None));
+}
+
+#[test]
+fn a_cut_or_a_stopped_list_steps_without_a_transition() {
+    // A cut never composites.
+    let mut engine = engine();
+    create_long(
+        &mut engine,
+        MediaListOptions {
+            auto_next: true,
+            ..MediaListOptions::default()
+        },
+    );
+    play(&mut engine, "play");
+    blend_step(&mut engine);
+    navigate(&mut engine, "next", EngineMediaListNavigation::Next);
+    assert_eq!(blend_step(&mut engine), (20, None));
+
+    // A stopped list cues the next item without blending.
+    let mut engine = self::engine();
+    create_long(&mut engine, faded(MediaListTransitionKind::Fade));
+    navigate(&mut engine, "next", EngineMediaListNavigation::Next);
+    let frame = engine.tick().unwrap();
+    assert!(
+        frame
+            .media
+            .iter()
+            .filter(|media| media.input == input(LIST))
+            .all(|media| media.outgoing.is_none())
+    );
+}
+
+#[test]
+fn the_transition_is_validated_and_undoable() {
+    let mut engine = engine();
+    create(&mut engine, MediaListOptions::default());
+    for frames in [0, fm_model::MAX_MEDIA_LIST_TRANSITION_FRAMES + 1] {
+        let mut options = faded(MediaListTransitionKind::Fade);
+        options.transition.duration_frames = frames;
+        assert_eq!(
+            refused(
+                &mut engine,
+                &format!("bad-{frames}"),
+                EngineMediaListOperation::Set {
+                    items: items(),
+                    options,
+                    active: None,
+                },
+            ),
+            "invalid_transition"
+        );
+    }
+    accept(
+        &mut engine,
+        "fade",
+        EngineMediaListOperation::Set {
+            items: items(),
+            options: faded(MediaListTransitionKind::Fade),
+            active: None,
+        },
+    );
+    let options = |engine: &Engine| engine.show().media_list(input(LIST)).unwrap().options;
+    assert_eq!(options(&engine), faded(MediaListTransitionKind::Fade));
+    assert!(
+        execute(&mut engine, "undo", undo())
+            .receipt
+            .accepted()
+            .is_some()
+    );
+    assert_eq!(options(&engine).transition, MediaListTransition::CUT);
+    assert!(
+        execute(&mut engine, "redo", redo())
+            .receipt
+            .accepted()
+            .is_some()
+    );
+    assert_eq!(options(&engine), faded(MediaListTransitionKind::Fade));
 }

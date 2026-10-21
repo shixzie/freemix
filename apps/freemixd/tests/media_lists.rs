@@ -32,10 +32,11 @@ use fm_model::{
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
-    EventPayload, HandshakeRequest, MediaListItemLength, MediaListItemSpec, MediaListNavigation,
-    MediaListOperation, MediaListOptionsSpec, MediaListStateMessage, MediaListStatus,
-    MediaOperation, Role, RuntimeLifecycleEvent, SnapshotMessage, WireInputId, WireMessage,
-    decode_line, encode_line,
+    EventPayload, HandshakeRequest, MAX_MEDIA_LIST_TRANSITION_FRAMES, MediaEvent,
+    MediaListItemLength, MediaListItemSpec, MediaListNavigation, MediaListOperation,
+    MediaListOptionsSpec, MediaListStateMessage, MediaListStatus, MediaListTransitionKind,
+    MediaListTransitionSpec, MediaOperation, Role, RuntimeLifecycleEvent, SnapshotMessage,
+    WireInputId, WireMessage, decode_line, encode_line,
 };
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
@@ -689,5 +690,115 @@ fn simulated_item_lengths_are_probed_published_and_restored() {
     }
     let (_reconnected, _, states) = Client::connect(&daemon);
     assert_eq!(states[0].status.lengths, vec![ten_seconds; 4]);
+    daemon.stop();
+}
+
+/// Protocol 2.96 on the simulated runtime: under Auto Next a list fade
+/// steps its transition's frames before the opener's out mark, so the
+/// opener never reports its end; the transition is an undoable list edit
+/// that persists in `project.json` and reaches a reconnecting client.
+#[cfg(unix)]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn a_list_transition_steps_auto_next_early_and_persists() {
+    let directory = TestDirectory::new("transition");
+    let project = directory.project();
+    save_project(&project);
+    let daemon = Daemon::start(&project);
+    let (mut client, _, _) = Client::connect(&daemon);
+    let fade = MediaListTransitionSpec {
+        kind: MediaListTransitionKind::Fade,
+        duration_frames: 6,
+    };
+    let options = MediaListOptionsSpec {
+        auto_next: true,
+        transition: fade,
+        ..MediaListOptionsSpec::default()
+    };
+    let created = client.list(MediaListOperation::Create {
+        name: "Fades".into(),
+        items: items(),
+        options,
+    });
+    assert_eq!(created.options.transition, fade);
+
+    // The opener plays 20..30; the fade steps six frames before its out
+    // mark, and the opener's transport never reports its end.
+    client.command(&CommandPayload::Media {
+        input: wire(LIST),
+        operation: MediaOperation::Play,
+    });
+    let mut opener_positions = Vec::new();
+    let advanced = client.wait_for("the early Auto Next advance", |message| match message {
+        WireMessage::RuntimeEvent(event) => {
+            if let RuntimeLifecycleEvent::Media { events, status, .. } = event.event
+                && status.input == wire(LIST)
+            {
+                assert!(
+                    !events
+                        .iter()
+                        .any(|event| matches!(event, MediaEvent::Ended { .. })),
+                    "the opener ended before the fade: {events:?}"
+                );
+                opener_positions.push(status.transport.position);
+            }
+            None
+        }
+        WireMessage::Event(event) => match event.payload {
+            EventPayload::MediaListChanged {
+                operation: "advance",
+                status,
+                ..
+            } => Some(*status),
+            _ => None,
+        },
+        _ => None,
+    });
+    assert_eq!((advanced.active, advanced.options.transition), (2, fade));
+    assert!(
+        opener_positions.iter().all(|position| *position < 30),
+        "{opener_positions:?}"
+    );
+    client.command(&CommandPayload::Media {
+        input: wire(LIST),
+        operation: MediaOperation::Stop,
+    });
+
+    // A longer wipe, undone, leaves the fade.
+    let wipe = MediaListTransitionSpec {
+        kind: MediaListTransitionKind::Wipe,
+        duration_frames: MAX_MEDIA_LIST_TRANSITION_FRAMES,
+    };
+    let set = client.list(MediaListOperation::Set {
+        items: items(),
+        options: MediaListOptionsSpec {
+            transition: wipe,
+            ..options
+        },
+        active: None,
+    });
+    assert_eq!(set.options.transition, wipe);
+    let undone = client.command(&CommandPayload::Undo {
+        expected_edit: None,
+    });
+    let EventPayload::MediaListChanged { status, .. } = undone else {
+        panic!("expected the list after undo, got {undone:?}");
+    };
+    assert_eq!(status.options.transition, fade);
+    drop(client);
+    daemon.terminate();
+
+    let stored = ProjectStore::new(&project).unwrap().load().unwrap();
+    let list = stored.project().media_list(input(LIST)).unwrap();
+    assert_eq!(
+        list.options.transition,
+        fm_model::MediaListTransition {
+            kind: fm_model::MediaListTransitionKind::Fade,
+            duration_frames: 6,
+        }
+    );
+    let daemon = Daemon::start(&project);
+    let (_client, _, states) = Client::connect(&daemon);
+    assert_eq!(states[0].status.options.transition, fade);
     daemon.stop();
 }

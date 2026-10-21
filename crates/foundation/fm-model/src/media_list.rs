@@ -10,8 +10,8 @@
 //!
 //! What is persisted: the items in authored order (each with a stable id, an
 //! `asset://` file, an optional title, and its in/out marks), the options
-//! (Auto Next, Auto First, loop, and an optional shuffle seed), the active
-//! item, and the loop cycle. The *play order* is derived: the authored order,
+//! (Auto Next, Auto First, loop, an optional shuffle seed, and the
+//! transition between items), the active item, and the loop cycle. The *play order* is derived: the authored order,
 //! or with a shuffle seed a deterministic permutation of it for the current
 //! cycle, so a show replayed from its journal shuffles identically.
 //!
@@ -38,6 +38,105 @@ pub const MAX_MEDIA_LISTS: usize = 64;
 pub const MAX_MEDIA_LIST_TITLE_BYTES: usize = 128;
 /// Largest item id.
 pub const MAX_MEDIA_LIST_ITEM_ID: u32 = 1_000_000;
+/// Longest transition between two items, in output frames.
+pub const MAX_MEDIA_LIST_TRANSITION_FRAMES: u32 = 600;
+/// The transition length a new list starts with, in output frames.
+pub const DEFAULT_MEDIA_LIST_TRANSITION_FRAMES: u32 = 15;
+
+/// How one item gives way to the next.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum MediaListTransitionKind {
+    /// The next item replaces the active one on the step's frame.
+    #[default]
+    Cut,
+    /// The two items cross-fade (a mix).
+    Fade,
+    /// The active item fades to black over the first half, and the next
+    /// item fades up from black over the second half.
+    Dip,
+    /// The next item wipes in from the left edge to the right.
+    Wipe,
+}
+
+impl MediaListTransitionKind {
+    /// Every kind, in operator order.
+    pub const ALL: [Self; 4] = [Self::Cut, Self::Fade, Self::Dip, Self::Wipe];
+
+    /// `cut`, `fade`, `dip`, or `wipe`.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Cut => "cut",
+            Self::Fade => "fade",
+            Self::Dip => "dip",
+            Self::Wipe => "wipe",
+        }
+    }
+
+    /// The kind a token names.
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.token() == token)
+    }
+}
+
+/// The transition a list plays between two items when it steps while
+/// playing (Auto Next, or Next, Previous, and the other steps): the two
+/// items are composited for `duration_frames` output frames, the outgoing
+/// one still playing. Under Auto Next the step comes `duration_frames`
+/// before the active item's out point, so the items overlap instead of
+/// the outgoing item holding its last frame.
+///
+/// The duration is kept, but unused, by a cut.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct MediaListTransition {
+    pub kind: MediaListTransitionKind,
+    /// `1..=`[`MAX_MEDIA_LIST_TRANSITION_FRAMES`].
+    pub duration_frames: u32,
+}
+
+impl Default for MediaListTransition {
+    fn default() -> Self {
+        Self::CUT
+    }
+}
+
+impl MediaListTransition {
+    /// A cut, keeping the default duration for a later blend.
+    pub const CUT: Self = Self {
+        kind: MediaListTransitionKind::Cut,
+        duration_frames: DEFAULT_MEDIA_LIST_TRANSITION_FRAMES,
+    };
+
+    /// Whether the duration is in bounds.
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        self.duration_frames >= 1 && self.duration_frames <= MAX_MEDIA_LIST_TRANSITION_FRAMES
+    }
+
+    /// The frames the two items are composited for: zero for a cut.
+    #[must_use]
+    pub const fn blend_frames(self) -> u32 {
+        match self.kind {
+            MediaListTransitionKind::Cut => 0,
+            _ => self.duration_frames,
+        }
+    }
+
+    /// The incoming item's weight, in basis points, on the `step`th
+    /// composited frame (`1..=duration_frames`): `step * 10_000 /
+    /// (duration_frames + 1)`, so neither end of a blend repeats a whole
+    /// picture; 10 000 after the blend and for a cut.
+    #[must_use]
+    pub fn mix_basis_points(self, step: u32) -> u16 {
+        let frames = self.blend_frames();
+        if frames == 0 || step > frames {
+            return 10_000;
+        }
+        let mix = u64::from(step) * 10_000 / (u64::from(frames) + 1);
+        u16::try_from(mix).unwrap_or(10_000)
+    }
+}
 
 /// One file of a media list.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -88,12 +187,14 @@ impl MediaListItem {
 ///   wraps to the last.
 /// * `shuffle_seed`: play order is a permutation derived from the seed and
 ///   the cycle; each wrap reshuffles.
+/// * `transition`: how a playing list steps from one item to the next.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct MediaListOptions {
     pub auto_next: bool,
     pub auto_first: bool,
     pub loop_list: bool,
     pub shuffle_seed: Option<u64>,
+    pub transition: MediaListTransition,
 }
 
 /// A media list input's persisted list.
@@ -119,6 +220,7 @@ impl MediaList {
         options: MediaListOptions,
     ) -> Result<Self, MediaListError> {
         validate_media_list_items(&items)?;
+        validate_media_list_options(options)?;
         let mut list = Self {
             active: items[0].id,
             items,
@@ -169,6 +271,7 @@ impl MediaList {
     /// Returns the first [`MediaListError`].
     pub fn validate(&self) -> Result<(), MediaListError> {
         validate_media_list_items(&self.items)?;
+        validate_media_list_options(self.options)?;
         if self.item(self.active).is_none() {
             return Err(MediaListError::UnknownActiveItem(self.active));
         }
@@ -221,6 +324,9 @@ pub enum MediaListError {
     /// The items' files and titles together exceed
     /// [`MAX_MEDIA_LIST_TEXT_BYTES`].
     TooMuchText,
+    /// The transition's duration is outside
+    /// `1..=`[`MAX_MEDIA_LIST_TRANSITION_FRAMES`].
+    InvalidTransition(u32),
 }
 
 impl MediaListError {
@@ -236,6 +342,7 @@ impl MediaListError {
             Self::InvalidTitle(_) => "invalid_title",
             Self::InvalidMarks(_) => "invalid_marks",
             Self::UnknownActiveItem(_) => "unknown_item",
+            Self::InvalidTransition(_) => "invalid_transition",
         }
     }
 }
@@ -281,6 +388,11 @@ impl fmt::Display for MediaListError {
                 "a media list's file names and titles hold at most {MAX_MEDIA_LIST_TEXT_BYTES} bytes, \
                  and at most {MAX_MEDIA_LIST_WIRE_TEXT_BYTES} once escaped for the wire"
             ),
+            Self::InvalidTransition(frames) => write!(
+                formatter,
+                "a media list transition of {frames} frames is outside \
+                 1..={MAX_MEDIA_LIST_TRANSITION_FRAMES}"
+            ),
         }
     }
 }
@@ -315,6 +427,21 @@ pub fn media_list_title_is_valid(title: &str) -> bool {
     !title.trim().is_empty()
         && title.len() <= MAX_MEDIA_LIST_TITLE_BYTES
         && !title.chars().any(char::is_control)
+}
+
+/// Checks options' bounds: the transition's duration.
+///
+/// # Errors
+///
+/// Returns [`MediaListError::InvalidTransition`].
+pub const fn validate_media_list_options(options: MediaListOptions) -> Result<(), MediaListError> {
+    if options.transition.is_valid() {
+        Ok(())
+    } else {
+        Err(MediaListError::InvalidTransition(
+            options.transition.duration_frames,
+        ))
+    }
 }
 
 /// Checks items' bounds: count, unique ids in range, `asset://` video or

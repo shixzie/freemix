@@ -53,9 +53,11 @@ highest-value remaining items, ranked:
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
    a real input end to end (engine, protocol, persistence, both daemons,
    Studio), and the native daemon prefetches each list's next item so Auto
-   Next and Next switch files gaplessly, and Studio's list card shows each
-   item's own picture; it still lacks transitions between items and
-   Windows/macOS evidence. (The slideshow,
+   Next and Next switch files gaplessly, Studio's list card shows each
+   item's own picture, and each list has its own transition between items
+   (cut, fade, dip to black, or wipe, with a length; Protocol 2.96, schema
+   77) that both daemons run on Auto Next and Next, the native one
+   compositing the two items; it still lacks Windows/macOS evidence. (The slideshow,
    `IN-009`, is now wired end to end; see its boundary below.)
 6. **The remaining keyer refinements (`SW-008`).** Key/fill (luma or
    alpha), clip, choke, edge softness, and despill now run natively, persist,
@@ -3996,10 +3998,23 @@ session loop (Protocol 2.91: the native daemon through its decoder, cached by
 asset and probed again when the file's size or modification time changes;
 the simulated daemon by the synthetic source's length), so each row's out
 field shows where the item really ends and the card header totals the
-list. Gaps: only the next item is prefetched, no
-transitions between items (a crossfade would need two live decoders for
-one input, which the input's single media transport does not have), no CLI or vMix API verbs, no
-cross-input GO bank, and Linux-only native evidence. The generic
+list; the Web operator page and the CLI (`remote-status`,
+`input-media-list`) show the same lengths, totals, and current item.
+Each list carries a transition (Protocol 2.96, schema 77: `cut`, `fade`,
+`dip`, or `wipe`, 1 to 600 frames, an undoable list edit) that a playing
+list's step to another item runs: the engine keeps the outgoing item's
+transport playing under the incoming one for the transition's frames and
+reports each frame's weight, and under Auto Next the step comes that many
+frames before the active item's out mark so the items overlap without
+lengthening the list. The native daemon keeps the outgoing decoder running
+beside the prefetched incoming one, composites their pictures on the CPU
+(`fm-video`'s `blend_items`), and mixes their sound with the transition's
+gains (`native_media_lists` records Program through a wipe and checks
+every composited frame); a step to a file that was not prefetched still
+cuts. The simulated daemon runs the timing without compositing its
+synthetic pictures. Studio's list card edits the transition with hover
+help. Gaps: only the next item is prefetched, no CLI edit or vMix API
+verbs, no cross-input GO bank, and Linux-only native evidence. The generic
 `page_navigate` step and the cue `page` action do not drive a list yet: a
 list steps with its own `navigate` (same next/previous/first/last/goto
 tokens, but Next and Previous wrap under Loop where a page step clamps).

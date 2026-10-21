@@ -159,9 +159,11 @@ pub use media::{
     MediaTime, MediaTransportState, MediaTransportStatus,
 };
 pub use media_list::{
-    MAX_MEDIA_LIST_ITEM_ID, MAX_MEDIA_LIST_ITEMS, MAX_MEDIA_LIST_STATES, MAX_MEDIA_LIST_TEXT_BYTES,
-    MAX_MEDIA_LIST_TITLE_BYTES, MediaListItemLength, MediaListItemSpec, MediaListNavigation,
+    DEFAULT_MEDIA_LIST_TRANSITION_FRAMES, MAX_MEDIA_LIST_ITEM_ID, MAX_MEDIA_LIST_ITEMS,
+    MAX_MEDIA_LIST_STATES, MAX_MEDIA_LIST_TEXT_BYTES, MAX_MEDIA_LIST_TITLE_BYTES,
+    MAX_MEDIA_LIST_TRANSITION_FRAMES, MediaListItemLength, MediaListItemSpec, MediaListNavigation,
     MediaListOperation, MediaListOptionsSpec, MediaListStateMessage, MediaListStatus,
+    MediaListTransitionKind, MediaListTransitionSpec,
 };
 pub use monitor_image::{
     MonitorFrameAssembler, MonitorImageError, TitlePreviewAssembler, decode_qoi_rgb,

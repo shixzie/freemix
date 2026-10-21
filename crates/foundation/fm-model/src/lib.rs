@@ -65,11 +65,12 @@ pub use layer_key::{
     LumaLayerKey, MAX_KEY_CHOKE, MAX_KEY_EDGE_SOFTNESS,
 };
 pub use media_list::{
-    M3uEntry, MAX_M3U_BYTES, MAX_MEDIA_LIST_ITEM_ID, MAX_MEDIA_LIST_ITEMS,
-    MAX_MEDIA_LIST_TEXT_BYTES, MAX_MEDIA_LIST_TITLE_BYTES, MAX_MEDIA_LIST_WIRE_TEXT_BYTES,
-    MAX_MEDIA_LISTS, MediaList, MediaListError, MediaListItem, MediaListOptions, is_m3u_file_name,
-    is_media_list_file_name, media_list_play_order, media_list_title_is_valid,
-    media_list_wire_text_bytes, parse_m3u, validate_media_list_items,
+    DEFAULT_MEDIA_LIST_TRANSITION_FRAMES, M3uEntry, MAX_M3U_BYTES, MAX_MEDIA_LIST_ITEM_ID,
+    MAX_MEDIA_LIST_ITEMS, MAX_MEDIA_LIST_TEXT_BYTES, MAX_MEDIA_LIST_TITLE_BYTES,
+    MAX_MEDIA_LIST_TRANSITION_FRAMES, MAX_MEDIA_LIST_WIRE_TEXT_BYTES, MAX_MEDIA_LISTS, MediaList,
+    MediaListError, MediaListItem, MediaListOptions, MediaListTransition, MediaListTransitionKind,
+    is_m3u_file_name, is_media_list_file_name, media_list_play_order, media_list_title_is_valid,
+    media_list_wire_text_bytes, parse_m3u, validate_media_list_items, validate_media_list_options,
 };
 pub use media_playback::{
     DEFAULT_MEDIA_LIVE_EDGE_OFFSET_FRAMES, MAX_MEDIA_END_TRIGGER_LEAD_FRAMES, MAX_MEDIA_FRAME,

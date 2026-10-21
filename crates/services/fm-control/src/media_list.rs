@@ -47,12 +47,38 @@ fn wire_item(item: &MediaListItem) -> MediaListItemSpec {
     }
 }
 
+const fn model_transition_kind(
+    kind: fm_protocol::MediaListTransitionKind,
+) -> fm_model::MediaListTransitionKind {
+    match kind {
+        fm_protocol::MediaListTransitionKind::Cut => fm_model::MediaListTransitionKind::Cut,
+        fm_protocol::MediaListTransitionKind::Fade => fm_model::MediaListTransitionKind::Fade,
+        fm_protocol::MediaListTransitionKind::Dip => fm_model::MediaListTransitionKind::Dip,
+        fm_protocol::MediaListTransitionKind::Wipe => fm_model::MediaListTransitionKind::Wipe,
+    }
+}
+
+const fn wire_transition_kind(
+    kind: fm_model::MediaListTransitionKind,
+) -> fm_protocol::MediaListTransitionKind {
+    match kind {
+        fm_model::MediaListTransitionKind::Cut => fm_protocol::MediaListTransitionKind::Cut,
+        fm_model::MediaListTransitionKind::Fade => fm_protocol::MediaListTransitionKind::Fade,
+        fm_model::MediaListTransitionKind::Dip => fm_protocol::MediaListTransitionKind::Dip,
+        fm_model::MediaListTransitionKind::Wipe => fm_protocol::MediaListTransitionKind::Wipe,
+    }
+}
+
 const fn model_options(options: MediaListOptionsSpec) -> MediaListOptions {
     MediaListOptions {
         auto_next: options.auto_next,
         auto_first: options.auto_first,
         loop_list: options.loop_list,
         shuffle_seed: options.shuffle_seed,
+        transition: fm_model::MediaListTransition {
+            kind: model_transition_kind(options.transition.kind),
+            duration_frames: options.transition.duration_frames,
+        },
     }
 }
 
@@ -62,7 +88,96 @@ const fn wire_options(options: MediaListOptions) -> MediaListOptionsSpec {
         auto_first: options.auto_first,
         loop_list: options.loop_list,
         shuffle_seed: options.shuffle_seed,
+        transition: fm_protocol::MediaListTransitionSpec {
+            kind: wire_transition_kind(options.transition.kind),
+            duration_frames: options.transition.duration_frames,
+        },
     }
+}
+
+/// Whether media input `frame.input`'s clip ended on `frame`, or (a media
+/// list's) came within its blending transition's frames of its out point
+/// ([`transition_lead_reached`]): a list under Auto Next then steps.
+pub(crate) fn item_done(
+    engine: &Engine,
+    frame: &fm_engine::EngineMediaFrame,
+    leads: &mut BTreeMap<fm_types::InputId, (u32, u64)>,
+) -> bool {
+    let ended = frame.tick.as_ref().is_some_and(|tick| {
+        tick.events
+            .iter()
+            .any(|event| matches!(event, fm_engine::fm_playback::MediaEvent::Ended { .. }))
+    });
+    // Always observed, so the lead knows the frames left on every frame.
+    let lead = transition_lead_reached(engine, frame, leads);
+    ended || lead
+}
+
+/// Whether media list `frame.input`'s active item just came within its
+/// blending transition's frames of its out point while playing under Auto
+/// Next, with a next item that plays (IN-006): the authority then steps
+/// the list early so the two items overlap. `leads` keeps each list's
+/// active item and the output frames it had left on its last playing
+/// frame; the lead fires once, on the frame the item crosses it, never on
+/// an item's first observed frame (an item shorter than its transition
+/// advances when it ends).
+pub(crate) fn transition_lead_reached(
+    engine: &Engine,
+    frame: &fm_engine::EngineMediaFrame,
+    leads: &mut BTreeMap<fm_types::InputId, (u32, u64)>,
+) -> bool {
+    let input = frame.input;
+    let Some(list) = engine.show().media_list(input) else {
+        leads.remove(&input);
+        return false;
+    };
+    let lead = u64::from(list.options.transition.blend_frames());
+    let playing = frame.tick.as_ref().is_some_and(|tick| {
+        tick.state == fm_engine::fm_playback::MediaState::Playing && tick.frame.is_some()
+    });
+    if lead == 0 || !list.options.auto_next || !playing {
+        leads.remove(&input);
+        return false;
+    }
+    let order = list.play_order();
+    let position = list.position().unwrap_or(0);
+    let next_plays = position + 1 < order.len() || list.options.loop_list;
+    let (Some(tick), Some(status)) = (frame.tick.as_ref(), engine.media_status(input)) else {
+        return false;
+    };
+    let Some(presented) = tick.frame else {
+        return false;
+    };
+    let remaining = remaining_output_frames(
+        status
+            .playable_end
+            .saturating_sub(presented.get().saturating_add(1)),
+        status.source_rate.unwrap_or_else(|| engine.frame_rate()),
+        engine.frame_rate(),
+        status.settings.speed_basis_points,
+    );
+    let previous = leads.insert(input, (list.active, remaining));
+    next_plays
+        && remaining <= lead
+        && previous.is_some_and(|(active, before)| active == list.active && before > lead)
+}
+
+/// How many output frames `source_frames` source frames at `source_rate`
+/// last at `output_rate` and `speed_basis_points` (rounded down).
+fn remaining_output_frames(
+    source_frames: u64,
+    source_rate: fm_types::FrameRate,
+    output_rate: fm_types::FrameRate,
+    speed_basis_points: u32,
+) -> u64 {
+    let numerator = u128::from(source_frames)
+        * u128::from(source_rate.denominator())
+        * u128::from(output_rate.numerator())
+        * 10_000;
+    let denominator = u128::from(source_rate.numerator())
+        * u128::from(output_rate.denominator())
+        * u128::from(speed_basis_points.max(1));
+    u64::try_from(numerator / denominator.max(1)).unwrap_or(u64::MAX)
 }
 
 const fn model_navigation(navigation: MediaListNavigation) -> EngineMediaListNavigation {

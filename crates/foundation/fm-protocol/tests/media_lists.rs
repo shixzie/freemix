@@ -2,7 +2,8 @@
 //! navigate, advance), the `media_list_changed` event, the snapshot's
 //! `media_list_states` count, the `media_list_state` follow-on record, and
 //! (Protocol 2.91) each item's probed length with the `media_list` runtime
-//! event that republishes it — exactly, and strictly.
+//! event that republishes it, and (Protocol 2.96) the transition between
+//! items — exactly, and strictly.
 
 use core::num::NonZeroU128;
 
@@ -10,9 +11,9 @@ use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CodecError, CommandMessage, CommandPayload, EditHistoryStatus,
     EngineIdentity, EventCursor, EventMessage, EventPayload, MAX_MEDIA_LIST_ITEMS,
     MediaListItemLength, MediaListItemSpec, MediaListNavigation, MediaListOperation,
-    MediaListOptionsSpec, MediaListStateMessage, MediaListStatus, RuntimeEventMessage,
-    RuntimeLifecycleEvent, ServerIdentity, WireInputId, WireMessage, decode_line, encode_line,
-    media_list_status_fits,
+    MediaListOptionsSpec, MediaListStateMessage, MediaListStatus, MediaListTransitionKind,
+    MediaListTransitionSpec, RuntimeEventMessage, RuntimeLifecycleEvent, ServerIdentity,
+    WireInputId, WireMessage, decode_line, encode_line, media_list_status_fits,
 };
 use fm_types::FrameRate;
 
@@ -69,6 +70,10 @@ fn options() -> MediaListOptionsSpec {
         auto_first: false,
         loop_list: true,
         shuffle_seed: Some(u64::MAX),
+        transition: MediaListTransitionSpec {
+            kind: MediaListTransitionKind::Dip,
+            duration_frames: 600,
+        },
     }
 }
 
@@ -108,7 +113,7 @@ fn media_list_commands_round_trip_exactly() {
     assert_eq!(
         create,
         format!(
-            "{}\tpayload=media_list\tinput=7\toperation=create\tname=Walk-in\t{ITEMS}\tauto_next=1\tauto_first=0\tloop=1\tshuffle_seed=18446744073709551615\n",
+            "{}\tpayload=media_list\tinput=7\toperation=create\tname=Walk-in\t{ITEMS}\tauto_next=1\tauto_first=0\tloop=1\tshuffle_seed=18446744073709551615\ttransition=dip\ttransition_frames=600\n",
             prefix()
         )
     );
@@ -194,6 +199,13 @@ fn malformed_media_list_commands_are_refused() {
         ),
         ("name=Walk-in", "name=%20"),
         ("\tname=Walk-in", ""),
+        ("transition=dip", "transition=slide"),
+        ("transition=dip", "transition=Dip"),
+        ("\ttransition=dip", ""),
+        ("transition_frames=600", "transition_frames=601"),
+        ("transition_frames=600", "transition_frames=0"),
+        ("transition_frames=600", "transition_frames=060"),
+        ("\ttransition_frames=600", ""),
     ] {
         let line = create.replacen(from, to, 1);
         assert_ne!(line, create, "{from}");
@@ -233,6 +245,64 @@ fn malformed_media_list_commands_are_refused() {
     );
 }
 
+/// Every transition kind rides a `set` (Protocol 2.96), and the default
+/// is a cut that keeps a 15-frame duration for a later blend.
+#[test]
+fn every_list_transition_round_trips() {
+    assert_eq!(
+        MediaListOptionsSpec::default().transition,
+        MediaListTransitionSpec {
+            kind: MediaListTransitionKind::Cut,
+            duration_frames: 15,
+        }
+    );
+    for kind in MediaListTransitionKind::ALL {
+        assert_eq!(
+            MediaListTransitionKind::from_token(kind.token()),
+            Some(kind)
+        );
+        for duration_frames in [1, 15, 600] {
+            let mut options = options();
+            options.transition = MediaListTransitionSpec {
+                kind,
+                duration_frames,
+            };
+            let line = round_trip(&command(
+                7,
+                MediaListOperation::Set {
+                    items: items(),
+                    options,
+                    active: Some(4),
+                },
+            ));
+            assert!(
+                line.contains(&format!(
+                    "\ttransition={}\ttransition_frames={duration_frames}\t",
+                    kind.token()
+                )),
+                "{line}"
+            );
+        }
+    }
+    // A transition outside its bounds is never written.
+    for duration_frames in [0, 601] {
+        let mut options = options();
+        options.transition.duration_frames = duration_frames;
+        assert!(
+            encode_line(&command(
+                7,
+                MediaListOperation::Set {
+                    items: items(),
+                    options,
+                    active: None,
+                }
+            ))
+            .is_err(),
+            "{duration_frames}"
+        );
+    }
+}
+
 #[test]
 fn the_state_record_and_event_carry_the_whole_list() {
     let state = WireMessage::MediaListState(MediaListStateMessage {
@@ -242,7 +312,7 @@ fn the_state_record_and_event_carry_the_whole_list() {
     assert_eq!(
         round_trip(&state),
         format!(
-            "media_list_state\trevision=9\tinput=7\tactive=4\tcycle=3\tposition=1\tauto_next=1\tauto_first=0\tloop=1\tshuffle_seed=18446744073709551615\t{ITEMS}\torder=1%2C4\t{LENGTHS}\n"
+            "media_list_state\trevision=9\tinput=7\tactive=4\tcycle=3\tposition=1\tauto_next=1\tauto_first=0\tloop=1\tshuffle_seed=18446744073709551615\ttransition=dip\ttransition_frames=600\t{ITEMS}\torder=1%2C4\t{LENGTHS}\n"
         )
     );
     let event = WireMessage::Event(EventMessage {

@@ -2749,6 +2749,14 @@ impl Engine {
                 {
                     runtime.play_on_open = activation.play;
                 }
+                // A playing step blends the two items when its transition
+                // does: the transport as the step finds it plays out.
+                runtime.pending_transition = plan
+                    .activation
+                    .as_ref()
+                    .filter(|activation| activation.play)
+                    .map(|_| plan.list.options.transition)
+                    .filter(|transition| transition.blend_frames() > 0);
             }
             if !matches!(step, HistoryStep::None) {
                 self.history.commit(step, command, command_id, revision);
@@ -2805,7 +2813,7 @@ impl Engine {
                     && (lifecycle.closed
                         || runtime.opened_for.as_ref() != show.input_source(*input));
                 if released {
-                    runtime.release();
+                    runtime.release(!lifecycle.closed);
                 }
                 runtime
                     .tick(
@@ -2821,6 +2829,7 @@ impl Engine {
                             operations: Vec::new(),
                             faulted: None,
                             completion_requested: false,
+                            outgoing: None,
                         })
                     })
             })

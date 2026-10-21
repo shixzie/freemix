@@ -52,10 +52,10 @@ pub use history::{
 };
 pub use input_lifecycle::EngineInputLifecycleEdit;
 pub use media::{
-    EngineMediaCommand, EngineMediaFault, EngineMediaFrame, EngineMediaOperation, EngineMediaSeek,
-    EngineMediaSource, EngineMediaStatus, MAX_MEDIA_TRACK_LANGUAGE_BYTES,
-    MAX_MEDIA_TRACK_TITLE_BYTES, MAX_MEDIA_TRACKS, SYNTHETIC_GROWING_START_SECONDS,
-    SYNTHETIC_MEDIA_SECONDS,
+    EngineMediaCommand, EngineMediaFault, EngineMediaFrame, EngineMediaOperation,
+    EngineMediaOutgoing, EngineMediaSeek, EngineMediaSource, EngineMediaStatus,
+    MAX_MEDIA_TRACK_LANGUAGE_BYTES, MAX_MEDIA_TRACK_TITLE_BYTES, MAX_MEDIA_TRACKS,
+    SYNTHETIC_GROWING_START_SECONDS, SYNTHETIC_MEDIA_SECONDS,
 };
 pub use media_list::{
     EngineMediaListCommand, EngineMediaListNavigation, EngineMediaListOperation,

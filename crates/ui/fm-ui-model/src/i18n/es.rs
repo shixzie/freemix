@@ -6426,6 +6426,35 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::MlReshuffleHover,
         t("Elige otro orden aleatorio para esta lista"),
     ),
+    (
+        Msg::MlTransitionHover,
+        t(
+            "Cómo pasa una lista en reproducción de un elemento al siguiente con Siguiente automático, Siguiente y Anterior: los dos elementos se mezclan durante los cuadros de la transición mientras el saliente sigue reproduciéndose, y con Siguiente automático el siguiente empieza esos cuadros antes de que termine el actual",
+        ),
+    ),
+    (
+        Msg::MlTransitionCutHover,
+        t("El siguiente elemento reemplaza al actual de inmediato"),
+    ),
+    (
+        Msg::MlTransitionFadeHover,
+        t("El siguiente elemento se funde sobre el actual"),
+    ),
+    (Msg::MlTransitionDip, t("Fundido a negro")),
+    (
+        Msg::MlTransitionDipHover,
+        t(
+            "El elemento actual se funde a negro en la primera mitad y el siguiente aparece desde negro en la segunda",
+        ),
+    ),
+    (
+        Msg::MlTransitionWipeHover,
+        t("El siguiente elemento entra sobre el actual desde el borde izquierdo"),
+    ),
+    (
+        Msg::MlTransitionFramesHover,
+        t("Cuántos cuadros dura la transición entre dos elementos"),
+    ),
     (Msg::MlReasonNoItems, t("añada al menos un archivo")),
     (
         Msg::MlReasonNotMedia,

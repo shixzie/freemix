@@ -1248,6 +1248,29 @@ fn operator_page_is_served_with_the_tally_security_model() {
     ] {
         assert!(page.contains(event), "{event}");
     }
+    // Media lists (IN-006), read only: each list's status follows the
+    // snapshot records, its events, and the runtime lengths (Protocol 2.91,
+    // taken only while the items are the same); the page shows every
+    // item's played length through its marks, the list total, the current
+    // item, and the list transition (Protocol 2.96), with hover help in
+    // English and Spanish.
+    for source in [
+        "case \"media_list_state\":",
+        "name === \"media_list_changed\"",
+        "required(record, \"event\") === \"media_list\"",
+        "takeMediaListLengths(record)",
+        "required(record, \"transition_frames\")",
+        "/^(\\d+)@(\\d+)\\/(\\d+)$/",
+        "const ML_TRANSITION_KEY = { fade: \"mlFade\", dip: \"mlDip\", wipe: \"mlWipe\" };",
+        "mlTransitionTimed: \"{kind} between items, {frames} frames\"",
+        "mlTransitionTimed: \"{kind} entre elementos, {frames} cuadros\"",
+        "mlTotalPartial: \"At least {duration}\"",
+        "mlTotalPartial: \"Al menos {duration}\"",
+        "row.setAttribute(\"aria-current\", \"true\")",
+        "id=\"media-lists-panel\" hidden aria-labelledby=\"media-lists-heading\"",
+    ] {
+        assert!(page.contains(source), "{source}");
+    }
     // Accessible markup: labelled sections, live status, pressed toggles.
     for markup in [
         "aria-labelledby=\"preview-heading\"",

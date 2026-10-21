@@ -28,7 +28,7 @@ commands = ["cargo test -p fm-audio --test channel_mapping", "cargo test -p fm-e
 [[tests]]
 id = "accept-in-006"
 state = "present"
-paths = ["crates/media/fm-playback/tests/list_scheduling.rs", "crates/foundation/fm-model/tests/media_lists.rs", "crates/services/fm-engine/tests/media_lists.rs", "crates/services/fm-persistence/tests/media_lists.rs", "crates/foundation/fm-protocol/tests/media_lists.rs", "crates/services/fm-control/src/tests/media_lists.rs", "apps/freemixd/src/media_lengths.rs", "apps/freemixd/tests/media_lists.rs", "apps/freemixd/tests/native_media_lists.rs", "crates/ui/fm-ui-model/src/tests.rs", "crates/ui/fm-ui-egui/src/media_list_ui.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+paths = ["crates/media/fm-playback/tests/list_scheduling.rs", "crates/foundation/fm-model/tests/media_lists.rs", "crates/services/fm-engine/tests/media_lists.rs", "crates/services/fm-persistence/tests/media_lists.rs", "crates/foundation/fm-protocol/tests/media_lists.rs", "crates/services/fm-control/src/tests/media_lists.rs", "apps/freemixd/src/media_lengths.rs", "apps/freemixd/tests/media_lists.rs", "apps/freemixd/tests/native_media_lists.rs", "crates/ui/fm-ui-model/src/tests.rs", "crates/ui/fm-ui-egui/src/media_list_ui.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs", "crates/media/fm-video/src/item_transition.rs"]
 commands = ["cargo test -p fm-playback --test list_scheduling", "cargo test -p fm-model --test media_lists", "cargo test -p fm-engine --test media_lists", "cargo test -p fm-persistence --test media_lists", "cargo test -p fm-protocol --test media_lists", "cargo test -p freemixd --test media_lists", "cargo test -p freemixd --test native_media_lists", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-in-007"

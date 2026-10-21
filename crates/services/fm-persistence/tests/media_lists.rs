@@ -11,8 +11,8 @@ use std::{
 };
 
 use fm_model::{
-    Input, InputKind, MediaList, MediaListItem, MediaListOptions, MediaPlaybackSettings, Project,
-    ProjectSettings,
+    Input, InputKind, MediaList, MediaListItem, MediaListOptions, MediaListTransition,
+    MediaListTransitionKind, MediaPlaybackSettings, Project, ProjectSettings,
 };
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoreError, StoredProject};
 use fm_types::{
@@ -96,6 +96,10 @@ fn project() -> Project {
             auto_first: false,
             loop_list: true,
             shuffle_seed: Some(18_446_744_073_709_551_615),
+            transition: MediaListTransition {
+                kind: MediaListTransitionKind::Dip,
+                duration_frames: 600,
+            },
         },
         active: 4,
         cycle: 3,
@@ -126,7 +130,8 @@ fn media_lists_round_trip_exactly_and_strictly() {
         text.contains(
             ",\n    \"media_lists\": [\n      {\"input\": 7, \"active\": 4, \"cycle\": 3, \
              \"auto_next\": true, \"auto_first\": false, \"loop\": true, \"shuffle_seed\": \
-             18446744073709551615, \"items\": [{\"id\": 1, \"uri\": \"asset://media/a.mp4\", \
+             18446744073709551615, \"transition\": \"dip\", \"transition_frames\": 600, \
+             \"items\": [{\"id\": 1, \"uri\": \"asset://media/a.mp4\", \
              \"title\": \"Intro \\\"cold\\\"\", \"mark_in\": 12, \"mark_out\": 250}, {\"id\": 4, \
              \"uri\": \"asset://media/b.wav\", \"title\": null, \"mark_in\": 0, \"mark_out\": \
              null}]}\n    ],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": []\n  },"
@@ -149,6 +154,9 @@ fn media_lists_round_trip_exactly_and_strictly() {
             "\"mark_out\": null, \"duration\": 5}",
         ),
         ("{\"id\": 4, ", "{"),
+        ("\"transition\": \"dip\"", "\"transition\": \"slide\""),
+        ("\"transition_frames\": 600, ", ""),
+        ("\"transition_frames\": 600", "\"transition_frames\": -1"),
     ] {
         let malformed = text.replacen(from, to, 1);
         assert_ne!(malformed, text, "{from}");
@@ -171,6 +179,8 @@ fn media_lists_round_trip_exactly_and_strictly() {
         ),
         ("asset://media/a.mp4", "/home/show/a.mp4"),
         ("asset://media/a.mp4", "asset://media/a.png"),
+        ("\"transition_frames\": 600", "\"transition_frames\": 601"),
+        ("\"transition_frames\": 600", "\"transition_frames\": 0"),
         ("\"input\": 7, \"active\"", "\"input\": 8, \"active\""),
         (
             "\"items\": [{\"id\": 1",

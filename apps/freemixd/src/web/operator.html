@@ -130,6 +130,13 @@
   .row button.reset { min-width: 0; margin-left: 0; }
   .row .state[data-tone="failed"] { color: var(--warn); }
   .row .state[data-tone="starting"] { color: #ffe2a0; }
+  /* Media lists (IN-006): read-only, the active item marked by a bar. */
+  .media-list + .media-list { margin-top: .9rem; }
+  .media-list h3 { font-size: 1rem; margin: 0; overflow-wrap: anywhere; }
+  .media-list .summary { margin: .15rem 0 .35rem; font-size: .85rem; color: var(--muted); }
+  .media-list ol { list-style: none; margin: 0; padding: 0; }
+  .media-list li[data-active="1"] { box-shadow: inset 4px 0 0 var(--preview); padding-left: .6rem; font-weight: 700; }
+  .media-list li .state { font-variant-numeric: tabular-nums; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   [hidden] { display: none !important; }
 </style>
@@ -255,6 +262,11 @@
     <h2 id="audio-heading" data-i18n="audio">Audio</h2>
     <div id="strips"></div>
     <p id="why-audio" class="why" aria-live="polite"></p>
+  </section>
+
+  <section id="media-lists-panel" hidden aria-labelledby="media-lists-heading">
+    <h2 id="media-lists-heading" data-i18n="mediaLists">Media lists</h2>
+    <div id="media-lists"></div>
   </section>
 </main>
 <div id="status" role="log" aria-live="polite">Not connected</div>
@@ -546,6 +558,23 @@
       failInternalError: "Internal error; see the daemon log",
       failUnknown: "Unknown error; see the daemon log",
       failWithExitCode: "{reason} (FFmpeg exited with code {code})",
+      mediaLists: "Media lists",
+      mlCut: "Cut between items",
+      mlTransitionTimed: "{kind} between items, {frames} frames",
+      mlTransitionHover: "How the list moves from one item to the next on Auto Next, Next, and Previous; set it in FreeMix Studio",
+      mlFade: "Fade",
+      mlDip: "Dip to black",
+      mlWipe: "Wipe",
+      mlAutoNext: "Auto Next",
+      mlLoop: "Loop",
+      mlTotal: "Total {duration}",
+      mlTotalPartial: "At least {duration}",
+      mlTotalHover: "How long the whole list plays once through: each item from its in mark to its out mark, or to its file's end when unmarked",
+      mlTotalPartialHover: "How long the whole list plays at least: {count} item(s) not measured yet or unreadable are not counted",
+      mlUnknownLength: "--:--",
+      mlItemHover: "{file}: plays {length} from its in mark to its out mark, or to the file's end when unmarked",
+      mlItemUnknownHover: "{file}: its length is not known yet (the file is still being measured, missing, or unreadable)",
+      mlCurrent: "Current item: {name}",
     },
     es: {
       title: "Operador de FreeMix",
@@ -763,6 +792,23 @@
       failInternalError: "Error interno; vea el registro del daemon",
       failUnknown: "Error desconocido; vea el registro del daemon",
       failWithExitCode: "{reason} (FFmpeg terminó con código {code})",
+      mediaLists: "Listas de medios",
+      mlCut: "Corte entre elementos",
+      mlTransitionTimed: "{kind} entre elementos, {frames} cuadros",
+      mlTransitionHover: "Cómo pasa la lista de un elemento al siguiente con Siguiente automático, Siguiente y Anterior; se ajusta en FreeMix Studio",
+      mlFade: "Fundido",
+      mlDip: "Fundido a negro",
+      mlWipe: "Cortina",
+      mlAutoNext: "Siguiente automático",
+      mlLoop: "Repetir la lista",
+      mlTotal: "Total {duration}",
+      mlTotalPartial: "Al menos {duration}",
+      mlTotalHover: "Cuánto dura la lista entera: cada elemento desde su marca de entrada hasta la de salida, o hasta el final del archivo si no la tiene",
+      mlTotalPartialHover: "Cuánto dura como mínimo la lista entera: no se cuentan {count} elemento(s) aún sin medir o ilegibles",
+      mlUnknownLength: "--:--",
+      mlItemHover: "{file}: dura {length} desde su marca de entrada hasta la de salida, o hasta el final del archivo si no la tiene",
+      mlItemUnknownHover: "{file}: aún no se conoce su duración (el archivo se está midiendo, falta o no se puede leer)",
+      mlCurrent: "Elemento actual: {name}",
     },
   };
   const LANGUAGE_KEY = "freemix.web.language";
@@ -784,6 +830,7 @@
     whyAudio: $("why-audio"), recorderNote: $("recorder-note"), language: $("language"),
     meters: $("meters"), meterScale: $("meter-scale"), meterNote: $("meter-note"),
     loudness: $("loudness"), loudnessReset: $("loudness-reset"), whyLoudness: $("why-loudness"),
+    mediaListsPanel: $("media-lists-panel"), mediaLists: $("media-lists"),
   };
 
   const store = window.sessionStorage;
@@ -862,6 +909,8 @@
     strips: new Map(), recordings: [false, false], streams: [],
     // Project shortcuts (RC-004), in project order: { id, name, enabled, action }.
     shortcuts: [],
+    // Media lists (IN-006) by input: see parseMediaList.
+    mediaLists: new Map(),
   };
   // Lossy live status (Protocol 2.66), latest-wins, each kind with its own
   // sequence and the local time it arrived; cleared with the connection.
@@ -937,6 +986,52 @@
         offline: lifecycle[3] === "1" || (lifecycle[4] !== undefined && lifecycle[4] !== "-"),
       };
     });
+  }
+  // A media list status (`media_list_state`, `event=media_list_changed`,
+  // `runtime_event` `event=media_list`): `items` as
+  // `id~uri~title|-~in~out|-` (uri and title escaped once more), `lengths`
+  // one `<frames>@<num>/<den>` or `-` per item (Protocol 2.91), and the
+  // list transition (Protocol 2.96).
+  function parseMediaList(record) {
+    const items = required(record, "items").split(",").map((entry) => {
+      const parts = entry.split("~");
+      if (parts.length !== 5 || !parts[0]) throw new Error("malformed media list item");
+      return {
+        id: parts[0], uri: decodeURIComponent(parts[1]),
+        title: parts[2] === "-" ? "" : decodeURIComponent(parts[2]),
+        markIn: Number(parts[3]), markOut: parts[4] === "-" ? null : Number(parts[4]),
+      };
+    });
+    const lengths = required(record, "lengths").split(",").map((entry) => {
+      if (entry === "-") return null;
+      const match = /^(\d+)@(\d+)\/(\d+)$/.exec(entry);
+      if (!match) throw new Error("malformed media list length");
+      return { frames: Number(match[1]), numerator: Number(match[2]), denominator: Number(match[3]) };
+    });
+    if (lengths.length !== items.length) throw new Error("media list lengths do not fit its items");
+    return {
+      input: required(record, "input"), active: required(record, "active"),
+      autoNext: required(record, "auto_next") === "1", loop: required(record, "loop") === "1",
+      transition: required(record, "transition"),
+      transitionFrames: Number(required(record, "transition_frames")),
+      items, lengths,
+    };
+  }
+  // A `runtime_event` `event=media_list` brings only lengths, taken while
+  // the list still has exactly its items.
+  function takeMediaListLengths(record) {
+    const update = parseMediaList(record);
+    const list = show.mediaLists.get(update.input);
+    const same = (a, b) => a.id === b.id && a.uri === b.uri && a.markIn === b.markIn && a.markOut === b.markOut;
+    if (list && list.items.length === update.items.length && list.items.every((item, at) => same(item, update.items[at]))) {
+      list.lengths = update.lengths;
+    }
+  }
+  // How long one item plays in ms through its marks, null while unknown.
+  function playedMs(item, length) {
+    if (!length) return null;
+    const end = item.markOut === null ? length.frames : Math.min(item.markOut, length.frames);
+    return Math.max(0, end - item.markIn) * 1000 * length.denominator / length.numerator;
   }
   // `input:gain:balance:pan:muted:soloed:follow_video:delay:group`.
   function parseStrips(value) {
@@ -1386,8 +1481,9 @@
         show.strips = parseStrips(required(record, "input_audio_strips"));
         show.recordings = parseRecordings(required(record, "recordings"));
         show.streams = parseStreams(required(record, "streams"));
-        // Its `shortcut_state` records follow it.
+        // Its `shortcut_state` and `media_list_state` records follow it.
         show.shortcuts = [];
+        show.mediaLists = new Map();
         show.desiredByRevision.clear();
         trackDesired(link.revision);
         link.phase = "live";
@@ -1402,6 +1498,12 @@
       case "shortcut_state":
         if (link.phase === "live") upsertShortcut(record);
         return;
+      case "media_list_state":
+        if (link.phase === "live") {
+          const list = parseMediaList(record);
+          show.mediaLists.set(list.input, list);
+        }
+        return;
       case "event": {
         if (link.phase !== "live" || !sameServer(record)) throw new Error("unexpected event");
         const revision = Number(required(record, "revision"));
@@ -1413,7 +1515,12 @@
         return;
       }
       case "runtime_event": {
-        if (!sameServer(record) || required(record, "event") !== "realized") return;
+        if (!sameServer(record)) return;
+        if (required(record, "event") === "media_list") {
+          if (link.phase === "live") takeMediaListLengths(record);
+          return;
+        }
+        if (required(record, "event") !== "realized") return;
         const desired = show.desiredByRevision.get(Number(required(record, "revision")));
         if (!desired) return;
         show.realized = { program: desired.program, preview: desired.preview, manualFrom: "", manualTo: "" };
@@ -1522,6 +1629,15 @@
       const id = required(record, "input");
       show.inputs = show.inputs.filter((candidate) => candidate.id !== id);
       show.strips.delete(id);
+      show.mediaLists.delete(id);
+    } else if (name === "media_list_changed") {
+      const list = parseMediaList(record);
+      show.mediaLists.set(list.input, list);
+      // A `create` adds its input, named by `created`.
+      const created = required(record, "created");
+      if (created !== "-" && !show.inputs.some((candidate) => candidate.id === list.input)) {
+        show.inputs.push({ id: list.input, label: created, offline: false });
+      }
     } else if (name === "shortcut_changed") {
       upsertShortcut(record);
     } else if (name === "shortcut_removed") {
@@ -1877,6 +1993,64 @@
     });
     ui.whyAudio.textContent = sectionReason("audio");
     paintLoudness();
+    renderMediaLists(live, inputOf);
+  }
+
+  const ML_TRANSITION_KEY = { fade: "mlFade", dip: "mlDip", wipe: "mlWipe" };
+  // A played duration rounded to the nearest second.
+  function mediaClock(ms) { return clock(Math.round(ms / 1000) * 1000); }
+  // Each media list, read only: its transition and options, its total
+  // through the marks, and every item's played length with the current one
+  // marked.
+  function renderMediaLists(live, inputOf) {
+    const listIds = live ? show.inputs.map((input) => input.id).filter((id) => show.mediaLists.has(id)) : [];
+    ui.mediaListsPanel.hidden = listIds.length === 0;
+    syncChildren(ui.mediaLists, listIds, () => {
+      const card = document.createElement("div");
+      card.className = "media-list";
+      card.innerHTML = "<h3></h3><p class=\"summary\"><span class=\"transition\"></span> · <span class=\"total\"></span></p><ol></ol>";
+      return card;
+    }, (card, id) => {
+      const list = show.mediaLists.get(id);
+      card.querySelector("h3").textContent = inputOf(id).label;
+      const transition = card.querySelector(".transition");
+      const kind = ML_TRANSITION_KEY[list.transition];
+      const options = [list.autoNext ? tr("mlAutoNext") : "", list.loop ? tr("mlLoop") : ""].filter(Boolean);
+      transition.textContent = [kind ? tr("mlTransitionTimed", { kind: tr(kind), frames: list.transitionFrames })
+        : tr("mlCut"), ...options].join(" · ");
+      transition.title = tr("mlTransitionHover");
+      const played = list.items.map((item, at) => playedMs(item, list.lengths[at]));
+      const unknown = played.filter((ms) => ms === null).length;
+      const duration = mediaClock(played.reduce((sum, ms) => sum + (ms || 0), 0));
+      const total = card.querySelector(".total");
+      total.textContent = tr(unknown ? "mlTotalPartial" : "mlTotal", { duration });
+      total.title = unknown ? tr("mlTotalPartialHover", { count: unknown }) : tr("mlTotalHover");
+      syncChildren(card.querySelector("ol"), list.items.map((item) => item.id), () => {
+        const row = document.createElement("li");
+        row.className = "row";
+        row.innerHTML = "<span class=\"name\"></span><span class=\"state\"></span>";
+        return row;
+      }, (row, itemId) => {
+        const at = list.items.findIndex((item) => item.id === itemId);
+        const item = list.items[at];
+        const file = item.uri.split(/[\\/]/).pop() || item.uri;
+        const name = (at + 1) + ". " + (item.title || file);
+        const current = item.id === list.active;
+        row.querySelector(".name").textContent = name;
+        const ms = played[at];
+        row.querySelector(".state").textContent = ms === null ? tr("mlUnknownLength") : mediaClock(ms);
+        row.title = ms === null ? tr("mlItemUnknownHover", { file: item.uri })
+          : tr("mlItemHover", { file: item.uri, length: mediaClock(ms) });
+        row.dataset.active = current ? "1" : "0";
+        if (current) {
+          row.setAttribute("aria-current", "true");
+          row.setAttribute("aria-label", tr("mlCurrent", { name }) + ", " + row.querySelector(".state").textContent);
+        } else {
+          row.removeAttribute("aria-current");
+          row.removeAttribute("aria-label");
+        }
+      });
+    });
   }
 
   // The short localized reason for one failure token; "" for none.

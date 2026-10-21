@@ -53,6 +53,21 @@
 //! ([`NativeMediaFiles::adopt`]) before the step's frame is projected, so
 //! the switch frame presents the new item instead of holding the last one.
 //!
+//! A list's transition between items (IN-006, Protocol 2.96) composites
+//! the two items on the CPU. The replaced worker is not retired at once: it
+//! becomes the input's *outgoing* worker, presenting the outgoing item's
+//! ticks the engine projects ([`fm_engine::EngineMediaOutgoing`]) into a
+//! hand-off slot instead of the source registry. The incoming worker blends
+//! its picture with the outgoing one of the same frame (waiting at most
+//! [`MAX_OUTGOING_WAIT`] for it, else using its latest) with
+//! [`fm_video::blend_items`], and mixes the two items' sound with the
+//! transition's gains, so the input stays one source. The outgoing worker
+//! retires on the first frame without a transition. A step to an item of
+//! the file already open has no second decoder: the outgoing item holds
+//! the last picture presented before the step, silent. A step whose next
+//! file was not opened ahead in time (its standby still opening) cuts to
+//! it once the file opens.
+//!
 //! A closed input (IN-026) is not opened at startup and releases its decoder
 //! when it closes; while closed it shows no picture (transparent black, so
 //! black on its own and absent as a layer) and no sound, as the simulated
@@ -80,7 +95,7 @@ use fm_engine::fm_playback::{FrameIndex, MediaState, MediaTick};
 use fm_engine::{EngineMediaFault, EngineMediaSource, FrameResult};
 use fm_frame::{
     AlphaMode, AudioBlock, ChromaLocation, ClockDomainId, ColorMetadata, ColorPrimaries,
-    CpuVideoFrame, CpuVideoPayload, MatrixCoefficients, MediaTimestamp, MediaTiming,
+    CpuVideoFrame, CpuVideoPayload, CpuVideoPlane, MatrixCoefficients, MediaTimestamp, MediaTiming,
     NormalizedDuration, NormalizedTimestamp, OriginalTimestamp, SequenceNumber, SignalRange,
     TimeBase, TransferFunction, VideoFrameMetadata,
 };
@@ -96,6 +111,11 @@ pub(crate) const MAX_MEDIA_FRAME_WAIT: Duration = Duration::from_millis(100);
 /// Most media list standbys (IN-006) opening their files at once; the
 /// others wait their turn on their own threads.
 pub(crate) const MAX_CONCURRENT_PREFETCHES: usize = 2;
+
+/// Longest an incoming item's worker waits for the outgoing item's picture
+/// of the same frame during a list transition before it blends the
+/// outgoing item's latest one.
+pub(crate) const MAX_OUTGOING_WAIT: Duration = Duration::from_millis(40);
 
 /// Bounds how many standbys open their files at once.
 #[derive(Default)]
@@ -184,9 +204,29 @@ pub(crate) struct Presented {
 struct Request {
     frame: u64,
     tick: MediaTick,
+    /// A list transition composites this tick's picture over the outgoing
+    /// item's (IN-006).
+    blend: Option<Blend>,
+}
+
+/// How one frame of a media list transition composites its two items.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Blend {
+    kind: fm_video::ItemTransition,
+    /// The incoming item's weight, in basis points.
+    weight: u16,
+}
+
+/// What an outgoing worker presented last, for the incoming one.
+#[derive(Clone)]
+struct Handoff {
+    frame: u64,
+    picture: Option<Arc<CpuVideoFrame>>,
+    audio: Option<AudioBlock>,
 }
 
 #[derive(Default)]
+#[allow(clippy::struct_excessive_bools)] // independent worker flags
 struct WorkerState {
     /// The latest tick to present; a newer one replaces an unserved one.
     request: Option<Request>,
@@ -203,6 +243,10 @@ struct WorkerState {
     /// the file, which may have changed meanwhile.
     reopened: u64,
     shutdown: bool,
+    /// The worker plays a list's outgoing item (IN-006): it presents into
+    /// `handoff`, never to the loop.
+    outgoing: bool,
+    handoff: Option<Handoff>,
 }
 
 struct Shared {
@@ -210,11 +254,51 @@ struct Shared {
     wake: Condvar,
     /// The worker panicked: it presents nothing more and is not waited for.
     panicked: AtomicBool,
+    /// An outgoing worker handed off a picture, or retired.
+    handed_off: Condvar,
 }
 
 impl Shared {
+    fn new(state: WorkerState, panicked: bool) -> Self {
+        Self {
+            state: Mutex::new(state),
+            wake: Condvar::new(),
+            panicked: AtomicBool::new(panicked),
+            handed_off: Condvar::new(),
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, WorkerState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// What outgoing worker `self` presented for engine frame `frame`, or
+    /// its latest once [`MAX_OUTGOING_WAIT`] passes; `None` once it retired
+    /// (or never presented).
+    fn handoff_for(&self, frame: u64) -> Option<Handoff> {
+        let deadline = Instant::now() + MAX_OUTGOING_WAIT;
+        let mut state = self.lock();
+        loop {
+            if state.shutdown || !state.outgoing || self.panicked.load(Ordering::Acquire) {
+                return None;
+            }
+            if state
+                .handoff
+                .as_ref()
+                .is_some_and(|handoff| handoff.frame >= frame)
+            {
+                return state.handoff.clone();
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return state.handoff.clone();
+            }
+            state = self
+                .handed_off
+                .wait_timeout(state, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
     }
 }
 
@@ -262,6 +346,9 @@ pub(crate) struct NativeMediaFiles {
     standbys: BTreeMap<InputId, Standby>,
     /// Bounds how many standbys open their files at once.
     prefetch_gate: Arc<PrefetchGate>,
+    /// Each media list's outgoing item during a transition (IN-006): the
+    /// worker a step replaced, still presenting.
+    outgoing: BTreeMap<InputId, Worker>,
 }
 
 /// A media list's next item file, opened, indexed, and cued on its own
@@ -346,6 +433,9 @@ struct WorkerStart {
     /// Added live: the worker opens the file itself first, as an input
     /// reopening does.
     open_live: bool,
+    /// The outgoing worker of a list transition this worker blends with
+    /// (IN-006).
+    outgoing: Option<Arc<Shared>>,
 }
 
 /// The playback configuration of an input with `settings`. An audio-only
@@ -385,16 +475,16 @@ fn spawn_worker(
         reports,
         closed,
         open_live,
+        outgoing,
     } = start;
-    let shared = Arc::new(Shared {
-        state: Mutex::new(WorkerState {
+    let shared = Arc::new(Shared::new(
+        WorkerState {
             reports,
             closed,
             ..WorkerState::default()
-        }),
-        wake: Condvar::new(),
-        panicked: AtomicBool::new(false),
-    });
+        },
+        false,
+    ));
     let worker_shared = Arc::clone(&shared);
     let thread = thread::Builder::new()
         .name(format!("freemix-media-file-{input}"))
@@ -405,7 +495,11 @@ fn spawn_worker(
                     &worker_shared,
                     player,
                     &reopen,
-                    WorkerMode { growing, open_live },
+                    WorkerMode {
+                        growing,
+                        open_live,
+                        outgoing: outgoing.as_deref(),
+                    },
                     rate,
                     clock_domain,
                     dimensions,
@@ -636,6 +730,7 @@ impl NativeMediaFiles {
                     reports,
                     closed,
                     open_live: false,
+                    outgoing: None,
                 },
                 growing,
                 (rate, clock_domain, dimensions),
@@ -654,6 +749,7 @@ impl NativeMediaFiles {
                 adapter: Some(adapter.clone()),
                 standbys: BTreeMap::new(),
                 prefetch_gate: Arc::default(),
+                outgoing: BTreeMap::new(),
             },
             seeds,
         ))
@@ -678,6 +774,7 @@ impl NativeMediaFiles {
                 adapter: None,
                 standbys: BTreeMap::new(),
                 prefetch_gate: Arc::default(),
+                outgoing: BTreeMap::new(),
             },
             Vec::new(),
         )
@@ -723,6 +820,7 @@ impl NativeMediaFiles {
                     reports: Vec::new(),
                     closed,
                     open_live: true,
+                    outgoing: None,
                 },
                 growing,
                 (self.rate, self.clock_domain, self.dimensions),
@@ -733,15 +831,14 @@ impl NativeMediaFiles {
                 EngineMediaFault::ToolUnavailable.token()
             );
             Worker {
-                shared: Arc::new(Shared {
-                    state: Mutex::new(WorkerState {
+                shared: Arc::new(Shared::new(
+                    WorkerState {
                         reports: vec![FileReport::Fault(EngineMediaFault::ToolUnavailable)],
                         closed,
                         ..WorkerState::default()
-                    }),
-                    wake: Condvar::new(),
-                    panicked: AtomicBool::new(true),
-                }),
+                    },
+                    true,
+                )),
                 thread: None,
                 requested: None,
                 collected: None,
@@ -864,9 +961,11 @@ impl NativeMediaFiles {
 
     /// Replaces media-file input `input`'s worker with one that plays
     /// `prefetched` (a media list's next item, IN-006) from the next tick:
-    /// the old worker retires as [`Self::remove`] retires it, and the new
-    /// one presents the projected ticks of the transport the caller opens
-    /// on [`Prefetched::source`].
+    /// the old worker becomes the input's outgoing worker (retired on the
+    /// first projected frame without a transition), and the new one
+    /// presents the projected ticks of the transport the caller opens on
+    /// [`Prefetched::source`], blending with the outgoing one while the
+    /// engine projects a transition.
     ///
     /// # Errors
     ///
@@ -884,7 +983,7 @@ impl NativeMediaFiles {
             ..
         } = prefetched;
         self.standbys.remove(&input);
-        self.remove(input);
+        let outgoing = self.keep_outgoing(input);
         let adapter = self
             .adapter
             .clone()
@@ -899,6 +998,7 @@ impl NativeMediaFiles {
                 reports: Vec::new(),
                 closed: false,
                 open_live: false,
+                outgoing,
             },
             growing,
             (self.rate, self.clock_domain, self.dimensions),
@@ -914,21 +1014,40 @@ impl NativeMediaFiles {
     pub(crate) fn remove(&mut self, input: InputId) -> bool {
         self.sources.retain(|(candidate, _)| *candidate != input);
         self.blanks.retain(|blank| blank.input != input);
-        let Some(mut worker) = self.workers.remove(&input) else {
+        if let Some(outgoing) = self.outgoing.remove(&input) {
+            retire(input, outgoing);
+        }
+        let Some(worker) = self.workers.remove(&input) else {
             return false;
         };
-        worker.shared.lock().shutdown = true;
-        worker.shared.wake.notify_one();
-        if let Some(thread) = worker.thread.take() {
-            // Bounded by one in-flight tool run, which the loop never
-            // waits for.
-            let _ = thread::Builder::new()
-                .name(format!("freemix-media-file-retire-{input}"))
-                .spawn(move || {
-                    let _ = thread.join();
-                });
-        }
+        retire(input, worker);
         true
+    }
+
+    /// Turns media list input `input`'s worker into its outgoing worker
+    /// (IN-006), retiring an earlier one, and returns the link the next
+    /// worker blends through. A worker that is closed or failed plays out
+    /// nothing and retires.
+    fn keep_outgoing(&mut self, input: InputId) -> Option<Arc<Shared>> {
+        self.sources.retain(|(candidate, _)| *candidate != input);
+        self.blanks.retain(|blank| blank.input != input);
+        if let Some(earlier) = self.outgoing.remove(&input) {
+            retire(input, earlier);
+        }
+        let worker = self.workers.remove(&input)?;
+        if worker.closed || worker.panicked() {
+            retire(input, worker);
+            return None;
+        }
+        {
+            let mut state = worker.shared.lock();
+            state.outgoing = true;
+            state.request = None;
+            state.completed = None;
+        }
+        let link = Arc::clone(&worker.shared);
+        self.outgoing.insert(input, worker);
+        Some(link)
     }
 
     /// Every input's source as opened at startup, for
@@ -961,13 +1080,43 @@ impl NativeMediaFiles {
         let frame = projected.frame.get();
         self.present_blanks(frame);
         for media in &projected.media {
+            // The outgoing item of a list transition plays its own ticks;
+            // the first frame without one retires it.
+            match &media.outgoing {
+                Some(outgoing) => {
+                    if let Some(worker) = self.outgoing.get_mut(&media.input) {
+                        let request = Some(Request {
+                            frame,
+                            tick: outgoing.tick.clone(),
+                            blend: None,
+                        });
+                        if worker.requested != request {
+                            worker.shared.lock().request.clone_from(&request);
+                            worker.requested = request;
+                            worker.shared.wake.notify_one();
+                        }
+                    }
+                }
+                None => {
+                    if let Some(worker) = self.outgoing.remove(&media.input) {
+                        retire(media.input, worker);
+                    }
+                }
+            }
             let Some(worker) = self.workers.get_mut(&media.input) else {
                 continue;
             };
             if worker.closed || worker.panicked() {
                 continue;
             }
-            let request = media.tick.clone().map(|tick| Request { frame, tick });
+            let blend = media.outgoing.as_ref().map(|outgoing| Blend {
+                kind: item_transition(outgoing.kind),
+                weight: outgoing.mix_basis_points,
+            });
+            let request = media
+                .tick
+                .clone()
+                .map(|tick| Request { frame, tick, blend });
             let changed = request.is_some() && worker.requested != request;
             if !changed && !media.completion_requested {
                 continue;
@@ -1111,13 +1260,139 @@ impl NativeMediaFiles {
     }
 }
 
+/// Stops `worker` (input `input`'s) and joins it off the session loop.
+fn retire(input: InputId, mut worker: Worker) {
+    {
+        let mut state = worker.shared.lock();
+        state.shutdown = true;
+        state.handoff = None;
+    }
+    worker.shared.wake.notify_one();
+    worker.shared.handed_off.notify_all();
+    if let Some(thread) = worker.thread.take() {
+        // Bounded by one in-flight tool run, which the loop never waits
+        // for.
+        let _ = thread::Builder::new()
+            .name(format!("freemix-media-file-retire-{input}"))
+            .spawn(move || {
+                let _ = thread.join();
+            });
+    }
+}
+
+/// The CPU blend of a list transition kind; a cut composites nothing (the
+/// engine never projects one).
+const fn item_transition(kind: fm_model::MediaListTransitionKind) -> fm_video::ItemTransition {
+    match kind {
+        fm_model::MediaListTransitionKind::Dip => fm_video::ItemTransition::Dip,
+        fm_model::MediaListTransitionKind::Wipe => fm_video::ItemTransition::Wipe,
+        fm_model::MediaListTransitionKind::Cut | fm_model::MediaListTransitionKind::Fade => {
+            fm_video::ItemTransition::Mix
+        }
+    }
+}
+
+/// `incoming` composited over `outgoing` for `blend`, dated `timing`
+/// with the incoming picture's metadata; `None` when the two pictures are
+/// not the same RGBA8 raster.
+fn blended_picture(
+    outgoing: &CpuVideoFrame,
+    incoming: &CpuVideoFrame,
+    blend: Blend,
+    timing: MediaTiming,
+) -> Option<CpuVideoFrame> {
+    let (from, to) = (outgoing.payload(), incoming.payload());
+    if from.format() != PixelFormat::Rgba8
+        || to.format() != PixelFormat::Rgba8
+        || from.dimensions() != to.dimensions()
+    {
+        return None;
+    }
+    let (from_plane, to_plane) = (from.plane(0)?, to.plane(0)?);
+    if from_plane.stride() != to_plane.stride() {
+        return None;
+    }
+    let size = to.dimensions();
+    let mut bytes = vec![0; to_plane.bytes().len()];
+    fm_video::blend_items(
+        blend.kind,
+        from_plane.bytes(),
+        to_plane.bytes(),
+        &mut bytes,
+        (size.width(), size.height(), to_plane.stride()),
+        blend.weight,
+    )
+    .ok()?;
+    let plane = CpuVideoPlane::new(to_plane.stride(), bytes).ok()?;
+    let payload = CpuVideoPayload::new(PixelFormat::Rgba8, size, vec![plane]).ok()?;
+    let frame = CpuVideoFrame::new(timing, payload);
+    match incoming.metadata() {
+        Some(metadata) => frame.with_metadata(metadata).ok(),
+        None => Some(frame),
+    }
+}
+
+/// `block` with every sample scaled by `gain`.
+fn scaled_audio(block: &AudioBlock, gain: f32) -> Option<AudioBlock> {
+    AudioBlock::new(
+        block.timing(),
+        block.sample_rate(),
+        block.channel_layout().clone(),
+        block
+            .planes()
+            .iter()
+            .map(|plane| plane.iter().map(|sample| sample * gain).collect())
+            .collect(),
+    )
+    .ok()
+}
+
+/// The two items' sound of one transition frame, at their gains: summed
+/// when both blocks share a rate, layout, and length, else the incoming
+/// item's alone (or the outgoing one's while the incoming item is silent).
+fn blended_audio(
+    outgoing: Option<&AudioBlock>,
+    incoming: Option<&AudioBlock>,
+    blend: Blend,
+) -> Option<AudioBlock> {
+    let (out_gain, in_gain) = blend.kind.audio_gains(blend.weight);
+    match (outgoing, incoming) {
+        (Some(from), Some(to))
+            if from.sample_rate() == to.sample_rate()
+                && from.channel_layout() == to.channel_layout()
+                && from.sample_count() == to.sample_count() =>
+        {
+            AudioBlock::new(
+                to.timing(),
+                to.sample_rate(),
+                to.channel_layout().clone(),
+                from.planes()
+                    .iter()
+                    .zip(to.planes())
+                    .map(|(a, b)| {
+                        a.iter()
+                            .zip(b)
+                            .map(|(a, b)| a * out_gain + b * in_gain)
+                            .collect()
+                    })
+                    .collect(),
+            )
+            .ok()
+        }
+        (_, Some(to)) => scaled_audio(to, in_gain),
+        (Some(from), None) => scaled_audio(from, out_gain),
+        (None, None) => None,
+    }
+}
+
 impl Drop for NativeMediaFiles {
     fn drop(&mut self) {
-        for worker in self.workers.values_mut() {
+        for worker in self.workers.values_mut().chain(self.outgoing.values_mut()) {
             worker.shared.lock().shutdown = true;
             worker.shared.wake.notify_one();
+            worker.shared.handed_off.notify_all();
         }
-        for worker in self.workers.values_mut() {
+        for worker in self.workers.values_mut().chain(self.outgoing.values_mut()) {
             if let Some(thread) = worker.thread.take() {
                 // Bounded by one in-flight tool run.
                 let _ = thread.join();
@@ -1157,12 +1432,90 @@ fn follow_growing_source(
     }
 }
 
+/// The pictures a worker presented, for what it presents next.
+#[derive(Default)]
+struct Pictures {
+    /// The file's picture presented last.
+    last: Option<Arc<CpuVideoFrame>>,
+    /// A list transition with no outgoing worker (a re-cue of the open
+    /// file) holds the picture presented before it.
+    held: Option<Arc<CpuVideoFrame>>,
+    /// The last frame was a blend: the next presents the plain picture
+    /// even when it did not change.
+    blended: bool,
+}
+
+impl Pictures {
+    /// What a tick presents: its picture when it is new (else the input
+    /// keeps its current one), re-dated `timing`, and its sound.
+    fn plain(
+        &mut self,
+        output: fm_codec_ffmpeg::PlaybackOutput,
+        timing: Option<MediaTiming>,
+    ) -> (Option<CpuVideoFrame>, Option<AudioBlock>) {
+        self.held = None;
+        let after_blend = std::mem::take(&mut self.blended);
+        let fresh = output.video.filter(|picture| {
+            after_blend
+                || self
+                    .last
+                    .as_ref()
+                    .is_none_or(|last| !Arc::ptr_eq(last, picture))
+        });
+        let video = fresh.and_then(|picture| {
+            let moved = redated(&picture, timing?);
+            self.last = Some(picture);
+            moved
+        });
+        (video, output.audio)
+    }
+
+    /// What a list transition's frame presents: the tick's picture blended
+    /// over the outgoing item's (`handoff`, else the held picture), and the
+    /// two items' sound at the transition's gains.
+    fn blend(
+        &mut self,
+        output: &fm_codec_ffmpeg::PlaybackOutput,
+        blend: Blend,
+        handoff: Option<Handoff>,
+        timing: Option<MediaTiming>,
+    ) -> (Option<CpuVideoFrame>, Option<AudioBlock>) {
+        let previous = self.last.clone();
+        if let Some(picture) = &output.video {
+            self.last = Some(Arc::clone(picture));
+        }
+        let (from_picture, from_audio) = if let Some(handoff) = handoff {
+            (handoff.picture, handoff.audio)
+        } else {
+            if self.held.is_none() {
+                self.held = previous;
+            }
+            (self.held.clone(), None)
+        };
+        self.blended = true;
+        let video = match (&from_picture, &output.video, timing) {
+            (Some(from), Some(to), Some(timing)) => {
+                blended_picture(from, to, blend, timing).or_else(|| redated(to, timing))
+            }
+            (None, Some(to), Some(timing)) => redated(to, timing),
+            _ => None,
+        };
+        (
+            video,
+            blended_audio(from_audio.as_ref(), output.audio.as_ref(), blend),
+        )
+    }
+}
+
 /// How a worker follows its file.
 #[derive(Clone, Copy)]
-struct WorkerMode {
+struct WorkerMode<'a> {
     growing: bool,
     /// Added live: open the file before anything else.
     open_live: bool,
+    /// The outgoing worker of the list transition this worker blends with
+    /// (IN-006).
+    outgoing: Option<&'a Shared>,
 }
 
 /// Runs one input's worker. A picture that is not `dimensions` (a file
@@ -1173,7 +1526,11 @@ fn run_worker(
     shared: &Shared,
     mut opened: Option<FilePlayer>,
     reopen: &dyn Fn() -> Result<FilePlayer, FilePlaybackError>,
-    WorkerMode { growing, open_live }: WorkerMode,
+    WorkerMode {
+        growing,
+        open_live,
+        outgoing,
+    }: WorkerMode<'_>,
     rate: FrameRate,
     clock_domain: ClockDomainId,
     dimensions: (u32, u32),
@@ -1186,9 +1543,9 @@ fn run_worker(
     let mut released = shared.lock().closed || open_live;
     let mut reopened = shared.lock().reopened;
     let mut faulted = opened.is_none() && !released;
-    let mut last_picture: Option<Arc<CpuVideoFrame>> = None;
+    let mut pictures = Pictures::default();
     loop {
-        let (request, complete) = {
+        let (request, complete, handing_off) = {
             let mut state = shared.lock();
             loop {
                 if state.shutdown {
@@ -1233,14 +1590,14 @@ fn run_worker(
                     // Closing releases the decoder and its tool processes.
                     drop(state);
                     opened = None;
-                    last_picture = None;
+                    pictures = Pictures::default();
                     continue;
                 }
                 // Reopening opens the file again; a file that no longer
                 // opens takes the input offline through its fault.
                 drop(state);
                 opened = None;
-                last_picture = None;
+                pictures = Pictures::default();
                 match reopen() {
                     Ok(player) => {
                         shared
@@ -1260,12 +1617,25 @@ fn run_worker(
                 }
                 continue;
             }
-            (state.request.take(), std::mem::take(&mut state.complete))
+            (
+                state.request.take(),
+                std::mem::take(&mut state.complete),
+                state.outgoing,
+            )
         };
         let Some(player) = opened.as_mut() else {
             // A file that did not reopen presents nothing.
             if let Some(request) = request {
-                shared.lock().completed = Some((request, None, None));
+                if handing_off {
+                    shared.lock().handoff = Some(Handoff {
+                        frame: request.frame,
+                        picture: None,
+                        audio: None,
+                    });
+                    shared.handed_off.notify_all();
+                } else {
+                    shared.lock().completed = Some((request, None, None));
+                }
             }
             continue;
         };
@@ -1283,6 +1653,7 @@ fn run_worker(
         }
         let mut completed = None;
         if let Some(request) = request {
+            let mut handoff = None;
             let (video, audio) = if faulted {
                 (None, None)
             } else {
@@ -1301,19 +1672,20 @@ fn run_worker(
                         reports.push(FileReport::Fault(EngineMediaFault::Unsupported));
                         (None, None)
                     }
+                    Ok(output) if handing_off => {
+                        // An outgoing item hands its picture and sound to
+                        // the incoming item's worker.
+                        handoff = Some((output.video, output.audio));
+                        (None, None)
+                    }
                     Ok(output) => {
-                        let fresh = output.video.filter(|picture| {
-                            last_picture
-                                .as_ref()
-                                .is_none_or(|last| !Arc::ptr_eq(last, picture))
-                        });
-                        let video = fresh.and_then(|picture| {
-                            let timing = output_timing(request.frame, rate, clock_domain)?;
-                            let moved = redated(&picture, timing);
-                            last_picture = Some(picture);
-                            moved
-                        });
-                        (video, output.audio)
+                        let timing = output_timing(request.frame, rate, clock_domain);
+                        if let Some(blend) = request.blend {
+                            let handoff = outgoing.and_then(|link| link.handoff_for(request.frame));
+                            pictures.blend(&output, blend, handoff, timing)
+                        } else {
+                            pictures.plain(output, timing)
+                        }
                     }
                     Err(error) => {
                         faulted = true;
@@ -1322,7 +1694,19 @@ fn run_worker(
                     }
                 }
             };
-            completed = Some((request, video, audio));
+            if handing_off {
+                // Even a failed tick hands off, so the incoming item's
+                // worker never waits for it.
+                let (picture, audio) = handoff.unwrap_or((None, None));
+                shared.lock().handoff = Some(Handoff {
+                    frame: request.frame,
+                    picture,
+                    audio,
+                });
+                shared.handed_off.notify_all();
+            } else {
+                completed = Some((request, video, audio));
+            }
         }
         {
             let mut state = shared.lock();
@@ -1473,11 +1857,7 @@ mod tests {
         files.workers.insert(
             input(),
             Worker {
-                shared: Arc::new(Shared {
-                    state: Mutex::new(WorkerState::default()),
-                    wake: Condvar::new(),
-                    panicked: AtomicBool::new(false),
-                }),
+                shared: Arc::new(Shared::new(WorkerState::default(), false)),
                 thread: None,
                 requested: None,
                 collected: None,
@@ -1537,6 +1917,7 @@ mod tests {
                     audio: fm_engine::fm_playback::AudioPlan::None,
                     events: Vec::new(),
                 },
+                blend: None,
             },
             None,
             None,

@@ -142,6 +142,15 @@ fn list_rejection(error: &fm_model::MediaListError) -> Rejection {
     )
 }
 
+fn options_rejection(error: &fm_model::MediaListError) -> Rejection {
+    rejection(
+        RejectionCode::InvalidCommand,
+        "options",
+        error.code(),
+        error.to_string(),
+    )
+}
+
 fn not_a_list(state: &ShowState, input: InputId) -> Rejection {
     if state.inputs().contains(&input) {
         rejection(
@@ -228,6 +237,8 @@ pub(crate) fn plan(
             ));
         }
         check_room(state)?;
+        fm_model::validate_media_list_options(*options)
+            .map_err(|error| options_rejection(&error))?;
         let list =
             MediaList::new(items.clone(), *options).map_err(|error| list_rejection(&error))?;
         let item = list
@@ -257,6 +268,8 @@ pub(crate) fn plan(
             active,
         } => {
             fm_model::validate_media_list_items(items).map_err(|error| list_rejection(&error))?;
+            fm_model::validate_media_list_options(*options)
+                .map_err(|error| options_rejection(&error))?;
             list.items.clone_from(items);
             list.options = *options;
             if let Some(active) = *active {

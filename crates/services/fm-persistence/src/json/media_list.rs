@@ -4,6 +4,7 @@
 //! "media_lists": [
 //!   {"input": 7, "active": 2, "cycle": 0, "auto_next": true,
 //!    "auto_first": false, "loop": false, "shuffle_seed": 42 | null,
+//!    "transition": "cut" | "fade" | "dip" | "wipe", "transition_frames": 15,
 //!    "items": [{"id": 1, "uri": "asset://media/a.mp4", "title": "Intro" | null,
 //!               "mark_in": 0, "mark_out": 250 | null}]}
 //! ]
@@ -16,7 +17,10 @@
 use core::fmt::Write as _;
 use std::collections::BTreeMap;
 
-use fm_model::{MediaList, MediaListItem, MediaListOptions, Project};
+use fm_model::{
+    MediaList, MediaListItem, MediaListOptions, MediaListTransition, MediaListTransitionKind,
+    Project,
+};
 use fm_types::InputId;
 
 use super::{DecodeError, Object, Value, escape_string, parse_array, parse_optional, syntax};
@@ -46,6 +50,13 @@ pub(crate) fn write_media_lists(output: &mut String, project: &Project) {
         )
         .expect("writing to a string cannot fail");
         write_optional_number(output, list.options.shuffle_seed);
+        write!(
+            output,
+            ", \"transition\": \"{}\", \"transition_frames\": {}",
+            list.options.transition.kind.token(),
+            list.options.transition.duration_frames
+        )
+        .expect("writing to a string cannot fail");
         output.push_str(", \"items\": [");
         for (position, item) in list.items.iter().enumerate() {
             if position != 0 {
@@ -123,6 +134,15 @@ pub(crate) fn parse_media_lists(
             auto_first: entry.boolean("auto_first")?,
             loop_list: entry.boolean("loop")?,
             shuffle_seed: optional_u64(entry.take("shuffle_seed")?, "shuffle_seed")?,
+            transition: {
+                let token = entry.string("transition")?;
+                MediaListTransition {
+                    kind: MediaListTransitionKind::from_token(&token).ok_or_else(|| {
+                        syntax(format!("unknown media list transition `{token}`"))
+                    })?,
+                    duration_frames: entry.u32("transition_frames")?,
+                }
+            },
         };
         let items = parse_array(entry.take("items")?, "items", parse_item)?;
         entry.finish()?;
