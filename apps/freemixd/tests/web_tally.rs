@@ -1280,6 +1280,26 @@ fn operator_page_is_served_with_the_tally_security_model() {
     ] {
         assert!(page.contains(source), "{source}");
     }
+    // Live source sync (AU-004, Protocol 2.101 on the Web), read only:
+    // each source's drift, correction, ratio, buffer, and recovery counts
+    // from the lossy feed, with hover help in English and Spanish.
+    for source in [
+        "case \"source_sync_status\":",
+        "freshLossy(record, telemetry.syncSequence)",
+        "parseSourceSync(required(record, \"sources\"))",
+        "parts.length !== 15",
+        "screen_capture: \"syncKindScreenCapture\"",
+        "id=\"sync-panel\" hidden aria-labelledby=\"sync-heading\"",
+        "sourceSync: \"Source sync\"",
+        "sourceSync: \"Sincronía de fuentes\"",
+        "syncDriftHover: \"Estimated drift of {input}'s clock",
+        "syncDriftHover: \"Deriva estimada del reloj de {input}",
+        "syncFaultsHover: \"{input}: {resyncs} hard resyncs",
+        "syncFaultsHover: \"{input}: {resyncs} resincronizaciones",
+        "readout.title = figure.hover;",
+    ] {
+        assert!(page.contains(source), "{source}");
+    }
     // Accessible markup: labelled sections, live status, pressed toggles.
     for markup in [
         "aria-labelledby=\"preview-heading\"",

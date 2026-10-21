@@ -89,10 +89,11 @@ highest-value remaining items, ranked:
    `LiveSourceClock` with pictures following it, and its drift, correction,
    ratio, backlog, and recovery counts now reach clients (Protocol 2.76
    `source_sync_status` and `diagnostics_response`), Studio (a `SYNC`
-   health lamp and per-strip `SYNC` keys), and `freemix-cli
-   remote-diagnostics`. There is still no real-device soak evidence, no
-   adapter for non-receiver sources, no Web page view, and the
-   Windows/macOS live paths do not exist yet.
+   health lamp and per-strip `SYNC` keys), `freemix-cli
+   remote-diagnostics`, and (Protocol 2.101) the Web operator page's
+   read-only Source sync section. There is still no real-device soak
+   evidence, no adapter for non-receiver sources, and the Windows/macOS
+   live paths do not exist yet.
 8. **Windows and macOS ports of the Linux-only live paths (`IN-001`, `AU-011`,
    `AU-001`, `IN-011`).** Live capture hot-plug, system audio inputs, and device
    listing are Linux-only, and screen/window capture runs only on Linux (X11,
@@ -1623,10 +1624,19 @@ health strip and a `SYNC` key on each live input's mixer strip (English and
 Spanish hover help, covered by the hover audit), and `freemix-cli
 remote-diagnostics` prints one `SourceSync(...)` line per source. The
 native network stream test now waits for its stream's running loop in
-`source_sync_status` and in diagnostics. Remaining for `AU-004`: an
-`AudioBlock`/`MediaTiming` adapter for non-receiver sources, a Web page
-view, real-device soak evidence, and the Windows/macOS live paths;
-`AU-004` remains planned.
+`source_sync_status` and in diagnostics.
+
+Update (Protocol 2.101): Web pages that may view status take
+`source_sync_status` in their lossy feed (latest-wins, paced like a
+status), and the operator page shows a read-only Source sync section
+while any live source runs a loop: each source's name, state, drift and
+correction in ppm, resampling ratio, buffer against its target, resyncs /
+underruns / overruns, and pictures dropped / repeated, with English and
+Spanish hover help on every figure (connection counts in the pictures
+help) and a stale note once records stop for 3.5 s. Remaining for
+`AU-004`: an `AudioBlock`/`MediaTiming` adapter for non-receiver sources,
+real-device soak evidence, and the Windows/macOS live paths; `AU-004`
+remains planned.
 
 
 Current implementation boundary for item 4: native `freemixd` now realizes

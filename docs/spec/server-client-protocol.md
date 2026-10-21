@@ -3969,6 +3969,22 @@ schema change.
   Spanish hover help naming each firing alert and the latest notification.
 - 2.99 is refused.
 
+Protocol 2.101 shows live source clock drift on the Web (AU-004).
+
+- A Web page whose session may view status now also receives
+  `source_sync_status` (unchanged record, Protocol 2.76) in its bounded
+  lossy feed, latest-wins and paced like a status (at most every 250 ms;
+  the daemon builds one at most once a second). CLI sessions still do not
+  receive it.
+- The operator page shows a read-only Source sync section while any live
+  source reports a loop: per source its name, state (priming, running,
+  recovering), drift and applied correction in ppm, resampling ratio,
+  buffer and target in ms, resyncs / underruns / overruns, and pictures
+  dropped / repeated, each with English and Spanish hover help (connection
+  counts in the pictures help); figures dim with a note once no record
+  has arrived for 3.5 s. The tally and title pages ignore the record.
+- 2.100 is refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision

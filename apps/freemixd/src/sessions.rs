@@ -519,10 +519,16 @@ impl Peer {
         }
     }
 
-    /// Coalesces the latest live source drift telemetry in its own slot
-    /// (Protocol 2.76); Web pages do not take it.
+    /// Coalesces the latest live source drift telemetry (Protocol 2.76): a
+    /// raw Studio session takes it in its own slot, and since Protocol
+    /// 2.101 a Web page's feed paces it.
     fn replace_source_sync_status(&mut self, bytes: Vec<u8>) {
-        if self.phase == Phase::Active && self.web_feed.is_none() && self.recorder_status {
+        if self.phase != Phase::Active {
+            return;
+        }
+        if let Some(feed) = self.web_feed.as_mut() {
+            feed.offer_source_sync_status(bytes);
+        } else if self.recorder_status {
             self.lossy.replace(LossySlot::SourceSyncStatus, bytes);
         }
     }
@@ -3187,7 +3193,7 @@ fn publish_recorder_status(peers: &mut [Peer], status: RecorderStatusMessage) {
 }
 
 /// Live source drift telemetry (Protocol 2.76) goes to raw Studio peers
-/// in its own latest-wins slot.
+/// in its own latest-wins slot and (Protocol 2.101) to Web pages' feeds.
 fn publish_source_sync_status(peers: &mut [Peer], status: &SourceSyncStatusMessage) {
     let Ok(bytes) =
         encode_line(&WireMessage::SourceSyncStatus(status.clone())).map(String::into_bytes)
@@ -4393,6 +4399,43 @@ mod tests {
         thread::sleep(crate::web_feed::WEB_STATUS_INTERVAL);
         assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
         assert_eq!(handed(&outbound), Vec::<WireMessage>::new());
+    }
+
+    /// AU-004 (Protocol 2.101): a Web page's feed hands over the live
+    /// source drift telemetry; it never uses the raw lossy slot.
+    #[test]
+    fn web_feeds_take_source_sync_status() {
+        let (mut peer, outbound, _acknowledge, _inbound) = web_peer();
+        peer.web_feed = Some(WebFeed::default());
+        let status = SourceSyncStatusMessage {
+            server: identity(),
+            sequence: 4,
+            sources: vec![fm_protocol::SourceSyncSample {
+                input: fm_protocol::WireInputId::new(NonZeroU128::new(3).unwrap()),
+                kind: fm_protocol::SourceSyncKind::Capture,
+                state: fm_protocol::SourceClockState::Running,
+                input_rate_hz: 48_000,
+                output_rate_hz: 48_000,
+                drift_mppm: 12_300,
+                correction_mppm: 12_000,
+                buffer_us: 40_000,
+                target_us: 40_000,
+                resyncs: 0,
+                underruns: 1,
+                overruns: 0,
+                picture_drops: 2,
+                picture_repeats: 0,
+                restarts: 1,
+            }],
+        };
+        publish_source_sync_status(std::slice::from_mut(&mut peer), &status);
+        assert!(peer.lossy.is_empty());
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        let handed: Vec<WireMessage> = outbound
+            .try_iter()
+            .flat_map(|bytes| LineDecoder::new().push(&bytes).unwrap())
+            .collect();
+        assert_eq!(handed, [WireMessage::SourceSyncStatus(status)]);
     }
 
     /// Raw Studio peers keep the recorder status in its own lossy slot.

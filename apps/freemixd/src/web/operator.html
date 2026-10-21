@@ -128,6 +128,17 @@
   .loudness button { margin-left: auto; }
   .row .lufs { flex: 0 1 auto; font-size: .8rem; font-variant-numeric: tabular-nums; color: #ddd; }
   .row button.reset { min-width: 0; margin-left: 0; }
+  /* Live source clock drift correction (AU-004): one read-only row per
+     source, its figures as compact readouts. */
+  .sync .row { gap: .4rem; }
+  .sync .row .state[data-tone="ok"] { color: #7ee08a; }
+  .sync .row .state[data-tone="warn"] { color: #ffb347; }
+  .sync .figures { display: flex; flex-wrap: wrap; gap: .3rem; flex: 1 0 100%; }
+  .sync .readout { display: inline-flex; align-items: baseline; gap: .25rem; padding: .15rem .4rem;
+    border: 1px solid var(--line); border-radius: 8px; font-size: .8rem; font-variant-numeric: tabular-nums; }
+  .sync .readout small { color: var(--muted); font-size: .65rem; font-weight: 700; letter-spacing: .04em; }
+  .sync .readout[data-hot="1"] b { color: #ffb347; }
+  .sync[data-stale="1"] .readout b { opacity: .35; }
   .row .state[data-tone="failed"] { color: var(--warn); }
   .row .state[data-tone="starting"] { color: #ffe2a0; }
   /* Media lists (IN-006): read-only, the active item marked by a bar. */
@@ -295,6 +306,12 @@
     <p id="why-fx" class="why" aria-live="polite"></p>
   </section>
 
+  <section id="sync-panel" hidden aria-labelledby="sync-heading">
+    <h2 id="sync-heading" data-i18n="sourceSync">Source sync</h2>
+    <div id="sync-sources" class="sync" role="list" data-i18n-label="syncLabel" aria-label="Live source clock drift correction"></div>
+    <p id="sync-note" class="why" aria-live="polite"></p>
+  </section>
+
   <section id="media-lists-panel" hidden aria-labelledby="media-lists-heading">
     <h2 id="media-lists-heading" data-i18n="mediaLists">Media lists</h2>
     <div id="media-lists"></div>
@@ -329,6 +346,15 @@
     unavailable: "recorderUnavailable", off: "recorderOff", starting: "recorderStarting",
     recording: "recorderRecording", failed: "recorderFailed",
   };
+  // Live source clock loops (`source_sync_status`, AU-004): wire kind and
+  // state -> label keys. The daemon reports at most once a second while a
+  // loop runs, and once more, empty, after the last stops.
+  const SYNC_KIND_KEY = {
+    capture: "syncKindCapture", stream: "syncKindStream", system_audio: "syncKindSystemAudio",
+    screen_capture: "syncKindScreenCapture",
+  };
+  const SYNC_STATE_KEY = { priming: "syncStatePriming", running: "syncStateRunning", recovering: "syncStateRecovering" };
+  const SYNC_STALE_MS = 3500;
   // Lossy status older than this is not trusted: the daemon stops sending
   // `stream_status` once no destination runs, so the snapshot state rules.
   const TELEMETRY_STALE_MS = 2000;
@@ -672,6 +698,30 @@
       mlCut: "Cut between items",
       mlTransitionTimed: "{kind} between items, {frames} frames",
       mlTransitionHover: "How the list moves from one item to the next on Auto Next, Next, and Previous; set it in FreeMix Studio",
+      syncLabel: "Live source clock drift correction",
+      sourceSync: "Source sync",
+      syncHover: "Each live source (capture, network stream, system audio, screen capture) has its own clock: its audio is resampled into the engine clock and its pictures follow it. Read only; the daemon reports these figures about once a second",
+      syncKindCapture: "capture",
+      syncKindStream: "network stream",
+      syncKindSystemAudio: "system audio",
+      syncKindScreenCapture: "screen capture",
+      syncStatePriming: "PRIMING",
+      syncStateRunning: "RUNNING",
+      syncStateRecovering: "RECOVERING",
+      syncStateHover: "{input} ({kind}) is {state}: priming fills its buffer, running tracks its drift, recovering refills it after a resync, underrun, or overrun",
+      syncDrift: "Drift",
+      syncDriftHover: "Estimated drift of {input}'s clock against the engine clock: {drift} ppm (parts per million)",
+      syncCorrection: "Corr",
+      syncCorrectionHover: "Correction the resampler applies to {input}: {correction} ppm",
+      syncRatio: "Ratio",
+      syncRatioHover: "Resampling ratio of {input}: {ratio} ({inputHz} Hz into {outputHz} Hz, with the correction)",
+      syncBuffer: "Buffer",
+      syncBufferHover: "Audio of {input} waiting ahead of the engine: {buffer} ms, aiming for {target} ms",
+      syncFaults: "Faults",
+      syncFaultsHover: "{input}: {resyncs} hard resyncs, {underruns} underruns, {overruns} overruns",
+      syncPictures: "Pictures",
+      syncPicturesHover: "{input}: {drops} pictures dropped and {repeats} repeated to follow the audio; {restarts} connections",
+      syncStale: "These figures are stale: the daemon has not reported source sync for a few seconds.",
       mlFade: "Fade",
       mlDip: "Dip to black",
       mlWipe: "Wipe",
@@ -985,6 +1035,30 @@
       mlCut: "Corte entre elementos",
       mlTransitionTimed: "{kind} entre elementos, {frames} cuadros",
       mlTransitionHover: "Cómo pasa la lista de un elemento al siguiente con Siguiente automático, Siguiente y Anterior; se ajusta en FreeMix Studio",
+      syncLabel: "Corrección de deriva de reloj de las fuentes en vivo",
+      sourceSync: "Sincronía de fuentes",
+      syncHover: "Cada fuente en vivo (captura, emisión de red, audio del sistema, captura de pantalla) tiene su propio reloj: su audio se remuestrea al reloj del motor y sus imágenes lo siguen. Solo lectura; el demonio informa de estas cifras más o menos cada segundo",
+      syncKindCapture: "captura",
+      syncKindStream: "emisión de red",
+      syncKindSystemAudio: "audio del sistema",
+      syncKindScreenCapture: "captura de pantalla",
+      syncStatePriming: "LLENANDO",
+      syncStateRunning: "EN MARCHA",
+      syncStateRecovering: "RECUPERÁNDOSE",
+      syncStateHover: "{input} ({kind}) está {state}: al llenarse carga su búfer, en marcha sigue su deriva y al recuperarse lo vuelve a llenar tras una resincronización, un vaciado o un desborde",
+      syncDrift: "Deriva",
+      syncDriftHover: "Deriva estimada del reloj de {input} respecto al reloj del motor: {drift} ppm (partes por millón)",
+      syncCorrection: "Corr.",
+      syncCorrectionHover: "Corrección que aplica el remuestreador a {input}: {correction} ppm",
+      syncRatio: "Relación",
+      syncRatioHover: "Relación de remuestreo de {input}: {ratio} ({inputHz} Hz a {outputHz} Hz, con la corrección)",
+      syncBuffer: "Búfer",
+      syncBufferHover: "Audio de {input} en espera por delante del motor: {buffer} ms, con objetivo de {target} ms",
+      syncFaults: "Fallos",
+      syncFaultsHover: "{input}: {resyncs} resincronizaciones, {underruns} vaciados, {overruns} desbordes",
+      syncPictures: "Imágenes",
+      syncPicturesHover: "{input}: {drops} imágenes descartadas y {repeats} repetidas para seguir el audio; {restarts} conexiones",
+      syncStale: "Estas cifras están desactualizadas: el demonio no ha informado de la sincronía de fuentes desde hace unos segundos.",
       mlFade: "Fundido",
       mlDip: "Fundido a negro",
       mlWipe: "Cortina",
@@ -1020,6 +1094,7 @@
     meters: $("meters"), meterScale: $("meter-scale"), meterNote: $("meter-note"),
     loudness: $("loudness"), loudnessReset: $("loudness-reset"), whyLoudness: $("why-loudness"),
     mediaListsPanel: $("media-lists-panel"), mediaLists: $("media-lists"),
+    syncPanel: $("sync-panel"), syncHeading: $("sync-heading"), syncSources: $("sync-sources"), syncNote: $("sync-note"),
   };
 
   const store = window.sessionStorage;
@@ -1110,6 +1185,9 @@
     // `audio_meters` `loudness` (Protocol 2.94 on the Web): target
     // ("master" or an input id) -> its readings.
     loudness: new Map(),
+    // `source_sync_status` `sources` (Protocol 2.101 on the Web): one
+    // sample per live source, in input order.
+    sync: [], syncAt: 0, syncSequence: -1,
   };
   // Per-channel peak hold and CLIP lamp: { holdDb, holdAt, clipAt }.
   let meterHolds = [];
@@ -1311,6 +1389,23 @@
       loudness.set(parts[0], { momentary, short, integrated, peak, max, range });
     }
     return loudness;
+  }
+  // `source_sync_status` `sources`: `;`-separated
+  // `<input>:<kind>:<state>:<input_hz>:<output_hz>:<drift_mppm>:<correction_mppm>:<buffer_us>:<target_us>:<resyncs>:<underruns>:<overruns>:<picture_drops>:<picture_repeats>:<restarts>`,
+  // empty when no live source runs.
+  function parseSourceSync(value) {
+    return (value ? value.split(";") : []).map((item) => {
+      const parts = item.split(":");
+      if (parts.length !== 15 || !SYNC_KIND_KEY[parts[1]] || !SYNC_STATE_KEY[parts[2]]) {
+        throw new Error("malformed source sync");
+      }
+      const numbers = parts.slice(3).map(Number);
+      if (!numbers.every(Number.isFinite)) throw new Error("malformed source sync");
+      const [inputHz, outputHz, driftMppm, correctionMppm, bufferUs, targetUs, resyncs, underruns, overruns,
+        drops, repeats, restarts] = numbers;
+      return { input: parts[0], kind: parts[1], state: parts[2], inputHz, outputHz, driftMppm, correctionMppm,
+        bufferUs, targetUs, resyncs, underruns, overruns, drops, repeats, restarts };
+    });
   }
   // A lossy record of this session's server and a newer sequence; anything
   // else is dropped (it is only telemetry).
@@ -1619,6 +1714,9 @@
     telemetry.metersAt = 0;
     telemetry.meterSequence = -1;
     telemetry.loudness = new Map();
+    telemetry.sync = [];
+    telemetry.syncAt = 0;
+    telemetry.syncSequence = -1;
     meterHolds = [];
   }
   // What `receive` returns for a lossy status record.
@@ -1774,6 +1872,14 @@
         telemetry.streams = parseStreamSamples(required(record, "samples"));
         telemetry.streamsAt = Date.now();
         telemetry.streamSequence = sequence;
+        return LOSSY;
+      }
+      case "source_sync_status": {
+        const sequence = freshLossy(record, telemetry.syncSequence);
+        if (sequence < 0) return LOSSY;
+        telemetry.sync = parseSourceSync(required(record, "sources"));
+        telemetry.syncAt = Date.now();
+        telemetry.syncSequence = sequence;
         return LOSSY;
       }
       case "audio_meters": {
@@ -2401,6 +2507,91 @@
     ui.noStreams.hidden = !live || show.streams.length > 0;
     ui.whyOutputs.textContent = transitionReason;
     paintMeters();
+    paintSourceSync();
+  }
+
+  // ---- Live source sync (AU-004, Protocol 2.101 on the Web): each live
+  // source's drift-correcting clock loop, read only. ----
+  function signedPpm(mppm) {
+    const value = mppm / 1000;
+    const text = Math.abs(value).toLocaleString(language, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    return (value > 0 ? "+" : value < 0 ? "\u2212" : "") + text;
+  }
+  function syncMs(us) {
+    return (us / 1000).toLocaleString(language, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  }
+  function syncRatio(sample) {
+    const ratio = sample.inputHz / Math.max(1, sample.outputHz) * (1 + sample.correctionMppm / 1e9);
+    return ratio.toLocaleString(language, { minimumFractionDigits: 6, maximumFractionDigits: 6 });
+  }
+  const SYNC_READOUTS = ["drift", "correction", "ratio", "buffer", "faults", "pictures"];
+  function syncFigures(sample, name) {
+    const values = {
+      input: name, drift: signedPpm(sample.driftMppm), correction: signedPpm(sample.correctionMppm),
+      ratio: syncRatio(sample), inputHz: sample.inputHz, outputHz: sample.outputHz,
+      buffer: syncMs(sample.bufferUs), target: syncMs(sample.targetUs), resyncs: sample.resyncs,
+      underruns: sample.underruns, overruns: sample.overruns, drops: sample.drops, repeats: sample.repeats,
+      restarts: sample.restarts,
+    };
+    const faults = sample.resyncs + sample.underruns + sample.overruns;
+    return {
+      drift: { tag: "syncDrift", text: values.drift, unit: "ppm", hover: tr("syncDriftHover", values) },
+      correction: { tag: "syncCorrection", text: values.correction, unit: "ppm", hover: tr("syncCorrectionHover", values) },
+      ratio: { tag: "syncRatio", text: values.ratio, unit: "", hover: tr("syncRatioHover", values) },
+      buffer: { tag: "syncBuffer", text: values.buffer + " / " + values.target, unit: "ms",
+        hover: tr("syncBufferHover", values) },
+      faults: { tag: "syncFaults", text: sample.resyncs + " / " + sample.underruns + " / " + sample.overruns,
+        unit: "", hover: tr("syncFaultsHover", values), hot: faults > 0 },
+      pictures: { tag: "syncPictures", text: sample.drops + " / " + sample.repeats, unit: "",
+        hover: tr("syncPicturesHover", values) },
+    };
+  }
+  function paintSourceSync() {
+    const live = link.phase === "live";
+    const samples = live ? telemetry.sync : [];
+    const stale = !telemetry.syncAt || Date.now() - telemetry.syncAt > SYNC_STALE_MS;
+    ui.syncPanel.hidden = samples.length === 0;
+    ui.syncSources.dataset.stale = stale ? "1" : "0";
+    ui.syncHeading.title = tr("syncHover");
+    syncChildren(ui.syncSources, samples.map((sample) => sample.input), () => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.setAttribute("role", "listitem");
+      row.innerHTML = "<span class=\"name\"></span><span class=\"state\"></span><span class=\"figures\"></span>";
+      const figures = row.querySelector(".figures");
+      for (const kind of SYNC_READOUTS) {
+        const readout = document.createElement("span");
+        readout.className = "readout";
+        readout.dataset.value = kind;
+        readout.innerHTML = "<small class=\"tag\"></small><b></b><small class=\"unit\"></small>";
+        figures.append(readout);
+      }
+      return row;
+    }, (row, id) => {
+      const sample = samples.find((candidate) => candidate.input === id);
+      const input = show.inputs.find((candidate) => candidate.id === id);
+      const name = input ? input.label : id;
+      row.querySelector(".name").textContent = name;
+      const state = row.querySelector(".state");
+      const stateText = tr(SYNC_STATE_KEY[sample.state]);
+      if (state.textContent !== stateText) state.textContent = stateText;
+      const faults = sample.resyncs + sample.underruns + sample.overruns;
+      state.dataset.tone = sample.state === "running" && faults === 0 ? "ok" : "warn";
+      state.title = tr("syncStateHover", { input: name, kind: tr(SYNC_KIND_KEY[sample.kind]), state: stateText });
+      const figures = syncFigures(sample, name);
+      for (const readout of row.querySelectorAll(".readout")) {
+        const figure = figures[readout.dataset.value];
+        readout.querySelector(".tag").textContent = tr(figure.tag);
+        const value = readout.querySelector("b");
+        if (value.textContent !== figure.text) value.textContent = figure.text;
+        readout.querySelector(".unit").textContent = figure.unit;
+        readout.title = figure.hover;
+        readout.setAttribute("aria-label", figure.hover);
+        readout.dataset.hot = figure.hot ? "1" : "0";
+      }
+    });
+    const note = samples.length > 0 && stale ? tr("syncStale") : "";
+    if (ui.syncNote.textContent !== note) ui.syncNote.textContent = note;
   }
 
   // ---- Program audio meters. ----

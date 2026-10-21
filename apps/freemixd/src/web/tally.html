@@ -1157,6 +1157,9 @@
         telemetry.meterSequence = sequence;
         return LOSSY;
       }
+      case "source_sync_status":
+        // Live source sync (Protocol 2.101 on the Web) is shown on /operator.
+        return LOSSY;
       case "error":
         // Includes server_shutting_down: reconnect after backoff.
         closeSocket();

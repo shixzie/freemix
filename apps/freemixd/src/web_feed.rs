@@ -23,6 +23,11 @@
 //! every status, never interleaved with another answer, and a newer answer
 //! replaces one that has not started. The session's title preview rate
 //! bounds them (a 320x180 preview is at most nine 32 KiB parts).
+//!
+//! Protocol 2.101 adds the live source drift telemetry
+//! (`source_sync_status`, AU-004), paced like a status; the daemon builds
+//! it at most once a second, so it rarely waits for its interval (at most
+//! 64 sources, a few kilobytes).
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -67,6 +72,9 @@ pub(crate) struct WebFeed {
     streams: Slot,
     /// The `title_phases` record (Protocol 2.90), paced like a status.
     phases: Slot,
+    /// The `source_sync_status` record (Protocol 2.101), paced like a
+    /// status.
+    sync: Slot,
     /// The parts of the exact title preview being handed over, one record
     /// each, in order (Protocol 2.90).
     preview: VecDeque<Vec<u8>>,
@@ -105,6 +113,11 @@ impl WebFeed {
         self.recorders.latest = Some(bytes);
     }
 
+    /// Offers the newest `source_sync_status` record.
+    pub(crate) fn offer_source_sync_status(&mut self, bytes: Vec<u8>) {
+        self.sync.latest = Some(bytes);
+    }
+
     /// The next record due at `now`: of the kinds due, the one that has
     /// been due the longest (one never sent first), ties going to meters,
     /// then recorders, then streams. A peer that takes records more slowly
@@ -126,6 +139,7 @@ impl WebFeed {
             (&mut self.recorders, WEB_STATUS_INTERVAL),
             (&mut self.streams, WEB_STATUS_INTERVAL),
             (&mut self.phases, WEB_STATUS_INTERVAL),
+            (&mut self.sync, WEB_STATUS_INTERVAL),
         ]
         .into_iter()
         .filter(|(slot, _)| slot.is_due(now))
@@ -294,6 +308,26 @@ mod tests {
         assert_eq!(
             feed.next(now + WEB_STATUS_INTERVAL).as_deref(),
             Some(&b"p2"[..])
+        );
+    }
+
+    /// AU-004: the live source drift telemetry is latest-wins and paced
+    /// like a status.
+    #[test]
+    fn source_sync_is_latest_wins_and_paced_like_a_status() {
+        let mut feed = WebFeed::default();
+        let now = Instant::now();
+        feed.offer_source_sync_status(b"y1".to_vec());
+        feed.offer_source_sync_status(b"y2".to_vec());
+        feed.offer_recorder_status(b"r1".to_vec());
+        assert_eq!(feed.next(now).as_deref(), Some(&b"r1"[..]));
+        assert_eq!(feed.next(now).as_deref(), Some(&b"y2"[..]));
+        assert!(feed.next(now).is_none());
+        feed.offer_source_sync_status(b"y3".to_vec());
+        assert!(feed.next(now + Duration::from_millis(10)).is_none());
+        assert_eq!(
+            feed.next(now + WEB_STATUS_INTERVAL).as_deref(),
+            Some(&b"y3"[..])
         );
     }
 
