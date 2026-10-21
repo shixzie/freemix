@@ -2766,6 +2766,120 @@ fn loudness_resets_are_journaled_and_replay_to_the_same_revision() {
     daemon.wait_success();
 }
 
+/// The simulated daemon has no audio render path, so its strip DSP is show
+/// state (AU-005, Protocol 2.95): a chain with the delay stage on a strip
+/// and on Master is accepted and announced, handed to a reconnecting
+/// client in its snapshot and `audio_strip_dsp_state` record, undone, and
+/// persisted across a restart.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn simulated_strip_dsp_with_the_delay_round_trips_undo_and_restart() {
+    use fm_types::strip_dsp::{StripDsp, StripDspPreset};
+
+    let directory = TestDirectory::new("simulated-strip-dsp");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+
+    let daemon = Daemon::start_without_once(&project_path);
+    // Undo is a project edit: an Admin console sends it.
+    let mut client = daemon.connect();
+    client.handshake_as(Role::Admin, None);
+    let before = client.receive_snapshot();
+    assert_eq!(before.audio_mixer.master_dsp, StripDsp::DEFAULT);
+    assert_eq!(before.audio_mixer.strip_dsp_states, 0);
+
+    let mut voice = StripDspPreset::Voice.chain();
+    voice.delay.enabled = true;
+    voice.delay.delay_us = 40_000;
+    let mut master = StripDspPreset::Master.chain();
+    master.delay.enabled = true;
+    master.delay.delay_us = 1_000_000;
+    let mut edited = voice;
+    edited.delay.delay_us = 120_500;
+    let operations = [
+        fm_protocol::AudioMixerOperation::SetStripDsp {
+            target: fm_protocol::AudioDspTarget::Input(input(1)),
+            chain: Box::new(voice),
+            gesture: None,
+        },
+        fm_protocol::AudioMixerOperation::SetStripDsp {
+            target: fm_protocol::AudioDspTarget::Master,
+            chain: Box::new(master),
+            gesture: None,
+        },
+        fm_protocol::AudioMixerOperation::SetStripDsp {
+            target: fm_protocol::AudioDspTarget::Input(input(1)),
+            chain: Box::new(edited),
+            gesture: None,
+        },
+    ];
+    for (index, operation) in operations.iter().enumerate() {
+        let id = format!("dsp-{index}");
+        client.send(&command(
+            &id,
+            &format!("{id}-key"),
+            CommandPayload::AudioMixer(operation.clone()),
+        ));
+        let revision = u64::try_from(index + 1).unwrap();
+        assert!(matches!(
+            client.next_result(),
+            CommandResult::Accepted { id: accepted, revision: got, .. }
+                if accepted == id && got == revision
+        ));
+        assert_eq!(
+            next_event_payload(&mut client),
+            fm_protocol::EventPayload::AudioMixerChanged(operation.clone())
+        );
+    }
+    // Undo takes the strip back to its 40 ms delay.
+    client.send(&command(
+        "dsp-undo",
+        "dsp-undo-key",
+        CommandPayload::Undo {
+            expected_edit: None,
+        },
+    ));
+    let undone = client.next_result();
+    assert!(
+        matches!(undone, CommandResult::Accepted { revision: 4, .. }),
+        "{undone:?}"
+    );
+    drop(client);
+
+    // A reconnecting client receives both chains.
+    let strip_record = |client: &mut Client| loop {
+        if let WireMessage::AudioStripDspState(state) = client.receive() {
+            return state;
+        }
+    };
+    let mut observer = daemon.connect();
+    observer.handshake_as(Role::Viewer, None);
+    let snapshot = observer.receive_snapshot();
+    assert_eq!(snapshot.audio_mixer.master_dsp, master);
+    assert_eq!(snapshot.audio_mixer.strip_dsp_states, 1);
+    let record = strip_record(&mut observer);
+    assert_eq!((record.input, record.chain), (input(1), voice));
+    drop(observer);
+    daemon.stop();
+
+    let daemon = Daemon::start(&project_path);
+    let mut restarted = daemon.connect();
+    restarted.handshake_as(Role::Viewer, None);
+    let snapshot = restarted.receive_snapshot();
+    assert_eq!(snapshot.audio_mixer.master_dsp, master);
+    let record = strip_record(&mut restarted);
+    assert_eq!((record.input, record.chain), (input(1), voice));
+    drop(restarted);
+    daemon.wait_success();
+
+    let persisted = ProjectStore::new(&project_path).unwrap().load().unwrap();
+    assert_eq!(persisted.project().master_audio_dsp(), &master);
+    assert_eq!(
+        persisted.project().input_audio_dsp(domain_input(1)),
+        Some(&voice)
+    );
+}
+
 /// `StreamStart` is an authorized transition-class command: its acceptance
 /// publishes a durable event, an unknown target is rejected without state
 /// change, and the desired running flag survives a kill plus journal recovery.
