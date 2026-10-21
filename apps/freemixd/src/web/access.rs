@@ -229,7 +229,8 @@ impl WebAccess {
         let mut state = self.lock();
         state
             .limiter
-            .attempt(&peer, now)
+            // An IPv6 host's /64 shares one allowance.
+            .attempt(&super::worker::peer_group(peer), now)
             .map_err(|retry_ms| PairRefusal::RateLimited {
                 retry_after_s: retry_ms.div_ceil(1_000).max(1),
             })?;
@@ -667,6 +668,28 @@ mod tests {
             access.redeem(&code, "x", other).err(),
             Some(PairRefusal::Expired)
         );
+    }
+
+    /// Pairing attempts from one IPv6 `/64` share one allowance, however
+    /// many addresses the host rotates through.
+    #[test]
+    fn ipv6_pairing_attempts_share_their_slash_64() {
+        use std::net::Ipv6Addr;
+        let directory = tempfile::tempdir().unwrap();
+        let access = access(directory.path());
+        let (code, _) = pair(&access, WebDeviceRole::Audio);
+        let wrong = if code == "000000" { "000001" } else { "000000" };
+        let host = |last: u16| IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 7, 0, 0, 0, last));
+        for last in 1..=5 {
+            assert!(!matches!(
+                access.redeem(wrong, "x", host(last)).err(),
+                Some(PairRefusal::RateLimited { .. })
+            ));
+        }
+        assert!(matches!(
+            access.redeem(wrong, "x", host(6)).err(),
+            Some(PairRefusal::RateLimited { .. })
+        ));
     }
 
     #[test]

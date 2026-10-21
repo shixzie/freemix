@@ -141,19 +141,26 @@ impl Write for Prefixed {
 /// [`MAX_CONNECTIONS_PER_ADDRESS`], or no per-address bound for a loopback
 /// peer (local processes are bounded by the gateway-wide cap only).
 pub(super) fn address_limit(peer: IpAddr) -> usize {
-    if canonical(peer).is_loopback() {
+    if peer_group(peer).is_loopback() {
         usize::MAX
     } else {
         MAX_CONNECTIONS_PER_ADDRESS
     }
 }
 
-/// `peer` with an IPv4-mapped IPv6 address read as IPv4, so a dual-stack
-/// listener counts one host once.
-fn canonical(peer: IpAddr) -> IpAddr {
-    match peer {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(peer, IpAddr::V4),
-        IpAddr::V4(_) => peer,
+/// The peer group `peer` counts against: an IPv4 address (an IPv4-mapped
+/// IPv6 peer of a dual-stack listener included, so it counts once), IPv6
+/// loopback as itself, or the `/64` network of any other IPv6 address,
+/// since one host may hold any number of addresses in its `/64` and would
+/// otherwise get a fresh allowance from each (as the RTMP key throttle and
+/// the Live LAN PIN throttle group them).
+pub(super) fn peer_group(peer: IpAddr) -> IpAddr {
+    match peer.to_canonical() {
+        IpAddr::V4(v4) => IpAddr::V4(v4),
+        IpAddr::V6(v6) if v6.is_loopback() => IpAddr::V6(v6),
+        IpAddr::V6(v6) => IpAddr::V6(std::net::Ipv6Addr::from_bits(
+            v6.to_bits() & !u128::from(u64::MAX),
+        )),
     }
 }
 
@@ -168,7 +175,8 @@ struct Connection {
 /// At most [`MAX_WEB_CLIENTS`] connected clients plus
 /// [`MAX_PENDING_CONNECTIONS`] connections still serving a page or
 /// completing an upgrade hold a thread, and at most `limit(peer)` of them
-/// come from one peer address ([`address_limit`]); a connection beyond
+/// come from one peer address or IPv6 `/64` ([`peer_group`],
+/// [`address_limit`]); a connection beyond
 /// either bound is closed unanswered, before any handshake. The first
 /// refusal of an address at its bound is logged (`FREEMIXD_WEB_LIMIT`),
 /// once until it drops below the bound again. Returns `false` when a
@@ -193,7 +201,7 @@ pub(super) fn listener_loop(
         }
         match listener.accept() {
             Ok((stream, address)) => {
-                let peer = canonical(address.ip());
+                let peer = peer_group(address.ip());
                 let held = connections
                     .iter()
                     .filter(|connection| connection.peer == peer)
@@ -1023,7 +1031,7 @@ mod tests {
         Gateway, MAX_CONNECTIONS_PER_ADDRESS, MAX_WEB_CLIENTS, WebAccess, WebConnection, WebEvent,
         base64url,
     };
-    use super::{address_limit, authorize_upgrade, listener_loop, serve_connection};
+    use super::{address_limit, authorize_upgrade, listener_loop, peer_group, serve_connection};
 
     const TOKEN: &[u8] = b"worker-test-token-0123456789abcdef";
 
@@ -1326,6 +1334,38 @@ mod tests {
             MAX_CONNECTIONS_PER_ADDRESS
         );
         const { assert!(MAX_CONNECTIONS_PER_ADDRESS < MAX_WEB_CLIENTS) };
+    }
+
+    /// One host may hold any number of IPv6 addresses in its `/64`, so the
+    /// per-address connection bound counts the `/64`: addresses in it share
+    /// a group, another `/64` does not, and IPv4 (mapped or not) and
+    /// loopback stay one address each.
+    #[test]
+    fn ipv6_peers_share_their_slash_64() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        let host = |last: u16, subnet: u16| {
+            IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, subnet, 0, 0, 0, last))
+        };
+        assert_eq!(peer_group(host(1, 7)), peer_group(host(0xbeef, 7)));
+        assert_eq!(
+            peer_group(host(1, 7)),
+            IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 7, 0, 0, 0, 0))
+        );
+        assert_ne!(peer_group(host(1, 7)), peer_group(host(1, 8)));
+        let lan = Ipv4Addr::new(192, 168, 1, 20);
+        assert_eq!(
+            peer_group(IpAddr::V6(lan.to_ipv6_mapped())),
+            IpAddr::V4(lan)
+        );
+        assert_ne!(
+            peer_group(IpAddr::V4(lan)),
+            peer_group(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 21)))
+        );
+        assert_eq!(
+            peer_group(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+            IpAddr::V6(Ipv6Addr::LOCALHOST)
+        );
+        assert_eq!(address_limit(host(1, 7)), MAX_CONNECTIONS_PER_ADDRESS);
     }
 
     /// A client that stops reading is dropped by its own relay without
