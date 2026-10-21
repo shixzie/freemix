@@ -20,12 +20,23 @@
 //!   when timestamp samples are dropped. It is unavailable on the simulated
 //!   daemon and on adapters without timestamp queries.
 //!
+//! An [`AlertEngine`] evaluates the [`DEFAULT_RULES`] after every sample.
+//! Each fired, resolved, or reminder notification prints one
+//! `FREEMIXD_ALERT` line on stderr and joins a bounded list of the
+//! [`MAX_RECENT_NOTIFICATIONS`] most recent ones.
+//!
 //! The registry is an additional view: the `FREEMIXD_TELEMETRY` record the
 //! native daemon prints at shutdown keeps its own whole-run aggregation and
 //! fields unchanged.
 
 use std::time::{Duration, Instant};
 
+use std::collections::VecDeque;
+
+use fm_observability::{
+    AlertEngine, AlertEngineLimits, AlertNotification, AlertPolicy, AlertRule, AlertSeverity,
+    RuleCondition, RuleId, RuleReading, RuleState, ThresholdDirection,
+};
 use fm_observability::{
     HistogramBuckets, LabelSet, MetricDescriptor, MetricId, MetricRegistry, RegistryLimits,
     SeriesKey, SeriesValue, StatisticsError, StatisticsSnapshot,
@@ -94,6 +105,150 @@ pub(crate) mod names {
     pub(crate) const CONTROL_SUBSCRIBERS: &str = "control.subscribers";
     /// The control plane's current revision.
     pub(crate) const CONTROL_REVISION: &str = "control.revision";
+}
+
+/// The most recent alert notifications kept for clients.
+pub(crate) const MAX_RECENT_NOTIFICATIONS: usize = 16;
+
+/// One default alert rule.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct DefaultRule {
+    /// The rule ID, which is also its wire token.
+    pub(crate) id: &'static str,
+    pub(crate) metric: &'static str,
+    pub(crate) severity: AlertSeverity,
+    /// `true` for a per-second rate of the metric, `false` for its value.
+    pub(crate) rate: bool,
+    pub(crate) direction: ThresholdDirection,
+    pub(crate) trigger: f64,
+    pub(crate) clear: f64,
+    /// How long the trigger must hold before the rule fires.
+    pub(crate) for_millis: u64,
+}
+
+/// Every default rule, in ID order.
+#[allow(clippy::cast_precision_loss)] // the disk thresholds are exact in an f64
+pub(crate) const DEFAULT_RULES: [DefaultRule; 6] = [
+    // The process keeps most of the machine busy for ten seconds.
+    DefaultRule {
+        id: "cpu_saturated",
+        metric: names::CPU_UTILIZATION,
+        severity: AlertSeverity::Warning,
+        rate: false,
+        direction: ThresholdDirection::Above,
+        trigger: 0.9,
+        clear: 0.75,
+        for_millis: 10_000,
+    },
+    // The configured outputs' filesystem runs low, at the native daemon's
+    // fixed free-space band.
+    DefaultRule {
+        id: "disk_low",
+        metric: names::DISK_FREE_BYTES,
+        severity: AlertSeverity::Critical,
+        rate: false,
+        direction: ThresholdDirection::Below,
+        trigger: crate::disk::DISK_LOW_FREE_BYTES as f64,
+        clear: crate::disk::DISK_CLEAR_FREE_BYTES as f64,
+        for_millis: 0,
+    },
+    // A quarter of the realized frames woke half a frame late for five
+    // seconds.
+    DefaultRule {
+        id: "frame_late",
+        metric: names::FRAME_LATE_RATIO,
+        severity: AlertSeverity::Warning,
+        rate: false,
+        direction: ThresholdDirection::Above,
+        trigger: 0.25,
+        clear: 0.05,
+        for_millis: 5_000,
+    },
+    // Outputs keep dropping at least a picture a second for three seconds.
+    DefaultRule {
+        id: "frames_dropped",
+        metric: names::FRAMES_DROPPED,
+        severity: AlertSeverity::Warning,
+        rate: true,
+        direction: ThresholdDirection::Above,
+        trigger: 1.0,
+        clear: 0.0,
+        for_millis: 3_000,
+    },
+    // The timestamped GPU passes keep the GPU nearly busy for five seconds.
+    DefaultRule {
+        id: "gpu_saturated",
+        metric: names::GPU_UTILIZATION,
+        severity: AlertSeverity::Warning,
+        rate: false,
+        direction: ThresholdDirection::Above,
+        trigger: 0.9,
+        clear: 0.7,
+        for_millis: 5_000,
+    },
+    // A stream target or recorder slot latched a failure.
+    DefaultRule {
+        id: "output_failed",
+        metric: names::OUTPUTS_FAILED,
+        severity: AlertSeverity::Critical,
+        rate: false,
+        direction: ThresholdDirection::Above,
+        trigger: 1.0,
+        clear: 0.0,
+        for_millis: 0,
+    },
+];
+
+/// One firing alert.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ActiveAlert {
+    pub(crate) rule: RuleId,
+    pub(crate) severity: AlertSeverity,
+    /// When it fired, in statistics milliseconds.
+    pub(crate) since_ms: u64,
+    /// The latest reading (a rate for rate rules).
+    pub(crate) value: Option<f64>,
+}
+
+fn default_engine(registry: &MetricRegistry) -> AlertEngine {
+    let mut engine = AlertEngine::new(AlertEngineLimits::default()).expect("default limits");
+    for rule in DEFAULT_RULES {
+        let policy = AlertPolicy::new(rule.direction, rule.trigger, rule.clear)
+            .expect("default rules form hysteresis bands");
+        let condition = if rule.rate {
+            RuleCondition::RateOfChange(policy)
+        } else {
+            RuleCondition::Threshold(policy)
+        };
+        engine
+            .add_rule(
+                AlertRule::new(
+                    RuleId::new(rule.id).expect("default rule IDs keep the grammar"),
+                    rule.severity,
+                    SeriesKey::new(metric(rule.metric), LabelSet::new()),
+                    RuleReading::Value,
+                    condition,
+                )
+                .for_duration(rule.for_millis),
+                registry,
+            )
+            .expect("default rules read registered metrics");
+    }
+    engine
+}
+
+/// The `FREEMIXD_ALERT` stderr line of one notification.
+pub(crate) fn alert_record(notification: &AlertNotification) -> String {
+    format!(
+        "FREEMIXD_ALERT\tv=1\trule={}\tseverity={}\tkind={}\tat_ms={}\tvalue={}",
+        notification.rule,
+        notification.severity.as_str(),
+        notification.kind.as_str(),
+        notification.at_millis,
+        notification
+            .value
+            .map_or_else(|| "none".to_owned(), |value| format!("{value:.3}")),
+    )
 }
 
 /// Host lateness bucket edges, in milliseconds.
@@ -182,6 +337,9 @@ pub(crate) struct DaemonStatistics {
     /// The latest utilization readings; `None` while unavailable.
     cpu_utilization: Option<f64>,
     gpu_utilization: Option<f64>,
+    alerts: AlertEngine,
+    /// The most recent notifications, oldest first.
+    recent: VecDeque<AlertNotification>,
 }
 
 impl DaemonStatistics {
@@ -226,8 +384,11 @@ impl DaemonStatistics {
                 .register(metric(name), descriptor)
                 .expect("the static metric set fits the default limits");
         }
+        let alerts = default_engine(&registry);
         Self {
             origin,
+            alerts,
+            recent: VecDeque::with_capacity(MAX_RECENT_NOTIFICATIONS),
             registry,
             sampled_at: None,
             errors: 0,
@@ -257,7 +418,47 @@ impl DaemonStatistics {
 
     /// The registry as `fm-statistics-v1` text for the support bundle.
     pub(crate) fn render(&self) -> String {
-        StatisticsSnapshot::new(&self.registry).render()
+        StatisticsSnapshot::new(&self.registry)
+            .with_alerts(&self.alerts)
+            .render()
+    }
+
+    /// Every firing alert, in rule order.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn active_alerts(&self) -> Vec<ActiveAlert> {
+        self.alerts
+            .statuses()
+            .filter_map(|status| match status.state {
+                RuleState::Firing { since_millis } => Some(ActiveAlert {
+                    rule: status.rule.id.clone(),
+                    severity: status.rule.severity,
+                    since_ms: since_millis,
+                    value: status.last_value,
+                }),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The most recent notifications, oldest first.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn recent_notifications(&self) -> impl ExactSizeIterator<Item = &AlertNotification> {
+        self.recent.iter()
+    }
+
+    /// Evaluates every rule at `at` and keeps what it notified.
+    fn evaluate_alerts(&mut self, at: u64) -> Vec<AlertNotification> {
+        if self.alerts.evaluate(&self.registry, at).is_err() {
+            self.errors = self.errors.saturating_add(1);
+        }
+        let notifications = self.alerts.drain_notifications();
+        for notification in &notifications {
+            if self.recent.len() == MAX_RECENT_NOTIFICATIONS {
+                self.recent.pop_front();
+            }
+            self.recent.push_back(notification.clone());
+        }
+        notifications
     }
 
     /// Registry refusals so far.
@@ -321,6 +522,9 @@ impl DaemonStatistics {
         self.gauge(names::CONTROL_REVISION, at, gauge_value(control.revision));
         if let Some(native) = native {
             self.record_native(at, &native);
+        }
+        for notification in self.evaluate_alerts(at) {
+            eprintln!("{}", alert_record(&notification));
         }
     }
 
@@ -556,6 +760,130 @@ mod tests {
             None,
         );
         assert_eq!(statistics.gpu_utilization(), None);
+    }
+
+    fn rule_ids(alerts: &[ActiveAlert]) -> Vec<&str> {
+        alerts.iter().map(|alert| alert.rule.as_str()).collect()
+    }
+
+    #[test]
+    fn default_rules_are_sorted_and_valid() {
+        let ids: Vec<_> = DEFAULT_RULES.iter().map(|rule| rule.id).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(ids, sorted);
+        let statistics = DaemonStatistics::new(Instant::now());
+        assert_eq!(statistics.alerts.statuses().len(), DEFAULT_RULES.len());
+        assert_eq!(statistics.active_alerts().len(), 0);
+    }
+
+    #[test]
+    fn sustained_cpu_saturation_fires_and_clears() {
+        let origin = Instant::now();
+        let mut statistics = DaemonStatistics::new(origin);
+        let second = |seconds| origin + Duration::from_secs(seconds);
+        for seconds in 0..10 {
+            statistics.record_sample(second(seconds), ControlSample::default(), None, Some(0.95));
+            assert!(
+                statistics.active_alerts().is_empty(),
+                "pending at {seconds} s"
+            );
+        }
+        statistics.record_sample(second(10), ControlSample::default(), None, Some(0.95));
+        let active = statistics.active_alerts();
+        assert_eq!(rule_ids(&active), ["cpu_saturated"]);
+        assert_eq!(active[0].severity, AlertSeverity::Warning);
+        assert_eq!(active[0].since_ms, 10_000);
+        assert_eq!(active[0].value, Some(0.95));
+        // Inside the hysteresis band it keeps firing; below it, it clears.
+        statistics.record_sample(second(11), ControlSample::default(), None, Some(0.8));
+        assert_eq!(rule_ids(&statistics.active_alerts()), ["cpu_saturated"]);
+        statistics.record_sample(second(12), ControlSample::default(), None, Some(0.5));
+        assert_eq!(statistics.active_alerts().len(), 0);
+        let kinds: Vec<_> = statistics
+            .recent_notifications()
+            .map(|notification| (notification.rule.as_str(), notification.kind.as_str()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [("cpu_saturated", "firing"), ("cpu_saturated", "resolved")]
+        );
+        let record = alert_record(statistics.recent_notifications().next().unwrap());
+        assert_eq!(
+            record,
+            "FREEMIXD_ALERT\tv=1\trule=cpu_saturated\tseverity=warning\tkind=firing\tat_ms=10000\tvalue=0.950"
+        );
+    }
+
+    #[test]
+    fn native_rules_cover_disk_outputs_lateness_and_drops() {
+        let origin = Instant::now();
+        let mut statistics = DaemonStatistics::new(origin);
+        let second = |seconds| origin + Duration::from_secs(seconds);
+        // Everything late, dropping two pictures a second, low on disk, and
+        // one failed output.
+        for seconds in 0..=5 {
+            let mut sample = native(vec![40.0, 50.0]);
+            sample.frames_dropped = 2 * seconds;
+            sample.disk_free_bytes = Some(100 * 1024 * 1024);
+            sample.outputs_failed = 1;
+            statistics.record_sample(
+                second(seconds),
+                ControlSample::default(),
+                Some(sample),
+                None,
+            );
+        }
+        assert_eq!(
+            rule_ids(&statistics.active_alerts()),
+            ["disk_low", "frame_late", "frames_dropped", "output_failed"]
+        );
+        // Recovery clears all four.
+        let mut sample = native(vec![0.0, 1.0]);
+        sample.frames_dropped = 10;
+        sample.disk_free_bytes = Some(8 * 1024 * 1024 * 1024);
+        statistics.record_sample(second(6), ControlSample::default(), Some(sample), None);
+        assert_eq!(statistics.active_alerts().len(), 0);
+        assert!(
+            statistics
+                .render()
+                .contains("alert output_failed severity=critical state=resolved")
+        );
+    }
+
+    #[test]
+    fn recent_notifications_are_bounded() {
+        let origin = Instant::now();
+        let mut statistics = DaemonStatistics::new(origin);
+        let toggle = |statistics: &mut DaemonStatistics, seconds: u64| {
+            let mut sample = native(Vec::new());
+            sample.outputs_failed = seconds % 2;
+            sample.disk_free_bytes = None;
+            statistics.record_sample(
+                origin + Duration::from_secs(seconds),
+                ControlSample::default(),
+                Some(sample),
+                None,
+            );
+        };
+        // Odd seconds fire, even ones resolve: seconds 1..=15 notify 15 times.
+        for seconds in 0..16 {
+            toggle(&mut statistics, seconds);
+        }
+        assert_eq!(
+            statistics.recent_notifications().len(),
+            MAX_RECENT_NOTIFICATIONS - 1
+        );
+        for seconds in 16..20 {
+            toggle(&mut statistics, seconds);
+        }
+        assert_eq!(
+            statistics.recent_notifications().len(),
+            MAX_RECENT_NOTIFICATIONS
+        );
+        let first = statistics.recent_notifications().next().unwrap();
+        assert_eq!(first.at_millis, 4_000);
     }
 
     #[test]
