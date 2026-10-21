@@ -4,7 +4,7 @@
 //! [`StripDsp`] chain processed in a fixed order:
 //!
 //! ```text
-//! polarity -> high-pass -> EQ (5 bands) -> gate -> expander -> compressor -> limiter
+//! delay -> polarity -> high-pass -> EQ (5 bands) -> gate -> expander -> compressor -> limiter
 //! ```
 //!
 //! Each stage has its own enable switch (the polarity stage is the invert
@@ -13,7 +13,7 @@
 //! thousandths, microseconds), so a chain compares, hashes, persists, and
 //! travels on the wire exactly. [`StripDsp::validate`] checks every bound;
 //! [`StripDsp::code`] and [`StripDsp::from_code`] are the canonical compact
-//! text form (103 bytes packed big-endian as unpadded base64url, 138
+//! text form (107 bytes packed big-endian as unpadded base64url, 143
 //! characters) shared by the protocol, the CLI, and the Studio clipboard.
 //!
 //! The default chain has every stage disabled and is therefore transparent;
@@ -67,9 +67,12 @@ pub const MIN_LIMITER_CEILING_MILLIDB: i32 = -60_000;
 pub const MIN_TIME_US: u32 = 100;
 pub const MAX_TIME_US: u32 = 1_000_000;
 
+/// Delay stage bound, in microseconds (one second).
+pub const MAX_DELAY_US: u32 = 1_000_000;
+
 /// Length of [`StripDsp::code`] in characters.
-pub const STRIP_DSP_CODE_LEN: usize = 138;
-const PACKED_BYTES: usize = 103;
+pub const STRIP_DSP_CODE_LEN: usize = 143;
+const PACKED_BYTES: usize = 107;
 
 /// The shape of one EQ band.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -118,6 +121,16 @@ impl EqBandKind {
             _ => None,
         }
     }
+}
+
+/// The delay stage: holds the strip back by a fixed time, for example to
+/// line a microphone up with a camera's late picture. The live chain
+/// realizes it to the nearest sample.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct StripDelay {
+    pub enabled: bool,
+    /// The delay, in microseconds (`0..=`[`MAX_DELAY_US`]).
+    pub delay_us: u32,
 }
 
 /// The 12 dB/octave high-pass (low-cut) filter.
@@ -195,6 +208,8 @@ pub struct StripLimiter {
 pub struct StripDsp {
     /// Bypasses the whole chain without losing its settings.
     pub bypass: bool,
+    /// Delays the strip, ahead of every other stage.
+    pub delay: StripDelay,
     /// Inverts the strip's polarity (every channel), ahead of the filters.
     pub invert_polarity: bool,
     pub high_pass: StripHighPass,
@@ -225,6 +240,10 @@ impl StripDsp {
     /// Every stage off; parameters at their starting points.
     pub const DEFAULT: Self = Self {
         bypass: false,
+        delay: StripDelay {
+            enabled: false,
+            delay_us: 0,
+        },
         invert_polarity: false,
         high_pass: StripHighPass {
             enabled: false,
@@ -292,7 +311,8 @@ impl StripDsp {
     #[must_use]
     pub const fn is_active(&self) -> bool {
         !self.bypass
-            && (self.invert_polarity
+            && (self.delay.enabled
+                || self.invert_polarity
                 || self.high_pass.enabled
                 || self.eq.enabled
                 || self.gate.enabled
@@ -325,6 +345,7 @@ impl StripDsp {
                 Err(StripDspError { field })
             }
         };
+        check(self.delay.delay_us <= MAX_DELAY_US, "delay.delay_us")?;
         check(
             (MIN_HIGH_PASS_HZ..=MAX_HIGH_PASS_HZ).contains(&self.high_pass.frequency_hz),
             "high_pass.frequency_hz",
@@ -418,18 +439,19 @@ impl StripDsp {
         )
     }
 
-    /// The canonical compact text form: the chain packed big-endian into 103
+    /// The canonical compact text form: the chain packed big-endian into 107
     /// bytes and written as unpadded base64url ([`STRIP_DSP_CODE_LEN`]
     /// characters, letters, digits, `-`, and `_` only).
     ///
     /// The layout is a 16-bit flag word (bit 0 bypass, 1 high-pass, 2 EQ,
     /// 3 through 7 the bands, 8 gate, 9 compressor, 10 limiter, 11 polarity
-    /// invert, 12 expander), the high-pass frequency (u16), five bands (kind
+    /// invert, 12 expander, 13 delay), the high-pass frequency (u16), five bands (kind
     /// u8 `0` low shelf, `1` peak, `2` high shelf; frequency u16; gain i16; Q
     /// u16), the gate (threshold i32, range u32, attack u32, hold u32,
     /// release u32), the expander (threshold i32, ratio u16, attack u32,
     /// release u32, range u32), the compressor (threshold i32, ratio u16, attack u32, release u32, knee
-    /// u16, makeup u16), and the limiter (ceiling i32, release u32).
+    /// u16, makeup u16), the limiter (ceiling i32, release u32), and the
+    /// delay (microseconds u32).
     ///
     /// # Panics
     ///
@@ -451,7 +473,8 @@ impl StripDsp {
             | u16::from(self.compressor.enabled) << 9
             | u16::from(self.limiter.enabled) << 10
             | u16::from(self.invert_polarity) << 11
-            | u16::from(self.expander.enabled) << 12;
+            | u16::from(self.expander.enabled) << 12
+            | u16::from(self.delay.enabled) << 13;
         let narrow = |value: u32| u16::try_from(value).expect("validated value fits u16");
         bytes.extend_from_slice(&flags.to_be_bytes());
         bytes.extend_from_slice(&narrow(self.high_pass.frequency_hz).to_be_bytes());
@@ -490,6 +513,7 @@ impl StripDsp {
         bytes.extend_from_slice(&narrow(compressor.makeup_millidb).to_be_bytes());
         bytes.extend_from_slice(&self.limiter.ceiling_millidb.to_be_bytes());
         bytes.extend_from_slice(&self.limiter.release_us.to_be_bytes());
+        bytes.extend_from_slice(&self.delay.delay_us.to_be_bytes());
         debug_assert_eq!(bytes.len(), PACKED_BYTES);
         base64url_encode(&bytes)
     }
@@ -511,7 +535,7 @@ impl StripDsp {
         }
         let mut reader = Reader { bytes: &bytes };
         let flags = reader.u16();
-        if flags >> 13 != 0 {
+        if flags >> 14 != 0 {
             return Err(invalid);
         }
         let flag = |bit: u32| flags & (1 << bit) != 0;
@@ -565,8 +589,13 @@ impl StripDsp {
             ceiling_millidb: reader.i32(),
             release_us: reader.u32(),
         };
+        let delay = StripDelay {
+            enabled: flag(13),
+            delay_us: reader.u32(),
+        };
         let chain = Self {
             bypass: flag(0),
+            delay,
             invert_polarity: flag(11),
             high_pass,
             eq: StripEq {
@@ -893,5 +922,28 @@ mod tests {
         assert!(chain.is_active());
         assert!(chain.has_active_dynamics());
         assert!(StripDsp::from_code(&chain.code()).unwrap().expander.enabled);
+    }
+
+    #[test]
+    fn the_delay_stage_is_bounded_activates_the_chain_and_round_trips() {
+        let mut chain = StripDsp::DEFAULT;
+        chain.delay = StripDelay {
+            enabled: true,
+            delay_us: MAX_DELAY_US,
+        };
+        assert!(chain.is_active());
+        assert!(!chain.has_active_dynamics());
+        assert_eq!(StripDsp::from_code(&chain.code()), Ok(chain));
+        chain.delay.enabled = false;
+        chain.delay.delay_us = 40_000;
+        assert!(!chain.is_active());
+        assert_eq!(StripDsp::from_code(&chain.code()), Ok(chain));
+        chain.delay.delay_us = MAX_DELAY_US + 1;
+        assert_eq!(
+            chain.validate(),
+            Err(StripDspError {
+                field: "delay.delay_us"
+            })
+        );
     }
 }

@@ -3496,4 +3496,5 @@ messages! {
     FxExpThresholdHover => t("The expander turns down levels below this"),
     FxExpRatioHover => t("How much faster the level falls below the threshold: at 2:1 each dB under it becomes 2 dB"),
     FxExpRangeHover => t("The most the expander turns the strip down"),
+    FxDelayHover => t("Delay time in milliseconds (up to 1 s), exact to the sample: holds the sound back, for example to line a microphone up with a camera's late picture"),
 }

@@ -520,6 +520,20 @@ fn native_daemon_applies_strip_and_master_dsp_and_meters_gain_reduction() {
                 .is_some_and(|reduction| reduction > 15_000)
     });
 
+    // Delay (Protocol 2.95): a one-second strip delay fades into its
+    // silent history, so Master falls silent, and the tone arrives a
+    // second later.
+    let mut delayed = StripDsp::DEFAULT;
+    delayed.delay.enabled = true;
+    delayed.delay.delay_us = 1_000_000;
+    client.dsp(strip, delayed);
+    client.settled("Master silent while the delay fills", 1, |meters| {
+        master_peak(meters) < flat / 20 && dynamics(meters, strip).is_none()
+    });
+    client.settled("the delayed tone", 3, |meters| {
+        f64::from(master_peak(meters)) > f64::from(flat) * 0.8
+    });
+
     // Master limiter: the boosted tone held under a -20 dBFS ceiling, its
     // reduction metered on Master.
     client.dsp(strip, tone_boost());

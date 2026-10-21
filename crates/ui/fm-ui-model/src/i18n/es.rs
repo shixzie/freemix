@@ -9790,4 +9790,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::FxExpRangeHover,
         t("Lo máximo que el expansor baja el canal"),
     ),
+    (
+        Msg::FxDelayHover,
+        t(
+            "Tiempo de retardo en milisegundos (hasta 1 s), exacto a la muestra: retrasa el sonido, por ejemplo para alinear un micrófono con la imagen retrasada de una cámara",
+        ),
+    ),
 ];

@@ -1107,7 +1107,7 @@ impl StripDspSlot {
     fn new(live: LiveStripDsp, capacity: usize) -> Self {
         let channels = live.channels();
         Self {
-            checkpoint: live.clone(),
+            checkpoint: live.render_checkpoint(),
             live,
             scratch: vec![0.0; channels * capacity],
             capacity,
@@ -1600,7 +1600,7 @@ impl MasterMixer {
                     settings,
                 )
                 .map_err(AudioError::Dsp)?;
-                self.master_checkpoint = Some(Box::new(live.clone()));
+                self.master_checkpoint = Some(Box::new(live.render_checkpoint()));
                 self.master_dsp = Some(Box::new(live));
                 Ok(())
             }
@@ -2376,12 +2376,13 @@ impl MasterMixer {
                 let StripDspSlot {
                     live, checkpoint, ..
                 } = &mut **slot;
-                // Same channel count by construction: never fails.
-                let _ = checkpoint.copy_state_from(live);
+                // Same channel count by construction: never fails. Only the
+                // delay's cursors are saved; its history stays in `live`.
+                let _ = checkpoint.copy_render_state_from(live);
             }
         }
         if let (Some(live), Some(checkpoint)) = (&self.master_dsp, &mut self.master_checkpoint) {
-            let _ = checkpoint.copy_state_from(live);
+            let _ = checkpoint.copy_render_state_from(live);
         }
     }
 
@@ -2392,11 +2393,11 @@ impl MasterMixer {
                 let StripDspSlot {
                     live, checkpoint, ..
                 } = &mut **slot;
-                let _ = live.copy_state_from(checkpoint);
+                let _ = live.copy_render_state_from(checkpoint);
             }
         }
         if let (Some(live), Some(checkpoint)) = (&mut self.master_dsp, &self.master_checkpoint) {
-            let _ = live.copy_state_from(checkpoint);
+            let _ = live.copy_render_state_from(checkpoint);
         }
     }
 

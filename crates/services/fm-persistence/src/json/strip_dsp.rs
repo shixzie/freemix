@@ -1,12 +1,13 @@
 //! Strip and Master DSP chains in `project.json` (schema 65, AU-005; the
-//! polarity invert and expander since schema 69).
+//! polarity invert and expander since schema 69, the delay since schema 76).
 //!
 //! Every entry of `input_audio_strips` carries `"dsp"`, and the project
 //! carries `"master_audio_dsp"`: `null` for the default chain (every stage
 //! off), otherwise the whole chain:
 //!
 //! ```text
-//! {"bypass": false, "invert_polarity": false,
+//! {"bypass": false, "delay": {"enabled": true, "delay_us": 40000},
+//!  "invert_polarity": false,
 //!  "high_pass": {"enabled": true, "frequency_hz": 80},
 //!  "eq": {"enabled": true, "bands": [
 //!    {"enabled": true, "kind": "low_shelf", "frequency_hz": 100, "gain_milli_db": -2000, "q_milli": 707},
@@ -29,7 +30,7 @@
 use core::fmt::Write as _;
 
 use fm_types::strip_dsp::{
-    EqBandKind, STRIP_EQ_BAND_COUNT, StripCompressor, StripDsp, StripEq, StripEqBand,
+    EqBandKind, STRIP_EQ_BAND_COUNT, StripCompressor, StripDelay, StripDsp, StripEq, StripEqBand,
     StripExpander, StripGate, StripHighPass, StripLimiter,
 };
 
@@ -43,9 +44,12 @@ pub(crate) fn write_strip_dsp(output: &mut String, dsp: &StripDsp) {
     }
     write!(
         output,
-        "{{\"bypass\": {}, \"invert_polarity\": {}, \"high_pass\": {{\"enabled\": {}, \
+        "{{\"bypass\": {}, \"delay\": {{\"enabled\": {}, \"delay_us\": {}}}, \
+         \"invert_polarity\": {}, \"high_pass\": {{\"enabled\": {}, \
          \"frequency_hz\": {}}}, \"eq\": {{\"enabled\": {}, \"bands\": [",
         dsp.bypass,
+        dsp.delay.enabled,
+        dsp.delay.delay_us,
         dsp.invert_polarity,
         dsp.high_pass.enabled,
         dsp.high_pass.frequency_hz,
@@ -128,6 +132,12 @@ pub(crate) fn parse_strip_dsp(
 fn parse_chain(value: Value, context: &'static str) -> Result<StripDsp, DecodeError> {
     let mut object = Object::new(value, context)?;
     let bypass = object.boolean("bypass")?;
+    let mut delay = Object::new(object.take("delay")?, "strip DSP delay")?;
+    let delay_value = StripDelay {
+        enabled: delay.boolean("enabled")?,
+        delay_us: delay.u32("delay_us")?,
+    };
+    delay.finish()?;
     let invert_polarity = object.boolean("invert_polarity")?;
     let mut high_pass = Object::new(object.take("high_pass")?, "strip DSP high_pass")?;
     let high_pass_value = StripHighPass {
@@ -200,6 +210,7 @@ fn parse_chain(value: Value, context: &'static str) -> Result<StripDsp, DecodeEr
     object.finish()?;
     Ok(StripDsp {
         bypass,
+        delay: delay_value,
         invert_polarity,
         high_pass: high_pass_value,
         eq: StripEq {

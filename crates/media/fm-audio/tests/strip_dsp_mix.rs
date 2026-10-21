@@ -442,3 +442,62 @@ fn a_render_longer_than_the_dsp_block_capacity_is_refused() {
     bypassed.set_input_dsp(id, &chain).unwrap();
     assert_eq!(mix(&mut bypassed, long), Ok(()));
 }
+
+/// The delay stage holds a strip and then Program back to the exact
+/// sample, and a rejected block between does not shift it.
+#[test]
+fn strip_and_master_delays_add_up_to_the_sample_through_a_rejected_block() {
+    let id = input(1);
+    let mut strip = StripDsp::DEFAULT;
+    strip.delay.enabled = true;
+    strip.delay.delay_us = 5_000;
+    let mut master = StripDsp::DEFAULT;
+    master.delay.enabled = true;
+    master.delay.delay_us = 2_000;
+    let mut mixer = mixer_with(&[id, input(2), input(3)]);
+    mixer.set_input_dsp(id, &strip).unwrap();
+    mixer.set_master_dsp(&master).unwrap();
+    let mut output = vec![vec![0.0; BLOCK]; 2];
+    let mut input_meters = vec![ChannelMeter::default(); 6];
+    let mut heard = Vec::new();
+    let silence = vec![vec![0.0; BLOCK]; 2];
+    let mut first = silence.clone();
+    first[0][10] = 0.5;
+    first[1][10] = 0.5;
+    render(&mut mixer, &[(id, &first)], &mut output, &mut input_meters);
+    heard.extend_from_slice(&output[0]);
+    // Rejected after the chains ran: two strips' sum overflows.
+    let poisoned = vec![vec![f32::MAX; BLOCK]; 2];
+    let layout = ChannelLayout::stereo();
+    let rejected = mixer.mix_planar_timed_into_with_meters(
+        timing(BLOCK),
+        BLOCK,
+        &[id, input(2), input(3)].map(|input| PlanarAudioSource {
+            input,
+            sample_rate: SampleRate::new(RATE).unwrap(),
+            channel_layout: &layout,
+            planes: &poisoned,
+            samples: BLOCK,
+            source_gain: SourceGain::UNITY,
+        }),
+        &[],
+        &mut output,
+        (&mut [ChannelMeter::default(); 2], &mut input_meters),
+    );
+    assert!(rejected.is_err(), "{rejected:?}");
+    render(
+        &mut mixer,
+        &[(id, &silence)],
+        &mut output,
+        &mut input_meters,
+    );
+    heard.extend_from_slice(&output[0]);
+    // 5 ms + 2 ms at 48 kHz is 336 samples.
+    let loud: Vec<usize> = heard
+        .iter()
+        .enumerate()
+        .filter(|(_, sample)| **sample != 0.0)
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(loud, vec![10 + 336], "{heard:?}");
+}

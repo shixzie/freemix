@@ -1,8 +1,8 @@
 //! The live, click-free strip DSP chain the Master mixer runs (AU-005).
 //!
 //! [`LiveStripDsp`] runs one [`fm_types::strip_dsp::StripDsp`] chain
-//! (`polarity -> high-pass -> 5-band EQ -> gate -> expander -> compressor ->
-//! limiter`) over every
+//! (`delay -> polarity -> high-pass -> 5-band EQ -> gate -> expander ->
+//! compressor -> limiter`) over every
 //! channel of a strip, with independent filter and detector state per
 //! channel. It is built from the tested primitives in [`crate::dsp`].
 //!
@@ -26,13 +26,20 @@
 //!   re-enters from silence.
 //! - Inverting the polarity ramps the sign through zero over the same
 //!   crossfade, so a flip mid-programme dips briefly instead of stepping.
+//! - The delay is exact to the nearest sample. A new delay time crossfades
+//!   from the old read position to the new one over the same crossfade;
+//!   enabling the delay crossfades from the undelayed signal into the
+//!   delayed one, whose history starts silent.
 //!
 //! # Real-time safety
 //!
 //! [`LiveStripDsp::new`] allocates the per-channel state. Processing
 //! ([`LiveStripDsp::process`]) and retargeting perform no allocation, take
 //! no locks, and never panic for finite input; the working buffers live on
-//! the stack, [`SUB_BLOCK`] samples at a time.
+//! the stack, [`SUB_BLOCK`] samples at a time. The one exception is the
+//! delay's history: [`MAX_DELAY_US`] plus [`crate::MAX_SAMPLES_PER_BLOCK`]
+//! samples per channel, allocated once, by the first chain (at
+//! construction or retargeting) that enables the delay.
 //!
 //! # Gain-reduction metering
 //!
@@ -41,7 +48,9 @@
 //! on any channel
 //! ([`LiveStripDsp::dynamics`]), for operators' GR meters.
 
-use fm_types::strip_dsp::{EqBandKind, STRIP_EQ_BAND_COUNT, StripDsp as StripDspSettings};
+use fm_types::strip_dsp::{
+    EqBandKind, MAX_DELAY_US, STRIP_EQ_BAND_COUNT, StripDsp as StripDspSettings,
+};
 
 use crate::dsp::{Biquad, BiquadCoefficients, Compressor, DspError, Expander, Gate, Limiter};
 
@@ -184,8 +193,129 @@ const EXPANDER: usize = 3;
 const COMPRESSOR: usize = 4;
 const LIMITER: usize = 5;
 const POLARITY: usize = 6;
-const CHAIN: usize = 7;
-const FADES: usize = 8;
+const DELAY: usize = 7;
+const CHAIN: usize = 8;
+const FADES: usize = 9;
+
+/// The delay stage's history and read positions.
+///
+/// The history is one ring per channel (channel-major, `len` samples each)
+/// written at `write`; a delay of `d` samples reads `d` behind it. The ring
+/// holds [`crate::MAX_SAMPLES_PER_BLOCK`] samples more than the longest
+/// delay, so a render rejected after the chain ran (whose writes are undone
+/// only by restoring the cursors, see [`LiveStripDsp::copy_render_state_from`])
+/// never overwrote history a delay still reads.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct DelayLine {
+    ring: Vec<f32>,
+    len: usize,
+    write: usize,
+    /// The delay now being read, in samples (the crossfade's destination).
+    tap: usize,
+    /// The delay the crossfade leaves, while `mix < 1`.
+    from_tap: usize,
+    /// Crossfade position from `from_tap` (0) to `tap` (1).
+    mix: f32,
+    /// The settings' delay, in samples.
+    target: usize,
+    /// The history missed samples (the stage or the chain was skipped) and
+    /// must start over silent.
+    stale: bool,
+}
+
+impl DelayLine {
+    /// The read positions settle at the target at once.
+    const fn settle(&mut self) {
+        self.tap = self.target;
+        self.from_tap = self.target;
+        self.mix = 1.0;
+    }
+
+    /// Clears the history and settles the read positions.
+    fn clear(&mut self) {
+        self.ring.fill(0.0);
+        self.write = 0;
+        self.settle();
+        self.stale = false;
+    }
+
+    /// Prepares one sub-block: while `delaying`, a stale history starts over
+    /// and `taps` gets the read crossfade; otherwise the history is marked
+    /// stale. Returns the read positions and the write cursor.
+    fn begin_sub_block(
+        &mut self,
+        delaying: bool,
+        step: f32,
+        taps: &mut [f32],
+    ) -> (usize, usize, usize) {
+        if delaying {
+            if self.stale {
+                self.clear();
+            }
+            let (from, to) = self.fill(step, taps);
+            (from, to, self.write)
+        } else {
+            self.stale = true;
+            self.settle();
+            (0, 0, 0)
+        }
+    }
+
+    /// Writes `value` into one channel's `ring` at `at` and reads the
+    /// delayed sample, crossfading from `from_tap` to `to_tap` by `mix`.
+    fn step(
+        ring: &mut [f32],
+        at: usize,
+        value: f32,
+        (from_tap, to_tap, mix): (usize, usize, f32),
+    ) -> f32 {
+        let len = ring.len();
+        ring[at] = value;
+        let read = |tap: usize| ring[(at + len - tap) % len];
+        let to = read(to_tap);
+        #[allow(clippy::float_cmp)]
+        if mix == 1.0 {
+            to
+        } else {
+            let from = read(from_tap);
+            from + mix * (to - from)
+        }
+    }
+
+    /// Fills `mixes` with one sub-block's tap crossfade and advances it; a
+    /// finished crossfade toward a stale tap starts the next one.
+    fn fill(&mut self, step: f32, mixes: &mut [f32]) -> (usize, usize) {
+        #[allow(clippy::float_cmp)]
+        if self.mix == 1.0 && self.tap != self.target {
+            self.from_tap = self.tap;
+            self.tap = self.target;
+            self.mix = 0.0;
+        }
+        for value in mixes {
+            self.mix = (self.mix + step).min(1.0);
+            *value = self.mix;
+        }
+        (self.from_tap, self.tap)
+    }
+}
+
+/// `dry` crossfaded toward `wet` by `mix`, exactly `wet` at a settled 1.
+#[allow(clippy::float_cmp)]
+fn blend(dry: f32, wet: f32, mix: f32) -> f32 {
+    if mix == 1.0 {
+        wet
+    } else {
+        dry + mix * (wet - dry)
+    }
+}
+
+/// `micros` at `sample_rate_hz`, to the nearest sample.
+fn delay_samples(sample_rate_hz: f32, micros: u32) -> usize {
+    let samples = f64::from(micros) * f64::from(sample_rate_hz) / 1_000_000.0;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let samples = samples.round() as usize;
+    samples
+}
 
 /// One strip's live DSP chain; see the module documentation.
 #[derive(Clone, Debug)]
@@ -210,6 +340,7 @@ pub struct LiveStripDsp {
     glide_coefficient: f32,
     fade_step: f32,
     channels: Vec<ChannelState>,
+    delay: DelayLine,
     dynamics: DspDynamicsReading,
 }
 
@@ -384,11 +515,14 @@ impl LiveStripDsp {
             glide_coefficient: 1.0 - (-sub_block / (GLIDE_SECONDS * sample_rate_hz)).exp(),
             fade_step: 1.0 / (CROSSFADE_SECONDS * sample_rate_hz).max(1.0),
             channels: vec![channel; channels],
+            delay: DelayLine::default(),
             dynamics: DspDynamicsReading::default(),
         };
         for (fade, on) in dsp.fades.iter_mut().zip(stage_switches(settings)) {
             *fade = Fade::settled(on);
         }
+        dsp.retarget_delay(settings);
+        dsp.delay.settle();
         Ok(dsp)
     }
 
@@ -405,6 +539,32 @@ impl LiveStripDsp {
     #[must_use]
     pub const fn sample_rate_hz(&self) -> f32 {
         self.sample_rate_hz
+    }
+
+    /// The delay the chain reads now, in samples (the destination while a
+    /// new delay time crossfades in).
+    #[must_use]
+    pub const fn delay_samples(&self) -> usize {
+        self.delay.tap
+    }
+
+    /// Points the delay at `settings`' time and allocates its history the
+    /// first time the delay is enabled.
+    fn retarget_delay(&mut self, settings: &StripDspSettings) {
+        self.delay.target = delay_samples(
+            self.sample_rate_hz,
+            settings.delay.delay_us.min(MAX_DELAY_US),
+        );
+        if settings.delay.enabled && self.delay.ring.is_empty() {
+            let len =
+                delay_samples(self.sample_rate_hz, MAX_DELAY_US) + crate::MAX_SAMPLES_PER_BLOCK;
+            self.delay.ring = vec![0.0; len * self.channels.len()];
+            self.delay.len = len;
+            self.delay.write = 0;
+        }
+        if self.fades[DELAY].is_off() {
+            self.delay.settle();
+        }
     }
 
     /// The peak gain reduction of the last processed block.
@@ -516,6 +676,7 @@ impl LiveStripDsp {
         for (fade, on) in self.fades.iter_mut().zip(stage_switches(settings)) {
             fade.set(on);
         }
+        self.retarget_delay(settings);
         // Retune a shape taken at once so the coefficients match it.
         for (coefficients, band) in self.band_coefficients.iter_mut().zip(&self.bands) {
             if let Ok(updated) = band_coefficients_of(self.sample_rate_hz, band) {
@@ -572,17 +733,72 @@ impl LiveStripDsp {
             channel.compressor.reset();
             channel.limiter.reset();
         }
+        self.delay.clear();
         self.dynamics = DspDynamicsReading::default();
     }
 
-    /// Copies the complete runtime state of an identically shaped chain
-    /// without allocating.
+    /// Copies the complete runtime state of an identically shaped chain,
+    /// the delay history included, without allocating once this chain's
+    /// history is as long as `other`'s.
     ///
     /// # Errors
     ///
     /// Returns [`DspError::ChannelCountMismatch`] when the channel counts
     /// differ; nothing changes.
     pub fn copy_state_from(&mut self, other: &Self) -> Result<(), DspError> {
+        self.copy_render_state_from(other)?;
+        self.delay.ring.clone_from(&other.delay.ring);
+        self.delay.len = other.delay.len;
+        Ok(())
+    }
+
+    /// A copy of this chain without its delay history (only the cursors), to
+    /// hold its render checkpoint ([`Self::copy_render_state_from`]).
+    #[must_use]
+    pub fn render_checkpoint(&self) -> Self {
+        Self {
+            sample_rate_hz: self.sample_rate_hz,
+            settings: self.settings,
+            high_pass_log_frequency: self.high_pass_log_frequency,
+            bands: self.bands,
+            high_pass_coefficients: self.high_pass_coefficients,
+            band_coefficients: self.band_coefficients,
+            gate_threshold: self.gate_threshold,
+            gate_range: self.gate_range,
+            expander_threshold: self.expander_threshold,
+            expander_ratio: self.expander_ratio,
+            expander_range: self.expander_range,
+            compressor_threshold: self.compressor_threshold,
+            compressor_ratio: self.compressor_ratio,
+            compressor_knee: self.compressor_knee,
+            compressor_makeup: self.compressor_makeup,
+            limiter_ceiling: self.limiter_ceiling,
+            fades: self.fades,
+            glide_coefficient: self.glide_coefficient,
+            fade_step: self.fade_step,
+            channels: self.channels.clone(),
+            delay: DelayLine {
+                ring: Vec::new(),
+                len: 0,
+                ..self.delay
+            },
+            dynamics: self.dynamics,
+        }
+    }
+
+    /// Like [`Self::copy_state_from`] but keeps this chain's delay history
+    /// and copies only its cursors, so it copies a few hundred bytes
+    /// whatever the delay. Only for saving a chain into its own checkpoint
+    /// before a render and restoring it from there when the render is
+    /// rejected: the history's spare [`crate::MAX_SAMPLES_PER_BLOCK`]
+    /// samples mean the rejected render's writes never reached history the
+    /// restored cursors read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DspError::ChannelCountMismatch`] when the channel counts
+    /// differ; nothing changes.
+    pub fn copy_render_state_from(&mut self, other: &Self) -> Result<(), DspError> {
         if self.channels.len() != other.channels.len() {
             return Err(DspError::ChannelCountMismatch {
                 expected: self.channels.len(),
@@ -609,6 +825,13 @@ impl LiveStripDsp {
         self.glide_coefficient = other.glide_coefficient;
         self.fade_step = other.fade_step;
         self.channels.copy_from_slice(&other.channels);
+        let delay = &other.delay;
+        self.delay.write = delay.write;
+        self.delay.tap = delay.tap;
+        self.delay.from_tap = delay.from_tap;
+        self.delay.mix = delay.mix;
+        self.delay.target = delay.target;
+        self.delay.stale = delay.stale;
         self.dynamics = other.dynamics;
         Ok(())
     }
@@ -759,10 +982,12 @@ impl LiveStripDsp {
     ///
     /// Performs no allocation. A fully transparent chain copies input to
     /// output unchanged.
+    #[allow(clippy::too_many_lines)] // one per-sample pass through every stage, kept inline
     pub fn process(&mut self, samples: usize, io: &mut impl LiveDspIo) {
         let mut reading = [0.0_f32; 4];
         let mut buffer = [0.0_f32; SUB_BLOCK];
         let mut mixes = [[0.0_f32; SUB_BLOCK]; FADES];
+        let mut taps = [0.0_f32; SUB_BLOCK];
         let mut start = 0;
         while start < samples {
             let length = SUB_BLOCK.min(samples - start);
@@ -787,14 +1012,35 @@ impl LiveStripDsp {
                 fade.fill(self.fade_step, &mut mixes[stage][..length]);
             }
             let chain_running = running[CHAIN] && running[..CHAIN].iter().any(|on| *on);
+            // The delay history is written only while the delay runs; once
+            // it missed samples it starts over silent.
+            let delaying = chain_running && running[DELAY] && self.delay.len != 0;
+            let (from_tap, to_tap, write) =
+                self.delay
+                    .begin_sub_block(delaying, self.fade_step, &mut taps[..length]);
+            let ring_len = self.delay.len;
             for (index, channel) in self.channels.iter_mut().enumerate() {
                 let buffer = &mut buffer[..length];
                 io.read(index, start, buffer);
                 if chain_running {
+                    let ring = if delaying {
+                        &mut self.delay.ring[index * ring_len..(index + 1) * ring_len]
+                    } else {
+                        &mut []
+                    };
                     for (offset, sample) in buffer.iter_mut().enumerate() {
                         let dry = *sample;
                         let mut value = dry;
                         ramps.apply(channel, offset);
+                        if delaying {
+                            let wet = DelayLine::step(
+                                ring,
+                                (write + offset) % ring_len,
+                                value,
+                                (from_tap, to_tap, taps[offset]),
+                            );
+                            value = blend(value, wet, mixes[DELAY][offset]);
+                        }
                         if running[POLARITY] {
                             // Ramps the sign: +1 at rest normal, -1 inverted.
                             value *= 1.0 - 2.0 * mixes[POLARITY][offset];
@@ -826,7 +1072,7 @@ impl LiveStripDsp {
                             let wet = channel.limiter.process(value);
                             value += mixes[LIMITER][offset] * (wet - value);
                         }
-                        *sample = dry + mixes[CHAIN][offset] * (value - dry);
+                        *sample = blend(dry, value, mixes[CHAIN][offset]);
                     }
                     if running[GATE] {
                         reading[0] = reading[0].max(channel.gate.current_attenuation_db());
@@ -842,6 +1088,9 @@ impl LiveStripDsp {
                     }
                 }
                 io.write(index, start, buffer);
+            }
+            if delaying {
+                self.delay.write = (write + length) % ring_len;
             }
             start += length;
         }
@@ -940,7 +1189,7 @@ fn band_coefficients_of(
 }
 
 /// Each crossfade's target: high-pass, EQ, gate, expander, compressor,
-/// limiter, polarity, chain.
+/// limiter, polarity, delay, chain.
 const fn stage_switches(settings: &StripDspSettings) -> [bool; FADES] {
     [
         settings.high_pass.enabled,
@@ -950,6 +1199,7 @@ const fn stage_switches(settings: &StripDspSettings) -> [bool; FADES] {
         settings.compressor.enabled,
         settings.limiter.enabled,
         settings.invert_polarity,
+        settings.delay.enabled,
         !settings.bypass,
     ]
 }
@@ -1199,5 +1449,149 @@ mod tests {
         dsp.process(48_000, &mut InPlacePlanes(&mut planes));
         let gain_db = 20.0 * (peak(&planes[0][40_000..]) / amplitude).log10();
         assert!((gain_db + 12.0).abs() < 0.2, "{gain_db}");
+    }
+}
+
+#[cfg(test)]
+mod delay_tests {
+    use super::*;
+    use fm_types::strip_dsp::StripDelay;
+
+    fn delayed(delay_us: u32) -> StripDspSettings {
+        let mut settings = StripDspSettings::DEFAULT;
+        settings.delay = StripDelay {
+            enabled: true,
+            delay_us,
+        };
+        settings
+    }
+
+    fn impulse(samples: usize, at: usize) -> Vec<f32> {
+        let mut plane = vec![0.0; samples];
+        plane[at] = 1.0;
+        plane
+    }
+
+    #[test]
+    fn the_delay_is_exact_to_the_sample_on_every_channel_across_blocks() {
+        // 1 ms at 48 kHz is 48 samples; 10.01 ms rounds to 480 samples.
+        for (delay_us, samples) in [(1_000, 48), (10_010, 480), (0, 0)] {
+            let mut dsp = LiveStripDsp::new(48_000.0, 2, &delayed(delay_us)).unwrap();
+            assert_eq!(dsp.delay_samples(), samples);
+            let mut output = Vec::new();
+            let input = impulse(2_000, 7);
+            // Odd block sizes cross the sub-block and the ring boundaries.
+            for chunk in input.chunks(333) {
+                let mut planes = vec![chunk.to_vec(), chunk.iter().map(|x| -x).collect()];
+                dsp.process(chunk.len(), &mut InPlacePlanes(&mut planes));
+                output.extend_from_slice(&planes[0]);
+                assert_eq!(
+                    planes[1],
+                    planes[0].iter().map(|x| -x).collect::<Vec<_>>(),
+                    "{delay_us}"
+                );
+            }
+            assert_eq!(output, impulse(2_000, 7 + samples), "{delay_us}");
+        }
+        assert_eq!(
+            LiveStripDsp::new(44_100.0, 1, &delayed(MAX_DELAY_US))
+                .unwrap()
+                .delay_samples(),
+            44_100
+        );
+    }
+
+    #[test]
+    fn a_new_delay_time_crossfades_without_a_click() {
+        let mut dsp = LiveStripDsp::new(48_000.0, 1, &delayed(0)).unwrap();
+        let input: Vec<f32> = (0..48_000)
+            .map(|index| {
+                #[allow(clippy::cast_precision_loss)]
+                let time = index as f32 / 48_000.0;
+                0.5 * (core::f32::consts::TAU * 100.0 * time).sin()
+            })
+            .collect();
+        let mut first = vec![input[..24_000].to_vec()];
+        dsp.process(24_000, &mut InPlacePlanes(&mut first));
+        dsp.set_settings(&delayed(250_000)).unwrap();
+        assert_eq!(
+            dsp.delay_samples(),
+            0,
+            "the read point moves while rendering"
+        );
+        let mut second = vec![input[24_000..].to_vec()];
+        dsp.process(24_000, &mut InPlacePlanes(&mut second));
+        assert_eq!(dsp.delay_samples(), 12_000);
+        let mut joined = first[0].clone();
+        joined.extend_from_slice(&second[0]);
+        let natural = 0.5 * core::f32::consts::TAU * 100.0 / 48_000.0;
+        let slope = joined
+            .windows(2)
+            .map(|pair| (pair[1] - pair[0]).abs())
+            .fold(0.0_f32, f32::max);
+        // The two read points are out of phase; the crossfade passes
+        // through their blend instead of jumping between them.
+        assert!(slope < natural * 2.0, "{slope} vs {natural}");
+        // Settled: exactly the input 12 000 samples ago.
+        assert_eq!(&second[0][12_000..], &input[24_000..36_000]);
+    }
+
+    #[test]
+    fn enabling_the_delay_fades_into_silent_history_and_bypass_starts_it_over() {
+        let mut dsp = LiveStripDsp::new(48_000.0, 1, &StripDspSettings::DEFAULT).unwrap();
+        let mut warm = vec![vec![0.25_f32; 4_800]];
+        dsp.process(4_800, &mut InPlacePlanes(&mut warm));
+        dsp.set_settings(&delayed(50_000)).unwrap();
+        let mut planes = vec![vec![0.25_f32; 4_800]];
+        dsp.process(4_800, &mut InPlacePlanes(&mut planes));
+        // The undelayed signal fades out over 10 ms ...
+        assert!(planes[0][479] < 0.01, "{}", planes[0][479]);
+        // ... into 50 ms of silence, then the delayed signal.
+        assert!(planes[0][480..2_400].iter().all(|sample| *sample == 0.0));
+        assert!(
+            planes[0][2_400..]
+                .iter()
+                .all(|sample| sample.to_bits() == 0.25_f32.to_bits())
+        );
+
+        // Bypassed long enough to settle, the history is dropped: no burst
+        // of old audio when the chain returns.
+        let mut bypassed = delayed(50_000);
+        bypassed.bypass = true;
+        dsp.set_settings(&bypassed).unwrap();
+        let mut planes = vec![vec![0.0_f32; 4_800]];
+        dsp.process(4_800, &mut InPlacePlanes(&mut planes));
+        dsp.set_settings(&delayed(50_000)).unwrap();
+        let mut planes = vec![vec![0.0_f32; 4_800]];
+        dsp.process(4_800, &mut InPlacePlanes(&mut planes));
+        assert!(planes[0].iter().all(|sample| *sample == 0.0));
+    }
+
+    #[test]
+    fn a_render_checkpoint_restores_the_delay_without_copying_its_history() {
+        let mut live = LiveStripDsp::new(48_000.0, 1, &delayed(100_000)).unwrap();
+        let mut reference = live.clone();
+        let mut checkpoint = live.render_checkpoint();
+        let input: Vec<f32> = (0..9_600_u16)
+            .map(|index| f32::from(index % 97) / 97.0)
+            .collect();
+        let mut planes = vec![input[..4_800].to_vec()];
+        live.process(4_800, &mut InPlacePlanes(&mut planes));
+        reference.process(4_800, &mut InPlacePlanes(&mut [input[..4_800].to_vec()]));
+        // A rejected render: the checkpoint is saved, a full block of
+        // garbage runs, and the chain is restored.
+        checkpoint.copy_render_state_from(&live).unwrap();
+        let mut garbage = vec![vec![0.9_f32; crate::MAX_SAMPLES_PER_BLOCK]];
+        live.process(
+            crate::MAX_SAMPLES_PER_BLOCK,
+            &mut InPlacePlanes(&mut garbage),
+        );
+        live.copy_render_state_from(&checkpoint).unwrap();
+        let mut ours = vec![input[4_800..].to_vec()];
+        live.process(4_800, &mut InPlacePlanes(&mut ours));
+        let mut theirs = vec![input[4_800..].to_vec()];
+        reference.process(4_800, &mut InPlacePlanes(&mut theirs));
+        assert_eq!(ours, theirs);
+        assert_eq!(&ours[0][..], &input[..4_800]);
     }
 }

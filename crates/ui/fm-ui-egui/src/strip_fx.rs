@@ -4,7 +4,8 @@
 //! for that chain: a chain bypass, presets, copy and paste between strips,
 //! and a reset in the header; an EQ response curve with a draggable point
 //! per band (frequency left and right, gain up and down, the wheel for the
-//! width) and a draggable high-pass corner; the polarity invert; each
+//! width) and a draggable high-pass corner; the polarity invert; the delay
+//! and its time; each
 //! band's switch, shape, frequency, gain, and Q; and the gate, expander,
 //! compressor, and limiter with their switches, settings, and
 //! gain-reduction meters fed by `audio_meters`.
@@ -22,13 +23,13 @@ use egui::{
 };
 use fm_types::strip_dsp::{
     EqBandKind, MAX_COMPRESSOR_KNEE_MILLIDB, MAX_COMPRESSOR_MAKEUP_MILLIDB,
-    MAX_COMPRESSOR_RATIO_MILLI, MAX_EQ_FREQUENCY_HZ, MAX_EQ_GAIN_MILLIDB, MAX_EQ_Q_MILLI,
-    MAX_EXPANDER_RANGE_MILLIDB, MAX_EXPANDER_RATIO_MILLI, MAX_GATE_HOLD_US, MAX_GATE_RANGE_MILLIDB,
-    MAX_GATE_RELEASE_US, MAX_HIGH_PASS_HZ, MAX_TIME_US, MIN_COMPRESSOR_RATIO_MILLI,
-    MIN_COMPRESSOR_THRESHOLD_MILLIDB, MIN_EQ_FREQUENCY_HZ, MIN_EQ_Q_MILLI,
-    MIN_EXPANDER_RATIO_MILLI, MIN_EXPANDER_THRESHOLD_MILLIDB, MIN_GATE_THRESHOLD_MILLIDB,
-    MIN_HIGH_PASS_HZ, MIN_LIMITER_CEILING_MILLIDB, MIN_TIME_US, StripDsp, StripDspPreset,
-    StripDspTarget,
+    MAX_COMPRESSOR_RATIO_MILLI, MAX_DELAY_US, MAX_EQ_FREQUENCY_HZ, MAX_EQ_GAIN_MILLIDB,
+    MAX_EQ_Q_MILLI, MAX_EXPANDER_RANGE_MILLIDB, MAX_EXPANDER_RATIO_MILLI, MAX_GATE_HOLD_US,
+    MAX_GATE_RANGE_MILLIDB, MAX_GATE_RELEASE_US, MAX_HIGH_PASS_HZ, MAX_TIME_US,
+    MIN_COMPRESSOR_RATIO_MILLI, MIN_COMPRESSOR_THRESHOLD_MILLIDB, MIN_EQ_FREQUENCY_HZ,
+    MIN_EQ_Q_MILLI, MIN_EXPANDER_RATIO_MILLI, MIN_EXPANDER_THRESHOLD_MILLIDB,
+    MIN_GATE_THRESHOLD_MILLIDB, MIN_HIGH_PASS_HZ, MIN_LIMITER_CEILING_MILLIDB, MIN_TIME_US,
+    StripDsp, StripDspPreset, StripDspTarget,
 };
 use fm_ui_model::strip_dsp::{DRAG_SEND_INTERVAL, StripDspBinding, response_db};
 
@@ -674,12 +675,14 @@ fn time_entry(
     )
 }
 
-/// The polarity invert, the high-pass corner, and each band's switch,
-/// shape, frequency, gain, and width.
+/// The polarity invert, the delay, the high-pass corner, and each band's
+/// switch, shape, frequency, gain, and width.
 fn draw_bands(ui: &mut Ui, chain: &mut StripDsp, (enabled, reason): (bool, &str)) {
     let l = l10n::locale(ui.ctx());
     ui.horizontal(|ui| {
         polarity_key(ui, &mut chain.invert_polarity, (enabled, reason));
+        ui.add_space(8.0);
+        delay_controls(ui, chain, (enabled, reason));
         ui.add_space(8.0);
         stage_key(
             ui,
@@ -768,6 +771,26 @@ fn draw_bands(ui: &mut Ui, chain: &mut StripDsp, (enabled, reason): (bool, &str)
                 ui.end_row();
             }
         });
+}
+
+/// The delay key and its time in milliseconds.
+fn delay_controls(ui: &mut Ui, chain: &mut StripDsp, (enabled, reason): (bool, &str)) {
+    let l = l10n::locale(ui.ctx());
+    stage_key(
+        ui,
+        &mut chain.delay.enabled,
+        // The stage shares the cue action's word: "Delay" / "Retardo".
+        Msg::CueActDelay,
+        (enabled, reason),
+    );
+    scaled_entry(
+        ui,
+        &mut chain.delay.delay_us,
+        0..=MAX_DELAY_US,
+        (1_000.0, 1, 100.0),
+        ("", "ms"),
+        (enabled, l.text(Msg::FxDelayHover), reason),
+    );
 }
 
 /// The polarity invert key, amber while the strip is inverted.

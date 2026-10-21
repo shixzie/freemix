@@ -3612,6 +3612,31 @@ scopes (RC-004, schema 75).
   console's.
 - 2.92 is refused.
 
+Protocol 2.95 adds a delay stage to the strip DSP chain (AU-005, schema
+76).
+
+- The chain code gains the delay: flag bit 13 enables it and a big-endian
+  u32 after the limiter's release carries its time in microseconds
+  (`0..=1000000`, one second): 107 bytes, exactly 143 characters of
+  unpadded base64url. Every `audio_strip_dsp` command, event, snapshot
+  field, and `audio_strip_dsp_state` record carries the new code; a
+  138-character code is refused. Every input strip and Master have it.
+- The delay is the chain's first stage (`delay -> polarity -> high-pass ->
+  EQ -> gate -> expander -> compressor -> limiter`), so a strip's chain
+  delay follows its `delay_samples` sync delay. Native `freemixd` realizes
+  it to the nearest sample at the mix rate: enabling it crossfades over
+  10 ms from the undelayed strip into its delayed history, which starts
+  silent; a new time crossfades between the old and new read positions
+  over the same 10 ms; a delay skipped (off, or the chain bypassed) drops
+  its history. It reports no gain reduction. The simulated daemon has no
+  audio render path: there the chain, the delay included, is show state
+  that is announced, snapshotted, undone, and persisted.
+- Durability (schema 76): a chain object gains required `"delay":
+  {"enabled", "delay_us"}` after `"bypass"`.
+- Studio's FX window adds the delay key and its time in milliseconds
+  beside the polarity key, with hover help.
+- 2.94 is refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision
