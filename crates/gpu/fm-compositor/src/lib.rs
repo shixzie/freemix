@@ -39,7 +39,7 @@ pub use fm_types::{GARBAGE_MATTE_UNIT, GarbageMatte, MattePoint};
 pub use keying::{
     AutoKey, AutoKeyError, AutoKeyOptions, AutoKeyRegion, Backing, Despill, KeyChannel, KeyFill,
     KeyRefinement, KeyRefinementError, LightWrap, MAX_AUTO_KEY_SAMPLES, MAX_CHOKE_RADIUS,
-    MAX_EDGE_SOFTNESS, MAX_LIGHT_WRAP_WIDTH, chroma_cb_cr, sample_auto_key,
+    MAX_EDGE_SOFTNESS, MAX_LIGHT_WRAP_WIDTH, chroma_cb_cr, chroma_distance, sample_auto_key,
 };
 pub use multiview::{
     ConfidenceMode, GridLayout, MAX_MULTIVIEW_CELLS, MAX_MULTIVIEW_COLUMNS,

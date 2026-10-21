@@ -1,8 +1,11 @@
 //! Exact-pixel CPU-oracle coverage for the chroma and luma key stage.
 //!
 //! Expectations are hand-computed from the integer formulas in
-//! `crates/gpu/fm-compositor/src/cpu.rs`: the chroma distance is the maximum
-//! absolute per-channel difference from the key color, the ramp adds
+//! `crates/gpu/fm-compositor/src/cpu.rs`: the chroma distance is the larger
+//! absolute difference of the fixed-point BT.709 Cb and Cr from the key
+//! color's ([`fm_compositor::chroma_distance`]; against pure green
+//! `(0, 255, 0)`, Cb 29 and Cr 12, the pixel `(0, 255, 2 d)` is at
+//! distance `d` for `d <= 10`), the ramp adds
 //! `softness / 2` before truncating, spill uses
 //! `(spill * (255 - key_alpha) + 127) / 255`, and every channel scaling uses
 //! `(left * right + 127) / 255`.
@@ -95,8 +98,8 @@ fn chroma_key_exact_color_transparent_and_tolerance_boundary_is_exact() {
         &[
             Rgba8::new(0, 255, 0, 255),   // distance 0
             Rgba8::new(0, 254, 0, 255),   // distance 1: untouched by tolerance 0
-            Rgba8::new(1, 255, 0, 255),   // distance 1 on red
-            Rgba8::new(0, 255, 2, 255),   // distance 2 on blue
+            Rgba8::new(1, 255, 0, 255),   // Cr 13: distance 1
+            Rgba8::new(0, 255, 4, 255),   // Cb 31: distance 2
             Rgba8::new(255, 0, 255, 255), // far from the key color
         ],
     );
@@ -106,7 +109,7 @@ fn chroma_key_exact_color_transparent_and_tolerance_boundary_is_exact() {
             Rgba8::new(0, 0, 0, 0),
             Rgba8::new(0, 254, 0, 255),
             Rgba8::new(1, 255, 0, 255),
-            Rgba8::new(0, 255, 2, 255),
+            Rgba8::new(0, 255, 4, 255),
             Rgba8::new(255, 0, 255, 255),
         ]
     );
@@ -117,9 +120,9 @@ fn chroma_key_exact_color_transparent_and_tolerance_boundary_is_exact() {
         1,
         &[
             Rgba8::new(0, 255, 0, 255), // distance 0 <= tolerance
-            Rgba8::new(0, 253, 0, 255), // distance 2 == tolerance
-            Rgba8::new(2, 255, 0, 255), // max-channel distance 2 == tolerance
-            Rgba8::new(0, 252, 0, 255), // distance 3: just past tolerance, hard edge
+            Rgba8::new(0, 255, 4, 255), // distance 2 == tolerance
+            Rgba8::new(2, 255, 0, 255), // Cr 13: distance 1 < tolerance
+            Rgba8::new(0, 255, 6, 255), // distance 3: just past tolerance, hard edge
         ],
     );
     assert_eq!(
@@ -128,8 +131,18 @@ fn chroma_key_exact_color_transparent_and_tolerance_boundary_is_exact() {
             Rgba8::new(0, 0, 0, 0),
             Rgba8::new(0, 0, 0, 0),
             Rgba8::new(0, 0, 0, 0),
-            Rgba8::new(0, 252, 0, 255),
+            Rgba8::new(0, 255, 6, 255),
         ]
+    );
+
+    // Shading moves a pixel less than its RGB difference: half-bright green
+    // (Cb/Cr (79, 70)) is distance 58 from pure green, not 127, so a
+    // similarity of 60 keys it.
+    let shade = keyed_row(1, chroma(green, 60, 0, 0));
+    let dark = frame(1, 1, &[Rgba8::new(0, 128, 0, 255)]);
+    assert_eq!(
+        pixels(&execute_layer(&shade, &dark)),
+        [Rgba8::new(0, 0, 0, 0)]
     );
 }
 
@@ -143,21 +156,21 @@ fn chroma_softness_ramp_rounds_half_up_at_exact_midpoint() {
         1,
         &[
             Rgba8::new(0, 255, 0, 255), // distance 0 -> 0
-            Rgba8::new(0, 254, 0, 255), // distance 1 -> (255 + 2) / 4 = 64
-            Rgba8::new(0, 253, 0, 255), // distance 2 -> (510 + 2) / 4 = 128
-            Rgba8::new(0, 252, 0, 255), // distance 3 -> (765 + 2) / 4 = 191
-            Rgba8::new(0, 251, 0, 255), // distance 4 == softness -> 255
-            Rgba8::new(0, 0, 0, 255),   // distance 255 >= softness -> 255
+            Rgba8::new(0, 255, 2, 255), // distance 1 -> (255 + 2) / 4 = 64
+            Rgba8::new(0, 255, 4, 255), // distance 2 -> (510 + 2) / 4 = 128
+            Rgba8::new(0, 255, 6, 255), // distance 3 -> (765 + 2) / 4 = 191
+            Rgba8::new(0, 255, 8, 255), // distance 4 == softness -> 255
+            Rgba8::new(0, 0, 0, 255),   // distance 116 >= softness -> 255
         ],
     );
     assert_eq!(
         pixels(&execute_layer(&ramped, &source)),
         [
             Rgba8::new(0, 0, 0, 0),
-            Rgba8::new(0, 64, 0, 64),
-            Rgba8::new(0, 127, 0, 128),
-            Rgba8::new(0, 189, 0, 191),
-            Rgba8::new(0, 251, 0, 255),
+            Rgba8::new(0, 64, 1, 64),
+            Rgba8::new(0, 128, 2, 128),
+            Rgba8::new(0, 191, 4, 191),
+            Rgba8::new(0, 255, 8, 255),
             Rgba8::new(0, 0, 0, 255),
         ]
     );
@@ -168,40 +181,42 @@ fn chroma_softness_ramp_rounds_half_up_at_exact_midpoint() {
     let source = frame(
         2,
         1,
-        &[Rgba8::new(0, 245, 0, 255), Rgba8::new(0, 244, 0, 255)],
+        &[Rgba8::new(0, 255, 20, 255), Rgba8::new(0, 255, 22, 255)],
     );
     assert_eq!(
         pixels(&execute_layer(&hard, &source)),
-        [Rgba8::new(0, 0, 0, 0), Rgba8::new(0, 244, 0, 255)]
+        [Rgba8::new(0, 0, 0, 0), Rgba8::new(0, 255, 22, 255)]
     );
 }
 
 #[test]
 fn chroma_spill_suppresses_only_when_enabled() {
     // Key color (100, 255, 150) is green-dominant, so spill pulls green toward
-    // max(r, b). The pixel sits at distance 200 with softness 255, so the
-    // straight-alpha key reduces alpha to 200 before premultiplication.
+    // max(r, b). The pixel's Cb/Cr (170, 146) sit at distance 91 from the
+    // key's (93, 55) with softness 255, so the straight-alpha key reduces
+    // alpha to 91 before premultiplication.
     let key_color = Rgba8::new(100, 255, 150, 255);
     let partial = frame(1, 1, &[Rgba8::new(100, 55, 150, 255)]);
 
     let no_spill = keyed_row(1, chroma(key_color, 0, 255, 0));
     assert_eq!(
         pixels(&execute_layer(&no_spill, &partial)),
-        [Rgba8::new(78, 43, 118, 200)]
+        [Rgba8::new(36, 20, 54, 91)]
     );
 
-    // spill 255: amount = (255 * (255 - 200) + 127) / 255 = 55, and
-    // green = (55 * 200 + 150 * 55 + 127) / 255 = 75 before premultiplication.
+    // spill 255: amount = (255 * (255 - 91) + 127) / 255 = 164, and
+    // green = (55 * 91 + 150 * 164 + 127) / 255 = 116 before premultiplication.
     let with_spill = keyed_row(1, chroma(key_color, 0, 255, 255));
     assert_eq!(
         pixels(&execute_layer(&with_spill, &partial)),
-        [Rgba8::new(78, 59, 118, 200)]
+        [Rgba8::new(36, 41, 54, 91)]
     );
 
-    // A fully opaque key alpha skips spill suppression entirely.
+    // A fully opaque key alpha (a hard edge) skips spill suppression.
+    let hard_spill = keyed_row(1, chroma(key_color, 0, 0, 255));
     let full = frame(1, 1, &[Rgba8::new(100, 0, 150, 255)]);
     assert_eq!(
-        pixels(&execute_layer(&with_spill, &full)),
+        pixels(&execute_layer(&hard_spill, &full)),
         [Rgba8::new(100, 0, 150, 255)]
     );
 
@@ -210,7 +225,7 @@ fn chroma_spill_suppresses_only_when_enabled() {
     let source = frame(1, 1, &[Rgba8::new(55, 200, 100, 255)]);
     assert_eq!(
         pixels(&execute_layer(&red_dominant, &source)),
-        [Rgba8::new(67, 157, 78, 200)]
+        [Rgba8::new(69, 134, 67, 171)]
     );
 
     // Blue-dominant key color pulls blue toward max(r, g).
@@ -218,7 +233,7 @@ fn chroma_spill_suppresses_only_when_enabled() {
     let source = frame(1, 1, &[Rgba8::new(200, 100, 55, 255)]);
     assert_eq!(
         pixels(&execute_layer(&blue_dominant, &source)),
-        [Rgba8::new(157, 78, 67, 200)]
+        [Rgba8::new(107, 54, 66, 137)]
     );
 }
 
@@ -305,9 +320,9 @@ fn key_and_mask_multiply_with_rounded_factors() {
         1,
         &[
             Rgba8::new(0, 255, 0, 255), // key alpha 0
-            Rgba8::new(0, 254, 0, 255), // key alpha 64
-            Rgba8::new(0, 253, 0, 255), // key alpha 128
-            Rgba8::new(0, 251, 0, 255), // key alpha 255
+            Rgba8::new(0, 255, 2, 255), // key alpha 64
+            Rgba8::new(0, 255, 4, 255), // key alpha 128
+            Rgba8::new(0, 255, 8, 255), // key alpha 255
         ],
     );
     let keyed_and_masked = plan_with_layers(
@@ -325,8 +340,8 @@ fn key_and_mask_multiply_with_rounded_factors() {
         pixels(&execute_layer(&keyed_and_masked, &source)),
         [
             Rgba8::new(0, 0, 0, 0),
-            Rgba8::new(0, 64, 0, 64),
-            Rgba8::new(0, 127, 0, 128),
+            Rgba8::new(0, 64, 1, 64),
+            Rgba8::new(0, 128, 2, 128),
             Rgba8::new(0, 0, 0, 0),
         ]
     );
@@ -382,7 +397,7 @@ fn key_and_mask_multiply_with_rounded_factors() {
         pixels(&output),
         [
             Rgba8::new(0, 0, 0, 0),
-            Rgba8::new(0, 64, 0, 64),
+            Rgba8::new(0, 64, 1, 64),
             Rgba8::new(70, 80, 90, 255),
             Rgba8::new(100, 110, 120, 255),
         ]
@@ -391,9 +406,9 @@ fn key_and_mask_multiply_with_rounded_factors() {
 
 #[test]
 fn key_runs_before_effects_and_premultiplication() {
-    // The key sees the raw source: (2, 2, 2) is distance 2 from the black key
-    // color and ramps to alpha 128, then levels maps 2 -> 5, then straight
-    // alpha premultiplies 5 * 128 / 255 = 3.
+    // The key sees the raw source: (0, 0, 4) is Cb/Cr distance 2 from the
+    // black key color and ramps to alpha 128, then levels maps 4 -> 10, then
+    // straight alpha premultiplies 10 * 128 / 255 = 5.
     let plan = plan_with_layers(
         2,
         1,
@@ -403,20 +418,20 @@ fn key_runs_before_effects_and_premultiplication() {
                 .with_effect(Effect::new("levels", vec![0, 100])),
         ],
     );
-    let source = frame(2, 1, &[Rgba8::new(2, 2, 2, 255), Rgba8::new(3, 3, 3, 255)]);
-    // Applying levels first would push every channel to distance >= 4 and
-    // produce alpha 255 with RGB 8; premultiplying before the key would leave
-    // RGB 2 or 3.
+    let source = frame(2, 1, &[Rgba8::new(0, 0, 4, 255), Rgba8::new(0, 0, 6, 255)]);
+    // Applying levels first would push both to distance >= 4 and produce
+    // alpha 255; premultiplying before the key would leave blue 4 or 6.
     assert_eq!(
         pixels(&execute_layer(&plan, &source)),
-        [Rgba8::new(3, 3, 3, 128), Rgba8::new(6, 6, 6, 191)]
+        [Rgba8::new(0, 0, 5, 128), Rgba8::new(0, 0, 11, 191)]
     );
 }
 
 #[test]
 fn straight_and_premultiplied_sources_apply_key_alpha_differently() {
     let key = chroma(Rgba8::new(0, 0, 0, 255), 0, 255, 0);
-    // Distance 200 over softness 255 gives key alpha 200.
+    // Cb/Cr (69, 85) against black's (128, 128): distance 59 over softness
+    // 255 gives key alpha 59.
     let source = frame(1, 1, &[Rgba8::new(100, 200, 60, 220)]);
 
     let straight = plan_with_layers(
@@ -424,11 +439,11 @@ fn straight_and_premultiplied_sources_apply_key_alpha_differently() {
         1,
         vec![SourceLayer::new(SourceId::new(1), 0, transform(0, 0, 1, 1)).with_key(key)],
     );
-    // Straight alpha scales alpha to (220 * 200 + 127) / 255 = 173, then
-    // premultiplication scales RGB by 173.
+    // Straight alpha scales alpha to (220 * 59 + 127) / 255 = 51, then
+    // premultiplication scales RGB by 51.
     assert_eq!(
         pixels(&execute_layer(&straight, &source)),
-        [Rgba8::new(68, 136, 41, 173)]
+        [Rgba8::new(20, 40, 12, 51)]
     );
 
     let premultiplied = plan_with_layers(
@@ -441,12 +456,12 @@ fn straight_and_premultiplied_sources_apply_key_alpha_differently() {
         ],
     );
     // The premultiplied key decision uses straight colour: (100, 200, 60) at
-    // alpha 220 un-premultiplies to (116, 232, 70), so the key alpha is 232.
-    // Premultiplied alpha then scales RGB and alpha by that factor at once:
-    // 100 -> 91, 200 -> 182, 60 -> 55, 220 -> 200.
+    // alpha 220 un-premultiplies to (116, 232, 70), Cb/Cr (60, 78), so the
+    // key alpha is 68. Premultiplied alpha then scales RGB and alpha by that
+    // factor at once: 100 -> 27, 200 -> 53, 60 -> 16, 220 -> 59.
     assert_eq!(
         pixels(&execute_layer(&premultiplied, &source)),
-        [Rgba8::new(91, 182, 55, 200)]
+        [Rgba8::new(27, 53, 16, 59)]
     );
 }
 
@@ -516,8 +531,8 @@ fn premultiplied_keys_decide_on_straight_colour() {
 fn strided_source_frames_keep_exact_pixels() {
     let source_pixels = [
         Rgba8::new(0, 255, 0, 255),
-        Rgba8::new(0, 254, 0, 255),
-        Rgba8::new(0, 253, 0, 255),
+        Rgba8::new(0, 255, 2, 255),
+        Rgba8::new(0, 255, 4, 255),
         Rgba8::new(10, 20, 30, 255),
     ];
     let padded = padded_frame(2, 2, &source_pixels, 4);
@@ -537,8 +552,8 @@ fn strided_source_frames_keep_exact_pixels() {
     );
     let expected = [
         Rgba8::new(0, 0, 0, 0),
-        Rgba8::new(0, 64, 0, 64),
-        Rgba8::new(0, 127, 0, 128),
+        Rgba8::new(0, 64, 1, 64),
+        Rgba8::new(0, 128, 2, 128),
         Rgba8::new(10, 20, 30, 255),
     ];
     assert_eq!(pixels(&execute_layer(&plan, &padded)), expected);

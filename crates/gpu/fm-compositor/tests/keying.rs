@@ -139,7 +139,8 @@ fn green_border_auto_key_rejects_outliers_and_derives_exact_parameters() {
     .unwrap();
     // Cb histogram 71x2, 76x10, 82x2, 106x2 -> lower median 76; Cr -> 55.
     // Red outliers are 30/168 away and do not agree; 14 of 16 do.
-    // Distances from (40, 200, 60): 0 x10, 10 x4 -> p95 is 10, tolerance 18.
+    // Cb/Cr distances from (76, 55): 0 x10, light 6 x2, dark 7 x2 -> p95 is
+    // 7, tolerance 15.
     assert_eq!(
         auto,
         AutoKey {
@@ -149,7 +150,7 @@ fn green_border_auto_key_rejects_outliers_and_derives_exact_parameters() {
             median_cr: 55,
             samples: 16,
             agreeing: 14,
-            key: ChromaKey::new(GREEN, 18, 32, 0),
+            key: ChromaKey::new(GREEN, 15, 32, 0),
             despill: Despill::new(Backing::Green, 255),
         }
     );
@@ -162,10 +163,11 @@ fn green_border_auto_key_rejects_outliers_and_derives_exact_parameters() {
             .with_key_refinement(auto.refinement()),
     )
     .unwrap();
-    // EDGE: distance 20 -> alpha (2 * 255 + 16) / 32 = 16; despill limit
-    // (60 + 70 + 1) / 2 = 65 pulls green 180 -> 65; premultiplied by 16 that
-    // gives (4, 4, 4, 16). RED and SKIN are below their despill limits.
-    let edge = Rgba8::new(4, 4, 4, 16);
+    // EDGE: Cb/Cr (87, 73), distance 18 -> alpha (3 * 255 + 16) / 32 = 24;
+    // despill limit (60 + 70 + 1) / 2 = 65 pulls green 180 -> 65;
+    // premultiplied by 24 that gives (6, 6, 7, 24). RED and SKIN are below
+    // their despill limits.
+    let edge = Rgba8::new(6, 6, 7, 24);
     assert_eq!(
         pixels(&run(&plan, &[(1, &plate)])),
         [
@@ -325,7 +327,8 @@ fn identity_refinement_matches_the_legacy_chroma_path() {
             .with_key_refinement(KeyRefinement::new()),
     )
     .unwrap();
-    let expected = [Rgba8::new(78, 59, 118, 200)];
+    // Cb/Cr (170, 146) against the key's (93, 55): distance 91, alpha 91.
+    let expected = [Rgba8::new(36, 41, 54, 91)];
     assert_eq!(pixels(&run(&legacy, &[(1, &source)])), expected);
     assert_eq!(pixels(&run(&refined, &[(1, &source)])), expected);
 }

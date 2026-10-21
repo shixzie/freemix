@@ -639,11 +639,7 @@ pub(crate) fn straight_key_color(pixel: Rgba8, alpha_mode: AlphaMode) -> Rgba8 {
 pub(crate) fn key_factor(pixel: Rgba8, key: Key) -> u8 {
     match key {
         Key::Chroma(parameters) => {
-            let distance = pixel
-                .r
-                .abs_diff(parameters.color.r)
-                .max(pixel.g.abs_diff(parameters.color.g))
-                .max(pixel.b.abs_diff(parameters.color.b));
+            let distance = crate::keying::chroma_distance(pixel, parameters.color);
             ramp(distance, parameters.tolerance, parameters.softness)
         }
         Key::Luma(parameters) => {

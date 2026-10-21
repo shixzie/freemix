@@ -51,8 +51,8 @@
 //! # The key
 //!
 //! - The key colour is the per-channel lower median RGB of the cluster.
-//! - Distances are the compositor's chroma distance, the largest
-//!   per-channel difference from the key colour. The similarity is the
+//! - Distances are the compositor's chroma distance, the larger absolute
+//!   difference of `cb` and `cr` from the key colour's. The similarity is the
 //!   cluster's 95th-percentile distance plus [`SIMILARITY_MARGIN`] (and, for
 //!   a point pick, at least the picked colour's distance plus the margin),
 //!   at most [`MAX_SIMILARITY`]. The smoothness is the 99th minus the 95th
@@ -476,10 +476,10 @@ fn agrees(seed: (i64, i64), sample: Sample) -> bool {
         && 1_000 * dot * dot >= COS2_THOUSANDTHS * seed_length * length
 }
 
+/// The compositor's chroma key distance: `max(|Δcb|, |Δcr|)`.
 fn distance(a: [u8; 3], b: [u8; 3]) -> u8 {
-    a[0].abs_diff(b[0])
-        .max(a[1].abs_diff(b[1]))
-        .max(a[2].abs_diff(b[2]))
+    let (left, right) = (chroma(a), chroma(b));
+    left.0.abs_diff(right.0).max(left.1.abs_diff(right.1))
 }
 
 /// The smallest value whose cumulative count reaches `(n + 1) / 2`.

@@ -379,7 +379,8 @@ pub struct AutoKeyOptions {
     pub agreement_radius: u8,
     /// Minimum `max(|Cb - 128|, |Cr - 128|)` of the median backing.
     pub min_saturation: u8,
-    /// Added (saturating) to the 95th-percentile RGB distance to form tolerance.
+    /// Added (saturating) to the 95th-percentile chroma distance to form
+    /// tolerance.
     pub tolerance_margin: u8,
     pub softness: u8,
     pub spill: u8,
@@ -504,6 +505,20 @@ pub fn chroma_cb_cr(pixel: Rgba8) -> (u8, u8) {
     )
 }
 
+/// The chroma key distance of `pixel` from `key` (SW-008): the larger
+/// absolute difference of their [`chroma_cb_cr`] components,
+/// `max(|cb - key_cb|, |cr - key_cr|)`. It ignores brightness, so shadows
+/// and highlights on an evenly coloured backing stay close to its key.
+#[must_use]
+pub fn chroma_distance(pixel: Rgba8, key: Rgba8) -> u8 {
+    let blue_red = chroma_cb_cr(pixel);
+    let keyed = chroma_cb_cr(key);
+    blue_red
+        .0
+        .abs_diff(keyed.0)
+        .max(blue_red.1.abs_diff(keyed.1))
+}
+
 /// Samples a backing color and derives manual chroma key parameters.
 ///
 /// The region holds `total` pixels; when `total` exceeds
@@ -515,7 +530,7 @@ pub fn chroma_cb_cr(pixel: Rgba8) -> (u8, u8) {
 /// samples must agree. The median backing must reach `min_saturation` and is
 /// green when `cb < 128 && cr < 128`, blue when `cb > 128 && cr < 128`, and
 /// rejected otherwise. The key color is the per-channel lower median RGB of
-/// the agreeing samples. Tolerance is the smallest max-channel RGB distance
+/// the agreeing samples. Tolerance is the smallest [`chroma_distance`]
 /// `d` from the key color such that at least 95% of agreeing samples are
 /// within `d`, plus `tolerance_margin` (saturating).
 ///
@@ -591,12 +606,7 @@ pub fn sample_auto_key(
 
     let mut distances = [0_u32; 256];
     for pixel in &agreeing_samples {
-        let distance = pixel
-            .r
-            .abs_diff(color.r)
-            .max(pixel.g.abs_diff(color.g))
-            .max(pixel.b.abs_diff(color.b));
-        distances[usize::from(distance)] += 1;
+        distances[usize::from(chroma_distance(*pixel, color))] += 1;
     }
     let mut cumulative = 0_u64;
     let mut percentile = u8::MAX;

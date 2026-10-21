@@ -62,11 +62,14 @@ impl Frame {
     }
 }
 
-/// The chroma key's distance: the largest per-channel difference.
+/// The chroma key's distance: the larger of the BT.709 Cb and Cr
+/// differences (Protocol 2.98).
 fn distance(a: [u8; 3], b: [u8; 3]) -> u8 {
-    a[0].abs_diff(b[0])
-        .max(a[1].abs_diff(b[1]))
-        .max(a[2].abs_diff(b[2]))
+    let (left, right) = (
+        fm_ui_model::auto_key::chroma(a),
+        fm_ui_model::auto_key::chroma(b),
+    );
+    left.0.abs_diff(right.0).max(left.1.abs_diff(right.1))
 }
 
 /// A fixed linear congruential generator: noise in `-amplitude..=amplitude`.

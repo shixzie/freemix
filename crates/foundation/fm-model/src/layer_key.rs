@@ -6,8 +6,12 @@
 //! layer's crop, multiplied with its mask, and before its effects and grade,
 //! with the compositor's exact integer semantics:
 //!
-//! * **Chroma**: a pixel's distance is the largest per-channel difference
-//!   from the key colour. Alpha is `0` while the distance is at most
+//! * **Chroma**: a pixel's distance is the larger absolute difference of
+//!   its full-range BT.709 fixed-point Cb and Cr from the key colour's
+//!   (`cb = (32896 - 29 r - 99 g + 128 b) / 256`,
+//!   `cr = (32896 + 128 r - 116 g - 12 b) / 256`, clamped to `0..=255`), so
+//!   brightness alone does not move a pixel off the key (Protocol 2.98).
+//!   Alpha is `0` while the distance is at most
 //!   `similarity`, rises linearly to `255` over the next `smoothness`
 //!   codes, and spill suppression (`spill`, `0` = off) pulls the key
 //!   colour's dominant channel of partially keyed pixels toward the other

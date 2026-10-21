@@ -132,8 +132,9 @@ impl RectMask {
 /// Chroma key parameters with exact integer semantics.
 ///
 /// `color.rgb` is the key color and `color.a` is ignored. A pixel's distance is
-/// the maximum absolute per-channel difference
-/// `max(|r - color.r|, |g - color.g|, |b - color.b|)`. The key alpha is `0`
+/// its [`crate::chroma_distance`] from the key color, the larger absolute
+/// difference of their fixed-point BT.709 Cb and Cr
+/// (`max(|cb - key_cb|, |cr - key_cr|)`). The key alpha is `0`
 /// while `distance <= tolerance`; otherwise it is `255` when `softness == 0`
 /// or `distance - tolerance >= softness`, and otherwise
 /// `((distance - tolerance) * 255 + softness / 2) / softness` with truncating

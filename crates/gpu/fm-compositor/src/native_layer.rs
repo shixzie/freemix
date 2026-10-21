@@ -229,13 +229,21 @@ fn ramp(distance: i32, softness: i32) -> i32 {
     return (distance * 255 + softness / 2) / softness;
 }
 
+// Full-range BT.709 fixed-point chroma, as `keying::chroma_cb_cr` (both
+// numerators are non-negative, so division truncates like the CPU's).
+fn chroma_cb_cr(rgb: vec3<i32>) -> vec2<i32> {
+    let cb = (32896 - 29 * rgb.r - 99 * rgb.g + 128 * rgb.b) / 256;
+    let cr = (32896 + 128 * rgb.r - 116 * rgb.g - 12 * rgb.b) / 256;
+    return clamp(vec2<i32>(cb, cr), vec2<i32>(0, 0), vec2<i32>(255, 255));
+}
+
 fn key_factor(codes: vec4<i32>) -> i32 {
     let softness = i32(op.key_softness);
     let low = i32(op.key_low);
     if op.key_kind == 1u {
         let key = vec3<i32>(i32(op.key_red), i32(op.key_green), i32(op.key_blue));
-        let delta = abs(codes.rgb - key);
-        let distance = max(delta.r, max(delta.g, delta.b));
+        let delta = abs(chroma_cb_cr(codes.rgb) - chroma_cb_cr(key));
+        let distance = max(delta.x, delta.y);
         return ramp(distance - low, softness);
     }
     if op.key_kind == 2u || op.key_kind == 3u {
