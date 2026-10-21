@@ -263,7 +263,7 @@ commands = ["cargo test -p fm-data --test title_binding_preview"]
 id = "accept-gx-006"
 state = "present"
 paths = ["apps/freemix-web/tests/title_editor.rs", "apps/freemix-web/tests/title_bridge.rs", "apps/freemixd/tests/web_tally.rs", "apps/freemixd/tests/native_web_titles.rs"]
-commands = ["cargo test -p freemix-web --test title_editor", "cargo test -p freemix-web --test title_bridge", "cargo test -p freemixd --test web_tally", "cargo test -p freemixd --features native-media --test native_web_titles"]
+commands = ["cargo test -p freemix-web --test title_editor", "cargo test -p freemix-web --test title_bridge", "cargo test -p freemixd --test web_tally", "cargo test -p freemixd --test native_web_titles"]
 [[tests]]
 id = "accept-gx-007"
 state = "present"
