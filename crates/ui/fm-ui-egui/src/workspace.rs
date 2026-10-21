@@ -1851,8 +1851,7 @@ impl StudioShell {
         }
         self.handle_preference_keys(ui);
         self.toggle_windows_on_keys(ui, state);
-        intents.extend(self.keyboard_intents(ui, state, manual));
-        self.fire_user_shortcut_keys(ui, state, Some(panel), intents);
+        self.console_and_user_keys(ui, state, Some(panel), manual, intents);
         crate::theme::paint_focus_ring(ui.ctx());
     }
 

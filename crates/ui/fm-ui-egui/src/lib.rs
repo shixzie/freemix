@@ -1894,6 +1894,23 @@ impl StudioShell {
         intents
     }
 
+    /// This frame's console keys, then the project's shortcut keys
+    /// (RC-004), answering in `popout`'s pop-out window or the main window.
+    pub(crate) fn console_and_user_keys(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        popout: Option<dock::PanelId>,
+        manual_transition_controls: ManualTransitionAvailability,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        // A pending chord's second stroke is the chord's, even a console key.
+        self.end_user_shortcut_chord(ui, state, popout, intents);
+        intents.extend(self.keyboard_intents(ui, state, manual_transition_controls));
+        // The project's own keys come after the console's.
+        self.fire_user_shortcut_keys(ui, state, popout, intents);
+    }
+
     /// The intent an external control's cue `key` sends (Studio's OSC
     /// `/freemix/cue/...` messages): the Cues panel's shown list, gated
     /// exactly like the panel's keys. `None` when that key is disabled.
@@ -2044,9 +2061,8 @@ impl StudioShell {
             }),
         );
         self.toggle_windows_on_keys(ui, state);
-        let mut intents = self.keyboard_intents(ui, state, manual_transition_controls);
-        // The project's own keys come after the console's (RC-004).
-        self.fire_user_shortcut_keys(ui, state, None, &mut intents);
+        let mut intents = Vec::new();
+        self.console_and_user_keys(ui, state, None, manual_transition_controls, &mut intents);
         self.restore_tiles_on_escape(ui);
         // Studio repaints on timers, so egui's `stable_dt` stays at its 1/60 s
         // prediction however long a frame gap really is; toasts and meter

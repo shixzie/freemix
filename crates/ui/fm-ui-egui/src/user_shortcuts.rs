@@ -599,12 +599,16 @@ impl Press {
 /// Keys scoped to a panel answer only while `focus` has that panel, and
 /// keys scoped to a pop-out window only in that window. The repeats of a
 /// held key are swallowed without firing again.
-pub(crate) fn take_presses(
+/// With `chord_end_only`, only the presses up to and including the one
+/// that ends a pending chord are taken (none without one), so a chord's
+/// second stroke is taken before the console keys read it.
+fn take_presses_from(
     events: &mut Vec<Event>,
     keys: ConsoleKeys<'_>,
     focus: KeyFocus<'_>,
     chord: &mut Option<PendingChord>,
     now: f64,
+    chord_end_only: bool,
 ) -> Vec<u64> {
     let mut fired = Vec::new();
     if chord
@@ -650,6 +654,9 @@ pub(crate) fn take_presses(
             *chord = None;
             return false;
         }
+        if chord_end_only {
+            return true;
+        }
         let mut starts = keys.live(focus).filter(|(_, bound)| matches(bound));
         let Some((shortcut, bound)) = starts.next() else {
             return true;
@@ -672,6 +679,18 @@ pub(crate) fn take_presses(
         false
     });
     fired
+}
+
+/// [`take_presses_from`] taking every press.
+#[cfg(test)]
+pub(crate) fn take_presses(
+    events: &mut Vec<Event>,
+    keys: ConsoleKeys<'_>,
+    focus: KeyFocus<'_>,
+    chord: &mut Option<PendingChord>,
+    now: f64,
+) -> Vec<u64> {
+    take_presses_from(events, keys, focus, chord, now, false)
 }
 
 // ---------------------------------------------------------------------------
@@ -1194,6 +1213,34 @@ impl StudioShell {
         popout: Option<crate::dock::PanelId>,
         intents: &mut Vec<StudioIntent>,
     ) {
+        self.fire_user_keys(ui, state, popout, intents, false);
+    }
+
+    /// Ends a pending chord with this frame's next press, firing the
+    /// shortcut it completes, before the console keys read that press: a
+    /// chord's second stroke may be a console key alone (RC-004).
+    pub(crate) fn end_user_shortcut_chord(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        popout: Option<crate::dock::PanelId>,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        if self.chord.is_some() {
+            self.fire_user_keys(ui, state, popout, intents, true);
+        }
+    }
+
+    /// [`Self::fire_user_shortcut_keys`], or with `chord_end_only` only up
+    /// to the press that ends a pending chord.
+    fn fire_user_keys(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        popout: Option<crate::dock::PanelId>,
+        intents: &mut Vec<StudioIntent>,
+        chord_end_only: bool,
+    ) {
         if self.console_keys_blocked(ui.ctx()) || ui.ctx().egui_wants_keyboard_input() {
             return;
         }
@@ -1209,9 +1256,9 @@ impl StudioShell {
         let chord = &mut self.chord;
         let fired = ui.input_mut(|input| {
             let now = input.time;
-            take_presses(&mut input.events, keys, focus, chord, now)
+            take_presses_from(&mut input.events, keys, focus, chord, now, chord_end_only)
         });
-        if let Some(pending) = &self.chord {
+        if let Some(pending) = self.chord.as_ref().filter(|_| !chord_end_only) {
             let l = self.locale;
             let waiting = l.format(
                 Msg::UserShortcutChordPending,

@@ -979,6 +979,84 @@ fn a_chord_fires_on_its_second_key_and_lapses() {
     );
 }
 
+/// Runs one main-window frame of `events` through the console keys and
+/// then the project's shortcut keys, as the console draws them.
+fn run_console_frame(
+    context: &egui::Context,
+    shell: &mut StudioShell,
+    state: &StudioUiState,
+    events: Vec<Event>,
+    time: f64,
+) -> Vec<StudioIntent> {
+    context.begin_pass(egui::RawInput {
+        events,
+        time: Some(time),
+        ..Default::default()
+    });
+    let mut ui = egui::Ui::new(
+        context.clone(),
+        egui::Id::new("studio-console-keys"),
+        egui::UiBuilder::new()
+            .layer_id(egui::LayerId::background())
+            .max_rect(context.viewport_rect()),
+    );
+    let manual = crate::manual_transition_availability(
+        crate::ManualTransitionGate::from_state(state),
+        false,
+    );
+    let mut intents = Vec::new();
+    shell.console_and_user_keys(&mut ui, state, None, manual, &mut intents);
+    drop(ui);
+    let _ = context.end_pass();
+    intents
+}
+
+/// A chord's second stroke is the chord's even when it is a console key
+/// alone (C cuts, 1 selects a preview): it fires the shortcut, never the
+/// console's action, and the wait still lapses back to the console.
+#[test]
+fn a_chord_takes_its_second_stroke_before_the_console_keys() {
+    let state = crate::hover_audit::shortcuts_fixture_with(vec![
+        bound(
+            4,
+            chord_key(key("K", true, false, false), key("C", false, false, false)),
+        ),
+        bound(
+            5,
+            chord_key(key("K", true, false, false), key("1", false, false, false)),
+        ),
+    ]);
+    let mut shell = StudioShell::default();
+    let ctrl_k = key_event(Key::K, press(true, false, false), false);
+    let c = key_event(Key::C, Modifiers::NONE, false);
+    let one = key_event(Key::Num1, Modifiers::NONE, false);
+    // A fresh context each frame: no key is still held from the last.
+    let mut frame = |events, time| {
+        run_console_frame(&egui::Context::default(), &mut shell, &state, events, time)
+    };
+
+    // The console's own keys act alone.
+    assert_eq!(frame(vec![c.clone()], 0.0), vec![StudioIntent::Cut]);
+    assert!(matches!(
+        frame(vec![one.clone()], 0.1).as_slice(),
+        [StudioIntent::SelectPreview(_)]
+    ));
+
+    assert_eq!(frame(vec![ctrl_k.clone()], 1.0), Vec::new());
+    assert_eq!(frame(vec![c.clone()], 1.5), vec![fire(4)]);
+    assert_eq!(frame(vec![ctrl_k.clone()], 2.0), Vec::new());
+    assert_eq!(frame(vec![one.clone()], 2.5), vec![fire(5)]);
+    // The chord is over: C cuts again.
+    assert_eq!(frame(vec![c.clone()], 3.0), vec![StudioIntent::Cut]);
+
+    // A lapsed wait leaves the key to the console.
+    assert_eq!(frame(vec![ctrl_k], 4.0), Vec::new());
+    assert_eq!(
+        frame(vec![c], 4.0 + CHORD_TIMEOUT + 0.1),
+        vec![StudioIntent::Cut]
+    );
+}
+
 /// A key scoped to a panel answers only while that panel has the focus,
 /// so two panels may give one key to different shortcuts.
 #[test]
