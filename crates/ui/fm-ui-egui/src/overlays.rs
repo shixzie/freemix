@@ -10,8 +10,8 @@ use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Msg};
 use crate::monitors::label_for_input;
 use crate::theme::{
-    AMBER, PROGRAM, accent_color, border_color, caption, field_label, mono, muted_color, pill,
-    raised_color, small_button, text_color, text_dim_color,
+    PROGRAM, Tone, accent_color, border_color, caption, field_label, mono, muted_color,
+    raised_color, small_button, status_chip, text_color, text_dim_color,
 };
 use crate::{StudioIntent, StudioUiState, overlay_status};
 
@@ -106,12 +106,15 @@ fn draw_overlay_channel(
     } else {
         (Msg::StatusNoState.en(), false)
     };
-    let state_color = if on_air {
-        PROGRAM
+    // The channel's state reads as the console's other status chips (the
+    // recorders' and streams'): solid red on air, amber while changing, an
+    // unlit inset when off.
+    let state_tone = if on_air {
+        Tone::OnAir
     } else if desired_active != confirmed_active {
-        AMBER
+        Tone::Pending
     } else {
-        muted_color()
+        Tone::Idle
     };
     Frame::new()
         .fill(raised_color())
@@ -142,7 +145,9 @@ fn draw_overlay_channel(
                         .strong()
                         .color(text_color()),
                 );
-                pill(ui, l.tr(state_label), state_color, on_air);
+                let state_text = l.tr(state_label);
+                let width = crate::theme::pill_width(ui, state_text).max(56.0);
+                status_chip(ui, state_text, state_tone, width);
                 let source_name = desired
                     .and_then(|overlay| overlay.source)
                     .zip(state.view.as_ref())
