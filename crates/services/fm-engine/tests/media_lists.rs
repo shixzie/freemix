@@ -1261,3 +1261,38 @@ fn a_step_without_a_transition_ends_the_running_one() {
     assert_eq!(asset(&engine), "asset://media/a.mp4");
     assert!(!ticks_with_outgoing(&mut engine));
 }
+
+#[test]
+fn an_edit_keeping_the_active_item_keeps_a_pending_transition() {
+    let mut engine = engine();
+    let items = vec![
+        item(1, "a.mp4", (10, Some(20))),
+        item(2, "a.mp4", (100, Some(110))),
+    ];
+    let options = faded(MediaListTransitionKind::Wipe);
+    accept(
+        &mut engine,
+        "create",
+        EngineMediaListOperation::Create {
+            name: "Cuts".into(),
+            items: items.clone(),
+            options,
+        },
+    );
+    play(&mut engine, "play");
+    for expected in 10..=12 {
+        assert_eq!(blend_step(&mut engine), (expected, None));
+    }
+    // A step and an edit leaving its item active, in one turn.
+    navigate(&mut engine, "next", EngineMediaListNavigation::Next);
+    accept(
+        &mut engine,
+        "set",
+        EngineMediaListOperation::Set {
+            items,
+            options,
+            active: None,
+        },
+    );
+    assert_eq!(blend_step(&mut engine), (100, Some((13, 1, 2_000))));
+}

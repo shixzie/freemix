@@ -2761,14 +2761,15 @@ impl Engine {
                 }
                 // A playing step blends the two items when its transition
                 // does: the transport as the step finds it plays out. Any
-                // other step is a cut.
-                runtime.pending_transition = plan.activation.as_ref().map(|activation| {
-                    if activation.play {
+                // other step is a cut; an edit leaving the active item
+                // keeps a step not yet realized.
+                if let Some(activation) = &plan.activation {
+                    runtime.pending_transition = Some(if activation.play {
                         plan.list.options.transition
                     } else {
                         fm_model::MediaListTransition::CUT
-                    }
-                });
+                    });
+                }
             }
             if !matches!(step, HistoryStep::None) {
                 self.history.commit(step, command, command_id, revision);
