@@ -410,7 +410,7 @@ fn draw_bar(
         let half = ((ui.available_width() - 4.0) / 2.0).floor();
         ui.add_enabled_ui(editable, |ui| {
             ComboBox::from_id_salt(("studio-media-speed", input))
-                .width(half - 8.0)
+                .width(half)
                 .selected_text(mono(speed_label(settings.speed_basis_points)))
                 .show_ui(ui, |ui| {
                     for speed in MEDIA_SPEEDS {
@@ -437,7 +437,7 @@ fn draw_bar(
         });
         ui.add_enabled_ui(editable, |ui| {
             ComboBox::from_id_salt(("studio-media-end", input))
-                .width(half - 8.0)
+                .width(half)
                 .truncate()
                 .selected_text(l.text(end_action_label(settings.end_action).0))
                 .show_ui(ui, |ui| {
@@ -473,7 +473,7 @@ fn draw_bar(
             )
         };
         ComboBox::from_id_salt(("studio-media-audio", input))
-            .width(ui.available_width() - 8.0)
+            .width(ui.available_width())
             .truncate()
             .selected_text(selected_text)
             .show_ui(ui, |ui| {

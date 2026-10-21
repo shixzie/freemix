@@ -431,26 +431,15 @@ pub(crate) fn draw_list(
     retain_item_textures(ui.ctx(), state);
     ui.add_space(4.0);
     ui.separator();
-    // Title, position, Previous and Next.
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        ui.label(section_label(l.text(Msg::MlTitle)));
-        ui.add_space(4.0);
-        ui.label(
-            caption(l.format(
-                Msg::MlPosition,
-                &[
-                    ("position", Arg::from(list.position as usize + 1)),
-                    ("count", Arg::from(list.items.len())),
-                ],
-            ))
-            .color(text_dim_color()),
-        )
-        .on_hover_text(l.text(Msg::MlPositionHover));
-        let (total, total_hover) = total_text(l, list);
-        ui.label(caption(total).color(text_dim_color()))
-            .on_hover_text(total_hover);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    // Title, position, Previous and Next. The keys take their room first;
+    // the section label sits over the position and total, which wrap in
+    // what is left, so a long Spanish position never runs under a key.
+    let row = egui::vec2(ui.available_width(), 30.0);
+    ui.allocate_ui_with_layout(
+        row,
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
             for (navigation, label, hover) in [
                 (
                     MediaListNavigation::Next,
@@ -474,8 +463,29 @@ pub(crate) fn draw_list(
                     operation = Some(MediaListOperation::Navigate(navigation));
                 }
             }
-        });
-    });
+            ui.add_space(4.0);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(8.0, 2.0);
+                ui.label(section_label(l.text(Msg::MlTitle)));
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        caption(l.format(
+                            Msg::MlPosition,
+                            &[
+                                ("position", Arg::from(list.position as usize + 1)),
+                                ("count", Arg::from(list.items.len())),
+                            ],
+                        ))
+                        .color(text_dim_color()),
+                    )
+                    .on_hover_text(l.text(Msg::MlPositionHover));
+                    let (total, total_hover) = total_text(l, list);
+                    ui.label(caption(total).color(text_dim_color()))
+                        .on_hover_text(total_hover);
+                });
+            });
+        },
+    );
 
     // Options.
     ui.horizontal_wrapped(|ui| {
@@ -536,10 +546,8 @@ pub(crate) fn draw_list(
         ui.add_enabled_ui(edit.is_none(), |ui| {
             egui::ComboBox::from_id_salt(("studio-media-list-transition", input))
                 .width(110.0)
-                .selected_text(
-                    RichText::new(l.text(transition_texts(kind).0))
-                        .size(crate::theme::legible(11.0)),
-                )
+                // The card's other pickers' size, not a smaller one.
+                .selected_text(l.text(transition_texts(kind).0))
                 .show_ui(ui, |ui| {
                     for option in MediaListTransitionKind::ALL {
                         let (label, hover) = transition_texts(option);
