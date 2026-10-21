@@ -4044,6 +4044,25 @@ change.
 - `freemix-cli remote-audio-output-devices <address>` prints the list.
 - 2.101 is refused.
 
+Protocol 2.104 shows strip FX gain reduction on the Web operator page
+(AU-005). The project schema is unchanged.
+
+- Web `audio_meters` records (the operator and tally pages' lossy feed)
+  now keep `dynamics` for Master and at most 32 strips, the lowest input
+  ids first, only for chains with a running dynamics stage (gate,
+  expander, compressor, or limiter): a bypassed chain, or one whose
+  dynamics stages are all off, has no entry, so a show without dynamics
+  sends an empty field. The entries are exactly the full `audio_meters`
+  `dynamics` entries (Protocol 2.75); the records still carry no
+  per-input or monitor meters.
+- The operator page's Strip FX section shows, in each open disclosure,
+  every switched-on gate, expander, compressor, and limiter's gain
+  reduction over the newest interval as a small `GR` bar (full at 24 dB)
+  with the value in dB, with English and Spanish hover help; the bars dim
+  (and say so on hover) when no meter record arrived for a second, and
+  a stage without an entry shows `—`.
+- 2.103 is refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision

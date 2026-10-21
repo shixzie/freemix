@@ -1399,13 +1399,19 @@ flight per chain: a slider drag sends at most ten sets a second under one
 gesture token (one undo step) plus one on release; a set refused as stale
 is resent once only while the chain is still the one it was based on, and
 otherwise the page shows the server's chain and says why
-(`tests/web_tally.rs`). The Web feed carries no dynamics meters, so the
-page shows no gain reduction. The simulated daemon has no audio render
-path: its chains, the delay included, are accepted, announced,
-snapshotted, undone, and persisted (`tests/process.rs`), and it sends no
-meters. Remaining for `AU-005`: gain-reduction readouts on the Web (the
-Web `audio_meters` records carry no dynamics), an audio render path in
-the simulated daemon, an allocation-counting real-time
+(`tests/web_tally.rs`). Since Protocol 2.104 the Web `audio_meters`
+records also keep the gain reduction of Master and at most 32 strips,
+only for chains with a running gate, expander, compressor, or limiter
+(a bypassed chain or one with every dynamics stage off sends none), and
+each FX disclosure shows its switched-on dynamics stages' gain reduction
+as a small `GR` bar (full at 24 dB) with the value in dB and English and
+Spanish hover help, dimmed when the meters are stale (`web_feed` unit
+tests; the page's parser and bar model run under Node.js against
+records the Rust codec renders in `tests/web_tally.rs`). The simulated
+daemon has no audio render path: its chains, the delay included, are
+accepted, announced, snapshotted, undone, and persisted
+(`tests/process.rs`), and it sends no meters. Remaining for `AU-005`: an
+audio render path in the simulated daemon, an allocation-counting real-time
 test (the workspace forbids the `unsafe` a
 counting allocator needs; the no-allocation property rests on preallocated
 buffers and review), and hardware acceptance.
