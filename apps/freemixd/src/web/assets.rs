@@ -69,12 +69,16 @@ const MAX_LISTED_IMAGES: usize = 512;
 /// The longest sanitized stem an uploaded file name keeps.
 const MAX_STEM_BYTES: usize = 40;
 
-/// Decoding bounds an upload must meet: at most 8192 x 8192 (64 Mpx).
+/// Decoding bounds an upload must meet: the bounds a title draws an image
+/// within (`fm_titles::MAX_OUTPUT_WIDTH` by `MAX_OUTPUT_HEIGHT`, and at most
+/// `fm_titles::MAX_IMAGE_ASSET_BYTES` decoded, 16 MiB of RGBA: 2048 x 2048,
+/// or 3840 x 1092). A larger picture would be stored and chosen, then never
+/// drawn, so it is refused here instead.
 pub(super) const UPLOAD_DECODE_LIMITS: StillDecodeLimits = StillDecodeLimits {
     max_encoded_bytes: MAX_UPLOAD_BYTES,
-    max_width: 8192,
-    max_height: 8192,
-    max_decoded_rgba_bytes: 8192 * 8192 * 4,
+    max_width: fm_titles::MAX_OUTPUT_WIDTH,
+    max_height: fm_titles::MAX_OUTPUT_HEIGHT,
+    max_decoded_rgba_bytes: fm_titles::MAX_IMAGE_ASSET_BYTES,
     max_icc_bytes: 1024 * 1024,
     max_image_alloc_bytes: 512 * 1024 * 1024,
 };
@@ -308,6 +312,11 @@ pub(super) fn image_response(assets_root: &Path, request: &Request, body: bool) 
     if !path.starts_with(&root) {
         return not_found();
     }
+    // Only a regular file is opened: opening a FIFO or a device in the
+    // bundle could block this worker indefinitely.
+    if !fs::metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
+        return not_found();
+    }
     let Ok(file) = File::open(&path) else {
         return not_found();
     };
@@ -383,6 +392,12 @@ impl Drop for UploadPermit {
 /// Checks an upload's head before any body byte is read: the declared
 /// format and the body length to read.
 pub(super) fn upload_head(request: &Request) -> Result<(ImageKind, usize), Vec<u8>> {
+    // The body is read by its `Content-Length` alone. A framed body
+    // (`Transfer-Encoding`, which overrides the length) would be stored with
+    // its chunk framing, so it is refused rather than misread.
+    if request.has_header("transfer-encoding") {
+        return Err(error("400 Bad Request", "bad_request"));
+    }
     let Some(length) = request.header("content-length") else {
         return Err(error("411 Length Required", "length_required"));
     };
@@ -848,6 +863,47 @@ mod tests {
             head("\r\nContent-Type: IMAGE/JPEG; q=1\r\nContent-Length: 10").unwrap(),
             (ImageKind::Jpeg, 10)
         );
+        // A chunked body is never read by its length.
+        for framing in [
+            "\r\nTransfer-Encoding: chunked",
+            "\r\nTransfer-Encoding: chunked\r\nContent-Length: 10",
+            "\r\nTransfer-Encoding: identity\r\nContent-Length: 10",
+        ] {
+            assert_eq!(
+                status(&head(&format!("\r\nContent-Type: image/png{framing}")).unwrap_err()),
+                "HTTP/1.1 400 Bad Request",
+                "{framing}"
+            );
+        }
+    }
+
+    #[test]
+    fn uploads_a_title_could_never_draw_are_refused() {
+        // 4097 x 1024 RGBA is just over the 16 MiB a title decodes an image
+        // into (fm_titles::MAX_IMAGE_ASSET_BYTES); storing it would hand
+        // the editor an image that renders blank on air.
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("assets");
+        let image = image::GrayImage::new(4097, 1024);
+        let mut wide = Vec::new();
+        image::DynamicImage::ImageLuma8(image)
+            .write_to(&mut Cursor::new(&mut wide), image::ImageFormat::Png)
+            .unwrap();
+        assert!(wide.len() < MAX_UPLOAD_BYTES);
+        assert_eq!(
+            status(&store_upload(
+                &root,
+                Some("wide.png"),
+                ImageKind::Png,
+                &wide
+            )),
+            "HTTP/1.1 422 Unprocessable Content"
+        );
+        assert_eq!(super::UPLOAD_DECODE_LIMITS.max_decoded_rgba_bytes, 16 << 20);
+        assert!(
+            !root.join("uploads").exists()
+                || std::fs::read_dir(root.join("uploads")).unwrap().count() == 0
+        );
     }
 
     #[test]
@@ -931,6 +987,19 @@ mod tests {
             );
             // Listing never follows the link either.
             assert!(!body(&list_response(&root)).contains("link.png"));
+            // A FIFO is answered at once, never opened (opening one would
+            // wait for a writer forever).
+            let fifo = root.join("pipe.png");
+            if std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .is_ok_and(|status| status.success())
+            {
+                assert_eq!(
+                    status(&get_image(&root, "asset://pipe.png")),
+                    "HTTP/1.1 404 Not Found"
+                );
+            }
         }
     }
 

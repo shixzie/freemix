@@ -58,6 +58,11 @@ impl Request {
         })
     }
 
+    /// Whether `name` is present at all (once or more).
+    pub(super) fn has_header(&self, name: &str) -> bool {
+        self.headers.iter().any(|(candidate, _)| candidate == name)
+    }
+
     /// The single value of `name`; `None` when absent or repeated.
     pub(super) fn header(&self, name: &str) -> Option<&str> {
         let mut values = self
