@@ -42,7 +42,7 @@ fn command(payload: CommandPayload) -> WireMessage {
     })
 }
 
-const PREFIX: &str = "command\tprotocol=2.103\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.104\tid=a\tidempotency_key=k";
 
 fn round_trip(message: &WireMessage) -> String {
     let line = encode_line(message).unwrap();
@@ -401,7 +401,7 @@ fn preview_requests_round_trip_and_are_bounded() {
     let line = round_trip(&request(TitlePreviewSample::In { frame: 6 }, None));
     assert_eq!(
         line,
-        "title_preview_request\tprotocol=2.103\trequest_id=preview-1\tinput=7\tphase=in\t\
+        "title_preview_request\tprotocol=2.104\trequest_id=preview-1\tinput=7\tphase=in\t\
          frame=6\twidth=640\theight=360\n"
     );
     for sample in [
@@ -422,7 +422,7 @@ fn preview_requests_round_trip_and_are_bounded() {
         ("phase=in\tframe=0\twidth=64\theight=0", "height"),
         ("phase=in\tframe=0\twidth=64\theight=361", "height"),
     ] {
-        let line = format!("title_preview_request\tprotocol=2.103\trequest_id=p\tinput=7\t{bad}\n");
+        let line = format!("title_preview_request\tprotocol=2.104\trequest_id=p\tinput=7\t{bad}\n");
         match decode_line(&line) {
             Err(CodecError::InvalidField { field: actual, .. }) => {
                 assert_eq!(actual, field, "{bad}");
