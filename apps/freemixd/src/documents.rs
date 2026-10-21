@@ -475,21 +475,33 @@ impl DocumentPages {
 
     /// Reads a document asset, bounded by [`MAX_DOCUMENT_BYTES`].
     fn read(&self, uri: &str) -> Result<Vec<u8>, DocumentError> {
-        let path = self
-            .asset_path(uri)
-            .ok_or_else(|| DocumentError::Io("not a bundle asset".into()))?;
+        let path = self.asset_path(uri)?;
         let metadata = fs::metadata(&path).map_err(|error| DocumentError::Io(error.to_string()))?;
+        if !metadata.is_file() {
+            return Err(DocumentError::Io("not a bundle asset".into()));
+        }
         if metadata.len() > MAX_DOCUMENT_BYTES {
             return Err(DocumentError::TooLarge);
         }
         fs::read(&path).map_err(|error| DocumentError::Io(error.to_string()))
     }
 
-    /// The bundle path of document asset `uri`.
-    fn asset_path(&self, uri: &str) -> Option<PathBuf> {
-        fm_model::validate_media_asset_uri(uri).ok()?;
-        let key = uri.strip_prefix(fm_model::MEDIA_ASSET_URI_PREFIX)?;
-        Some(self.assets_root.join(key))
+    /// The resolved bundle path of document asset `uri`: links are followed
+    /// and the result must stay inside the assets, so a link out of them
+    /// never reads a host file.
+    fn asset_path(&self, uri: &str) -> Result<PathBuf, DocumentError> {
+        let not_asset = || DocumentError::Io("not a bundle asset".into());
+        fm_model::validate_media_asset_uri(uri).map_err(|_| not_asset())?;
+        let key = uri
+            .strip_prefix(fm_model::MEDIA_ASSET_URI_PREFIX)
+            .ok_or_else(not_asset)?;
+        let io = |error: std::io::Error| DocumentError::Io(error.to_string());
+        let root = fs::canonicalize(&self.assets_root).map_err(io)?;
+        let path = fs::canonicalize(root.join(key)).map_err(io)?;
+        if !path.starts_with(&root) {
+            return Err(not_asset());
+        }
+        Ok(path)
     }
 }
 
@@ -794,6 +806,31 @@ mod tests {
         assert_eq!(keynote.state, DocumentState::Unavailable);
         assert!(keynote.message.unwrap().contains("PDF"));
         assert!(pages.render("asset://gone.pdf", 0, 16, 9).is_none());
+    }
+
+    /// A document reached through a link out of the assets (to a file or
+    /// to a folder) is never read; a link inside them is followed.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_the_assets_never_reads_a_host_document() {
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret.pdf"), deck()).unwrap();
+        let root = bundle(&[("deck.pdf", deck())]);
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.pdf"),
+            root.path().join("escape.pdf"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("host")).unwrap();
+        std::os::unix::fs::symlink(root.path().join("deck.pdf"), root.path().join("alias.pdf"))
+            .unwrap();
+        let pages = DocumentPages::new(root.path(), None);
+        for uri in ["asset://escape.pdf", "asset://host/secret.pdf"] {
+            let report = pages.report(uri);
+            assert_eq!((report.count, report.state), (None, DocumentState::Failed));
+            assert!(pages.render(uri, 0, 16, 9).is_none(), "{uri}");
+        }
+        assert_eq!(pages.report("asset://alias.pdf").count, Some(2));
     }
 
     #[test]

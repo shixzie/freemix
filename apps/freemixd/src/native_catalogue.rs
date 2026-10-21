@@ -42,7 +42,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
     io::Read,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, mpsc},
     thread,
 };
@@ -707,10 +707,26 @@ impl NativeDaemon {
 
     /// The bundle path of media asset `asset_uri`, if it names one.
     fn asset_path(&self, asset_uri: &str) -> Option<PathBuf> {
-        fm_model::validate_media_asset_uri(asset_uri).ok()?;
-        let key = asset_uri.strip_prefix(fm_model::MEDIA_ASSET_URI_PREFIX)?;
-        Some(self.assets_root.join(key))
+        bundle_asset_path(&self.assets_root, asset_uri)
     }
+}
+
+/// The bundle path of media asset `asset_uri` under `assets_root`, if it
+/// names one that does not lead out of the assets: a path that resolves
+/// (following links) outside them is `None`, so a link out of the assets is
+/// never sniffed, prefetched, or opened. A path that does not resolve (a
+/// missing file) is kept, so its input faults as missing and is retried.
+fn bundle_asset_path(assets_root: &Path, asset_uri: &str) -> Option<PathBuf> {
+    fm_model::validate_media_asset_uri(asset_uri).ok()?;
+    let key = asset_uri.strip_prefix(fm_model::MEDIA_ASSET_URI_PREFIX)?;
+    let path = assets_root.join(key);
+    if let Ok(resolved) = std::fs::canonicalize(&path) {
+        let root = std::fs::canonicalize(assets_root).ok()?;
+        if !resolved.starts_with(root) {
+            return None;
+        }
+    }
+    Some(path)
 }
 
 /// The item a media list steps to from its active one by Auto Next (and,
@@ -875,6 +891,43 @@ mod tests {
             pending.result.recv().unwrap(),
             Err(EngineMediaFault::SourceMissing)
         );
+    }
+
+    /// A media asset that resolves out of the assets, through a link to a
+    /// file or to a folder, has no bundle path; one inside them (a link
+    /// included) and a missing one keep theirs.
+    #[cfg(unix)]
+    #[test]
+    fn a_media_link_out_of_the_assets_has_no_bundle_path() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.mkv"), b"host file").unwrap();
+        let assets = tempfile::tempdir().unwrap();
+        std::fs::write(assets.path().join("clip.mkv"), b"clip").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.mkv"),
+            assets.path().join("escape.mkv"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path(), assets.path().join("host")).unwrap();
+        std::os::unix::fs::symlink(
+            assets.path().join("clip.mkv"),
+            assets.path().join("alias.mkv"),
+        )
+        .unwrap();
+        for uri in ["asset://escape.mkv", "asset://host/secret.mkv"] {
+            assert_eq!(bundle_asset_path(assets.path(), uri), None, "{uri}");
+        }
+        for (uri, file) in [
+            ("asset://clip.mkv", "clip.mkv"),
+            ("asset://alias.mkv", "alias.mkv"),
+            ("asset://gone.mkv", "gone.mkv"),
+        ] {
+            assert_eq!(
+                bundle_asset_path(assets.path(), uri),
+                Some(assets.path().join(file)),
+                "{uri}"
+            );
+        }
     }
 
     #[test]
