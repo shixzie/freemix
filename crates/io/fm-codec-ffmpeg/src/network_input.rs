@@ -2476,7 +2476,7 @@ fn receive_audio(
         }
     };
     let expected = format!("POST /{} ", plan.token);
-    if !buffer.starts_with(expected.as_bytes()) {
+    if !starts_with_secret(&buffer, expected.as_bytes()) {
         return false;
     }
     let mut pending = buffer.split_off(body_start);
@@ -2534,6 +2534,18 @@ fn push_audio(inner: &mut Inner, planes: &[Vec<f32>], at: f64) {
         // Shapes are the receiver's own and samples are finite: no error.
         let _ = clock.push(&planes, at);
     }
+}
+
+/// Whether `buffer` starts with `prefix`, which carries the upload token,
+/// in time that depends only on the prefix's length: every byte is
+/// compared, so how long a refusal takes never tells which byte differed.
+fn starts_with_secret(buffer: &[u8], prefix: &[u8]) -> bool {
+    let mut difference = usize::from(buffer.len() < prefix.len());
+    for (index, expected) in prefix.iter().enumerate() {
+        let actual = buffer.get(index).copied().unwrap_or(0);
+        difference |= usize::from(std::hint::black_box(expected ^ actual));
+    }
+    std::hint::black_box(difference) == 0
 }
 
 fn is_timeout(error: &io::Error) -> bool {
@@ -2827,6 +2839,29 @@ mod tests {
             .into_iter()
             .map(|arg| arg.into_string().unwrap())
             .collect()
+    }
+
+    /// The audio upload's request line is matched against its token in
+    /// full: a wrong byte anywhere, a short request, or a missing token is
+    /// refused, and anything may follow the matched prefix.
+    #[test]
+    fn the_audio_upload_token_is_matched_in_full() {
+        let prefix = b"POST /t0k3n ";
+        assert!(starts_with_secret(b"POST /t0k3n HTTP/1.1\r\n", prefix));
+        assert!(starts_with_secret(prefix, prefix));
+        for refused in [
+            &b"POST /t0k3m HTTP/1.1"[..],
+            b"POST /x0k3n HTTP/1.1",
+            b"POST /t0k3",
+            b"POST / HTTP/1.1",
+            b"",
+        ] {
+            assert!(
+                !starts_with_secret(refused, prefix),
+                "{}",
+                String::from_utf8_lossy(refused)
+            );
+        }
     }
 
     #[test]
