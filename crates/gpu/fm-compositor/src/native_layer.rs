@@ -621,7 +621,9 @@ impl LayerPreparation {
     /// # Errors
     ///
     /// Returns [`NativeCompositionError::UnsupportedEffect`] for an effect
-    /// descriptor that does not parse.
+    /// descriptor that does not parse, and
+    /// [`NativeCompositionError::GarbageMatteDimensionLimit`] for a garbage
+    /// matte over a crop the shader cannot test exactly.
     pub(crate) fn plan(
         layer_index: usize,
         layer: &PlanLayer,
@@ -636,6 +638,19 @@ impl LayerPreparation {
         let keyed = layer.key().is_some() || layer.key_fill().is_some();
         if !keyed && effects.is_empty() {
             return Ok(None);
+        }
+        let maximum = fm_types::MAX_GARBAGE_MATTE_LAYER_SIDE;
+        if layer
+            .key_refinement()
+            .is_some_and(|refinement| refinement.garbage_matte.is_some())
+            && (crop.width > maximum || crop.height > maximum)
+        {
+            return Err(NativeCompositionError::GarbageMatteDimensionLimit {
+                layer: layer_index,
+                width: crop.width,
+                height: crop.height,
+                maximum,
+            });
         }
         let key = KeyStage::of(layer, crop);
         let mut passes = Vec::with_capacity(effects.len() + 4);
@@ -1198,6 +1213,41 @@ mod tests {
         // 10x4 crop: x in twentieths, y in eighths.
         assert_eq!(key[32..38], [0, 0, 20, 2, 10, 8]);
         assert!(key[38..].iter().all(|word| *word == 0));
+    }
+
+    /// The shader's exact polygon test multiplies half-pixel differences in
+    /// 32 bits, which holds up to 16384 pixels a side; a larger crop is
+    /// refused rather than tested with overflowing products.
+    #[test]
+    fn a_garbage_matte_past_the_exact_side_is_refused() {
+        let matte = crate::GarbageMatte::inset(100);
+        let side = fm_types::MAX_GARBAGE_MATTE_LAYER_SIDE;
+        for (width, height, refused) in [
+            (side, side, false),
+            (side + 1, 4, true),
+            (4, side + 1, true),
+        ] {
+            let crop = CropRect::new(0, 0, width, height);
+            let keyed = layer(
+                base()
+                    .with_key(Key::Luma(LumaKey::new(0, 0, false)))
+                    .with_key_refinement(KeyRefinement::new().with_garbage_matte(matte)),
+            );
+            let planned = LayerPreparation::plan(3, &keyed, crop);
+            if refused {
+                assert_eq!(
+                    planned,
+                    Err(NativeCompositionError::GarbageMatteDimensionLimit {
+                        layer: 3,
+                        width,
+                        height,
+                        maximum: side,
+                    })
+                );
+            } else {
+                assert!(planned.unwrap().is_some());
+            }
+        }
     }
 
     #[test]

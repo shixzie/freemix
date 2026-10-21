@@ -611,6 +611,15 @@ pub enum NativeCompositionError {
         height: u32,
         maximum: u32,
     },
+    /// A garbage-matted layer whose crop is wider or taller than
+    /// [`fm_types::MAX_GARBAGE_MATTE_LAYER_SIDE`], past which the shader's
+    /// exact 32-bit polygon test could overflow.
+    GarbageMatteDimensionLimit {
+        layer: usize,
+        width: u32,
+        height: u32,
+        maximum: u32,
+    },
     /// A key/fill layer whose key source is not the fill source's size.
     KeyFillDimensionMismatch {
         layer: usize,
@@ -667,6 +676,15 @@ impl fmt::Display for NativeCompositionError {
             } => write!(
                 formatter,
                 "layer {layer} native transform dimensions {width}x{height} exceed {maximum}"
+            ),
+            Self::GarbageMatteDimensionLimit {
+                layer,
+                width,
+                height,
+                maximum,
+            } => write!(
+                formatter,
+                "layer {layer} garbage matte over a {width}x{height} crop exceeds {maximum} a side"
             ),
             Self::KeyFillDimensionMismatch {
                 layer,

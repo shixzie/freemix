@@ -20,7 +20,8 @@
 //! edge from `a` to `b` is crossed when `(a.y > Y) != (b.y > Y)` and
 //! `(X - a.x) * (b.y - a.y)` is below `(Y - a.y) * (b.x - a.x)` (with the
 //! comparison reversed when `b.y < a.y`). Every product fits in 32 bits for
-//! layers up to 16384 pixels a side, so CPU and GPU agree exactly.
+//! layers up to [`MAX_GARBAGE_MATTE_LAYER_SIDE`] pixels a side, so CPU and GPU
+//! agree exactly; the native compositor refuses a matte over a larger layer.
 
 use core::fmt;
 
@@ -28,6 +29,10 @@ use core::fmt;
 pub const MIN_GARBAGE_MATTE_POINTS: usize = 3;
 /// Most points of a garbage matte polygon.
 pub const MAX_GARBAGE_MATTE_POINTS: usize = 8;
+/// Widest or tallest layer whose coverage products all fit in 32 bits
+/// (see the module documentation); a 32-bit implementation (the native
+/// shader) refuses a matte over a larger layer.
+pub const MAX_GARBAGE_MATTE_LAYER_SIDE: u32 = 16_384;
 /// The normalized coordinate of a layer's right or bottom edge.
 pub const GARBAGE_MATTE_UNIT: u16 = 1_000;
 
