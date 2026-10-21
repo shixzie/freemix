@@ -173,8 +173,10 @@ fn composition_fragment(@builtin(position) position: vec4<f32>) -> @location(0) 
 
 // One light-wrapped layer composited over the background (crate::LightWrap):
 // 25 taps at [-w, -(w / 2), 0, w / 2, w] per axis, clamped to the output,
-// average the placed layer's alpha and the background's premultiplied
-// codes; edge pixels move toward that light on straight codes.
+// average the placed layer's alpha and the background's coverage, and take
+// the background's light as the alpha-weighted mean of its premultiplied
+// codes, so a transparent background lends no light; edge pixels move
+// toward that light on straight codes.
 @fragment
 fn light_wrap_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let pixel = vec2<i32>(position.xy);
@@ -193,6 +195,7 @@ fn light_wrap_fragment(@builtin(position) position: vec4<f32>) -> @location(0) v
     let width = i32(layer.wrap_width);
     var offsets = array<i32, 5>(-width, -(width / 2), 0, width / 2, width);
     var alpha_sum = 0;
+    var cover_sum = 0;
     var light = vec3<i32>(0);
     for (var row = 0; row < 5; row++) {
         for (var column = 0; column < 5; column++) {
@@ -208,11 +211,19 @@ fn light_wrap_fragment(@builtin(position) position: vec4<f32>) -> @location(0) v
                 multiply_u8(below.g, below.a),
                 multiply_u8(below.b, below.a),
             );
+            cover_sum += below.a;
         }
     }
     let mean_alpha = (alpha_sum + 12) / 25;
-    let mean_light = (light + vec3<i32>(12)) / vec3<i32>(25);
-    let weight = multiply_u8(255 - mean_alpha, i32(layer.wrap_amount));
+    let cover = (cover_sum + 12) / 25;
+    var mean_light = vec3<i32>(0);
+    if cover_sum > 0 {
+        mean_light = min(
+            (light * 255 + vec3<i32>(cover_sum / 2)) / vec3<i32>(cover_sum),
+            vec3<i32>(255),
+        );
+    }
+    let weight = multiply_u8(multiply_u8(255 - mean_alpha, i32(layer.wrap_amount)), cover);
     let rgb = (codes.rgb * (255 - weight) + mean_light * weight + vec3<i32>(127)) / vec3<i32>(255);
     let source = encode_working(vec4<i32>(rgb, codes.a)) * opacity;
     return source + behind * (1.0 - source.a);

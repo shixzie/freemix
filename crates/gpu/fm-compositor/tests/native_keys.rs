@@ -766,13 +766,14 @@ fn light_wrap_matches_the_cpu_reference() {
     // opaque foreground: every output pixel is either background or the
     // (wrapped) foreground, so the composite itself adds no error.
     let hard = KeyFill::new(KEY_ALPHA, LumaKey::new(128, 0, false)).with_channel(KeyChannel::Alpha);
-    for (case, wrap, transform, rotation, opacity) in [
+    for (case, wrap, transform, rotation, opacity, background_width) in [
         (
             "light wrap 255 x 1",
             LightWrap::new(255, 1),
             (0, 0, WIDTH, HEIGHT),
             0,
             255,
+            WIDTH,
         ),
         (
             "light wrap 160 x 4",
@@ -780,6 +781,7 @@ fn light_wrap_matches_the_cpu_reference() {
             (0, 0, WIDTH, HEIGHT),
             0,
             255,
+            WIDTH,
         ),
         (
             "light wrap 255 x 8, scaled",
@@ -787,10 +789,25 @@ fn light_wrap_matches_the_cpu_reference() {
             (3, -2, 26, 30),
             0,
             255,
+            WIDTH,
+        ),
+        // A background covering only the left half (a nested scene's
+        // transparent canvas elsewhere): the wrap weighs it by its alpha.
+        (
+            "light wrap 255 x 8, half transparent background",
+            LightWrap::new(255, 8),
+            (0, 0, WIDTH, HEIGHT),
+            0,
+            255,
+            WIDTH / 2,
         ),
     ] {
         let mut scene = Scene::new(WIDTH, HEIGHT, Rgba8::new(0, 0, 0, 0)).unwrap();
-        scene.push_layer(full_layer(KEY));
+        scene.push_layer(SourceLayer::new(
+            KEY,
+            0,
+            Transform::new(0, 0, background_width, HEIGHT, Rotation::Deg0),
+        ));
         let (x, y, width, height) = transform;
         scene.push_layer(
             SourceLayer::new(

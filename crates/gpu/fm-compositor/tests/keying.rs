@@ -716,6 +716,54 @@ fn light_wrapped(wrap: fm_compositor::LightWrap, opacity: u8) -> Vec<Rgba8> {
     pixels(&output)
 }
 
+/// A transparent background (a nested scene's empty canvas) lends no
+/// light: the wrap weighs the background by its alpha instead of pulling
+/// the edge toward black, and partial coverage takes the covered colour at
+/// a proportionally smaller weight.
+#[test]
+fn light_wrap_weighs_the_background_by_its_alpha() {
+    use fm_compositor::LightWrap;
+    let wrapped_over = |red_width: u32, wrap: LightWrap| {
+        let red = uniform(1, 1, Rgba8::new(255, 0, 0, 255));
+        let blue = uniform(1, 1, Rgba8::new(0, 0, 255, 255));
+        let mut scene = Scene::new(9, 1, CLEAR).unwrap();
+        scene.push_layer(SourceLayer::new(
+            SourceId::new(1),
+            0,
+            Transform::new(0, 0, red_width, 1, Rotation::Deg0),
+        ));
+        scene.push_layer(
+            SourceLayer::new(
+                SourceId::new(2),
+                1,
+                Transform::new(3, 0, 6, 1, Rotation::Deg0),
+            )
+            .with_key(Key::Luma(LumaKey::new(0, 0, false)))
+            .with_key_refinement(KeyRefinement::new().with_light_wrap(wrap)),
+        );
+        let plan = compile_scene(&scene, OutputTarget::Program).unwrap().0;
+        pixels(
+            &execute_cpu(
+                &plan,
+                &[
+                    CpuSourceFrame::new(SourceId::new(1), &red),
+                    CpuSourceFrame::new(SourceId::new(2), &blue),
+                ],
+            )
+            .unwrap(),
+        )
+    };
+    let blue = Rgba8::new(0, 0, 255, 255);
+    // Nothing beneath the layer's edge: it keeps its own colour.
+    assert_eq!(wrapped_over(1, LightWrap::new(255, 1))[3..], [blue; 6]);
+    // Width 2 at x = 3 reads taps 1..=5, of which only x = 1 is red: the
+    // light is pure red at coverage 51, so weight 102 * 51 / 255 = 20.
+    assert_eq!(
+        wrapped_over(2, LightWrap::new(255, 2))[3],
+        Rgba8::new(20, 0, 235, 255)
+    );
+}
+
 #[test]
 fn light_wrap_bleeds_the_background_into_the_layer_edge() {
     use fm_compositor::LightWrap;

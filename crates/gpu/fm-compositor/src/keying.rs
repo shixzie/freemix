@@ -33,14 +33,20 @@ pub const MAX_LIGHT_WRAP_WIDTH: u8 = 8;
 /// `B` everything composited beneath it (premultiplied). Each output pixel
 /// reads 25 taps: the offsets `[-width, -(width / 2), 0, width / 2, width]`
 /// in each axis, clamped to the output grid. Over those taps
-/// `mean_alpha = (sum(P.a) + 12) / 25` and, per colour channel,
-/// `mean_c = (sum(B.c) + 12) / 25`. The wrap weight is
-/// `w = (255 - mean_alpha) * amount / 255` (rounded), so a pixel deep inside
-/// the layer gets none and one at its edge the most, and each of the
+/// `mean_alpha = (sum(P.a) + 12) / 25`, the background's coverage
+/// `cover = (sum(B.a) + 12) / 25`, and, per colour channel, the
+/// background's light as a straight (alpha-weighted) mean
+/// `light_c = min(255, (sum(B.c) * 255 + sum(B.a) / 2) / sum(B.a))` (`0`
+/// when `sum(B.a)` is `0`). The wrap weight is
+/// `w = ((255 - mean_alpha) * amount / 255) * cover / 255` (each product
+/// rounded), so a pixel deep inside the layer gets none and one at its edge
+/// the most, and a transparent background (a nested scene's empty canvas)
+/// lends no light, rather than darkening the edge toward black. Each of the
 /// layer's colour channels moves toward the background light it covers:
-/// `P.c' = (P.c * (255 - w) + (mean_c * P.a / 255) * w + 127) / 255` (each
-/// product rounded as the key stage rounds). Alpha is unchanged and a
-/// pixel the layer does not cover stays untouched.
+/// `P.c' = (P.c * (255 - w) + (light_c * P.a / 255) * w + 127) / 255`
+/// (each product rounded as the key stage rounds). Over an opaque
+/// background this is the plain mean of its colour. Alpha is unchanged and
+/// a pixel the layer does not cover stays untouched.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LightWrap {
     /// `1..=255`; how far an edge pixel moves toward the background.
@@ -877,6 +883,7 @@ pub(crate) fn apply_light_wrap(
                 continue;
             }
             let mut alpha = 0_u32;
+            let mut cover = 0_u32;
             let mut light = [0_u32; 3];
             for dy in offsets {
                 let tap_y = clamp(y, dy, height);
@@ -894,12 +901,19 @@ pub(crate) fn apply_light_wrap(
                     light[0] += u32::from(behind.r);
                     light[1] += u32::from(behind.g);
                     light[2] += u32::from(behind.b);
+                    cover += u32::from(behind.a);
                 }
             }
             let mean = |sum: u32| u8::try_from((sum + 12) / 25).unwrap_or(u8::MAX);
-            let weight = multiply_u8(u8::MAX - mean(alpha), wrap.amount);
+            let weight = multiply_u8(multiply_u8(u8::MAX - mean(alpha), wrap.amount), mean(cover));
+            // No coverage lends no light (and its weight is zero anyway).
+            let straight = |sum: u32| {
+                (sum * 255 + cover / 2)
+                    .checked_div(cover)
+                    .map_or(0, |light| u8::try_from(light.min(255)).unwrap_or(u8::MAX))
+            };
             let toward = |channel: u8, sum: u32| {
-                let target = multiply_u8(mean(sum), pixel.a);
+                let target = multiply_u8(straight(sum), pixel.a);
                 let inverse = u16::from(u8::MAX - weight);
                 let value = u16::from(channel) * inverse + u16::from(target) * u16::from(weight);
                 u8::try_from((u32::from(value) + 127) / 255).unwrap_or(u8::MAX)
