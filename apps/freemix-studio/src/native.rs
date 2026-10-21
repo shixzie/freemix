@@ -3291,6 +3291,11 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
                 }
             }
             state.source_sync = runtime.session().latest_source_sync_status().cloned();
+            state.health = runtime
+                .session()
+                .latest_health_status()
+                .cloned()
+                .map(Box::new);
             state.recording_desired = recording_desired_slots(view);
         }
         state.view = view;

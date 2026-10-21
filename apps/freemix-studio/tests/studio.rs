@@ -872,7 +872,7 @@ fn assert_diagnose_success(output: Result<Output, String>) {
 }
 
 #[test]
-#[allow(clippy::result_large_err)] // tungstenite accept_hdr callback signature is fixed
+#[allow(clippy::result_large_err, clippy::too_many_lines)] // tungstenite accept_hdr callback signature is fixed
 fn websocket_diagnose_uses_current_session_contract() {
     let token = "web-diagnostic-token-abcdefghijklmnopqrstuvwxyz-0123456789";
     let (address, server_thread) = spawn_server(move |listener| {

@@ -2389,6 +2389,7 @@ fn ready_over(model: &ClientModel, operator: bool) -> StudioUiState {
     state.stream_status = Some(stream_status());
     state.audio_meters = Some(meters());
     state.source_sync = Some(source_sync());
+    state.health = Some(Box::new(daemon_health()));
     // GX-006: the lower third plays its In phase on air.
     state.title_phases = Some(fm_protocol::TitlePhasesMessage {
         frame: 900,
@@ -2424,6 +2425,41 @@ fn ready_over(model: &ClientModel, operator: bool) -> StudioUiState {
         );
     }
     state
+}
+
+/// Daemon health (RC-015): the CPU lamp reads busy, the GPU lamp has no
+/// estimate, and a critical output alert fires, so the console renders every
+/// daemon lamp (hover-only lamps; their help is checked in
+/// `daemon_health_ui`).
+fn daemon_health() -> fm_protocol::HealthStatusMessage {
+    fm_protocol::HealthStatusMessage {
+        server: ServerIdentity {
+            engine_id: "e".into(),
+            project_id: "1".into(),
+            state_epoch: 1,
+            log_id: "l".into(),
+        },
+        sequence: 1,
+        health: fm_protocol::DaemonHealth {
+            uptime_ms: 30_000,
+            cpu_permille: Some(810),
+            gpu_permille: None,
+            alerts: vec![fm_protocol::HealthAlert {
+                rule: fm_protocol::HealthAlertRule::OutputFailed,
+                severity: fm_protocol::HealthSeverity::Critical,
+                since_ms: 25_000,
+                value_milli: Some(1_000),
+            }],
+            notifications: vec![fm_protocol::HealthNotification {
+                sequence: 2,
+                rule: fm_protocol::HealthAlertRule::OutputFailed,
+                severity: fm_protocol::HealthSeverity::Critical,
+                kind: fm_protocol::HealthNotificationKind::Firing,
+                at_ms: 25_000,
+                value_milli: Some(1_000),
+            }],
+        },
+    }
 }
 
 /// Live source drift telemetry (AU-004): input 2's loop runs clean, input

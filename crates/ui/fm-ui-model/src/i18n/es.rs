@@ -377,6 +377,65 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::BitrateKbps, t("{value} kb/s")),
     (Msg::BitrateMbps, t("{value} Mb/s")),
+    // Daemon utilization and alerts (RC-015).
+    (Msg::HealthCpu, t("CPU {value}")),
+    (Msg::HealthCpuUnavailable, t("CPU —")),
+    (
+        Msg::HealthCpuHover,
+        t(
+            "CPU del proceso del daemon: {value} de todas las CPU lógicas en el último segundo. Ámbar desde el 75 %; rojo mientras salta la alerta de CPU (90 % durante 10 s).",
+        ),
+    ),
+    (
+        Msg::HealthCpuUnavailableHover,
+        t("El daemon aún no informa de la CPU, o no puede en esta plataforma"),
+    ),
+    (Msg::HealthGpu, t("GPU {value}")),
+    (Msg::HealthGpuUnavailable, t("GPU —")),
+    (
+        Msg::HealthGpuHover,
+        t(
+            "Estimación de GPU: {value} del último segundo en las pasadas de render cronometradas del compositor, no un contador del fabricante. Ámbar desde el 75 %; rojo mientras salta la alerta de GPU.",
+        ),
+    ),
+    (
+        Msg::HealthGpuUnavailableHover,
+        t(
+            "Sin estimación de GPU: el daemon simulado no renderiza en GPU y algunos adaptadores no cronometran las pasadas",
+        ),
+    ),
+    (
+        Msg::HealthAlerts,
+        plural("{count} ALERTA", "{count} ALERTAS"),
+    ),
+    (Msg::HealthAlertsNone, t("SIN ALERTAS")),
+    (
+        Msg::HealthAlertsHover,
+        t("Alertas del daemon activas ahora:"),
+    ),
+    (
+        Msg::HealthAlertsNoneHover,
+        t(
+            "No hay ninguna alerta del daemon activa. Vigila CPU, GPU, fotogramas tardíos, imágenes descartadas, espacio en disco de las salidas y salidas fallidas.",
+        ),
+    ),
+    (Msg::AlertLine, t("{rule} ({severity}) desde hace {age}")),
+    (
+        Msg::AlertLastNotification,
+        t("Última: {rule} {kind} hace {age}"),
+    ),
+    (Msg::AlertRuleCpuSaturated, t("CPU saturada")),
+    (Msg::AlertRuleDiskLow, t("poco disco en las salidas")),
+    (Msg::AlertRuleFrameLate, t("fotogramas tardíos")),
+    (Msg::AlertRuleFramesDropped, t("imágenes descartadas")),
+    (Msg::AlertRuleGpuSaturated, t("GPU saturada")),
+    (Msg::AlertRuleOutputFailed, t("salida fallida")),
+    (Msg::AlertSeverityInfo, t("información")),
+    (Msg::AlertSeverityWarning, t("aviso")),
+    (Msg::AlertSeverityCritical, t("crítica")),
+    (Msg::AlertKindFiring, t("saltó")),
+    (Msg::AlertKindResolved, t("se resolvió")),
+    (Msg::AlertKindReminder, t("sigue activa")),
     // Live source clock drift correction (AU-004).
     (Msg::HealthSync, t("SINC {drift}")),
     (

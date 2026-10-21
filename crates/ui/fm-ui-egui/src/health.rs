@@ -177,6 +177,8 @@ pub(crate) fn health_items(
     if let Some(item) = crate::source_sync_ui::health_item(l, state) {
         items.push(item);
     }
+    // The daemon's CPU, GPU, and alert lamps (RC-015).
+    items.extend(crate::daemon_health_ui::health_items(l, state));
     items
 }
 
