@@ -5942,6 +5942,18 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::DesignKeyDespillStrengthHover,
         t("Cuánto derrame se quita, de 0 a 255"),
     ),
+    (Msg::DesignKeyLightWrap, t("Envoltura de luz")),
+    (
+        Msg::DesignKeyLightWrapHover,
+        t(
+            "Deja que la imagen detrás de la capa brille en sus bordes, de 0 (apagado) a 255, para integrar al sujeto recortado en la escena",
+        ),
+    ),
+    (Msg::DesignKeyLightWrapWidth, t("Ancho de la envoltura")),
+    (
+        Msg::DesignKeyLightWrapWidthHover,
+        t("Hasta dónde llega la luz del fondo en los bordes de la capa, de 1 a 8 píxeles"),
+    ),
     (Msg::DesignGroupEffects, t("Efectos")),
     (
         Msg::DesignEffectsHover,

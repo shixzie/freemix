@@ -383,6 +383,12 @@ fn with_layer_key(
         .with_clip(refinement.clip_black, refinement.clip_white)
         .with_choke(refinement.choke)
         .with_edge_softness(refinement.edge_softness);
+    if refinement.light_wrap != 0 {
+        compositor = compositor.with_light_wrap(fm_compositor::LightWrap::new(
+            refinement.light_wrap,
+            refinement.light_wrap_width,
+        ));
+    }
     if let Some(despill) = despill {
         compositor = compositor.with_despill(despill);
     }

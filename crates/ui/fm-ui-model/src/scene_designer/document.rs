@@ -97,6 +97,8 @@ pub const fn fill_linear(key_input: WireInputId) -> WireFillKey {
 
 /// Default despill strength when despill is first switched on.
 pub const DEFAULT_DESPILL_STRENGTH: u8 = 255;
+/// The width a light wrap turned on in the designer starts with.
+pub const DEFAULT_LIGHT_WRAP_WIDTH: u8 = 3;
 
 /// `key` with `refinement`.
 const fn with_refinement(key: WireLayerKey, refinement: WireKeyRefinement) -> WireLayerKey {
@@ -238,6 +240,12 @@ pub enum Field {
     KeyDespill,
     /// Key despill strength, `0..=255` (despill on only).
     KeyDespillStrength,
+    /// Key light wrap amount, `0..=255`, `0` off; turning it on gives the
+    /// wrap its default width.
+    KeyLightWrap,
+    /// Key light wrap width, `1..=MAX_KEY_LIGHT_WRAP_WIDTH` pixels (light
+    /// wrap on only).
+    KeyLightWrapWidth,
     /// Parameter `parameter` of the effect at list position `effect`,
     /// within its kind's range (a `levels` black stays below its white).
     EffectParameter {
@@ -948,7 +956,9 @@ impl SceneLayoutDocument {
             | Field::KeyChoke
             | Field::KeyEdgeSoftness
             | Field::KeyDespill
-            | Field::KeyDespillStrength => refinement_value(
+            | Field::KeyDespillStrength
+            | Field::KeyLightWrap
+            | Field::KeyLightWrapWidth => refinement_value(
                 layer
                     .key
                     .map_or(WireKeyRefinement::NONE, |key| key.refinement()),
@@ -1631,7 +1641,9 @@ fn apply_field(layer: &mut DesignLayer, field: Field, value: f64, canvas: (u32, 
         | Field::KeyChoke
         | Field::KeyEdgeSoftness
         | Field::KeyDespill
-        | Field::KeyDespillStrength => {
+        | Field::KeyDespillStrength
+        | Field::KeyLightWrap
+        | Field::KeyLightWrapWidth => {
             let Some(key) = layer.key else {
                 return;
             };
@@ -1658,6 +1670,8 @@ fn refinement_value(refinement: WireKeyRefinement, field: Field) -> f64 {
             WireKeyDespill::Green { .. } => 1,
             WireKeyDespill::Blue { .. } => 2,
         }),
+        Field::KeyLightWrap => f64::from(refinement.light_wrap),
+        Field::KeyLightWrapWidth => f64::from(refinement.light_wrap_width),
         _ => f64::from(match refinement.despill {
             WireKeyDespill::Off => 0,
             WireKeyDespill::Green { strength } | WireKeyDespill::Blue { strength } => strength,
@@ -1693,6 +1707,21 @@ fn apply_refinement_field(refinement: &mut WireKeyRefinement, field: Field, valu
                 1 => WireKeyDespill::Green { strength },
                 _ => WireKeyDespill::Blue { strength },
             };
+        }
+        Field::KeyLightWrap => {
+            refinement.light_wrap = to_u8(value, 0, u8::MAX);
+            refinement.light_wrap_width = match (refinement.light_wrap, refinement.light_wrap_width)
+            {
+                (0, _) => 0,
+                (_, 0) => DEFAULT_LIGHT_WRAP_WIDTH,
+                (_, width) => width,
+            };
+        }
+        Field::KeyLightWrapWidth => {
+            if refinement.light_wrap != 0 {
+                refinement.light_wrap_width =
+                    to_u8(value, 1, fm_protocol::MAX_KEY_LIGHT_WRAP_WIDTH);
+            }
         }
         _ => match &mut refinement.despill {
             WireKeyDespill::Off => {}

@@ -23,8 +23,9 @@
 //!   input.
 //!
 //! Every key carries a [`KeyRefinement`] (the identity by default): the raw
-//! matte is clipped, choked or spread, and softened before the mask, and an
-//! optional green or blue despill lowers the backing colour's spill.
+//! matte is clipped, choked or spread, and softened before the mask, an
+//! optional green or blue despill lowers the backing colour's spill, and an
+//! optional light wrap bleeds the background into the layer's edges.
 
 use core::fmt;
 
@@ -34,6 +35,8 @@ use fm_types::InputId;
 pub const MAX_KEY_CHOKE: u8 = 8;
 /// Largest edge-softness radius, in pixels.
 pub const MAX_KEY_EDGE_SOFTNESS: u8 = 8;
+/// Largest light wrap width, in pixels.
+pub const MAX_KEY_LIGHT_WRAP_WIDTH: u8 = 8;
 
 /// Spill suppression of a green or blue backing.
 ///
@@ -60,6 +63,12 @@ pub enum KeyDespill {
 /// with the maximum), then edge softness (the rounded mean over a
 /// `2 * edge_softness + 1` window), then the mask. Windows are clamped to
 /// the cropped layer. [`KeyDespill`] adjusts colour independently.
+///
+/// Light wrap (`light_wrap > 0`) bleeds the light of what lies beneath the
+/// layer into its edges where it is composited: an edge pixel moves toward
+/// the background averaged over `light_wrap_width` pixels around it, by up
+/// to `light_wrap / 255` (the compositor's `LightWrap` has the exact
+/// formula).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KeyRefinement {
     pub clip_black: u8,
@@ -70,6 +79,11 @@ pub struct KeyRefinement {
     /// `0..=MAX_KEY_EDGE_SOFTNESS`.
     pub edge_softness: u8,
     pub despill: KeyDespill,
+    /// Light wrap amount, `0` off.
+    pub light_wrap: u8,
+    /// Light wrap reach in pixels: `0` exactly when `light_wrap` is `0`,
+    /// otherwise `1..=MAX_KEY_LIGHT_WRAP_WIDTH`.
+    pub light_wrap_width: u8,
 }
 
 impl Default for KeyRefinement {
@@ -86,7 +100,12 @@ impl KeyRefinement {
         choke: 0,
         edge_softness: 0,
         despill: KeyDespill::Off,
+        light_wrap: 0,
+        light_wrap_width: 0,
     };
+
+    /// The light wrap width a newly enabled light wrap starts with.
+    pub const DEFAULT_LIGHT_WRAP_WIDTH: u8 = 3;
 
     /// Whether this refinement changes nothing.
     #[must_use]
@@ -94,12 +113,14 @@ impl KeyRefinement {
         *self == Self::NONE
     }
 
-    /// Checks the clip range and the choke and softness radii.
+    /// Checks the clip range, the choke and softness radii, and the light
+    /// wrap.
     ///
     /// # Errors
     ///
     /// [`LayerKeyError::EmptyClipRange`], [`LayerKeyError::ChokeOutOfRange`],
-    /// or [`LayerKeyError::EdgeSoftnessOutOfRange`].
+    /// [`LayerKeyError::EdgeSoftnessOutOfRange`], or
+    /// [`LayerKeyError::LightWrapOutOfRange`].
     pub const fn validate(self) -> Result<(), LayerKeyError> {
         if self.clip_black >= self.clip_white {
             return Err(LayerKeyError::EmptyClipRange);
@@ -109,6 +130,11 @@ impl KeyRefinement {
         }
         if self.edge_softness > MAX_KEY_EDGE_SOFTNESS {
             return Err(LayerKeyError::EdgeSoftnessOutOfRange);
+        }
+        if (self.light_wrap == 0) != (self.light_wrap_width == 0)
+            || self.light_wrap_width > MAX_KEY_LIGHT_WRAP_WIDTH
+        {
+            return Err(LayerKeyError::LightWrapOutOfRange);
         }
         Ok(())
     }
@@ -291,6 +317,9 @@ pub enum LayerKeyError {
     ChokeOutOfRange,
     /// An edge softness beyond [`MAX_KEY_EDGE_SOFTNESS`] pixels.
     EdgeSoftnessOutOfRange,
+    /// A light wrap width beyond [`MAX_KEY_LIGHT_WRAP_WIDTH`] pixels, or one
+    /// that is zero exactly when the amount is not.
+    LightWrapOutOfRange,
 }
 
 impl fmt::Display for LayerKeyError {
@@ -307,6 +336,10 @@ impl fmt::Display for LayerKeyError {
             Self::EdgeSoftnessOutOfRange => write!(
                 formatter,
                 "key edge softness must be at most {MAX_KEY_EDGE_SOFTNESS} pixels"
+            ),
+            Self::LightWrapOutOfRange => write!(
+                formatter,
+                "key light wrap width must be 1..={MAX_KEY_LIGHT_WRAP_WIDTH} pixels when its amount is set, and 0 otherwise"
             ),
         }
     }

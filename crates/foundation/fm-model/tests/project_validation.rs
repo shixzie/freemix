@@ -2354,6 +2354,8 @@ fn key_fill_keys_and_refinements_are_validated_and_hold_their_key_input() {
             choke: -8,
             edge_softness: 8,
             despill: fm_model::KeyDespill::Blue { strength: 200 },
+            light_wrap: 255,
+            light_wrap_width: fm_model::MAX_KEY_LIGHT_WRAP_WIDTH,
         },
         ..fm_model::FillLayerKey::linear(input_id(96))
     };
@@ -2400,6 +2402,28 @@ fn key_fill_keys_and_refinements_are_validated_and_hold_their_key_input() {
 
     // Refinement bounds hold for every key kind.
     for (refinement, reason) in [
+        (
+            fm_model::KeyRefinement {
+                light_wrap: 40,
+                ..fm_model::KeyRefinement::NONE
+            },
+            LayerKeyError::LightWrapOutOfRange,
+        ),
+        (
+            fm_model::KeyRefinement {
+                light_wrap_width: 2,
+                ..fm_model::KeyRefinement::NONE
+            },
+            LayerKeyError::LightWrapOutOfRange,
+        ),
+        (
+            fm_model::KeyRefinement {
+                light_wrap: 40,
+                light_wrap_width: 9,
+                ..fm_model::KeyRefinement::NONE
+            },
+            LayerKeyError::LightWrapOutOfRange,
+        ),
         (
             fm_model::KeyRefinement {
                 clip_black: 50,

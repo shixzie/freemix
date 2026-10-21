@@ -33,6 +33,7 @@ const _: () = {
     assert!(fm_protocol::MAX_SCENE_LAYER_TILT_MILLIDEGREES == LayerGeometry::MAX_TILT_MILLIDEGREES);
     assert!(fm_protocol::MAX_KEY_CHOKE == fm_model::MAX_KEY_CHOKE);
     assert!(fm_protocol::MAX_KEY_EDGE_SOFTNESS == fm_model::MAX_KEY_EDGE_SOFTNESS);
+    assert!(fm_protocol::MAX_KEY_LIGHT_WRAP_WIDTH == fm_model::MAX_KEY_LIGHT_WRAP_WIDTH);
 };
 
 /// The domain refinement a wire refinement names.
@@ -48,6 +49,8 @@ pub const fn domain_refinement(refinement: WireKeyRefinement) -> KeyRefinement {
             WireKeyDespill::Green { strength } => KeyDespill::Green { strength },
             WireKeyDespill::Blue { strength } => KeyDespill::Blue { strength },
         },
+        light_wrap: refinement.light_wrap,
+        light_wrap_width: refinement.light_wrap_width,
     }
 }
 
@@ -64,6 +67,8 @@ pub const fn wire_refinement(refinement: KeyRefinement) -> WireKeyRefinement {
             KeyDespill::Green { strength } => WireKeyDespill::Green { strength },
             KeyDespill::Blue { strength } => WireKeyDespill::Blue { strength },
         },
+        light_wrap: refinement.light_wrap,
+        light_wrap_width: refinement.light_wrap_width,
     }
 }
 

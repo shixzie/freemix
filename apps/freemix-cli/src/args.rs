@@ -4810,7 +4810,8 @@ fn parse_scene_layer_effect_clear(
 /// (IN-020), or `fill <key-input> luma|alpha <low> <high> <softness>
 /// <invert:on|off>` (SW-008), then any of the refinement options
 /// `--clip <black> <white>`, `--choke <-8..=8>`, `--edge-softness <0..=8>`,
-/// and `--despill green|blue <strength>`. Returns the key and the arguments
+/// `--despill green|blue <strength>`, and `--light-wrap <amount> <1..=8>`
+/// (`0 0` off). Returns the key and the arguments
 /// after it. The model checks the band and refinement bounds.
 fn layer_key_spec(
     arguments: &mut impl Iterator<Item = String>,
@@ -4895,8 +4896,9 @@ fn read_byte(
 }
 
 /// A key's refinement options (SW-008): `--clip <black> <white>`,
-/// `--choke <n>`, `--edge-softness <n>`, and `--despill green|blue
-/// <strength>`; every other argument is returned in order.
+/// `--choke <n>`, `--edge-softness <n>`, `--despill green|blue
+/// <strength>`, and `--light-wrap <amount> <width>`; every other argument
+/// is returned in order.
 fn key_refinement_options(
     arguments: &mut impl Iterator<Item = String>,
 ) -> Result<(fm_model::KeyRefinement, Vec<String>), ArgsError> {
@@ -4913,6 +4915,10 @@ fn key_refinement_options(
             }
             "--edge-softness" => {
                 refinement.edge_softness = read_byte(arguments, "edge softness")?;
+            }
+            "--light-wrap" => {
+                refinement.light_wrap = read_byte(arguments, "light wrap")?;
+                refinement.light_wrap_width = read_byte(arguments, "light wrap width")?;
             }
             "--despill" => {
                 let backing = required(arguments, "despill backing")?;
@@ -5017,7 +5023,8 @@ fn parse_scene_layer_auto_key(
 
 /// `remote-scene-layer-auto-key <address> <scene> <layer-id> --picture
 /// <file.ppm> [--point <x> <y>] [--clip <black> <white>] [--choke <n>]
-/// [--edge-softness <n>] [--key <key>] [--expect <revision>]` (SW-008).
+/// [--edge-softness <n>] [--light-wrap <amount> <width>] [--key <key>]
+/// [--expect <revision>]` (SW-008).
 fn parse_remote_scene_layer_auto_key(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<Command, ArgsError> {

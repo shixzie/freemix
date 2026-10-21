@@ -2620,7 +2620,8 @@ fn luma_fields(
 }
 
 /// The matte refinements every key shares (SW-008): clip black and white,
-/// choke, edge softness, and despill with its strength.
+/// choke, edge softness, despill with its strength, and light wrap with
+/// its width.
 fn refinement_fields(
     ui: &mut Ui,
     l: Locale,
@@ -2691,6 +2692,58 @@ fn refinement_fields(
             }
         });
     despill_fields(ui, l, document, id, lock);
+    light_wrap_fields(ui, l, document, id, lock);
+}
+
+/// A key's light wrap amount and, while on, its width.
+fn light_wrap_fields(
+    ui: &mut Ui,
+    l: Locale,
+    document: &mut SceneLayoutDocument,
+    id: WireSceneLayerId,
+    lock: Option<&'static str>,
+) {
+    let on = document
+        .layer(id)
+        .and_then(|layer| layer.key)
+        .is_some_and(|key| key.refinement().light_wrap != 0);
+    egui::Grid::new("studio-designer-key-light-wrap")
+        .num_columns(2)
+        .spacing(Vec2::new(6.0, 4.0))
+        .show(ui, |ui| {
+            scrub(
+                ui,
+                l,
+                document,
+                id,
+                byte_scrub(
+                    Field::KeyLightWrap,
+                    l.text(Msg::DesignKeyLightWrap),
+                    l.text(Msg::DesignKeyLightWrapHover).to_owned(),
+                ),
+                lock,
+            );
+            ui.end_row();
+            if on {
+                scrub(
+                    ui,
+                    l,
+                    document,
+                    id,
+                    Scrub {
+                        field: Field::KeyLightWrapWidth,
+                        label: l.text(Msg::DesignKeyLightWrapWidth),
+                        hover: l.text(Msg::DesignKeyLightWrapWidthHover).to_owned(),
+                        range: 1.0..=f64::from(fm_protocol::MAX_KEY_LIGHT_WRAP_WIDTH),
+                        speed: 0.05,
+                        suffix: " px",
+                        shown_per_stored: 1.0,
+                    },
+                    lock,
+                );
+                ui.end_row();
+            }
+        });
 }
 
 /// A key's despill (off, green, or blue) and, while on, its strength.

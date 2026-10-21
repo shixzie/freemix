@@ -639,7 +639,12 @@ fn write_layer_key(output: &mut String, key: Option<fm_model::LayerKey>) {
                 .expect("writing to a string cannot fail");
         }
     }
-    output.push_str("}}");
+    write!(
+        output,
+        ", \"light_wrap\": {}, \"light_wrap_width\": {}}}}}",
+        refinement.light_wrap, refinement.light_wrap_width
+    )
+    .expect("writing to a string cannot fail");
 }
 
 fn write_scenes(output: &mut String, project: &fm_model::Project) {

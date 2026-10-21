@@ -10167,13 +10167,16 @@ fn local_scene_layer_effects_author_render_and_clear_exactly() {
         "--despill",
         "green",
         "255",
+        "--light-wrap",
+        "200",
+        "3",
     ];
     apply!(&fill);
     let scenes = invoke(&["scenes", path]);
     assert!(
         stdout(&scenes).contains(
             "key=fill(key_input=2 channel=luma low=0 high=255 softness=255 invert=off)\
-             +refine(clip=0,255 choke=0 edge_softness=2 despill=green:255)"
+             +refine(clip=0,255 choke=0 edge_softness=2 despill=green:255 light_wrap=200:3)"
         ),
         "{}",
         stdout(&scenes)
@@ -15899,6 +15902,8 @@ fn remote_scene_layer_auto_key_is_one_live_key_edit() {
             choke: 1,
             edge_softness: 2,
             despill: WireKeyDespill::Green { strength: 128 },
+            light_wrap: 90,
+            light_wrap_width: 4,
         },
     })));
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -15928,6 +15933,9 @@ fn remote_scene_layer_auto_key_is_one_live_key_edit() {
         "1",
         "--edge-softness",
         "2",
+        "--light-wrap",
+        "90",
+        "4",
         "--key",
         "remote-auto-key",
         "--expect",

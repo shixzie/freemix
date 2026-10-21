@@ -855,6 +855,22 @@ fn key_fill_and_matte_refinements_edit_live_and_export() {
         Some(255.0)
     );
     assert!(document.set_field(Field::KeyDespillStrength, 128.0));
+    // Light wrap starts at its default width when turned on; its width
+    // edits only while on and stays within 1..=8.
+    assert!(!document.set_field(Field::KeyLightWrapWidth, 5.0));
+    assert!(document.set_field(Field::KeyLightWrap, 300.0));
+    assert_eq!(
+        document.field_value(layer_id(2), Field::KeyLightWrapWidth),
+        Some(f64::from(
+            fm_ui_model::scene_designer::DEFAULT_LIGHT_WRAP_WIDTH
+        ))
+    );
+    assert!(document.set_field(Field::KeyLightWrapWidth, 0.0));
+    assert_eq!(
+        document.field_value(layer_id(2), Field::KeyLightWrapWidth),
+        Some(1.0)
+    );
+    assert!(document.set_field(Field::KeyLightWrapWidth, 40.0));
     let live = document.take_live_edits();
     let Some(SceneLayerOperation::SetKey(Some(sent))) =
         live.last().map(|edit| edit.operation.clone())
@@ -869,13 +885,15 @@ fn key_fill_and_matte_refinements_edit_live_and_export() {
             choke: -8,
             edge_softness: 8,
             despill: fm_protocol::WireKeyDespill::Blue { strength: 128 },
+            light_wrap: 255,
+            light_wrap_width: 8,
         }
     );
     assert!(sent.refinement().is_valid());
     let script = document.cli_script("show.freemix");
     assert!(script.lines().any(|line| line
         == "freemix-cli scene-layer-key show.freemix 100 1 fill 8 alpha 30 255 255 off \
-            --clip 99 100 --choke -8 --edge-softness 8 --despill blue 128"));
+            --clip 99 100 --choke -8 --edge-softness 8 --despill blue 128 --light-wrap 255 8"));
     // Back to a luma key: the refinement stays, the key input goes.
     assert!(document.set_key_kind(Some(false)));
     let key = document.layer(layer_id(2)).unwrap().key.unwrap();
@@ -1047,6 +1065,8 @@ fn an_auto_key_is_one_step_and_one_set_key() {
         choke: 1,
         edge_softness: 2,
         despill: fm_protocol::WireKeyDespill::Off,
+        light_wrap: 0,
+        light_wrap_width: 0,
     };
     keyed.layers[1].key = Some(WireLayerKey::Luma(WireLumaKey {
         low: 16,

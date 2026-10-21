@@ -140,6 +140,8 @@ fn fill() -> WireLayerKey {
             choke: -8,
             edge_softness: 3,
             despill: fm_protocol::WireKeyDespill::Blue { strength: 90 },
+            light_wrap: 200,
+            light_wrap_width: fm_protocol::MAX_KEY_LIGHT_WRAP_WIDTH,
         },
     })
 }
@@ -273,19 +275,19 @@ fn scene_layer_commands_have_an_exact_wire_form() {
         (
             SceneLayerOperation::SetKey(Some(chroma())),
             "payload=scene_layer_key_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\tkind=chroma\t\
-             red=0\tgreen=255\tblue=7\tsimilarity=64\tsmoothness=32\tspill=128\tclip_black=0\tclip_white=255\tchoke=0\tedge_softness=0\tdespill=off\tdespill_strength=0\n",
+             red=0\tgreen=255\tblue=7\tsimilarity=64\tsmoothness=32\tspill=128\tclip_black=0\tclip_white=255\tchoke=0\tedge_softness=0\tdespill=off\tdespill_strength=0\tlight_wrap=0\tlight_wrap_width=0\n",
         ),
         (
             SceneLayerOperation::SetKey(Some(luma())),
             "payload=scene_layer_key_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\tkind=luma\t\
-             low=16\thigh=235\tsoftness=8\tinvert=true\tclip_black=0\tclip_white=255\tchoke=0\tedge_softness=0\tdespill=off\tdespill_strength=0\n",
+             low=16\thigh=235\tsoftness=8\tinvert=true\tclip_black=0\tclip_white=255\tchoke=0\tedge_softness=0\tdespill=off\tdespill_strength=0\tlight_wrap=0\tlight_wrap_width=0\n",
         ),
         (
             SceneLayerOperation::SetKey(Some(fill())),
             "payload=scene_layer_key_set\tscene=3\tlayer=2\tcontinues=false\tgesture=0\tkind=fill\t\
              key_input=9\tchannel=alpha\tlow=4\thigh=250\t\
              softness=60\tinvert=false\tclip_black=12\tclip_white=240\tchoke=-8\t\
-             edge_softness=3\tdespill=blue\tdespill_strength=90\n",
+             edge_softness=3\tdespill=blue\tdespill_strength=90\tlight_wrap=200\tlight_wrap_width=8\n",
         ),
         (
             SceneLayerOperation::SetKey(None),
@@ -368,6 +370,11 @@ fn scene_layer_commands_are_strict() {
         fill_line.replace("despill=blue", "despill=red"),
         fill_line.replace("despill=blue", "despill=off"),
         fill_line.replace("\tdespill_strength=90", ""),
+        // Light wrap (2.98): a width exactly when an amount, at most 8.
+        fill_line.replace("light_wrap_width=8", "light_wrap_width=9"),
+        fill_line.replace("light_wrap_width=8", "light_wrap_width=0"),
+        fill_line.replace("light_wrap=200", "light_wrap=0"),
+        fill_line.replace("\tlight_wrap_width=8", ""),
         key_line.replace("\tclip_white=255", ""),
         // Effects are a known kind with in-range values, no trailing bytes.
         effects_line.replace("effects=AQAg1gM", "effects=AQUg1gM"),

@@ -309,6 +309,12 @@ fn with_native_layer_key(
         .with_clip(refinement.clip_black, refinement.clip_white)
         .with_choke(refinement.choke)
         .with_edge_softness(refinement.edge_softness);
+    if refinement.light_wrap != 0 {
+        compositor = compositor.with_light_wrap(fm_compositor::LightWrap::new(
+            refinement.light_wrap,
+            refinement.light_wrap_width,
+        ));
+    }
     match refinement.despill {
         fm_model::KeyDespill::Off => {}
         fm_model::KeyDespill::Green { strength } => {
@@ -10680,6 +10686,8 @@ mod tests {
             choke: -2,
             edge_softness: 3,
             despill: fm_model::KeyDespill::Green { strength: 200 },
+            light_wrap: 180,
+            light_wrap_width: 5,
         };
         let keyed = |id: u32, key_input: InputId| Layer {
             key: Some(fm_model::LayerKey::Fill(fm_model::FillLayerKey {
@@ -10729,6 +10737,7 @@ mod tests {
                         fm_compositor::Backing::Green,
                         200
                     ))
+                    .with_light_wrap(fm_compositor::LightWrap::new(180, 5))
             )
         );
         // The layer keyed by a Scene input is compiled undrawn.

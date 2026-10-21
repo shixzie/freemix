@@ -188,7 +188,7 @@ pub use paged::{
 pub use recorder_status::{
     MAX_RECORDER_STATUS_SAMPLES, RecorderRealizedState, RecorderStatusMessage, RecorderStatusSample,
 };
-pub use scene_layer::{MAX_KEY_CHOKE, MAX_KEY_EDGE_SOFTNESS};
+pub use scene_layer::{MAX_KEY_CHOKE, MAX_KEY_EDGE_SOFTNESS, MAX_KEY_LIGHT_WRAP_WIDTH};
 pub use scene_layer::{
     MAX_SCENE_LAYER_EFFECTS, MAX_SCENE_LAYER_TILT_MILLIDEGREES, MIN_SCENE_LAYER_TILT_MILLIDEGREES,
     SCENE_LAYER_ANCHOR_CENTER, SCENE_LAYER_ANCHOR_MAX, SCENE_LAYER_EFFECT_KINDS, SceneLayerEdit,

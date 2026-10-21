@@ -5805,8 +5805,16 @@ fn format_layer_key(key: Option<fm_model::LayerKey>) -> String {
         fm_model::KeyDespill::Green { strength } => format!("green:{strength}"),
         fm_model::KeyDespill::Blue { strength } => format!("blue:{strength}"),
     };
+    let light_wrap = if refinement.light_wrap == 0 {
+        String::new()
+    } else {
+        format!(
+            " light_wrap={}:{}",
+            refinement.light_wrap, refinement.light_wrap_width
+        )
+    };
     format!(
-        "{kind}+refine(clip={},{} choke={} edge_softness={} despill={despill})",
+        "{kind}+refine(clip={},{} choke={} edge_softness={} despill={despill}{light_wrap})",
         refinement.clip_black, refinement.clip_white, refinement.choke, refinement.edge_softness
     )
 }
@@ -6210,10 +6218,10 @@ Usage:
   freemix-cli scene-layer-effect-set <show.freemix> <scene-id> <zero-based-layer-index> <zero-based-effect-index> <name> [<i32-parameter>...]
   freemix-cli scene-layer-effect-remove <show.freemix> <scene-id> <zero-based-layer-index> <zero-based-effect-index>
   freemix-cli scene-layer-effect-clear <show.freemix> <scene-id> <zero-based-layer-index>
-  freemix-cli scene-layer-key <show.freemix> <scene-id> <zero-based-layer-index> none|chroma <red> <green> <blue> <similarity> <smoothness> <spill>|luma <low> <high> <softness> <invert:on|off>|fill <key-input-id> luma|alpha <low> <high> <softness> <invert:on|off> [--clip <black> <white>] [--choke <-8..8>] [--edge-softness <0..8>] [--despill green|blue <strength>]
+  freemix-cli scene-layer-key <show.freemix> <scene-id> <zero-based-layer-index> none|chroma <red> <green> <blue> <similarity> <smoothness> <spill>|luma <low> <high> <softness> <invert:on|off>|fill <key-input-id> luma|alpha <low> <high> <softness> <invert:on|off> [--clip <black> <white>] [--choke <-8..8>] [--edge-softness <0..8>] [--despill green|blue <strength>] [--light-wrap <amount> <1..8>]
   freemix-cli remote-scene-layer-key <127.0.0.1:port> <scene-id> <layer-id> <key spec as above> [--key <key>] [--expect <revision>]
   freemix-cli scene-layer-auto-key <show.freemix> <scene-id> <zero-based-layer-index> [--picture <file.ppm>] [--point <x> <y>]
-  freemix-cli remote-scene-layer-auto-key <127.0.0.1:port> <scene-id> <layer-id> --picture <file.ppm> [--point <x> <y>] [--clip <black> <white>] [--choke <-8..8>] [--edge-softness <0..8>] [--key <key>] [--expect <revision>]
+  freemix-cli remote-scene-layer-auto-key <127.0.0.1:port> <scene-id> <layer-id> --picture <file.ppm> [--point <x> <y>] [--clip <black> <white>] [--choke <-8..8>] [--edge-softness <0..8>] [--light-wrap <amount> <1..8>] [--key <key>] [--expect <revision>]
   freemix-cli remote-scene-layer-effects <127.0.0.1:port> <scene-id> <layer-id> none|<name>[:<i32>,...]... [--key <key>] [--expect <revision>]
   freemix-cli project-rename <show.freemix> <name>
   freemix-cli input-remove <show.freemix> <input-id>

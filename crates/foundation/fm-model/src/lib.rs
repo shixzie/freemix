@@ -62,7 +62,7 @@ pub use input_lifecycle::{
 };
 pub use layer_key::{
     ChromaLayerKey, FillLayerKey, KeyChannel, KeyDespill, KeyRefinement, LayerKey, LayerKeyError,
-    LumaLayerKey, MAX_KEY_CHOKE, MAX_KEY_EDGE_SOFTNESS,
+    LumaLayerKey, MAX_KEY_CHOKE, MAX_KEY_EDGE_SOFTNESS, MAX_KEY_LIGHT_WRAP_WIDTH,
 };
 pub use media_list::{
     DEFAULT_MEDIA_LIST_TRANSITION_FRAMES, M3uEntry, MAX_M3U_BYTES, MAX_MEDIA_LIST_ITEM_ID,

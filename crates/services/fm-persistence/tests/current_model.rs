@@ -1543,6 +1543,8 @@ fn key_fill_keys_and_refinements_round_trip_at_the_current_schema() {
                     choke: -8,
                     edge_softness: 8,
                     despill: fm_model::KeyDespill::Green { strength: 200 },
+                    light_wrap: 150,
+                    light_wrap_width: 8,
                 },
             })),
         )
@@ -1575,7 +1577,8 @@ fn key_fill_keys_and_refinements_round_trip_at_the_current_schema() {
             "\"key\": {\"type\": \"fill\", \"key_input\": 1, \"channel\": \"alpha\", \
              \"low\": 8, \"high\": 247, \"softness\": 90, \"invert\": true, \"refinement\": \
              {\"clip_black\": 12, \"clip_white\": 230, \"choke\": -8, \"edge_softness\": 8, \
-             \"despill\": {\"type\": \"green\", \"strength\": 200}}}"
+             \"despill\": {\"type\": \"green\", \"strength\": 200}, \"light_wrap\": 150, \
+             \"light_wrap_width\": 8}}"
         ),
         "{encoded}"
     );
@@ -1595,7 +1598,8 @@ fn layer_effect_bounds_are_rejected_at_the_current_schema() {
         .join(", ");
 
     let refinement = "\"refinement\": {\"clip_black\": 0, \"clip_white\": 255, \"choke\": 0, \
-                      \"edge_softness\": 0, \"despill\": {\"type\": \"off\"}}";
+                      \"edge_softness\": 0, \"despill\": {\"type\": \"off\"}, \
+                      \"light_wrap\": 0, \"light_wrap_width\": 0}";
     let key = format!(
         "\"key\": {{\"type\": \"chroma\", \"red\": 0, \"green\": 255, \"blue\": 0, \
          \"similarity\": 64, \"smoothness\": 32, \"spill\": 128, {refinement}}}"
@@ -1647,6 +1651,26 @@ fn layer_effect_bounds_are_rejected_at_the_current_schema() {
         valid.replacen(
             key,
             &key.replace("\"edge_softness\": 0", "\"edge_softness\": 9"),
+            1,
+        ),
+        // Light wrap is required and bounded (schema 79).
+        valid.replacen(key, &key.replace(", \"light_wrap_width\": 0", ""), 1),
+        valid.replacen(
+            key,
+            &key.replace("\"light_wrap\": 0", "\"light_wrap\": 10"),
+            1,
+        ),
+        valid.replacen(
+            key,
+            &key.replace("\"light_wrap_width\": 0", "\"light_wrap_width\": 2"),
+            1,
+        ),
+        valid.replacen(
+            key,
+            &key.replace(
+                "\"light_wrap\": 0, \"light_wrap_width\": 0",
+                "\"light_wrap\": 10, \"light_wrap_width\": 9",
+            ),
             1,
         ),
         valid.replacen(

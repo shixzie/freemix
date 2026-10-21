@@ -12,7 +12,8 @@
 //! names its `kind` (`chroma`, `luma`, or `fill` since 2.70) and that kind's
 //! fields, then (since 2.70) the refinement's `clip_black`, `clip_white`,
 //! `choke` (signed), `edge_softness`, `despill` (`off`, `green`, or `blue`),
-//! and `despill_strength` (`0` when `despill` is `off`).
+//! and `despill_strength` (`0` when `despill` is `off`), then (since 2.98)
+//! `light_wrap` and `light_wrap_width` (`0` exactly when `light_wrap` is).
 
 use core::num::NonZeroU32;
 
@@ -209,7 +210,9 @@ fn push_refinement(push: &mut Push<'_>, refinement: WireKeyRefinement) -> Result
         WireKeyDespill::Blue { strength } => ("blue", strength),
     };
     push("despill", despill.to_owned())?;
-    push("despill_strength", strength.to_string())
+    push("despill_strength", strength.to_string())?;
+    push("light_wrap", refinement.light_wrap.to_string())?;
+    push("light_wrap_width", refinement.light_wrap_width.to_string())
 }
 
 /// A key refinement's fields (Protocol 2.70).
@@ -228,12 +231,21 @@ fn refinement_fields(fields: &mut dyn FieldSource) -> Result<WireKeyRefinement, 
         "blue" => WireKeyDespill::Blue { strength },
         _ => return Err(invalid("despill", despill)),
     };
+    let light_wrap = bounded(fields, "light_wrap", u8::MAX)?;
+    let light_wrap_width = bounded(fields, "light_wrap_width", u8::MAX)?;
+    if (light_wrap == 0) != (light_wrap_width == 0)
+        || light_wrap_width > crate::MAX_KEY_LIGHT_WRAP_WIDTH
+    {
+        return Err(invalid("light_wrap_width", light_wrap_width.to_string()));
+    }
     Ok(WireKeyRefinement {
         clip_black,
         clip_white,
         choke,
         edge_softness,
         despill,
+        light_wrap,
+        light_wrap_width,
     })
 }
 

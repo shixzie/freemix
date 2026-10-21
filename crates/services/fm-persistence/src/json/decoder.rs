@@ -756,8 +756,9 @@ fn parse_layer_key(value: Value) -> Result<fm_model::LayerKey, DecodeError> {
 }
 
 /// Parses a key refinement (schema 61, SW-008): `{"clip_black",
-/// "clip_white", "choke", "edge_softness", "despill"}` where `despill` is
-/// `{"type": "off"}` or `{"type": "green"|"blue", "strength"}`.
+/// "clip_white", "choke", "edge_softness", "despill", "light_wrap",
+/// "light_wrap_width"}` where `despill` is `{"type": "off"}` or
+/// `{"type": "green"|"blue", "strength"}` (light wrap since schema 79).
 fn parse_key_refinement(value: Value) -> Result<fm_model::KeyRefinement, DecodeError> {
     let mut object = Object::new(value, "key refinement")?;
     let clip_black = object.u8("clip_black")?;
@@ -778,6 +779,8 @@ fn parse_key_refinement(value: Value) -> Result<fm_model::KeyRefinement, DecodeE
         value => return Err(unknown_enum("key despill", value)),
     };
     despill.finish()?;
+    let light_wrap = object.u8("light_wrap")?;
+    let light_wrap_width = object.u8("light_wrap_width")?;
     object.finish()?;
     Ok(fm_model::KeyRefinement {
         clip_black,
@@ -785,6 +788,8 @@ fn parse_key_refinement(value: Value) -> Result<fm_model::KeyRefinement, DecodeE
         choke,
         edge_softness,
         despill: despill_value,
+        light_wrap,
+        light_wrap_width,
     })
 }
 

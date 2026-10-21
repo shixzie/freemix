@@ -3753,7 +3753,8 @@ pub(crate) fn designer_fixture(operator: bool, locked: bool) -> (StudioUiState, 
 /// a crop and an inverted mask in the draft (every field and the draft
 /// buttons enabled, a chroma key, and one effect of every kind), the luma
 /// keyed layer with a full effect list (Add effect refused), the same layer
-/// key/filled from another input with green despill (SW-008), the host
+/// key/filled from another input with green despill and light wrap
+/// (SW-008), the host
 /// layer with its input's green-screen picture for auto key (SW-008),
 /// with the Pick colour eyedropper on, two layers selected (their effects
 /// differ), the project padlock, and a viewer.
@@ -3791,6 +3792,7 @@ fn designer_scenes(locale: Locale) -> Vec<Scene> {
         document.select(scene_layer(2), false);
         document.set_key_fill(wire(1));
         document.set_field(Field::KeyDespill, 1.0);
+        document.set_field(Field::KeyLightWrap, 128.0);
     };
     let both = |shell: &mut StudioShell| {
         let document = shell.scene_layout_draft_mut(scene_id()).unwrap();

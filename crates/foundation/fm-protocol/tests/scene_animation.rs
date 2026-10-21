@@ -475,6 +475,8 @@ fn the_worst_case_layout_fits_one_line() {
                     choke: -8,
                     edge_softness: 8,
                     despill: fm_protocol::WireKeyDespill::Green { strength: 255 },
+                    light_wrap: 255,
+                    light_wrap_width: 8,
                 },
             })),
             effects: vec![

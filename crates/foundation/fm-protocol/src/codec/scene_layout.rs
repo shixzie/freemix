@@ -24,6 +24,8 @@
 //!          1 alpha) low high softness (bytes) invert(byte 0 or 1) refine
 //! refine = clip_black clip_white (bytes) choke(zigzag) edge_softness(byte)
 //!          despill(byte: 0 off, 1 green, 2 blue) strength(byte, 0 when off)
+//!          light_wrap light_wrap_width (bytes, 2.98; width 0 exactly when
+//!          light_wrap is 0)
 //! effect = kind(byte, index into SCENE_LAYER_EFFECT_KINDS)
 //!          value(zigzag)* (exactly the kind's parameter count)
 //! ```
@@ -235,7 +237,13 @@ fn push_key(out: &mut Vec<u8>, key: WireLayerKey) {
         WireKeyDespill::Green { strength } => (DESPILL_GREEN, strength),
         WireKeyDespill::Blue { strength } => (DESPILL_BLUE, strength),
     };
-    out.extend_from_slice(&[refinement.edge_softness, despill, strength]);
+    out.extend_from_slice(&[
+        refinement.edge_softness,
+        despill,
+        strength,
+        refinement.light_wrap,
+        refinement.light_wrap_width,
+    ]);
 }
 
 /// Validates and encodes a `scene_layer_effects_set` list.
@@ -475,6 +483,8 @@ impl Reader<'_> {
             choke,
             edge_softness,
             despill,
+            light_wrap: self.byte()?,
+            light_wrap_width: self.byte()?,
         })
     }
 

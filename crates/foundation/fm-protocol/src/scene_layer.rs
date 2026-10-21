@@ -27,6 +27,8 @@ use crate::{WireInputId, WireSceneId, WireSceneLayerId, WireSceneLayerOutline};
 pub const MAX_KEY_CHOKE: u8 = 8;
 /// Largest key edge-softness radius, in pixels (Protocol 2.70).
 pub const MAX_KEY_EDGE_SOFTNESS: u8 = 8;
+/// Largest key light wrap width, in pixels (Protocol 2.98).
+pub const MAX_KEY_LIGHT_WRAP_WIDTH: u8 = 8;
 
 /// The far edge of a layer anchor coordinate, in basis points.
 pub const SCENE_LAYER_ANCHOR_MAX: u16 = 10_000;
@@ -192,7 +194,10 @@ pub enum WireKeyDespill {
 /// A key's matte refinement (Protocol 2.70): clip, then choke (`> 0`) or
 /// spread (`< 0`), then edge softness, then the mask; despill adjusts
 /// colour. `clip_black < clip_white`, `|choke| <= MAX_KEY_CHOKE`,
-/// `edge_softness <= MAX_KEY_EDGE_SOFTNESS`.
+/// `edge_softness <= MAX_KEY_EDGE_SOFTNESS`. Light wrap (Protocol 2.98)
+/// bleeds the background into the layer's edges: `light_wrap` is its
+/// amount (`0` off) and `light_wrap_width` its reach, `0` exactly when the
+/// amount is `0` and otherwise at most `MAX_KEY_LIGHT_WRAP_WIDTH`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct WireKeyRefinement {
     pub clip_black: u8,
@@ -200,6 +205,8 @@ pub struct WireKeyRefinement {
     pub choke: i8,
     pub edge_softness: u8,
     pub despill: WireKeyDespill,
+    pub light_wrap: u8,
+    pub light_wrap_width: u8,
 }
 
 impl Default for WireKeyRefinement {
@@ -216,6 +223,8 @@ impl WireKeyRefinement {
         choke: 0,
         edge_softness: 0,
         despill: WireKeyDespill::Off,
+        light_wrap: 0,
+        light_wrap_width: 0,
     };
 
     /// Whether every bound holds.
@@ -224,6 +233,8 @@ impl WireKeyRefinement {
         self.clip_black < self.clip_white
             && self.choke.unsigned_abs() <= MAX_KEY_CHOKE
             && self.edge_softness <= MAX_KEY_EDGE_SOFTNESS
+            && (self.light_wrap == 0) == (self.light_wrap_width == 0)
+            && self.light_wrap_width <= MAX_KEY_LIGHT_WRAP_WIDTH
     }
 }
 

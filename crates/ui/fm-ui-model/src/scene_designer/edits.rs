@@ -156,6 +156,13 @@ fn key_arguments(index: usize, key: Option<WireLayerKey>) -> Vec<String> {
                 strength.to_string(),
             ]),
         }
+        if refinement.light_wrap != 0 {
+            arguments.extend([
+                "--light-wrap".to_owned(),
+                refinement.light_wrap.to_string(),
+                refinement.light_wrap_width.to_string(),
+            ]);
+        }
     }
     arguments
 }
