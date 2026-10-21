@@ -968,10 +968,12 @@ pub struct ControlService<A = Policy> {
     /// Media list items that ended under Auto Next since the authority
     /// last took them, oldest first (bounded like the end triggers).
     media_list_ends: Vec<MediaListEnd>,
-    /// Each media list's active item and the output frames it had left on
-    /// the last frame it played, so a blending transition's early Auto
-    /// Next fires once, as the item crosses its lead (IN-006).
-    media_list_leads: BTreeMap<InputId, (u32, u64)>,
+    /// Each media list's active item, the output frames it had left on
+    /// the last frame it played, and whether that was its first observed
+    /// frame, so a blending transition's early Auto Next fires once, as the
+    /// item crosses its lead or, for an item shorter than the lead, on its
+    /// second played frame (IN-006).
+    media_list_leads: BTreeMap<InputId, (u32, u64, bool)>,
     /// Inputs whose source is unavailable, and why (IN-026): runtime state
     /// reported by media faults and by the media plane.
     input_offline: BTreeMap<InputId, fm_protocol::InputOfflineReason>,

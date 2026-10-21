@@ -101,7 +101,7 @@ const fn wire_options(options: MediaListOptions) -> MediaListOptionsSpec {
 pub(crate) fn item_done(
     engine: &Engine,
     frame: &fm_engine::EngineMediaFrame,
-    leads: &mut BTreeMap<fm_types::InputId, (u32, u64)>,
+    leads: &mut BTreeMap<fm_types::InputId, (u32, u64, bool)>,
 ) -> bool {
     let ended = frame.tick.as_ref().is_some_and(|tick| {
         tick.events
@@ -117,14 +117,17 @@ pub(crate) fn item_done(
 /// blending transition's frames of its out point while playing under Auto
 /// Next, with a next item that plays (IN-006): the authority then steps
 /// the list early so the two items overlap. `leads` keeps each list's
-/// active item and the output frames it had left on its last playing
-/// frame; the lead fires once, on the frame the item crosses it, never on
-/// an item's first observed frame (an item shorter than its transition
-/// advances when it ends).
+/// active item, the output frames it had left on its last playing frame,
+/// and whether that frame was the item's first observed one; the lead
+/// fires once, on the frame the item crosses it, never on an item's first
+/// observed frame: an item shorter than its transition (already within it
+/// on its first frame) steps on its first played frame after the first, so
+/// the list keeps its length and the item plays on under the next one
+/// instead of freezing on its last frame for the whole transition.
 pub(crate) fn transition_lead_reached(
     engine: &Engine,
     frame: &fm_engine::EngineMediaFrame,
-    leads: &mut BTreeMap<fm_types::InputId, (u32, u64)>,
+    leads: &mut BTreeMap<fm_types::InputId, (u32, u64, bool)>,
 ) -> bool {
     let input = frame.input;
     let Some(list) = engine.show().media_list(input) else {
@@ -156,10 +159,18 @@ pub(crate) fn transition_lead_reached(
         engine.frame_rate(),
         status.settings.speed_basis_points,
     );
-    let previous = leads.insert(input, (list.active, remaining));
+    let first = previous_item(leads.get(&input)) != Some(list.active);
+    let previous = leads.insert(input, (list.active, remaining, first));
     next_plays
         && remaining <= lead
-        && previous.is_some_and(|(active, before)| active == list.active && before > lead)
+        && previous.is_some_and(|(active, before, was_first)| {
+            active == list.active && (before > lead || was_first)
+        })
+}
+
+/// The active item a lead record describes.
+fn previous_item(record: Option<&(u32, u64, bool)>) -> Option<u32> {
+    record.map(|(active, _, _)| *active)
 }
 
 /// How many output frames `source_frames` source frames at `source_rate`

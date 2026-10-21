@@ -568,3 +568,58 @@ fn a_blending_transition_steps_auto_next_early_by_its_length() {
     // cues the first: all ten of its frames play.
     assert_eq!(ticks_to_end(&mut control), (10, 2));
 }
+
+/// An item shorter than its blending transition (ten frames under a
+/// twelve-frame fade) is within the lead from its first frame: Auto Next
+/// steps on its first played frame after the first, so it plays on under
+/// the next item and the list keeps its length, rather than playing to its
+/// end and holding its last frame through the whole transition.
+#[test]
+fn an_item_shorter_than_its_transition_steps_on_its_second_frame() {
+    let options = MediaListOptionsSpec {
+        auto_next: true,
+        loop_list: true,
+        transition: fm_protocol::MediaListTransitionSpec {
+            kind: fm_protocol::MediaListTransitionKind::Fade,
+            duration_frames: 12,
+        },
+        ..MediaListOptionsSpec::default()
+    };
+    let mut ten = items();
+    ten[0].mark_out = Some(20);
+    ten[1].mark_out = Some(10);
+    let mut control = service(64, 256);
+    let created = submit(
+        &mut control,
+        Role::Graphics,
+        "create",
+        payload(MediaListOperation::Create {
+            name: "Walk-in".to_owned(),
+            items: ten,
+            options,
+        }),
+    );
+    assert!(created.is_accepted(), "{:?}", created.output.result);
+    let play = submit(
+        &mut control,
+        Role::Operator,
+        "play",
+        CommandPayload::Media {
+            input: list(),
+            operation: MediaOperation::Play,
+        },
+    );
+    assert!(play.is_accepted(), "{:?}", play.output.result);
+    // Frame 10 plays first (nine frames left, within the twelve); the step
+    // comes on the frame presenting 11, once.
+    assert_eq!(ticks_to_end(&mut control), (2, 1));
+    let advanced = submit(
+        &mut control,
+        Role::Operator,
+        "advance",
+        payload(MediaListOperation::Advance { from: 1 }),
+    );
+    assert!(advanced.is_accepted(), "{:?}", advanced.output.result);
+    // The second item (looping on to the first) does the same.
+    assert_eq!(ticks_to_end(&mut control), (2, 2));
+}
