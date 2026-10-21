@@ -1443,7 +1443,7 @@ fn decode_title_state(fields: &mut Fields) -> Result<TitleStateMessage, CodecErr
 }
 
 /// A title's complete field state from its `fields`, `field_names`,
-/// `field_exposed` (Protocol 2.90), and `field_revisions` (Protocol 2.97)
+/// `field_exposed` (Protocol 2.90), and `field_revisions` (Protocol 2.96)
 /// values; no field revision may exceed the title's `field_revision`.
 fn decode_title_field_statuses(
     fields: &mut Fields,

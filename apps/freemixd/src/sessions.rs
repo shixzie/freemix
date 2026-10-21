@@ -194,7 +194,7 @@ struct Peer {
     /// Live records taken from the subscription that met transient
     /// backpressure, queued first on a later pass, in order: an event, and
     /// after a Web peer's `title_exposure_changed` the `title_state`
-    /// records that resynchronize its titles (Protocol 2.97).
+    /// records that resynchronize its titles (Protocol 2.96).
     deferred_live: VecDeque<WireMessage>,
     /// Bytes written to the raw socket so far, so a pass can tell whether
     /// the last write made progress.
@@ -2688,7 +2688,7 @@ fn web_title_command(peer: &Peer, command: &fm_protocol::CommandMessage) -> bool
 /// title records leave out the fields their titles hide (`hidden`, present
 /// whenever a Web peer is connected), and its `title_exposure_changed` event
 /// is followed by one `title_state` per title it names, as the Web session
-/// may now see it (`title_states`, Protocol 2.97), so a newly exposed
+/// may now see it (`title_states`, Protocol 2.96), so a newly exposed
 /// field's name and value reach the page without a reconnect.
 fn drain_live(
     peers: &mut [Peer],

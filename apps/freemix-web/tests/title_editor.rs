@@ -775,7 +775,7 @@ fn pushed_snapshots_follow_clean_titles_and_stale_dirty_ones() {
     );
 
     // With a draft on another field, the push moves Bob's base along
-    // (Protocol 2.97): fields are revisioned one by one, so his draft is
+    // (Protocol 2.96): fields are revisioned one by one, so his draft is
     // not stale and may be saved; airing it needs a fresh preview.
     bob.set_input(lt, field(ROLE), "Bob's Role").unwrap();
     bob.preview(lt).unwrap();

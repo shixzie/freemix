@@ -111,7 +111,7 @@ pub(crate) fn web_title_state(mut state: TitleStateMessage) -> TitleStateMessage
 }
 
 /// The `title_state` records that resynchronize a Web session after a
-/// `title_exposure_changed` event naming `inputs` (Protocol 2.97): each
+/// `title_exposure_changed` event naming `inputs` (Protocol 2.96): each
 /// named title still in `states`, as the session may now see it, in input
 /// order. They are taken when the event is queued, so they hold every value
 /// up to then; a `title_changed` already queued behind them names an older

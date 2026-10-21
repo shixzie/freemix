@@ -2,7 +2,7 @@
 //! Graphics page on the plain `--web-listen` gateway uploads an image over
 //! the `/v1/assets/images` HTTP API, sets an exposed image field to it while
 //! Studio edits another field of the same title revision (per-field
-//! revisions, Protocol 2.97), and sees the native renderer draw the upload
+//! revisions, Protocol 2.96), and sees the native renderer draw the upload
 //! in its title preview, a draft image before it is saved, the refusal of a
 //! stale edit, and a field Studio exposes arriving live in a fresh
 //! `title_state` without a reconnect. Uploads the renderer could never draw

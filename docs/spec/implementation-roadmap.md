@@ -90,7 +90,7 @@ highest-value remaining items, ranked:
    per-field browser exposure (set in Studio's TITLES tab), server-rendered
    draft previews and an image picker with uploads in the page, live
    `title_phases`, and a read-only In / Hold / Out strip in Studio.
-   Protocol 2.97 (schema 78) adds per-field revisions, so editors of
+   Protocol 2.96 (schema 78) adds per-field revisions, so editors of
    different fields of one title never clobber each other while a stale
    edit of the same field is refused as a conflict; a live `title_state`
    after every exposure change, so newly exposed fields reach open pages
@@ -3908,7 +3908,7 @@ authenticated HTTPS endpoints (`/v1/assets/images`), which sniff the type,
 cap the size at 8 MiB, decode-check the image, sanitize the name, and store it
 inside the bundle under `assets/uploads/`; and lossy `title_phases` records
 drive an In / Hold / Out line with an extrapolated progress bar. Protocol
-2.97 (schema 78) closes three more. Each title field carries the field
+2.96 (schema 78) closes three more. Each title field carries the field
 revision that last changed its value (persisted as each field's
 `"revision"` in `project.json`, so journal replay stays deterministic, and
 sent as `title_state`'s `field_revisions`); an edit applies when its

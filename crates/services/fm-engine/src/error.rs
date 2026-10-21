@@ -569,7 +569,7 @@ pub enum TitleRejection {
         actual: u64,
     },
     /// A field the edit sets changed after its `base_revision` (Protocol
-    /// 2.97): another editor's change would be overwritten.
+    /// 2.96): another editor's change would be overwritten.
     StaleField {
         field: FieldId,
         expected: u64,

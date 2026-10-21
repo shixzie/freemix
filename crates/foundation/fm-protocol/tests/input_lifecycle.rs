@@ -11,7 +11,7 @@ use fm_protocol::{
     WireInputSource, WireMessage, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.95\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.96\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())

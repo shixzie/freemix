@@ -1418,7 +1418,7 @@ fn encode_title_state(record: &mut Record, message: &TitleStateMessage) -> Resul
 }
 
 /// A title's complete field state as its `fields`, `field_names`,
-/// `field_exposed` (Protocol 2.90), and `field_revisions` (Protocol 2.97)
+/// `field_exposed` (Protocol 2.90), and `field_revisions` (Protocol 2.96)
 /// values.
 fn encode_title_field_statuses(
     statuses: &[crate::TitleFieldStatus],

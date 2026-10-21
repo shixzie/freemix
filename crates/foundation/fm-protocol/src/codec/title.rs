@@ -485,7 +485,7 @@ pub(super) fn decode_title_field_exposure(
         .collect()
 }
 
-/// Encodes each field's revision (Protocol 2.97) positionally as
+/// Encodes each field's revision (Protocol 2.96) positionally as
 /// comma-separated canonical decimals, one per field.
 pub(super) fn encode_title_field_revisions(revisions: impl IntoIterator<Item = u64>) -> String {
     revisions

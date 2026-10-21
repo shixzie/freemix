@@ -14,7 +14,7 @@ use fm_protocol::{
     TitleTimelineStatus, WireInputId, WireMessage, WireTitleFieldId, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.95\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.96\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
@@ -63,7 +63,7 @@ fn event(payload: EventPayload) -> WireMessage {
 
 #[test]
 fn the_protocol_is_2_90() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 95));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 96));
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn previews_carry_draft_fields_only_when_there_are_any() {
     let line = round_trip(&preview(Vec::new()));
     assert_eq!(
         line,
-        "title_preview_request\tprotocol=2.95\trequest_id=web-1\tinput=7\tphase=hold\t\
+        "title_preview_request\tprotocol=2.96\trequest_id=web-1\tinput=7\tphase=hold\t\
          frame=0\twidth=320\theight=180\n"
     );
     let drafted = preview(vec![
@@ -310,7 +310,7 @@ fn title_state(revisions: [u64; 2]) -> WireMessage {
 
 #[test]
 fn title_states_carry_exact_per_field_revisions() {
-    // Protocol 2.97: each field's revision follows its exposure flag,
+    // Protocol 2.96: each field's revision follows its exposure flag,
     // positionally, none above the title's field revision.
     let line = round_trip(&title_state([0, 6]));
     assert!(

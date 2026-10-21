@@ -2717,7 +2717,7 @@ fn web_until<T>(socket: &mut Browser, mut found: impl FnMut(&str, WireMessage) -
 }
 
 /// The next record, which must be a `title_state` (one follows each
-/// `title_exposure_changed` a Web session gets, Protocol 2.97); lossy
+/// `title_exposure_changed` a Web session gets, Protocol 2.96); lossy
 /// status records in between are skipped.
 fn next_title_state(socket: &mut Browser) -> fm_protocol::TitleStateMessage {
     web_until(socket, |line, message| match message {
@@ -2940,7 +2940,7 @@ fn web_title_editor_hides_fields_previews_drafts_and_follows_phases() {
     assert_eq!(exposed.0, [title]);
     assert_eq!(exposed.1.len(), 2);
     assert!(exposed.1.iter().all(|item| item.exposed));
-    // Protocol 2.97: the page's title follows at once, with the newly
+    // Protocol 2.96: the page's title follows at once, with the newly
     // exposed field's name, value, and revision, without a reconnect.
     let resynced = next_title_state(&mut graphics);
     assert_eq!((resynced.input, resynced.field_revision), (title, 1));
@@ -2992,7 +2992,7 @@ fn web_title_editor_hides_fields_previews_drafts_and_follows_phases() {
     );
 }
 
-/// GX-006 per-field revisions (Protocol 2.97): Studio and a browser that
+/// GX-006 per-field revisions (Protocol 2.96): Studio and a browser that
 /// both saw the same title revision edit different fields of it and both
 /// edits apply; a stale edit of a field someone else changed is refused as
 /// `title_revision_conflict`, from another browser and from Studio alike,

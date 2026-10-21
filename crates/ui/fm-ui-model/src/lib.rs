@@ -5638,7 +5638,7 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                 .expect("validated title change names a title");
             title.field_revision = field_revision;
             // A field's revision is the title revision that last changed
-            // its value (Protocol 2.97).
+            // its value (Protocol 2.96).
             for (current, update) in title.fields.iter_mut().zip(fields) {
                 if current.value != update.value {
                     current.value = update.value;

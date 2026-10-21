@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.95 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.96 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -3697,7 +3697,7 @@ schema 77).
   item's file length and played duration, and the total.
 - 2.94 is refused.
 
-Protocol 2.97 gives title fields their own revisions and keeps browser
+Protocol 2.96 gives title fields their own revisions and keeps browser
 title editors in step with exposure changes (GX-006, schema 78).
 
 - Each title field has a field revision: the title `field_revision` that
@@ -3740,7 +3740,7 @@ title editors in step with exposure changes (GX-006, schema 78).
 - Durability (schema 78): each title input field in `project.json` carries
   `"revision"`, its field revision, at most the title's
   `"field_revision"`; restore refuses a field revision ahead of its title.
-- 2.93 is refused.
+- 2.95 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

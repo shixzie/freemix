@@ -2003,7 +2003,7 @@ mod titles {
         assert_eq!(title.fields[0].name, "Name", "names are kept");
         assert_eq!(title.fields[0].value, TitleFieldValue::Text("Bea".into()));
         assert_eq!(title.fields[1].value, TitleFieldValue::Number(7));
-        // Each changed field moves to the event's field revision (2.97).
+        // Each changed field moves to the event's field revision (2.96).
         assert_eq!((title.fields[0].revision, title.fields[1].revision), (3, 3));
         assert_eq!(
             state.desired_overlays(),

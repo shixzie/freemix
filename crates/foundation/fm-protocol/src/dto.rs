@@ -1485,7 +1485,7 @@ pub struct TitleFieldStatus {
     pub exposed: bool,
     /// The title field revision that last changed this field's value,
     /// zero for a template default never changed, and never above the
-    /// title's `field_revision` (Protocol 2.97). A `title_fields` or
+    /// title's `field_revision` (Protocol 2.96). A `title_fields` or
     /// `title_take` edit made against a `base_revision` below it is refused
     /// as a conflict.
     pub revision: u64,

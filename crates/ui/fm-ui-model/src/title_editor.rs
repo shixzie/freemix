@@ -3,7 +3,7 @@
 //! The model keeps, per title input, the last server snapshot, the snapshot
 //! the operator's drafts are based on, and one draft per edited exposed
 //! field. Every value-carrying command names its base revision. Fields are
-//! revisioned one by one (Protocol 2.97): another editor's change to a field
+//! revisioned one by one (Protocol 2.96): another editor's change to a field
 //! without a draft moves the base along with it, while a change to a drafted
 //! field makes the title stale, and a stale base comes back as a conflict
 //! that keeps the drafts and shows the server's current values until the
@@ -108,7 +108,7 @@ pub struct ExposedField {
     pub name: String,
     pub value: TitleFieldValue,
     /// The title field revision that last changed the value (Protocol
-    /// 2.97): a draft of this field is stale once it passes the draft's base.
+    /// 2.96): a draft of this field is stale once it passes the draft's base.
     pub revision: u64,
 }
 
@@ -786,7 +786,7 @@ impl Entry {
     }
 
     /// Whether the server changed `field` after the drafts' base: its field
-    /// revision passed the base (Protocol 2.97), its value or type moved,
+    /// revision passed the base (Protocol 2.96), its value or type moved,
     /// or it is no longer there.
     fn changed_upstream(&self, field: WireTitleFieldId) -> bool {
         match (self.live.field(field), self.base.field(field)) {
@@ -899,7 +899,7 @@ impl Entry {
             }
         }
         // Only another editor's change to a field still drafted conflicts
-        // (Protocol 2.97); changes to other fields become the base.
+        // (Protocol 2.96); changes to other fields become the base.
         let concurrent = self.drafts.keys().any(|id| {
             ours.field(*id).map(|field| &field.value)
                 != snapshot.field(*id).map(|field| &field.value)

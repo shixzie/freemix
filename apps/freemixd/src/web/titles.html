@@ -261,7 +261,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.95";
+  const PROTOCOL = "2.96";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -867,7 +867,7 @@
     if (names.length !== count) throw new Error("field names do not match fields");
     return names;
   }
-  // Field revisions (Protocol 2.97): one decimal per field, positionally:
+  // Field revisions (Protocol 2.96): one decimal per field, positionally:
   // the title revision that last changed each field's value.
   function parseFieldRevisions(value, count) {
     const revisions = value ? value.split(",").map(Number) : [];
@@ -1260,7 +1260,7 @@
       }
       case "title_state": {
         // After the snapshot, and live after a title_exposure_changed event
-        // (Protocol 2.97): the title's fields as this page may now see them.
+        // (Protocol 2.96): the title's fields as this page may now see them.
         if (link.phase !== "live") throw new Error("unexpected title state");
         const id = required(record, "input");
         const title = titles.get(id);
@@ -1379,7 +1379,7 @@
       const revision = Number(required(record, "field_revision"));
       const own = ownChanges.delete(link.revision);
       // A live title_state written after this event was queued already
-      // holds it (Protocol 2.97).
+      // holds it (Protocol 2.96).
       if (title.fields && revision < title.fieldRevision) return;
       const previous = title.fieldRevision;
       title.fieldRevision = revision;
@@ -1408,7 +1408,7 @@
     } else if (name === "title_exposure_changed") {
       // The fields each title now shows this page (the server names only
       // exposed ones). A newly exposed field's name and value follow in a
-      // title_state for each listed title (Protocol 2.97); a hidden one
+      // title_state for each listed title (Protocol 2.96); a hidden one
       // disappears now.
       const list = required(record, "fields");
       const exposed = new Set((list ? list.split(",") : []).filter((item) => item.endsWith(":1"))
@@ -1723,7 +1723,7 @@
 
   // Drops edits that now equal the server's value; a draft whose base is
   // older than the server's revision is stale until the operator decides.
-  // Fields are revisioned one by one (Protocol 2.97): another editor's
+  // Fields are revisioned one by one (Protocol 2.96): another editor's
   // change to a field this page has no draft for moves the draft's base
   // along (the server accepts an edit that touches only fields unchanged
   // since its base); a change to a drafted field leaves it stale.

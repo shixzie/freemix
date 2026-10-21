@@ -395,7 +395,7 @@ fn saving_fields_advances_the_revision_once_and_reports_it() {
 
 #[test]
 fn editors_of_different_fields_never_clobber_each_other() {
-    // Two editors both saw revision 0 (GX-006, Protocol 2.97).
+    // Two editors both saw revision 0 (GX-006, Protocol 2.96).
     let mut engine = engine();
     assert_accepted(&run(
         &mut engine,
