@@ -13357,8 +13357,9 @@ fn native_group_vet(
 }
 
 /// Executes one member of a native group commit on the group's control
-/// copy: as [`execute_native_authority_command`] does, but its first frame
-/// is not realized here. `frame_due` is set when the command would have
+/// copy: as [`execute_native_authority_command`] does (host media it names
+/// comes into the bundle first, through `store`, which a group that cannot
+/// be made durable discards), but its first frame is not realized here. `frame_due` is set when the command would have
 /// realized one, and [`realize_native_group`] realizes it for the whole
 /// group once the group is durable.
 fn execute_native_group_member(
@@ -13377,6 +13378,8 @@ fn execute_native_group_member(
     {
         return Ok(CommandDelivery::answer(result));
     }
+    let imported = import_host_media(control, store, &member.principal, command, now);
+    let command = imported.command.as_ref().unwrap_or(command);
     let execution = execute_durable_command_with_ticks(
         control,
         store,
@@ -13392,6 +13395,7 @@ fn execute_native_group_member(
             Ok(Vec::new())
         },
     )?;
+    imported.discard_unused(store, durable.project());
     Ok(durable_delivery(execution))
 }
 
@@ -25279,6 +25283,79 @@ mod tests {
         assert_eq!(replayed.position(), durable.position());
         assert_eq!(replayed.runtime_routing(), durable.runtime_routing());
         assert_eq!(replayed.project(), durable.project());
+    }
+
+    /// A native group member naming host media (here an image input's
+    /// picture) brings it into the bundle first, as the same command alone
+    /// does on either daemon and in a simulated group: it is journaled with
+    /// the picture's `asset://` URI, not refused as naming no project asset.
+    #[test]
+    fn a_native_group_member_imports_the_host_media_it_names() {
+        use journal::DurableJournal;
+
+        let directory = tempfile::tempdir().unwrap();
+        let host = directory.path().join("host");
+        fs::create_dir_all(&host).unwrap();
+        let picture = host.join("logo.png");
+        image::RgbaImage::new(2, 2).save(&picture).unwrap();
+        let store = ProjectStore::new(directory.path().join("native-import.freemix")).unwrap();
+        let manifest = test_project();
+        store.save(&manifest).unwrap();
+        let control: SharedControl = Rc::new(RefCell::new(test_control(&manifest)));
+        let server = test_server(&control.borrow());
+        let input = fm_protocol::WireInputId::from_domain(test_input_id(9));
+        let commands = [test_command(
+            "add-logo",
+            "add-logo-key",
+            CommandPayload::AddInput {
+                input,
+                name: "Logo".into(),
+                source: fm_protocol::LiveInputSource::Image(Box::new(
+                    fm_types::still::ImageInputConfig::new(
+                        picture.to_string_lossy(),
+                        fm_types::OutputScaling::Fill,
+                    ),
+                )),
+            },
+        )];
+        let members = group_members(&commands, &server);
+        let journal = DurableJournal::open(&store).unwrap();
+        let mut speculation = control.borrow().speculate();
+        let recorder = GroupRecorder::new(&journal);
+        let mut staged = manifest.clone();
+        let mut frame_due = false;
+        let result = execute_native_group_member(
+            &mut speculation,
+            &recorder,
+            &mut staged,
+            &members[0],
+            0,
+            None,
+            &mut frame_due,
+        )
+        .unwrap()
+        .result;
+        assert!(
+            matches!(result, CommandResult::Accepted { revision: 1, .. }),
+            "{result:?}"
+        );
+        let added = staged
+            .project()
+            .inputs()
+            .iter()
+            .find(|candidate| candidate.id == test_input_id(9))
+            .expect("the image input");
+        assert_eq!(added.kind.file_asset_uris(), ["asset://logo.png"]);
+        assert!(store.assets_root().join("logo.png").is_file());
+        let records = recorder.records.take();
+        let CommandPayload::AddInput {
+            source: fm_protocol::LiveInputSource::Image(image),
+            ..
+        } = &records[0].command.payload
+        else {
+            panic!("{:?}", records[0].command);
+        };
+        assert_eq!(image.asset_uri, "asset://logo.png");
     }
 
     /// The receipts of accepted commands: a refusal's receipt rides the
