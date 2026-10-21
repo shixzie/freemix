@@ -4063,6 +4063,46 @@ Protocol 2.103 shows strip FX gain reduction on the Web operator page
   a stage without an entry shows `—`.
 - 2.102 is refused.
 
+Protocol 2.104 keeps the values of title fields hidden from browsers out of
+the cue lists, shortcuts, and scripts a Web session is sent (GX-006). No
+schema change.
+
+- A cue action token `title_text.<input>.<field>.hidden` or
+  `title_number.<input>.<field>.hidden` stands for a title text or number
+  action whose value (and, for a number, its `set`/`add` mode) is hidden
+  from the session. The marker is exactly `hidden`: it is not lowercase hex
+  and not a mode, so no real action token carries it, and any other spelling
+  is refused. It may appear wherever a cue or shortcut action does.
+- A Web session's `cue_list_state`, `cue_list_changed`, `shortcut_state`,
+  and `shortcut_changed` carry the marker in place of each title text or
+  number action aimed at a field hidden from it. An action on a fixed title
+  is hidden when that title hides the field; an action on `preview`,
+  `program`, or `selected` (bound only when it fires) is hidden when any
+  title hides a field of that id, since the title it reaches is unknown.
+  Resumed events are filtered as live ones are.
+- `script_state` and `script_changed` carry `source=hidden` in place of
+  the source's hex when the source is withheld; a Web session's always are
+  (a script's verbs cannot be reliably redacted), so it sees each script's
+  name and run state only. `script_set` never carries the marker.
+- After a `title_exposure_changed` (and the `title_state` records that
+  follow it, Protocol 2.96), a Web session receives one `cue_list_state`
+  per cue list and one `shortcut_state` per shortcut that sets a title
+  field, in project order, as it may now see them.
+- A Web session's `cue_list_set` or `shortcut_set` may send a marker back
+  where the stored definition has the action it stands for: the same cue
+  id (for a shortcut, the same shortcut) and action position, the same
+  title target, field, and kind, still hidden from the session. The stored
+  action is kept, so redaction never overwrites real values. A marker
+  anywhere else is refused `invalid_command`; an action aimed at a hidden
+  field with a value of its own is refused `permission_denied` whatever the
+  value (so an edit cannot test a guess); and its `script_set` is refused
+  `permission_denied`. Removing an action, cue, or list is allowed.
+- The authority never stores or runs a marker: a `cue_list_set` or
+  `shortcut_set` that still carries one (from any raw session, Studio
+  included) is refused `invalid_command` before it reaches the engine.
+- Studio and other raw sessions see every value and source, unchanged.
+- 2.103 is refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision

@@ -118,7 +118,9 @@ highest-value remaining items, ranked:
    edit of the same field is refused as a conflict; a live `title_state`
    after every exposure change, so newly exposed fields reach open pages
    (and hidden ones leave them) without a reconnect; tighter image uploads;
-   and a native-daemon check of the browser flow. Still missing: the
+   and a native-daemon check of the browser flow. Protocol 2.104 keeps
+   hidden values out of the cue lists, shortcuts, and scripts a browser is
+   sent, and its edits keep the stored values. Still missing: the
    rendered preview draws hidden fields as on air, and `GX-006` awaits its
    capability-profile certification.
 
@@ -4160,8 +4162,20 @@ edges; larger pictures were accepted before and drawn blank), a `Transfer-Encodi
 than stored with its framing, and a non-regular file under `assets/` is
 never opened. `apps/freemixd/tests/native_web_titles.rs` drives the upload,
 draft preview, per-field edits, stale refusal, and live resync against a
-native-media daemon whose renderer draws the uploaded image. Remaining gaps:
-the rendered preview draws hidden fields as on air, and the capability
+native-media daemon whose renderer draws the uploaded image. Protocol 2.104
+keeps hidden values out of the definitions that set title fields: a Web
+session's cue lists and shortcuts carry each title text or number action
+aimed at a field hidden from it as a `hidden` marker (an action on
+`preview`, `program`, or `selected` counts as hidden when any title hides a
+field of that id), its scripts carry no source, and after an exposure change
+it is re-sent every cue list and shortcut that sets a title field. Its edits
+that send a marker back keep the stored action (matched by cue id, action
+position, title target, field, and kind); a marker anywhere else is refused
+`invalid_command` (from Studio too), and an action setting a hidden field
+with its own value, or any `script_set`, is refused `permission_denied`.
+`apps/freemixd/tests/web_tally.rs` scans every record a Graphics page gets.
+Remaining gaps: the rendered preview draws hidden fields as on air, a script
+fault's message may quote a token of its source, and the capability
 profiles are not certified. `GX-006` remains planned.
 
 
