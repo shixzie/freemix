@@ -169,14 +169,21 @@ impl PreviewPacer {
 pub const KEY_PICTURE_REFRESH: Duration = Duration::from_secs(3);
 /// The request id prefix of the designer's input pictures.
 pub const KEY_PICTURE_PREFIX: &str = "design-key-picture-";
+/// The request id prefix of the Colour window's pictures of a grade
+/// target's source (SW-019).
+pub const COLOR_PICTURE_PREFIX: &str = "color-picture-";
 
 /// Paces the requests for the selected layer's input picture that auto key
 /// samples (SW-008, see the module documentation): one at a time, at least
 /// [`PREVIEW_MIN_INTERVAL`] apart, given up after [`PREVIEW_TIMEOUT`], and
 /// again every [`KEY_PICTURE_REFRESH`] (also after a refusal) while the
 /// same input stays selected.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+///
+/// The Colour window paces its pictures of a grade target's source the
+/// same way under its own request id prefix ([`Self::with_prefix`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyPicturePacer {
+    prefix: &'static str,
     issued: u64,
     in_flight: Option<(String, InputId, Duration)>,
     /// The newest picture and when it was asked for.
@@ -186,7 +193,32 @@ pub struct KeyPicturePacer {
     last_issue: Option<Duration>,
 }
 
+impl Default for KeyPicturePacer {
+    fn default() -> Self {
+        Self::with_prefix(KEY_PICTURE_PREFIX)
+    }
+}
+
 impl KeyPicturePacer {
+    /// A pacer whose request ids start with `prefix`.
+    #[must_use]
+    pub const fn with_prefix(prefix: &'static str) -> Self {
+        Self {
+            prefix,
+            issued: 0,
+            in_flight: None,
+            picture: None,
+            refused: None,
+            last_issue: None,
+        }
+    }
+
+    /// Whether `request_id` is one of this pacer's requests (by prefix).
+    #[must_use]
+    pub fn issues(&self, request_id: &str) -> bool {
+        request_id.starts_with(self.prefix)
+    }
+
     /// The request to send now for `input`'s picture at `size`, if one is
     /// due; `allowed` is false when previews cannot be asked for (or the
     /// designer's own preview is in flight).
@@ -225,7 +257,7 @@ impl KeyPicturePacer {
             return None;
         }
         self.issued += 1;
-        let request_id = format!("{KEY_PICTURE_PREFIX}{}", self.issued);
+        let request_id = format!("{}{}", self.prefix, self.issued);
         self.in_flight = Some((request_id.clone(), input, now));
         self.last_issue = Some(now);
         Some(ScenePreviewRequest {

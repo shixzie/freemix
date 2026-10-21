@@ -1999,6 +1999,7 @@ messages! {
     ColorLutInvalid => t("{file} is not a valid .cube LUT: {error}"),
     ColorLutImporting => t("Importing LUT {name}…"),
     ColorSourceLive => t("Picture: live {tap} monitor frame"),
+    ColorSourceServer => t("Picture: the server's picture of this source, refreshed every 3 s while it is on no monitor ungraded"),
     ColorSourceHeld => t("Picture: last ungraded frame of this source; the monitors show the grade on air"),
     ColorSourceStill => t("Picture: test still. No ungraded frame of this source has arrived; put it on Preview to preview it live"),
     ColorSourceLayerStill => t("Picture: test still. No frame of this layer's source has arrived; put its input on Preview to preview the layer live"),

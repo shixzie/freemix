@@ -120,8 +120,9 @@ Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
 since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
 (see the `IN-003` boundary).
 
-Smaller follow-ups found by the audit: the Colour window sends no
-`ScenePreview` (`SW-019`); headphone output needs device enumeration
+Smaller follow-ups found by the audit: the Colour window now asks the
+server for its target's source picture when no monitor shows it ungraded
+(`SW-019`, see its boundary below); headphone output needs device enumeration
 (`AU-001`). `fm-observability`'s `MetricRegistry` and `AlertEngine` now run in
 both daemons with CPU and GPU-proxy utilization, default alert rules, and a
 `health_status` view in Studio and `remote-diagnostics` (`RC-015`); network,
@@ -3794,12 +3795,26 @@ scene), so when a fresh Preview monitor frame, or a Program frame while the
 program grade is identity, shows that source, the window grades it
 locally with the draft layer grade; otherwise it shows the last clean
 frame it held for the target, and before any a test still with a caption
-saying so. Remaining gaps: the Colour window does not request an exact
-scene preview of a layer's source, so a layer whose source is on neither
-monitor previews on its last held frame or a still, and the preview is the
-source picture rather than the layer posed in its scene; the window's
+saying so. Since Protocol 2.97 the window also asks the server for the
+clean picture of a target no monitor shows ungraded (no wire change: a
+`scene_preview_request` with `color-picture-` request ids, at most one in
+flight, at most one per input every 3 s like the layer designer's key
+picture, never while a grade drag runs or the designer's own preview
+flies, and only over raw TCP with `EditProject`): an input target's own
+ungraded picture (a Scene input's composed scene only while its own grade
+is identity), and for a layer the picture of the input it draws (a Scene
+input's composed, graded scene as is; any other input's ungraded picture
+with that input's replicated grade applied locally, without a LUT the
+window does not hold) or of an ungraded Scene input showing the scene it
+draws. Up to 480x270 in the canvas shape, it feeds the same Corrected,
+Original, Side-by-side, and wipe modes and scopes, captioned as the
+server's picture (English and Spanish). Program, not an input, still
+previews only its clean monitor frame, last held frame, or still.
+Remaining gaps: the preview is the source picture rather than the layer
+posed in its scene; the window's
 before/after split and scopes are computed locally from the monitor
-proxy frame, not from the full-resolution graded output; and native
+proxy frame or the server's reduced picture, not from the full-resolution
+graded output; and native
 graded scene previews match the GPU only within the 8-bit CPU and 16-bit
 float GPU pipeline difference, so `SW-019` remains planned. Grades travel
 between

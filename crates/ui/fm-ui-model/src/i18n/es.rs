@@ -5223,6 +5223,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Imagen: fotograma en vivo del monitor {tap}"),
     ),
     (
+        Msg::ColorSourceServer,
+        t(
+            "Imagen: la imagen de esta fuente enviada por el servidor, actualizada cada 3 s mientras no esté sin corregir en ningún monitor",
+        ),
+    ),
+    (
         Msg::ColorSourceHeld,
         t(
             "Imagen: último fotograma sin corregir de esta fuente; los monitores muestran la corrección al aire",

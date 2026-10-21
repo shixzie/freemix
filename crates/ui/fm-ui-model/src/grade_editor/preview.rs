@@ -366,6 +366,12 @@ impl GradePreview {
         self.luts.contains_key(asset_uri)
     }
 
+    /// The parsed LUT supplied for `asset_uri`.
+    #[must_use]
+    pub fn lut(&self, asset_uri: &str) -> Option<&Arc<CubeLut>> {
+        self.luts.get(asset_uri)
+    }
+
     /// The URIs of every supplied LUT.
     pub fn lut_uris(&self) -> impl Iterator<Item = &str> {
         self.luts.keys().map(String::as_str)

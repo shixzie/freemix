@@ -6,7 +6,7 @@
 use fm_client::Client;
 use fm_protocol::{CommandPayload, CommandResult, ErrorMessage};
 use fm_ui_egui::{StudioShell, StudioUiState, TitleAnimationRefusal};
-use fm_ui_model::scene_designer::preview::{KeyPicturePacer, PreviewPacer};
+use fm_ui_model::scene_designer::preview::{COLOR_PICTURE_PREFIX, KeyPicturePacer, PreviewPacer};
 use fm_ui_model::title_animation::{TitleDesign, preview_request_id};
 
 /// The refusal of a title or scene animation edit, naming its input and
@@ -38,11 +38,14 @@ pub(crate) fn animation_refusal(
 }
 
 /// The exact preview a server error answers, if it answers one: the
-/// Animation window's or the layer designer's (its canvas picture or the
-/// selected layer's input picture).
+/// Animation window's, the layer designer's (its canvas picture or the
+/// selected layer's input picture), or the Colour window's source picture.
 pub(crate) fn preview_error_id(error: &ErrorMessage) -> Option<&str> {
     error.request_id.as_deref().filter(|id| {
-        preview_request_id(id).is_some() || PreviewPacer::owns(id) || KeyPicturePacer::owns(id)
+        preview_request_id(id).is_some()
+            || PreviewPacer::owns(id)
+            || KeyPicturePacer::owns(id)
+            || id.starts_with(COLOR_PICTURE_PREFIX)
     })
 }
 
@@ -90,6 +93,8 @@ mod tests {
         assert_eq!(preview_error_id(&designer), Some("design-preview-2"));
         let key_picture = error(Some("design-key-picture-3"));
         assert_eq!(preview_error_id(&key_picture), Some("design-key-picture-3"));
+        let colour = error(Some("color-picture-5"));
+        assert_eq!(preview_error_id(&colour), Some("color-picture-5"));
         assert_eq!(preview_error_id(&error(Some("cmd-7"))), None);
         assert_eq!(preview_error_id(&error(None)), None);
     }

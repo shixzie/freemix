@@ -871,6 +871,23 @@ fn key_pictures_are_paced_per_input_and_kept() {
     assert!(!pacer.in_flight());
 }
 
+/// SW-019: the Colour window paces its source pictures like key pictures,
+/// under its own request ids that neither designer pacer claims.
+#[test]
+fn colour_pictures_use_their_own_request_ids() {
+    use super::preview::{COLOR_PICTURE_PREFIX, KeyPicturePacer};
+
+    let mut pacer = KeyPicturePacer::with_prefix(COLOR_PICTURE_PREFIX);
+    let start = Duration::from_secs(3);
+    let first = pacer.poll(Some(input(4)), (480, 270), start, true).unwrap();
+    assert_eq!(first.request_id, "color-picture-1");
+    assert!(pacer.issues(&first.request_id));
+    assert!(!KeyPicturePacer::owns(&first.request_id));
+    assert!(!PreviewPacer::owns(&first.request_id));
+    assert!(!KeyPicturePacer::default().issues(&first.request_id));
+    assert!(KeyPicturePacer::default().issues("design-key-picture-9"));
+}
+
 #[test]
 fn the_layout_stamp_follows_every_layout_change() {
     let base = layout();

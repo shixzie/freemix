@@ -3819,7 +3819,9 @@ auto key pictures.
   `not_found`. Studio's layer designer asks for the selected layer's input
   picture this way (at most one designer preview in flight, refreshed every
   3 s) and auto key and the eyedropper sample it, up to 640x360, instead of
-  the 160x90 input thumbnail.
+  the 160x90 input thumbnail. Studio's Colour window asks for its grade
+  target's source picture the same way (`color-picture-` request ids)
+  while no monitor shows that source ungraded.
 - Durability (schema 79): each stored refinement carries required
   `"light_wrap"`, `"light_wrap_width"`, and `"garbage_matte"`: `null` or
   `{"invert": bool, "points": [[x, y], ...]}` with the bounds above.

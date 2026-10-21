@@ -848,6 +848,7 @@ impl StudioShell {
         }
         self.animation.preset_pending = None;
         self.abandon_designer_requests();
+        self.color.picture.abandon();
     }
 
     /// Records that the exact preview `request_id` never reached the
@@ -855,6 +856,7 @@ impl StudioShell {
     pub fn title_preview_unsent(&mut self, request_id: &str) {
         self.animation.preview_failed(request_id);
         self.designer_preview_unsent(request_id, Duration::ZERO);
+        self.color.picture.failed(request_id, Duration::ZERO);
     }
 
     /// `Ctrl+Shift+A` opens or closes the Animation window (on the title

@@ -9,15 +9,22 @@
 //! is a valid preview source (grading an already graded frame would apply
 //! the grade twice), so the window borrows a monitor tap frame only while
 //! the target shows there without a grade on air, keeps the last such frame
-//! per target, and otherwise previews a test still.
+//! per target. While the target is on no monitor without a grade, the
+//! window asks the server for its source's own picture instead
+//! ([`fetch_target`]: a `scene_preview_request`, which since Protocol 2.97
+//! answers a non-Scene input with its ungraded picture and a Scene input
+//! with its composed scene), one at a time and every
+//! [`KEY_PICTURE_REFRESH`], and previews a test still only until one
+//! arrives.
 //!
 //! A scene layer's grade applies after its source's input grade, so its
 //! clean picture is its source as a monitor shows it: the layer's input on
 //! Preview (or on Program while Program is ungraded), with that input's
 //! grade; for a layer drawing a scene directly, a Scene input showing that
 //! scene without a grade of its own. The window previews that live picture
-//! while it is on a monitor and the last one it saw otherwise (a test still
-//! until one arrives); it never requests an exact scene preview for it.
+//! while it is on a monitor and otherwise the server's picture of that
+//! source: a Scene input's composed scene (already carrying its grade), or
+//! an input's ungraded picture with the input's grade applied here.
 //!
 //! The window also saves the draft to the project's grade library, applies
 //! library grades (linked by reference), and imports `.cube` LUTs. Studio
@@ -32,12 +39,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use egui::{ComboBox, Key, Modifiers, RichText, ScrollArea, TextEdit, Ui};
-use fm_protocol::{MonitorImage, MonitorTap, WireInputId, WireSceneLayerSource};
+use fm_protocol::{MonitorImage, MonitorTap, TitlePreviewImage, WireInputId, WireSceneLayerSource};
 use fm_ui_model::GradingStatus;
 use fm_ui_model::grade_editor::{
     GradeBinding, GradeCommand, GradeNameProblem, GradeSyncStatus, GradeTarget, RgbaImage,
     library_name_problem, lut_id, lut_name_problem, lut_uri, next_library_id, next_lut_id,
     sample_still, target_grade,
+};
+use fm_ui_model::scene_designer::preview::{
+    COLOR_PICTURE_PREFIX, KEY_PICTURE_REFRESH, KeyPicturePacer,
 };
 
 use crate::color_panel::{ColorPanelState, ColorPanelWidget, PREVIEW_MAX};
@@ -93,6 +103,8 @@ pub enum GradeLutFile {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SourceKind {
     Live(MonitorTap),
+    /// The server's picture of the target's source.
+    Server,
     Held,
     Still,
 }
@@ -120,6 +132,12 @@ pub(crate) struct ColorWindow {
     source_frame: Option<(MonitorTap, u64)>,
     source_at: Option<Instant>,
     held: BTreeMap<GradeTarget, RgbaImage>,
+    /// Paces the requests for the server's picture of the target's source.
+    pub(crate) picture: KeyPicturePacer,
+    /// A server picture that arrived for a target, not shown yet.
+    fetched: Option<(GradeTarget, RgbaImage)>,
+    seen_image: Option<String>,
+    seen_failure: Option<String>,
     /// The last grade refusal handled.
     refusal: Option<String>,
     /// The targets ticked in `Copy to…`.
@@ -145,6 +163,10 @@ impl Default for ColorWindow {
             source_frame: None,
             source_at: None,
             held: BTreeMap::new(),
+            picture: KeyPicturePacer::with_prefix(COLOR_PICTURE_PREFIX),
+            fetched: None,
+            seen_image: None,
+            seen_failure: None,
             refusal: None,
             copy_ticked: BTreeSet::new(),
         }
@@ -332,6 +354,67 @@ pub(crate) fn ungraded_frame<'a>(
                 })
         }
     }
+}
+
+/// The input whose server picture shows `target`'s clean picture (see the
+/// module documentation), and the grade to apply over that picture here to
+/// make it clean; `None` for Program (not an input) and while the layout
+/// or grades are unknown.
+pub(crate) fn fetch_target(
+    state: &StudioUiState,
+    grading: &GradingStatus,
+    target: GradeTarget,
+) -> Option<(fm_types::InputId, Option<fm_grade::Grade>)> {
+    let project = state.project_state.as_ref()?;
+    let is_scene = |input: fm_types::InputId| project.scene(input).is_some();
+    match target {
+        GradeTarget::Program => None,
+        // A Scene input's picture carries its own grade: clean only while
+        // that grade is identity. Any other input's picture is ungraded.
+        GradeTarget::Input(input) => (!is_scene(input)
+            || target_grade(grading, target).is_identity())
+        .then_some((input, None)),
+        GradeTarget::Layer { scene, layer } => {
+            let source = project
+                .scene_layout(scene)?
+                .layout
+                .as_ref()?
+                .layers
+                .iter()
+                .find(|outline| outline.id == layer)?
+                .source;
+            match source {
+                WireSceneLayerSource::Input(input) => {
+                    let input = input.to_domain();
+                    if is_scene(input) {
+                        return Some((input, None));
+                    }
+                    let grade = target_grade(grading, GradeTarget::Input(input));
+                    Some((input, (!grade.is_identity()).then_some(grade)))
+                }
+                WireSceneLayerSource::Scene(_) => layer_source_inputs(state, grading, scene, layer)
+                    .into_iter()
+                    .next()
+                    .map(|input| (input, None)),
+            }
+        }
+    }
+}
+
+/// The size to ask the server for: the canvas shape (the newest Program
+/// frame's, else 16:9) fitted within the panel's [`PREVIEW_MAX`].
+fn fetch_size(state: &StudioUiState) -> (u16, u16) {
+    let (width, height) = state.monitor_images[MonitorTap::Program.index()]
+        .as_ref()
+        .map(|(image, _)| (u32::from(image.width), u32::from(image.height)))
+        .filter(|(width, height)| *width > 0 && *height > 0)
+        .unwrap_or((1_920, 1_080));
+    let scale = (f64::from(PREVIEW_MAX.0) / f64::from(width))
+        .min(f64::from(PREVIEW_MAX.1) / f64::from(height));
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let fit =
+        |side: u32, max: u32| (f64::from(side) * scale).round().clamp(1.0, f64::from(max)) as u16;
+    (fit(width, PREVIEW_MAX.0), fit(height, PREVIEW_MAX.1))
 }
 
 fn rgba(image: &MonitorImage) -> Option<RgbaImage> {
@@ -613,6 +696,22 @@ impl ColorWindow {
             }
             return;
         }
+        if let Some((fetched, picture)) = self.fetched.take()
+            && fetched == target
+        {
+            self.panel.set_source(&picture);
+            if self.held.len() >= HELD_SOURCES && !self.held.contains_key(&target) {
+                self.held.pop_first();
+            }
+            self.held.insert(target, picture);
+            self.source = Some((target, SourceKind::Server));
+            self.source_frame = None;
+            self.source_at = Some(now);
+            return;
+        }
+        if self.source == Some((target, SourceKind::Server)) {
+            return;
+        }
         let kind = if self.held.contains_key(&target) {
             SourceKind::Held
         } else {
@@ -630,6 +729,84 @@ impl ColorWindow {
         self.source = Some((target, kind));
         self.source_frame = None;
         self.source_at = Some(now);
+    }
+
+    /// Takes this window's server picture or refusal from `state`: a
+    /// picture of the current target's source becomes the next preview
+    /// source (with the source's input grade applied here when the server
+    /// sent it ungraded).
+    fn receive_picture(&mut self, state: &StudioUiState, time: Duration) {
+        if let Some(failed) = &state.title_preview_failed
+            && self.seen_failure.as_ref() != Some(failed)
+        {
+            self.seen_failure = Some(failed.clone());
+            self.picture.failed(failed, time);
+        }
+        let Some(image) = &state.title_preview else {
+            return;
+        };
+        if self.seen_image.as_ref() == Some(&image.request_id) {
+            return;
+        }
+        self.seen_image = Some(image.request_id.clone());
+        if !self.picture.received(image) {
+            return;
+        }
+        let target = self.target;
+        if let Some(picture) = grading(state)
+            .and_then(|grading| fetch_target(state, grading, target))
+            .filter(|(input, _)| image.input == WireInputId::from_domain(*input))
+            .and_then(|(_, grade)| self.fetched_picture(image, grade.as_ref()))
+        {
+            self.fetched = Some((target, picture));
+        }
+    }
+
+    /// `image` as a preview source, graded by `grade` when it is set (a
+    /// LUT the panel does not hold is left out, as in the draft preview).
+    fn fetched_picture(
+        &self,
+        image: &TitlePreviewImage,
+        grade: Option<&fm_grade::Grade>,
+    ) -> Option<RgbaImage> {
+        let mut pixels = image.rgba.to_vec();
+        if let Some(grade) = grade {
+            let lut = grade
+                .lut
+                .as_ref()
+                .and_then(|lut| self.panel.preview().lut(&lut.asset_uri))
+                .cloned();
+            fm_grade::CompiledGrade::new(grade, lut)
+                .ok()?
+                .apply_rgba8_in_place(&mut pixels);
+        }
+        RgbaImage::new(u32::from(image.width), u32::from(image.height), pixels)
+    }
+
+    /// The server picture request due now: while the target is on no
+    /// monitor without a grade, previews are allowed, `others_busy` (the
+    /// layer designer's preview in flight) is false, and no drag runs.
+    fn poll_picture(
+        &mut self,
+        state: &StudioUiState,
+        now: Instant,
+        time: Duration,
+        others_busy: bool,
+    ) -> Option<fm_protocol::ScenePreviewRequest> {
+        let grading = grading(state);
+        let input = grading
+            .filter(|grading| ungraded_frame(state, grading, self.target, now).is_none())
+            .and_then(|grading| fetch_target(state, grading, self.target))
+            .map(|(input, _)| input);
+        let dragging = self
+            .binding
+            .as_ref()
+            .is_some_and(|binding| binding.document().gesture_active());
+        let allowed = self.open
+            && !others_busy
+            && !dragging
+            && crate::studio_animation::preview_block_reason(state).is_none();
+        self.picture.poll(input, fetch_size(state), time, allowed)
     }
 }
 
@@ -748,9 +925,21 @@ impl StudioShell {
     ) {
         let now = Instant::now();
         let time = Duration::from_secs_f64(context.input(|input| input.time).max(0.0));
+        self.color.receive_picture(state, time);
         if self.color.open {
             self.color.sync(state);
             self.color.refresh_source(state, now);
+            // The server keeps one preview per session: never ask while the
+            // layer designer's own picture is in flight.
+            let busy = self.designer.preview_in_flight();
+            if let Some(request) = self.color.poll_picture(state, now, time, busy) {
+                intents.push(StudioIntent::ScenePreview(request));
+            }
+            if self.color.picture.in_flight()
+                || matches!(self.color.source, Some((_, SourceKind::Server)))
+            {
+                context.request_repaint_after(KEY_PICTURE_REFRESH / 3);
+            }
             let l = self.locale;
             let mut open = true;
             let close_hover = l10n::with_key(l, l.text(Msg::ColorClose), COLOR_SHORTCUT);
@@ -935,6 +1124,7 @@ impl StudioShell {
                     }),
                 )],
             ),
+            Some(SourceKind::Server) => l.text(Msg::ColorSourceServer).to_owned(),
             Some(SourceKind::Held) => l.text(Msg::ColorSourceHeld).to_owned(),
             Some(SourceKind::Still) | None if matches!(target, GradeTarget::Layer { .. }) => {
                 l.text(Msg::ColorSourceLayerStill).to_owned()
@@ -1834,6 +2024,132 @@ mod tests {
         assert_eq!(
             tap(&state, &grading, GradeTarget::Input(input(2))),
             Some(MonitorTap::Preview)
+        );
+    }
+
+    /// SW-019: a target on no monitor without a grade previews the
+    /// server's picture of its source, asked for one at a time; an input's
+    /// ungraded picture takes the input's grade here when a layer above it
+    /// is the target.
+    #[test]
+    #[allow(clippy::too_many_lines)] // every target kind, then both answers
+    fn targets_off_the_monitors_preview_the_servers_picture_of_their_source() {
+        let mut state = ready_with(&[2], false, true, Some((false, false)));
+        state.title_previews = true;
+        let grading = grading(&state).unwrap().clone();
+        let host = GradeTarget::Layer {
+            scene: scene(SHOWN),
+            layer: layer(1),
+        };
+        let wall = GradeTarget::Layer {
+            scene: scene(SPARE),
+            layer: layer(5),
+        };
+        let fetch = |target| fetch_target(&state, &grading, target);
+        assert_eq!(fetch(GradeTarget::Program), None);
+        // A graded input's own picture arrives ungraded.
+        assert_eq!(fetch(GradeTarget::Input(input(2))), Some((input(2), None)));
+        assert_eq!(fetch(GradeTarget::Input(input(3))), Some((input(3), None)));
+        // Host draws input 2, whose grade the layer's clean picture
+        // carries; Wall draws scene 30 through ungraded Scene input 3.
+        assert_eq!(fetch(host), Some((input(2), Some(warm()))));
+        assert_eq!(fetch(wall), Some((input(3), None)));
+        // A graded Scene input's picture already carries its grade.
+        let scene_graded = GradingStatus {
+            inputs: [(input(3), WireGradeSource::Inline(Box::new(warm())))].into(),
+            ..grading.clone()
+        };
+        assert_eq!(
+            fetch_target(&state, &scene_graded, GradeTarget::Input(input(3))),
+            None
+        );
+
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        shell.open_color_window(GradeTarget::Input(input(2)));
+        let intents = draw(&context, &mut shell, &state);
+        let [StudioIntent::ScenePreview(request)] = intents.as_slice() else {
+            panic!("{intents:?}");
+        };
+        assert_eq!(request.request_id, "color-picture-1");
+        assert_eq!(request.input, wire(2));
+        assert_eq!((request.width, request.height), (480, 270));
+        assert!(request.clip.is_none());
+        assert_eq!(
+            shell.color.source,
+            Some((GradeTarget::Input(input(2)), SourceKind::Still))
+        );
+        // One at a time.
+        assert_eq!(draw(&context, &mut shell, &state), Vec::new());
+        let raw = [40, 80, 120, 255, 200, 100, 50, 255];
+        let mut answered = state.clone();
+        answered.title_preview = Some(TitlePreviewImage {
+            request_id: request.request_id.clone(),
+            input: wire(2),
+            animation_revision: 0,
+            draft: false,
+            width: 2,
+            height: 1,
+            rgba: raw.to_vec().into(),
+        });
+        assert_eq!(draw(&context, &mut shell, &answered), Vec::new());
+        assert_eq!(
+            shell.color.source,
+            Some((GradeTarget::Input(input(2)), SourceKind::Server))
+        );
+        let shown = shell.color.panel.preview().source().unwrap();
+        assert_eq!(shown.pixels(), raw.as_slice());
+        assert!(!shell.color.picture.in_flight());
+
+        // A target live on a clean monitor asks for nothing.
+        let mut live = state.clone();
+        live.monitor_images = [
+            Some(frame(MonitorTap::Preview, 2, 1)),
+            Some(frame(MonitorTap::Program, 1, 1)),
+        ];
+        let mut on_program = StudioShell::default();
+        on_program.open_color_window(GradeTarget::Input(input(1)));
+        assert_eq!(draw(&context, &mut on_program, &live), Vec::new());
+        assert_eq!(
+            on_program.color.source,
+            Some((
+                GradeTarget::Input(input(1)),
+                SourceKind::Live(MonitorTap::Program)
+            ))
+        );
+
+        // A layer over a graded input previews that input's picture with
+        // its grade applied here; previews need a raw TCP connection.
+        let mut layered = StudioShell::default();
+        layered.open_color_window(host);
+        let mut relayed = state.clone();
+        relayed.title_previews = false;
+        assert_eq!(draw(&context, &mut layered, &relayed), Vec::new());
+        let intents = draw(&context, &mut layered, &state);
+        let [StudioIntent::ScenePreview(request)] = intents.as_slice() else {
+            panic!("{intents:?}");
+        };
+        assert_eq!(request.input, wire(2));
+        let mut answered = state.clone();
+        answered.title_preview = Some(TitlePreviewImage {
+            request_id: request.request_id.clone(),
+            input: wire(2),
+            animation_revision: 0,
+            draft: false,
+            width: 2,
+            height: 1,
+            rgba: raw.to_vec().into(),
+        });
+        let _ = draw(&context, &mut layered, &answered);
+        assert_eq!(layered.color.source, Some((host, SourceKind::Server)));
+        let mut expected = raw.to_vec();
+        fm_grade::CompiledGrade::new(&warm(), None)
+            .unwrap()
+            .apply_rgba8_in_place(&mut expected);
+        assert_ne!(expected, raw.to_vec());
+        assert_eq!(
+            layered.color.panel.preview().source().unwrap().pixels(),
+            expected.as_slice()
         );
     }
 

@@ -421,6 +421,12 @@ impl DesignerWindow {
         }
     }
 
+    /// Whether the canvas picture or the key picture is in flight (the
+    /// server keeps one preview per session).
+    pub(crate) const fn preview_in_flight(&self) -> bool {
+        self.pacer.in_flight() || self.key_picture.in_flight()
+    }
+
     /// What the canvas wants pictured now.
     fn preview_subject(&self, state: &StudioUiState) -> Option<PreviewSubject> {
         let scene = self.scene?;
@@ -705,6 +711,8 @@ impl StudioShell {
             }
         }
         self.designer.send_live_edits(state, now, intents);
+        // The Colour window's source picture shares the session's preview.
+        let colour_busy = self.color.picture.in_flight();
         let window = &mut self.designer;
         if window
             .document()
@@ -716,9 +724,10 @@ impl StudioShell {
             .document()
             .is_some_and(|document| document.gesture_kind().is_some() || document.editing());
         let subject = window.preview_subject(state);
-        let allowed = window
-            .scene
-            .is_some_and(|scene| picture_block_reason(state, scene).is_none());
+        let allowed = !colour_busy
+            && window
+                .scene
+                .is_some_and(|scene| picture_block_reason(state, scene).is_none());
         // The server keeps one preview per session: the canvas picture and
         // the key picture never fly together.
         if !window.key_picture.in_flight()
