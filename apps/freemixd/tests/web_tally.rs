@@ -2055,6 +2055,428 @@ fn page_scripts_parse_with_node_when_available() {
     }
 }
 
+/// The operator page's strip DSP chain codec block (AU-005), which uses
+/// nothing else on the page.
+fn page_strip_dsp_codec(page: &str) -> &str {
+    let begin = "  // ---- Strip DSP chain codec (AU-005) begin ----\n";
+    let start = page.find(begin).expect("codec block begin");
+    let end = page[start..]
+        .find("  // ---- Strip DSP chain codec (AU-005) end ----")
+        .expect("codec block end");
+    &page[start..start + end]
+}
+
+fn base64url_decode(text: &str) -> Vec<u8> {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut bytes = Vec::new();
+    for chunk in text.as_bytes().chunks(4) {
+        let mut value = 0_u32;
+        for (index, byte) in chunk.iter().enumerate() {
+            let sextet = ALPHABET
+                .iter()
+                .position(|candidate| candidate == byte)
+                .unwrap();
+            value |= u32::try_from(sextet).unwrap() << (18 - 6 * index);
+        }
+        for index in 0..chunk.len() - 1 {
+            bytes.push(u8::try_from((value >> (16 - 8 * index)) & 0xff).unwrap());
+        }
+    }
+    bytes
+}
+
+/// A chain as the page's JavaScript object literal (field names as in Rust).
+fn chain_literal(chain: &fm_types::strip_dsp::StripDsp) -> String {
+    let bands: Vec<String> = chain
+        .eq
+        .bands
+        .iter()
+        .map(|band| {
+            format!(
+                "{{enabled:{},kind:\"{}\",frequency_hz:{},gain_millidb:{},q_milli:{}}}",
+                band.enabled,
+                band.kind.token(),
+                band.frequency_hz,
+                band.gain_millidb,
+                band.q_milli
+            )
+        })
+        .collect();
+    let (gate, expander, compressor, limiter) = (
+        &chain.gate,
+        &chain.expander,
+        &chain.compressor,
+        &chain.limiter,
+    );
+    format!(
+        "{{bypass:{},delay:{{enabled:{},delay_us:{}}},invert_polarity:{},high_pass:{{enabled:{},frequency_hz:{}}},eq:{{enabled:{},bands:[{}]}},gate:{{enabled:{},threshold_millidb:{},range_millidb:{},attack_us:{},hold_us:{},release_us:{}}},expander:{{enabled:{},threshold_millidb:{},ratio_milli:{},attack_us:{},release_us:{},range_millidb:{}}},compressor:{{enabled:{},threshold_millidb:{},ratio_milli:{},attack_us:{},release_us:{},knee_millidb:{},makeup_millidb:{}}},limiter:{{enabled:{},ceiling_millidb:{},release_us:{}}}}}",
+        chain.bypass,
+        chain.delay.enabled,
+        chain.delay.delay_us,
+        chain.invert_polarity,
+        chain.high_pass.enabled,
+        chain.high_pass.frequency_hz,
+        chain.eq.enabled,
+        bands.join(","),
+        gate.enabled,
+        gate.threshold_millidb,
+        gate.range_millidb,
+        gate.attack_us,
+        gate.hold_us,
+        gate.release_us,
+        expander.enabled,
+        expander.threshold_millidb,
+        expander.ratio_milli,
+        expander.attack_us,
+        expander.release_us,
+        expander.range_millidb,
+        compressor.enabled,
+        compressor.threshold_millidb,
+        compressor.ratio_milli,
+        compressor.attack_us,
+        compressor.release_us,
+        compressor.knee_millidb,
+        compressor.makeup_millidb,
+        limiter.enabled,
+        limiter.ceiling_millidb,
+        limiter.release_us,
+    )
+}
+
+/// Chains whose every field differs from the default somewhere: extremes,
+/// every flag bit, every band kind, and the delay.
+fn strip_dsp_vectors() -> Vec<fm_types::strip_dsp::StripDsp> {
+    use fm_types::strip_dsp::{
+        EqBandKind, MAX_DELAY_US, StripDelay, StripDsp, StripDspPreset, StripExpander,
+    };
+    let mut chains: Vec<StripDsp> = StripDspPreset::ALL
+        .into_iter()
+        .map(StripDspPreset::chain)
+        .collect();
+    let mut extremes = StripDspPreset::Podcast.chain();
+    extremes.bypass = true;
+    extremes.invert_polarity = true;
+    extremes.delay = StripDelay {
+        enabled: true,
+        delay_us: MAX_DELAY_US,
+    };
+    extremes.high_pass.frequency_hz = 2_000;
+    extremes.eq.bands[0].gain_millidb = -24_000;
+    extremes.eq.bands[0].q_milli = 100;
+    extremes.eq.bands[1].kind = EqBandKind::HighShelf;
+    extremes.eq.bands[1].frequency_hz = 20_000;
+    extremes.eq.bands[1].enabled = false;
+    extremes.eq.bands[2].kind = EqBandKind::LowShelf;
+    extremes.eq.bands[2].frequency_hz = 20;
+    extremes.eq.bands[2].gain_millidb = 24_000;
+    extremes.eq.bands[2].q_milli = 10_000;
+    extremes.eq.bands[3].enabled = false;
+    extremes.gate.threshold_millidb = -80_000;
+    extremes.gate.range_millidb = 80_000;
+    extremes.gate.attack_us = 100;
+    extremes.gate.hold_us = 0;
+    extremes.gate.release_us = 5_000_000;
+    extremes.expander = StripExpander {
+        enabled: true,
+        threshold_millidb: 0,
+        ratio_milli: 20_000,
+        attack_us: 1_000_000,
+        release_us: 100,
+        range_millidb: 80_000,
+    };
+    extremes.compressor.threshold_millidb = -60_000;
+    extremes.compressor.ratio_milli = 20_000;
+    extremes.compressor.knee_millidb = 24_000;
+    extremes.compressor.makeup_millidb = 24_000;
+    extremes.limiter.ceiling_millidb = -60_000;
+    extremes.limiter.release_us = 1_000_000;
+    chains.push(extremes);
+    let mut odd = StripDsp::DEFAULT;
+    odd.delay = StripDelay {
+        enabled: false,
+        delay_us: 41_667,
+    };
+    odd.eq.enabled = true;
+    odd.eq.bands[4].gain_millidb = -1;
+    odd.gate.threshold_millidb = -1;
+    odd.compressor.threshold_millidb = -59_999;
+    odd.limiter.enabled = true;
+    odd.limiter.ceiling_millidb = 0;
+    chains.push(odd);
+    chains
+}
+
+/// AU-005 Web chain editing: the operator page's JavaScript chain codec is
+/// the Rust codec. Under Node.js (skipped when it is not on the `PATH`),
+/// the page's codec block encodes chains the Rust codec rendered to the
+/// same codes, decodes those codes back to the same chains, builds each
+/// preset's exact chain, and refuses every code the Rust codec refuses.
+#[test]
+fn operator_page_strip_dsp_codec_matches_the_rust_codec() {
+    use std::fmt::Write as _;
+
+    use fm_types::strip_dsp::{STRIP_DSP_CODE_LEN, StripDsp, StripDspPreset};
+    let page = include_str!("../src/web/operator.html");
+    let codec = page_strip_dsp_codec(page);
+    // The block stands alone: it names no other part of the page.
+    for outside in ["tr(", "show.", "link.", "ui.", "document", "send("] {
+        assert!(!codec.contains(outside), "the codec block uses {outside}");
+    }
+
+    let vectors = strip_dsp_vectors();
+    let default_code = StripDsp::DEFAULT.code();
+    assert_eq!(default_code.len(), STRIP_DSP_CODE_LEN);
+    // Codes the Rust codec refuses: the wrong length, a character outside
+    // base64url, an unknown flag bit, non-canonical trailing bits, an
+    // unknown band kind, and values out of bounds.
+    let mut invalid = vec![
+        default_code[1..].to_owned(),
+        format!("{default_code}A"),
+        format!("+{}", &default_code[1..]),
+        format!("_{}", &default_code[1..]),
+        format!("{}B", &default_code[..STRIP_DSP_CODE_LEN - 1]),
+    ];
+    let packed = base64url_decode(&default_code);
+    assert_eq!(packed.len(), 107);
+    for (offset, bytes) in [
+        // High-pass at 10 Hz.
+        (2, vec![0x00, 0x0a]),
+        // Band 1 of kind 3.
+        (4, vec![0x03]),
+        // Band 1 gain +24.001 dB.
+        (7, vec![0x5d, 0xc1]),
+        // Gate threshold +1 mdB.
+        (39, vec![0x00, 0x00, 0x00, 0x01]),
+        // Delay one microsecond past a second.
+        (103, vec![0x00, 0x0f, 0x42, 0x41]),
+    ] {
+        let mut changed = packed.clone();
+        changed[offset..offset + bytes.len()].copy_from_slice(&bytes);
+        invalid.push(base64url(&changed));
+    }
+    for code in &invalid {
+        assert!(StripDsp::from_code(code).is_err(), "Rust accepts {code}");
+    }
+
+    let mut script = String::from(codec);
+    script.push_str("\nconst failures = [];\n");
+    script.push_str(
+        "const check = (ok, what) => { if (!ok) failures.push(what); };\n\
+         const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);\n",
+    );
+    let _ = writeln!(
+        script,
+        "check(STRIP_DSP.encode(STRIP_DSP.defaults()) === \"{default_code}\", \"default\");"
+    );
+    for (index, chain) in vectors.iter().enumerate() {
+        let code = chain.code();
+        let literal = chain_literal(chain);
+        let _ = writeln!(
+            script,
+            "check(STRIP_DSP.encode({literal}) === \"{code}\", \"encode {index}\");\n\
+             check(same(STRIP_DSP.decode(\"{code}\"), {literal}), \"decode {index}\");"
+        );
+    }
+    for preset in StripDspPreset::ALL {
+        let _ = writeln!(
+            script,
+            "check(STRIP_DSP.encode(STRIP_DSP.preset(\"{}\")) === \"{}\", \"preset {}\");",
+            preset.token(),
+            preset.chain().code(),
+            preset.token()
+        );
+    }
+    let _ = writeln!(
+        script,
+        "check(same(STRIP_DSP.PRESETS, {:?}), \"preset tokens\");",
+        StripDspPreset::ALL.map(StripDspPreset::token)
+    );
+    for (index, code) in invalid.iter().enumerate() {
+        let _ = writeln!(
+            script,
+            "check(STRIP_DSP.decode(\"{code}\") === null, \"refuse {index}\");"
+        );
+    }
+    // An out-of-range chain object is refused before it is encoded.
+    script.push_str(
+        "const wide = STRIP_DSP.defaults(); wide.compressor.ratio_milli = 999;\n\
+         check(STRIP_DSP.encode(wide) === null && STRIP_DSP.validate(wide) === \"compressor.ratio_milli\", \"bounds\");\n\
+         const half = STRIP_DSP.defaults(); half.eq.bands[0].gain_millidb = 0.5;\n\
+         check(STRIP_DSP.encode(half) === null, \"integers\");\n\
+         if (failures.length) { console.error(failures.join(\"\\n\")); process.exit(1); }\n\
+         console.log(\"ok\");\n",
+    );
+
+    if ProcessCommand::new("node")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_err()
+    {
+        eprintln!("node unavailable: the page's strip DSP codec check skipped");
+        return;
+    }
+    let directory = TestDirectory::new("strip-dsp-codec");
+    let path = directory.0.join("codec.js");
+    fs::write(&path, script).unwrap();
+    let output = ProcessCommand::new("node").arg(&path).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ok\n");
+}
+
+/// AU-005 Web chain editing end to end: the operator page's exact
+/// `audio_strip_dsp` records set a strip's and Master's chains within the
+/// session's role, a drag's sets share one gesture (one undo step), a set
+/// based on an older revision is refused rather than overwriting a newer
+/// chain, and a reconnecting page learns every chain from its snapshot.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn operator_page_edits_strip_fx_within_the_session_role() {
+    use std::fmt::Write as _;
+
+    use fm_protocol::{AudioDspTarget, AudioMixerOperation};
+    use fm_types::strip_dsp::{StripDsp, StripDspPreset};
+    let page = include_str!("../src/web/operator.html");
+    for source in [
+        "[\"payload\", \"audio_strip_dsp\"], [\"target\", target], [\"chain\", queued.code]",
+        "[\"gesture\", queued.gesture.token], [\"continues\", queued.gesture.sent ? \"true\" : \"false\"]",
+        "[\"expected_revision\", String(link.revision)]",
+        "const FX_SEND_INTERVAL_MS = 100;",
+        "input.addEventListener(\"change\", () => take(\"release\"));",
+        "case \"audio_strip_dsp_state\":",
+        "fxTakeSnapshot(record);",
+        "required(record, \"audio_master_dsp\")",
+        "required(record, \"operation\") === \"audio_strip_dsp\"",
+        "code === \"revision_conflict\" && !inflight.retried",
+        "fxServerCode(target) !== edit.retry.base",
+        "function fxGate(target) { return gate(\"audio\", target === \"master\" ? undefined : target); }",
+        "id=\"fx-panel\"",
+    ] {
+        assert!(page.contains(source), "{source}");
+    }
+
+    let directory = TestDirectory::new("strip-fx");
+    let project = directory.0.join("show.freemix");
+    create_project(&project);
+    let daemon = Daemon::start(&project);
+    let set = |target: &str, chain: &StripDsp, gesture: Option<(u64, bool)>| {
+        let mut payload = format!(
+            "payload=audio_strip_dsp\ttarget={target}\tchain={}",
+            chain.code()
+        );
+        if let Some((token, continues)) = gesture {
+            let _ = write!(payload, "\tgesture={token}\tcontinues={continues}");
+        }
+        payload
+    };
+    let strip = input(1).to_string();
+    let voice = StripDspPreset::Voice.chain();
+
+    // A Viewer page is refused.
+    let (mut page, _, _, snapshot) = web_session(daemon.web, Role::Viewer);
+    assert_eq!(snapshot.audio_mixer.master_dsp, StripDsp::DEFAULT);
+    assert_eq!(
+        page_command(
+            &mut page,
+            "viewer-fx",
+            Some(snapshot.revision),
+            &set(&strip, &voice, None)
+        )
+        .unwrap_err()
+        .0,
+        "permission_denied"
+    );
+    page.close(None).unwrap();
+    drop(page);
+
+    // An Audio page sets a strip's chain.
+    let (mut page, _, permissions, snapshot) = web_session(daemon.web, Role::Audio);
+    assert_eq!(permissions, ["view_status", "control_audio"]);
+    let (revision, event) = page_command(
+        &mut page,
+        "audio-fx-preset",
+        Some(snapshot.revision),
+        &set(&strip, &voice, None),
+    )
+    .unwrap();
+    assert_eq!(
+        event,
+        EventPayload::AudioMixerChanged(AudioMixerOperation::SetStripDsp {
+            target: AudioDspTarget::Input(input(1)),
+            chain: Box::new(voice),
+            gesture: None,
+        })
+    );
+    // A drag: its first set opens a gesture, the later ones continue it.
+    let mut dragged = voice;
+    let mut revision = revision;
+    for (step, continues) in [(0, false), (1, true), (2, true)] {
+        dragged.compressor.threshold_millidb = -20_000 - 1_000 * step;
+        let (next, _) = page_command(
+            &mut page,
+            &format!("audio-fx-drag-{step}"),
+            Some(revision),
+            &set(&strip, &dragged, Some((9_007_199_254_740_993, continues))),
+        )
+        .unwrap();
+        revision = next;
+    }
+    // A set built from an older revision is refused, not applied.
+    assert_eq!(
+        page_command(
+            &mut page,
+            "audio-fx-stale",
+            Some(revision - 1),
+            &set(&strip, &StripDsp::DEFAULT, None)
+        )
+        .unwrap_err(),
+        ("revision_conflict".to_owned(), revision)
+    );
+    // Master's chain.
+    let master = StripDspPreset::Master.chain();
+    let (revision, _) = page_command(
+        &mut page,
+        "audio-fx-master",
+        Some(revision),
+        &set("master", &master, None),
+    )
+    .unwrap();
+    page.close(None).unwrap();
+    drop(page);
+
+    // Studio's Undo reverts the whole drag in one step, after Master's set.
+    let mut studio = RawOperator::connect_as(daemon.control, Role::Admin);
+    for id in ["undo-master", "undo-drag"] {
+        studio.send(&command(
+            id,
+            CommandPayload::Undo {
+                expected_edit: None,
+            },
+        ));
+        studio.accepted(id);
+    }
+
+    // A reconnecting page learns every chain from its snapshot.
+    let (mut page, lines) = web_sync(daemon.web, Role::Audio);
+    let WireMessage::Snapshot(snapshot) = decode_line(&lines[0]).unwrap() else {
+        panic!("expected a snapshot");
+    };
+    assert_eq!(snapshot.revision, revision + 2);
+    assert_eq!(snapshot.audio_mixer.master_dsp, StripDsp::DEFAULT);
+    assert_eq!(snapshot.audio_mixer.strip_dsp_states, 1);
+    let state = web_until(&mut page, |_, message| match message {
+        WireMessage::AudioStripDspState(state) => Some(state),
+        _ => None,
+    });
+    assert_eq!(state.input, input(1));
+    assert_eq!(state.chain, voice, "the drag was one undo step");
+}
+
 /// GX-006: the browser title editor is served like the other pages and its
 /// exact wire records edit, take, update, and take off a title, each within
 /// the session's role: a Graphics page edits text but cannot go to air, an

@@ -137,6 +137,30 @@
   .media-list ol { list-style: none; margin: 0; padding: 0; }
   .media-list li[data-active="1"] { box-shadow: inset 4px 0 0 var(--preview); padding-left: .6rem; font-weight: 700; }
   .media-list li .state { font-variant-numeric: tabular-nums; }
+  /* Strip FX (AU-005): one disclosure per strip and Master, each stage a
+     switch over its sliders; a chain being sent is outlined. */
+  .fx { border-top: 1px solid #ffffff14; }
+  #fx-strips > .fx:first-child { border-top: 0; }
+  .fx summary { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; min-height: 48px; cursor: pointer; }
+  .fx summary .name { flex: 1 1 6rem; overflow-wrap: anywhere; font-weight: 650; }
+  .fx summary .badge { color: var(--muted); }
+  .fx summary .badge[data-state="active"] { color: #8af0a3; }
+  .fx summary .badge[data-state="bypassed"] { color: var(--warn); }
+  .fx[data-pending="1"] summary { box-shadow: inset 4px 0 0 var(--warn); padding-left: .5rem; }
+  .fx .head, .fx .stage-head { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+  .fx .stage { margin: .5rem 0 0; padding: .5rem; border: 1px solid #ffffff1f; border-radius: 10px; }
+  .fx .stage[data-on="0"] .param { opacity: .6; }
+  .fx label.toggle { display: inline-flex; align-items: center; gap: .4rem; min-height: 44px; font-weight: 650; }
+  .fx label.toggle input { width: 22px; height: 22px; margin: 0; }
+  .fx select { min-height: 44px; padding: 0 .4rem; border-radius: 10px; border: 1px solid var(--line); background: #111; }
+  .fx .params { display: grid; gap: .25rem .75rem; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); margin-top: .35rem; }
+  .fx .param { display: grid; grid-template-columns: 4.4rem 1fr 4.8rem; align-items: center; gap: .4rem; font-size: .8rem; }
+  .fx .param span { color: var(--muted); font-weight: 700; letter-spacing: .04em; }
+  .fx .param input { width: 100%; min-height: 36px; margin: 0; }
+  .fx .param output { text-align: right; font-variant-numeric: tabular-nums; }
+  .fx .band { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .6rem; padding-top: .35rem;
+    border-top: 1px solid #ffffff10; }
+  .fx .band .params { flex: 1 0 100%; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   [hidden] { display: none !important; }
 </style>
@@ -178,7 +202,7 @@
       <label class="field"><span data-i18n="role">Role</span>
         <select id="role">
           <option value="operator" data-i18n="roleOperatorChoice">Operator (switch, record, stream, audio)</option>
-          <option value="audio" data-i18n="roleAudioChoice">Audio (mute only)</option>
+          <option value="audio" data-i18n="roleAudioChoice">Audio (mute, loudness, and FX)</option>
           <option value="viewer" data-i18n="roleViewerChoice">Viewer (watch only)</option>
         </select>
       </label>
@@ -262,6 +286,13 @@
     <h2 id="audio-heading" data-i18n="audio">Audio</h2>
     <div id="strips"></div>
     <p id="why-audio" class="why" aria-live="polite"></p>
+  </section>
+
+  <section id="fx-panel" aria-labelledby="fx-heading">
+    <h2 id="fx-heading" data-i18n="fxHeading">Strip FX</h2>
+    <div id="fx-strips"></div>
+    <p id="fx-note" class="why" style="color:var(--muted)" data-i18n="fxNoGainReduction"></p>
+    <p id="why-fx" class="why" aria-live="polite"></p>
   </section>
 
   <section id="media-lists-panel" hidden aria-labelledby="media-lists-heading">
@@ -381,7 +412,7 @@
       token: "Access token",
       role: "Role",
       roleOperatorChoice: "Operator (switch, record, stream, audio)",
-      roleAudioChoice: "Audio (mute only)",
+      roleAudioChoice: "Audio (mute, loudness, and FX)",
       roleViewerChoice: "Viewer (watch only)",
       roleOperator: "operator",
       roleAudio: "audio",
@@ -506,6 +537,84 @@
       alreadyOnPreview: "Already on Preview",
       notInShow: "No longer in the show",
       noAudioStrip: "Waiting for this input's audio state",
+      fxHeading: "Strip FX",
+      fxNoGainReduction: "Gain reduction readouts are in FreeMix Studio's FX window: the Web status feed carries no dynamics meters.",
+      fxMasterName: "Master bus",
+      fxSummary: "{strip} FX",
+      fxSummaryHover: "Show or hide {strip}'s FX chain: delay, polarity, high-pass, EQ, gate, expander, compressor, and limiter, in that order",
+      fxStateFlat: "FLAT",
+      fxStateActive: "ACTIVE",
+      fxStateBypassed: "BYPASSED",
+      fxStateFlatHover: "Every stage of this chain is off: the strip is heard unprocessed",
+      fxStateActiveHover: "At least one stage of this chain is on",
+      fxStateBypassedHover: "The chain is bypassed: the strip is heard unprocessed and every setting is kept",
+      fxPendingHover: "Sending this chain to the server",
+      fxBypass: "BYPASS",
+      fxBypassHover: "Bypass the whole chain: the strip is heard unprocessed and every setting is kept",
+      fxPresetLabel: "Preset",
+      fxPresetChoose: "Load a preset…",
+      fxPresetHover: "Load a starting chain; every stage stays editable",
+      fxPresetFlat: "Flat",
+      fxPresetVoice: "Voice",
+      fxPresetPodcast: "Podcast",
+      fxPresetMusic: "Music",
+      fxPresetMaster: "Master glue",
+      fxReset: "Reset chain",
+      fxResetHover: "Switch every stage off and restore the default settings",
+      fxStageOnHover: "{stage} is on: click to switch it off",
+      fxStageOffHover: "{stage} is off: click to switch it on",
+      fxStageDelay: "Delay",
+      fxStageHighPass: "High-pass",
+      fxStageEq: "EQ",
+      fxStageGate: "Gate",
+      fxStageExpander: "Expander",
+      fxStageCompressor: "Compressor",
+      fxStageLimiter: "Limiter",
+      fxPolarity: "Ø INVERT",
+      fxPolarityOffHover: "Invert this strip's polarity on every channel, for example for a microphone wired out of phase",
+      fxPolarityOnHover: "Polarity is inverted on every channel: click to restore it",
+      fxBand: "Band {band}",
+      fxBandHover: "Switch EQ band {band} on or off",
+      fxBandKindHover: "The shape of band {band}: low shelf, peak, or high shelf",
+      fxKindLowShelf: "Low shelf",
+      fxKindPeak: "Peak",
+      fxKindHighShelf: "High shelf",
+      fxAbbrTime: "TIME",
+      fxAbbrFrequency: "FREQ",
+      fxAbbrGain: "GAIN",
+      fxAbbrQ: "Q",
+      fxAbbrThreshold: "THR",
+      fxAbbrRange: "RNG",
+      fxAbbrAttack: "ATK",
+      fxAbbrHold: "HLD",
+      fxAbbrRelease: "REL",
+      fxAbbrRatio: "RATIO",
+      fxAbbrKnee: "KNEE",
+      fxAbbrMakeup: "MAKEUP",
+      fxAbbrCeiling: "CEIL",
+      fxDelayHover: "Delay time in milliseconds (up to 1 s), exact to the sample: holds the sound back, for example to line a microphone up with a camera's late picture",
+      fxHighPassHover: "High-pass corner: lower frequencies are cut at 12 dB per octave",
+      fxFrequencyHover: "Band frequency in hertz",
+      fxBandGainHover: "Band boost or cut in dB",
+      fxQHover: "Band width: a higher Q is narrower",
+      fxGateThresholdHover: "The gate opens while the level is above this",
+      fxGateRangeHover: "How far the closed gate turns the strip down",
+      fxAttackHover: "How fast the stage reacts to a rise in level",
+      fxHoldHover: "How long the gate stays open after the level falls",
+      fxReleaseHover: "How fast the stage recovers once the level falls",
+      fxExpThresholdHover: "The expander turns down levels below this",
+      fxExpRatioHover: "How much faster the level falls below the threshold: at 2:1 each dB under it becomes 2 dB",
+      fxExpRangeHover: "The most the expander turns the strip down",
+      fxCompThresholdHover: "The compressor turns down levels above this",
+      fxRatioHover: "How strongly levels over the threshold are reduced",
+      fxKneeHover: "Softens the onset of compression around the threshold",
+      fxMakeupHover: "Gain added after compression to restore the level",
+      fxCeilingHover: "The limiter keeps peaks below this level",
+      fxControlLabel: "{strip}: {control}",
+      fxReleaseToSend: "{hover}. Changes are sent while you drag, at most ten times a second, and on release",
+      commandFx: "FX on {strip}",
+      noteFxChanged: "FX change not applied: {strip}'s chain changed first; check it and change it again",
+      noteFxGaveUp: "FX change not sent: the show kept changing; change it again",
       statusIdle: "Pair this device or enter the daemon's web access token to connect",
       statusConnecting: "Connecting",
       statusReconnecting: "Reconnecting (attempt {attempt})",
@@ -616,7 +725,7 @@
       token: "Token de acceso",
       role: "Rol",
       roleOperatorChoice: "Operador (conmutar, grabar, transmitir, audio)",
-      roleAudioChoice: "Audio (solo silenciar)",
+      roleAudioChoice: "Audio (silenciar, sonoridad y FX)",
       roleViewerChoice: "Observador (solo mirar)",
       roleOperator: "operador",
       roleAudio: "audio",
@@ -741,6 +850,84 @@
       alreadyOnPreview: "Ya está en Previo",
       notInShow: "Ya no está en el show",
       noAudioStrip: "Esperando el estado de audio de esta entrada",
+      fxHeading: "FX de canales",
+      fxNoGainReduction: "La reducción de ganancia se ve en la ventana FX de FreeMix Studio: el estado web no lleva medidores de dinámica.",
+      fxMasterName: "Bus máster",
+      fxSummary: "FX de {strip}",
+      fxSummaryHover: "Muestra u oculta la cadena FX de {strip}: retardo, polaridad, paso alto, EQ, puerta, expansor, compresor y limitador, en ese orden",
+      fxStateFlat: "PLANO",
+      fxStateActive: "ACTIVA",
+      fxStateBypassed: "PUENTEADA",
+      fxStateFlatHover: "Todas las etapas de esta cadena están inactivas: el canal se oye sin procesar",
+      fxStateActiveHover: "Al menos una etapa de esta cadena está activa",
+      fxStateBypassedHover: "La cadena está puenteada: el canal se oye sin procesar y se conservan todos los ajustes",
+      fxPendingHover: "Enviando esta cadena al servidor",
+      fxBypass: "BYPASS",
+      fxBypassHover: "Puentea toda la cadena: el canal se oye sin procesar y se conservan todos los ajustes",
+      fxPresetLabel: "Preajuste",
+      fxPresetChoose: "Cargar un preajuste…",
+      fxPresetHover: "Carga una cadena de partida; todas las etapas siguen siendo editables",
+      fxPresetFlat: "Plano",
+      fxPresetVoice: "Voz",
+      fxPresetPodcast: "Pódcast",
+      fxPresetMusic: "Música",
+      fxPresetMaster: "Pegamento de máster",
+      fxReset: "Restablecer cadena",
+      fxResetHover: "Desactiva todas las etapas y restaura los ajustes predeterminados",
+      fxStageOnHover: "{stage} activo: haga clic para desactivarlo",
+      fxStageOffHover: "{stage} inactivo: haga clic para activarlo",
+      fxStageDelay: "Retardo",
+      fxStageHighPass: "Paso alto",
+      fxStageEq: "EQ",
+      fxStageGate: "Puerta",
+      fxStageExpander: "Expansor",
+      fxStageCompressor: "Compresor",
+      fxStageLimiter: "Limitador",
+      fxPolarity: "Ø INVERTIR",
+      fxPolarityOffHover: "Invierte la polaridad de este canal en todos sus canales de audio, por ejemplo para un micrófono cableado en contrafase",
+      fxPolarityOnHover: "La polaridad está invertida en todos los canales de audio: haga clic para restaurarla",
+      fxBand: "Banda {band}",
+      fxBandHover: "Activa o desactiva la banda {band} del EQ",
+      fxBandKindHover: "La forma de la banda {band}: estante grave, pico o estante agudo",
+      fxKindLowShelf: "Estante grave",
+      fxKindPeak: "Pico",
+      fxKindHighShelf: "Estante agudo",
+      fxAbbrTime: "TIEMPO",
+      fxAbbrFrequency: "FREC",
+      fxAbbrGain: "GAN",
+      fxAbbrQ: "Q",
+      fxAbbrThreshold: "UMB",
+      fxAbbrRange: "RANGO",
+      fxAbbrAttack: "ATQ",
+      fxAbbrHold: "MANT",
+      fxAbbrRelease: "LIB",
+      fxAbbrRatio: "PROP",
+      fxAbbrKnee: "CODO",
+      fxAbbrMakeup: "COMP",
+      fxAbbrCeiling: "TECHO",
+      fxDelayHover: "Tiempo de retardo en milisegundos (hasta 1 s), exacto a la muestra: retrasa el sonido, por ejemplo para alinear un micrófono con la imagen retrasada de una cámara",
+      fxHighPassHover: "Corte del paso alto: las frecuencias más graves se atenúan 12 dB por octava",
+      fxFrequencyHover: "Frecuencia de la banda en hercios",
+      fxBandGainHover: "Realce o atenuación de la banda en dB",
+      fxQHover: "Anchura de la banda: una Q mayor es más estrecha",
+      fxGateThresholdHover: "La puerta se abre mientras el nivel supera este valor",
+      fxGateRangeHover: "Cuánto baja el canal la puerta cerrada",
+      fxAttackHover: "Con qué rapidez reacciona la etapa a una subida de nivel",
+      fxHoldHover: "Cuánto tiempo sigue abierta la puerta después de que baja el nivel",
+      fxReleaseHover: "Con qué rapidez se recupera la etapa cuando baja el nivel",
+      fxExpThresholdHover: "El expansor baja los niveles por debajo de este valor",
+      fxExpRatioHover: "Cuánto más rápido baja el nivel por debajo del umbral: con 2:1 cada dB por debajo se convierte en 2 dB",
+      fxExpRangeHover: "Lo máximo que el expansor baja el canal",
+      fxCompThresholdHover: "El compresor baja los niveles que superan este valor",
+      fxRatioHover: "Con qué intensidad se reducen los niveles por encima del umbral",
+      fxKneeHover: "Suaviza la entrada de la compresión alrededor del umbral",
+      fxMakeupHover: "Ganancia añadida tras la compresión para recuperar el nivel",
+      fxCeilingHover: "El limitador mantiene los picos por debajo de este nivel",
+      fxControlLabel: "{strip}: {control}",
+      fxReleaseToSend: "{hover}. Los cambios se envían mientras arrastra, como mucho diez veces por segundo, y al soltar",
+      commandFx: "FX de {strip}",
+      noteFxChanged: "Cambio de FX no aplicado: la cadena de {strip} cambió antes; revísela y vuelva a cambiarla",
+      noteFxGaveUp: "Cambio de FX no enviado: el programa siguió cambiando; vuelva a cambiarlo",
       statusIdle: "Empareje este dispositivo o introduzca el token de acceso web del daemon para conectar",
       statusConnecting: "Conectando",
       statusReconnecting: "Reconectando (intento {attempt})",
@@ -1389,6 +1576,7 @@
     pending.clear();
     mutesSent.clear();
     muteRetries = [];
+    fxClear();
     if (link.phase === "stopped" || link.phase === "idle") { render(); return; }
     link.attempt += 1;
     if (!link.everLive || link.attempt >= 3) checkCredential();
@@ -1481,6 +1669,7 @@
         show.ftb = parseFtb(record, "desired_");
         show.realizedFtb = parseFtb(record, "realized_");
         show.strips = parseStrips(required(record, "input_audio_strips"));
+        fxTakeSnapshot(record);
         show.recordings = parseRecordings(required(record, "recordings"));
         show.streams = parseStreams(required(record, "streams"));
         // Its `shortcut_state` and `media_list_state` records follow it.
@@ -1500,6 +1689,9 @@
       case "shortcut_state":
         if (link.phase === "live") upsertShortcut(record);
         return;
+      case "audio_strip_dsp_state":
+        if (link.phase === "live") fxTakeChain(required(record, "input"), required(record, "chain"));
+        return;
       case "media_list_state":
         if (link.phase === "live") {
           const list = parseMediaList(record);
@@ -1514,6 +1706,7 @@
         applyEvent(required(record, "event"), record);
         trackDesired(revision);
         settleMuteRetries();
+        fxPumpAll();
         return;
       }
       case "runtime_event": {
@@ -1542,6 +1735,7 @@
         return;
       case "command_result": {
         const id = required(record, "id");
+        if (fxResult(id, record)) return;
         const label = pending.get(id);
         const mute = mutesSent.get(id);
         pending.delete(id);
@@ -1632,6 +1826,7 @@
       show.inputs = show.inputs.filter((candidate) => candidate.id !== id);
       show.strips.delete(id);
       show.mediaLists.delete(id);
+      fxForget(id);
     } else if (name === "media_list_changed") {
       const list = parseMediaList(record);
       show.mediaLists.set(list.input, list);
@@ -1645,6 +1840,8 @@
     } else if (name === "shortcut_removed") {
       const id = required(record, "shortcut");
       show.shortcuts = show.shortcuts.filter((shortcut) => shortcut.id !== id);
+    } else if (name === "audio_mixer_changed" && required(record, "operation") === "audio_strip_dsp") {
+      fxTakeChain(required(record, "target"), required(record, "chain"));
     } else if (name === "audio_mixer_changed" && required(record, "operation") === "audio_group_solo") {
       // A group solo re-solos its members; resynchronize so a mute never
       // writes back a stale solo.
@@ -1685,6 +1882,7 @@
       muteRetries = muteRetries.filter((retry) => now < retry.deadline);
       note(tr("noteMuteGaveUp"));
     }
+    fxTick();
     if (link.phase === "waiting" && now >= link.retryAt) connect();
     else if (link.phase === "open" && link.syncDeadline && now >= link.syncDeadline) closeSocket();
     else if (link.phase === "live") {
@@ -1999,6 +2197,7 @@
     });
     ui.whyAudio.textContent = sectionReason("audio");
     paintLoudness();
+    renderFx(ids);
     renderMediaLists(live, inputOf);
   }
 
@@ -2328,6 +2527,648 @@
       if (value.textContent !== text) value.textContent = text;
       value.dataset.clip = clip ? "1" : "0";
     });
+  }
+
+  // ---- Strip DSP chain codec (AU-005) begin ----
+  // Mirrors fm_types::strip_dsp exactly (Protocol 2.94): a chain packs
+  // big-endian into 107 bytes written as 143 characters of unpadded
+  // base64url. `encode` refuses (null) a chain out of bounds; `decode`
+  // refuses (null) a code of another length, non-canonical base64url, an
+  // unknown flag bit or band kind, or a value out of bounds. This block
+  // uses nothing else on the page: the daemon's tests run it under Node.js
+  // against codes the Rust codec renders.
+  const STRIP_DSP = (() => {
+    const CODE_LEN = 143;
+    const PACKED_BYTES = 107;
+    const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const KINDS = ["low_shelf", "peak", "high_shelf"];
+    const MIN_TIME_US = 100;
+    const MAX_TIME_US = 1000000;
+    const MAX_SLOW_RELEASE_US = 5000000;
+    const PRESETS = ["flat", "voice", "podcast", "music", "master"];
+    function band(kind, frequency, q) {
+      return { enabled: true, kind, frequency_hz: frequency, gain_millidb: 0, q_milli: q };
+    }
+    // StripDsp::DEFAULT: every stage off, parameters at their starting points.
+    function defaults() {
+      return {
+        bypass: false,
+        delay: { enabled: false, delay_us: 0 },
+        invert_polarity: false,
+        high_pass: { enabled: false, frequency_hz: 80 },
+        eq: { enabled: false, bands: [band("low_shelf", 100, 707), band("peak", 250, 1000),
+          band("peak", 1000, 1000), band("peak", 4000, 1000), band("high_shelf", 10000, 707)] },
+        gate: { enabled: false, threshold_millidb: -50000, range_millidb: 40000, attack_us: 1000,
+          hold_us: 50000, release_us: 200000 },
+        expander: { enabled: false, threshold_millidb: -40000, ratio_milli: 2000, attack_us: 1000,
+          release_us: 100000, range_millidb: 20000 },
+        compressor: { enabled: false, threshold_millidb: -18000, ratio_milli: 3000, attack_us: 10000,
+          release_us: 150000, knee_millidb: 6000, makeup_millidb: 0 },
+        limiter: { enabled: false, ceiling_millidb: -1000, release_us: 50000 },
+      };
+    }
+    // StripDspPreset::chain, by token; null for an unknown one.
+    function preset(name) {
+      const chain = defaults();
+      if (name === "voice" || name === "podcast") {
+        const podcast = name === "podcast";
+        chain.high_pass = { enabled: true, frequency_hz: 100 };
+        chain.eq.enabled = true;
+        const bands = chain.eq.bands;
+        bands[0].gain_millidb = -2000; bands[0].frequency_hz = 150;
+        bands[1].gain_millidb = -3000; bands[1].frequency_hz = 300;
+        bands[3].gain_millidb = 3000; bands[3].frequency_hz = 3500;
+        bands[4].gain_millidb = 2000; bands[4].frequency_hz = 10000;
+        chain.gate.enabled = true;
+        chain.gate.threshold_millidb = podcast ? -45000 : -55000;
+        chain.gate.range_millidb = podcast ? 30000 : 20000;
+        Object.assign(chain.compressor, { enabled: true, threshold_millidb: podcast ? -22000 : -18000,
+          ratio_milli: podcast ? 4000 : 3000, attack_us: 5000, release_us: 120000,
+          makeup_millidb: podcast ? 4000 : 2000 });
+        chain.limiter.enabled = podcast;
+      } else if (name === "music") {
+        chain.high_pass = { enabled: true, frequency_hz: 30 };
+        Object.assign(chain.compressor, { enabled: true, threshold_millidb: -14000, ratio_milli: 2000,
+          attack_us: 30000, release_us: 250000, knee_millidb: 10000 });
+      } else if (name === "master") {
+        Object.assign(chain.compressor, { enabled: true, threshold_millidb: -10000, ratio_milli: 2000,
+          attack_us: 20000, release_us: 200000, knee_millidb: 6000 });
+        Object.assign(chain.limiter, { enabled: true, ceiling_millidb: -1000, release_us: 50000 });
+      } else if (name !== "flat") {
+        return null;
+      }
+      return chain;
+    }
+    // StripDsp::validate: "" or the first out-of-range field ("code" for a
+    // malformed chain object).
+    function validate(chain) {
+      const flag = (value) => value === true || value === false;
+      const within = (value, low, high) => Number.isInteger(value) && value >= low && value <= high;
+      if (!(flag(chain.bypass) && flag(chain.invert_polarity) && flag(chain.delay.enabled)
+        && flag(chain.high_pass.enabled) && flag(chain.eq.enabled) && flag(chain.gate.enabled)
+        && flag(chain.expander.enabled) && flag(chain.compressor.enabled) && flag(chain.limiter.enabled)
+        && Array.isArray(chain.eq.bands) && chain.eq.bands.length === 5)) return "code";
+      if (!within(chain.delay.delay_us, 0, 1000000)) return "delay.delay_us";
+      if (!within(chain.high_pass.frequency_hz, 20, 2000)) return "high_pass.frequency_hz";
+      for (const item of chain.eq.bands) {
+        if (!flag(item.enabled) || !KINDS.includes(item.kind)) return "code";
+        if (!within(item.frequency_hz, 20, 20000)) return "eq.frequency_hz";
+        if (!within(item.gain_millidb, -24000, 24000)) return "eq.gain_millidb";
+        if (!within(item.q_milli, 100, 10000)) return "eq.q_milli";
+      }
+      const { gate, expander, compressor, limiter } = chain;
+      const checks = [
+        [within(gate.threshold_millidb, -80000, 0), "gate.threshold_millidb"],
+        [within(gate.range_millidb, 0, 80000), "gate.range_millidb"],
+        [within(gate.attack_us, MIN_TIME_US, MAX_TIME_US), "gate.attack_us"],
+        [within(gate.hold_us, 0, 1000000), "gate.hold_us"],
+        [within(gate.release_us, MIN_TIME_US, MAX_SLOW_RELEASE_US), "gate.release_us"],
+        [within(expander.threshold_millidb, -80000, 0), "expander.threshold_millidb"],
+        [within(expander.ratio_milli, 1000, 20000), "expander.ratio_milli"],
+        [within(expander.attack_us, MIN_TIME_US, MAX_TIME_US), "expander.attack_us"],
+        [within(expander.release_us, MIN_TIME_US, MAX_SLOW_RELEASE_US), "expander.release_us"],
+        [within(expander.range_millidb, 0, 80000), "expander.range_millidb"],
+        [within(compressor.threshold_millidb, -60000, 0), "compressor.threshold_millidb"],
+        [within(compressor.ratio_milli, 1000, 20000), "compressor.ratio_milli"],
+        [within(compressor.attack_us, MIN_TIME_US, MAX_TIME_US), "compressor.attack_us"],
+        [within(compressor.release_us, MIN_TIME_US, MAX_TIME_US), "compressor.release_us"],
+        [within(compressor.knee_millidb, 0, 24000), "compressor.knee_millidb"],
+        [within(compressor.makeup_millidb, 0, 24000), "compressor.makeup_millidb"],
+        [within(limiter.ceiling_millidb, -60000, 0), "limiter.ceiling_millidb"],
+        [within(limiter.release_us, MIN_TIME_US, MAX_TIME_US), "limiter.release_us"],
+      ];
+      for (const [ok, field] of checks) if (!ok) return field;
+      return "";
+    }
+    // StripDsp::code: the flag word (bit 0 bypass, 1 high-pass, 2 EQ, 3..7
+    // the bands, 8 gate, 9 compressor, 10 limiter, 11 polarity, 12
+    // expander, 13 delay), the high-pass, five bands, gate, expander,
+    // compressor, limiter, and delay.
+    function encode(chain) {
+      if (validate(chain)) return null;
+      const view = new DataView(new ArrayBuffer(PACKED_BYTES));
+      let at = 0;
+      const put = (method, size) => (value) => { view[method](at, value); at += size; };
+      const u8 = put("setUint8", 1), u16 = put("setUint16", 2), i16 = put("setInt16", 2);
+      const u32 = put("setUint32", 4), i32 = put("setInt32", 4);
+      let flags = Number(chain.bypass) | Number(chain.high_pass.enabled) << 1 | Number(chain.eq.enabled) << 2;
+      chain.eq.bands.forEach((item, index) => { flags |= Number(item.enabled) << (3 + index); });
+      flags |= Number(chain.gate.enabled) << 8 | Number(chain.compressor.enabled) << 9
+        | Number(chain.limiter.enabled) << 10 | Number(chain.invert_polarity) << 11
+        | Number(chain.expander.enabled) << 12 | Number(chain.delay.enabled) << 13;
+      u16(flags);
+      u16(chain.high_pass.frequency_hz);
+      for (const item of chain.eq.bands) {
+        u8(KINDS.indexOf(item.kind)); u16(item.frequency_hz); i16(item.gain_millidb); u16(item.q_milli);
+      }
+      const { gate, expander, compressor, limiter } = chain;
+      i32(gate.threshold_millidb); u32(gate.range_millidb); u32(gate.attack_us); u32(gate.hold_us);
+      u32(gate.release_us);
+      i32(expander.threshold_millidb); u16(expander.ratio_milli); u32(expander.attack_us);
+      u32(expander.release_us); u32(expander.range_millidb);
+      i32(compressor.threshold_millidb); u16(compressor.ratio_milli); u32(compressor.attack_us);
+      u32(compressor.release_us); u16(compressor.knee_millidb); u16(compressor.makeup_millidb);
+      i32(limiter.ceiling_millidb); u32(limiter.release_us);
+      u32(chain.delay.delay_us);
+      let out = "";
+      for (let start = 0; start < PACKED_BYTES; start += 3) {
+        const chunk = Math.min(3, PACKED_BYTES - start);
+        let value = 0;
+        for (let index = 0; index < chunk; index += 1) value |= view.getUint8(start + index) << (16 - 8 * index);
+        for (let index = 0; index <= chunk; index += 1) out += ALPHABET[(value >> (18 - 6 * index)) & 63];
+      }
+      return out;
+    }
+    // StripDsp::from_code.
+    function decode(code) {
+      if (typeof code !== "string" || code.length !== CODE_LEN) return null;
+      const bytes = [];
+      for (let start = 0; start < code.length; start += 4) {
+        const chunk = code.slice(start, start + 4);
+        if (chunk.length === 1) return null;
+        let value = 0;
+        for (let index = 0; index < chunk.length; index += 1) {
+          const sextet = ALPHABET.indexOf(chunk[index]);
+          if (sextet < 0) return null;
+          value |= sextet << (18 - 6 * index);
+        }
+        for (let index = 0; index < chunk.length - 1; index += 1) bytes.push((value >> (16 - 8 * index)) & 255);
+      }
+      if (bytes.length !== PACKED_BYTES) return null;
+      const view = new DataView(Uint8Array.from(bytes).buffer);
+      let at = 0;
+      const take = (method, size) => () => { const value = view[method](at); at += size; return value; };
+      const u8 = take("getUint8", 1), u16 = take("getUint16", 2), i16 = take("getInt16", 2);
+      const u32 = take("getUint32", 4), i32 = take("getInt32", 4);
+      const flags = u16();
+      if (flags >> 14 !== 0) return null;
+      const flag = (bit) => (flags & (1 << bit)) !== 0;
+      const highPass = { enabled: flag(1), frequency_hz: u16() };
+      const bands = [];
+      for (let index = 0; index < 5; index += 1) {
+        const kind = KINDS[u8()];
+        if (!kind) return null;
+        bands.push({ enabled: flag(3 + index), kind, frequency_hz: u16(), gain_millidb: i16(), q_milli: u16() });
+      }
+      const gate = { enabled: flag(8), threshold_millidb: i32(), range_millidb: u32(), attack_us: u32(),
+        hold_us: u32(), release_us: u32() };
+      const expander = { enabled: flag(12), threshold_millidb: i32(), ratio_milli: u16(), attack_us: u32(),
+        release_us: u32(), range_millidb: u32() };
+      const compressor = { enabled: flag(9), threshold_millidb: i32(), ratio_milli: u16(), attack_us: u32(),
+        release_us: u32(), knee_millidb: u16(), makeup_millidb: u16() };
+      const limiter = { enabled: flag(10), ceiling_millidb: i32(), release_us: u32() };
+      const delay = { enabled: flag(13), delay_us: u32() };
+      const chain = { bypass: flag(0), delay, invert_polarity: flag(11), high_pass: highPass,
+        eq: { enabled: flag(2), bands }, gate, expander, compressor, limiter };
+      return encode(chain) === code ? chain : null;
+    }
+    function clone(chain) { return JSON.parse(JSON.stringify(chain)); }
+    // StripDsp::is_active: not bypassed and at least one stage on.
+    function isActive(chain) {
+      return !chain.bypass && (chain.delay.enabled || chain.invert_polarity || chain.high_pass.enabled
+        || chain.eq.enabled || chain.gate.enabled || chain.expander.enabled || chain.compressor.enabled
+        || chain.limiter.enabled);
+    }
+    return { CODE_LEN, KINDS, PRESETS, defaults, preset, validate, encode, decode, clone, isActive };
+  })();
+  // ---- Strip DSP chain codec (AU-005) end ----
+
+  // ---- Strip FX (AU-005): each strip's and Master's chain, edited with
+  // `audio_strip_dsp` under the session's `control_audio` permission. ----
+  // Server chains by target ("master" or an input id) come from the
+  // snapshot's `audio_master_dsp`, its `audio_strip_dsp_state` records (the
+  // inputs whose chain is not the default), and `audio_mixer_changed`
+  // events. An edit names the revision the page holds, with one set in
+  // flight per target: a slider drag sends its chain at most every
+  // FX_SEND_INTERVAL_MS under one gesture token (so the drag is one undo
+  // step) and once more on release, the newest chain waiting while a set is
+  // in flight. A set refused as stale is resent once, after the page
+  // catches up, only while the server chain is still the one it was based
+  // on; otherwise the page shows the server's chain and says why.
+  const FX_SEND_INTERVAL_MS = 100;
+  const FX_RETRY_TIMEOUT_MS = 2000;
+  const FX_DEFAULT_CODE = STRIP_DSP.encode(STRIP_DSP.defaults());
+  ui.fxStrips = $("fx-strips");
+  ui.fxNote = $("fx-note");
+  ui.whyFx = $("why-fx");
+  const fx = {
+    chains: new Map(),
+    // target -> { draft, gesture, queued, inflight, wait, retry, sentAt, timer }
+    edits: new Map(),
+    // command id -> target
+    sent: new Map(),
+    // Targets whose disclosure is open, kept across reconnects.
+    open: new Set(),
+  };
+  function fxServerCode(target) { return fx.chains.get(target) || FX_DEFAULT_CODE; }
+  function fxChain(target) {
+    const edit = fx.edits.get(target);
+    return edit ? edit.draft : (STRIP_DSP.decode(fxServerCode(target)) || STRIP_DSP.defaults());
+  }
+  function fxTargetName(target) {
+    if (target === "master") return tr("fxMasterName");
+    const input = show.inputs.find((candidate) => candidate.id === target);
+    return input ? input.label : target;
+  }
+  function fxGate(target) { return gate("audio", target === "master" ? undefined : target); }
+  function fxGestureToken() {
+    const [high, low] = crypto.getRandomValues(new Uint32Array(2));
+    const token = (BigInt(high) << 32n) | BigInt(low);
+    return (token === 0n ? 1n : token).toString();
+  }
+  function fxTakeSnapshot(record) {
+    fx.chains = new Map([["master", required(record, "audio_master_dsp")]]);
+  }
+  function fxTakeChain(target, chain) { fx.chains.set(target, chain); }
+  // Drops a target's local edit: the page shows the server's chain again.
+  function fxDrop(target) {
+    const edit = fx.edits.get(target);
+    if (edit && edit.timer) clearTimeout(edit.timer);
+    fx.edits.delete(target);
+  }
+  function fxForget(target) {
+    fxDrop(target);
+    fx.chains.delete(target);
+  }
+  function fxClear() {
+    for (const target of [...fx.edits.keys()]) fxDrop(target);
+    fx.sent.clear();
+  }
+  // Applies `change` to the target's draft and queues the chain. A drag
+  // (`phase` "drag" while it moves, "release" when it ends) shares one
+  // gesture; any other edit stands alone.
+  function fxEdit(target, change, phase) {
+    if (fxGate(target)) return;
+    let edit = fx.edits.get(target);
+    if (!edit) {
+      edit = { draft: fxChain(target), gesture: null, queued: null, inflight: null, wait: 0, retry: null,
+        sentAt: 0, timer: 0 };
+      fx.edits.set(target, edit);
+    }
+    const next = STRIP_DSP.clone(edit.draft);
+    change(next);
+    const code = STRIP_DSP.encode(next);
+    if (!code) return;
+    edit.draft = next;
+    let gesture = null;
+    if (phase) {
+      if (!edit.gesture) edit.gesture = { token: fxGestureToken(), sent: false };
+      gesture = edit.gesture;
+      if (phase === "release") edit.gesture = null;
+    } else {
+      edit.gesture = null;
+    }
+    edit.queued = { code, gesture };
+    fxPump(target);
+    render();
+  }
+  // A drag that lost focus without a release (the control was disabled
+  // under it) ends its gesture so the page follows the server again.
+  function fxEndGesture(target) {
+    const edit = fx.edits.get(target);
+    if (!edit || !edit.gesture) return;
+    edit.gesture = null;
+    fxPump(target);
+    render();
+  }
+  // Sends a target's queued chain when nothing is in flight, the page has
+  // caught up with its last set, and the send interval has passed.
+  function fxPump(target) {
+    const edit = fx.edits.get(target);
+    if (!edit || edit.inflight || link.phase !== "live") return;
+    if (edit.retry && Date.now() > edit.retry.deadline) {
+      fxDrop(target);
+      note(tr("noteFxGaveUp"));
+      return;
+    }
+    if (link.revision < edit.wait) return;
+    if (edit.retry && fxServerCode(target) !== edit.retry.base) {
+      fxDrop(target);
+      note(tr("noteFxChanged", { strip: fxTargetName(target) }));
+      return;
+    }
+    const queued = edit.queued;
+    const base = fxServerCode(target);
+    if (!queued || (queued.code === base && !(queued.gesture && queued.gesture.sent) && !edit.retry)) {
+      // Settled: show the server's chain again once no drag holds the draft.
+      edit.queued = null;
+      if (!edit.gesture) fxDrop(target);
+      return;
+    }
+    const wait = edit.sentAt + FX_SEND_INTERVAL_MS - Date.now();
+    if (wait > 0) {
+      if (!edit.timer) edit.timer = setTimeout(() => { edit.timer = 0; fxPump(target); render(); }, wait);
+      return;
+    }
+    if (fxGate(target)) { fxDrop(target); return; }
+    commandCounter += 1;
+    const id = "operator-" + sessionNonce + "-" + commandCounter;
+    const payload = [["payload", "audio_strip_dsp"], ["target", target], ["chain", queued.code]];
+    if (queued.gesture) {
+      payload.push(["gesture", queued.gesture.token], ["continues", queued.gesture.sent ? "true" : "false"]);
+      queued.gesture.sent = true;
+    }
+    send(encodeRecord("command", [["protocol", PROTOCOL], ["id", id], ["idempotency_key", id],
+      ["expected_revision", String(link.revision)], ...payload]));
+    fx.sent.set(id, target);
+    edit.inflight = { id, base, queued, retried: Boolean(edit.retry) };
+    edit.queued = null;
+    edit.retry = null;
+    edit.sentAt = Date.now();
+  }
+  function fxPumpAll() { for (const target of [...fx.edits.keys()]) fxPump(target); }
+  // Takes a `command_result` for an FX set; false for any other command.
+  function fxResult(id, record) {
+    const target = fx.sent.get(id);
+    if (target === undefined) return false;
+    fx.sent.delete(id);
+    const edit = fx.edits.get(target);
+    if (!edit || !edit.inflight || edit.inflight.id !== id) return true;
+    const inflight = edit.inflight;
+    edit.inflight = null;
+    const label = tr("commandFx", { strip: fxTargetName(target) });
+    if (record.fields.get("status") === "rejected") {
+      const code = required(record, "code");
+      if (code === "revision_conflict" && !inflight.retried) {
+        edit.wait = Number(required(record, "current_revision"));
+        edit.retry = { base: inflight.base, deadline: Date.now() + FX_RETRY_TIMEOUT_MS };
+        if (!edit.queued) edit.queued = inflight.queued;
+        fxPump(target);
+        return true;
+      }
+      fxDrop(target);
+      const message = record.fields.get("message") || "";
+      note(code === "revision_conflict" ? tr("noteFxChanged", { strip: fxTargetName(target) })
+        : tr(message ? "noteRefusedMessage" : "noteRefused", { label, code, message }));
+      return true;
+    }
+    edit.wait = Number(required(record, "revision"));
+    if (!edit.queued && !edit.gesture) note(tr("noteAccepted", { label }));
+    fxPump(target);
+    return true;
+  }
+  // A stale set still waiting for the page to catch up gives up in time.
+  function fxTick() {
+    const now = Date.now();
+    for (const [target, edit] of [...fx.edits]) {
+      if (edit.retry && !edit.inflight && now > edit.retry.deadline) { fxPump(target); render(); }
+    }
+  }
+
+  // Sliders work in the chain's integer units: linear with a step, or
+  // logarithmic over 0..FX_LOG_STEPS positions.
+  const FX_LOG_STEPS = 1000;
+  function fxFormat(kind, value) {
+    const number = (amount, digits) => amount.toLocaleString(language,
+      { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    switch (kind) {
+      case "hz": return value >= 1000 ? number(value / 1000, value >= 10000 ? 1 : 2) + " kHz" : value + " Hz";
+      case "db": return number(value / 1000, 1) + " dB";
+      case "q": return number(value / 1000, 2);
+      case "ratio": return number(value / 1000, 1) + ":1";
+      case "ms": return value >= 1000000 ? number(value / 1000000, 2) + " s"
+        : number(value / 1000, value < 10000 ? 1 : 0) + " ms";
+      default: return number(value / 1000, 1) + " ms"; // the delay, to 0.1 ms
+    }
+  }
+  // `scale` is "log" or a linear step.
+  function fxParam(path, abbr, hover, min, max, scale, format) {
+    return { path, abbr, hover, min, max, scale, format };
+  }
+  function fxTime(path, abbr, hover, max) { return fxParam(path, abbr, hover, 100, max, "log", "ms"); }
+  const FX_STAGES = [
+    { key: "delay", stage: "fxStageDelay", toggle: ["delay", "enabled"], params: [
+      fxParam(["delay", "delay_us"], "fxAbbrTime", "fxDelayHover", 0, 1000000, 100, "delay")] },
+    { key: "high_pass", stage: "fxStageHighPass", toggle: ["high_pass", "enabled"], params: [
+      fxParam(["high_pass", "frequency_hz"], "fxAbbrFrequency", "fxHighPassHover", 20, 2000, "log", "hz")] },
+    { key: "eq", stage: "fxStageEq", toggle: ["eq", "enabled"], params: [] },
+    { key: "gate", stage: "fxStageGate", toggle: ["gate", "enabled"], params: [
+      fxParam(["gate", "threshold_millidb"], "fxAbbrThreshold", "fxGateThresholdHover", -80000, 0, 500, "db"),
+      fxParam(["gate", "range_millidb"], "fxAbbrRange", "fxGateRangeHover", 0, 80000, 500, "db"),
+      fxTime(["gate", "attack_us"], "fxAbbrAttack", "fxAttackHover", 1000000),
+      fxParam(["gate", "hold_us"], "fxAbbrHold", "fxHoldHover", 0, 1000000, 1000, "ms"),
+      fxTime(["gate", "release_us"], "fxAbbrRelease", "fxReleaseHover", 5000000)] },
+    { key: "expander", stage: "fxStageExpander", toggle: ["expander", "enabled"], params: [
+      fxParam(["expander", "threshold_millidb"], "fxAbbrThreshold", "fxExpThresholdHover", -80000, 0, 500, "db"),
+      fxParam(["expander", "ratio_milli"], "fxAbbrRatio", "fxExpRatioHover", 1000, 20000, 100, "ratio"),
+      fxTime(["expander", "attack_us"], "fxAbbrAttack", "fxAttackHover", 1000000),
+      fxTime(["expander", "release_us"], "fxAbbrRelease", "fxReleaseHover", 5000000),
+      fxParam(["expander", "range_millidb"], "fxAbbrRange", "fxExpRangeHover", 0, 80000, 500, "db")] },
+    { key: "compressor", stage: "fxStageCompressor", toggle: ["compressor", "enabled"], params: [
+      fxParam(["compressor", "threshold_millidb"], "fxAbbrThreshold", "fxCompThresholdHover", -60000, 0, 500, "db"),
+      fxParam(["compressor", "ratio_milli"], "fxAbbrRatio", "fxRatioHover", 1000, 20000, 100, "ratio"),
+      fxTime(["compressor", "attack_us"], "fxAbbrAttack", "fxAttackHover", 1000000),
+      fxTime(["compressor", "release_us"], "fxAbbrRelease", "fxReleaseHover", 1000000),
+      fxParam(["compressor", "knee_millidb"], "fxAbbrKnee", "fxKneeHover", 0, 24000, 500, "db"),
+      fxParam(["compressor", "makeup_millidb"], "fxAbbrMakeup", "fxMakeupHover", 0, 24000, 100, "db")] },
+    { key: "limiter", stage: "fxStageLimiter", toggle: ["limiter", "enabled"], params: [
+      fxParam(["limiter", "ceiling_millidb"], "fxAbbrCeiling", "fxCeilingHover", -60000, 0, 100, "db"),
+      fxTime(["limiter", "release_us"], "fxAbbrRelease", "fxReleaseHover", 1000000)] },
+  ];
+  const FX_BAND_PARAMS = [
+    fxParam(["frequency_hz"], "fxAbbrFrequency", "fxFrequencyHover", 20, 20000, "log", "hz"),
+    fxParam(["gain_millidb"], "fxAbbrGain", "fxBandGainHover", -24000, 24000, 100, "db"),
+    fxParam(["q_milli"], "fxAbbrQ", "fxQHover", 100, 10000, "log", "q"),
+  ];
+  const FX_PRESET_KEY = { flat: "fxPresetFlat", voice: "fxPresetVoice", podcast: "fxPresetPodcast",
+    music: "fxPresetMusic", master: "fxPresetMaster" };
+  const FX_KIND_KEY = { low_shelf: "fxKindLowShelf", peak: "fxKindPeak", high_shelf: "fxKindHighShelf" };
+  function fxGet(object, path) { return path.reduce((value, key) => value[key], object); }
+  function fxSet(object, path, value) { fxGet(object, path.slice(0, -1))[path[path.length - 1]] = value; }
+  function fxPosition(param, value) {
+    if (param.scale !== "log") return value;
+    return Math.round(FX_LOG_STEPS * Math.log(value / param.min) / Math.log(param.max / param.min));
+  }
+  function fxValue(param, position) {
+    const value = param.scale === "log"
+      ? Math.round(param.min * (param.max / param.min) ** (position / FX_LOG_STEPS)) : Math.round(position);
+    return Math.min(param.max, Math.max(param.min, value));
+  }
+  // One slider: its abbreviation, a range input, and the value readout.
+  function fxSlider(target, param, path, bandNumber) {
+    const label = document.createElement("label");
+    label.className = "param";
+    const name = document.createElement("span");
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = param.scale === "log" ? "0" : String(param.min);
+    input.max = param.scale === "log" ? String(FX_LOG_STEPS) : String(param.max);
+    input.step = param.scale === "log" ? "1" : String(param.scale);
+    const output = document.createElement("output");
+    label.append(name, input, output);
+    const take = (phase) => fxEdit(target, (chain) => fxSet(chain, path, fxValue(param, Number(input.value))), phase);
+    input.addEventListener("input", () => take("drag"));
+    input.addEventListener("change", () => take("release"));
+    input.addEventListener("blur", () => fxEndGesture(target));
+    return { element: label, update(chain, reason, strip) {
+      const value = fxGet(chain, path);
+      const edit = fx.edits.get(target);
+      // Never move a slider under the finger dragging it.
+      if (!(edit && edit.gesture && document.activeElement === input)) {
+        const position = String(fxPosition(param, value));
+        if (input.value !== position) input.value = position;
+      }
+      name.textContent = tr(param.abbr);
+      output.textContent = fxFormat(param.format, value);
+      const control = bandNumber ? tr("fxBand", { band: bandNumber }) + " " + tr(param.abbr) : tr(param.abbr);
+      input.setAttribute("aria-label", tr("fxControlLabel", { strip, control }));
+      input.setAttribute("aria-valuetext", output.textContent);
+      input.disabled = Boolean(reason);
+      label.title = reason || tr("fxReleaseToSend", { hover: tr(param.hover) });
+    } };
+  }
+  // A switch: `hover` while off and `onHover` while on, with `values`.
+  function fxToggle(target, path, onHover, hover, text, values) {
+    const label = document.createElement("label");
+    label.className = "toggle";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    const span = document.createElement("span");
+    label.append(box, span);
+    box.addEventListener("change", () => {
+      const on = box.checked;
+      fxEdit(target, (chain) => fxSet(chain, path, on), null);
+    });
+    return { element: label, update(chain, reason, strip) {
+      const on = fxGet(chain, path);
+      box.checked = on;
+      span.textContent = text();
+      box.setAttribute("aria-label", tr("fxControlLabel", { strip, control: text() }));
+      box.disabled = Boolean(reason);
+      label.title = reason || tr(on ? onHover : hover, values);
+    } };
+  }
+  function fxChoice(options, hover, onPick) {
+    const select = document.createElement("select");
+    for (const value of options) select.append(new Option("", value));
+    select.addEventListener("change", () => onPick(select));
+    return { element: select, update(current, reason, strip, text, values) {
+      for (const option of select.options) option.textContent = text(option.value);
+      select.value = current;
+      select.disabled = Boolean(reason);
+      select.title = reason || tr(hover, values);
+      select.setAttribute("aria-label", tr("fxControlLabel", { strip, control: tr(hover, values) }));
+    } };
+  }
+  // Builds one target's disclosure; `update` repaints it.
+  function fxPanel(target) {
+    const details = document.createElement("details");
+    details.className = "fx";
+    details.open = fx.open.has(target);
+    const summary = document.createElement("summary");
+    const title = document.createElement("span");
+    title.className = "name";
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    summary.append(title, badge);
+    details.append(summary);
+    const paints = [];
+    const add = (parent, control, paint) => { parent.append(control.element); paints.push(paint); };
+    const head = document.createElement("div");
+    head.className = "head";
+    details.append(head);
+    const bypass = fxToggle(target, ["bypass"], "fxBypassHover", "fxBypassHover", () => tr("fxBypass"), {});
+    add(head, bypass, bypass.update);
+    const polarity = fxToggle(target, ["invert_polarity"], "fxPolarityOnHover", "fxPolarityOffHover",
+      () => tr("fxPolarity"), {});
+    add(head, polarity, polarity.update);
+    const presets = fxChoice(["", ...STRIP_DSP.PRESETS], "fxPresetHover", (select) => {
+      const chosen = STRIP_DSP.preset(select.value);
+      select.value = "";
+      if (chosen) fxEdit(target, (chain) => Object.assign(chain, chosen), null);
+    });
+    add(head, presets, (chain, reason, strip) => presets.update("", reason, strip,
+      (value) => tr(value ? FX_PRESET_KEY[value] : "fxPresetChoose"), {}));
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.addEventListener("click", () => fxEdit(target, (chain) => Object.assign(chain, STRIP_DSP.defaults()), null));
+    add(head, { element: reset }, (chain, reason, strip) => {
+      reset.textContent = tr("fxReset");
+      reset.setAttribute("aria-label", tr("fxControlLabel", { strip, control: tr("fxReset") }));
+      setDisabled(reset, reason);
+      if (!reason) reset.title = tr("fxResetHover");
+    });
+    for (const stage of FX_STAGES) {
+      const box = document.createElement("div");
+      box.className = "stage";
+      const stageHead = document.createElement("div");
+      stageHead.className = "stage-head";
+      box.append(stageHead);
+      details.append(box);
+      const toggle = fxToggle(target, stage.toggle, "fxStageOnHover", "fxStageOffHover", () => tr(stage.stage),
+        { get stage() { return tr(stage.stage); } });
+      add(stageHead, toggle, (chain, reason, strip) => {
+        toggle.update(chain, reason, strip);
+        box.dataset.on = fxGet(chain, stage.toggle) ? "1" : "0";
+      });
+      if (stage.params.length) {
+        const params = document.createElement("div");
+        params.className = "params";
+        box.append(params);
+        for (const param of stage.params) {
+          const slider = fxSlider(target, param, param.path, 0);
+          add(params, slider, slider.update);
+        }
+      }
+      if (stage.key !== "eq") continue;
+      for (let index = 0; index < 5; index += 1) {
+        const row = document.createElement("div");
+        row.className = "band";
+        box.append(row);
+        const values = { band: index + 1 };
+        const on = fxToggle(target, ["eq", "bands", index, "enabled"], "fxBandHover", "fxBandHover",
+          () => tr("fxBand", values), values);
+        add(row, on, on.update);
+        const kind = fxChoice(STRIP_DSP.KINDS, "fxBandKindHover", (select) => {
+          const picked = select.value;
+          fxEdit(target, (chain) => { chain.eq.bands[index].kind = picked; }, null);
+        });
+        add(row, kind, (chain, reason, strip) => kind.update(chain.eq.bands[index].kind, reason, strip,
+          (value) => tr(FX_KIND_KEY[value]), values));
+        const bandParams = document.createElement("div");
+        bandParams.className = "params";
+        row.append(bandParams);
+        for (const param of FX_BAND_PARAMS) {
+          const slider = fxSlider(target, param, ["eq", "bands", index, ...param.path], index + 1);
+          add(bandParams, slider, slider.update);
+        }
+      }
+    }
+    details.addEventListener("toggle", () => {
+      if (details.open) fx.open.add(target); else fx.open.delete(target);
+      if (details.open) render();
+    });
+    return { details, update() {
+      const strip = fxTargetName(target);
+      const chain = fxChain(target);
+      title.textContent = tr("fxSummary", { strip });
+      const state = chain.bypass ? "bypassed" : STRIP_DSP.isActive(chain) ? "active" : "flat";
+      badge.dataset.state = state;
+      badge.textContent = tr({ flat: "fxStateFlat", active: "fxStateActive", bypassed: "fxStateBypassed" }[state]);
+      badge.title = tr({ flat: "fxStateFlatHover", active: "fxStateActiveHover",
+        bypassed: "fxStateBypassedHover" }[state]);
+      const edit = fx.edits.get(target);
+      const busy = Boolean(edit && (edit.inflight || edit.queued));
+      details.dataset.pending = busy ? "1" : "0";
+      summary.title = tr("fxSummaryHover", { strip }) + (busy ? " · " + tr("fxPendingHover") : "");
+      // A closed disclosure repaints its controls when it opens.
+      if (!details.open) return;
+      const reason = fxGate(target);
+      for (const paint of paints) paint(chain, reason, strip);
+    } };
+  }
+  const fxPanels = new Map();
+  function renderFx(ids) {
+    const live = link.phase === "live";
+    const targets = live ? ["master", ...ids] : [];
+    syncChildren(ui.fxStrips, targets, (target) => {
+      const panel = fxPanel(target);
+      fxPanels.set(target, panel);
+      return panel.details;
+    }, (details, target) => fxPanels.get(target).update());
+    for (const target of [...fxPanels.keys()]) if (!targets.includes(target)) fxPanels.delete(target);
+    ui.fxNote.hidden = !live;
+    ui.whyFx.textContent = sectionReason("audio");
   }
 
   // ---- Commands. The server authorizes every command again. ----
