@@ -1506,7 +1506,7 @@ fn draft_controls<T: AnimationTarget>(
     status_chip(ui, l.text(text), tone, 92.0).on_hover_text(l.text(hover));
     let mut auto = binding.auto_save();
     if ui
-        .checkbox(&mut auto, l.text(Msg::AnimAutoSave))
+        .checkbox(&mut auto, toolbar_text(l.text(Msg::AnimAutoSave)))
         .on_hover_text(l.text(Msg::AnimAutoSaveHover))
         .changed()
     {
@@ -1548,9 +1548,14 @@ fn draft_controls<T: AnimationTarget>(
         binding.reload_theirs();
         reverted = true;
     }
-    ui.checkbox(onion, l.text(Msg::AnimOnion))
+    ui.checkbox(onion, toolbar_text(l.text(Msg::AnimOnion)))
         .on_hover_text(l.text(Msg::AnimOnionHover));
     reverted
+}
+
+/// A toolbar switch's words at the size of the keys beside it.
+fn toolbar_text(text: &str) -> egui::RichText {
+    egui::RichText::new(text).size(crate::theme::legible(11.0))
 }
 
 /// The notice that someone else changed the animation under this draft,
