@@ -89,10 +89,15 @@ highest-value remaining items, ranked:
    from a browser paired as Graphics. Protocol 2.90 (schema 74) adds
    per-field browser exposure (set in Studio's TITLES tab), server-rendered
    draft previews and an image picker with uploads in the page, live
-   `title_phases`, and a read-only In / Hold / Out strip in Studio. Still
-   missing: per-field revisions, a live `title_state` resync of newly
-   exposed values without a reconnect, and the native-daemon checks of the
-   browser flow.
+   `title_phases`, and a read-only In / Hold / Out strip in Studio.
+   Protocol 2.97 (schema 78) adds per-field revisions, so editors of
+   different fields of one title never clobber each other while a stale
+   edit of the same field is refused as a conflict; a live `title_state`
+   after every exposure change, so newly exposed fields reach open pages
+   (and hidden ones leave them) without a reconnect; tighter image uploads;
+   and a native-daemon check of the browser flow. Still missing: the
+   rendered preview draws hidden fields as on air, and `GX-006` awaits its
+   capability-profile certification.
 
 Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
 since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
@@ -3902,12 +3907,29 @@ that lists the bundle's PNG and JPEG images and uploads new ones over
 authenticated HTTPS endpoints (`/v1/assets/images`), which sniff the type,
 cap the size at 8 MiB, decode-check the image, sanitize the name, and store it
 inside the bundle under `assets/uploads/`; and lossy `title_phases` records
-drive an In / Hold / Out line with an extrapolated progress bar. Remaining
-gaps: revisions are per title rather than per field; the rendered preview
-draws hidden fields as on air; a newly exposed field reaches an open page
-only through a resynchronizing reconnect; the browser flow is checked
-against the simulated daemon (and headless Chromium) only. `GX-006` remains
-planned.
+drive an In / Hold / Out line with an extrapolated progress bar. Protocol
+2.97 (schema 78) closes three more. Each title field carries the field
+revision that last changed its value (persisted as each field's
+`"revision"` in `project.json`, so journal replay stays deterministic, and
+sent as `title_state`'s `field_revisions`); an edit applies when its
+`base_revision` is one the title has reached and none of the fields it sets
+changed after it, so Studio and browsers that saw the same revision may edit
+different fields, while a stale edit of a field someone else changed is
+refused as `title_revision_conflict` naming the field and the revision that
+changed it. The page rebases its untouched drafts automatically and marks a
+draft stale only when its own field changed. A Web session's
+`title_exposure_changed` is followed at once by a fresh, web-filtered
+`title_state` for every input it names, so a field Studio exposes appears in
+open pages with its value and revision, and a hidden one disappears, without
+a reconnect. Uploads are refused unless the title renderer can draw them
+(at most 16 MiB of decoded RGBA, such as 2048x2048, within 8192-pixel
+edges; larger pictures were accepted before and drawn blank), a `Transfer-Encoding` body is refused rather
+than stored with its framing, and a non-regular file under `assets/` is
+never opened. `apps/freemixd/tests/native_web_titles.rs` drives the upload,
+draft preview, per-field edits, stale refusal, and live resync against a
+native-media daemon whose renderer draws the uploaded image. Remaining gaps:
+the rendered preview draws hidden fields as on air, and the capability
+profiles are not certified. `GX-006` remains planned.
 
 
 Current implementation boundary for item 3: `fm-browser-input` provides a

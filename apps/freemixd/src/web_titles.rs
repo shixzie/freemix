@@ -364,7 +364,7 @@ mod tests {
             [input(3), input(4)]
         );
         assert_eq!(resynced[0].fields.len(), 1);
-        assert!(resynced[1].fields.is_empty());
+        assert_eq!(resynced[1].fields.len(), 0);
         let changed = event(EventPayload::TitleChanged {
             input: input(3),
             field_revision: 2,

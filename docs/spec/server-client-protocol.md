@@ -3697,6 +3697,51 @@ schema 77).
   item's file length and played duration, and the total.
 - 2.94 is refused.
 
+Protocol 2.97 gives title fields their own revisions and keeps browser
+title editors in step with exposure changes (GX-006, schema 78).
+
+- Each title field has a field revision: the title `field_revision` that
+  last changed its value (`0` for a value never changed). Writing a field
+  its current value leaves its revision alone, and no field revision is
+  ever above the title's.
+- `title_state` gains a required `field_revisions` right after
+  `field_exposed`: one canonical decimal per field, comma separated, in
+  `fields` order (empty for an empty title), each at most the record's
+  `field_revision`; anything else is refused as `invalid_field` naming
+  `field_revisions`. A Web session's record lists only the exposed fields,
+  as for `fields`.
+- `title_fields` and `title_take` check `base_revision` per field: the
+  edit applies when `base_revision` is at most the title's
+  `field_revision` and no field it sets changed after `base_revision`.
+  Editors that saw the same revision may therefore set different fields
+  of one title, each edit advancing the title revision by one, while an
+  edit of a field someone else changed since is refused as before
+  (`conflict` with field issue `title_revision_conflict` on
+  `base_revision`, worded "title edit is based on revision <base>, but
+  field <field> changed at revision <changed>"). A `base_revision` ahead
+  of the title is refused as before; an edit setting no field needs only
+  a base the title has reached. Clients learn each field's revision from
+  `title_state` and from `title_changed`, whose `field_revision` is the
+  revision of every field whose value it changes.
+- A Web session that receives `title_exposure_changed` receives right
+  after it one `title_state` per input the event names, in its order,
+  web-filtered as above and carrying the title's current values and
+  revisions (`revision` is the current project revision), so newly
+  exposed fields appear and hidden ones disappear without a reconnect.
+  This is the one `title_state` a Web session receives outside a
+  snapshot; a page ignores `title_changed` events older than the title
+  state it holds. Raw sessions see every field and receive no such
+  record.
+- Image uploads (`POST /v1/assets/images`) are refused `422` unless the
+  title renderer can draw the picture: at most 8192 pixels on an edge and
+  16 MiB of decoded RGBA (such as 2048x2048). A request carrying
+  `Transfer-Encoding` is refused `400` before its body is read, and
+  `GET /v1/assets/image` serves regular files only (`404` otherwise).
+- Durability (schema 78): each title input field in `project.json` carries
+  `"revision"`, its field revision, at most the title's
+  `"field_revision"`; restore refuses a field revision ahead of its title.
+- 2.93 is refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision
