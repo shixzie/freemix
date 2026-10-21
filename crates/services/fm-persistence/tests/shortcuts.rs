@@ -325,7 +325,7 @@ fn mouse_buttons_and_window_scopes_round_trip_exactly_and_strictly() {
             "\"scope\": \"timeline-window\"",
         ),
         ("\"scope\": \"mixer-window\"", "\"scope\": \"-window\""),
-        // A tool window's name alone is no panel (schema 82).
+        // A tool window's name alone is no panel (schema 81).
         ("\"scope\": \"mixer-window\"", "\"scope\": \"designer\""),
         // The same button in the whole console clashes with the window's.
         (

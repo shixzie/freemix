@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.104 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.105 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4103,8 +4103,8 @@ schema change.
 - Studio and other raw sessions see every value and source, unchanged.
 - 2.103 is refused.
 
-Protocol 2.106 adds tool window scopes to user shortcut keys (RC-004,
-schema 82).
+Protocol 2.105 adds tool window scopes to user shortcut keys (RC-004,
+schema 81).
 
 - A `scope` may also name one of Studio's tool windows, the tool's name
   followed by `-window`: `color-window` (the Colour window),
@@ -4115,8 +4115,8 @@ schema 82).
 - A tool window scope overlaps only itself and an unscoped key: `F9` and
   `F9@color-window` clash; `F9@color-window`, `F9@animation-window`,
   `F9@mixer`, and `F9@mixer-window` do not.
-- Durability (schema 82): the shortcut `"key"` object is unchanged; its
-  `"scope"` may name a tool window. `.fmshortcuts` files (schema 82) and
+- Durability (schema 81): the shortcut `"key"` object is unchanged; its
+  `"scope"` may name a tool window. `.fmshortcuts` files (schema 81) and
   Studio's console key preference lines (`Shift+G @color-window`) carry
   the same, and the CLI's `shortcuts` listing prints it (`F9@color-window`).
 - Studio's "Answers in" and "Answers here in" pickers list the three tool
@@ -4134,7 +4134,7 @@ schema 82).
   windows) likewise takes the focus on a press inside it, and the main
   window's presses then fire its panel's and its window's keys, as its
   native window would.
-- 2.105 is refused.
+- 2.104 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

@@ -169,7 +169,7 @@ fn a_shortcut_set_is_imported_listed_exported_and_carried_to_another_project() {
 }
 
 /// Keys scoped to Studio's tool windows (the Colour window, the Animation
-/// editor, the scene Designer; schema 82) import, list with their scope,
+/// editor, the scene Designer; schema 81) import, list with their scope,
 /// and export unchanged; one tool window's key does not clash with
 /// another's.
 #[test]

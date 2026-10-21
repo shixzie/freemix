@@ -4,7 +4,7 @@
 //! optional key (a key name and its modifiers; since 2.83 optionally a
 //! chord's second stroke and the console panel the key is scoped to; since
 //! 2.93 a mouse button in place of a key and a panel's pop-out window as
-//! its scope; since 2.106 one of Studio's tool windows as its scope), an
+//! its scope; since 2.105 one of Studio's tool windows as its scope), an
 //! optional OSC name (the
 //! shortcut answers `/freemix/user/<name>`), whether it is enabled, and
 //! what it does ([`WireShortcutAction`]): cue actions run together on one
@@ -83,7 +83,7 @@ pub const SHORTCUT_MOUSE_BUTTONS: [&str; 3] = ["MouseMiddle", "MouseBack", "Mous
 /// it answers only while that window has the system's focus.
 pub const SHORTCUT_WINDOW_SUFFIX: &str = "-window";
 
-/// The tool windows a shortcut key may be scoped to (Protocol 2.106), each
+/// The tool windows a shortcut key may be scoped to (Protocol 2.105), each
 /// followed by [`SHORTCUT_WINDOW_SUFFIX`]: `color-window` (the Colour
 /// window), `animation-window` (the keyframe Animation editor), and
 /// `designer-window` (the scene Designer). A key scoped to one answers only
@@ -130,7 +130,7 @@ pub fn shortcut_scopes_overlap(first: Option<&str>, second: Option<&str>) -> boo
 /// `scope` of its own. Since 2.93 `key` may name a mouse button
 /// ([`SHORTCUT_MOUSE_BUTTONS`]) and the scope may be a panel's pop-out
 /// window ([`shortcut_scope_is_valid`]); since 2.99 a mouse button may be
-/// a chord's first or second stroke; since 2.106 the scope may be a tool
+/// a chord's first or second stroke; since 2.105 the scope may be a tool
 /// window ([`SHORTCUT_TOOL_WINDOWS`]).
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct WireShortcutKey {

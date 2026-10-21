@@ -30,7 +30,7 @@
 //! the console's focus, or to a panel's pop-out window (`<panel>-window`,
 //! [`shortcut_scope_is_valid`]), answering only while that window has the
 //! system's focus, or to one of Studio's tool windows (`<tool>-window`,
-//! [`SHORTCUT_TOOL_WINDOWS`], schema 82), answering only while that window
+//! [`SHORTCUT_TOOL_WINDOWS`], schema 81), answering only while that window
 //! has the focus. A key name may instead be one of
 //! [`SHORTCUT_MOUSE_BUTTONS`], a press of that mouse button with the same
 //! modifiers, as either stroke of a chord (schema 80). Two enabled-or-not

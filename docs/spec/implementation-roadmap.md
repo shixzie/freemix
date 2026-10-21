@@ -63,7 +63,7 @@ highest-value remaining items, ranked:
    preferences, and mouse buttons as either stroke of a chord (Protocol
    2.99, schema 80), and keys scoped to the Colour, Animation, and
    Designer tool windows, with a pop-out the platform embeds in the main
-   window answering its panel's and window's keys (Protocol 2.106, schema
+   window answering its panel's and window's keys (Protocol 2.105, schema
    82). This closes the gaps this item named; the row stays planned until
    its acceptance evidence covers its Windows and macOS profiles (see the
    RC-004 boundary below). This is a P0 row.
@@ -1124,7 +1124,7 @@ A mouse button may now be either stroke of a chord (Protocol 2.99, schema
 80; `.fmshortcuts` and console keys too), clashing as any chord does;
 Studio captures a button as either stroke, and a named button press starts
 or ends a waiting chord as a key press does.
-Protocol 2.106 / schema 82 add tool window scopes: a key may be scoped to
+Protocol 2.105 / schema 81 add tool window scopes: a key may be scoped to
 the Colour window (`color-window`), the keyframe Animation editor
 (`animation-window`), or the scene Designer (`designer-window`), each
 overlapping only itself and the whole console; model validation, the

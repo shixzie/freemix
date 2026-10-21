@@ -568,7 +568,7 @@ fn assets_listing(store: &ProjectStore) -> Vec<String> {
 fn every_element_kind_round_trips_exactly() {
     let expected = rich_template();
     let encoded = encode_title_template(&expected).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 80,\n  \"template\": {\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 81,\n  \"template\": {\n"));
     assert!(encoded.contains(
         "\"kind\": {\"type\": \"image\", \"field\": 4, \"fit\": \"contain\", \"filter\": \"bilinear\"}"
     ));
@@ -763,15 +763,15 @@ fn strict_decoder_refuses_unknown_missing_and_out_of_contract_content() {
         );
     }
 
-    for (schema, found) in [("79", 79), ("81", 81)] {
+    for (schema, found) in [("80", 80), ("82", 82)] {
         let document = encoded.replacen(
-            "\"schema_version\": 80",
+            "\"schema_version\": 81",
             &format!("\"schema_version\": {schema}"),
             1,
         );
         assert!(matches!(
             decode_title_template(&document),
-            Err(TitleTemplateError::UnsupportedSchema { found: f, supported: 80 }) if f == found
+            Err(TitleTemplateError::UnsupportedSchema { found: f, supported: 81 }) if f == found
         ));
     }
 
@@ -1377,7 +1377,7 @@ fn a_compact_source_whose_stored_form_exceeds_the_cap_is_refused() {
     // would leave a template that never loads again.
     let cap = usize::try_from(fm_persistence::MAX_TITLE_TEMPLATE_BYTES).unwrap();
     let mut source = String::from(
-        r##"{"schema_version":80,"template":{"id":1,"name":"Big","width":16,"height":9,"background":"#00000000","fields":[],"elements":["##,
+        r##"{"schema_version":81,"template":{"id":1,"name":"Big","width":16,"height":9,"background":"#00000000","fields":[],"elements":["##,
     );
     let mut id = 1_u32;
     while source.len() < cap - 1024 {

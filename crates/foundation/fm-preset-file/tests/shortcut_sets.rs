@@ -196,7 +196,7 @@ fn a_shortcut_set_is_refused_unless_strict_and_valid() {
         ("\"scope\": \"cues\"", "\"scope\": \"timeline\""),
         // A pop-out window of no panel.
         ("\"scope\": \"cues\"", "\"scope\": \"timeline-window\""),
-        // A tool window's name alone is no panel (schema 82).
+        // A tool window's name alone is no panel (schema 81).
         ("\"scope\": \"cues\"", "\"scope\": \"color\""),
     ] {
         let bad = text.replacen(from, to, 1);
@@ -218,7 +218,7 @@ fn a_shortcut_set_is_refused_unless_strict_and_valid() {
     let window = text.replacen("\"scope\": \"cues\"", "\"scope\": \"cues-window\"", 1);
     assert!(decode_shortcut_set_file(&window).is_ok());
     // So is a tool window: the Colour window, the Animation editor, and the
-    // scene Designer (schema 82), and it round-trips exactly.
+    // scene Designer (schema 81), and it round-trips exactly.
     for tool in ["color-window", "animation-window", "designer-window"] {
         let window = text.replacen("\"scope\": \"cues\"", &format!("\"scope\": \"{tool}\""), 1);
         let decoded = decode_shortcut_set_file(&window).unwrap();

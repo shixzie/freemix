@@ -637,7 +637,7 @@ fn mouse_buttons_and_window_scopes_round_trip_exactly_and_strictly() {
     assert!(!at("MouseBack", None).clashes(&at("MouseForward", None)));
 }
 
-/// Protocol 2.106 (RC-004): a key may be scoped to one of Studio's tool
+/// Protocol 2.105 (RC-004): a key may be scoped to one of Studio's tool
 /// windows (`color-window`, `animation-window`, `designer-window`), which
 /// round-trips exactly; a tool has no panel scope of its own, and a tool
 /// window overlaps only itself and the whole console.
