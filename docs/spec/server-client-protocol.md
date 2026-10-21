@@ -1740,8 +1740,9 @@ local audio output device at its own level and mute, independent of Program.
   edit authorized as an audio operation; choosing a device again, even the
   current one, reopens it, so a failed device is retried. Choosing the
   current device again changes nothing durable and records no undo entry.
-  Only choosing the device again reopens a failed device: a later sample
-  rate or channel change of the bus does not.
+  A later sample rate or channel change of the bus never reopens a failed
+  device early; since Protocol 2.102 the server also retries a failed
+  device on its own, with back-off (see below).
 - `payload=audio_monitor_level` (`gain_millidb` -96000..=24000, `muted`
   `0|1`) moves the headphone feed's level. It is a live audio operation:
   never recorded, never undone, never padlock-guarded. It changes neither
@@ -3987,6 +3988,61 @@ Protocol 2.101 shows live source clock drift on the Web (AU-004).
   counts in the pictures help); figures dim with a note once no record
   has arrived for 3.5 s. The tally and title pages ignore the record.
 - 2.100 is refused.
+
+Protocol 2.102 lists the server's headphone output devices (AU-001), so an
+operator picks the monitor bus's device instead of typing its ALSA name,
+and retries a device that failed or was unplugged on its own. No schema
+change.
+
+- A client sends `audio_output_devices_request` with `request_id` and
+  receives `audio_output_devices` with the same `request_id`, `supported`
+  (`0|1`: whether the server plays the monitor bus on a device at all), an
+  optional `error` (why the devices could not be listed: one line of 1 to
+  160 bytes, no control characters), and `devices`. `supported=0` carries
+  no `error` and an empty list. Like every device inventory the request
+  needs the `edit_project` permission; any other session is answered with
+  an `error` naming the `request_id` (`permission_denied`).
+- `devices` is a comma-separated list, strictly ascending by device name,
+  of `<default>~<channels>~<device length>~<description length>:<device>
+  <description>`: `default` is `0|1` (at most one), `channels` is `-` or 1
+  to 64, the device is a valid `audio_monitor_device` name (1 to 64 bytes of
+  printable ASCII without spaces, not starting with `-`) and the
+  description 0 to 96 bytes of one trimmed line. At most 48 devices. The
+  texts are written raw after their canonical byte lengths, so the line
+  encoding escapes them exactly once; anything else refuses the record.
+- Native `freemixd` on Linux lists ALSA's `default` PCM (the default) and
+  every PCM with a playback stream in `/proc/asound/cards` and
+  `/proc/asound/pcm` as `plughw:CARD=<card id>,DEV=<device>`: the card id is
+  stable across ports and boots, and `plughw` converts to the bus's rate
+  and channels. A USB card's `stream<device>` file gives the playback
+  channel count. Without `/proc/asound` the list is empty with an `error`.
+  It lists on a worker thread, never on the session loop that realizes
+  frames; a listing younger than 2 s answers later requests, and a peer's
+  newer request replaces its request not yet started. A simulated daemon
+  lists a fixed set (`default`, a stereo `plughw:CARD=Headset,DEV=0`, and
+  an eight-channel `plughw:CARD=Interface,DEV=0`); a native daemon on
+  another platform answers `supported=0`.
+- Hot-plug: a failed headphone device is retried after 1 s, then 2, 4, 8,
+  16, and at most 30 s between attempts; a device that played for 10 s
+  starts the back-off over, and choosing the device again retries it at
+  once. Before an attempt a native Linux daemon checks that the device's
+  card (by id or number) and PCM are in `/proc/asound`: an unplugged device
+  is not opened, only looked for every second, and opened as soon as it is
+  back. `audio_meters` keeps reporting `failed` while the device is missing
+  or being retried, until a reopened device has played for 1 s; each
+  failed attempt logs one `FREEMIXD_MONITOR_OUTPUT_FAILURE` record.
+- Studio's monitor strip replaces the device field with a picker of the
+  listed devices (each with its channel count and the default marked),
+  meter-only, the chosen device marked `not connected` when the server no
+  longer lists it, and `Type a name…`, which opens the device field for a
+  name the list does not show (such as `pulse`). Studio asks for the list
+  whenever the picker opens and every 3 s while the strip is shown, so
+  devices plugged in or out appear; picking the current device again
+  retries it. A server that lists no devices, or a session that may not
+  ask, keeps the device field. Every control has English and Spanish hover
+  help.
+- `freemix-cli remote-audio-output-devices <address>` prints the list.
+- 2.101 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

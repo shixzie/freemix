@@ -123,8 +123,11 @@ since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
 
 Smaller follow-ups found by the audit: the Colour window now asks the
 server for its target's source picture when no monitor shows it ungraded
-(`SW-019`, see its boundary below); headphone output needs device enumeration
-(`AU-001`). `fm-observability`'s `MetricRegistry` and `AlertEngine` now run in
+(`SW-019`, see its boundary below). Headphone output device enumeration has
+since landed (`AU-001`, Protocol 2.102): Studio picks the monitor bus's device
+from the server's ALSA outputs and a failed or unplugged device is reopened
+on its own; macOS and Windows still list and open no output device.
+`fm-observability`'s `MetricRegistry` and `AlertEngine` now run in
 both daemons with CPU and GPU-proxy utilization, default alert rules, and a
 `health_status` view in Studio and `remote-diagnostics` (`RC-015`); network,
 sync, and encoder-capacity sampling, operator acknowledgement and silencing,
@@ -3957,7 +3960,8 @@ write blocked on a full input pipe (as after `FFmpeg` starts, or once a slow
 device clock fills it), skips blocks until the pipe backlog is about 40 ms.
 A device that stops reading for 3 s is failed and its child killed; the
 failure is logged with a bounded, redacted tail of the child's standard
-error, and only choosing the device again reopens it. Program, recordings, streams, and the
+error, and only choosing the device again reopens it (until Protocol
+2.102, below). Program, recordings, streams, and the
 monitor meters never see the headphone level. `audio_meters` reports the
 device as off, playing, or failed. Studio's monitor strip adds a device
 field (Enter plays, an empty field stops, Enter on a failed device retries),
@@ -3967,9 +3971,44 @@ Spanish hover help. `freemix-cli` adds `audio-monitor-device` and
 `native_monitor_output` test reads the PCM that reached a captured device
 (unity, -6 dB, mute, undo and redo of the device), fails a missing ALSA
 card through the real `FFmpeg`, and plays the real ALSA `null` device where
-ALSA is available. Remaining gaps: the device is opened only through ALSA,
-so macOS and Windows report it failed; there is no device enumeration (the
-operator types the ALSA name); the monitor output carries the Master
+ALSA is available.
+
+Protocol 2.102 lists the headphone output devices and reopens a lost one
+(`AU-001`). An `audio_output_devices_request`, answered only to a session
+that may edit the project, lists a native Linux daemon's ALSA outputs:
+`default` (marked the default) and every playback PCM in `/proc/asound` as
+`plughw:CARD=<card id>,DEV=<n>`, a name that survives the card moving to
+another port or index, described as `<card>: <PCM>` with a USB card's
+playback channel count; a missing `/proc/asound` is reported as the
+listing's error. `freemixd` lists on a worker thread and reuses a listing
+for 2 s; a simulated daemon answers a fixed three-device list for clients
+and tests, and a native daemon off Linux answers unsupported (its
+`fm-io-linux` lister and presence probe are portable and compile on every
+platform, but nothing calls them there). A failed device is now retried on
+its own: 1 s, then doubling to at most 30 s between attempts, starting over
+after 10 s of play or when the device is chosen again; before each attempt
+the daemon checks that its card and PCM are present and, while they are
+not, only looks again every second, so a replugged headset plays within
+about a second. The state stays `failed` (Studio's `PHONES FAILED`) until a
+reopened device has played for 1 s. Studio's monitor strip replaces the
+device field with a picker of the listed devices, meter-only, the chosen
+device marked `not connected` when it is no longer listed, and `Type a
+name…` (the old field, kept for names the list cannot show such as
+`pulse`); it asks for the list when the picker opens and every 3 s while
+shown, and a server without the list or a session that may not ask keeps
+the field. Every new control has English and Spanish hover help, audited by
+`check_monitor_output`. `freemix-cli remote-audio-output-devices` prints the
+list. Tests cover the exact wire form and refusals, the ALSA parser and
+presence probe against a fake `/proc/asound`, the listing worker, the
+simulated list and its permission refusal through a real daemon, the
+native daemon's answer, the back-off, unplugged, replugged, and probation
+cases of the retry, and the CLI.
+
+Remaining gaps: the device is opened and listed only through ALSA, so macOS
+and Windows list nothing and report a chosen device failed; `PulseAudio`
+sinks are not listed (ALSA's `pulse` PCM can be typed); channel counts are
+known only for USB cards; hot-plug is found by polling, not udev events; the
+monitor output carries the Master
 channel layout without its own channel mapping or downmix; the ALSA buffer
 `FFmpeg` sizes and its internal queues add fixed device latency, and
 draining a backlog assumes the 64 KiB Linux pipe and leaves a short gap; the automix/talkback `MonitorBus`
