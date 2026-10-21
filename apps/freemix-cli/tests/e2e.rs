@@ -3221,8 +3221,8 @@ fn remote_display_output_commands_and_inventory() {
         stream.set_write_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
         let mut writer = stream.try_clone().unwrap();
         let mut reader = BufReader::new(stream);
-        assert_handshake_request_viewer(read_message(&mut reader));
-        write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+        assert_handshake_request_role(read_message(&mut reader), Role::Graphics);
+        write_handshake_role(&mut writer, &engine, 0, Role::Graphics);
         let WireMessage::DisplayInventoryRequest(request) = read_message(&mut reader) else {
             panic!("expected a display inventory request");
         };
@@ -13752,8 +13752,8 @@ fn remote_capture_commands_send_exact_payloads() {
         stream.set_write_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
         let mut writer = stream.try_clone().unwrap();
         let mut reader = BufReader::new(stream);
-        assert_handshake_request_viewer(read_message(&mut reader));
-        write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+        assert_handshake_request_role(read_message(&mut reader), Role::Graphics);
+        write_handshake_role(&mut writer, &engine, 0, Role::Graphics);
         let WireMessage::CaptureDevicesRequest(request) = read_message(&mut reader) else {
             panic!("expected a capture devices request");
         };
@@ -13794,8 +13794,8 @@ fn remote_capture_commands_send_exact_payloads() {
         stream.set_write_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
         let mut writer = stream.try_clone().unwrap();
         let mut reader = BufReader::new(stream);
-        assert_handshake_request_viewer(read_message(&mut reader));
-        write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+        assert_handshake_request_role(read_message(&mut reader), Role::Graphics);
+        write_handshake_role(&mut writer, &engine, 0, Role::Graphics);
         let WireMessage::SystemAudioDevicesRequest(request) = read_message(&mut reader) else {
             panic!("expected a system audio devices request");
         };
@@ -14314,8 +14314,8 @@ fn remote_screen_capture_commands_send_exact_payloads() {
         stream.set_write_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
         let mut writer = stream.try_clone().unwrap();
         let mut reader = BufReader::new(stream);
-        assert_handshake_request_viewer(read_message(&mut reader));
-        write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+        assert_handshake_request_role(read_message(&mut reader), Role::Graphics);
+        write_handshake_role(&mut writer, &engine, 0, Role::Graphics);
         let WireMessage::ScreenCaptureTargetsRequest(request) = read_message(&mut reader) else {
             panic!("expected a screen capture targets request");
         };

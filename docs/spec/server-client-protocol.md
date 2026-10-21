@@ -1196,8 +1196,10 @@ Protocol 2.42 makes fullscreen display outputs project configuration
   bytes, and up to 16 `displays`, each
   `<id>~<name>~<x>~<y>~<current mode>~<modes ;-separated, at most 128>~<hdr capability unknown|sdr|hdr>`)
   is published when the connected displays change.
-- `display_inventory_request` (`request_id`) is a read-only query like
-  `diagnostics_request`; any role may send it, and the server answers
+- `display_inventory_request` (`request_id`) is a read-only query. It names
+  the server's displays, so it needs the `edit_project` permission (as
+  configuring a display output does); any other session is answered with an
+  `error` naming the `request_id` (`permission_denied`). The server answers
   `display_inventory` with the same `request_id` and the inventory fields.
   A daemon without a display presenter answers `presenter=0` and no
   displays, and its configured slots wait with `no-presenter`.
@@ -1418,7 +1420,9 @@ Protocol 2.47 adds capture device inputs (IN-001).
   format or `-`), `audio` (`0` or `1`), `frames`, `losses`, `recoveries`,
   `renegotiations`, and `error` (at most 160 bytes, or `-`).
 - `capture_devices_request` carries `protocol` and a non-blank
-  `request_id`; any role may send it. The `capture_devices` reply echoes
+  `request_id`. It needs the `edit_project` permission (as adding a capture
+  input does); any other session is answered with an `error` naming the
+  `request_id` (`permission_denied`). The `capture_devices` reply echoes
   `request_id` and carries `backend` (a lowercase token such as `v4l2`, or
   `-` when the daemon realizes no capture inputs), `error` (why the last
   enumeration failed, or `-`), and `devices`. The runtime event
@@ -2399,7 +2403,9 @@ operator picks a device instead of typing its name.
 - A client sends `system_audio_devices_request` with `request_id` and receives
   `system_audio_devices` with the same `request_id`, `supported` (`0|1`:
   whether the server captures system audio at all), `errors`, and `devices`.
-  `supported=0` carries empty lists.
+  `supported=0` carries empty lists. The request needs the `edit_project`
+  permission (as adding a system audio input does); any other session is
+  answered with an `error` naming the `request_id` (`permission_denied`).
 - `errors` is a comma-separated list, strictly ascending by audio system, of
   `<backend>~<length>:<text>`: an audio system that could not be listed and
   why (1 to 160 bytes, no control characters).
@@ -2671,7 +2677,10 @@ generic paged-input step.
   `slideshow_slides` carries `request_id`, `input`, `generation`, `offset`,
   `total`, and `slides` (`<length>:<asset URI>~<length>:<caption>` or
   `~-`, comma-separated, inside `total`, at most 12 KiB). A client drops a
-  window for another `generation`.
+  window for another `generation`. The request needs the `transition`
+  permission (as stepping a slideshow does) or `edit_project`; any other
+  session is answered with an `error` naming the `request_id`
+  (`permission_denied`).
 - Both daemons follow a folder slideshow's asset folder (rescanned every 2 s
   and on each project revision) and keep the slide on air through listing
   changes. The simulated daemon decodes slides and composes them on the CPU;
@@ -2892,7 +2901,9 @@ shows a PDF or a presentation one page at a time, stepped with the generic
   Answers are not durable and not projected into snapshots; they are
   rendered off the session loop, and at most 32 requests per connection
   wait for an answer (the oldest is dropped unanswered; a client asks again
-  for what it still shows).
+  for what it still shows). The request needs the `transition` permission
+  (as stepping a document does) or `edit_project`; any other session is
+  answered with an `error` naming the `request_id` (`permission_denied`).
 - Studio's Media tab lists every document input below the media transports:
   state, title, the server's message, Previous and Next keys, the page
   counter, a strip of thumbnails around the current page (a click goes to

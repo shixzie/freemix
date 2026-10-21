@@ -432,6 +432,41 @@ fn screen_capture_targets_need_project_edit_authority() {
     }
 }
 
+/// The server's capture devices, displays, and system audio devices are
+/// listed only to a session that may edit the project; a slideshow's slide
+/// list and a document page's notes go to one that steps presentations
+/// (`transition`) or edits them, never to a tally viewer or an audio desk.
+#[test]
+fn inventories_and_presentation_content_need_more_than_view_status() {
+    let server = ready_server(config());
+    for (desired, role, inventory, presentation) in [
+        (Role::Viewer, AuthRole::Viewer, false, false),
+        (Role::Audio, AuthRole::Audio, false, false),
+        (Role::Viewer, AuthRole::Admin, false, false),
+        (Role::Operator, AuthRole::Operator, false, true),
+        (Role::Graphics, AuthRole::Graphics, true, true),
+        (Role::Admin, AuthRole::Admin, true, true),
+    ] {
+        let session = server
+            .handshake(&hello(desired, None), &principal(role), 0)
+            .unwrap()
+            .session;
+        for (admitted, expected) in [
+            (session.admit_device_inventory(), inventory),
+            (session.admit_presentation_content(), presentation),
+        ] {
+            if expected {
+                assert_eq!(admitted, Ok(()), "{desired:?} as {role:?}");
+            } else {
+                assert!(
+                    matches!(admitted, Err(SessionError::Authorization(_))),
+                    "{desired:?} as {role:?}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn wipe_uses_transition_authorization_and_fade_rate_accounting() {
     let server = ready_server(config());

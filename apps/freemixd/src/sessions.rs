@@ -2050,8 +2050,16 @@ impl Runtime<'_> {
                 self.exact_preview(peer, message, durable, native.as_deref())
             }
             // The presenter's last inventory (OR-011); a daemon without one
-            // answers that it has no presenter.
+            // answers that it has no presenter. Like every device inventory
+            // it is answered only to a session that may edit the project.
             WireMessage::DisplayInventoryRequest(request) => {
+                if self.refuse_request(
+                    peer,
+                    &request.request_id,
+                    Session::admit_device_inventory,
+                )? {
+                    return Ok(());
+                }
                 let inventory = self.control.borrow().display_inventory().clone();
                 peer.reply(WireMessage::DisplayInventory(
                     fm_protocol::DisplayInventoryMessage {
@@ -2064,6 +2072,13 @@ impl Runtime<'_> {
             // The media plane's last capture device inventory (IN-001); a
             // daemon without capture answers with no backend and no devices.
             WireMessage::CaptureDevicesRequest(request) => {
+                if self.refuse_request(
+                    peer,
+                    &request.request_id,
+                    Session::admit_device_inventory,
+                )? {
+                    return Ok(());
+                }
                 let inventory = self.control.borrow().capture_inventory().clone();
                 peer.reply(WireMessage::CaptureDevices(
                     fm_protocol::CaptureDevicesMessage {
@@ -2111,8 +2126,16 @@ impl Runtime<'_> {
                 }))?;
                 Ok(())
             }
-            // One window of a slideshow's slide list (IN-009).
+            // One window of a slideshow's slide list (IN-009), only to a
+            // session that steps or edits presentations.
             WireMessage::SlideshowSlidesRequest(request) => {
+                if self.refuse_request(
+                    peer,
+                    &request.request_id,
+                    Session::admit_presentation_content,
+                )? {
+                    return Ok(());
+                }
                 let slides = self.control.borrow().slideshow_slides(&request);
                 peer.reply(WireMessage::SlideshowSlides(slides))?;
                 Ok(())
@@ -2182,13 +2205,28 @@ impl Runtime<'_> {
                 Ok(())
             }
             WireMessage::SystemAudioDevicesRequest(request) => {
+                if self.refuse_request(
+                    peer,
+                    &request.request_id,
+                    Session::admit_device_inventory,
+                )? {
+                    return Ok(());
+                }
                 self.system_audio_devices
                     .submit(peer.id, request.request_id);
                 Ok(())
             }
             // A document page's notes or thumbnail (IN-014) are read off
-            // this loop and sent on a later pass.
+            // this loop and sent on a later pass, only to a session that
+            // steps or edits presentations.
             WireMessage::PagedPageRequest(request) => {
+                if self.refuse_request(
+                    peer,
+                    &request.request_id,
+                    Session::admit_presentation_content,
+                )? {
+                    return Ok(());
+                }
                 let input = request.input.to_domain();
                 let uri = self
                     .control
@@ -2207,6 +2245,28 @@ impl Runtime<'_> {
                 Ok(())
             }
         }
+    }
+
+    /// Answers a read-only request that `admit` refuses with an error
+    /// naming its `request_id` (`permission_denied` for a missing
+    /// permission) and returns whether it was refused.
+    fn refuse_request(
+        &self,
+        peer: &mut Peer,
+        request_id: &str,
+        admit: impl FnOnce(&Session) -> Result<(), SessionError>,
+    ) -> Result<bool, DispatchError> {
+        let session = peer.session.as_ref().expect("active peers have sessions");
+        let Err(error) = admit(session) else {
+            return Ok(false);
+        };
+        let current_revision = Some(self.control.borrow().diagnostics().current_revision);
+        peer.reply(WireMessage::Error(ErrorMessage {
+            request_id: Some(request_id.to_owned()),
+            current_revision,
+            error: structured_session_error(&error),
+        }))?;
+        Ok(true)
     }
 
     /// The refusal a Web peer's command meets before it executes (see

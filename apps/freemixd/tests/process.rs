@@ -2065,7 +2065,8 @@ fn fade_to_black_timing_and_a_more_kind_t_bar_round_trip_through_the_daemon() {
 
 /// AU-011, Protocol 2.68: a simulated daemon does not capture system audio,
 /// so it answers each device list request, by its own request id, that it
-/// lists nothing, and the session stays usable.
+/// lists nothing, and the session stays usable. Only a session that may edit
+/// the project is answered.
 #[test]
 fn a_simulated_daemon_lists_no_system_audio_devices() {
     let directory = TestDirectory::new("system-audio-devices");
@@ -2073,7 +2074,7 @@ fn a_simulated_daemon_lists_no_system_audio_devices() {
     create_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
     let mut client = daemon.connect();
-    client.handshake_as(Role::Viewer, None);
+    client.handshake_as(Role::Graphics, None);
     client.receive_snapshot();
     for request_id in ["devices-1", "devices-2"] {
         client.send(&WireMessage::SystemAudioDevicesRequest(
@@ -2091,6 +2092,92 @@ fn a_simulated_daemon_lists_no_system_audio_devices() {
             answer.inventory,
             fm_protocol::SystemAudioInventory::unsupported()
         );
+    }
+}
+
+/// The server's device inventories (capture devices, displays, system audio
+/// devices) and a presentation's slide list and page notes are not shown to
+/// a tally viewer: each request is refused by its own request id
+/// (`permission_denied`). An operator, who steps presentations, is shown a
+/// slide list but no device inventory.
+#[test]
+fn inventories_and_presentation_content_are_refused_to_a_viewer() {
+    let directory = TestDirectory::new("inventory-roles");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+    let requests = |prefix: &str| {
+        let id = |name: &str| format!("{prefix}-{name}");
+        vec![
+            WireMessage::CaptureDevicesRequest(fm_protocol::CaptureDevicesRequest {
+                request_id: id("capture"),
+            }),
+            WireMessage::DisplayInventoryRequest(fm_protocol::DisplayInventoryRequest {
+                request_id: id("displays"),
+            }),
+            WireMessage::SystemAudioDevicesRequest(fm_protocol::SystemAudioDevicesRequest {
+                request_id: id("audio"),
+            }),
+            WireMessage::SlideshowSlidesRequest(fm_protocol::SlideshowSlidesRequest {
+                request_id: id("slides"),
+                input: input(1),
+                offset: 0,
+                limit: 8,
+            }),
+            WireMessage::PagedPageRequest(fm_protocol::PagedPageRequest {
+                request_id: id("page"),
+                input: input(1),
+                page: 1,
+                thumbnail: false,
+            }),
+        ]
+    };
+    let refused = |client: &mut Client| loop {
+        match client.receive() {
+            WireMessage::Error(error) => {
+                assert_eq!(error.error.code, "permission_denied");
+                break error.request_id.unwrap();
+            }
+            message @ (WireMessage::CaptureDevices(_)
+            | WireMessage::DisplayInventory(_)
+            | WireMessage::SystemAudioDevices(_)
+            | WireMessage::SlideshowSlides(_)
+            | WireMessage::PagedPage(_)) => panic!("answered: {message:?}"),
+            _ => {}
+        }
+    };
+
+    let mut viewer = daemon.connect();
+    viewer.handshake_as(Role::Viewer, None);
+    viewer.receive_snapshot();
+    for request in requests("viewer") {
+        viewer.send(&request);
+    }
+    for name in ["capture", "displays", "audio", "slides", "page"] {
+        assert_eq!(refused(&mut viewer), format!("viewer-{name}"));
+    }
+
+    let mut operator = daemon.connect();
+    operator.handshake_as(Role::Operator, None);
+    operator.receive_snapshot();
+    let [capture, displays, audio, slides, ..] =
+        <[WireMessage; 5]>::try_from(requests("op")).unwrap();
+    for request in [&capture, &displays, &audio] {
+        operator.send(request);
+    }
+    for name in ["capture", "displays", "audio"] {
+        assert_eq!(refused(&mut operator), format!("op-{name}"));
+    }
+    operator.send(&slides);
+    loop {
+        match operator.receive() {
+            WireMessage::SlideshowSlides(answer) => {
+                assert_eq!(answer.request_id, "op-slides");
+                break;
+            }
+            WireMessage::Error(error) => panic!("an operator was refused: {error:?}"),
+            _ => {}
+        }
     }
 }
 

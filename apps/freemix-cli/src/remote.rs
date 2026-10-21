@@ -982,7 +982,9 @@ pub(crate) fn print_screen_capture_inputs(
 
 /// Lists the screens and windows the daemon's host can capture (IN-011).
 pub fn screen_capture_targets(address: SocketAddr) -> RemoteResult<()> {
-    let mut remote = Remote::connect(address, Role::Viewer)?;
+    // The daemon lists its devices and desktop only to a session that
+    // may edit the project, which Graphics holds.
+    let mut remote = Remote::connect(address, Role::Graphics)?;
     let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
     let request_id = format!("cli-screen-capture-{}", unique_client_id()?);
     remote.write(&WireMessage::ScreenCaptureTargetsRequest(
@@ -1205,7 +1207,9 @@ fn format_capture_input(entry: &fm_protocol::CaptureInputEntry) -> String {
 /// Lists the capture devices the daemon at `address` can open, with a
 /// table of each device's formats (IN-001).
 pub fn capture_devices(address: SocketAddr) -> RemoteResult<()> {
-    let mut remote = Remote::connect(address, Role::Viewer)?;
+    // The daemon lists its devices and desktop only to a session that
+    // may edit the project, which Graphics holds.
+    let mut remote = Remote::connect(address, Role::Graphics)?;
     let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
     let request_id = format!("cli-capture-{}", unique_client_id()?);
     remote.write(&WireMessage::CaptureDevicesRequest(
@@ -1232,7 +1236,9 @@ pub fn capture_devices(address: SocketAddr) -> RemoteResult<()> {
 /// Lists the system audio capture devices of the daemon's host (AU-011,
 /// Protocol 2.68).
 pub fn system_audio_devices(address: SocketAddr) -> RemoteResult<()> {
-    let mut remote = Remote::connect(address, Role::Viewer)?;
+    // The daemon lists its devices and desktop only to a session that
+    // may edit the project, which Graphics holds.
+    let mut remote = Remote::connect(address, Role::Graphics)?;
     let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
     let request_id = format!("cli-system-audio-{}", unique_client_id()?);
     remote.write(&WireMessage::SystemAudioDevicesRequest(
@@ -1386,7 +1392,9 @@ fn format_display_output(
 
 /// Lists the displays the daemon's presenter sees (Protocol 2.42).
 pub fn display_inventory(address: SocketAddr) -> RemoteResult<()> {
-    let mut remote = Remote::connect(address, Role::Viewer)?;
+    // The daemon lists its devices and desktop only to a session that
+    // may edit the project, which Graphics holds.
+    let mut remote = Remote::connect(address, Role::Graphics)?;
     let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
     let request_id = format!("cli-displays-{}", unique_client_id()?);
     remote.write(&WireMessage::DisplayInventoryRequest(

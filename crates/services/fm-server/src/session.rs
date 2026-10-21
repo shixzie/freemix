@@ -293,6 +293,52 @@ impl Session {
         Ok(())
     }
 
+    /// Authorizes one request for a server device inventory: the capture
+    /// devices (IN-001), the presenter's displays (OR-011), or the system
+    /// audio devices (AU-011).
+    ///
+    /// The inventories name the production machine's cameras, displays,
+    /// and audio devices, which only someone who may add an input or
+    /// configure a display output needs, so they require
+    /// [`CommandClass::EditProject`], like
+    /// [`Self::admit_screen_capture_targets`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a session or authorization error when the request cannot be
+    /// admitted.
+    pub fn admit_device_inventory(&self) -> Result<(), SessionError> {
+        self.ensure_connected()?;
+        self.policy
+            .authorize(&self.principal, CommandClass::EditProject)?;
+        Ok(())
+    }
+
+    /// Authorizes one request for a presentation's content: a window of a
+    /// slideshow's slide list (IN-009) or a document page's notes or
+    /// thumbnail (IN-014).
+    ///
+    /// They name the project's slide files and carry speaker notes, which
+    /// only someone who steps a presentation
+    /// ([`CommandClass::Transition`], as page navigation needs) or edits
+    /// the project ([`CommandClass::EditProject`]) needs; a tally viewer
+    /// or an audio desk is refused.
+    ///
+    /// # Errors
+    ///
+    /// Returns a session or authorization error when the request cannot be
+    /// admitted.
+    pub fn admit_presentation_content(&self) -> Result<(), SessionError> {
+        self.ensure_connected()?;
+        self.policy
+            .authorize(&self.principal, CommandClass::Transition)
+            .or_else(|_| {
+                self.policy
+                    .authorize(&self.principal, CommandClass::EditProject)
+            })?;
+        Ok(())
+    }
+
     /// Authorizes and accounts for one screen capture pick request
     /// (IN-011, Protocol 2.85).
     ///
