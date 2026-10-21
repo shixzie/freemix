@@ -10,13 +10,16 @@
 //! and the SRT cases skip when `ffmpeg` lacks `libsrt` unless
 //! `FM_REQUIRE_FFMPEG_SRT=1`.
 
-use std::net::{Ipv4Addr, TcpListener, TcpStream, UdpSocket};
+use std::io::Read;
+use std::net::{IpAddr, Ipv4Addr, TcpListener, TcpStream, UdpSocket};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use fm_codec_ffmpeg::network_input::{NetworkInputConfig, NetworkReceiver, Picture};
+use fm_codec_ffmpeg::network_input::{
+    FREE_KEY_FAILURES, KEY_LOCKOUT_BASE, NetworkInputConfig, NetworkReceiver, Picture,
+};
 use fm_types::FrameRate;
 use fm_types::network_stream::{
     AudioChannels, GiveUp, NetworkStreamConfig, NetworkStreamState, NetworkStreamStatus,
@@ -143,6 +146,10 @@ impl Peer {
 
     fn tone(output: &[&str]) -> Self {
         Self::start("sine=frequency=440:sample_rate=48000", output)
+    }
+
+    fn exited(&mut self) -> bool {
+        !matches!(self.0.try_wait(), Ok(None))
     }
 }
 
@@ -350,6 +357,94 @@ fn an_rtmp_listener_takes_an_encoder_push_refuses_a_wrong_key_and_listens_again(
     let _again = Peer::tone(&["-f", "flv", &format!("rtmp://127.0.0.1:{port}/live/{KEY}")]);
     expect_live(&receiver, &mut observed, "rtmp listener, second push");
     assert_no_secret(&receiver.status(), &[KEY]);
+}
+
+#[test]
+fn an_rtmp_listener_locks_out_an_address_that_keeps_guessing_stream_keys() {
+    let _serial = serialize();
+    if !tools_available() {
+        return;
+    }
+    let port = free_tcp_port();
+    let mut config = stream(&format!("rtmp://127.0.0.1:{port}/live"));
+    config.settings.mode = StreamMode::Listener;
+    config.stream_key = Some(KEY.to_owned());
+    let receiver = receiver(&config);
+    let mut observed = Observed::default();
+    assert!(
+        pull_until(
+            &receiver,
+            Duration::from_secs(10),
+            &mut observed,
+            |status, _| status.state == NetworkStreamState::Listening
+        ),
+        "the listener listens: {:?}",
+        receiver.status()
+    );
+    // Guess keys one after another until the address is locked out.
+    let mut lockouts = Vec::new();
+    for guess in 0..FREE_KEY_FAILURES {
+        assert!(lockouts.is_empty(), "locked out after {guess} guesses");
+        let mut wrong = Peer::tone(&[
+            "-f",
+            "flv",
+            &format!("rtmp://127.0.0.1:{port}/live/guess{guess}"),
+        ]);
+        assert!(
+            pull_until(&receiver, Duration::from_secs(15), &mut observed, |_, _| {
+                wrong.exited()
+            }),
+            "guess {guess} is refused: {:?}",
+            receiver.status()
+        );
+        // The refusal is recorded once the connection is torn down.
+        pull_until(
+            &receiver,
+            Duration::from_millis(300),
+            &mut observed,
+            |_, _| false,
+        );
+        lockouts.extend(receiver.take_key_lockouts());
+    }
+    assert_eq!(observed.pictures, 0, "a refused publisher is never shown");
+    assert_eq!(lockouts.len(), 1, "{lockouts:?}");
+    assert_eq!(lockouts[0].peer, IpAddr::V4(Ipv4Addr::LOCALHOST));
+    assert_eq!(lockouts[0].failures, FREE_KEY_FAILURES);
+    assert_eq!(lockouts[0].lockout, KEY_LOCKOUT_BASE);
+    let status = receiver.status();
+    assert!(
+        status
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("refused for")),
+        "{status:?}"
+    );
+    assert_no_secret(&status, &[KEY]);
+
+    // While locked out, a connection is closed before any byte is relayed.
+    let mut probe = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).expect("the port accepts");
+    probe
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let mut byte = [0_u8; 1];
+    // An admitted publisher's child would wait for its handshake instead.
+    let read = probe.read(&mut byte);
+    assert!(
+        matches!(read, Ok(0))
+            || read.as_ref().is_err_and(|error| {
+                !matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                )
+            }),
+        "a locked-out address is closed at once: {read:?}"
+    );
+    drop(probe);
+
+    // Once the lockout ends, the right key goes live.
+    thread::sleep(KEY_LOCKOUT_BASE);
+    let _publisher = Peer::tone(&["-f", "flv", &format!("rtmp://127.0.0.1:{port}/live/{KEY}")]);
+    expect_live(&receiver, &mut observed, "rtmp listener after a lockout");
 }
 
 #[test]

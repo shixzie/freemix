@@ -95,8 +95,11 @@
 //! port that answers a stranger, so it reports `listening` as its child
 //! starts. `ffmpeg`'s RTMP listener accepts any stream name, so the
 //! receiver itself drops a publisher whose stream key is not the configured
-//! one. A child that fails quickly (its port is taken) reconnects with the
-//! backoff policy.
+//! one. Repeated wrong keys from one address lock it out with an
+//! exponential back-off (see `key_throttle`): a locked-out publisher is
+//! closed as it is accepted, and each lockout is queued for
+//! [`NetworkReceiver::take_key_lockouts`]. A child that fails quickly (its
+//! port is taken) reconnects with the backoff policy.
 //!
 //! # Reconnect
 //!
@@ -174,6 +177,12 @@ use fm_types::{FrameRate, SampleRate};
 use crate::config::Executable;
 
 pub use fm_audio::LiveSourceTelemetry;
+
+use crate::key_throttle::KeyThrottle;
+pub use crate::key_throttle::{FREE_KEY_FAILURES, KEY_LOCKOUT_BASE, KEY_LOCKOUT_MAX, KeyLockout};
+
+/// Most lockouts a receiver queues for [`NetworkReceiver::take_key_lockouts`].
+const MAX_QUEUED_LOCKOUTS: usize = 16;
 
 /// Default cap on the decoded pictures one receiver queues.
 pub const DEFAULT_MAX_BUFFER_BYTES: usize = 256 * 1024 * 1024;
@@ -529,6 +538,8 @@ struct Inner {
     audio_input_failed: bool,
     /// The connected RTMP publisher used another stream key: drop it.
     rejected_peer: bool,
+    /// Wrong-key lockouts not yet taken by the owner, oldest first.
+    key_lockouts: VecDeque<KeyLockout>,
     /// The child's log is inside its input stream dump (`Input #0`).
     in_input_dump: bool,
     /// Audio channels of the source's first audio stream; 0 unknown.
@@ -952,6 +963,14 @@ impl NetworkReceiver {
     #[must_use]
     pub fn buffered_frames(&self) -> usize {
         self.shared.lock().frames.len()
+    }
+
+    /// The wrong-stream-key lockouts an RTMP listener imposed since the
+    /// last call, oldest first (at most a few; older ones are dropped), for
+    /// the owner to log.
+    #[must_use]
+    pub fn take_key_lockouts(&self) -> Vec<KeyLockout> {
+        self.shared.lock().key_lockouts.drain(..).collect()
     }
 
     /// Whether the receiver connects with audio: `false` once it found the
@@ -1686,8 +1705,9 @@ enum Ended {
 fn supervise(shared: &Arc<Shared>, plan: &Arc<Plan>) {
     let policy = plan.config.settings.reconnect;
     let mut attempt: u32 = 0;
-    // An RTMP listener's own port, bound once and kept.
-    let mut relay = None;
+    // An RTMP listener's own port, bound once and kept, and its memory of
+    // publishers that presented a wrong stream key.
+    let mut relay = RelayPort::default();
     loop {
         match connect_once(shared, plan, &mut relay) {
             Ended::Shutdown => return,
@@ -1828,13 +1848,17 @@ struct Opened {
     publisher: Option<(TcpStream, u16)>,
 }
 
+/// An RTMP listener's own listening socket, bound at its first connection
+/// and kept across them, and its per-peer wrong-key back-off.
+#[derive(Default)]
+struct RelayPort {
+    listener: Option<TcpListener>,
+    throttle: KeyThrottle,
+}
+
 /// Starts a connection: resets the shared state and, for an RTMP listener,
 /// waits for a publisher on the receiver's own port.
-fn open_connection(
-    shared: &Shared,
-    plan: &Plan,
-    relay: &mut Option<TcpListener>,
-) -> Result<Opened, Ended> {
+fn open_connection(shared: &Shared, plan: &Plan, relay: &mut RelayPort) -> Result<Opened, Ended> {
     let probe = if plan.probes() {
         SrtProbe::new(plan)
     } else {
@@ -1842,7 +1866,8 @@ fn open_connection(
     };
     // Without a probe, an SRT listener reports `listening` as its child
     // starts, as a rendezvous does.
-    let accepting = relay.is_some() || (plan.listens() && !plan.relays() && probe.is_none());
+    let accepting =
+        relay.listener.is_some() || (plan.listens() && !plan.relays() && probe.is_none());
     let (generation, audio_absent) =
         begin_connection(shared, plan, accepting).ok_or(Ended::Shutdown)?;
     let publisher = if plan.relays() {
@@ -1923,7 +1948,7 @@ fn spawn_child(
 
 /// Runs one connection to its end. `relay` is an RTMP listener's own
 /// listening socket, bound at its first connection and kept across them.
-fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>, relay: &mut Option<TcpListener>) -> Ended {
+fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>, relay: &mut RelayPort) -> Ended {
     let Opened {
         generation,
         audio_absent,
@@ -1949,6 +1974,10 @@ fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>, relay: &mut Option<TcpLi
         .and_then(|listener| listener.local_addr().ok())
         .map(|address| address.port());
     let relay_port = publisher.as_ref().map(|(_, port)| *port);
+    let peer = publisher
+        .as_ref()
+        .and_then(|(publisher, _)| publisher.peer_addr().ok())
+        .map(|address| address.ip());
     let (mut child, feeder) = match spawn_child(shared, plan, audio_port, relay_port) {
         Ok(spawned) => spawned,
         Err(ended) => return ended,
@@ -2008,6 +2037,9 @@ fn connect_once(shared: &Arc<Shared>, plan: &Arc<Plan>, relay: &mut Option<TcpLi
     }
     for reader in readers.into_iter().flatten() {
         let _ = reader.join();
+    }
+    if let Some(peer) = peer {
+        note_publisher(shared, &mut relay.throttle, peer);
     }
     match ended {
         // A relayed publisher's session ended (it left, was refused, or
@@ -2594,12 +2626,12 @@ fn bind_relay(plan: &Plan) -> io::Result<TcpListener> {
 fn accept_publisher(
     shared: &Shared,
     plan: &Plan,
-    relay: &mut Option<TcpListener>,
+    relay: &mut RelayPort,
 ) -> Result<TcpStream, Ended> {
-    if relay.is_none() {
+    if relay.listener.is_none() {
         match bind_relay(plan) {
             Ok(listener) => {
-                *relay = Some(listener);
+                relay.listener = Some(listener);
                 let mut inner = shared.lock();
                 inner.state = NetworkStreamState::Listening;
                 inner.last_error = None;
@@ -2610,15 +2642,21 @@ fn accept_publisher(
             }
         }
     }
-    let Some(listener) = relay.as_ref() else {
+    let Some(listener) = relay.listener.as_ref() else {
         return Err(Ended::Dropped { delivered: false });
     };
     loop {
-        if let Ok((publisher, _)) = listener.accept()
-            && publisher.set_nonblocking(false).is_ok()
-        {
-            let _ = publisher.set_nodelay(true);
-            return Ok(publisher);
+        if let Ok((publisher, address)) = listener.accept() {
+            // A locked-out address is closed at once: no child, no key
+            // check, so the lockout bounds how fast it can guess.
+            if !relay.throttle.admits(address.ip(), Instant::now()) {
+                let _ = publisher.shutdown(Shutdown::Both);
+                continue;
+            }
+            if publisher.set_nonblocking(false).is_ok() {
+                let _ = publisher.set_nodelay(true);
+                return Ok(publisher);
+            }
         }
         let inner = shared.lock();
         if inner.shutdown {
@@ -2630,6 +2668,28 @@ fn accept_publisher(
                 .wait_timeout(inner, POLL)
                 .unwrap_or_else(PoisonError::into_inner),
         );
+    }
+}
+
+/// Feeds a relayed publisher's outcome to the wrong-key back-off: a
+/// publisher refused for its stream key counts against its address (and may
+/// lock it out), one that delivered a picture clears it.
+fn note_publisher(shared: &Shared, throttle: &mut KeyThrottle, peer: IpAddr) {
+    let mut inner = shared.lock();
+    if inner.rejected_peer {
+        if let Some(lockout) = throttle.failed(peer, Instant::now()) {
+            inner.last_error = Some(format!(
+                "a publisher used another stream key {} times: its address is refused for {} s",
+                lockout.failures,
+                lockout.lockout.as_secs()
+            ));
+            if inner.key_lockouts.len() >= MAX_QUEUED_LOCKOUTS {
+                inner.key_lockouts.pop_front();
+            }
+            inner.key_lockouts.push_back(lockout);
+        }
+    } else if inner.delivered {
+        throttle.succeeded(peer);
     }
 }
 

@@ -350,6 +350,21 @@ fn statuses(
 ) -> Vec<(InputId, NetworkStreamStatus)> {
     let mut due = Vec::new();
     for (&input, stream) in streams {
+        // An RTMP listener's wrong-stream-key lockouts: the peer address
+        // and back-off, never the key it tried.
+        for lockout in stream
+            .receiver
+            .as_ref()
+            .map(NetworkReceiver::take_key_lockouts)
+            .unwrap_or_default()
+        {
+            eprintln!(
+                "FREEMIXD_NETWORK_LOCKOUT\tv=1\tinput={input}\tpeer={}\tfailures={}\tlockout_ms={}",
+                lockout.peer,
+                lockout.failures,
+                lockout.lockout.as_millis()
+            );
+        }
         stream.sync_log.report(
             SourceKind::Stream,
             input,

@@ -2689,7 +2689,14 @@ deliver its first picture within the timeout plus a 5 s grace. Verified by
 loopback tests in which a connection made the moment `listening` is
 reported is accepted, and a publisher that pushes once, without retrying,
 the moment a wrong-key publisher is refused (or while it is still being
-refused) goes live. Remaining gaps: no `rtmps`
+refused) goes live. Wrong keys are throttled per peer address (an IPv6
+peer by its `/64`): the third consecutive wrong key locks the address out
+for 1 s, each further one doubles that up to 300 s, a locked-out
+connection is closed at accept before any child exists, a publisher that
+delivers a picture clears its address, and at most 1024 addresses are
+remembered (each forgotten 10 min after its last failure or lockout).
+Each lockout is logged as `FREEMIXD_NETWORK_LOCKOUT` (input, peer,
+failures, `lockout_ms`) and named in the input's last error. Remaining gaps: no `rtmps`
 listener (no TLS certificate handling); the key reaches the `ffmpeg`
 child's command line; only one publisher per input (a second publisher's
 connection waits in the listen backlog until the first leaves); not

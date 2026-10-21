@@ -29,6 +29,13 @@ media parser, native SDK, plugin, project bundle, and update package.
   untrusted input.
 - Verify signed updates and plugins before load.
 
+Network-facing listeners bound their abuse. An RTMP ingest listener locks out
+a peer address (an IPv6 peer by its `/64` prefix) that presents a wrong stream
+key three times in a row, for 1 s doubling per further failure up to 300 s,
+closes a locked-out connection before starting any decoder, remembers at most
+1024 addresses, and logs each lockout (`FREEMIXD_NETWORK_LOCKOUT`) without the
+key tried.
+
 ## 3. Roles and dangerous actions
 
 Authorization is command-level and resource-aware. A graphics operator may
