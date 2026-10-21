@@ -45,6 +45,13 @@ pub(super) const MAX_WEB_CLIENTS: usize = 16;
 /// connected clients. Each is bounded by its handshake timeout; a
 /// connection beyond this bound is closed unanswered.
 const MAX_PENDING_CONNECTIONS: usize = 8;
+/// Connections one non-loopback peer address may hold at once (clients and
+/// pending ones together), so a single LAN host cannot take every one of
+/// the gateway's connection threads. A browser opens a handful of
+/// connections per host, and each page holds one WebSocket; a connection
+/// beyond this bound is closed unanswered. Loopback peers (local processes,
+/// or a reverse proxy) are bounded by the gateway-wide cap only.
+const MAX_CONNECTIONS_PER_ADDRESS: usize = 8;
 
 /// How often the gateway looks at the operator's certificate files.
 const TRUST_POLL: Duration = Duration::from_secs(1);
@@ -460,7 +467,9 @@ impl WebGateway {
         let listener_accepting = Arc::clone(&accepting);
         let listener_thread = thread::Builder::new()
             .name("freemixd-web-listener".into())
-            .spawn(move || listener_loop(&listener, &gateway, &listener_accepting))?;
+            .spawn(move || {
+                listener_loop(&listener, &gateway, &listener_accepting, address_limit)
+            })?;
         let maintenance_thread = {
             let access = Arc::clone(&access);
             let settings = settings.clone();
@@ -610,7 +619,7 @@ mod page;
 mod settings;
 mod tls;
 mod worker;
-use worker::listener_loop;
+use worker::{address_limit, listener_loop};
 
 #[cfg(test)]
 mod tests {

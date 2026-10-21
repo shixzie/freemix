@@ -34,7 +34,9 @@ a peer address (an IPv6 peer by its `/64` prefix) that presents a wrong stream
 key three times in a row, for 1 s doubling per further failure up to 300 s,
 closes a locked-out connection before starting any decoder, remembers at most
 1024 addresses, and logs each lockout (`FREEMIXD_NETWORK_LOCKOUT`) without the
-key tried.
+key tried. The Web gateway lets one non-loopback peer address hold at most 8
+of its 24 connection threads at once and closes the next connection before any
+handshake.
 
 Stream keys, SRT stream IDs, and SRT passphrases never appear on a media
 child's command line on Unix, where any local user can read it

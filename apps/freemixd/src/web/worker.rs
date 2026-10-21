@@ -23,8 +23,8 @@ use tungstenite::{
 
 use super::{
     BEARER_SUBPROTOCOL_PREFIX, CONTROL_SUBPROTOCOL, ClientSlot, Gateway, INBOUND_CAPACITY,
-    MAX_PENDING_CONNECTIONS, MAX_WEB_CLIENTS, OUTBOUND_CAPACITY, PATH, RELAY_POLL,
-    SOCKET_HANDSHAKE_TIMEOUT, TLS_HANDSHAKE_TIMEOUT, WEBSOCKET_MAX_WRITE_BUFFER,
+    MAX_CONNECTIONS_PER_ADDRESS, MAX_PENDING_CONNECTIONS, MAX_WEB_CLIENTS, OUTBOUND_CAPACITY, PATH,
+    RELAY_POLL, SOCKET_HANDSHAKE_TIMEOUT, TLS_HANDSHAKE_TIMEOUT, WEBSOCKET_MAX_WRITE_BUFFER,
     WEBSOCKET_MESSAGE_LIMIT, WEBSOCKET_READ_BUFFER, WEBSOCKET_WRITE_BUFFER, WebAccess,
     WebConnection, WebEvent, WebIdentity, WireMessage,
     access::PairRefusal,
@@ -137,19 +137,53 @@ impl Write for Prefixed {
     }
 }
 
+/// How many connections a peer at `peer` may hold at once:
+/// [`MAX_CONNECTIONS_PER_ADDRESS`], or no per-address bound for a loopback
+/// peer (local processes are bounded by the gateway-wide cap only).
+pub(super) fn address_limit(peer: IpAddr) -> usize {
+    if canonical(peer).is_loopback() {
+        usize::MAX
+    } else {
+        MAX_CONNECTIONS_PER_ADDRESS
+    }
+}
+
+/// `peer` with an IPv4-mapped IPv6 address read as IPv4, so a dual-stack
+/// listener counts one host once.
+fn canonical(peer: IpAddr) -> IpAddr {
+    match peer {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(peer, IpAddr::V4),
+        IpAddr::V4(_) => peer,
+    }
+}
+
+/// One accepted connection's thread and its peer address.
+struct Connection {
+    peer: IpAddr,
+    thread: JoinHandle<()>,
+}
+
 /// Accepts gateway connections and serves each on its own thread.
 ///
 /// At most [`MAX_WEB_CLIENTS`] connected clients plus
 /// [`MAX_PENDING_CONNECTIONS`] connections still serving a page or
-/// completing an upgrade hold a thread; a connection beyond that is closed
-/// unanswered. Returns `false` when a connection thread panicked, after
-/// joining every one of them once the gateway is cancelled.
+/// completing an upgrade hold a thread, and at most `limit(peer)` of them
+/// come from one peer address ([`address_limit`]); a connection beyond
+/// either bound is closed unanswered, before any handshake. The first
+/// refusal of an address at its bound is logged (`FREEMIXD_WEB_LIMIT`),
+/// once until it drops below the bound again. Returns `false` when a
+/// connection thread panicked, after joining every one of them once the
+/// gateway is cancelled.
 pub(super) fn listener_loop(
     listener: &TcpListener,
     gateway: &Gateway,
     accepting: &Arc<AtomicBool>,
+    limit: fn(IpAddr) -> usize,
 ) -> bool {
-    let mut connections: Vec<JoinHandle<()>> = Vec::new();
+    let mut connections: Vec<Connection> = Vec::new();
+    // Addresses refused at their bound and already logged; at most one per
+    // open connection's address, so bounded by the gateway-wide cap.
+    let mut refused: Vec<IpAddr> = Vec::new();
     let mut clean = true;
     while !gateway.cancel.load(Ordering::Acquire) {
         clean &= reap_finished(&mut connections);
@@ -158,7 +192,30 @@ pub(super) fn listener_loop(
             continue;
         }
         match listener.accept() {
-            Ok((stream, _)) => {
+            Ok((stream, address)) => {
+                let peer = canonical(address.ip());
+                let held = connections
+                    .iter()
+                    .filter(|connection| connection.peer == peer)
+                    .count();
+                refused.retain(|address| {
+                    connections
+                        .iter()
+                        .filter(|connection| connection.peer == *address)
+                        .count()
+                        >= limit(*address)
+                });
+                if held >= limit(peer) {
+                    if !refused.contains(&peer) {
+                        refused.push(peer);
+                        eprintln!(
+                            "FREEMIXD_WEB_LIMIT\tv=1\tpeer={peer}\tconnections={held}\tlimit={}",
+                            limit(peer)
+                        );
+                    }
+                    let _ = stream.shutdown(Shutdown::Both);
+                    continue;
+                }
                 if connections.len() >= MAX_WEB_CLIENTS + MAX_PENDING_CONNECTIONS {
                     let _ = stream.shutdown(Shutdown::Both);
                     continue;
@@ -168,7 +225,7 @@ pub(super) fn listener_loop(
                     .name("freemixd-web-connection".into())
                     .spawn(move || serve_connection(stream, &connection))
                 {
-                    Ok(handle) => connections.push(handle),
+                    Ok(thread) => connections.push(Connection { peer, thread }),
                     // The stream moved into the closure and is dropped (closed).
                     Err(_) => thread::sleep(RELAY_POLL),
                 }
@@ -185,19 +242,19 @@ pub(super) fn listener_loop(
         }
     }
     gateway.cancel.store(true, Ordering::Release);
-    for handle in connections {
-        clean &= handle.join().is_ok();
+    for connection in connections {
+        clean &= connection.thread.join().is_ok();
     }
     clean
 }
 
 /// Joins every finished connection thread; `false` if one panicked.
-fn reap_finished(connections: &mut Vec<JoinHandle<()>>) -> bool {
+fn reap_finished(connections: &mut Vec<Connection>) -> bool {
     let mut clean = true;
     let mut index = 0;
     while index < connections.len() {
-        if connections[index].is_finished() {
-            clean &= connections.swap_remove(index).join().is_ok();
+        if connections[index].thread.is_finished() {
+            clean &= connections.swap_remove(index).thread.join().is_ok();
         } else {
             index += 1;
         }
@@ -941,8 +998,11 @@ mod tests {
         http::{HeaderMap, HeaderValue, StatusCode, header::SEC_WEBSOCKET_PROTOCOL},
     };
 
-    use super::super::{Gateway, MAX_WEB_CLIENTS, WebAccess, WebConnection, WebEvent, base64url};
-    use super::{authorize_upgrade, serve_connection};
+    use super::super::{
+        Gateway, MAX_CONNECTIONS_PER_ADDRESS, MAX_WEB_CLIENTS, WebAccess, WebConnection, WebEvent,
+        base64url,
+    };
+    use super::{address_limit, authorize_upgrade, listener_loop, serve_connection};
 
     const TOKEN: &[u8] = b"worker-test-token-0123456789abcdef";
 
@@ -1142,6 +1202,109 @@ mod tests {
         drop(sessions);
         drop(admitted);
         assert_eq!(gateway.clients.load(Ordering::Acquire), 0);
+    }
+
+    /// A peer address may hold only its bound of connections at once: the
+    /// next one is closed before any byte is answered, while the earlier
+    /// ones keep their sessions, and a released connection admits the next.
+    /// (Loopback peers are exempt in production, so the bound is injected.)
+    #[test]
+    fn one_address_holds_at_most_its_bound_of_connections() {
+        const LIMIT: usize = 2;
+        fn limit(_: std::net::IpAddr) -> usize {
+            LIMIT
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let (gateway, events_rx) = gateway();
+        let accepting = Arc::new(AtomicBool::new(true));
+        let loop_gateway = gateway.clone();
+        let loop_thread =
+            thread::spawn(move || listener_loop(&listener, &loop_gateway, &accepting, limit));
+
+        let connect = || {
+            let client = TcpStream::connect(address).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            client
+        };
+        let mut sessions = Vec::new();
+        for _ in 0..LIMIT {
+            let (socket, _) = tungstenite::client::client(upgrade_request(address), connect())
+                .expect("a connection within the bound is admitted");
+            let Ok(WebEvent::Connected(connection)) =
+                events_rx.recv_timeout(Duration::from_secs(2))
+            else {
+                panic!("an admitted client reaches the scheduler");
+            };
+            sessions.push((socket, connection));
+        }
+
+        // Beyond the bound: closed at once, unanswered, never admitted.
+        let mut extra = connect();
+        let started = Instant::now();
+        let mut byte = [0_u8; 1];
+        let read = extra.read(&mut byte);
+        assert!(
+            matches!(read, Ok(0))
+                || read.as_ref().is_err_and(|error| !matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                )),
+            "the extra connection is closed: {read:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(events_rx.try_recv().is_err());
+        // The admitted sessions are untouched.
+        assert_eq!(gateway.clients.load(Ordering::Acquire), LIMIT);
+
+        // One session ends: its address may connect once more.
+        let (socket, connection) = sessions.pop().unwrap();
+        connection.cancel.store(true, Ordering::Release);
+        drop(connection);
+        drop(socket);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let admitted = loop {
+            if let Ok((socket, _)) =
+                tungstenite::client::client(upgrade_request(address), connect())
+            {
+                break socket;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "a released connection admits the next"
+            );
+            thread::sleep(Duration::from_millis(20));
+        };
+        assert!(matches!(
+            events_rx.recv_timeout(Duration::from_secs(2)),
+            Ok(WebEvent::Connected(_))
+        ));
+
+        gateway.cancel.store(true, Ordering::Release);
+        drop(admitted);
+        drop(sessions);
+        assert!(loop_thread.join().unwrap(), "no connection thread panicked");
+    }
+
+    #[test]
+    fn only_non_loopback_peers_have_a_per_address_bound() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        assert_eq!(address_limit(IpAddr::V4(Ipv4Addr::LOCALHOST)), usize::MAX);
+        assert_eq!(address_limit(IpAddr::V6(Ipv6Addr::LOCALHOST)), usize::MAX);
+        assert_eq!(
+            address_limit(IpAddr::V6(Ipv4Addr::LOCALHOST.to_ipv6_mapped())),
+            usize::MAX
+        );
+        let lan = Ipv4Addr::new(192, 168, 1, 20);
+        assert_eq!(address_limit(IpAddr::V4(lan)), MAX_CONNECTIONS_PER_ADDRESS);
+        assert_eq!(
+            address_limit(IpAddr::V6(lan.to_ipv6_mapped())),
+            MAX_CONNECTIONS_PER_ADDRESS
+        );
+        const { assert!(MAX_CONNECTIONS_PER_ADDRESS < MAX_WEB_CLIENTS) };
     }
 
     /// A client that stops reading is dropped by its own relay without

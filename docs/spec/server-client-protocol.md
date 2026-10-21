@@ -65,7 +65,12 @@ separate control session with its own handshake, granted role, heartbeat,
 subscription, rate limits, and outbound queue, exactly like a raw TCP peer
 (clients are never multiplexed onto one session). An authorized upgrade beyond
 that bound is refused with `503 Service Unavailable`; an unauthorized one
-still receives `401`/`403` first. Idempotency keys remain engine-wide, so
+still receives `401`/`403` first. One non-loopback peer address may hold at
+most 8 gateway connections at once (clients and pending page or upgrade
+requests together, an IPv4-mapped address counted as IPv4); a connection
+beyond that, or beyond the gateway-wide 24, is closed before any handshake,
+and the first such refusal of an address is logged (`FREEMIXD_WEB_LIMIT`).
+Loopback peers have only the gateway-wide bound. Idempotency keys remain engine-wide, so
 browser pages derive theirs from a random per-page-load nonce. The simulated
 and the native-media daemon serve the same sessions: up to eight raw TCP
 peers next to the Web clients, each its own session as above (raw sessions

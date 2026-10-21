@@ -4671,7 +4671,9 @@ nonce; authorization runs before any receipt replay, so a lower role never
 obtains another session's accepted result. Every connection runs on its own
 gateway thread: an accepted socket serving a page or completing an upgrade
 (at most 8 at once, each bounded by the 500 ms handshake deadline; more are
-closed unanswered) and then the client's relay. A relay write that blocks
+closed unanswered) and then the client's relay. One non-loopback peer
+address holds at most 8 of these connections at once; its next one is
+closed unanswered and logged once as `FREEMIXD_WEB_LIMIT`. A relay write that blocks
 for 250 ms on a peer that stopped reading drops that peer only; the scheduler
 never blocks on a Web peer (one record in flight, handed over by `try_send`),
 and a peer whose live subscription overflows is dropped as a slow client. An
