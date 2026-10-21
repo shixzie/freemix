@@ -1449,6 +1449,10 @@ struct Pictures {
     /// The last frame was a blend: the next presents the plain picture
     /// even when it did not change.
     blended: bool,
+    /// A list transition with neither an outgoing worker nor a picture to
+    /// hold (a step to a file that was not prefetched) cuts: its picture
+    /// and sound play in full until the next plain tick.
+    cut: bool,
 }
 
 impl Pictures {
@@ -1460,6 +1464,7 @@ impl Pictures {
         timing: Option<MediaTiming>,
     ) -> (Option<CpuVideoFrame>, Option<AudioBlock>) {
         self.held = None;
+        self.cut = false;
         let after_blend = std::mem::take(&mut self.blended);
         let fresh = output.video.filter(|picture| {
             after_blend
@@ -1490,15 +1495,24 @@ impl Pictures {
         if let Some(picture) = &output.video {
             self.last = Some(Arc::clone(picture));
         }
-        let (from_picture, from_audio) = if let Some(handoff) = handoff {
-            (handoff.picture, handoff.audio)
+        let (from_picture, from_audio, cut) = if let Some(handoff) = handoff {
+            (handoff.picture, handoff.audio, false)
         } else {
-            if self.held.is_none() {
+            if self.held.is_none() && !self.cut {
+                self.cut = previous.is_none();
                 self.held = previous;
             }
-            (self.held.clone(), None)
+            (self.held.clone(), None, self.cut)
         };
         self.blended = true;
+        if cut {
+            let video = output
+                .video
+                .as_ref()
+                .zip(timing)
+                .and_then(|(to, timing)| redated(to, timing));
+            return (video, output.audio.clone());
+        }
         let video = match (&from_picture, &output.video, timing) {
             (Some(from), Some(to), Some(timing)) => {
                 blended_picture(from, to, blend, timing).or_else(|| redated(to, timing))
@@ -2125,6 +2139,78 @@ mod tests {
                 .iter()
                 .flatten()
                 .all(|sample| (*sample - 0.5).abs() < f32::EPSILON)
+        );
+    }
+
+    /// A decoded tick of a 32x18 picture and a stereo block of `value`.
+    fn decoded(value: f32) -> fm_codec_ffmpeg::PlaybackOutput {
+        let timing = timing_at(
+            0,
+            FrameRate::new(25, 1).unwrap(),
+            ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+        )
+        .unwrap();
+        fm_codec_ffmpeg::PlaybackOutput {
+            tick: MediaTick {
+                output_tick: 0,
+                frame: None,
+                repeated: false,
+                dropped_frames: 0,
+                discontinuity: false,
+                state: MediaState::Playing,
+                audio: fm_engine::fm_playback::AudioPlan::None,
+                events: Vec::new(),
+            },
+            video: Some(Arc::new(blank_picture((32, 18), timing).unwrap())),
+            video_late: false,
+            audio: Some(audio(
+                48_000,
+                &fm_types::ChannelLayout::stereo(),
+                1920,
+                value,
+            )),
+        }
+    }
+
+    /// A step to a file that was not prefetched cuts (a fresh worker has no
+    /// outgoing picture to blend over): its sound plays at full gain with
+    /// its picture, even over a dip's first half, while a re-cue of the
+    /// open file (a picture to hold) fades its sound in with the picture.
+    #[test]
+    fn a_transition_without_an_outgoing_picture_cuts_its_sound_too() {
+        let timing = timing_at(
+            3,
+            FrameRate::new(25, 1).unwrap(),
+            ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+        );
+        let dip = Blend {
+            kind: fm_video::ItemTransition::Dip,
+            weight: 2_500,
+        };
+        let mut fresh = Pictures::default();
+        for _ in 0..2 {
+            let (video, sound) = fresh.blend(&decoded(1.0), dip, None, timing);
+            assert!(video.is_some());
+            let sound = sound.unwrap();
+            assert!(
+                sound
+                    .planes()
+                    .iter()
+                    .flatten()
+                    .all(|sample| (*sample - 1.0).abs() < f32::EPSILON)
+            );
+        }
+
+        let mut recued = Pictures::default();
+        let _ = recued.plain(decoded(1.0), timing);
+        let (_, sound) = recued.blend(&decoded(1.0), dip, None, timing);
+        assert!(
+            sound
+                .unwrap()
+                .planes()
+                .iter()
+                .flatten()
+                .all(|sample| (*sample - 0.0).abs() < f32::EPSILON)
         );
     }
 
