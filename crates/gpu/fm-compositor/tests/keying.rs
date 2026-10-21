@@ -679,3 +679,98 @@ fn alpha_channel_key_fill_reads_the_key_source_alpha() {
         [CLEAR, gray(255), CLEAR]
     );
 }
+
+/// A 9x1 canvas: opaque red beneath an opaque blue layer over `x = 3..9`
+/// whose key keeps every pixel, light-wrapped with `wrap`.
+fn light_wrapped(wrap: fm_compositor::LightWrap, opacity: u8) -> Vec<Rgba8> {
+    let red = uniform(1, 1, Rgba8::new(255, 0, 0, 255));
+    let blue = uniform(1, 1, Rgba8::new(0, 0, 255, 255));
+    let mut scene = Scene::new(9, 1, CLEAR).unwrap();
+    scene.push_layer(SourceLayer::new(
+        SourceId::new(1),
+        0,
+        Transform::new(0, 0, 9, 1, Rotation::Deg0),
+    ));
+    scene.push_layer(
+        SourceLayer::new(
+            SourceId::new(2),
+            1,
+            Transform::new(3, 0, 6, 1, Rotation::Deg0),
+        )
+        .with_key(Key::Luma(LumaKey::new(0, 0, false)))
+        .with_key_refinement(KeyRefinement::new().with_light_wrap(wrap))
+        .with_opacity(opacity),
+    );
+    let plan = compile_scene(&scene, OutputTarget::Program).unwrap().0;
+    let output = execute_cpu(
+        &plan,
+        &[
+            CpuSourceFrame::new(SourceId::new(1), &red),
+            CpuSourceFrame::new(SourceId::new(2), &blue),
+        ],
+    )
+    .unwrap();
+    pixels(&output)
+}
+
+#[test]
+fn light_wrap_bleeds_the_background_into_the_layer_edge() {
+    use fm_compositor::LightWrap;
+    let red = Rgba8::new(255, 0, 0, 255);
+    let blue = Rgba8::new(0, 0, 255, 255);
+    // Width 1: x = 3 reads taps 2, 3, 3, 3, 4 per row (one row repeated
+    // five times, clamped): mean alpha (5100 + 12) / 25 = 204, weight
+    // 51 * 255 / 255 = 51, so blue moves 51/255 toward the red beneath.
+    let wrapped = Rgba8::new(51, 0, 204, 255);
+    assert_eq!(
+        light_wrapped(LightWrap::new(255, 1), 255),
+        [red, red, red, wrapped, blue, blue, blue, blue, blue]
+    );
+    // Width 2 reaches x = 4 (taps 2, 3, 4, 5, 6: weight 51) and x = 3 takes
+    // more (taps 1, 2, 3, 4, 5: mean alpha 153, weight 102 at full amount,
+    // 51 at amount 128).
+    assert_eq!(
+        light_wrapped(LightWrap::new(255, 2), 255),
+        [
+            red,
+            red,
+            red,
+            Rgba8::new(102, 0, 153, 255),
+            wrapped,
+            blue,
+            blue,
+            blue,
+            blue
+        ]
+    );
+    assert_eq!(
+        light_wrapped(LightWrap::new(128, 2), 255)[3],
+        Rgba8::new(51, 0, 204, 255)
+    );
+    // Opacity applies after the wrap.
+    assert_eq!(
+        light_wrapped(LightWrap::new(255, 1), 128)[3],
+        Rgba8::new(127 + 26, 0, 102, 255)
+    );
+}
+
+#[test]
+fn light_wrap_bounds_are_validated() {
+    use fm_compositor::LightWrap;
+    for wrap in [
+        LightWrap::new(0, 3),
+        LightWrap::new(10, 0),
+        LightWrap::new(10, 9),
+    ] {
+        assert!(matches!(
+            KeyRefinement::new().with_light_wrap(wrap).validate(),
+            Err(KeyRefinementError::InvalidLightWrap { .. })
+        ));
+    }
+    assert_eq!(
+        KeyRefinement::new()
+            .with_light_wrap(LightWrap::new(255, 8))
+            .validate(),
+        Ok(())
+    );
+}

@@ -13,10 +13,12 @@ use fm_video::{
 };
 
 use crate::native_grade::{NativeGradeCache, NativeGradeError, NativeGradeRenderer};
-use crate::native_layer::{LayerPreparation, NativeLayerRenderer, native_effect};
+use crate::native_layer::{
+    LayerPreparation, NativeLayerRenderer, WORKING_CODES_WGSL, native_effect,
+};
 use crate::rotate::Tilt;
 use crate::{
-    CompositionPlan, FadeToBlackPlan, RectMask, SourceId, StingerBase, StingerFramePlan,
+    CompositionPlan, FadeToBlackPlan, LightWrap, RectMask, SourceId, StingerBase, StingerFramePlan,
     StingerFrameRole, TransitionKind, TransitionPlan,
 };
 
@@ -26,7 +28,7 @@ use crate::{
 /// arithmetic when combined with device-bounded source dimensions.
 pub const MAX_NATIVE_TRANSFORM_DIMENSION: u32 = 16_384;
 
-const COMPOSITION_UNIFORM_SIZE: usize = 96;
+const COMPOSITION_UNIFORM_SIZE: usize = 112;
 const TRANSITION_UNIFORM_SIZE: usize = 64;
 
 const COMPOSITION_FRAGMENT_SHADER: &str = r"
@@ -54,11 +56,17 @@ struct LayerUniform {
     tilted: u32,
     tilt_sin: f32,
     tilt_cos: f32,
+    wrap_amount: u32,
+    wrap_width: u32,
     padding_0: u32,
+    padding_1: u32,
+    padding_2: u32,
 };
 
+// The composition pass binds the layer twice; the light wrap pass binds
+// everything composed beneath the layer at binding 1.
 @group(0) @binding(0) var source_texture: texture_2d<f32>;
-@group(0) @binding(1) var unused_source_texture: texture_2d<f32>;
+@group(0) @binding(1) var background_texture: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> layer: LayerUniform;
 
 // One premultiplied texel of the untilted footprint (the scaled,
@@ -118,19 +126,14 @@ fn footprint_texel(rotated_signed: vec2<i32>) -> vec4<f32> {
     return textureLoad(source_texture, vec2<i32>(source_coordinates), 0);
 }
 
-@fragment
-fn composition_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    if layer.visible == 0u {
-        return vec4<f32>(0.0);
-    }
-    let opacity = f32(layer.opacity) / 255.0;
+// The placed layer at output pixel `pixel`, premultiplied, before opacity.
+fn placed(pixel: vec2<i32>) -> vec4<f32> {
     let translation = vec2<i32>(
         bitcast<i32>(layer.translation_x),
         bitcast<i32>(layer.translation_y),
     );
-    let pixel = vec2<i32>(position.xy);
     if layer.tilted == 0u {
-        return footprint_texel(pixel - translation) * opacity;
+        return footprint_texel(pixel - translation);
     }
 
     // Tilted: the pixel centre inverse-maps about the footprint centre into
@@ -156,7 +159,63 @@ fn composition_fragment(@builtin(position) position: vec4<f32>) -> @location(0) 
         footprint_texel(cell + vec2<i32>(1, 1)),
         weight.x,
     );
-    return mix(top, bottom, weight.y) * opacity;
+    return mix(top, bottom, weight.y);
+}
+
+@fragment
+fn composition_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    if layer.visible == 0u {
+        return vec4<f32>(0.0);
+    }
+    let opacity = f32(layer.opacity) / 255.0;
+    return placed(vec2<i32>(position.xy)) * opacity;
+}
+
+// One light-wrapped layer composited over the background (crate::LightWrap):
+// 25 taps at [-w, -(w / 2), 0, w / 2, w] per axis, clamped to the output,
+// average the placed layer's alpha and the background's premultiplied
+// codes; edge pixels move toward that light on straight codes.
+@fragment
+fn light_wrap_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let pixel = vec2<i32>(position.xy);
+    let behind = textureLoad(background_texture, pixel, 0);
+    if layer.visible == 0u {
+        return behind;
+    }
+    let opacity = f32(layer.opacity) / 255.0;
+    let center = placed(pixel);
+    let codes = decode_working(center);
+    if codes.a == 0 {
+        let source = center * opacity;
+        return source + behind * (1.0 - source.a);
+    }
+    let last = vec2<i32>(textureDimensions(background_texture)) - vec2<i32>(1);
+    let width = i32(layer.wrap_width);
+    var offsets = array<i32, 5>(-width, -(width / 2), 0, width / 2, width);
+    var alpha_sum = 0;
+    var light = vec3<i32>(0);
+    for (var row = 0; row < 5; row++) {
+        for (var column = 0; column < 5; column++) {
+            let tap = clamp(
+                pixel + vec2<i32>(offsets[column], offsets[row]),
+                vec2<i32>(0),
+                last,
+            );
+            alpha_sum += clamp(i32(round(placed(tap).a * 255.0)), 0, 255);
+            let below = decode_working(textureLoad(background_texture, tap, 0));
+            light += vec3<i32>(
+                multiply_u8(below.r, below.a),
+                multiply_u8(below.g, below.a),
+                multiply_u8(below.b, below.a),
+            );
+        }
+    }
+    let mean_alpha = (alpha_sum + 12) / 25;
+    let mean_light = (light + vec3<i32>(12)) / vec3<i32>(25);
+    let weight = multiply_u8(255 - mean_alpha, i32(layer.wrap_amount));
+    let rgb = (codes.rgb * (255 - weight) + mean_light * weight + vec3<i32>(127)) / vec3<i32>(255);
+    let source = encode_working(vec4<i32>(rgb, codes.a)) * opacity;
+    return source + behind * (1.0 - source.a);
 }
 ";
 
@@ -664,6 +723,8 @@ fn grade_error(source: SourceId, error: NativeGradeError) -> NativeCompositionEr
 /// are cached across frames).
 pub struct NativeCompositionRenderer {
     pipeline: NativeFullscreenPipeline,
+    /// One light-wrapped layer over a copy of what lies beneath it.
+    light_wrap: NativeFullscreenPipeline,
     layer: NativeLayerRenderer,
     grade: NativeGradeRenderer,
     grade_cache: NativeGradeCache,
@@ -676,6 +737,7 @@ impl NativeCompositionRenderer {
     ///
     /// Returns a mapped GPU shader or pipeline validation error.
     pub async fn new(context: &NativeContext) -> Result<Self, NativeCompositionError> {
+        let shader = format!("{WORKING_CODES_WGSL}{COMPOSITION_FRAGMENT_SHADER}");
         let pipeline = context
             .create_fullscreen_pipeline_with_options(
                 ShaderDescriptor::new(
@@ -683,11 +745,28 @@ impl NativeCompositionRenderer {
                     ShaderStage::Fragment,
                     ShaderLanguage::Wgsl,
                     "composition_fragment",
-                    ShaderSource::Text(COMPOSITION_FRAGMENT_SHADER.to_owned()),
+                    ShaderSource::Text(shader.clone()),
                 ),
                 NativeFullscreenPipelineOptions {
                     target_format: TextureFormat::Rgba16Float,
                     blend: NativeFullscreenBlend::PremultipliedSourceOver,
+                    uniform_size: COMPOSITION_UNIFORM_SIZE,
+                    source_extent_policy: NativeSourceExtentPolicy::Independent,
+                },
+            )
+            .await?;
+        let light_wrap = context
+            .create_fullscreen_pipeline_with_options(
+                ShaderDescriptor::new(
+                    "fm-compositor native light wrap",
+                    ShaderStage::Fragment,
+                    ShaderLanguage::Wgsl,
+                    "light_wrap_fragment",
+                    ShaderSource::Text(shader),
+                ),
+                NativeFullscreenPipelineOptions {
+                    target_format: TextureFormat::Rgba16Float,
+                    blend: NativeFullscreenBlend::Replace,
                     uniform_size: COMPOSITION_UNIFORM_SIZE,
                     source_extent_policy: NativeSourceExtentPolicy::Independent,
                 },
@@ -704,6 +783,7 @@ impl NativeCompositionRenderer {
             })?;
         Ok(Self {
             pipeline,
+            light_wrap,
             layer,
             grade,
             grade_cache: NativeGradeCache::default(),
@@ -733,7 +813,11 @@ impl NativeCompositionRenderer {
     /// A key/fill layer or a layer with a key refinement first builds a
     /// crop-sized matte (raw key alpha from the layer's source or the key
     /// source, clip, choke/spread, edge softness) that the key stage then
-    /// reads; see [`crate::KeyRefinement`] and [`crate::KeyFill`]. A missing
+    /// reads; see [`crate::KeyRefinement`] and [`crate::KeyFill`]. A layer
+    /// whose refinement light-wraps ends the render pass: it is drawn over
+    /// a copy of everything beneath it into a new target, reading that
+    /// background on the CPU reference's 8-bit codes ([`crate::LightWrap`]),
+    /// and later layers continue on that target. A missing
     /// or differently sized key source, unparseable effect descriptors, and
     /// safe-area guides are rejected before any GPU allocation.
     ///
@@ -760,30 +844,58 @@ impl NativeCompositionRenderer {
             let source = keyed.as_ref().unwrap_or(layer.texture);
             graded.push(self.grade_layer(context, layer, source).await?.or(keyed));
         }
-        let output = context
+        let mut output = context
             .create_rgba16_float_render_target(plan.width(), plan.height())
             .await?;
-        let draws = prepared
-            .iter()
-            .zip(&graded)
-            .map(|(layer, graded)| {
-                let texture = graded.as_ref().unwrap_or(layer.texture);
-                NativeFullscreenDraw::new(&self.pipeline, texture, texture, &layer.uniform)
-            })
-            .collect::<Vec<_>>();
         let background = plan.background();
-        context
-            .submit_fullscreen_pass(
-                &output,
-                NativeFullscreenLoadOp::ClearRgba8([
-                    background.r,
-                    background.g,
-                    background.b,
-                    background.a,
-                ]),
-                &draws,
-            )
-            .await?;
+        let mut load = NativeFullscreenLoadOp::ClearRgba8([
+            background.r,
+            background.g,
+            background.b,
+            background.a,
+        ]);
+        // Layers draw in one pass, except that a light-wrapped layer ends
+        // the pass: it is drawn over what lies beneath it into a new target
+        // (reading that background), and later layers continue there.
+        let mut draws = Vec::with_capacity(prepared.len());
+        for (layer, graded) in prepared.iter().zip(&graded) {
+            let texture = graded.as_ref().unwrap_or(layer.texture);
+            if !layer.light_wrap {
+                draws.push(NativeFullscreenDraw::new(
+                    &self.pipeline,
+                    texture,
+                    texture,
+                    &layer.uniform,
+                ));
+                continue;
+            }
+            context
+                .submit_fullscreen_pass(&output, load, &draws)
+                .await?;
+            draws.clear();
+            load = NativeFullscreenLoadOp::Load;
+            let wrapped = context
+                .create_rgba16_float_render_target(plan.width(), plan.height())
+                .await?;
+            context
+                .submit_fullscreen_pass(
+                    &wrapped,
+                    NativeFullscreenLoadOp::ClearTransparent,
+                    &[NativeFullscreenDraw::new(
+                        &self.light_wrap,
+                        texture,
+                        &output,
+                        &layer.uniform,
+                    )],
+                )
+                .await?;
+            output = wrapped;
+        }
+        if !draws.is_empty() || load != NativeFullscreenLoadOp::Load {
+            context
+                .submit_fullscreen_pass(&output, load, &draws)
+                .await?;
+        }
         Ok(output)
     }
 
@@ -823,6 +935,8 @@ struct PreparedLayer<'a> {
     grades: Vec<&'a Arc<CompiledGrade>>,
     /// Key/mask/effect passes producing a crop-sized texture, if any.
     preparation: Option<LayerPreparation>,
+    /// Whether the layer light-wraps (its uniform carries the wrap).
+    light_wrap: bool,
     uniform: [u8; COMPOSITION_UNIFORM_SIZE],
 }
 
@@ -879,6 +993,9 @@ fn validate_composition<'a>(
             None => None,
         };
         let preparation = LayerPreparation::plan(layer_index, layer, crop)?;
+        let light_wrap = layer
+            .key_refinement()
+            .and_then(|refinement| refinement.light_wrap);
         // A prepared texture is the crop with its mask already applied.
         let (crop, mask) = match &preparation {
             Some(preparation) => {
@@ -898,6 +1015,7 @@ fn validate_composition<'a>(
                 .filter(|grade| !grade.is_identity())
                 .collect(),
             preparation,
+            light_wrap: light_wrap.is_some(),
             uniform: encode_composition_uniform(
                 layer.transform(),
                 crop,
@@ -906,6 +1024,7 @@ fn validate_composition<'a>(
                 visible,
                 layer.inset_border_width(),
                 tilt,
+                light_wrap,
             ),
         });
     }
@@ -1009,6 +1128,7 @@ fn encode_composition_uniform(
     visible: bool,
     border_width: u32,
     tilt: Option<Tilt>,
+    light_wrap: Option<LightWrap>,
 ) -> [u8; COMPOSITION_UNIFORM_SIZE] {
     let (rotated_width, rotated_height) = rotated_dimensions(transform);
     let rotation = match transform.rotation {
@@ -1058,6 +1178,10 @@ fn encode_composition_uniform(
         u32::from(tilt.is_some()),
         tilt.map_or(0, |tilt| q30_to_f32(tilt.sin).to_bits()),
         tilt.map_or(0, |tilt| q30_to_f32(tilt.cos).to_bits()),
+        light_wrap.map_or(0, |wrap| u32::from(wrap.amount)),
+        light_wrap.map_or(0, |wrap| u32::from(wrap.width)),
+        0,
+        0,
         0,
     ];
     let mut bytes = [0; COMPOSITION_UNIFORM_SIZE];
@@ -1602,8 +1726,8 @@ mod tests {
         Transform::new(x, y, width, height, rotation)
     }
 
-    fn uniform_words(uniform: [u8; COMPOSITION_UNIFORM_SIZE]) -> [u32; 24] {
-        let mut words = [0; 24];
+    fn uniform_words(uniform: [u8; COMPOSITION_UNIFORM_SIZE]) -> [u32; 28] {
+        let mut words = [0; 28];
         for (word, bytes) in words.iter_mut().zip(uniform.as_chunks::<4>().0) {
             *word = u32::from_le_bytes(*bytes);
         }
@@ -1611,7 +1735,7 @@ mod tests {
     }
 
     #[test]
-    fn composition_uniform_is_twenty_four_little_endian_words_with_border_and_mask() {
+    fn composition_uniform_is_twenty_eight_little_endian_words_with_border_mask_and_wrap() {
         let transform = transform(-7, 9, 12, 5, Rotation::Deg90);
         let mask = RectMask::new(5, 6, 7, 8).inverted(true);
         let uniform = encode_composition_uniform(
@@ -1622,8 +1746,9 @@ mod tests {
             true,
             3,
             None,
+            Some(LightWrap::new(200, 6)),
         );
-        assert_eq!(uniform.len(), 96);
+        assert_eq!(uniform.len(), 112);
         assert_eq!(
             uniform_words(uniform),
             [
@@ -1650,6 +1775,10 @@ mod tests {
                 0,
                 0,
                 0,
+                200,
+                6,
+                0,
+                0,
                 0,
             ]
         );
@@ -1670,6 +1799,7 @@ mod tests {
             true,
             0,
             Some(tilt),
+            None,
         ));
         assert_eq!(words[20], 1);
         assert_eq!(f32::from_bits(words[21]), 0.5);
@@ -1730,6 +1860,7 @@ mod tests {
                 255,
                 false,
                 0,
+                None,
                 None,
             ));
             assert_eq!(words[0], translation.cast_unsigned());

@@ -10,7 +10,7 @@ use fm_video::{
     compose_layers, crop, draw_inset_rect_border, premultiply_alpha, transform_nearest,
 };
 
-use crate::keying::apply_layer_keying;
+use crate::keying::{LightWrap, apply_layer_keying, apply_light_wrap};
 use crate::rotate::Tilt;
 use crate::{
     AlphaMode, CompositionPlan, Effect, Key, RectMask, ReferenceEffect, ReferenceEffectError,
@@ -252,13 +252,68 @@ pub fn execute_cpu(
         rendered.push(place_layer(&frame, layer, plan)?);
     }
 
-    let layers = rendered
+    let output = if plan
+        .layers()
         .iter()
-        .zip(plan.layers())
-        .map(|(frame, description)| Layer::new(frame, 0, 0, description.z(), description.opacity()))
-        .collect::<Vec<_>>();
-    let output = compose_layers(plan.width(), plan.height(), plan.background(), &layers)?;
+        .any(|layer| light_wrap(layer).is_some())
+    {
+        compose_with_light_wrap(plan, &rendered)?
+    } else {
+        let layers = rendered
+            .iter()
+            .zip(plan.layers())
+            .map(|(frame, description)| {
+                Layer::new(frame, 0, 0, description.z(), description.opacity())
+            })
+            .collect::<Vec<_>>();
+        compose_layers(plan.width(), plan.height(), plan.background(), &layers)?
+    };
     draw_safe_areas(output, plan)
+}
+
+fn light_wrap(layer: &crate::PlanLayer) -> Option<LightWrap> {
+    layer
+        .key_refinement()
+        .and_then(|refinement| refinement.light_wrap)
+}
+
+/// Composes `rendered` (placed, premultiplied, in plan order, which is
+/// z order) when some layer light-wraps: everything beneath a wrapping
+/// layer is composed first, the layer's edges take that background's light
+/// ([`LightWrap`]), and it is composited over it.
+fn compose_with_light_wrap(
+    plan: &CompositionPlan,
+    rendered: &[ImageFrame],
+) -> Result<ImageFrame, CpuExecutionError> {
+    let (width, height) = (plan.width(), plan.height());
+    let transparent = Rgba8::new(0, 0, 0, 0);
+    let flush = |composed: ImageFrame,
+                 pending: &[(&ImageFrame, u8)]|
+     -> Result<ImageFrame, CpuExecutionError> {
+        if pending.is_empty() {
+            return Ok(composed);
+        }
+        let mut layers = Vec::with_capacity(pending.len() + 1);
+        layers.push(Layer::new(&composed, 0, 0, 0, u8::MAX));
+        for (index, (frame, opacity)) in pending.iter().enumerate() {
+            let z = i32::try_from(index + 1).unwrap_or(i32::MAX);
+            layers.push(Layer::new(frame, 0, 0, z, *opacity));
+        }
+        Ok(compose_layers(width, height, transparent, &layers)?)
+    };
+    let mut composed = compose_layers(width, height, plan.background(), &[])?;
+    let mut pending: Vec<(&ImageFrame, u8)> = Vec::new();
+    for (frame, layer) in rendered.iter().zip(plan.layers()) {
+        let Some(wrap) = light_wrap(layer) else {
+            pending.push((frame, layer.opacity()));
+            continue;
+        };
+        composed = flush(composed, &pending)?;
+        pending.clear();
+        let wrapped = apply_light_wrap(frame, &composed, wrap)?;
+        composed = flush(composed, &[(&wrapped, layer.opacity())])?;
+    }
+    flush(composed, &pending)
 }
 
 /// Places one prepared layer `frame` on the output grid: transformed (and

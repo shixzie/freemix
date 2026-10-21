@@ -36,7 +36,7 @@ use std::{
 use fm_color::{NativeImportNormalizer, NativeWorkingFrame, srgb_from_linear};
 use fm_compositor::{
     AlphaMode, Backing, ChromaKey, CpuExecutionError, CpuSourceFrame, CropRect, Despill, Effect,
-    Key, KeyChannel, KeyFill, KeyRefinement, LumaKey, NativeCompositionError,
+    Key, KeyChannel, KeyFill, KeyRefinement, LightWrap, LumaKey, NativeCompositionError,
     NativeCompositionRenderer, NativeSourceFrame, OutputTarget, RectMask, Rgba8, Rotation, Scene,
     SourceId, SourceLayer, Transform, compile_scene, execute_cpu,
 };
@@ -65,6 +65,7 @@ const FILL_PREMULTIPLIED: SourceId = SourceId::new(3);
 const KEY_ALPHA: SourceId = SourceId::new(4);
 const CLEAR_FILL: SourceId = SourceId::new(5);
 const SMALL_KEY: SourceId = SourceId::new(6);
+const OPAQUE_FILL: SourceId = SourceId::new(7);
 
 struct ThreadWaker(thread::Thread);
 
@@ -378,6 +379,14 @@ impl Harness {
                 None,
             ),
             (SMALL_KEY, image(WIDTH - 1, HEIGHT, key), None),
+            (
+                OPAQUE_FILL,
+                image(WIDTH, HEIGHT, |x, y| {
+                    let [r, g, b, _] = fill(x, y);
+                    [r, g, b, 255]
+                }),
+                None,
+            ),
         ];
         block_on(async {
             let normalizer = NativeImportNormalizer::new(&context).await.unwrap();
@@ -450,12 +459,22 @@ impl Harness {
         layer: SourceLayer,
         budget: Budget,
     ) -> (u8, u8) {
-        let plan = Self::plan(layer, width, height);
-        let expected = execute_cpu(&plan, &self.cpu_sources(None)).unwrap();
+        self.check_plan(case, &Self::plan(layer, width, height), budget)
+    }
+
+    /// Renders `plan` on both paths and checks parity.
+    fn check_plan(
+        &self,
+        case: &str,
+        plan: &fm_compositor::CompositionPlan,
+        budget: Budget,
+    ) -> (u8, u8) {
+        let (width, height) = (plan.width(), plan.height());
+        let expected = execute_cpu(plan, &self.cpu_sources(None)).unwrap();
         block_on(async {
             let composed = self
                 .renderer
-                .render(&self.context, &plan, &self.native_sources(None))
+                .render(&self.context, plan, &self.native_sources(None))
                 .await
                 .unwrap();
             assert_eq!((composed.width(), composed.height()), (width, height));
@@ -711,6 +730,77 @@ fn refined_key_fill_with_crop_garbage_mask_and_effects_matches_the_cpu_reference
         budget(GREEN_SOFTNESS, u8::MAX),
     ));
     worst.report("refined combinations");
+}
+
+#[test]
+fn light_wrap_matches_the_cpu_reference() {
+    let Some(harness) = Harness::new("light_wrap_matches_the_cpu_reference") else {
+        return;
+    };
+    let mut worst = Worst::default();
+    // An opaque background (the gray ellipse key signal) under a hard-keyed
+    // opaque foreground: every output pixel is either background or the
+    // (wrapped) foreground, so the composite itself adds no error.
+    let hard = KeyFill::new(KEY_ALPHA, LumaKey::new(128, 0, false)).with_channel(KeyChannel::Alpha);
+    for (case, wrap, transform, rotation, opacity) in [
+        (
+            "light wrap 255 x 1",
+            LightWrap::new(255, 1),
+            (0, 0, WIDTH, HEIGHT),
+            0,
+            255,
+        ),
+        (
+            "light wrap 160 x 4",
+            LightWrap::new(160, 4),
+            (0, 0, WIDTH, HEIGHT),
+            0,
+            255,
+        ),
+        (
+            "light wrap 255 x 8, scaled",
+            LightWrap::new(255, 8),
+            (3, -2, 26, 30),
+            0,
+            255,
+        ),
+    ] {
+        let mut scene = Scene::new(WIDTH, HEIGHT, Rgba8::new(0, 0, 0, 0)).unwrap();
+        scene.push_layer(full_layer(KEY));
+        let (x, y, width, height) = transform;
+        scene.push_layer(
+            SourceLayer::new(
+                OPAQUE_FILL,
+                1,
+                Transform::new(x, y, width, height, Rotation::Deg0),
+            )
+            .with_rotation_millidegrees(rotation)
+            .with_opacity(opacity)
+            .with_key_fill(hard)
+            .with_key_refinement(KeyRefinement::new().with_light_wrap(wrap)),
+        );
+        // A layer above the wrapped one still composites over it.
+        scene.push_layer(
+            SourceLayer::new(OPAQUE_FILL, 2, Transform::new(0, 0, 6, 5, Rotation::Deg0))
+                .with_key_fill(hard),
+        );
+        let plan = compile_scene(&scene, OutputTarget::Program).unwrap().0;
+        let budget = if rotation == 0 {
+            EXACT_MATTE
+        } else {
+            // A tilted edge is bilinear, so its partial alpha composites in
+            // linear light natively and on 8-bit codes on the CPU.
+            Budget {
+                colour: 48,
+                alpha: 1,
+            }
+        };
+        let (colour, alpha) = harness.check_plan(case, &plan, budget);
+        if rotation == 0 {
+            worst.add((colour, alpha));
+        }
+    }
+    worst.report("light wrap");
 }
 
 #[test]

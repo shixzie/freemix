@@ -21,6 +21,46 @@ pub const MAX_CHOKE_RADIUS: u8 = 8;
 /// Maximum matte edge-softness (box blur) radius in pixels.
 pub const MAX_EDGE_SOFTNESS: u8 = 8;
 
+/// Maximum light wrap width in pixels.
+pub const MAX_LIGHT_WRAP_WIDTH: u8 = 8;
+
+/// Light wrap: the background bleeding into a keyed layer's edges.
+///
+/// Light wrap is applied where the layer is composited, on the output grid,
+/// after the layer is placed (transformed, tilted, bordered) and before its
+/// opacity. Let `P` be the placed layer (premultiplied, before opacity) and
+/// `B` everything composited beneath it (premultiplied). Each output pixel
+/// reads 25 taps: the offsets `[-width, -(width / 2), 0, width / 2, width]`
+/// in each axis, clamped to the output grid. Over those taps
+/// `mean_alpha = (sum(P.a) + 12) / 25` and, per colour channel,
+/// `mean_c = (sum(B.c) + 12) / 25`. The wrap weight is
+/// `w = (255 - mean_alpha) * amount / 255` (rounded), so a pixel deep inside
+/// the layer gets none and one at its edge the most, and each of the
+/// layer's colour channels moves toward the background light it covers:
+/// `P.c' = (P.c * (255 - w) + (mean_c * P.a / 255) * w + 127) / 255` (each
+/// product rounded as the key stage rounds). Alpha is unchanged and a
+/// pixel the layer does not cover stays untouched.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LightWrap {
+    /// `1..=255`; how far an edge pixel moves toward the background.
+    pub amount: u8,
+    /// `1..=MAX_LIGHT_WRAP_WIDTH`; how far the wrap reaches, in pixels.
+    pub width: u8,
+}
+
+impl LightWrap {
+    #[must_use]
+    pub const fn new(amount: u8, width: u8) -> Self {
+        Self { amount, width }
+    }
+
+    /// The five tap offsets of one axis.
+    pub(crate) const fn offsets(self) -> [i64; 5] {
+        let width = self.width as i64;
+        [-width, -(width / 2), 0, width / 2, width]
+    }
+}
+
 /// The backing color family recognized by the auto key and despill.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Backing {
@@ -90,7 +130,8 @@ impl Despill {
 ///
 /// Chroma spill suppression from [`ChromaKey::spill`] uses the refined key
 /// alpha. The optional [`Despill`] is applied to every pixel's color before
-/// alpha scaling, independent of the matte.
+/// alpha scaling, independent of the matte. The optional [`LightWrap`] is
+/// applied when the layer is composited.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KeyRefinement {
     pub clip_black: u8,
@@ -98,6 +139,7 @@ pub struct KeyRefinement {
     pub choke: i8,
     pub edge_softness: u8,
     pub despill: Option<Despill>,
+    pub light_wrap: Option<LightWrap>,
 }
 
 impl Default for KeyRefinement {
@@ -116,6 +158,7 @@ impl KeyRefinement {
             choke: 0,
             edge_softness: 0,
             despill: None,
+            light_wrap: None,
         }
     }
 
@@ -144,10 +187,17 @@ impl KeyRefinement {
         self
     }
 
+    #[must_use]
+    pub const fn with_light_wrap(mut self, light_wrap: LightWrap) -> Self {
+        self.light_wrap = Some(light_wrap);
+        self
+    }
+
     /// # Errors
     /// Returns an error when the clip range is empty, the choke radius
     /// exceeds [`MAX_CHOKE_RADIUS`], or the edge softness exceeds
-    /// [`MAX_EDGE_SOFTNESS`].
+    /// [`MAX_EDGE_SOFTNESS`], or a light wrap's amount is zero or its width
+    /// is outside `1..=MAX_LIGHT_WRAP_WIDTH`.
     pub fn validate(&self) -> Result<(), KeyRefinementError> {
         if self.clip_black >= self.clip_white {
             return Err(KeyRefinementError::EmptyClipRange {
@@ -165,6 +215,15 @@ impl KeyRefinement {
             return Err(KeyRefinementError::EdgeSoftnessOutOfRange {
                 radius: self.edge_softness,
                 maximum: MAX_EDGE_SOFTNESS,
+            });
+        }
+        if let Some(wrap) = self.light_wrap
+            && (wrap.amount == 0 || wrap.width == 0 || wrap.width > MAX_LIGHT_WRAP_WIDTH)
+        {
+            return Err(KeyRefinementError::InvalidLightWrap {
+                amount: wrap.amount,
+                width: wrap.width,
+                maximum: MAX_LIGHT_WRAP_WIDTH,
             });
         }
         Ok(())
@@ -188,6 +247,7 @@ pub enum KeyRefinementError {
     EmptyClipRange { clip_black: u8, clip_white: u8 },
     ChokeOutOfRange { choke: i8, maximum: u8 },
     EdgeSoftnessOutOfRange { radius: u8, maximum: u8 },
+    InvalidLightWrap { amount: u8, width: u8, maximum: u8 },
 }
 
 impl fmt::Display for KeyRefinementError {
@@ -206,6 +266,14 @@ impl fmt::Display for KeyRefinementError {
             Self::EdgeSoftnessOutOfRange { radius, maximum } => {
                 write!(formatter, "edge softness {radius} exceeds radius {maximum}")
             }
+            Self::InvalidLightWrap {
+                amount,
+                width,
+                maximum,
+            } => write!(
+                formatter,
+                "light wrap amount {amount} must be nonzero and its width {width} within 1..={maximum}"
+            ),
         }
     }
 }
@@ -746,4 +814,70 @@ fn soften_matte(matte: &[u8], width: usize, height: usize, radius: u8) -> Vec<u8
         }
     }
     output
+}
+
+/// Applies a [`LightWrap`] to `placed` (a premultiplied layer placed on the
+/// output grid, before opacity) over `background` (premultiplied, the same
+/// size): see [`LightWrap`] for the exact formula.
+pub(crate) fn apply_light_wrap(
+    placed: &ImageFrame,
+    background: &ImageFrame,
+    wrap: LightWrap,
+) -> Result<ImageFrame, FrameError> {
+    let width = placed.width();
+    let height = placed.height();
+    if (background.width(), background.height()) != (width, height) {
+        return Err(FrameError::LayoutOverflow);
+    }
+    let offsets = wrap.offsets();
+    let clamp = |value: u32, offset: i64, size: u32| {
+        u32::try_from((i64::from(value) + offset).clamp(0, i64::from(size) - 1)).unwrap_or(0)
+    };
+    let width_usize = usize::try_from(width).map_err(|_| FrameError::LayoutOverflow)?;
+    let mut bytes = Vec::with_capacity(width_usize * 4 * height as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = placed.pixel(x, y).ok_or(FrameError::LayoutOverflow)?;
+            if pixel.a == 0 {
+                bytes.extend_from_slice(&pixel.to_bytes());
+                continue;
+            }
+            let mut alpha = 0_u32;
+            let mut light = [0_u32; 3];
+            for dy in offsets {
+                let tap_y = clamp(y, dy, height);
+                for dx in offsets {
+                    let tap_x = clamp(x, dx, width);
+                    alpha += u32::from(
+                        placed
+                            .pixel(tap_x, tap_y)
+                            .ok_or(FrameError::LayoutOverflow)?
+                            .a,
+                    );
+                    let behind = background
+                        .pixel(tap_x, tap_y)
+                        .ok_or(FrameError::LayoutOverflow)?;
+                    light[0] += u32::from(behind.r);
+                    light[1] += u32::from(behind.g);
+                    light[2] += u32::from(behind.b);
+                }
+            }
+            let mean = |sum: u32| u8::try_from((sum + 12) / 25).unwrap_or(u8::MAX);
+            let weight = multiply_u8(u8::MAX - mean(alpha), wrap.amount);
+            let toward = |channel: u8, sum: u32| {
+                let target = multiply_u8(mean(sum), pixel.a);
+                let inverse = u16::from(u8::MAX - weight);
+                let value = u16::from(channel) * inverse + u16::from(target) * u16::from(weight);
+                u8::try_from((u32::from(value) + 127) / 255).unwrap_or(u8::MAX)
+            };
+            let wrapped = Rgba8::new(
+                toward(pixel.r, light[0]),
+                toward(pixel.g, light[1]),
+                toward(pixel.b, light[2]),
+                pixel.a,
+            );
+            bytes.extend_from_slice(&wrapped.to_bytes());
+        }
+    }
+    ImageFrame::new(width, height, width_usize * 4, bytes)
 }

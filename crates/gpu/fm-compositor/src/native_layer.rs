@@ -82,48 +82,10 @@ const DESPILL_NONE: u32 = 0;
 const DESPILL_GREEN: u32 = 1;
 const DESPILL_BLUE: u32 = 2;
 
-const LAYER_FRAGMENT_SHADER: &str = r"
-// Operations: 0 key stage, 1 levels, 2 brightness_contrast, 3 saturation,
-// 4 sharpen, 5 flip, 6 matte, 7 choke/spread, 8 edge softness. Flags:
-// 1 decode working input, 2 encode working output, 4 key alpha from matte.
-struct LayerOperation {
-    operation: u32,
-    flags: u32,
-    offset_x: u32,
-    offset_y: u32,
-    width: u32,
-    height: u32,
-    parameter_0: u32,
-    parameter_1: u32,
-    key_kind: u32,
-    key_red: u32,
-    key_green: u32,
-    key_blue: u32,
-    key_low: u32,
-    key_softness: u32,
-    key_spill: u32,
-    key_high: u32,
-    key_invert: u32,
-    mask_enabled: u32,
-    mask_invert: u32,
-    mask_left: u32,
-    mask_top: u32,
-    mask_right: u32,
-    mask_bottom: u32,
-    matte_channel: u32,
-    clip_black: u32,
-    clip_white: u32,
-    despill_backing: u32,
-    despill_strength: u32,
-    padding_0: u32,
-    padding_1: u32,
-    padding_2: u32,
-};
-
-@group(0) @binding(0) var source_texture: texture_2d<f32>;
-@group(0) @binding(1) var matte_texture: texture_2d<f32>;
-@group(0) @binding(2) var<uniform> op: LayerOperation;
-
+/// WGSL shared by the layer-preparation and light wrap passes: the
+/// canonical working texel to and from straight sRGB BT.709 8-bit codes,
+/// and the key stage's rounded 8-bit product.
+pub(crate) const WORKING_CODES_WGSL: &str = r"
 fn srgb_to_linear(encoded: f32) -> f32 {
     if encoded <= 0.04045 {
         return encoded / 12.92;
@@ -195,6 +157,53 @@ fn encode_working(codes: vec4<i32>) -> vec4<f32> {
     return vec4<f32>(working * alpha, alpha);
 }
 
+fn multiply_u8(left: i32, right: i32) -> i32 {
+    return (left * right + 127) / 255;
+}
+";
+
+const LAYER_FRAGMENT_SHADER: &str = r"
+// Operations: 0 key stage, 1 levels, 2 brightness_contrast, 3 saturation,
+// 4 sharpen, 5 flip, 6 matte, 7 choke/spread, 8 edge softness. Flags:
+// 1 decode working input, 2 encode working output, 4 key alpha from matte.
+struct LayerOperation {
+    operation: u32,
+    flags: u32,
+    offset_x: u32,
+    offset_y: u32,
+    width: u32,
+    height: u32,
+    parameter_0: u32,
+    parameter_1: u32,
+    key_kind: u32,
+    key_red: u32,
+    key_green: u32,
+    key_blue: u32,
+    key_low: u32,
+    key_softness: u32,
+    key_spill: u32,
+    key_high: u32,
+    key_invert: u32,
+    mask_enabled: u32,
+    mask_invert: u32,
+    mask_left: u32,
+    mask_top: u32,
+    mask_right: u32,
+    mask_bottom: u32,
+    matte_channel: u32,
+    clip_black: u32,
+    clip_white: u32,
+    despill_backing: u32,
+    despill_strength: u32,
+    padding_0: u32,
+    padding_1: u32,
+    padding_2: u32,
+};
+
+@group(0) @binding(0) var source_texture: texture_2d<f32>;
+@group(0) @binding(1) var matte_texture: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> op: LayerOperation;
+
 fn load_codes(pixel: vec2<u32>) -> vec4<i32> {
     let coordinates = pixel + vec2<u32>(op.offset_x, op.offset_y);
     let texel = textureLoad(source_texture, vec2<i32>(coordinates), 0);
@@ -202,10 +211,6 @@ fn load_codes(pixel: vec2<u32>) -> vec4<i32> {
         return decode_working(texel);
     }
     return clamp(vec4<i32>(round(texel * 255.0)), vec4<i32>(0), vec4<i32>(255));
-}
-
-fn multiply_u8(left: i32, right: i32) -> i32 {
-    return (left * right + 127) / 255;
 }
 
 // The key ramp over `distance` past the threshold (or below the high bound).
@@ -859,7 +864,7 @@ impl NativeLayerRenderer {
                     ShaderStage::Fragment,
                     ShaderLanguage::Wgsl,
                     "layer_fragment",
-                    ShaderSource::Text(LAYER_FRAGMENT_SHADER.to_owned()),
+                    ShaderSource::Text(format!("{WORKING_CODES_WGSL}{LAYER_FRAGMENT_SHADER}")),
                 ),
                 NativeFullscreenPipelineOptions {
                     target_format: TextureFormat::Rgba16Float,
