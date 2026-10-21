@@ -612,7 +612,58 @@ impl MonitorGrid {
                 ..mask
             });
         }
+        placed.key = layer
+            .key
+            .map(|key| key.with_refinement(self.refinement(key.refinement())));
         Some(Placement::Draw(Box::new(placed)))
+    }
+
+    /// A key refinement's pixel-sized reaches (choke, edge softness, light
+    /// wrap width), authored in project pixels, scaled onto the grid so a
+    /// downscaled preview reaches as far into the picture as Program does.
+    /// Each rounds to the nearest pixel (half away from zero); a light wrap
+    /// keeps at least one pixel so it stays on.
+    fn refinement(self, refinement: fm_model::KeyRefinement) -> fm_model::KeyRefinement {
+        if (self.width, self.height) == (self.project_width, self.project_height) {
+            return refinement;
+        }
+        // Monitor grids keep the project's aspect, so one ratio (the mean
+        // of both axes, in case rounding moved one) scales every reach.
+        let ratio = f64::midpoint(
+            f64::from(self.width) / f64::from(self.project_width.max(1)),
+            f64::from(self.height) / f64::from(self.project_height.max(1)),
+        );
+        // Clamped to the model's bounds (a grid larger than the project
+        // cannot reach further than they allow).
+        let scale = |value: i8, low: f64, high: u8| {
+            (f64::from(value) * ratio)
+                .round()
+                .clamp(low, f64::from(high))
+        };
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to i8/u8
+        let mut scaled = fm_model::KeyRefinement {
+            choke: scale(
+                refinement.choke,
+                -f64::from(fm_model::MAX_KEY_CHOKE),
+                fm_model::MAX_KEY_CHOKE,
+            ) as i8,
+            edge_softness: scale(
+                i8::try_from(refinement.edge_softness).unwrap_or(i8::MAX),
+                0.0,
+                fm_model::MAX_KEY_EDGE_SOFTNESS,
+            ) as u8,
+            ..refinement
+        };
+        if refinement.light_wrap != 0 {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 1..=8
+            let width = scale(
+                i8::try_from(refinement.light_wrap_width).unwrap_or(i8::MAX),
+                1.0,
+                fm_model::MAX_KEY_LIGHT_WRAP_WIDTH,
+            ) as u8;
+            scaled.light_wrap_width = width;
+        }
+        scaled
     }
 
     /// Maps the in-bounds project column span `start..start + length` onto

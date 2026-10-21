@@ -2482,6 +2482,64 @@ mod tests {
         }
     }
 
+    /// A key's pixel-sized reaches are authored in project pixels: on a
+    /// one-third-size monitor a light wrap 8 pixels wide reaches as far into
+    /// the picture as Program's (downscaled) does, not three times further.
+    #[test]
+    fn monitor_size_key_reaches_scale_with_the_grid() {
+        let mut project = project(1_920, 1_080);
+        let bars = layer(SourceRef::Input(input_id(2)), 0, 0, 1_920, 1_080);
+        let mut keyed = layer(SourceRef::Input(input_id(1)), 960, 0, 960, 1_080);
+        keyed.z_order = 1;
+        keyed.key = Some(fm_model::LayerKey::Luma(fm_model::LumaLayerKey {
+            low: 0,
+            high: 255,
+            softness: 0,
+            invert: false,
+            refinement: fm_model::KeyRefinement {
+                light_wrap: 255,
+                light_wrap_width: 8,
+                ..fm_model::KeyRefinement::NONE
+            },
+        }));
+        add_scene(&mut project, 1, 10, vec![bars, keyed]);
+        let scene = scene_render::scene_of_input(&project, input_id(10)).unwrap();
+        let monitor = simulated_pipeline(&project).unwrap();
+        let full = simulated_pipeline_at(&project, 1_920, 1_080).unwrap();
+        let fast = scene_render::render_scene(
+            &project,
+            input_id(10),
+            &monitor,
+            4,
+            AnimSample::Hold,
+            &CompiledProjectGrades::default(),
+        )
+        .unwrap();
+        let reference = scene_render::render_scene_at_project_size(
+            &project,
+            scene,
+            &full,
+            4,
+            fast.width(),
+            fast.height(),
+            AnimSample::Hold,
+        )
+        .unwrap();
+        assert_eq!((fast.width(), fast.height()), (640, 360));
+        // Columns from the layer's left edge (monitor column 320) whose
+        // solid colour the wrap changed.
+        let reach = |image: &ImageFrame| {
+            (320..640)
+                .take_while(|&x| {
+                    let pixel = image.pixel(x, 180).unwrap();
+                    (pixel.r, pixel.g, pixel.b) != (7, 11, 13)
+                })
+                .count()
+        };
+        assert_eq!(reach(&reference), 3);
+        assert_eq!(reach(&fast), reach(&reference));
+    }
+
     /// Regression for multi-second debug-build redraws: a 1080p Scene redraw
     /// does a fraction of the project-size composition's work.
     #[test]
