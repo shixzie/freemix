@@ -4644,6 +4644,7 @@ fn viewer_diagnostics_query_is_read_only_and_correlated() {
         subscriber_limit,
         subscriber_queue_limit,
         source_sync,
+        health: _,
     }) = response
     else {
         panic!("expected diagnostics response");

@@ -373,6 +373,7 @@ fn serve_diagnostics_peer(
             subscriber_limit: 8,
             subscriber_queue_limit: 16,
             source_sync,
+            health: fm_protocol::DaemonHealth::default(),
         }),
     );
 }

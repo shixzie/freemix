@@ -6,6 +6,7 @@ mod decode;
 mod display_output;
 mod encode;
 mod grade;
+mod health;
 mod input_lifecycle;
 mod layout;
 mod live_lan;

@@ -1549,6 +1549,7 @@ fn diagnostics_wait_assembles_monitor_frames() {
             subscriber_limit: 4,
             subscriber_queue_limit: 8,
             source_sync: Vec::new(),
+            health: fm_protocol::DaemonHealth::default(),
         }));
         peer.send_all(&records);
     });
@@ -1592,6 +1593,7 @@ fn diagnostics_wait_reconciles_results_answered_before_it() {
                 subscriber_limit: 4,
                 subscriber_queue_limit: 8,
                 source_sync: Vec::new(),
+                health: fm_protocol::DaemonHealth::default(),
             }),
         ]);
     });
@@ -2251,6 +2253,86 @@ fn source_sync_status_rejects_a_foreign_server_identity() {
         Err(TcpSessionError::UnexpectedMessage)
     ));
     assert!(session.latest_source_sync_status().is_none());
+    server_thread.join().unwrap();
+}
+
+fn health_status(sequence: u64, cpu_permille: u16) -> fm_protocol::HealthStatusMessage {
+    fm_protocol::HealthStatusMessage {
+        server: server(),
+        sequence,
+        health: fm_protocol::DaemonHealth {
+            uptime_ms: sequence * 1_000,
+            cpu_permille: Some(cpu_permille),
+            gpu_permille: None,
+            alerts: if cpu_permille >= 900 {
+                vec![fm_protocol::HealthAlert {
+                    rule: fm_protocol::HealthAlertRule::CpuSaturated,
+                    severity: fm_protocol::HealthSeverity::Warning,
+                    since_ms: sequence * 1_000,
+                    value_milli: Some(i64::from(cpu_permille)),
+                }]
+            } else {
+                Vec::new()
+            },
+            notifications: Vec::new(),
+        },
+    }
+}
+
+/// Protocol 2.99: `health_status` is lossy, retained latest-wins, and
+/// strictly ordered like `source_sync_status`; a replayed sequence
+/// disconnects and forgets it, as does a foreign server identity.
+#[test]
+fn health_status_is_retained_latest_wins_and_strictly_ordered() {
+    let (release_tx, release_rx) = mpsc::channel();
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        release_rx.recv().unwrap();
+        peer.send(&WireMessage::HealthStatus(health_status(5, 950)));
+        peer.send(&WireMessage::HealthStatus(health_status(6, 120)));
+        peer.send(&WireMessage::HealthStatus(health_status(6, 130)));
+    });
+
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    assert!(session.latest_health_status().is_none());
+    release_tx.send(()).unwrap();
+    assert!(matches!(
+        session.receive().unwrap(),
+        SessionEvent::HealthStatus { status } if status.health.alerts.len() == 1
+    ));
+    session.receive().unwrap();
+    let latest = session.latest_health_status().expect("retained status");
+    assert_eq!(latest.sequence, 6);
+    assert_eq!(latest.health.cpu_permille, Some(120));
+    assert_eq!(latest.health.alerts, []);
+    // Lossy telemetry never advances the durable cursor.
+    assert_eq!(session.client().last_applied_cursor().unwrap().revision, 4);
+    assert!(matches!(
+        session.receive(),
+        Err(TcpSessionError::UnexpectedMessage)
+    ));
+    assert!(session.latest_health_status().is_none());
+    server_thread.join().unwrap();
+
+    let (release_tx, release_rx) = mpsc::channel();
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        release_rx.recv().unwrap();
+        let mut foreign = health_status(1, 10);
+        foreign.server.engine_id = "engine-b".to_owned();
+        peer.send(&WireMessage::HealthStatus(foreign));
+    });
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    release_tx.send(()).unwrap();
+    assert!(matches!(
+        session.receive(),
+        Err(TcpSessionError::UnexpectedMessage)
+    ));
+    assert!(session.latest_health_status().is_none());
     server_thread.join().unwrap();
 }
 

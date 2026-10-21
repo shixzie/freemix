@@ -3350,6 +3350,9 @@ pub struct DiagnosticsResponse {
     /// Every running live source's drift loop (Protocol 2.76), in strictly
     /// increasing input order; empty without live sources.
     pub source_sync: Vec<crate::SourceSyncSample>,
+    /// The daemon's latest health sample (Protocol 2.99): utilization and
+    /// alerts.
+    pub health: crate::DaemonHealth,
 }
 
 // A snapshot is sent once per (re)connection, so its inline size is not worth
@@ -3374,6 +3377,8 @@ pub enum WireMessage {
     RecorderStatus(crate::RecorderStatusMessage),
     /// Lossy live source drift telemetry (Protocol 2.76).
     SourceSyncStatus(crate::SourceSyncStatusMessage),
+    /// Lossy daemon utilization and alerts (Protocol 2.99).
+    HealthStatus(crate::HealthStatusMessage),
     MonitorFrame(MonitorFrameMessage),
     CapabilityReport(CapabilityReportMessage),
     DiagnosticsRequest(DiagnosticsRequest),

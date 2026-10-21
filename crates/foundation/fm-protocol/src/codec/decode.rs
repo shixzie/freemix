@@ -123,6 +123,11 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
             sequence: fields.canonical_required("sequence")?,
             sources: super::source_sync::decode_samples("sources", &fields.required("sources")?)?,
         }),
+        "health_status" => WireMessage::HealthStatus(crate::HealthStatusMessage {
+            server: decode_server_identity(&mut fields)?,
+            sequence: fields.canonical_required("sequence")?,
+            health: decode_health(&mut fields)?,
+        }),
         "monitor_frame" => WireMessage::MonitorFrame(decode_monitor_frame(&mut fields)?),
         "input_thumbnail_subscription" => {
             WireMessage::InputThumbnailSubscription(crate::InputThumbnailSubscription {
@@ -3902,6 +3907,17 @@ fn decode_diagnostics_response(fields: &mut Fields) -> Result<DiagnosticsRespons
             "source_sync",
             &fields.required("source_sync")?,
         )?,
+        health: decode_health(fields)?,
+    })
+}
+
+fn decode_health(fields: &mut Fields) -> Result<crate::DaemonHealth, CodecError> {
+    super::health::decode(super::health::HealthFields {
+        uptime_ms: fields.required("uptime_ms")?,
+        cpu_permille: fields.optional("cpu_permille"),
+        gpu_permille: fields.optional("gpu_permille"),
+        alerts: fields.required("alerts")?,
+        notifications: fields.required("notifications")?,
     })
 }
 

@@ -16401,6 +16401,7 @@ fn diagnostics_response(
         subscriber_limit: u32::try_from(diagnostics.limits.max_subscribers)?,
         subscriber_queue_limit: u32::try_from(diagnostics.limits.subscriber_queue)?,
         source_sync,
+        health: fm_protocol::DaemonHealth::default(),
     })
 }
 

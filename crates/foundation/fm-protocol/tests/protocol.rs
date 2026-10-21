@@ -470,6 +470,28 @@ fn every_message_variant_round_trips() {
             subscriber_limit: 16,
             subscriber_queue_limit: 256,
             source_sync: Vec::new(),
+            health: fm_protocol::DaemonHealth {
+                uptime_ms: 12_000,
+                cpu_permille: Some(125),
+                gpu_permille: None,
+                alerts: vec![fm_protocol::HealthAlert {
+                    rule: fm_protocol::HealthAlertRule::DiskLow,
+                    severity: fm_protocol::HealthSeverity::Critical,
+                    since_ms: 11_000,
+                    value_milli: Some(1_000),
+                }],
+                notifications: Vec::new(),
+            },
+        }),
+        WireMessage::HealthStatus(fm_protocol::HealthStatusMessage {
+            server: ServerIdentity {
+                engine_id: "engine-a".to_owned(),
+                project_id: "project-a".to_owned(),
+                state_epoch: 1,
+                log_id: "log-a".to_owned(),
+            },
+            sequence: 1,
+            health: fm_protocol::DaemonHealth::default(),
         }),
         WireMessage::Command(CommandMessage {
             payload: CommandPayload::ReorderInputs {

@@ -100,6 +100,15 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             record.field("sequence", message.sequence)?;
             record.field_string("sources", sources)?;
         }
+        WireMessage::HealthStatus(message) => {
+            let fields = super::health::encode(&message.health)?;
+            record.kind("health_status");
+            encode_server_identity(&mut record, &message.server)?;
+            record.field("sequence", message.sequence)?;
+            for (name, value) in fields {
+                record.field_string(name, value)?;
+            }
+        }
         WireMessage::MonitorFrame(message) => encode_monitor_frame(&mut record, message)?,
         WireMessage::InputThumbnailSubscription(message) => {
             record.kind("input_thumbnail_subscription");
@@ -3519,7 +3528,11 @@ fn encode_diagnostics_response(
     record.field("subscriber_limit", message.subscriber_limit)?;
     record.field("subscriber_queue_limit", message.subscriber_queue_limit)?;
     let sources = super::source_sync::encode_samples("source_sync", &message.source_sync)?;
-    record.field_string("source_sync", sources)
+    record.field_string("source_sync", sources)?;
+    for (name, value) in super::health::encode(&message.health)? {
+        record.field_string(name, value)?;
+    }
+    Ok(())
 }
 
 fn encode_error_message(record: &mut Record, message: &ErrorMessage) -> Result<(), CodecError> {

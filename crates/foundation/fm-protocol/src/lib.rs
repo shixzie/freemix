@@ -6,6 +6,7 @@ mod codec;
 mod cue;
 mod display_output;
 mod dto;
+mod health;
 mod input_lifecycle;
 mod input_thumbnail;
 mod live_lan;
@@ -134,6 +135,10 @@ pub use dto::{
 pub use fm_command::{
     FaultDetail, IdKind, InputUse, MAX_FAULT_MESSAGE_BYTES, MAX_REFUSAL_FIELD_BYTES, RefusalReason,
     ScriptFailureKind,
+};
+pub use health::{
+    DaemonHealth, HealthAlert, HealthAlertRule, HealthNotification, HealthNotificationKind,
+    HealthSeverity, HealthStatusMessage, MAX_HEALTH_NOTIFICATIONS, MAX_UTILIZATION_PERMILLE,
 };
 pub use input_lifecycle::{
     AddedInput, ImportItemSpec, ImportRefusal, InputCategoryStatus, InputColorLabel,

@@ -19,7 +19,7 @@ fn invalid(field: &'static str, value: impl Into<String>) -> CodecError {
 
 /// Parses a canonical signed decimal: `0`, or an optional `-` and digits
 /// without a leading zero, exactly as `i64::to_string` writes it.
-fn parse_canonical_i64(value: &str) -> Option<i64> {
+pub(super) fn parse_canonical_i64(value: &str) -> Option<i64> {
     let digits = value.strip_prefix('-').unwrap_or(value);
     if digits.is_empty()
         || !digits.bytes().all(|byte| byte.is_ascii_digit())

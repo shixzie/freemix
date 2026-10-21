@@ -1312,6 +1312,7 @@ fn run_worker(
                     | SessionEvent::RecorderStatus { .. }
                     | SessionEvent::TitlePhases { .. }
                     | SessionEvent::SourceSyncStatus { .. }
+                    | SessionEvent::HealthStatus { .. }
                     | SessionEvent::DisplayInventory { .. }
                     | SessionEvent::CaptureDevices { .. }
                     | SessionEvent::SystemAudioDevices { .. }
@@ -1857,6 +1858,7 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::RecorderStatus { .. }
                         | SessionEvent::TitlePhases { .. }
                         | SessionEvent::SourceSyncStatus { .. }
+                        | SessionEvent::HealthStatus { .. }
                         | SessionEvent::DisplayInventory { .. }
                         | SessionEvent::CaptureDevices { .. }
                         | SessionEvent::SystemAudioDevices { .. }
@@ -2410,6 +2412,7 @@ fn receive_command_event(
                 | SessionEvent::RecorderStatus { .. }
                 | SessionEvent::TitlePhases { .. }
                 | SessionEvent::SourceSyncStatus { .. }
+                | SessionEvent::HealthStatus { .. }
                 | SessionEvent::DisplayInventory { .. }
                 | SessionEvent::CaptureDevices { .. }
                 | SessionEvent::SystemAudioDevices { .. }

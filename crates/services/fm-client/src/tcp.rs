@@ -383,6 +383,11 @@ pub enum SessionEvent {
     SourceSyncStatus {
         status: SourceSyncStatusMessage,
     },
+    /// The daemon's utilization and alerts (Protocol 2.99); the latest is
+    /// retained in [`TcpSession::latest_health_status`].
+    HealthStatus {
+        status: fm_protocol::HealthStatusMessage,
+    },
     /// One valid `monitor_frame` part arrived for `tap`. When `complete` is
     /// `true` it finished its group and the decoded image is available from
     /// [`TcpSession::latest_monitor_frame`]; pixels are never carried here.
@@ -544,6 +549,8 @@ pub struct TcpSession {
     latest_title_phases: Option<fm_protocol::TitlePhasesMessage>,
     last_source_sync_sequence: Option<u64>,
     latest_source_sync_status: Option<SourceSyncStatusMessage>,
+    last_health_sequence: Option<u64>,
+    latest_health_status: Option<fm_protocol::HealthStatusMessage>,
     /// Last completed monitor frame sequence per [`MonitorTap::index`].
     monitor_sequences: [Option<u64>; 2],
     monitor_assemblers: [MonitorFrameAssembler; 2],
@@ -691,6 +698,8 @@ impl TcpSession {
             latest_title_phases: None,
             last_source_sync_sequence: None,
             latest_source_sync_status: None,
+            last_health_sequence: None,
+            latest_health_status: None,
             monitor_sequences: [None, None],
             monitor_assemblers: [MonitorFrameAssembler::new(), MonitorFrameAssembler::new()],
             latest_monitor: [None, None],
@@ -762,6 +771,13 @@ impl TcpSession {
     #[must_use]
     pub const fn latest_source_sync_status(&self) -> Option<&SourceSyncStatusMessage> {
         self.latest_source_sync_status.as_ref()
+    }
+
+    /// The latest daemon health (Protocol 2.99): CPU and GPU utilization,
+    /// firing alerts, and recent notifications. Cleared on disconnect.
+    #[must_use]
+    pub const fn latest_health_status(&self) -> Option<&fm_protocol::HealthStatusMessage> {
+        self.latest_health_status.as_ref()
     }
 
     /// The latest fully assembled and decoded monitor image for `tap` and
@@ -1537,6 +1553,9 @@ impl TcpSession {
                     WireMessage::SourceSyncStatus(status) => {
                         self.validate_source_sync_status(&status)?;
                     }
+                    WireMessage::HealthStatus(status) => {
+                        self.validate_health_status(&status)?;
+                    }
                     WireMessage::MonitorFrame(frame) => {
                         self.validate_monitor_frame(&frame)?;
                     }
@@ -1638,6 +1657,10 @@ impl TcpSession {
             WireMessage::SourceSyncStatus(status) => {
                 self.validate_source_sync_status(&status)?;
                 Ok(SessionEvent::SourceSyncStatus { status })
+            }
+            WireMessage::HealthStatus(status) => {
+                self.validate_health_status(&status)?;
+                Ok(SessionEvent::HealthStatus { status })
             }
             WireMessage::MonitorFrame(frame) => {
                 let complete = self.validate_monitor_frame(&frame)?;
@@ -1962,6 +1985,8 @@ impl TcpSession {
         self.latest_title_phases = None;
         self.last_source_sync_sequence = None;
         self.latest_source_sync_status = None;
+        self.last_health_sequence = None;
+        self.latest_health_status = None;
         self.monitor_sequences = [None, None];
         for assembler in &mut self.monitor_assemblers {
             assembler.reset();
@@ -2062,6 +2087,29 @@ impl TcpSession {
         }
         self.last_source_sync_sequence = Some(status.sequence);
         self.latest_source_sync_status = Some(status.clone());
+        Ok(())
+    }
+
+    /// Like [`Self::validate_source_sync_status`]: a foreign identity or a
+    /// non-increasing sequence disconnects; the codec already holds the
+    /// health fields to the wire contract.
+    fn validate_health_status(
+        &mut self,
+        status: &fm_protocol::HealthStatusMessage,
+    ) -> Result<(), TcpSessionError> {
+        let valid_identity = self
+            .client
+            .session()
+            .is_some_and(|session| session.server == status.server);
+        let valid_sequence = self
+            .last_health_sequence
+            .is_none_or(|sequence| status.sequence > sequence);
+        if !valid_identity || !valid_sequence {
+            self.transition_disconnect();
+            return Err(TcpSessionError::UnexpectedMessage);
+        }
+        self.last_health_sequence = Some(status.sequence);
+        self.latest_health_status = Some(status.clone());
         Ok(())
     }
 }

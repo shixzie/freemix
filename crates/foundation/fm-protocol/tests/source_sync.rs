@@ -228,21 +228,21 @@ fn diagnostics_response_carries_the_source_sync_samples() {
             subscriber_limit: 16,
             subscriber_queue_limit: 64,
             source_sync,
+            health: fm_protocol::DaemonHealth::default(),
         })
     };
     let empty = response(Vec::new());
     let line = encode_line(&empty).unwrap();
     assert!(
-        line.ends_with("\tsubscriber_queue_limit=64\tsource_sync=\n"),
+        line.ends_with(
+            "\tsubscriber_queue_limit=64\tsource_sync=\tuptime_ms=0\talerts=\tnotifications=\n"
+        ),
         "{line}"
     );
     assert_eq!(decode_line(&line).unwrap(), empty);
     let one = response(vec![sample(7)]);
     let line = encode_line(&one).unwrap();
-    assert!(
-        line.ends_with(&format!("\tsource_sync={ENTRY}\n")),
-        "{line}"
-    );
+    assert!(line.contains(&format!("\tsource_sync={ENTRY}\t")), "{line}");
     assert_eq!(decode_line(&line).unwrap(), one);
     // The field is required.
     let missing = line.replace(&format!("\tsource_sync={ENTRY}"), "");

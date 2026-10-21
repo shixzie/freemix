@@ -722,6 +722,7 @@ impl Client {
             | WireMessage::TitlePhases(_)
             | WireMessage::RecorderStatus(_)
             | WireMessage::SourceSyncStatus(_)
+            | WireMessage::HealthStatus(_)
             | WireMessage::MonitorFrame(_)
             | WireMessage::InputThumbnailSubscription(_)
             | WireMessage::InputThumbnail(_)
