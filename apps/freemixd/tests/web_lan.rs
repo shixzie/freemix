@@ -917,7 +917,8 @@ fn hsts(headers: &[(String, String)]) -> Option<&str> {
 /// names (here a `--web-host` under `home.arpa`, inside the local root's
 /// name constraints) carry a one-week HSTS for that host only; answers for
 /// an address (which browsers ignore HSTS for) or `localhost` (HSTS would
-/// pin every port on this computer) carry none.
+/// pin every port on this computer) carry none. Pages keep their hardening
+/// headers.
 #[test]
 fn hsts_pins_only_names_the_certificate_covers() {
     let directory = TestDirectory::new("hsts");
@@ -961,6 +962,35 @@ fn hsts_pins_only_names_the_certificate_covers() {
     );
     assert_eq!(status, "HTTP/1.1 421 Misdirected Request");
     assert_eq!(hsts(&headers), None);
+    // The pages keep their hardening headers.
+    for page in ["/", "/tally", "/operator", "/titles"] {
+        let (_, headers, body) = https(
+            &daemon,
+            &format!("GET {page} HTTP/1.1\r\nHost: studio.home.arpa:{port}\r\n\r\n"),
+        );
+        let header = |name: &str| {
+            headers
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(header("x-content-type-options"), "nosniff", "{page}");
+        assert_eq!(header("referrer-policy"), "no-referrer", "{page}");
+        assert_eq!(header("x-frame-options"), "DENY", "{page}");
+        let policy = header("content-security-policy");
+        assert!(
+            policy.contains("frame-ancestors 'none'"),
+            "{page}: {policy}"
+        );
+        // Inline page scripts stay allowed by the policy.
+        if body.contains("<script") {
+            assert!(
+                policy.contains("script-src 'unsafe-inline'"),
+                "{page}: {policy}"
+            );
+        }
+    }
 }
 
 /// An mkcert-like certificate for `names`, signed by a fresh root.
