@@ -1661,83 +1661,91 @@ fn draw_console_key(
     let mut use_project: Option<bool> = None;
     // This console's key changed by its chord or scope controls.
     let mut reshaped: Option<WireShortcutKey> = None;
-    ui.horizontal_wrapped(|ui| {
+    // The label holds its column; the status and keys wrap under each
+    // other beside it (Spanish "Sin tecla aquí"), not back under the label.
+    ui.horizontal(|ui| {
         form_label(ui, l.text(Msg::UserShortcutLocalLabel));
-        match (&local, window.capturing_local) {
-            (_, true) => ui.label(
-                RichText::new(l.text(if window.capturing_local_then {
-                    Msg::UserShortcutLocalThenCapturing
-                } else {
-                    Msg::UserShortcutLocalCapturing
-                }))
-                .color(accent_color()),
-            ),
-            (Some(Some(key)), false) => {
-                let response = crate::menu::key_cap(ui, &l.keys(&key_text(key)), 0.0);
-                if let Some(scope) = key.scope.as_deref().and_then(AnswerScope::of) {
-                    ui.label(RichText::new(scope.label(l)).color(muted_color()))
-                        .on_hover_text(l.text(Msg::UserShortcutLocalScopeHover));
+        ui.horizontal_wrapped(|ui| {
+            match (&local, window.capturing_local) {
+                (_, true) => ui.label(
+                    RichText::new(l.text(if window.capturing_local_then {
+                        Msg::UserShortcutLocalThenCapturing
+                    } else {
+                        Msg::UserShortcutLocalCapturing
+                    }))
+                    .color(accent_color()),
+                ),
+                (Some(Some(key)), false) => {
+                    let response = crate::menu::key_cap(ui, &l.keys(&key_text(key)), 0.0);
+                    if let Some(scope) = key.scope.as_deref().and_then(AnswerScope::of) {
+                        ui.label(RichText::new(scope.label(l)).color(muted_color()))
+                            .on_hover_text(l.text(Msg::UserShortcutLocalScopeHover));
+                    }
+                    response
                 }
-                response
+                (Some(None), false) => ui.label(
+                    RichText::new(l.text(Msg::UserShortcutLocalNone))
+                        .size(crate::theme::legible(11.0))
+                        .color(muted_color()),
+                ),
+                (None, false) => ui.label(
+                    RichText::new(l.text(Msg::UserShortcutLocalProject))
+                        .size(crate::theme::legible(11.0))
+                        .color(muted_color()),
+                ),
             }
-            (Some(None), false) => {
-                ui.label(RichText::new(l.text(Msg::UserShortcutLocalNone)).color(muted_color()))
+            .on_hover_text(l.text(Msg::UserShortcutLocalHover));
+            ui.add_space(4.0);
+            let set = if capturing {
+                Some(Msg::UserShortcutReasonCapturing.en())
+            } else {
+                limit
+            };
+            if ui
+                .add_enabled(
+                    set.is_none(),
+                    small_button(l.text(Msg::UserShortcutSetLocal)),
+                )
+                .hint(l.text(Msg::UserShortcutSetLocalHover), set.unwrap_or(""))
+                .clicked()
+            {
+                window.capturing_local = true;
+                window.capturing_local_then = false;
+                window.local_refusal = None;
             }
-            (None, false) => {
-                ui.label(RichText::new(l.text(Msg::UserShortcutLocalProject)).color(muted_color()))
+            let project_key = local
+                .is_none()
+                .then_some(Msg::UserShortcutReasonProjectKeyHere.en());
+            if ui
+                .add_enabled(
+                    project_key.is_none(),
+                    small_button(l.text(Msg::UserShortcutUseProject)),
+                )
+                .hint(
+                    l.text(Msg::UserShortcutUseProjectHover),
+                    project_key.unwrap_or(""),
+                )
+                .clicked()
+            {
+                use_project = Some(true);
             }
-        }
-        .on_hover_text(l.text(Msg::UserShortcutLocalHover));
-        ui.add_space(4.0);
-        let set = if capturing {
-            Some(Msg::UserShortcutReasonCapturing.en())
-        } else {
-            limit
-        };
-        if ui
-            .add_enabled(
-                set.is_none(),
-                small_button(l.text(Msg::UserShortcutSetLocal)),
-            )
-            .hint(l.text(Msg::UserShortcutSetLocalHover), set.unwrap_or(""))
-            .clicked()
-        {
-            window.capturing_local = true;
-            window.capturing_local_then = false;
-            window.local_refusal = None;
-        }
-        let project_key = local
-            .is_none()
-            .then_some(Msg::UserShortcutReasonProjectKeyHere.en());
-        if ui
-            .add_enabled(
-                project_key.is_none(),
-                small_button(l.text(Msg::UserShortcutUseProject)),
-            )
-            .hint(
-                l.text(Msg::UserShortcutUseProjectHover),
-                project_key.unwrap_or(""),
-            )
-            .clicked()
-        {
-            use_project = Some(true);
-        }
-        let no_key = (local == Some(None))
-            .then_some(Msg::UserShortcutReasonNoKeyHere.en())
-            .or(limit);
-        if ui
-            .add_enabled(
-                no_key.is_none(),
-                small_button(l.text(Msg::UserShortcutNoLocalKey)),
-            )
-            .hint(
-                l.text(Msg::UserShortcutNoLocalKeyHover),
-                no_key.unwrap_or(""),
-            )
-            .clicked()
-        {
-            use_project = Some(false);
-        }
+            let no_key = (local == Some(None))
+                .then_some(Msg::UserShortcutReasonNoKeyHere.en())
+                .or(limit);
+            if ui
+                .add_enabled(
+                    no_key.is_none(),
+                    small_button(l.text(Msg::UserShortcutNoLocalKey)),
+                )
+                .hint(
+                    l.text(Msg::UserShortcutNoLocalKeyHover),
+                    no_key.unwrap_or(""),
+                )
+                .clicked()
+            {
+                use_project = Some(false);
+            }
+        });
     });
     // The console key's chord and the panel or window it answers in.
     let own = match &local {
@@ -2215,7 +2223,7 @@ fn draw_editor(
         if ui
             .add_enabled(
                 revert.is_none(),
-                Button::new(l.text(Msg::UserShortcutRevert)).min_size(egui::vec2(0.0, 26.0)),
+                footer_key(l.text(Msg::UserShortcutRevert)),
             )
             .hint(l.text(Msg::UserShortcutRevertHover), revert.unwrap_or(""))
             .clicked()
@@ -2237,10 +2245,7 @@ fn draw_editor(
                 .and_then(|found| fire_block(state, found).or_else(|| value_block(found, None)))
         };
         if ui
-            .add_enabled(
-                fire.is_none(),
-                Button::new(l.text(Msg::UserShortcutFire)).min_size(egui::vec2(0.0, 26.0)),
-            )
+            .add_enabled(fire.is_none(), footer_key(l.text(Msg::UserShortcutFire)))
             .hint(l.text(Msg::UserShortcutFireHover), fire.unwrap_or(""))
             .clicked()
         {
@@ -2254,7 +2259,7 @@ fn draw_editor(
         if ui
             .add_enabled(
                 remove.is_none(),
-                Button::new(l.text(Msg::UserShortcutRemove)).min_size(egui::vec2(0.0, 26.0)),
+                footer_key(l.text(Msg::UserShortcutRemove)),
             )
             .hint(l.text(Msg::UserShortcutRemoveHover), remove.unwrap_or(""))
             .clicked()
@@ -2502,6 +2507,12 @@ pub(crate) fn reference_rows(
             (keys, action)
         })
         .collect()
+}
+
+/// A key of the editor's Save row: Save's text size and height, so the
+/// row reads as one set of keys.
+fn footer_key(text: &str) -> Button<'static> {
+    Button::new(RichText::new(text).size(12.0)).min_size(egui::vec2(0.0, 26.0))
 }
 
 #[cfg(test)]
