@@ -7,12 +7,14 @@
 //! subscription, rate limits, outbound queue, and lossy side channels), and
 //! no peer ever blocks the loop: sockets are non-blocking, Web records are
 //! handed over with `try_send`, and every queue is bounded. A native daemon
-//! realizes its Program frames from the same loop, so it dispatches at most
-//! one command per pass (each realizes a frame) and serves every peer's
-//! reads, heartbeats, and writes between commands. A simulated daemon
-//! dispatches one message per peer per pass, and the commands several peers
-//! sent in one pass share one journal append (a group commit, see
-//! `Runtime::dispatch_group`).
+//! realizes its Program frames from the same loop, so it dispatches commands
+//! on at most one frame per pass and serves every peer's reads, heartbeats,
+//! and writes between such frames; the commands queued when a pass takes its
+//! command turn begin on that one frame together and share one journal
+//! append (a group commit, see `native_group` and `Runtime::dispatch_group`).
+//! A simulated daemon dispatches one message per peer per pass, and the
+//! commands several peers sent in one pass share one journal append the
+//! same way.
 
 use std::{
     collections::VecDeque,
@@ -44,9 +46,9 @@ use super::{
     DaemonShutdownReason, GroupMember, NativeDaemon, PendingWrite, ProcessShutdown, SharedControl,
     admit_session_command, current_handshake, diagnostics_response, error_message,
     execute_command_group, execute_session_command, group_commit_eligible, handshake_code,
-    handshake_response, is_client_session_termination, now_millis, reconciled_handshake_outcome,
-    record_heartbeat, rejected_handshake_response, requested_daemon_shutdown, server_identity,
-    shutdown_message, structured_session_error,
+    handshake_response, is_client_session_termination, native_group_eligible, now_millis,
+    reconciled_handshake_outcome, record_heartbeat, rejected_handshake_response,
+    requested_daemon_shutdown, server_identity, shutdown_message, structured_session_error,
 };
 use crate::input_thumbnails::{ThumbnailKey, ThumbnailOutbox, ThumbnailWork, ThumbnailWorker};
 use crate::journal::DurableStore;
@@ -947,10 +949,15 @@ pub(super) fn run(
 
         let mut live_budget = vec![LIVE_EVENTS_PER_PASS; peers.len()];
         // A native command waits for and realizes the pacer's next frame, so
-        // a pass dispatches at most one: the next peer's command waits for
-        // the next pass, after every peer was read and written. Throughput
-        // stays one command per frame, and no peer's commands delay another
-        // peer's heartbeats or records by more than one frame.
+        // a pass dispatches commands on one frame only, at one peer's turn:
+        // every peer is read and written between two such frames, so no
+        // peer's commands delay another peer's heartbeats or records by
+        // more than one frame. The commands queued when the turn comes are
+        // executed together as one group commit, all begun on that frame, up
+        // to NATIVE_GROUP_COMMANDS (see `native_group`): one journal append
+        // and disk sync, and one frame, for all of them, so throughput is no
+        // longer one command per frame. A command that cannot join a group
+        // takes the turn alone, as before group commit.
         // The command turn goes to the first peer with a command ready after
         // the one that had the last turn, so peers with commands waiting
         // alternate strictly however many idle peers sit between them.
@@ -992,9 +999,34 @@ pub(super) fn run(
         // the next pass.
         let group_commits = native.is_none() && store.groups_commits();
         let mut group: Vec<(usize, fm_protocol::CommandMessage)> = Vec::new();
+        // The native group the command turn takes, if any; its peers send
+        // nothing else this pass.
+        let mut native_commands = match command_turn {
+            Some(turn) if store.groups_commits() => native_group(&mut peers, &close, turn),
+            _ => Vec::new(),
+        };
+        let mut grouped = vec![false; peers.len()];
+        for (index, _) in &native_commands {
+            grouped[*index] = true;
+        }
         for offset in 0..peers.len() {
             let index = (start + offset) % peers.len();
             if close[index] || peers[index].held_result.is_some() {
+                continue;
+            }
+            if grouped[index] {
+                if command_turn == Some(index)
+                    && let Err(DispatchError::Daemon(error)) = runtime.dispatch_group(
+                        &mut peers,
+                        &mut close,
+                        std::mem::take(&mut native_commands),
+                        durable,
+                        native.as_deref_mut(),
+                    )
+                {
+                    shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+                    return Err(error);
+                }
                 continue;
             }
             let ready = match peers[index].phase {
@@ -1032,6 +1064,7 @@ pub(super) fn run(
                             &mut close,
                             std::mem::take(&mut group),
                             durable,
+                            None,
                         )
                     {
                         shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
@@ -1057,7 +1090,7 @@ pub(super) fn run(
         }
         if !group.is_empty()
             && let Err(DispatchError::Daemon(error)) =
-                runtime.dispatch_group(&mut peers, &mut close, group, durable)
+                runtime.dispatch_group(&mut peers, &mut close, group, durable, None)
         {
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
@@ -1569,10 +1602,11 @@ fn read_peer(peer: &mut Peer) -> bool {
         return finish_after_read_close(peer);
     }
     // A peer that sends faster than it is served (a native daemon dispatches
-    // one command per frame across every peer) is not read until its queue
-    // has room, so TCP backpressure slows it instead of the daemon dropping
-    // it. Every message one read decodes is kept, so the queue holds at most
-    // INBOUND_CAPACITY - 1 messages plus one read's worth of lines.
+    // at most one group of commands per frame across every peer) is not
+    // read until its queue has room, so TCP backpressure slows it instead
+    // of the daemon dropping it. Every message one read decodes is kept, so
+    // the queue holds at most INBOUND_CAPACITY - 1 messages plus one read's
+    // worth of lines.
     if peer.inbound.len() >= INBOUND_CAPACITY {
         return false;
     }
@@ -1641,6 +1675,72 @@ fn command_turn(peers: &[Peer], close: &[bool], start: usize) -> Option<usize> {
                 && peer.phase == Phase::Active
                 && matches!(peer.inbound.front(), Some(WireMessage::Command(_)))
         })
+}
+
+/// The most commands a native pass executes as one group commit. A group's
+/// events are published together once it is durable, into every peer's
+/// bounded live subscription (64 events, drained a few per pass), so the
+/// bound keeps a group's burst of events well inside it (a cut publishes
+/// two; a group of 32 cuts overflowed it and dropped every peer as a slow
+/// client). It also keeps the members' staging, which runs before the
+/// group's append in front of its frame, short.
+const NATIVE_GROUP_COMMANDS: usize = 8;
+
+/// The commands a native pass whose command turn is `turn` executes as one
+/// group commit, taken off their peers' queues: from `turn` round the peer
+/// list, one command per active peer per round, as many rounds as needed,
+/// so peers with commands queued share the group fairly. A peer contributes
+/// the commands at the front of its queue until a message that is not a
+/// [`native_group_eligible`] command (or a Web title command, checked on
+/// its own), which waits for a later pass with everything behind it, so
+/// each peer's messages are still handled in the order it sent them.
+/// Returns nothing, and takes nothing, unless the turn's own command can
+/// join and the group would hold at least two: a lone command takes its
+/// turn as before group commit.
+fn native_group(
+    peers: &mut [Peer],
+    close: &[bool],
+    turn: usize,
+) -> Vec<(usize, fm_protocol::CommandMessage)> {
+    let joins = |peer: &Peer, at: usize| match peer.inbound.get(at) {
+        Some(WireMessage::Command(command)) => {
+            native_group_eligible(command) && !web_title_command(peer, command)
+        }
+        _ => false,
+    };
+    let mut open: Vec<usize> = (0..peers.len())
+        .map(|offset| (turn + offset) % peers.len())
+        .filter(|&index| {
+            !close[index]
+                && peers[index].held_result.is_none()
+                && peers[index].phase == Phase::Active
+        })
+        .collect();
+    if open.first() != Some(&turn) || !joins(&peers[turn], 0) {
+        return Vec::new();
+    }
+    let mut taken = vec![0_usize; peers.len()];
+    let mut order = Vec::new();
+    while order.len() < NATIVE_GROUP_COMMANDS && !open.is_empty() {
+        open.retain(|&index| {
+            if order.len() >= NATIVE_GROUP_COMMANDS || !joins(&peers[index], taken[index]) {
+                return false;
+            }
+            taken[index] += 1;
+            order.push(index);
+            true
+        });
+    }
+    if order.len() < 2 {
+        return Vec::new();
+    }
+    order
+        .into_iter()
+        .map(|index| match peers[index].inbound.pop_front() {
+            Some(WireMessage::Command(command)) => (index, command),
+            _ => unreachable!("a grouped peer's queue starts with its grouped commands"),
+        })
+        .collect()
 }
 
 /// The principal of a Web session: the operator's `FREEMIXD_WEB_TOKEN`
@@ -1841,19 +1941,22 @@ impl Runtime<'_> {
             .catch_up(control, self.authority, rate, now)
     }
 
-    /// Executes the commands several peers sent in one pass of a simulated
-    /// daemon as one group commit ([`execute_command_group`]): one journal
-    /// append and disk sync for the group instead of one per command. Each
-    /// peer still sends at most one command per pass, the group runs in the
-    /// pass's round-robin order, and each peer is answered only once the
-    /// whole group is durable (or refused, when it could not be made so).
-    /// One command alone goes the single-command way.
+    /// Executes the commands of one pass as one group commit
+    /// ([`execute_command_group`]): one journal append and disk sync for the
+    /// group instead of one per command. The group runs in the pass's
+    /// round-robin order, and each peer is answered, in its own order, only
+    /// once the whole group is durable (or refused, when it could not be
+    /// made so). A simulated daemon's group holds at most one command per
+    /// peer; a native daemon's (`native`) may hold several of one peer's
+    /// (see `native_group`), all begun on one frame. One command alone goes
+    /// the single-command way.
     fn dispatch_group(
         &self,
         peers: &mut [Peer],
         close: &mut [bool],
         group: Vec<(usize, fm_protocol::CommandMessage)>,
         durable: &mut StoredProject,
+        native: Option<&mut NativeDaemon>,
     ) -> Result<(), DispatchError> {
         if let [(index, _)] = group.as_slice() {
             let index = *index;
@@ -1862,7 +1965,7 @@ impl Runtime<'_> {
                 &mut peers[index],
                 WireMessage::Command(command),
                 durable,
-                None,
+                native,
             ) {
                 Err(DispatchError::Peer) => {
                     close[index] = dropping(peers[index].id, "dispatch_refused");
@@ -1871,6 +1974,7 @@ impl Runtime<'_> {
                 result => result,
             };
         }
+        let simulated = native.is_none();
         let members: Vec<GroupMember> = group
             .iter()
             .map(|(index, command)| GroupMember {
@@ -1879,34 +1983,61 @@ impl Runtime<'_> {
                     .identity
                     .clone()
                     .expect("active peers have identities"),
-                command: command.clone(),
+                // A live fire's Preview and Program are the authority's to
+                // bind (RC-004), as for a command executed alone.
+                command: fm_control::client_fire_payload(&command.payload).map_or_else(
+                    || command.clone(),
+                    |payload| fm_protocol::CommandMessage {
+                        payload,
+                        ..command.clone()
+                    },
+                ),
             })
             .collect();
+        // A command holds an in-flight slot of its session from its
+        // admission until it completed. A peer with several commands in the
+        // group has the slot of its previous one released before the next
+        // is admitted, as when they run one by one, so a group never holds
+        // more of a session's slots than one-by-one execution would.
+        let mut holding: Vec<Option<usize>> = vec![None; peers.len()];
+        let mut released = vec![false; members.len()];
         let outcomes = execute_command_group(
             self.control,
             self.store,
             durable,
             &members,
+            native,
             Some(self.process_shutdown),
             |member, control, staged, now| {
                 let command = &members[member].command;
-                self.catch_up_simulated(control, command, staged)?;
-                admit_session_command(
-                    peers[group[member].0]
-                        .session
-                        .as_mut()
-                        .expect("active peers have sessions"),
-                    control,
-                    command,
-                    now,
-                )
+                let index = group[member].0;
+                let session = peers[index]
+                    .session
+                    .as_mut()
+                    .expect("active peers have sessions");
+                if let Some(previous) = holding[index].take() {
+                    session.command_completed()?;
+                    released[previous] = true;
+                }
+                if simulated {
+                    self.catch_up_simulated(control, command, staged)?;
+                }
+                let refusal = admit_session_command(session, control, command, now)?;
+                if refusal.is_none() {
+                    holding[index] = Some(member);
+                }
+                Ok(refusal)
             },
         )
         .map_err(DispatchError::Daemon)?;
         self.sync_title_templates();
-        for ((index, _), outcome) in group.iter().zip(outcomes) {
+        for (member, ((index, _), outcome)) in group.iter().zip(outcomes).enumerate() {
             let peer = &mut peers[*index];
+            if close[*index] {
+                continue;
+            }
             if outcome.admitted
+                && !released[member]
                 && let Err(error) = peer
                     .session
                     .as_mut()
@@ -4315,6 +4446,106 @@ mod tests {
         });
         peers[3].phase = Phase::Syncing;
         assert_eq!(command_turn(&peers, &close, 0), None);
+    }
+
+    /// A native pass's group takes the commands queued at the front of
+    /// every active peer, one per peer per round from the turn, each peer's
+    /// in the order it sent them, stops a peer at its first message that
+    /// cannot join (leaving it and all behind it queued), and is bounded.
+    /// A turn whose own command cannot join, or a group of one, takes
+    /// nothing.
+    #[test]
+    fn a_native_group_takes_queued_commands_round_robin_in_each_peers_order() {
+        let command = |id: &str, payload: CommandPayload| {
+            WireMessage::Command(fm_protocol::CommandMessage {
+                protocol: fm_protocol::CURRENT_PROTOCOL_VERSION,
+                id: id.into(),
+                idempotency_key: id.into(),
+                expected_revision: None,
+                deadline_ms: None,
+                payload,
+            })
+        };
+        let cut = |id: &str| command(id, CommandPayload::Cut);
+        let record = |id: &str| {
+            command(
+                id,
+                CommandPayload::RecordStart {
+                    recorder: fm_protocol::WireRecorderSlot::new(1).unwrap(),
+                },
+            )
+        };
+        let fresh = || -> Vec<Peer> {
+            (0..4)
+                .map(|index| {
+                    let (mut peer, _client) = raw_peer();
+                    peer.id = index;
+                    peer.phase = Phase::Active;
+                    peer
+                })
+                .collect()
+        };
+        let ids = |group: &[(usize, fm_protocol::CommandMessage)]| -> Vec<(usize, String)> {
+            group
+                .iter()
+                .map(|(index, command)| (*index, command.id.clone()))
+                .collect()
+        };
+        let close = vec![false; 4];
+
+        let mut peers = fresh();
+        peers[0].inbound.extend([cut("a1"), filler(0), cut("a2")]);
+        peers[1]
+            .inbound
+            .extend([cut("b1"), cut("b2"), record("b3"), cut("b4")]);
+        peers[2].inbound.extend([cut("c1"), cut("c2"), cut("c3")]);
+        peers[3].inbound.extend([cut("d1")]);
+        peers[3].held_result = Some(HeldResult {
+            message: filler(1),
+            slot: None,
+        });
+        let group = native_group(&mut peers, &close, 1);
+        assert_eq!(
+            ids(&group),
+            [
+                (1, "b1".into()),
+                (2, "c1".into()),
+                (0, "a1".into()),
+                (1, "b2".into()),
+                (2, "c2".into()),
+                (2, "c3".into()),
+            ]
+        );
+        assert_eq!(peers[0].inbound, [filler(0), cut("a2")]);
+        assert_eq!(peers[1].inbound, [record("b3"), cut("b4")]);
+        assert!(peers[2].inbound.is_empty());
+        assert_eq!(peers[3].inbound, [cut("d1")]);
+
+        // The turn's own command cannot join, or it would be alone.
+        let mut peers = fresh();
+        peers[0].inbound.extend([record("a1"), cut("a2")]);
+        peers[1].inbound.extend([cut("b1")]);
+        assert_eq!(ids(&native_group(&mut peers, &close, 0)), Vec::new());
+        assert_eq!(ids(&native_group(&mut peers, &close, 1)), Vec::new());
+        assert_eq!(peers[0].inbound.len(), 2);
+        assert_eq!(peers[1].inbound.len(), 1);
+
+        // Bounded: the rest waits, in order, for a later pass.
+        let mut peers = fresh();
+        for (index, peer) in peers.iter_mut().enumerate() {
+            for sent in 0..NATIVE_GROUP_COMMANDS {
+                peer.inbound.push_back(cut(&format!("{index}-{sent}")));
+            }
+        }
+        let group = native_group(&mut peers, &close, 0);
+        assert_eq!(group.len(), NATIVE_GROUP_COMMANDS);
+        let per_peer = NATIVE_GROUP_COMMANDS / 4;
+        for (index, peer) in peers.iter().enumerate() {
+            assert_eq!(
+                peer.inbound.front(),
+                Some(&cut(&format!("{index}-{per_peer}")))
+            );
+        }
     }
 
     /// Every raw session runs as the daemon's principal with a session id

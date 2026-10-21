@@ -13308,6 +13308,137 @@ fn group_commit_eligible(command: &CommandMessage) -> bool {
     )
 }
 
+/// Whether a session command may join a native daemon's group commit: a
+/// [`group_commit_eligible`] one that the native runtime follows from the
+/// project and engine state the group leaves alone. Stinger edits (which
+/// preflight their clips on the native runtime), recorder and stream
+/// commands, and cue, script and shortcut fires (which may start or stop
+/// recorders and streams) hand work to the native runtime per command, and
+/// a recording start's acknowledgement may be held, so they are executed on
+/// their own, exactly as before group commit.
+fn native_group_eligible(command: &CommandMessage) -> bool {
+    group_commit_eligible(command)
+        && !is_stinger_mutation(command)
+        && recording_command_slot(&command.payload).is_none()
+        && !matches!(
+            command.payload,
+            CommandPayload::StreamStart { .. }
+                | CommandPayload::StreamStop { .. }
+                | CommandPayload::StreamRetry { .. }
+                | CommandPayload::StreamStartAll
+                | CommandPayload::StreamStopAll
+                | CommandPayload::CueControl { .. }
+                | CommandPayload::CueAdvance { .. }
+                | CommandPayload::RunScript { .. }
+                | CommandPayload::FireShortcut { .. }
+        )
+}
+
+/// The native runtime's refusal of a group member that leaves `candidate`
+/// from `current`, or `None`. The runtime follows the catalogue only once
+/// the group is durable, so `budget` (taken before the group) still
+/// describes the catalogue of `base`, the project before the group: a member
+/// that changes the catalogue is vetted for every change the group made up
+/// to it, as one-by-one execution vets each against the catalogue the
+/// command before it left. A member that changes no input is never refused.
+#[cfg(feature = "native-media")]
+fn native_group_vet(
+    budget: &native_catalogue::NativeCatalogueBudget,
+    base: &StoredProject,
+    current: &StoredProject,
+    candidate: &StoredProject,
+) -> Option<CommandRefusal> {
+    if native_catalogue::catalogue_keys(current.project())
+        == native_catalogue::catalogue_keys(candidate.project())
+    {
+        return None;
+    }
+    budget.refusal(base.project(), candidate.project())
+}
+
+/// Executes one member of a native group commit on the group's control
+/// copy: as [`execute_native_authority_command`] does, but its first frame
+/// is not realized here. `frame_due` is set when the command would have
+/// realized one, and [`realize_native_group`] realizes it for the whole
+/// group once the group is durable.
+fn execute_native_group_member(
+    control: &mut ControlService<Policy>,
+    store: &dyn DurableStore,
+    durable: &mut StoredProject,
+    member: &GroupMember,
+    now: u64,
+    vet: Option<&ProjectVet<'_>>,
+    frame_due: &mut bool,
+) -> AppResult<CommandDelivery> {
+    let command = &member.command;
+    let current_revision = control.diagnostics().current_revision;
+    if let Some(result) = playlist_clock::playlist_command_refusal(command, current_revision)
+        .or_else(|| cue_clock::cue_command_refusal(command, current_revision))
+    {
+        return Ok(CommandDelivery::answer(result));
+    }
+    let execution = execute_durable_command_with_ticks(
+        control,
+        store,
+        durable,
+        &member.principal,
+        &member.server,
+        command,
+        now,
+        vet,
+        Realize::First,
+        |_, _| {
+            *frame_due = true;
+            Ok(Vec::new())
+        },
+    )?;
+    Ok(durable_delivery(execution))
+}
+
+/// Realizes what a durable native group commit leaves, on the live service
+/// (`control`, which adopted the group) and `durable` (the project after
+/// its last member): the frame its members began on, when any of them
+/// realizes one (waiting for the pacer's deadline, as a single command
+/// does), then the native runtime's sources, titles, documents and stream
+/// targets follow the project, as after a single command.
+#[cfg_attr(not(feature = "native-media"), allow(unused_variables))]
+fn realize_native_group(
+    control: &mut ControlService<Policy>,
+    store: &dyn DurableStore,
+    durable: &StoredProject,
+    native: &mut NativeDaemon,
+    server: &ServerIdentity,
+    frame_due: bool,
+    process_shutdown: Option<&ProcessShutdown>,
+) -> AppResult<()> {
+    native.invalidate_projection();
+    if frame_due {
+        // A media list stepped to the item its standby opened switches on
+        // this very frame (IN-006).
+        #[cfg(feature = "native-media")]
+        native.adopt_prefetched_media(control);
+        if native
+            .wait_and_tick(control, server, process_shutdown)?
+            .is_none()
+        {
+            control.tick_for_shutdown(server)?;
+        }
+    }
+    #[cfg(feature = "native-media")]
+    {
+        native.titles.observe(durable.project());
+        native.titles.observe_templates(&control.title_templates());
+        if let Some(pages) = store.documents() {
+            native.documents.observe(durable.project(), pages);
+        }
+        native.sync_input_catalogue(control, durable.project())?;
+        native.sync_media_list_prefetch(durable.project());
+        native.sync_stream_targets(durable.project(), control.frame_cursor())?;
+        native.sync_input_lifecycle(control)?;
+    }
+    Ok(())
+}
+
 /// One client command of a group commit and who sent it.
 struct GroupMember {
     principal: Principal,
@@ -13325,8 +13456,7 @@ struct GroupOutcome {
 
 /// Executes several clients' commands as one group commit: one journal
 /// append and one disk sync for all of them, where executing them one by
-/// one costs one each. Simulated runtime only (a native command realizes
-/// its own frame, see the session loop).
+/// one costs one each.
 ///
 /// The members are executed in order, exactly as one-by-one execution
 /// would (each sees the state the previous one left), but on a speculative
@@ -13348,17 +13478,29 @@ struct GroupOutcome {
 ///   journal), and a member the session refused keeps its refusal, at the
 ///   live revision.
 ///
+/// On a native daemon (`native`), the members ([`native_group_eligible`]
+/// ones) all begin on the frame the pacer realizes next: none realizes a
+/// frame of its own, so each is prepared on the state the one before it
+/// left, on the same frame cursor, and journaled with that frame, which is
+/// exactly what replay reproduces (it ticks no idle frame between records
+/// that began on one frame). Once the group is durable and adopted, that
+/// frame is realized once for all of them, as a single command's is
+/// ([`realize_native_group`]), before anyone is answered. A group that could
+/// not be made durable realizes nothing; the pacer realizes the frame idle.
+///
 /// A refused command is never journaled: its receipt rides the next
 /// checkpoint, as for one command. `admit` runs before each member on the
 /// copy (catch-up and session admission) and returns the session's refusal
 /// of a member it did not admit. An error executing any member stops the
 /// daemon, as it does for one command; no member of the group was made
 /// durable or answered then.
+#[allow(clippy::too_many_lines)]
 fn execute_command_group(
     control: &SharedControl,
     store: &dyn DurableStore,
     durable: &mut StoredProject,
     members: &[GroupMember],
+    native: Option<&mut NativeDaemon>,
     process_shutdown: Option<&ProcessShutdown>,
     mut admit: impl FnMut(
         usize,
@@ -13371,6 +13513,24 @@ fn execute_command_group(
     let recorder = GroupRecorder::new(store);
     let mut staged = durable.clone();
     let mut outcomes = Vec::with_capacity(members.len());
+    // A native group's members are vetted against the catalogue the native
+    // runtime holds now, before any of them: it follows their changes only
+    // once the group is durable (see `native_group_vet`).
+    #[cfg(feature = "native-media")]
+    let budget = native.as_deref().map(NativeDaemon::catalogue_budget);
+    #[cfg(feature = "native-media")]
+    let base = native.is_some().then(|| durable.clone());
+    #[cfg(feature = "native-media")]
+    let vet = |current: &StoredProject, candidate: &StoredProject| {
+        native_group_vet(budget.as_ref()?, base.as_ref()?, current, candidate)
+    };
+    #[cfg(feature = "native-media")]
+    let vet: Option<&ProjectVet<'_>> = Some(&vet);
+    #[cfg(not(feature = "native-media"))]
+    let vet: Option<&ProjectVet<'_>> = None;
+    // Whether a native member's first frame is due: the group realizes it
+    // once, after its append (see `realize_native_group`).
+    let mut frame_due = false;
     for (index, member) in members.iter().enumerate() {
         let now = now_millis()?;
         if let Some(result) = admit(index, &mut speculation.borrow_mut(), &staged, now)? {
@@ -13380,17 +13540,29 @@ fn execute_command_group(
             });
             continue;
         }
-        let delivery = execute_admitted_command(
-            &speculation,
-            &recorder,
-            &mut staged,
-            &member.principal,
-            &member.server,
-            &member.command,
-            now,
-            None,
-            process_shutdown,
-        )?;
+        let delivery = if native.is_some() {
+            execute_native_group_member(
+                &mut speculation.borrow_mut(),
+                &recorder,
+                &mut staged,
+                member,
+                now,
+                vet,
+                &mut frame_due,
+            )?
+        } else {
+            execute_admitted_command(
+                &speculation,
+                &recorder,
+                &mut staged,
+                &member.principal,
+                &member.server,
+                &member.command,
+                now,
+                None,
+                process_shutdown,
+            )?
+        };
         outcomes.push(GroupOutcome {
             delivery,
             admitted: true,
@@ -13409,6 +13581,17 @@ fn execute_command_group(
                 .into_inner();
             let _ = control.borrow_mut().adopt(speculation);
             *durable = staged;
+            if let (Some(native), Some(member)) = (native, members.first()) {
+                realize_native_group(
+                    &mut control.borrow_mut(),
+                    store,
+                    durable,
+                    native,
+                    &member.server,
+                    frame_due,
+                    process_shutdown,
+                )?;
+            }
         }
         Err(error) => {
             drop(speculation);
@@ -24989,6 +25172,115 @@ mod tests {
         ]
     }
 
+    /// A native group commit's members all begin on the frame the pacer
+    /// realizes next and realize none of their own: each runs on the state
+    /// the one before it left (a cut during the group's fade is refused as
+    /// in flight, as it would be one by one), every record names that one
+    /// frame, the frame is due once for the group, and replaying the
+    /// group's journal reproduces every member's acknowledged position and
+    /// the routing the group left.
+    #[test]
+    fn native_group_members_begin_on_one_frame_and_replay_exactly() {
+        use journal::DurableJournal;
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(directory.path().join("native-group.freemix")).unwrap();
+        let manifest = test_project();
+        store.save(&manifest).unwrap();
+        let control: SharedControl = Rc::new(RefCell::new(test_control(&manifest)));
+        let server = test_server(&control.borrow());
+        // Idle frames the pacer realized before the group.
+        for _ in 0..3 {
+            control.borrow_mut().tick(&server).unwrap();
+        }
+        let frame = control.borrow().frame_cursor();
+        let rename = |name: &str| CommandPayload::RenameInput {
+            input: fm_protocol::WireInputId::from_domain(test_input_id(1)),
+            name: name.into(),
+        };
+        let commands = [
+            test_command("cut-1", "cut-1-key", CommandPayload::Cut),
+            test_command("cut-2", "cut-2-key", CommandPayload::Cut),
+            test_command("rename", "rename-key", rename("Grouped")),
+            test_command("cut-3", "cut-3-key", CommandPayload::Cut),
+            test_command(
+                "fade",
+                "fade-key",
+                CommandPayload::Fade { duration_frames: 4 },
+            ),
+            test_command("in-flight", "in-flight-key", CommandPayload::Cut),
+        ];
+        let members = group_members(&commands, &server);
+        let mut durable = manifest.clone();
+        let journal = DurableJournal::open(&store).unwrap();
+        let mut speculation = control.borrow().speculate();
+        let recorder = GroupRecorder::new(&journal);
+        let mut staged = durable.clone();
+        let mut frame_due = false;
+        let results: Vec<CommandResult> = members
+            .iter()
+            .map(|member| {
+                execute_native_group_member(
+                    &mut speculation,
+                    &recorder,
+                    &mut staged,
+                    member,
+                    0,
+                    None,
+                    &mut frame_due,
+                )
+                .unwrap()
+                .result
+            })
+            .collect();
+        assert!(frame_due);
+        let revisions: Vec<Option<u64>> = results
+            .iter()
+            .map(|result| match result {
+                CommandResult::Accepted { revision, .. } => Some(*revision),
+                CommandResult::Rejected { .. } => None,
+            })
+            .collect();
+        assert_eq!(
+            revisions,
+            [Some(1), Some(2), Some(3), Some(4), Some(5), None],
+            "{results:?}"
+        );
+        let records = recorder.records.take();
+        assert_eq!(
+            records
+                .iter()
+                .filter_map(journal::GroupRecord::appended_revision)
+                .collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5],
+            "the refused cut is only a receipt"
+        );
+        assert!(records.iter().all(|record| record.began_frame == frame));
+        assert_eq!(
+            speculation.frame_cursor(),
+            frame,
+            "no member realized a frame"
+        );
+
+        journal.record_group(&durable, &records, &staged).unwrap();
+        let _ = control.borrow_mut().adopt(speculation);
+        durable = staged;
+        // The group's one frame, then the fade's rest, as the pacer
+        // realizes them.
+        while control.borrow().work_in_flight() || control.borrow().frame_cursor() == frame {
+            control.borrow_mut().tick(&server).unwrap();
+        }
+        drop(journal);
+
+        let scan = store.scan_journal().unwrap();
+        assert_eq!(scan.batches().len(), 5);
+        let replayed =
+            replay_journal(&manifest, &BundleAssets::default(), scan.batches(), None).unwrap();
+        assert_eq!(replayed.position(), durable.position());
+        assert_eq!(replayed.runtime_routing(), durable.runtime_routing());
+        assert_eq!(replayed.project(), durable.project());
+    }
+
     /// The receipts of accepted commands: a refusal's receipt rides the
     /// next checkpoint, so a crash before it may lose it by design.
     fn accepted_receipts(project: &StoredProject) -> Vec<&fm_persistence::IdempotencyReceipt> {
@@ -25056,6 +25348,7 @@ mod tests {
             &mut durable,
             &group_members(&commands, &server),
             None,
+            None,
             |member, speculation, _, _| {
                 admitted_at.push((member, speculation.diagnostics().current_revision));
                 Ok(None)
@@ -25122,6 +25415,7 @@ mod tests {
             &mut durable,
             &members,
             None,
+            None,
             |_, _, _, _| Ok(None),
         )
         .unwrap();
@@ -25157,6 +25451,7 @@ mod tests {
             &store,
             &mut durable,
             &members,
+            None,
             None,
             |_, _, _, _| Ok(None),
         )
@@ -25212,6 +25507,7 @@ mod tests {
             &store,
             &mut durable,
             &members,
+            None,
             None,
             |member, speculation, _, _| {
                 Ok((member == 2).then(|| {
@@ -25306,6 +25602,7 @@ mod tests {
                 &journal,
                 &mut durable,
                 &group_members(&group_commands(), &server),
+                None,
                 None,
                 |_, _, _, _| Ok(None),
             )
