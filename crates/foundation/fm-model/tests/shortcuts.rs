@@ -458,6 +458,74 @@ fn mouse_buttons_and_window_scopes_are_bounded_and_clash_with_keys() {
     );
 }
 
+/// Schema 82 (RC-004): a key may be scoped to one of Studio's tool windows
+/// (the Colour window, the Animation editor, the scene Designer), which
+/// overlaps only itself and the whole console; a tool has no panel scope.
+#[test]
+fn tool_window_scopes_are_bounded_and_clash_only_with_themselves() {
+    let at = |scope: Option<&str>| ShortcutKey {
+        scope: scope.map(str::to_owned),
+        ..ShortcutKey::plain("F9")
+    };
+    assert_eq!(
+        fm_model::SHORTCUT_TOOL_WINDOWS,
+        ["color", "animation", "designer"]
+    );
+    for tool in fm_model::SHORTCUT_TOOL_WINDOWS {
+        let scope = format!("{tool}{}", fm_model::SHORTCUT_WINDOW_SUFFIX);
+        assert!(at(Some(&scope)).is_valid(), "{scope}");
+        assert!(fm_model::shortcut_scope_is_valid(&scope), "{scope}");
+        // A tool window is not a panel.
+        assert!(!at(Some(tool)).is_valid(), "{tool}");
+        assert!(!fm_model::SHORTCUT_SCOPES.contains(&tool), "{tool}");
+    }
+    assert!(!at(Some("colour-window")).is_valid());
+    assert!(!at(Some("color-window-window")).is_valid());
+    assert_eq!(
+        at(Some("designer-window")).to_string(),
+        "F9 in designer-window"
+    );
+
+    assert!(fm_model::shortcut_scopes_overlap(
+        None,
+        Some("color-window")
+    ));
+    assert!(fm_model::shortcut_scopes_overlap(
+        Some("animation-window"),
+        Some("animation-window")
+    ));
+    assert!(!fm_model::shortcut_scopes_overlap(
+        Some("color-window"),
+        Some("animation-window")
+    ));
+    assert!(!fm_model::shortcut_scopes_overlap(
+        Some("designer-window"),
+        Some("mixer")
+    ));
+
+    let with_key = |id: u64, key: ShortcutKey| Shortcut {
+        key: Some(key),
+        ..shortcut(id)
+    };
+    assert_eq!(
+        validate_shortcuts(&[
+            with_key(1, at(Some("color-window"))),
+            with_key(2, at(Some("animation-window"))),
+            with_key(3, at(Some("designer-window"))),
+            with_key(4, at(Some("mixer-window"))),
+            with_key(5, at(Some("cues"))),
+        ]),
+        Ok(())
+    );
+    assert_eq!(
+        validate_shortcuts(&[with_key(1, at(Some("color-window"))), with_key(2, at(None)),]),
+        Err(ShortcutError::DuplicateKey {
+            first: 1,
+            second: 2
+        })
+    );
+}
+
 /// Schema 80 (RC-004): a mouse button may be either stroke of a chord,
 /// clashing as any chord does.
 #[test]

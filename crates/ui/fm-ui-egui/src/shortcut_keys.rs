@@ -254,10 +254,16 @@ mod tests {
         assert!(overrides.set(project(7), 5, Some(mouse.clone())));
         mouse.then = Some(Box::new(key("1", false, false, false)));
         assert!(overrides.set(project(7), 6, Some(mouse)));
+        // A tool window is a scope too (Colour, Animation, Designer).
+        let mut tool = key("F9", false, false, false);
+        tool.scope = Some("animation-window".into());
+        assert!(overrides.set(project(7), 8, Some(tool.clone())));
+        tool.scope = Some("animation".into());
+        assert!(!overrides.set(project(7), 9, Some(tool)));
         let mut unknown = chord;
         unknown.scope = Some("timeline".into());
         assert!(!overrides.set(project(7), 7, Some(unknown)));
-        assert_eq!(overrides.len(), 5);
+        assert_eq!(overrides.len(), 6);
     }
 
     #[test]
@@ -276,6 +282,9 @@ mod tests {
         let mut back_chord = key("MouseBack", false, false, false);
         back_chord.then = Some(Box::new(key("MouseForward", false, false, true)));
         overrides.set(project(42), 7, Some(back_chord));
+        let mut tool = key("G", false, true, false);
+        tool.scope = Some("color-window".into());
+        overrides.set(project(42), 8, Some(tool));
         let lines = overrides.preference_entries();
         assert_eq!(
             lines,
@@ -296,6 +305,10 @@ mod tests {
                 (
                     "shortcut.key.42.7".to_owned(),
                     "MouseBack, Alt+MouseForward".to_owned()
+                ),
+                (
+                    "shortcut.key.42.8".to_owned(),
+                    "Shift+G @color-window".to_owned()
                 ),
                 (format!("shortcut.key.{}.9", u128::MAX), "none".to_owned()),
             ]
@@ -319,6 +332,7 @@ mod tests {
             ("shortcut.key.42.3", "Ctrl+K, 1, 2"),
             ("shortcut.key.42.3", "Ctrl+K, Mouse+"),
             ("shortcut.key.42.3", "Ctrl+K @timeline"),
+            ("shortcut.key.42.3", "Ctrl+K @color"),
             ("shortcut.key.42.3", "Ctrl+K @"),
             ("shortcut.key.42.3", "Ctrl+K @cues @mixer"),
             ("shortcut.key.42.3", " @cues"),

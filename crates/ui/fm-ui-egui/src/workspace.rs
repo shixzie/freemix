@@ -1295,6 +1295,9 @@ impl StudioShell {
             .is_some_and(|pos| ui.ctx().layer_id_at(pos) == Some(layer))
         {
             self.focused_panel = Some(panel);
+            // A popped-out panel embedded in the main window takes the
+            // window focus back below.
+            self.focused_window = None;
         }
         if let PanelId::Preview | PanelId::Program = panel {
             self.draw_monitor_panel(ui, panel, state, frame);
@@ -1630,6 +1633,16 @@ impl StudioShell {
                         .show(ui, |ui| {
                             self.draw_panel_body(ui, panel, state, frame, intents);
                         });
+                    if class == ViewportClass::EmbeddedWindow {
+                        // Embedded, the window shares the main window's
+                        // input: a press in it gives it the keys scoped
+                        // to its panel and its window (RC-004).
+                        self.focus_window_on_press(
+                            ui,
+                            None,
+                            crate::user_shortcuts::KeyWindow::Panel(panel),
+                        );
+                    }
                     self.native_window_keys(ui, panel, class, state, frame.manual, intents);
                     (window_outcome(ui, class, header.dock_back), header)
                 });

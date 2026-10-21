@@ -1648,7 +1648,10 @@ fn set_key_binds_a_mouse_button_as_either_stroke() {
 #[test]
 fn window_scopes_name_every_panel_window_and_clash_where_they_overlap() {
     let scopes: Vec<_> = AnswerScope::all().collect();
-    assert_eq!(scopes.len(), 2 * crate::dock::PanelId::ALL.len());
+    assert_eq!(
+        scopes.len(),
+        2 * crate::dock::PanelId::ALL.len() + crate::dock::ToolWindow::ALL.len()
+    );
     for scope in scopes {
         let text = scope.key();
         assert!(fm_protocol::shortcut_scope_is_valid(&text), "{text}");
@@ -1947,4 +1950,304 @@ fn add_second_key_here_makes_the_console_key_a_chord() {
                 "Ctrl+K, 4 @mixer-window".to_owned()
             ))
     );
+}
+
+/// The tool windows are scopes the protocol accepts, by the names Studio
+/// keeps them under, and the picker names each one in English and Spanish.
+#[test]
+fn tool_window_scopes_name_every_tool_window() {
+    assert_eq!(
+        crate::dock::ToolWindow::ALL.map(crate::dock::ToolWindow::key),
+        fm_protocol::SHORTCUT_TOOL_WINDOWS
+    );
+    for tool in crate::dock::ToolWindow::ALL {
+        let scope = AnswerScope::Tool(tool);
+        let text = scope.key();
+        assert!(fm_protocol::shortcut_scope_is_valid(&text), "{text}");
+        assert_eq!(AnswerScope::of(&text), Some(scope));
+        assert!(AnswerScope::all().any(|offered| offered == scope));
+        assert_eq!(
+            AnswerScope::hover(Some(scope), Msg::UserShortcutScopeHover),
+            Msg::UserShortcutScopeToolHover
+        );
+        // A tool's name alone is no scope.
+        assert_eq!(AnswerScope::of(tool.key()), None);
+    }
+    assert_eq!(
+        AnswerScope::Tool(crate::dock::ToolWindow::Color).label(Locale::ENGLISH),
+        "Colour grade window"
+    );
+    assert_eq!(
+        AnswerScope::Tool(crate::dock::ToolWindow::Designer)
+            .label(Locale::new(fm_ui_model::i18n::Language::Spanish)),
+        "Ventana de Diseñador de capas"
+    );
+    let words = key_words(
+        Locale::ENGLISH,
+        &windowed(key("F9", false, false, false), "animation"),
+        false,
+    );
+    assert_eq!(words, "F9 in the Animation window");
+}
+
+/// A key scoped to a tool window answers only while that window has the
+/// focus: not in a panel, a panel's window, or another tool's window.
+#[test]
+fn a_tool_window_scoped_key_answers_only_in_its_tool_window() {
+    let shortcuts = vec![
+        bound(1, windowed(key("F11", false, false, false), "color")),
+        bound(2, windowed(key("F11", false, false, false), "animation")),
+        bound(3, scoped(key("F11", false, false, false), "mixer")),
+        bound(
+            4,
+            windowed(key("MouseBack", false, false, false), "designer"),
+        ),
+        bound(5, key("F9", false, false, false)),
+    ];
+    let overrides = ShortcutKeyOverrides::default();
+    let keys = ConsoleKeys {
+        shortcuts: &shortcuts,
+        overrides: &overrides,
+        project: None,
+    };
+    let presses = || {
+        vec![
+            key_event(Key::F11, Modifiers::NONE, false),
+            mouse_event(egui::PointerButton::Extra1, Modifiers::NONE),
+            key_event(Key::F9, Modifiers::NONE, false),
+        ]
+    };
+    let mut chord = None;
+    for (focus, fired) in [
+        (
+            KeyFocus {
+                panel: None,
+                window: Some("color"),
+            },
+            vec![1, 5],
+        ),
+        (
+            KeyFocus {
+                panel: None,
+                window: Some("animation"),
+            },
+            vec![2, 5],
+        ),
+        (
+            KeyFocus {
+                panel: None,
+                window: Some("designer"),
+            },
+            vec![4, 5],
+        ),
+        (
+            KeyFocus {
+                panel: Some("mixer"),
+                window: Some("mixer"),
+            },
+            vec![3, 5],
+        ),
+        (KeyFocus::default(), vec![5]),
+    ] {
+        let mut events = presses();
+        assert_eq!(
+            take_presses(&mut events, keys, focus, &mut chord, 0.0),
+            fired,
+            "{focus:?}"
+        );
+    }
+}
+
+/// Runs one main-window frame of the project's shortcut keys, then tool
+/// `tool`'s own read of them (`native` in its own window).
+fn run_tool_frame(
+    shell: &mut StudioShell,
+    state: &StudioUiState,
+    events: Vec<Event>,
+    tool: crate::dock::ToolWindow,
+    native: bool,
+) -> (Vec<StudioIntent>, Vec<StudioIntent>) {
+    let context = egui::Context::default();
+    context.begin_pass(egui::RawInput {
+        events,
+        ..Default::default()
+    });
+    let mut ui = egui::Ui::new(
+        context.clone(),
+        egui::Id::new("studio-tool-keys"),
+        egui::UiBuilder::new()
+            .layer_id(egui::LayerId::background())
+            .max_rect(context.viewport_rect()),
+    );
+    let mut main = Vec::new();
+    if !native {
+        shell.fire_user_shortcut_keys(&mut ui, state, None, &mut main);
+    }
+    let mut in_tool = Vec::new();
+    shell.tool_window_keys(&mut ui, state, tool, (native, None), &mut in_tool);
+    drop(ui);
+    let _ = context.end_pass();
+    (main, in_tool)
+}
+
+/// Studio's dispatcher gives the main window's presses to the tool window
+/// or embedded pop-out the operator last clicked, while it is still there:
+/// its window-scoped keys answer and the focused panel's do not.
+#[test]
+fn the_main_window_answers_the_tool_window_or_embedded_pop_out_with_the_focus() {
+    use crate::dock::{PanelId, ToolWindow};
+    let state = crate::hover_audit::shortcuts_fixture_with(vec![
+        bound(4, windowed(key("F11", false, false, false), "color")),
+        bound(5, windowed(key("F11", false, false, false), "animation")),
+        bound(6, scoped(key("F11", false, false, false), "mixer")),
+        bound(7, windowed(key("F12", false, false, false), "mixer")),
+    ]);
+    let presses = || {
+        vec![
+            key_event(Key::F11, Modifiers::NONE, false),
+            key_event(Key::F12, Modifiers::NONE, false),
+        ]
+    };
+    let mut shell = StudioShell {
+        focused_panel: Some(PanelId::Mixer),
+        ..StudioShell::default()
+    };
+    assert_eq!(
+        run_frame(&mut shell, &state, presses(), false),
+        vec![fire(6)]
+    );
+
+    // The Colour window over the console has the focus.
+    shell.color.open = true;
+    shell.focused_window = Some(KeyWindow::Tool(ToolWindow::Color));
+    assert_eq!(
+        run_frame(&mut shell, &state, presses(), false),
+        vec![fire(4)]
+    );
+    // The Animation editor, popped out but embedded in the main window.
+    shell.animation.open = true;
+    shell.layout.set_tool_popped(ToolWindow::Animation, true);
+    shell.focused_window = Some(KeyWindow::Tool(ToolWindow::Animation));
+    assert_eq!(
+        run_frame(&mut shell, &state, presses(), false),
+        vec![fire(5)]
+    );
+    // A closed tool window has no focus: the panel's keys answer again.
+    shell.color.open = false;
+    shell.focused_window = Some(KeyWindow::Tool(ToolWindow::Color));
+    assert_eq!(
+        run_frame(&mut shell, &state, presses(), false),
+        vec![fire(6)]
+    );
+
+    // The Mixer popped out but embedded: its panel's and window's keys.
+    assert!(shell.layout.dock.pop_out(PanelId::Mixer, None));
+    shell.focused_window = Some(KeyWindow::Panel(PanelId::Mixer));
+    assert_eq!(
+        run_frame(&mut shell, &state, presses(), false),
+        vec![fire(6), fire(7)]
+    );
+    // Docked back, it is a panel again.
+    shell.layout.dock.dock_back(PanelId::Mixer);
+    assert_eq!(
+        run_frame(&mut shell, &state, presses(), false),
+        vec![fire(6)]
+    );
+}
+
+/// A tool window that owns the keyboard reads the project's keys itself,
+/// after its own keys took theirs; in its own native window it always
+/// does. Either way it answers its own window's keys and unscoped ones.
+#[test]
+fn a_tool_window_reads_its_keys_when_it_owns_the_keyboard_or_its_window() {
+    use crate::dock::ToolWindow;
+    let state = crate::hover_audit::shortcuts_fixture_with(vec![
+        bound(4, windowed(key("F11", false, false, false), "color")),
+        bound(5, windowed(key("F11", false, false, false), "designer")),
+        bound(6, scoped(key("F11", false, false, false), "mixer")),
+    ]);
+    let presses = || {
+        vec![
+            key_event(Key::F11, Modifiers::NONE, false),
+            key_event(Key::F9, Modifiers::NONE, false),
+        ]
+    };
+    let mut shell = StudioShell::default();
+    shell.color.open = true;
+    shell.focused_window = Some(KeyWindow::Tool(ToolWindow::Color));
+    // Not owning the keyboard, the main window read them.
+    assert_eq!(
+        run_tool_frame(&mut shell, &state, presses(), ToolWindow::Color, false),
+        (vec![fire(4), fire(1)], Vec::new())
+    );
+    // Owning it, the window reads them after its own keys.
+    shell.color.panel.keyboard_active = true;
+    assert_eq!(
+        run_tool_frame(&mut shell, &state, presses(), ToolWindow::Color, false),
+        (Vec::new(), vec![fire(4), fire(1)])
+    );
+    // Another tool sharing the main window without the focus reads none.
+    shell.designer.open = true;
+    assert_eq!(
+        run_tool_frame(&mut shell, &state, presses(), ToolWindow::Designer, false),
+        (Vec::new(), Vec::new())
+    );
+    // In its own native window the designer reads its own keys.
+    assert_eq!(
+        run_tool_frame(&mut shell, &state, presses(), ToolWindow::Designer, true),
+        (Vec::new(), vec![fire(5), fire(1)])
+    );
+}
+
+/// A press inside a window sharing the main window's input gives it the
+/// focus; a press elsewhere, or outside its docked area, does not.
+#[test]
+fn a_press_in_a_window_gives_it_the_focus() {
+    use crate::dock::ToolWindow;
+    let context = egui::Context::default();
+    let mut shell = StudioShell::default();
+    let area_id = egui::Id::new("studio-test-tool-window");
+    let frame = |shell: &mut StudioShell, events: Vec<Event>, docked: Option<egui::Rect>| {
+        context.begin_pass(egui::RawInput {
+            events,
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(800.0, 600.0),
+            )),
+            ..Default::default()
+        });
+        egui::Area::new(area_id)
+            .fixed_pos(egui::pos2(100.0, 100.0))
+            .show(&context, |ui| {
+                ui.allocate_space(egui::vec2(200.0, 200.0));
+                shell.focus_window_on_press(ui, docked, KeyWindow::Tool(ToolWindow::Designer));
+            });
+        let _ = context.end_pass();
+    };
+    let press_at = |x: f32, y: f32| {
+        let pos = egui::pos2(x, y);
+        vec![
+            Event::PointerMoved(pos),
+            Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::NONE,
+            },
+        ]
+    };
+    // The window is laid out once before it can be hit.
+    frame(&mut shell, Vec::new(), None);
+    frame(&mut shell, press_at(20.0, 20.0), None);
+    assert_eq!(shell.focused_window, None);
+    frame(&mut shell, press_at(150.0, 150.0), None);
+    assert_eq!(
+        shell.focused_window,
+        Some(KeyWindow::Tool(ToolWindow::Designer))
+    );
+    // Outside the docked area the press is the console's.
+    shell.focused_window = None;
+    let docked = egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(20.0, 20.0));
+    frame(&mut shell, press_at(150.0, 150.0), Some(docked));
+    assert_eq!(shell.focused_window, None);
 }

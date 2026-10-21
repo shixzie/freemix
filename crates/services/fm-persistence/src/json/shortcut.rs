@@ -1,6 +1,6 @@
 //! The project's user shortcuts in `project.json` (RC-004, schema 63; a
 //! key's `then` and `scope` since schema 70; mouse buttons and pop-out
-//! window scopes since schema 75).
+//! window scopes since schema 75; tool window scopes since schema 82).
 //!
 //! ```text
 //! "shortcuts": [
@@ -20,7 +20,9 @@
 //!
 //! A chord's `then` is its second stroke, `{"key", "command", "shift",
 //! "alt"}`; `scope` is `null`, the console panel the key answers in, or that
-//! panel's pop-out window (`"mixer-window"`). A `key` may name a mouse
+//! panel's pop-out window (`"mixer-window"`), or since schema 82 a tool
+//! window (`"color-window"`, `"animation-window"`, `"designer-window"`).
+//! A `key` may name a mouse
 //! button (`MouseMiddle`, `MouseBack`, `MouseForward`), and since schema
 //! 80 either stroke of a chord may.
 //!

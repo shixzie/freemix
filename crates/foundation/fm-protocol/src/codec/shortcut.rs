@@ -5,7 +5,9 @@
 //! * `key` is `-` for none or `<stroke>[+<stroke>][@<scope>]` (the second
 //!   stroke and the scope since 2.83), each stroke
 //!   `<key>.<command 0|1>.<shift 0|1>.<alt 0|1>` with `key` 1 to 16 ASCII
-//!   letters and digits, and `scope` one of [`crate::SHORTCUT_SCOPES`].
+//!   letters and digits, and `scope` one of [`crate::SHORTCUT_SCOPES`],
+//!   a panel's pop-out window (2.93), or a tool window (2.106, see
+//!   [`crate::shortcut_scope_is_valid`]).
 //! * `osc` is `-` for none or the OSC name (1 to 32 lowercase ASCII
 //!   letters, digits, `-`, and `_`).
 //! * `action` is `actions:<tokens>` (1 to 16 `/`-separated cue action

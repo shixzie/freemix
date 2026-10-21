@@ -1715,6 +1715,10 @@ pub struct StudioShell {
     /// The panel the operator last clicked, which scoped project shortcut
     /// keys answer in (RC-004).
     focused_panel: Option<dock::PanelId>,
+    /// The window inside the main window the operator last clicked (an
+    /// embedded pop-out or a tool window), whose scoped project shortcut
+    /// keys answer there (RC-004); `None` after a click in a docked panel.
+    focused_window: Option<user_shortcuts::KeyWindow>,
     /// A project shortcut chord's first key, waiting for its second.
     chord: Option<user_shortcuts::PendingChord>,
     /// The Add / Edit destination dialog and Remove confirmation (OR-006).
@@ -2111,7 +2115,7 @@ impl StudioShell {
         }
         // Docked, the Animation window spans the whole console width below
         // the monitors; it also follows the authority here every frame.
-        self.draw_animation_dock(ui, state);
+        self.draw_animation_dock(ui, state, &mut intents);
         self.announce_rejected_layout();
         let frame = workspace::panel_frame(self, state, manual_transition_controls, dt_ms);
         let central = CentralPanel::default()
@@ -2304,6 +2308,7 @@ impl Default for StudioShell {
             user_shortcuts: user_shortcuts::ShortcutsWindow::default(),
             shortcut_keys: ShortcutKeyOverrides::default(),
             focused_panel: None,
+            focused_window: None,
             chord: None,
             stream_targets: stream_targets::StreamTargetsUi::default(),
             dock_ui: workspace::DockUi::default(),

@@ -637,6 +637,62 @@ fn mouse_buttons_and_window_scopes_round_trip_exactly_and_strictly() {
     assert!(!at("MouseBack", None).clashes(&at("MouseForward", None)));
 }
 
+/// Protocol 2.106 (RC-004): a key may be scoped to one of Studio's tool
+/// windows (`color-window`, `animation-window`, `designer-window`), which
+/// round-trips exactly; a tool has no panel scope of its own, and a tool
+/// window overlaps only itself and the whole console.
+#[test]
+fn tool_window_scopes_round_trip_exactly_and_strictly() {
+    assert_eq!(
+        fm_protocol::SHORTCUT_TOOL_WINDOWS,
+        ["color", "animation", "designer"]
+    );
+    let mut tool = spec(WireShortcutAction::Script { script: 2 });
+    tool.key = Some(WireShortcutKey {
+        scope: Some("color-window".to_owned()),
+        then: Some(Box::new(key("1", false, false, false))),
+        ..key("K", true, false, false)
+    });
+    let message = command(CommandPayload::SetShortcut {
+        shortcut: 4,
+        spec: Box::new(tool),
+        position: None,
+    });
+    let line = round_trip(&message);
+    assert!(
+        line.contains("\tkey=K.1.0.0%2B1.0.0.0%40color-window\t"),
+        "{line}"
+    );
+    for (to, valid) in [
+        ("key=K.1.0.0%40animation-window", true),
+        ("key=MouseBack.0.0.0%40designer-window", true),
+        ("key=K.1.0.0%40color", false),
+        ("key=K.1.0.0%40designer", false),
+        ("key=K.1.0.0%40colour-window", false),
+        ("key=K.1.0.0%40color-window-window", false),
+    ] {
+        let changed = line.replacen("key=K.1.0.0%2B1.0.0.0%40color-window", to, 1);
+        assert_eq!(decode_line(&changed).is_ok(), valid, "{to}");
+    }
+    for scope in ["color-window", "animation-window", "designer-window"] {
+        assert!(fm_protocol::shortcut_scope_is_valid(scope), "{scope}");
+        assert_eq!(
+            fm_protocol::shortcut_scope_panel(scope),
+            scope.trim_end_matches("-window")
+        );
+    }
+
+    let at = |scope: Option<&str>| WireShortcutKey {
+        scope: scope.map(str::to_owned),
+        ..key("F9", false, false, false)
+    };
+    assert!(at(Some("color-window")).clashes(&at(Some("color-window"))));
+    assert!(at(None).clashes(&at(Some("animation-window"))));
+    assert!(!at(Some("color-window")).clashes(&at(Some("animation-window"))));
+    assert!(!at(Some("designer-window")).clashes(&at(Some("mixer"))));
+    assert!(!at(Some("designer-window")).clashes(&at(Some("mixer-window"))));
+}
+
 /// Protocol 2.88 (RC-004): an action names an input id or the role
 /// `preview`, `program`, or `selected`; `shortcut_fire`, `cue_go`, and
 /// `cue_arm` carry the fire's optional bindings `selected`,

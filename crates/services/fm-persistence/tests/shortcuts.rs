@@ -325,6 +325,8 @@ fn mouse_buttons_and_window_scopes_round_trip_exactly_and_strictly() {
             "\"scope\": \"timeline-window\"",
         ),
         ("\"scope\": \"mixer-window\"", "\"scope\": \"-window\""),
+        // A tool window's name alone is no panel (schema 82).
+        ("\"scope\": \"mixer-window\"", "\"scope\": \"designer\""),
         // The same button in the whole console clashes with the window's.
         (
             "\"key\": \"MouseMiddle\", \"command\": false",
@@ -340,6 +342,43 @@ fn mouse_buttons_and_window_scopes_round_trip_exactly_and_strictly() {
             store.load()
         );
     }
+}
+
+/// Schema 82: a key may be scoped to one of Studio's tool windows (the
+/// Colour window, the Animation editor, the scene Designer); each
+/// round-trips exactly, and a tool window clashes only with itself and the
+/// whole console.
+#[test]
+fn tool_window_scopes_round_trip_exactly() {
+    let directory = TestDirectory::new("tool-windows");
+    let store = ProjectStore::new(directory.path("show.freemix")).unwrap();
+    let mut expected = project();
+    expected.set_shortcuts(
+        (1..=3)
+            .zip(["color-window", "animation-window", "designer-window"])
+            .map(|(id, scope)| Shortcut {
+                id,
+                name: format!("Tool {id}"),
+                enabled: true,
+                key: Some(ShortcutKey {
+                    scope: Some(scope.into()),
+                    ..ShortcutKey::plain("F9")
+                }),
+                osc: None,
+                action: ShortcutAction::Script { script: id },
+            })
+            .collect(),
+    );
+    store.save(&stored(expected.clone()).unwrap()).unwrap();
+    assert_eq!(store.load().unwrap().project(), &expected);
+
+    let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
+    assert!(text.contains("\"scope\": \"animation-window\"}"), "{text}");
+    // The same key in the whole console clashes with a tool window's.
+    let clash = text.replacen(", \"scope\": \"designer-window\"", ", \"scope\": null", 1);
+    assert_ne!(clash, text);
+    fs::write(directory.path("show.freemix/project.json"), clash).unwrap();
+    assert!(matches!(store.load(), Err(StoreError::Validation(_))));
 }
 
 /// RC-004 dynamic values (schema 80): a gain from the firing control, a

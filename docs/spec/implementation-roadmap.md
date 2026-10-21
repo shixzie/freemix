@@ -61,9 +61,12 @@ highest-value remaining items, ranked:
    the firing control's OSC value; Protocol 2.99, schema 80), and chorded
    and panel- or window-scoped console key overrides in Studio's local
    preferences, and mouse buttons as either stroke of a chord (Protocol
-   2.99, schema 80); still missing are window scopes for Studio's tool
-   windows and an embedded pop-out (see the RC-004 boundary below). This
-   is a P0 row.
+   2.99, schema 80), and keys scoped to the Colour, Animation, and
+   Designer tool windows, with a pop-out the platform embeds in the main
+   window answering its panel's and window's keys (Protocol 2.106, schema
+   82). This closes the gaps this item named; the row stays planned until
+   its acceptance evidence covers its Windows and macOS profiles (see the
+   RC-004 boundary below). This is a P0 row.
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
    a real input end to end (engine, protocol, persistence, both daemons,
    Studio), and the native daemon prefetches each list's next item so Auto
@@ -1121,9 +1124,23 @@ A mouse button may now be either stroke of a chord (Protocol 2.99, schema
 80; `.fmshortcuts` and console keys too), clashing as any chord does;
 Studio captures a button as either stroke, and a named button press starts
 or ends a waiting chord as a key press does.
-Still missing, so RC-004 remains planned: window scopes for the Colour,
-Animation, and Designer tool windows (which read no console keys) and for
-a pop-out the platform embeds in the main window.
+Protocol 2.106 / schema 82 add tool window scopes: a key may be scoped to
+the Colour window (`color-window`), the keyframe Animation editor
+(`animation-window`), or the scene Designer (`designer-window`), each
+overlapping only itself and the whole console; model validation, the
+wire, project durability, `.fmshortcuts` files, console key preference
+lines, and the CLI listing carry them. Studio's "Answers in" and "Answers
+here in" pickers list them with English and Spanish hover help. A tool
+window over the console (floating, docked, or embedded) takes the focus on
+a press inside it, and the main window then fires its window's keys and
+unscoped ones but no panel's; while the tool's own keys hold the keyboard
+it reads the project's keys itself after its own, and in its own native
+window it reads them there. A popped-out panel the platform embeds in the
+main window takes the focus the same way and answers its panel's and its
+window's keys. With this, every scope, chord, target, template, conflict,
+and import/export behavior the RC-004 row names is implemented and tested
+on Linux; RC-004 stays planned until its acceptance evidence covers the
+Windows and macOS profiles it lists.
 
 Current implementation boundary for item 8: `fm-scopes` now provides a bounded
 reference color-monitoring session on top of its scope math: an exact

@@ -4103,6 +4103,39 @@ schema change.
 - Studio and other raw sessions see every value and source, unchanged.
 - 2.103 is refused.
 
+Protocol 2.106 adds tool window scopes to user shortcut keys (RC-004,
+schema 82).
+
+- A `scope` may also name one of Studio's tool windows, the tool's name
+  followed by `-window`: `color-window` (the Colour window),
+  `animation-window` (the keyframe Animation editor), or `designer-window`
+  (the scene Designer), as in `K.1.0.0@color-window`. The key answers only
+  while that window has the focus. A tool has no panel scope: `@color`
+  and any other name are refused.
+- A tool window scope overlaps only itself and an unscoped key: `F9` and
+  `F9@color-window` clash; `F9@color-window`, `F9@animation-window`,
+  `F9@mixer`, and `F9@mixer-window` do not.
+- Durability (schema 82): the shortcut `"key"` object is unchanged; its
+  `"scope"` may name a tool window. `.fmshortcuts` files (schema 82) and
+  Studio's console key preference lines (`Shift+G @color-window`) carry
+  the same, and the CLI's `shortcuts` listing prints it (`F9@color-window`).
+- Studio's "Answers in" and "Answers here in" pickers list the three tool
+  windows after the panels' windows, with English and Spanish hover help.
+  A tool window over the console (floating, the Animation editor docked
+  along its bottom, or popped out where the platform keeps pop-outs inside
+  the main window) takes the focus on a press inside it, until a press in
+  a docked panel or another such window; while it has the focus the main
+  window's presses fire its window's keys and unscoped ones, never a
+  panel's. While the tool's own keys hold the keyboard (the Colour wheels,
+  the Animation timeline, the Designer canvas) it reads the project's keys
+  itself after its own keys take theirs. A tool in its own native window
+  fires its window's keys and unscoped ones from that window.
+- A popped-out panel the platform embeds in the main window (no native
+  windows) likewise takes the focus on a press inside it, and the main
+  window's presses then fire its panel's and its window's keys, as its
+  native window would.
+- 2.105 is refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision

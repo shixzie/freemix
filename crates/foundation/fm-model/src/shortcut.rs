@@ -29,7 +29,9 @@
 //! console panel ([`SHORTCUT_SCOPES`]), answering only while that panel has
 //! the console's focus, or to a panel's pop-out window (`<panel>-window`,
 //! [`shortcut_scope_is_valid`]), answering only while that window has the
-//! system's focus. A key name may instead be one of
+//! system's focus, or to one of Studio's tool windows (`<tool>-window`,
+//! [`SHORTCUT_TOOL_WINDOWS`], schema 82), answering only while that window
+//! has the focus. A key name may instead be one of
 //! [`SHORTCUT_MOUSE_BUTTONS`], a press of that mouse button with the same
 //! modifiers, as either stroke of a chord (schema 80). Two enabled-or-not
 //! shortcuts may not share an OSC name or hold clashing keys
@@ -83,16 +85,30 @@ pub const SHORTCUT_MOUSE_BUTTONS: [&str; 3] = ["MouseMiddle", "MouseBack", "Mous
 /// panel's pop-out window.
 pub const SHORTCUT_WINDOW_SUFFIX: &str = "-window";
 
-/// Whether `scope` names a console panel ([`SHORTCUT_SCOPES`]) or a panel's
-/// pop-out window (the panel's name and [`SHORTCUT_WINDOW_SUFFIX`]).
+/// The tool windows a shortcut key may be scoped to, each followed by
+/// [`SHORTCUT_WINDOW_SUFFIX`]: `color-window` (the Colour window),
+/// `animation-window` (the keyframe Animation editor), and
+/// `designer-window` (the scene Designer). A tool window has no panel
+/// scope of its own.
+pub const SHORTCUT_TOOL_WINDOWS: [&str; 3] = ["color", "animation", "designer"];
+
+/// Whether `scope` names a console panel ([`SHORTCUT_SCOPES`]), a panel's
+/// pop-out window (the panel's name and [`SHORTCUT_WINDOW_SUFFIX`]), or a
+/// tool window ([`SHORTCUT_TOOL_WINDOWS`] and the suffix).
 #[must_use]
 pub fn shortcut_scope_is_valid(scope: &str) -> bool {
-    SHORTCUT_SCOPES.contains(&shortcut_scope_panel(scope))
+    match scope.strip_suffix(SHORTCUT_WINDOW_SUFFIX) {
+        Some(window) => {
+            SHORTCUT_SCOPES.contains(&window) || SHORTCUT_TOOL_WINDOWS.contains(&window)
+        }
+        None => SHORTCUT_SCOPES.contains(&scope),
+    }
 }
 
 /// Whether keys in scopes `first` and `second` can answer one press:
 /// either is unscoped, both are the same, or one is a panel and the other
-/// that panel's pop-out window (where the panel has the focus).
+/// that panel's pop-out window (where the panel has the focus). A tool
+/// window overlaps only itself.
 #[must_use]
 pub fn shortcut_scopes_overlap(first: Option<&str>, second: Option<&str>) -> bool {
     let (Some(first), Some(second)) = (first, second) else {
@@ -101,8 +117,8 @@ pub fn shortcut_scopes_overlap(first: Option<&str>, second: Option<&str>) -> boo
     shortcut_scope_panel(first) == shortcut_scope_panel(second)
 }
 
-/// The panel a scope names: the panel itself, or the panel whose pop-out
-/// window it is.
+/// The panel or tool a scope names: the panel itself, or the panel or tool
+/// whose window it is.
 #[must_use]
 pub fn shortcut_scope_panel(scope: &str) -> &str {
     scope.strip_suffix(SHORTCUT_WINDOW_SUFFIX).unwrap_or(scope)
@@ -121,8 +137,8 @@ pub struct ShortcutKey {
     pub alt: bool,
     /// A chord's second stroke.
     pub then: Option<Box<ShortcutKey>>,
-    /// The panel (one of [`SHORTCUT_SCOPES`]) or pop-out window
-    /// ([`shortcut_scope_is_valid`]) the key answers in; `None` answers
+    /// The panel (one of [`SHORTCUT_SCOPES`]), pop-out window, or tool
+    /// window ([`shortcut_scope_is_valid`]) the key answers in; `None` answers
     /// anywhere on the console.
     pub scope: Option<String>,
 }

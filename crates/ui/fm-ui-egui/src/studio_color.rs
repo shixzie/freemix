@@ -946,7 +946,7 @@ impl StudioShell {
             if let Some(geometry) = self.layout.tool_popped(ToolWindow::Color) {
                 let (id, builder) = self.tool_viewport(ToolWindow::Color, geometry);
                 let (outcome, close) = context.show_viewport_immediate(id, builder, |ui, class| {
-                    workspace::tool_popout_frame(
+                    let shown = workspace::tool_popout_frame(
                         ui,
                         l,
                         ToolWindow::Color,
@@ -960,7 +960,10 @@ impl StudioShell {
                                     self.draw_color_contents(ui, state, intents);
                                 });
                         },
-                    )
+                    );
+                    let native = class != egui::ViewportClass::EmbeddedWindow;
+                    self.tool_window_keys(ui, state, ToolWindow::Color, (native, None), intents);
+                    shown
                 });
                 open &= !close;
                 self.finish_tool_popout(ToolWindow::Color, outcome);
@@ -981,7 +984,7 @@ impl StudioShell {
                     .default_pos(egui::pos2(area.left() + 4.0, area.bottom() - 4.0))
                     .frame(workspace::tool_window_frame())
                     .show(context, |ui| {
-                        workspace::floating_tool_frame(
+                        let header = workspace::floating_tool_frame(
                             ui,
                             l,
                             ToolWindow::Color,
@@ -995,7 +998,9 @@ impl StudioShell {
                                     });
                             },
                         )
-                        .0
+                        .0;
+                        self.tool_window_keys(ui, state, ToolWindow::Color, (false, None), intents);
+                        header
                     });
                 if let Some(header) = shown.and_then(|shown| shown.inner) {
                     open &= !header.close;

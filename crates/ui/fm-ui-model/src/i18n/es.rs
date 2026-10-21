@@ -7771,7 +7771,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::UserShortcutLocalScopeHover,
         t(
-            "Dónde dispara el atajo la tecla de esta consola: en cualquier parte de esta consola, solo mientras un panel tiene el foco, o solo mientras la ventana propia de un panel desacoplado tiene el foco. Las demás consolas conservan la tecla y el ámbito del proyecto",
+            "Dónde dispara el atajo la tecla de esta consola: en cualquier parte de esta consola, solo mientras un panel tiene el foco, solo mientras la ventana propia de un panel desacoplado tiene el foco, o solo mientras la ventana de Corrección de color, Animación o Diseñador de capas tiene el foco. Las demás consolas conservan la tecla y el ámbito del proyecto",
         ),
     ),
     (
@@ -9303,7 +9303,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::UserShortcutScopeHover,
         t(
-            "Dónde dispara la tecla el atajo: en toda la consola, solo mientras un panel tiene el foco (el último panel en que hizo clic) o solo mientras la ventana propia de un panel desacoplado tiene el foco. Paneles o ventanas distintos pueden usar la misma tecla",
+            "Dónde dispara la tecla el atajo: en toda la consola, solo mientras un panel tiene el foco (el último panel en que hizo clic), solo mientras la ventana propia de un panel desacoplado tiene el foco, o solo mientras la ventana de Corrección de color, Animación o Diseñador de capas tiene el foco. Paneles o ventanas distintos pueden usar la misma tecla",
         ),
     ),
     (Msg::UserShortcutScopeAnywhere, t("En toda la consola")),
@@ -9327,12 +9327,19 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::UserShortcutScopeWindowHover,
         t(
-            "Disparar solo mientras este panel está desacoplado en su propia ventana y esa ventana tiene el foco; la ventana principal de la consola nunca responde a la tecla",
+            "Disparar solo mientras este panel está desacoplado en su propia ventana y esa ventana tiene el foco (donde el sistema mantiene las ventanas desacopladas dentro de la principal, mientras fue la última en que hizo clic); el resto de la consola nunca responde a la tecla",
         ),
     ),
     (
         Msg::UserShortcutInWindow,
         t("{keys} en la ventana de {panel}"),
+    ),
+    (Msg::UserShortcutScopeTool, t("Ventana de {tool}")),
+    (
+        Msg::UserShortcutScopeToolHover,
+        t(
+            "Disparar solo mientras esta ventana de herramienta tiene el foco (la última ventana en que hizo clic), sobre la consola, acoplada o desacoplada; ningún panel ni otra ventana responde a la tecla, así que puede reutilizar una tecla de la consola o de otra ventana",
+        ),
     ),
     (Msg::CueActSlideNext, t("Diapositiva siguiente")),
     (Msg::CueActSlidePrevious, t("Diapositiva anterior")),
