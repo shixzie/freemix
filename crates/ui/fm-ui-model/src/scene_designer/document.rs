@@ -314,6 +314,9 @@ pub struct SceneLayoutDocument {
     /// Whether live edits were sent whose echo has not arrived yet (the
     /// server's layout has not matched [`Self::sent`] since).
     in_flight: bool,
+    /// Whether the latest garbage matte point edit was refused because it
+    /// would put every point on one line (a matte without area).
+    matte_refused: bool,
 }
 
 /// A layer property one live edit sets.
@@ -587,6 +590,7 @@ impl SceneLayoutDocument {
             live_keys: BTreeSet::new(),
             live_gesture: 0,
             in_flight: false,
+            matte_refused: false,
         }
     }
 
@@ -1023,6 +1027,7 @@ impl SceneLayoutDocument {
         let canvas = self.canvas;
         let selection = self.selection.clone();
         let mut changed = false;
+        let mut refused = false;
         for id in selection {
             if field == Field::Enabled && value >= 0.5 && !self.can_show(id) {
                 continue;
@@ -1033,11 +1038,44 @@ impl SceneLayoutDocument {
             let before = layer.clone();
             apply_field(layer, field, value, canvas);
             changed |= *layer != before;
+            refused |= matte_point_refused(layer, field, value);
+        }
+        if matches!(field, Field::MattePointX { .. } | Field::MattePointY { .. }) {
+            self.matte_refused = refused;
         }
         if own_step {
             self.commit();
         }
         changed
+    }
+
+    /// Moves garbage matte point `point` of every selected layer to `x`,
+    /// `y` (normalized like [`Field::MattePointX`]) at once, so a diagonal
+    /// drag never passes through a refused flat matte on one axis. Joins
+    /// the open step, or makes one of its own.
+    pub fn move_matte_point(&mut self, point: u8, x: f64, y: f64) -> bool {
+        let mut refused = false;
+        let moved = self.edit_selected(EditLabel::GarbageMatte, |layer| {
+            let coordinate = |value: f64| {
+                u16::try_from(to_i32(value).clamp(0, i32::from(fm_types::GARBAGE_MATTE_UNIT)))
+                    .unwrap_or(0)
+            };
+            refused |= edit_matte(layer, |points| {
+                if let Some(at) = points.get_mut(usize::from(point)) {
+                    *at = fm_types::MattePoint::new(coordinate(x), coordinate(y));
+                }
+            });
+        });
+        self.matte_refused = refused;
+        moved
+    }
+
+    /// Whether the latest garbage matte point edit (a move, or removing a
+    /// point) was refused because every point would lie on one line, which
+    /// would remove the whole layer.
+    #[must_use]
+    pub const fn matte_refused(&self) -> bool {
+        self.matte_refused
     }
 
     /// Moves every selected layer by whole pixels as one step.
@@ -1186,6 +1224,7 @@ impl SceneLayoutDocument {
     /// as one step: the new last point halves the edge that closes the
     /// polygon, so the matte keeps its shape.
     pub fn add_matte_point(&mut self) -> bool {
+        self.matte_refused = false;
         self.edit_selected(EditLabel::GarbageMatte, |layer| {
             edit_matte(layer, |points| {
                 if points.len() >= fm_types::MAX_GARBAGE_MATTE_POINTS {
@@ -1204,13 +1243,16 @@ impl SceneLayoutDocument {
     /// matte has more than [`fm_types::MIN_GARBAGE_MATTE_POINTS`] points, as
     /// one step.
     pub fn remove_matte_point(&mut self, index: usize) -> bool {
-        self.edit_selected(EditLabel::GarbageMatte, |layer| {
-            edit_matte(layer, |points| {
+        let mut refused = false;
+        let removed = self.edit_selected(EditLabel::GarbageMatte, |layer| {
+            refused |= edit_matte(layer, |points| {
                 if points.len() > fm_types::MIN_GARBAGE_MATTE_POINTS && index < points.len() {
                     points.remove(index);
                 }
             });
-        })
+        });
+        self.matte_refused = refused;
+        removed
     }
 
     /// Whether every selected layer carries the same effect kinds in the
@@ -1714,20 +1756,49 @@ fn apply_field(layer: &mut DesignLayer, field: Field, value: f64, canvas: (u32, 
 }
 
 /// Edits the points of `layer`'s garbage matte, if its key has one.
-fn edit_matte(layer: &mut DesignLayer, edit: impl FnOnce(&mut Vec<fm_types::MattePoint>)) {
+/// Returns whether the edit was refused for leaving every point on one
+/// line (the matte keeps its points then).
+fn edit_matte(layer: &mut DesignLayer, edit: impl FnOnce(&mut Vec<fm_types::MattePoint>)) -> bool {
     let Some(key) = layer.key else {
-        return;
+        return false;
     };
     let mut refinement = key.refinement();
     let Some(matte) = refinement.garbage_matte else {
-        return;
+        return false;
     };
     let mut points = matte.points().to_vec();
     edit(&mut points);
-    if let Ok(edited) = fm_types::GarbageMatte::new(&points, matte.invert()) {
-        refinement.garbage_matte = Some(edited);
-        layer.key = Some(with_refinement(key, refinement));
+    match fm_types::GarbageMatte::new(&points, matte.invert()) {
+        Ok(edited) => {
+            refinement.garbage_matte = Some(edited);
+            layer.key = Some(with_refinement(key, refinement));
+            false
+        }
+        Err(error) => error == fm_types::GarbageMatteError::Flat,
     }
+}
+
+/// Whether setting garbage matte coordinate `field` to `value` on
+/// `layer` was refused: the layer has the point but kept another
+/// coordinate (moving it would have left the matte without area).
+fn matte_point_refused(layer: &DesignLayer, field: Field, value: f64) -> bool {
+    let (Field::MattePointX { point } | Field::MattePointY { point }) = field else {
+        return false;
+    };
+    let Some(at) = layer
+        .key
+        .and_then(|key| key.refinement().garbage_matte)
+        .and_then(|matte| matte.points().get(usize::from(point)).copied())
+    else {
+        return false;
+    };
+    let wanted = to_i32(value).clamp(0, i32::from(fm_types::GARBAGE_MATTE_UNIT));
+    let kept = if matches!(field, Field::MattePointX { .. }) {
+        at.x
+    } else {
+        at.y
+    };
+    i32::from(kept) != wanted
 }
 
 /// The value refinement `field` shows (despill reads `0` off, `1` green,

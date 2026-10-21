@@ -1,7 +1,9 @@
 //! Polygon garbage mattes of a layer key (SW-008).
 //!
 //! A garbage matte is a polygon of [`MIN_GARBAGE_MATTE_POINTS`] to
-//! [`MAX_GARBAGE_MATTE_POINTS`] points in coordinates normalized to the
+//! [`MAX_GARBAGE_MATTE_POINTS`] points, not all on one line (a polygon
+//! without area keeps nothing, so it would silently remove the whole
+//! layer), in coordinates normalized to the
 //! keyed (cropped) layer: `0` is its left or top edge and
 //! [`GARBAGE_MATTE_UNIT`] its right or bottom edge. The matte keeps the
 //! pixels inside the polygon and removes the rest, or the reverse when
@@ -60,6 +62,9 @@ pub enum GarbageMatteError {
     PointCount(usize),
     /// A coordinate beyond [`GARBAGE_MATTE_UNIT`].
     OutOfRange(MattePoint),
+    /// Every point lies on one line (or on one spot), so the polygon has
+    /// no area.
+    Flat,
 }
 
 impl fmt::Display for GarbageMatteError {
@@ -74,6 +79,8 @@ impl fmt::Display for GarbageMatteError {
                 "garbage matte point {},{} is beyond {GARBAGE_MATTE_UNIT}",
                 point.x, point.y
             ),
+            Self::Flat => formatter
+                .write_str("a garbage matte's points all lie on one line, so it has no area"),
         }
     }
 }
@@ -86,7 +93,8 @@ impl GarbageMatte {
     ///
     /// # Errors
     ///
-    /// [`GarbageMatteError`] for a point count or coordinate out of bounds.
+    /// [`GarbageMatteError`] for a point count or coordinate out of bounds,
+    /// or points that all lie on one line.
     pub fn new(points: &[MattePoint], invert: bool) -> Result<Self, GarbageMatteError> {
         if !(MIN_GARBAGE_MATTE_POINTS..=MAX_GARBAGE_MATTE_POINTS).contains(&points.len()) {
             return Err(GarbageMatteError::PointCount(points.len()));
@@ -97,6 +105,9 @@ impl GarbageMatte {
         {
             return Err(GarbageMatteError::OutOfRange(*point));
         }
+        if is_flat(points) {
+            return Err(GarbageMatteError::Flat);
+        }
         let mut stored = [MattePoint::default(); MAX_GARBAGE_MATTE_POINTS];
         stored[..points.len()].copy_from_slice(points);
         Ok(Self {
@@ -106,10 +117,11 @@ impl GarbageMatte {
         })
     }
 
-    /// A quadrilateral inset `margin` units from every edge of the layer.
+    /// A quadrilateral inset `margin` units from every edge of the layer
+    /// (at most one unit short of the centre, so it keeps an area).
     #[must_use]
     pub fn inset(margin: u16) -> Self {
-        let near = margin.min(GARBAGE_MATTE_UNIT / 2);
+        let near = margin.min(GARBAGE_MATTE_UNIT / 2 - 1);
         let far = GARBAGE_MATTE_UNIT - near;
         let mut points = [MattePoint::default(); MAX_GARBAGE_MATTE_POINTS];
         points[..4].copy_from_slice(&[
@@ -167,6 +179,26 @@ impl GarbageMatte {
     }
 }
 
+/// Whether every one of `points` lies on the line through the first and
+/// another of them (or all coincide).
+fn is_flat(points: &[MattePoint]) -> bool {
+    let Some((first, rest)) = points.split_first() else {
+        return true;
+    };
+    let offset = |point: &MattePoint| {
+        (
+            i64::from(point.x) - i64::from(first.x),
+            i64::from(point.y) - i64::from(first.y),
+        )
+    };
+    let Some(direction) = rest.iter().map(offset).find(|&offset| offset != (0, 0)) else {
+        return true;
+    };
+    rest.iter()
+        .map(offset)
+        .all(|(x, y)| x * direction.1 == y * direction.0)
+}
+
 /// The even-odd test of pixel `(x, y)`'s centre against `points` in
 /// half-pixel units (see the module documentation).
 #[must_use]
@@ -210,9 +242,57 @@ mod tests {
             GarbageMatte::new(&[point, point, far], false),
             Err(GarbageMatteError::OutOfRange(far))
         );
-        let matte = GarbageMatte::new(&[point; 8], true).unwrap();
+        let corner = MattePoint::new(1_000, 0);
+        let matte = GarbageMatte::new(
+            &[
+                point,
+                corner,
+                MattePoint::new(0, 1_000),
+                point,
+                corner,
+                point,
+                corner,
+                point,
+            ],
+            true,
+        )
+        .unwrap();
         assert_eq!(matte.points().len(), 8);
         assert!(matte.invert());
+    }
+
+    /// Points on one spot or one line enclose nothing, so such a matte
+    /// would remove the whole layer: it is refused, inverted or not.
+    #[test]
+    fn a_matte_without_area_is_refused() {
+        let at = |x, y| MattePoint::new(x, y);
+        for points in [
+            vec![at(500, 500); 3],
+            vec![at(0, 0), at(500, 500), at(1_000, 1_000)],
+            vec![at(100, 300), at(100, 300), at(700, 300), at(400, 300)],
+            vec![at(250, 0), at(250, 1_000), at(250, 500), at(250, 0)],
+            vec![at(0, 0), at(300, 100), at(600, 200), at(900, 300), at(0, 0)],
+        ] {
+            for invert in [false, true] {
+                assert_eq!(
+                    GarbageMatte::new(&points, invert),
+                    Err(GarbageMatteError::Flat),
+                    "{points:?}"
+                );
+            }
+        }
+        // One point off the line gives it an area; so does a bow tie, whose
+        // signed area cancels but whose halves the even-odd rule keeps.
+        assert!(GarbageMatte::new(&[at(0, 0), at(500, 500), at(1_000, 999)], false).is_ok());
+        let bow_tie = GarbageMatte::new(
+            &[at(0, 0), at(1_000, 1_000), at(1_000, 0), at(0, 1_000)],
+            false,
+        )
+        .unwrap();
+        assert!(bow_tie.keeps(0, 3, 8, 8) && !bow_tie.keeps(3, 1, 8, 8));
+        // The widest inset still keeps a middle.
+        let widest = GarbageMatte::inset(u16::MAX);
+        assert_eq!(GarbageMatte::new(widest.points(), false), Ok(widest));
     }
 
     #[test]

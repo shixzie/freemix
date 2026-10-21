@@ -398,6 +398,8 @@ fn scene_layer_commands_are_strict() {
             "",
         ),
         fill_line.replace("1000%3A1000", "1001%3A1000"),
+        // Points all on one line enclose nothing.
+        fill_line.replace("1000%3A1000%2C0%3A900", "500%3A200%2C0%3A200"),
         fill_line.replace("=100%3A200", "=0100%3A200"),
         fill_line.replace("=100%3A200", "=100%3B200"),
         fill_line.replace("%2C1000%3A1000%2C0%3A900", ""),

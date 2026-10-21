@@ -1705,6 +1705,16 @@ fn layer_effect_bounds_are_rejected_at_the_current_schema() {
             ),
             1,
         ),
+        // ... not all on one line, which would key the whole layer out.
+        valid.replacen(
+            key,
+            &key.replace(
+                "\"garbage_matte\": null",
+                "\"garbage_matte\": {\"invert\": true, \"points\": \
+                 [[0, 0], [500, 500], [1000, 1000]]}",
+            ),
+            1,
+        ),
         valid.replacen(
             key,
             &key.replace(

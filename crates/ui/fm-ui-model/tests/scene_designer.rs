@@ -999,6 +999,52 @@ fn garbage_matte_points_edit_live_and_export() {
     assert_eq!(matte(&document), Some(sent_matte));
 }
 
+/// SW-008: a garbage matte edit that would leave every point on one line
+/// (a matte without area, which removes the whole layer) is refused and
+/// flagged for the inspector; the next accepted edit clears the flag, and a
+/// drag moves both coordinates at once so it may pass the line diagonally.
+#[test]
+fn garbage_matte_edits_refuse_a_flat_matte() {
+    use fm_types::MattePoint;
+    let matte = |document: &SceneLayoutDocument| {
+        document
+            .layer(layer_id(2))
+            .unwrap()
+            .key
+            .and_then(|key| key.refinement().garbage_matte)
+            .unwrap()
+    };
+    let mut document = SceneLayoutDocument::new(scene(), &layout());
+    document.select(layer_id(2), false);
+    assert!(document.set_key_kind(Some(true)));
+    assert!(document.set_field(Field::Matte, 1.0));
+    assert!(document.remove_matte_point(3));
+    // (100,100) (900,100) (900,900): moving the last point onto the line
+    // through the first two is refused.
+    let before = matte(&document);
+    assert!(!document.set_field(Field::MattePointY { point: 2 }, 100.0));
+    assert_eq!(matte(&document), before);
+    assert!(document.matte_refused());
+    // An accepted move clears the flag.
+    assert!(document.set_field(Field::MattePointY { point: 2 }, 500.0));
+    assert!(!document.matte_refused());
+    // A drag onto the line is refused as a whole; off it, both axes move.
+    assert!(!document.move_matte_point(2, 500.0, 100.0));
+    assert!(document.matte_refused());
+    assert!(document.move_matte_point(2, 100.0, 900.0));
+    assert!(!document.matte_refused());
+    assert_eq!(matte(&document).points()[2], MattePoint::new(100, 900));
+
+    // Removing a point that leaves the other three on one line is refused.
+    assert!(document.add_matte_point());
+    assert!(document.move_matte_point(3, 500.0, 100.0));
+    assert!(!document.remove_matte_point(2));
+    assert!(document.matte_refused());
+    assert_eq!(matte(&document).points().len(), 4);
+    assert!(document.remove_matte_point(3));
+    assert!(!document.matte_refused());
+}
+
 /// IN-020: effect list edits send the whole list as `SetEffects`; a
 /// parameter scrub folds into one gesture; reorder, removal, the list
 /// limit, and mixed selections behave.

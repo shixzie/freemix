@@ -908,5 +908,10 @@ mod tests {
         far[1] = 0xe9;
         far[2] |= 0x03;
         assert_eq!(read_matte(&far), None);
+        // Points all on one line, (0,0) (500,0) (1000,0), are refused.
+        let flat_bits: u64 = 500 << 20 | 1_000 << 40;
+        let mut flat = vec![6];
+        flat.extend_from_slice(&flat_bits.to_le_bytes());
+        assert_eq!(read_matte(&flat), None);
     }
 }

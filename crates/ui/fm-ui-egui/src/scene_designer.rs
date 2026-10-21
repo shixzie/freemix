@@ -1738,8 +1738,7 @@ fn drag_matte_point(document: &mut SceneLayoutDocument, point: u8, at: Point) {
     };
     let x = along(local.x, frame.half_width);
     let y = along(local.y, frame.half_height);
-    document.set_field(Field::MattePointX { point }, x);
-    document.set_field(Field::MattePointY { point }, y);
+    document.move_matte_point(point, x, y);
 }
 
 /// The selected layer's garbage matte: its outline and numbered points.
@@ -2995,6 +2994,10 @@ fn garbage_matte_fields(
         });
     if let Some(index) = remove {
         document.remove_matte_point(index);
+    }
+    if document.matte_refused() {
+        ui.label(RichText::new(l.text(Msg::DesignMatteFlat)).color(crate::theme::AMBER))
+            .on_hover_text(l.text(Msg::DesignMatteFlatHover));
     }
     if ui
         .add_enabled(

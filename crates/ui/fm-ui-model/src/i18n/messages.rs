@@ -2260,6 +2260,8 @@ messages! {
     DesignMatteAddPoint => t("Add point"),
     DesignMatteAddPointHover => t("Add a point halfway along the shape's closing edge, at most 8 points"),
     DesignMatteRemovePointHover => t("Remove this point; the shape keeps at least 3"),
+    DesignMatteFlat => t("Not moved: the points would all lie on one line"),
+    DesignMatteFlatHover => t("A garbage matte needs an area; with every point on one line it would remove the whole layer, so that change was refused"),
     DesignGroupEffects => t("Effects"),
     DesignEffectsHover => t("Video effects on the layer, applied in list order from the top, at most 8 per layer"),
     DesignEffectsEmpty => t("No effects."),

@@ -3785,8 +3785,11 @@ auto key pictures.
   Unless `off`, `matte_points` follows: three to eight `x:y` points joined
   by commas (escaped like every field value), each coordinate a canonical
   `0..=1000` normalized to the cropped layer (`0` its left or top edge,
-  `1000` its right or bottom edge). Any field missing, out of range,
-  non-canonical, or present with `off` is refused.
+  `1000` its right or bottom edge), not all on one line (a matte without
+  area would remove the whole layer). Any field missing, out of range,
+  non-canonical, or present with `off` is refused, as is a matte whose
+  points all lie on one line, here, in the layout encoding, and in a
+  project.
 - In the layout encoding each `refine` gains `light_wrap light_wrap_width`
   (bytes) and a matte byte: `0` none, else `count << 1 | outside`
   (`count` 3..=8), followed by the points' `x, y` coordinates as 10-bit

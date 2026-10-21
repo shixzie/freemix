@@ -479,7 +479,18 @@ fn the_worst_case_layout_fits_one_line() {
                     light_wrap_width: 8,
                     garbage_matte: Some(
                         fm_types::GarbageMatte::new(
-                            &[fm_types::MattePoint::new(1_000, 1_000); 8],
+                            // The longest coordinates that still enclose
+                            // an area.
+                            &[
+                                fm_types::MattePoint::new(1_000, 1_000),
+                                fm_types::MattePoint::new(999, 1_000),
+                                fm_types::MattePoint::new(1_000, 999),
+                                fm_types::MattePoint::new(1_000, 1_000),
+                                fm_types::MattePoint::new(1_000, 1_000),
+                                fm_types::MattePoint::new(1_000, 1_000),
+                                fm_types::MattePoint::new(1_000, 1_000),
+                                fm_types::MattePoint::new(1_000, 1_000),
+                            ],
                             true,
                         )
                         .unwrap(),

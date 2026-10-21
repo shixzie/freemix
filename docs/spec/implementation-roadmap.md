@@ -2481,7 +2481,7 @@ there, after placement and before opacity, so the CPU reference composes
 everything beneath the layer first and the native compositor splits its
 pass at the layer to read a copy of the background) and an optional polygon
 garbage matte (three to eight points normalized to `0..=1000` of the cropped
-layer, keeping the inside or the outside, tested exactly in half-pixel
+layer and not all on one line, so it always has an area, keeping the inside or the outside, tested exactly in half-pixel
 integers shared by `fm_types::GarbageMatte` so CPU and GPU agree bit for
 bit); both persist, travel in key edits and layouts, render in both daemons
 and the CLI, and are edited in Studio's KEY section with hover help (the

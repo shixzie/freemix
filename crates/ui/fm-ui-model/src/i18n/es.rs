@@ -6051,6 +6051,16 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::DesignMatteRemovePointHover,
         t("Quitar este punto; la forma conserva al menos 3"),
     ),
+    (
+        Msg::DesignMatteFlat,
+        t("Sin cambios: los puntos quedarían todos en una línea"),
+    ),
+    (
+        Msg::DesignMatteFlatHover,
+        t(
+            "Una máscara de recorte necesita un área; con todos los puntos en una línea quitaría la capa entera, así que se rechazó el cambio",
+        ),
+    ),
     (Msg::DesignKeyLightWrapWidth, t("Ancho de la envoltura")),
     (
         Msg::DesignKeyLightWrapWidthHover,
