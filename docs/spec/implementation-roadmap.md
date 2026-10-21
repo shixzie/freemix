@@ -2602,8 +2602,11 @@ journal replay, and in the saved project. A native process test covers
 this; before the fix it came back last.
 
 Remaining gaps:
-- on Windows the SRT passphrase still reaches the `ffmpeg` child's
-  command line, and on every platform the RTMP key and SRT stream ID do;
+- on Windows the SRT passphrase, RTMP key, and SRT stream ID still reach
+  the `ffmpeg` child's command line (on Unix the child reads them with
+  `-fpre /dev/stdin`: the URL keeps only scheme and authority, the key
+  travels as `rtmp_app`/`rtmp_playpath` split as `ffmpeg` splits the path,
+  or as `streamid`, except an SRT stream ID holding `%` or `+`);
 - there is no SRT listener or rendezvous output, and no SRT link
   statistics for destinations;
 - a running destination must be stopped before it can be edited;
@@ -2696,9 +2699,14 @@ connection is closed at accept before any child exists, a publisher that
 delivers a picture clears its address, and at most 1024 addresses are
 remembered (each forgotten 10 min after its last failure or lockout).
 Each lockout is logged as `FREEMIXD_NETWORK_LOCKOUT` (input, peer,
-failures, `lockout_ms`) and named in the input's last error. Remaining gaps: no `rtmps`
-listener (no TLS certificate handling); the key reaches the `ffmpeg`
-child's command line; only one publisher per input (a second publisher's
+failures, `lockout_ms`) and named in the input's last error. The key never
+reaches the `ffmpeg` child's command line: every RTMP child (and every SRT
+child with a passphrase or stream ID) reads its URL and protocol options
+through the `concat` demuxer from a one-entry script on its stdin (`-f
+concat -safe 0 -protocol_whitelist pipe,rtmp,rtmps,tcp,tls -i pipe:0`), and
+the loopback tests assert that no receiver argv in `/proc` holds it.
+Remaining gaps: no `rtmps` listener (no TLS certificate handling); only one
+publisher per input (a second publisher's
 connection waits in the listen backlog until the first leaves); not
 verified on Windows or macOS, so `IN-016` remains planned.
 

@@ -26,6 +26,7 @@
 //! have — never starting at a real frame size, and quietly falling behind real
 //! time — are both invisible to a test that only counts bytes at 64x48.
 
+use std::io::Read;
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::num::NonZeroU128;
 use std::path::Path;
@@ -190,28 +191,45 @@ fn wait_for_listen(port: u16, deadline: Instant) -> bool {
     }
 }
 
-/// True while any process is still running our publisher command line. The
-/// `rawvideo` term distinguishes the sink's own child from the test receiver,
-/// which shares the destination URL. A reparented orphan is still found.
-fn publisher_alive(key: &str) -> bool {
+/// The argv of every running publisher whose output is the destination on
+/// `port`, NUL separators shown as spaces. The `rawvideo` term distinguishes
+/// the sink's own child from the test receiver, which listens on the same
+/// port. A reparented orphan is still found.
+fn publisher_argv(port: u16) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
-        return false;
+        return Vec::new();
     };
-    entries.flatten().any(|entry| {
-        std::fs::read(entry.path().join("cmdline")).is_ok_and(|cmdline| {
-            let text = String::from_utf8_lossy(&cmdline);
-            text.contains(key) && text.contains("rawvideo")
-        })
-    })
+    // On Unix the publisher's last argument is the scheme and authority
+    // alone, the stream key travelling in its stdin preset.
+    let url = if cfg!(unix) {
+        format!("rtmp://127.0.0.1:{port}\0")
+    } else {
+        format!("rtmp://127.0.0.1:{port}/")
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| std::fs::read(entry.path().join("cmdline")).ok())
+        .map(|cmdline| String::from_utf8_lossy(&cmdline).into_owned())
+        .filter(|text| text.contains(&url) && text.contains("rawvideo"))
+        .map(|text| text.replace('\0', " "))
+        .collect()
 }
 
-fn spawn_rtmp_receiver(port: u16, key: &str, output: &Path) -> Child {
-    Command::new("ffmpeg")
+/// True while any process is still running a publisher to `port`.
+fn publisher_alive(port: u16) -> bool {
+    !publisher_argv(port).is_empty()
+}
+
+/// A receiver listening for `key` on `port`, and its drained log.
+fn spawn_rtmp_receiver(port: u16, key: &str, output: &Path) -> (Child, JoinHandle<String>) {
+    let mut child = Command::new("ffmpeg")
         .args([
             "-nostdin",
             "-hide_banner",
+            // Warnings name a publisher's other stream name ("Unexpected
+            // stream"), which `ffmpeg`'s RTMP listener otherwise accepts.
             "-loglevel",
-            "error",
+            "warning",
             "-listen",
             "1",
             "-i",
@@ -223,7 +241,14 @@ fn spawn_rtmp_receiver(port: u16, key: &str, output: &Path) -> Child {
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .unwrap()
+        .unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let log = thread::spawn(move || {
+        let mut log = String::new();
+        let _ = stderr.read_to_string(&mut log);
+        log
+    });
+    (child, log)
 }
 
 fn reap(child: &mut Child, deadline: Instant) {
@@ -413,7 +438,7 @@ fn live_stream_reaches_a_real_rtmp_receiver_at_broadcast_resolution() {
     let captured_path = directory.path().join("received.flv");
     let key = unique_key("e2e");
     let port = free_port();
-    let mut receiver = spawn_rtmp_receiver(port, &key, &captured_path);
+    let (mut receiver, receiver_log) = spawn_rtmp_receiver(port, &key, &captured_path);
     assert!(
         wait_for_listen(port, Instant::now() + Duration::from_secs(10)),
         "RTMP receiver never started listening"
@@ -434,6 +459,13 @@ fn live_stream_reaches_a_real_rtmp_receiver_at_broadcast_resolution() {
     );
 
     reject_byte_compatible_impostors(&mut streamer, &format);
+    // The publisher runs, and its argv (world-readable in `/proc`) never
+    // holds the stream key.
+    if cfg!(target_os = "linux") {
+        let argv = publisher_argv(port);
+        assert_eq!(argv.len(), 1, "one publisher child: {argv:?}");
+        assert!(!argv[0].contains(&key), "argv leaks the stream key");
+    }
 
     let (wall, offered) = produce(&mut streamer, &format, 150, None);
     let live = streamer.telemetry();
@@ -456,6 +488,10 @@ fn live_stream_reaches_a_real_rtmp_receiver_at_broadcast_resolution() {
     assert_eq!(streamer.stop(), report, "stop must be idempotent");
 
     reap(&mut receiver, Instant::now() + Duration::from_secs(20));
+    // The publisher named the receiver's stream, though its argv never held
+    // the key.
+    let log = receiver_log.join().unwrap();
+    assert!(!log.contains("Unexpected stream"), "{log}");
     let bytes = std::fs::read(&captured_path).unwrap();
     assert!(
         bytes.len() > 64 * 1024,
@@ -489,7 +525,7 @@ fn live_stream_reaches_a_real_rtmp_receiver_at_broadcast_resolution() {
         captured.video_seconds,
         captured.audio_seconds
     );
-    assert!(!publisher_alive(&key), "an ffmpeg publisher survived stop");
+    assert!(!publisher_alive(port), "an ffmpeg publisher survived stop");
 }
 
 /// A sink that checks payload byte counts instead of the format accepts media
@@ -571,7 +607,7 @@ fn media_time_tracks_wall_clock_through_producer_loss() {
     let captured_path = directory.path().join("lossy.flv");
     let key = unique_key("loss");
     let port = free_port();
-    let mut receiver = spawn_rtmp_receiver(port, &key, &captured_path);
+    let (mut receiver, _receiver_log) = spawn_rtmp_receiver(port, &key, &captured_path);
     assert!(wait_for_listen(
         port,
         Instant::now() + Duration::from_secs(10)
@@ -622,7 +658,7 @@ fn media_time_tracks_wall_clock_through_producer_loss() {
         captured.video_seconds,
         captured.audio_seconds
     );
-    assert!(!publisher_alive(&key), "an ffmpeg publisher survived stop");
+    assert!(!publisher_alive(port), "an ffmpeg publisher survived stop");
 }
 
 /// A stream whose media clock has stopped is dead, and must be reported dead,
@@ -640,7 +676,7 @@ fn a_stalled_media_clock_is_terminal_with_nothing_outstanding() {
     let captured_path = directory.path().join("stalled.flv");
     let key = unique_key("stall2");
     let port = free_port();
-    let mut receiver = spawn_rtmp_receiver(port, &key, &captured_path);
+    let (mut receiver, _receiver_log) = spawn_rtmp_receiver(port, &key, &captured_path);
     assert!(wait_for_listen(
         port,
         Instant::now() + Duration::from_secs(10)
@@ -720,7 +756,7 @@ fn a_stalled_media_clock_is_terminal_with_nothing_outstanding() {
     );
     assert_accounted(&report.telemetry);
     reap(&mut receiver, Instant::now() + Duration::from_secs(10));
-    assert!(!publisher_alive(&key), "an ffmpeg publisher survived stop");
+    assert!(!publisher_alive(port), "an ffmpeg publisher survived stop");
 }
 
 #[test]
@@ -731,7 +767,8 @@ fn a_forced_failure_never_exposes_the_stream_key() {
     }
     let key = unique_key("secret");
     // Nothing is listening: the child fails opening the destination and prints
-    // the full URL, with the key, to stderr twice.
+    // its URL to stderr twice; off Unix that URL holds the key, on Unix the
+    // child never had it (it reads the key from its stdin preset).
     let port = free_port();
     let destination = destination(port, &key);
     assert_eq!(
@@ -786,8 +823,13 @@ fn a_forced_failure_never_exposes_the_stream_key() {
     let telemetry = &report.telemetry;
     assert_eq!(telemetry.failure, Some(failure.clone()));
     assert!(!telemetry.connected, "{telemetry:?}");
+    let echoed = if cfg!(unix) {
+        format!("rtmp://127.0.0.1:{port}.")
+    } else {
+        "****".to_owned()
+    };
     assert!(
-        telemetry.stderr_tail.contains("****"),
+        telemetry.stderr_tail.contains(&echoed),
         "expected redacted child stderr, got {:?}",
         telemetry.stderr_tail
     );
@@ -806,7 +848,7 @@ fn a_forced_failure_never_exposes_the_stream_key() {
             "stream key prefix leaked: {text}"
         );
     }
-    assert!(!publisher_alive(&key), "an ffmpeg publisher survived stop");
+    assert!(!publisher_alive(port), "an ffmpeg publisher survived stop");
 }
 
 #[test]
@@ -904,7 +946,7 @@ fn backpressure_stays_bounded_counted_and_terminal() {
         );
         assert_accounted(&report.telemetry);
         assert!(
-            !publisher_alive(&key),
+            !publisher_alive(stalled.port),
             "{policy:?} left an ffmpeg publisher"
         );
         drop(stalled);
@@ -959,7 +1001,10 @@ fn a_wedged_input_writer_is_bounded_by_the_no_progress_budget() {
         "{failure:?}"
     );
     assert_accounted(&report.telemetry);
-    assert!(!publisher_alive(&key), "an ffmpeg publisher survived stop");
+    assert!(
+        !publisher_alive(stalled.port),
+        "an ffmpeg publisher survived stop"
+    );
     drop(stalled);
 }
 
@@ -974,7 +1019,8 @@ fn no_ffmpeg_child_survives_stop_or_cancel() {
     let directory = tempdir().unwrap();
     let clean_key = unique_key("stopclean");
     let port = free_port();
-    let mut receiver = spawn_rtmp_receiver(port, &clean_key, &directory.path().join("clean.flv"));
+    let (mut receiver, _receiver_log) =
+        spawn_rtmp_receiver(port, &clean_key, &directory.path().join("clean.flv"));
     assert!(wait_for_listen(
         port,
         Instant::now() + Duration::from_secs(10)
@@ -993,10 +1039,7 @@ fn no_ffmpeg_child_survives_stop_or_cancel() {
         matches!(report.telemetry.child, ChildState::Exited { .. }),
         "child was never reaped: {report:?}"
     );
-    assert!(
-        !publisher_alive(&clean_key),
-        "an ffmpeg publisher survived stop"
-    );
+    assert!(!publisher_alive(port), "an ffmpeg publisher survived stop");
     drop(streamer);
     reap(&mut receiver, Instant::now() + Duration::from_secs(20));
 
@@ -1025,7 +1068,7 @@ fn no_ffmpeg_child_survives_stop_or_cancel() {
     );
     assert_accounted(&report.telemetry);
     assert!(
-        !publisher_alive(&cancel_key),
+        !publisher_alive(stalled.port),
         "an ffmpeg publisher survived request_cancel"
     );
 
@@ -1043,7 +1086,7 @@ fn no_ffmpeg_child_survives_stop_or_cancel() {
     let dropped = Streamer::start(config).unwrap();
     drop(dropped);
     assert!(
-        !publisher_alive(&drop_key),
+        !publisher_alive(stalled_drop.port),
         "dropping a Streamer orphaned its ffmpeg child"
     );
 }

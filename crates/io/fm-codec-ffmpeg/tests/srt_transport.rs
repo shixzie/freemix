@@ -176,19 +176,13 @@ fn wait_for_udp_bind(port: u16, deadline: Instant) -> bool {
     }
 }
 
-/// True while any process is still running our publisher command line. The
-/// `rawvideo` term distinguishes the sink's own child from the test receiver,
-/// which shares the stream id. A reparented orphan is still found.
-fn publisher_alive(key: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return false;
-    };
-    entries.flatten().any(|entry| {
-        std::fs::read(entry.path().join("cmdline")).is_ok_and(|cmdline| {
-            let text = String::from_utf8_lossy(&cmdline);
-            text.contains(key) && text.contains("rawvideo")
-        })
-    })
+/// True while any process is still running our publisher command line: one
+/// whose output URL is exactly the destination on `port` (the stream id
+/// travels in its stdin preset, never in argv). The `rawvideo` term
+/// distinguishes the sink's own child from the test receiver, whose URL
+/// carries `?mode=listener`. A reparented orphan is still found.
+fn publisher_alive(port: u16) -> bool {
+    !publisher_argv(port).is_empty()
 }
 
 fn spawn_srt_receiver(port: u16, output: &Path) -> Child {
@@ -314,7 +308,14 @@ fn live_srt_stream_reaches_a_real_listener_as_nonempty_mpegts() {
         streamer.destination(),
         format!("srt://127.0.0.1:{port}?streamid=****")
     );
-    assert!(publisher_alive(&key), "no publisher child is running");
+    assert!(publisher_alive(port), "no publisher child is running");
+    // The stream id never reaches argv (world-readable in /proc).
+    for cmdline in publisher_argv(port) {
+        assert!(
+            !cmdline.contains(&key),
+            "argv leaks the stream id: {cmdline}"
+        );
+    }
 
     produce(&mut streamer, &format, 120);
     let live = streamer.telemetry();
@@ -380,21 +381,22 @@ fn live_srt_stream_reaches_a_real_listener_as_nonempty_mpegts() {
         counted(audio, "nb_read_packets") > 0.0,
         "no audio packets were captured: {probed}"
     );
-    assert!(!publisher_alive(&key), "an ffmpeg publisher survived stop");
+    assert!(!publisher_alive(port), "an ffmpeg publisher survived stop");
 }
 
-/// The argv of every running publisher child for `key` (see
+/// The argv of every running publisher child on `port` (see
 /// [`publisher_alive`]), NUL separators shown as spaces.
-#[cfg(unix)]
-fn publisher_argv(key: &str) -> Vec<String> {
+fn publisher_argv(port: u16) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
     };
+    let url = format!("srt://127.0.0.1:{port}\0");
     entries
         .flatten()
         .filter_map(|entry| std::fs::read(entry.path().join("cmdline")).ok())
-        .map(|cmdline| String::from_utf8_lossy(&cmdline).replace('\0', " "))
-        .filter(|text| text.contains(key) && text.contains("rawvideo"))
+        .map(|cmdline| String::from_utf8_lossy(&cmdline).into_owned())
+        .filter(|text| text.contains(&url) && text.contains("rawvideo"))
+        .map(|text| text.replace('\0', " "))
         .collect()
 }
 
@@ -443,12 +445,13 @@ fn an_encrypted_srt_stream_keeps_its_passphrase_out_of_the_child_argv() {
             panic!("sink never started: {error:?}");
         }
     };
-    let argv = publisher_argv(&key);
+    let argv = publisher_argv(port);
     if cfg!(target_os = "linux") {
         assert_eq!(argv.len(), 1, "one publisher child: {argv:?}");
     }
     for cmdline in &argv {
         assert!(!cmdline.contains(PASSPHRASE), "argv leaks the passphrase");
+        assert!(!cmdline.contains(&key), "argv leaks the stream id");
         assert!(cmdline.contains("-fpre /dev/stdin"), "{cmdline}");
     }
 
@@ -468,5 +471,5 @@ fn an_encrypted_srt_stream_keeps_its_passphrase_out_of_the_child_argv() {
         "the encrypted listener captured only {} bytes",
         bytes.len()
     );
-    assert!(!publisher_alive(&key), "an ffmpeg publisher survived stop");
+    assert!(!publisher_alive(port), "an ffmpeg publisher survived stop");
 }

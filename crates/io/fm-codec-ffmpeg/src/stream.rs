@@ -26,24 +26,28 @@
 //! private: its `Debug` and `Display` render the redacted form only, every
 //! typed error is path- and key-free, and child stderr is redacted *before* it
 //! enters the bounded retention ring, so neither truncation nor a read split
-//! across chunk boundaries can expose a partial key. The key still appears in
-//! the child's argv, and on Linux `/proc/<pid>/cmdline` is mode 0444: unless
-//! the operating system is configured to hide it, **any** local user can read
-//! the key while the child runs, not merely a process running as the same user.
-//! This crate cannot close that hole. Containing it is an OS-level measure
-//! (`hidepid=2`, a PID namespace, or a dedicated unprivileged user) and lies
-//! outside this crate's isolation boundary, exactly as for the recorder's
-//! loopback input tokens. An SRT destination's optional encryption
-//! passphrase ([`SrtOptions`]) is kept out of argv altogether on Unix: the
-//! child is started with `-fpre /dev/stdin`, the streamer writes the one line
-//! `passphrase=...` into the child's stdin and closes it, and `ffmpeg`
-//! applies it as an output option exactly like `-passphrase` (verified with
+//! across chunk boundaries can expose a partial key. On Linux
+//! `/proc/<pid>/cmdline` is mode 0444 (and `ps` shows it): unless the
+//! operating system is configured to hide it, **any** local user can read a
+//! child's argv. On Unix the key therefore never reaches argv: the child is
+//! started with `-fpre /dev/stdin` and the URL's scheme and authority only,
+//! and the streamer writes the secret options into the child's stdin and
+//! closes it, where `ffmpeg` applies each as an output option. An RTMP(S)
+//! key travels as `rtmp_app` and `rtmp_playpath`, split from the URL path
+//! exactly as `ffmpeg`'s RTMP protocol splits it; an SRT `streamid` as
+//! `streamid` (left in the URL when it holds `%` or `+`, which libsrt would
+//! URL-decode). An SRT destination's optional encryption passphrase
+//! ([`SrtOptions`]) travels the same way, as `passphrase` (verified with
 //! `ffmpeg` 6.1 against an encrypted libsrt listener, which refuses a wrong
-//! passphrase). The secret never touches the disk, and a child whose stdin
-//! cannot be written is killed before it could connect unencrypted. Elsewhere
-//! (Windows, which does not show a process's command line to other users) it
-//! travels as its own `-passphrase` argument. Either way it is never in the
-//! URL, its `Debug` is masked, and it is scrubbed out of captured stderr.
+//! passphrase, and an RTMP listener, which names a wrong stream). The
+//! secrets never touch the disk, and a child whose stdin cannot be written
+//! is killed before it could connect without them. Elsewhere (Windows,
+//! which does not show a process's command line to other users) the key
+//! stays in the URL and the passphrase travels as its own `-passphrase`
+//! argument. Either way the passphrase is never in the URL, its `Debug` is
+//! masked, and every secret is scrubbed out of captured stderr. The
+//! recorder's loopback input tokens remain in argv; containing those is an
+//! OS-level measure (`hidepid=2`, a PID namespace, or a dedicated user).
 //!
 //! # Loss is explicit, and the media clock is not allowed to drift
 //!
@@ -741,30 +745,149 @@ impl SrtOptions {
             "-latency".to_owned(),
             (u64::from(self.latency_ms) * 1_000).to_string(),
         ];
-        if let Some(passphrase) = &self.passphrase {
-            if cfg!(unix) {
-                // `-fpre` reads `key=value` lines and applies each as if it
-                // were given as an output option, so libsrt's `passphrase`
-                // reaches the output protocol exactly like `-passphrase`.
-                values.extend(["-fpre".to_owned(), PRESET_FROM_STDIN.to_owned()]);
-            } else {
-                // Without `/dev/stdin` to read a preset from, the passphrase
-                // travels in argv, which Windows does not show other users.
-                values.extend(["-passphrase".to_owned(), passphrase.clone()]);
-            }
+        if let Some(passphrase) = &self.passphrase
+            && !cfg!(unix)
+        {
+            // Without `/dev/stdin` to read a preset from, the passphrase
+            // travels in argv, which Windows does not show other users.
+            values.extend(["-passphrase".to_owned(), passphrase.clone()]);
         }
         values
     }
 
-    /// The preset the child reads from its stdin, `Some` only when the
-    /// passphrase is kept out of argv. The passphrase is printable ASCII
+    /// The passphrase as a preset option ([`output_preset`]), `Some` only
+    /// when it is kept out of argv. The passphrase is printable ASCII
     /// without whitespace, so it is one `key=value` line as `-fpre` parses it.
-    fn preset(&self) -> Option<String> {
+    fn preset_option(&self) -> Option<(&'static str, String)> {
         self.passphrase
             .as_ref()
             .filter(|_| cfg!(unix))
-            .map(|passphrase| format!("passphrase={passphrase}\n"))
+            .map(|passphrase| ("passphrase", passphrase.clone()))
     }
+}
+
+/// The longest value a `-fpre` line carries whole: `ffmpeg` reads at most
+/// 999 bytes per line, option name and `=` included.
+const MAX_PRESET_VALUE: usize = 960;
+
+/// The destination's stream key moved out of its URL (Unix only): the URL
+/// the child is given on its command line, and the protocol options that
+/// carry the secret instead, for [`output_preset`].
+///
+/// RTMP(S): the URL keeps only its scheme and authority, and `rtmp_app` and
+/// `rtmp_playpath` carry the application and stream name exactly as
+/// `ffmpeg`'s RTMP protocol would have parsed them out of the full URL
+/// path. SRT: the URL loses its `?streamid=` query, and `streamid` carries
+/// its value. `None` (the URL is passed whole) for HLS, a destination
+/// without a key, off Unix, an SRT stream id holding `%` or `+`, or a value
+/// longer than a preset line carries.
+fn split_secret(destination: &StreamDestination) -> Option<(String, Vec<(&'static str, String)>)> {
+    if !cfg!(unix) || destination.key().is_empty() {
+        return None;
+    }
+    let url = destination.url.as_str();
+    let (scheme, rest) = url.split_once("://")?;
+    let (url, options) = match destination.kind {
+        DestinationKind::Rtmp | DestinationKind::Rtmps => {
+            // `av_url_split`: the path starts at the first `/`, `?`, or `#`.
+            let at = rest.find(['/', '?', '#'])?;
+            let (app, playpath) = rtmp_app_and_playpath(&rest[at..]);
+            (
+                format!("{scheme}://{}", &rest[..at]),
+                vec![("rtmp_app", app), ("rtmp_playpath", playpath)],
+            )
+        }
+        DestinationKind::Srt => {
+            let (authority, query) = rest.split_once('?')?;
+            let value = query.strip_prefix(STREAM_ID_PARAM)?.strip_prefix('=')?;
+            (
+                format!("{scheme}://{authority}"),
+                vec![("streamid", verbatim_query_value(value)?)],
+            )
+        }
+        DestinationKind::Hls => return None,
+    };
+    options
+        .iter()
+        .all(|(_, value)| value.len() <= MAX_PRESET_VALUE)
+        .then_some((url, options))
+}
+
+/// The application and stream name `ffmpeg`'s RTMP protocol derives from a
+/// URL `path` when neither is given as an option (`rtmp_open` in
+/// `libavformat/rtmpproto.c`, `ffmpeg` 4 through 7): the application is the
+/// first path segment, or the first two when a further `/` follows (unless a
+/// `:` comes first); the rest is the stream name, with a `.flv` suffix
+/// dropped and an `.mp4` or `.f4v` one prefixed `mp4:`.
+fn rtmp_app_and_playpath(path: &str) -> (String, String) {
+    let (app, name) = if let Some(name) = path.strip_prefix("/ondemand/") {
+        ("ondemand", Some(name))
+    } else {
+        let next = path.get(1..).unwrap_or("");
+        match next.find('/') {
+            None => (next, None),
+            Some(slash) => {
+                let after = &next[slash + 1..];
+                let colon = after.find(':');
+                match after.find('/') {
+                    Some(second) if colon.is_none_or(|colon| colon > second) => {
+                        (&next[..=slash + second], Some(&after[second + 1..]))
+                    }
+                    _ => (&next[..slash], Some(after)),
+                }
+            }
+        }
+    };
+    let playpath = match name {
+        None => String::new(),
+        Some(name) => {
+            let suffix = name.get(name.len().saturating_sub(4)..).unwrap_or("");
+            if !name.contains(':') && name.len() >= 4 && (suffix == ".f4v" || suffix == ".mp4") {
+                format!("mp4:{name}")
+            } else if name.len() >= 4 && suffix == ".flv" {
+                name[..name.len() - 4].to_owned()
+            } else {
+                name.to_owned()
+            }
+        }
+    };
+    (app.to_owned(), playpath)
+}
+
+/// `value` as libsrt reads it out of a URL query, when that is `value`
+/// itself: libsrt URL-decodes it (`%xx`, and `+` as a space), so a value
+/// holding either is left in the URL rather than re-implementing that
+/// decoder's edge cases.
+fn verbatim_query_value(value: &str) -> Option<String> {
+    (!value.contains(['%', '+'])).then(|| value.to_owned())
+}
+
+/// The preset an output child reads from its stdin (`-fpre /dev/stdin`):
+/// one `key=value` line per secret option (the stream key, the SRT
+/// passphrase), `None` when nothing secret is kept out of argv.
+fn output_preset(config: &StreamConfig) -> Option<String> {
+    let mut options = split_secret(&config.destination)
+        .map(|(_, options)| options)
+        .unwrap_or_default();
+    if let Some(passphrase) = config
+        .srt
+        .as_ref()
+        .filter(|_| config.destination.kind() == DestinationKind::Srt)
+        .and_then(SrtOptions::preset_option)
+    {
+        options.push(passphrase);
+    }
+    if options.is_empty() {
+        return None;
+    }
+    let mut preset = String::new();
+    for (name, value) in options {
+        preset.push_str(name);
+        preset.push('=');
+        preset.push_str(&value);
+        preset.push('\n');
+    }
+    Some(preset)
 }
 
 /// Where the child reads its output preset: the pipe the streamer writes the
@@ -1784,11 +1907,7 @@ impl Streamer {
             redactor,
         ));
         let (monitor_sender, monitor) = spawn_monitor_waiter()?;
-        let preset = config
-            .srt
-            .as_ref()
-            .filter(|_| config.destination.kind() == DestinationKind::Srt)
-            .and_then(SrtOptions::preset);
+        let preset = output_preset(&config);
         let child = match command(&executable, &args, preset.is_some()).spawn() {
             Ok(child) => Arc::new(Mutex::new(child)),
             Err(error) => {
@@ -1801,7 +1920,7 @@ impl Streamer {
             && let Err(kind) = deliver_preset(&child, &preset)
         {
             // A child that never read its preset must not run on: it would
-            // connect without the passphrase.
+            // connect without the passphrase or stream key.
             drop(monitor_sender);
             let _ = monitor.join();
             let cleanup = terminate_without_monitor(&child, config.limits.kill_timeout);
@@ -3408,9 +3527,18 @@ fn command_args(config: &StreamConfig, layout: &str, inputs: &Inputs<'_>) -> Vec
         {
             values.extend(srt.args());
         }
+        // `-fpre` reads `key=value` lines and applies each as if it were
+        // given as an output option, so the stream key and the SRT
+        // passphrase reach the output protocol exactly as in the URL or as
+        // `-passphrase` would, without ever being in argv.
+        if output_preset(config).is_some() {
+            values.extend(["-fpre".to_owned(), PRESET_FROM_STDIN.to_owned()]);
+        }
+        let url = split_secret(&config.destination)
+            .map_or_else(|| config.destination.url.clone(), |(url, _)| url);
         values.extend(output_args(
             config.destination.kind(),
-            &config.destination.url,
+            &url,
             config.encoder.keyframe_interval_seconds,
             config.hls_segments,
         ));
@@ -3856,7 +3984,13 @@ mod tests {
             .map(|argument| argument.to_str().unwrap())
             .collect::<Vec<_>>();
         let url_position = text.len() - 1;
-        assert_eq!(text[url_position], "srt://127.0.0.1:9000?streamid=abcd1234");
+        // On Unix the stream id travels in the stdin preset.
+        let expected = if cfg!(unix) {
+            "srt://127.0.0.1:9000"
+        } else {
+            "srt://127.0.0.1:9000?streamid=abcd1234"
+        };
+        assert_eq!(text[url_position], expected);
         assert_eq!(text[url_position - 1], "mpegts");
         assert_eq!(text[url_position - 2], "-f");
         assert!(!text.contains(&"-flvflags"), "{text:?}");
@@ -3871,7 +4005,12 @@ mod tests {
             .map(|argument| argument.to_str().unwrap())
             .collect::<Vec<_>>();
         let url_position = text.len() - 1;
-        assert_eq!(text[url_position], "rtmp://127.0.0.1:1935/app/key12345");
+        let expected = if cfg!(unix) {
+            "rtmp://127.0.0.1:1935"
+        } else {
+            "rtmp://127.0.0.1:1935/app/key12345"
+        };
+        assert_eq!(text[url_position], expected);
         assert_eq!(text[url_position - 1], "flv");
         assert_eq!(text[url_position - 2], "-f");
         let flvflags = text
@@ -3879,6 +4018,98 @@ mod tests {
             .position(|window| window == ["-flvflags", "no_duration_filesize"])
             .expect("FLV output keeps -flvflags");
         assert!(flvflags < url_position - 2);
+    }
+
+    /// The application and stream name split exactly as `ffmpeg` 6.1's own
+    /// RTMP listener logs it (`path = ..., app = ..., fname = ...`) for the
+    /// same paths.
+    #[test]
+    fn rtmp_paths_split_into_app_and_playpath_as_ffmpeg_does() {
+        for (path, app, playpath) in [
+            ("/live/K", "live", "K"),
+            ("/a/b/K", "a/b", "K"),
+            ("/a/b/c/K", "a/b", "c/K"),
+            ("/K", "K", ""),
+            ("//K", "", "K"),
+            ("/a/b:c/K", "a", "b:c/K"),
+            ("/a:b/c/K", "a:b/c", "K"),
+            ("/live/K.flv", "live", "K"),
+            ("/live/K.mp4", "live", "mp4:K.mp4"),
+            ("/live/x:K.mp4", "live", "x:K.mp4"),
+            ("/ondemand/x/K", "ondemand", "x/K"),
+            ("/live/K?x=1/y", "live/K?x=1", "y"),
+            ("/a/b/c?d/e", "a/b", "c?d/e"),
+        ] {
+            assert_eq!(
+                rtmp_app_and_playpath(path),
+                (app.to_owned(), playpath.to_owned()),
+                "{path}"
+            );
+        }
+    }
+
+    /// The stream key never reaches argv, which every local user can read in
+    /// `/proc/<pid>/cmdline` and `ps` shows: the spawned command names only
+    /// the scheme and authority and reads the key from its stdin preset.
+    #[test]
+    #[cfg(unix)]
+    fn the_stream_key_is_not_on_the_child_command_line() {
+        const KEY: &str = "live_9Xq7Zr2Kp";
+        let inputs = Inputs {
+            video_address: "127.0.0.1:20001".parse().unwrap(),
+            audio_address: "127.0.0.1:20002".parse().unwrap(),
+            video_token: "video-token",
+            audio_token: "audio-token",
+        };
+        for (url, preset) in [
+            (
+                format!("rtmp://ingest.test:1935/live/{KEY}"),
+                format!("rtmp_app=live\nrtmp_playpath={KEY}\n"),
+            ),
+            (
+                format!("rtmps://ingest.test:443/app/inst/{KEY}?sig=a/b"),
+                format!("rtmp_app=app/inst\nrtmp_playpath={KEY}?sig=a/b\n"),
+            ),
+            (
+                format!("srt://ingest.test:9000?streamid={KEY}"),
+                format!("streamid={KEY}\n"),
+            ),
+        ] {
+            let config = StreamConfig::new(format(), StreamDestination::parse(&url).unwrap());
+            let built = command_args(&config, "stereo", &inputs);
+            let command = command(
+                OsStr::new("ffmpeg"),
+                &built,
+                output_preset(&config).is_some(),
+            );
+            let argv = command
+                .get_args()
+                .map(|argument| argument.to_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            assert!(
+                argv.iter().all(|argument| !argument.contains(KEY)),
+                "{argv:?}"
+            );
+            assert!(
+                argv.iter().all(|argument| !argument.contains("sig=")),
+                "{argv:?}"
+            );
+            let fpre = argv
+                .iter()
+                .position(|argument| argument == "-fpre")
+                .unwrap();
+            assert_eq!(argv[fpre + 1], PRESET_FROM_STDIN);
+            assert_eq!(output_preset(&config), Some(preset), "{url}");
+        }
+        // An SRT stream id libsrt would URL-decode stays in the URL.
+        let encoded = StreamDestination::parse("srt://ingest.test:9000?streamid=a%2Fb12").unwrap();
+        assert_eq!(split_secret(&encoded), None);
+        // A destination without a key has no preset.
+        let open = StreamConfig::new(
+            format(),
+            StreamDestination::parse("srt://ingest.test:9000").unwrap(),
+        );
+        assert_eq!(output_preset(&open), None);
     }
 
     #[test]
@@ -3912,16 +4143,17 @@ mod tests {
                 "/dev/stdin",
                 "-f",
                 "mpegts",
-                "srt://127.0.0.1:9000?streamid=abcd1234",
+                "srt://127.0.0.1:9000",
             ]
         );
-        // The passphrase reaches the child only through its stdin, never
-        // through argv (world-readable in `/proc/<pid>/cmdline`).
+        // The passphrase and stream id reach the child only through its
+        // stdin, never through argv (world-readable in `/proc/<pid>/cmdline`).
         assert!(text.iter().all(|argument| !argument.contains(PASSPHRASE)));
+        assert!(text.iter().all(|argument| !argument.contains("abcd1234")));
         assert!(!text.iter().any(|argument| argument == "-passphrase"));
         assert_eq!(
-            srt.srt.as_ref().unwrap().preset(),
-            Some(format!("passphrase={PASSPHRASE}\n"))
+            output_preset(&srt),
+            Some(format!("streamid=abcd1234\npassphrase={PASSPHRASE}\n"))
         );
         // Unencrypted: the latency only.
         srt.srt = Some(SrtOptions::new(120, None).unwrap());

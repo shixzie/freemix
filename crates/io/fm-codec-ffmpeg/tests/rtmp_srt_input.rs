@@ -32,6 +32,8 @@ const FPS: u32 = 25;
 const FRAME_PERIOD: Duration = Duration::from_millis(40);
 const KEY: &str = "sk_live_7Hq2";
 const PASSPHRASE: &str = "correct-horse-battery-staple";
+const SRT_WHITELIST: &str = "pipe,srt";
+const RTMP_WHITELIST: &str = "pipe,rtmp,rtmps,tcp,tls";
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -249,28 +251,38 @@ fn loud_frames_over(receiver: &NetworkReceiver, span: Duration) -> usize {
     observed.loud_frames
 }
 
-/// Asserts that the receiver's encrypted SRT child (the only process whose
-/// argv names the `pipe,srt` whitelist) is running and that `secret` is not
-/// in its argv, which any local user can read in `/proc/<pid>/cmdline`. The
-/// test's own `ffmpeg` peer carries the passphrase in its URL, so it is
+/// Asserts that the receiver's scripted child (the only process whose argv
+/// names the `pipe,<protocols>` whitelist) is running and that `secret` is
+/// not in its argv, which any local user can read in `/proc/<pid>/cmdline`.
+/// The test's own `ffmpeg` peer carries the secret in its URL, so it is
 /// told apart by that whitelist.
 #[cfg(target_os = "linux")]
-fn assert_child_argv_free_of(secret: &str) {
+fn assert_child_argv_free_of(whitelist: &str, secret: &str) {
+    let marker = format!("-protocol_whitelist {whitelist} -i pipe:0");
     let children = std::fs::read_dir("/proc")
         .expect("read /proc")
         .flatten()
+        // Only this test process's own children: other processes on the
+        // machine may run the same tests.
+        .filter(|entry| {
+            std::fs::read_to_string(entry.path().join("stat")).is_ok_and(|stat| {
+                stat.rsplit_once(") ")
+                    .and_then(|(_, rest)| rest.split(' ').nth(1))
+                    .is_some_and(|ppid| ppid == std::process::id().to_string())
+            })
+        })
         .filter_map(|entry| std::fs::read(entry.path().join("cmdline")).ok())
         .map(|cmdline| String::from_utf8_lossy(&cmdline).replace('\0', " "))
-        .filter(|cmdline| cmdline.contains("-protocol_whitelist pipe,srt -i pipe:0"))
+        .filter(|cmdline| cmdline.contains(&marker))
         .collect::<Vec<_>>();
     assert!(!children.is_empty(), "the receiver's child is running");
     for cmdline in children {
-        assert!(!cmdline.contains(secret), "argv leaks the passphrase");
+        assert!(!cmdline.contains(secret), "argv leaks a secret: {cmdline}");
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn assert_child_argv_free_of(_secret: &str) {}
+fn assert_child_argv_free_of(_whitelist: &str, _secret: &str) {}
 
 fn assert_no_secret(status: &NetworkStreamStatus, secrets: &[&str]) {
     if let Some(error) = &status.last_error {
@@ -340,6 +352,7 @@ fn an_rtmp_listener_takes_an_encoder_push_refuses_a_wrong_key_and_listens_again(
     // is refused, once and without retrying, goes live.
     let publisher = Peer::tone(&["-f", "flv", &format!("rtmp://127.0.0.1:{port}/live/{KEY}")]);
     expect_live(&receiver, &mut observed, "rtmp listener");
+    assert_child_argv_free_of(RTMP_WHITELIST, KEY);
     assert!(loud_frames_over(&receiver, Duration::from_secs(2)) > 10);
     assert_eq!(receiver.status().source_channels, 1);
 
@@ -501,6 +514,7 @@ fn an_rtmp_caller_pulls_from_an_ffmpeg_rtmp_server() {
     let receiver = receiver(&config);
     let mut observed = Observed::default();
     expect_live(&receiver, &mut observed, "rtmp caller");
+    assert_child_argv_free_of(RTMP_WHITELIST, KEY);
     assert!(loud_frames_over(&receiver, Duration::from_secs(2)) > 10);
     assert!(
         !format!("{receiver:?}").contains(KEY),
@@ -539,7 +553,7 @@ fn an_srt_listener_with_a_passphrase_hears_the_chosen_pair_of_eight_channels() {
     };
     let _caller = Peer::start(eight, &["-f", "mpegts", &caller_url(port)]);
     expect_live(&receiver, &mut observed, "srt listener");
-    assert_child_argv_free_of(PASSPHRASE);
+    assert_child_argv_free_of(SRT_WHITELIST, PASSPHRASE);
     assert_eq!(receiver.status().source_channels, 8);
     assert!(
         loud_frames_over(&receiver, Duration::from_secs(2)) > 10,
@@ -654,7 +668,7 @@ fn an_srt_caller_pulls_from_an_encrypted_ffmpeg_listener() {
     let receiver = receiver(&config);
     let mut observed = Observed::default();
     expect_live(&receiver, &mut observed, "srt caller");
-    assert_child_argv_free_of(PASSPHRASE);
+    assert_child_argv_free_of(SRT_WHITELIST, PASSPHRASE);
     assert!(loud_frames_over(&receiver, Duration::from_secs(2)) > 10);
     assert!(!format!("{receiver:?}").contains(PASSPHRASE));
 }

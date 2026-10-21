@@ -36,6 +36,13 @@ closes a locked-out connection before starting any decoder, remembers at most
 1024 addresses, and logs each lockout (`FREEMIXD_NETWORK_LOCKOUT`) without the
 key tried.
 
+Stream keys, SRT stream IDs, and SRT passphrases never appear on a media
+child's command line on Unix, where any local user can read it
+(`/proc/<pid>/cmdline`, `ps`): network input children read their URL from a
+`concat` script on stdin, and stream output children read the secret protocol
+options from a preset on stdin (`-fpre /dev/stdin`). Windows, which does not
+show other users' command lines, still passes the output key in argv.
+
 ## 3. Roles and dangerous actions
 
 Authorization is command-level and resource-aware. A graphics operator may

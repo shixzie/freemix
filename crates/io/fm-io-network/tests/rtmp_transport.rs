@@ -11,8 +11,9 @@
 //!
 //! The receiver is the same real RTMP receiver the codec crate's streaming
 //! tests use, and the surviving-child check scans `/proc` for a publisher
-//! command line carrying this test's unique stream key, so it also finds a
-//! reparented orphan. `publisher_alive` is asserted *true* while a stream is
+//! command line whose output is this test's unique destination port (the
+//! stream key itself never reaches argv), so it also finds a reparented
+//! orphan. `publisher_alive` is asserted *true* while a stream is
 //! live before it is asserted false after a stop, because a detector that never
 //! matches would make every leak assertion vacuous.
 //!
@@ -152,19 +153,38 @@ fn wait_for_listen(port: u16, deadline: Instant) -> bool {
     }
 }
 
-/// True while any process is still running a publisher for this key. The
-/// `rawvideo` term distinguishes the transport's own child from the test
-/// receiver, which shares the destination URL. A reparented orphan is found.
-fn publisher_alive(key: &str) -> bool {
+/// The argv of every running publisher whose output is the destination on
+/// `port`. The `rawvideo` term distinguishes the transport's own child from
+/// the test receiver, which listens on the same port. A reparented orphan is
+/// found.
+fn publisher_argv(port: u16) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
-        return false;
+        return Vec::new();
     };
-    entries.flatten().any(|entry| {
-        std::fs::read(entry.path().join("cmdline")).is_ok_and(|cmdline| {
-            let text = String::from_utf8_lossy(&cmdline);
-            text.contains(key) && text.contains("rawvideo")
-        })
-    })
+    // The publisher's URL is its last argument: the scheme and authority
+    // only, the stream key travelling in its stdin preset.
+    let url = format!("rtmp://127.0.0.1:{port}\0");
+    entries
+        .flatten()
+        .filter_map(|entry| std::fs::read(entry.path().join("cmdline")).ok())
+        .map(|cmdline| String::from_utf8_lossy(&cmdline).into_owned())
+        .filter(|text| text.contains(&url) && text.contains("rawvideo"))
+        .collect()
+}
+
+/// True while any process is still running a publisher to `port`.
+fn publisher_alive(port: u16) -> bool {
+    !publisher_argv(port).is_empty()
+}
+
+/// Asserts that a publisher to `port` runs and that `key` is in no
+/// publisher's argv, which every local user can read in `/proc`.
+fn assert_publisher_hides(port: u16, key: &str) {
+    let argv = publisher_argv(port);
+    assert!(!argv.is_empty(), "no publisher child is running");
+    for cmdline in argv {
+        assert!(!cmdline.contains(key), "argv leaks the stream key");
+    }
 }
 
 fn spawn_rtmp_receiver(port: u16, key: &str, output: &Path) -> Child {
@@ -395,7 +415,7 @@ fn a_killed_receiver_is_retried_and_resumed_on_the_backup_endpoint() {
         live.connected,
         "the transport never opened the destination: {live:?}"
     );
-    assert!(publisher_alive(&key), "no publisher child is running");
+    assert_publisher_hides(primary_port, &key);
     assert_eq!(pump.connect_attempts(), 1);
     assert_eq!(pump.failure_count(), 0);
     assert_eq!(
@@ -467,7 +487,10 @@ fn a_killed_receiver_is_retried_and_resumed_on_the_backup_endpoint() {
 
     pump.set.stop(pump.destination, &mut pump.sink).unwrap();
     assert_eq!(pump.state(), DestinationState::Stopped);
-    assert!(!publisher_alive(&key), "a publisher survived the stop");
+    assert!(
+        !publisher_alive(primary_port) && !publisher_alive(backup_port),
+        "a publisher survived the stop"
+    );
     assert_eq!(
         pump.sink.connections_started(),
         pump.sink.connections_stopped(),
@@ -536,9 +559,10 @@ fn a_terminal_cause_stops_the_destination_and_a_transient_one_is_retried() {
     // Retryable: a well-formed destination with nothing listening. The child
     // starts, the destination refuses it, and the budget bounds the retries.
     let key = unique_key("refused");
+    let refused_port = free_port();
     let mut pump = Pump::new(
         destination_config(
-            free_port(),
+            refused_port,
             None,
             ReconnectPolicy::new(100, 400, 2, Some(2)).unwrap(),
         ),
@@ -566,7 +590,7 @@ fn a_terminal_cause_stops_the_destination_and_a_transient_one_is_retried() {
         pump.sink.connections_stopped()
     );
     assert!(
-        !publisher_alive(&key),
+        !publisher_alive(refused_port),
         "a failed attempt leaked a publisher"
     );
 }
@@ -604,12 +628,13 @@ fn no_ffmpeg_child_outlives_a_stop_or_a_failed_attempt() {
         |pump| pump.packets_sent() >= 45,
     );
     assert!(
-        publisher_alive(&key),
+        publisher_alive(port),
         "the surviving-child detector never matched a running publisher"
     );
+    assert_publisher_hides(port, &key);
 
     pump.set.stop(pump.destination, &mut pump.sink).unwrap();
-    assert!(!publisher_alive(&key), "a publisher survived the stop");
+    assert!(!publisher_alive(port), "a publisher survived the stop");
     assert_eq!(pump.sink.connections_started(), 1);
     assert_eq!(pump.sink.connections_stopped(), 1);
     assert_eq!(pump.sink.unconfirmed_cleanups(), 0);
@@ -619,9 +644,10 @@ fn no_ffmpeg_child_outlives_a_stop_or_a_failed_attempt() {
 
     // A failed attempt must be cleaned up just as completely.
     let failed_key = unique_key("failedattempt");
+    let failed_port = free_port();
     let mut pump = Pump::new(
         destination_config(
-            free_port(),
+            failed_port,
             None,
             ReconnectPolicy::new(2_000, 4_000, 2, Some(4)).unwrap(),
         ),
@@ -634,7 +660,7 @@ fn no_ffmpeg_child_outlives_a_stop_or_a_failed_attempt() {
         |pump| pump.failure_count() >= 1,
     );
     assert!(
-        !publisher_alive(&failed_key),
+        !publisher_alive(failed_port),
         "the failed attempt's publisher is still running"
     );
     assert_eq!(
