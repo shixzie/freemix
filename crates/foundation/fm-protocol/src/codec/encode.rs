@@ -215,6 +215,19 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
                 record.field_string(name, value)
             })?;
         }
+        WireMessage::AudioOutputDevicesRequest(message) => {
+            record.kind("audio_output_devices_request");
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+        }
+        WireMessage::AudioOutputDevices(message) => {
+            record.kind("audio_output_devices");
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+            super::audio_output::encode_inventory(&message.inventory, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         WireMessage::WebAccessRequest(message) => {
             record.kind("web_access_request");
             validate_request_id(&message.request_id)?;

@@ -200,6 +200,7 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
         (StudioIntent::RequestDisplayInventory, StudioIntent::RequestDisplayInventory)
         | (StudioIntent::RequestCaptureDevices, StudioIntent::RequestCaptureDevices)
         | (StudioIntent::RequestSystemAudioDevices, StudioIntent::RequestSystemAudioDevices)
+        | (StudioIntent::RequestAudioOutputDevices, StudioIntent::RequestAudioOutputDevices)
         | (
             StudioIntent::WebAccess(fm_protocol::WebAccessAction::Status),
             StudioIntent::WebAccess(fm_protocol::WebAccessAction::Status),
@@ -1277,6 +1278,7 @@ fn run_worker(
                 | StudioIntent::RequestDisplayInventory
                 | StudioIntent::RequestCaptureDevices
                 | StudioIntent::RequestSystemAudioDevices
+                | StudioIntent::RequestAudioOutputDevices
                 | StudioIntent::WebAccess(_)
                 | StudioIntent::RequestSlideshowSlides { .. }
                 | StudioIntent::PagedPage(_)
@@ -1316,6 +1318,7 @@ fn run_worker(
                     | SessionEvent::DisplayInventory { .. }
                     | SessionEvent::CaptureDevices { .. }
                     | SessionEvent::SystemAudioDevices { .. }
+                    | SessionEvent::AudioOutputDevices { .. }
                     | SessionEvent::WebAccess { .. }
                     | SessionEvent::SlideshowSlides { .. }
                     | SessionEvent::PagedPage { .. }
@@ -1377,6 +1380,7 @@ fn run_worker(
                 | StudioIntent::RequestDisplayInventory
                 | StudioIntent::RequestCaptureDevices
                 | StudioIntent::RequestSystemAudioDevices
+                | StudioIntent::RequestAudioOutputDevices
                 | StudioIntent::WebAccess(_)
                 | StudioIntent::RequestSlideshowSlides { .. }
                 | StudioIntent::PagedPage(_)
@@ -1498,6 +1502,15 @@ fn handle_preview_request(
         }
         return true;
     }
+    // So are the headphone output devices (AU-001, Protocol 2.102).
+    if matches!(request, StudioIntent::RequestAudioOutputDevices) {
+        if recovery.active() {
+            runtime.want_audio_output_devices();
+        } else {
+            runtime.request_audio_output_devices();
+        }
+        return true;
+    }
     // A new pick of a screen capture input's target (IN-011, Protocol
     // 2.85) is not repeated after a reconnect: the operator asks again.
     if let StudioIntent::PickScreenCapture { input } = request {
@@ -1550,6 +1563,7 @@ fn handle_worker_intent(
         | StudioIntent::RequestDisplayInventory
         | StudioIntent::RequestCaptureDevices
         | StudioIntent::RequestSystemAudioDevices
+        | StudioIntent::RequestAudioOutputDevices
         | StudioIntent::WebAccess(_)
         | StudioIntent::RequestSlideshowSlides { .. }
         | StudioIntent::PagedPage(_)
@@ -1862,6 +1876,7 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::DisplayInventory { .. }
                         | SessionEvent::CaptureDevices { .. }
                         | SessionEvent::SystemAudioDevices { .. }
+                        | SessionEvent::AudioOutputDevices { .. }
                         | SessionEvent::WebAccess { .. }
                         | SessionEvent::SlideshowSlides { .. }
                         | SessionEvent::PagedPage { .. }
@@ -2416,6 +2431,7 @@ fn receive_command_event(
                 | SessionEvent::DisplayInventory { .. }
                 | SessionEvent::CaptureDevices { .. }
                 | SessionEvent::SystemAudioDevices { .. }
+                | SessionEvent::AudioOutputDevices { .. }
                 | SessionEvent::WebAccess { .. }
                 | SessionEvent::SlideshowSlides { .. }
                 | SessionEvent::PagedPage { .. }
@@ -2936,6 +2952,9 @@ fn intent_payload(
         }
         StudioIntent::RequestSystemAudioDevices => {
             return Err("A system audio devices request is not a command".to_owned());
+        }
+        StudioIntent::RequestAudioOutputDevices => {
+            return Err("An audio output devices request is not a command".to_owned());
         }
         StudioIntent::WebAccess(_) => {
             return Err("A web access request is not a command".to_owned());
@@ -6534,6 +6553,22 @@ mod tests {
                 curve: fm_protocol::FadeToBlackCurve::Ease,
             })
         );
+    }
+
+    /// The headphone output device list (Protocol 2.102) is a request, not
+    /// a command, and one queued request answers the next.
+    #[test]
+    fn audio_output_device_requests_are_not_commands_and_coalesce() {
+        assert!(intent_payload(StudioIntent::RequestAudioOutputDevices, None).is_err());
+        let mut outputs = StudioIntent::RequestAudioOutputDevices;
+        assert!(coalesce_adjacent_intent(
+            &mut outputs,
+            StudioIntent::RequestAudioOutputDevices
+        ));
+        assert!(!coalesce_adjacent_intent(
+            &mut outputs,
+            StudioIntent::RequestSystemAudioDevices
+        ));
     }
 
     /// OR-011: the Fullscreen outputs dialog's intents become the

@@ -522,6 +522,29 @@ fn native_daemon_plays_the_monitor_bus_on_a_headphone_device() {
     assert_eq!(mixer.monitor, fm_protocol::AudioMonitorStatus::default());
     client.output("a meter-only monitor bus", AudioMonitorOutputState::Off);
 
+    // The headphone output devices are listed (Protocol 2.102): ALSA's
+    // on Linux, whose list is ALSA's default and the playback PCMs, or why
+    // ALSA could not be read; nothing on another platform.
+    client.send(&WireMessage::AudioOutputDevicesRequest(
+        fm_protocol::AudioOutputDevicesRequest {
+            request_id: "outputs".into(),
+        },
+    ));
+    let outputs = client.wait_for("the output devices", |_, message| match message {
+        WireMessage::AudioOutputDevices(answer) if answer.request_id == "outputs" => {
+            Some(answer.inventory)
+        }
+        _ => None,
+    });
+    assert_eq!(outputs.supported, cfg!(target_os = "linux"));
+    if outputs.supported && outputs.error.is_none() {
+        assert_eq!(
+            outputs.device("default").map(|device| device.default),
+            Some(true),
+            "{outputs:?}"
+        );
+    }
+
     // The clip's tone plays on Program; the monitor bus follows Master.
     client.accept(CommandPayload::InputLifecycle(
         InputLifecycleOperation::Import {

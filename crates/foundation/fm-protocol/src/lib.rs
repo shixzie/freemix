@@ -1,6 +1,7 @@
 //! Transport-neutral wire DTOs and newline-delimited control codec.
 
 mod audio_mixer;
+mod audio_output;
 mod capture;
 mod codec;
 mod cue;
@@ -40,6 +41,11 @@ pub use audio_mixer::{
     MAX_AUDIO_MONITOR_DEVICE_BYTES, MAX_AUDIO_STRIP_DSP_STATES, MAX_DYNAMICS_REDUCTION_MILLIDB,
     MAX_LOUDNESS_MILLI, MAX_LOUDNESS_RANGE_MILLILU, MIN_LOUDNESS_MILLI, audio_group_is_valid,
     audio_label_is_valid, audio_monitor_device_is_valid, fade_to_black_affects,
+};
+pub use audio_output::{
+    AudioOutputDevice, AudioOutputDevicesMessage, AudioOutputDevicesRequest, AudioOutputInventory,
+    MAX_AUDIO_OUTPUT_CHANNELS, MAX_AUDIO_OUTPUT_DESCRIPTION_BYTES, MAX_AUDIO_OUTPUT_DEVICE_BYTES,
+    MAX_AUDIO_OUTPUT_DEVICES, MAX_AUDIO_OUTPUT_ERROR_BYTES, audio_output_device_is_valid,
 };
 pub use capture::{
     CaptureAudio, CaptureDevice, CaptureDevicesMessage, CaptureDevicesRequest, CaptureError,

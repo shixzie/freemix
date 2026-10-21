@@ -1912,6 +1912,10 @@ pub struct ClientView {
     /// (Protocol 2.68); `None` until a `system_audio_devices` reply
     /// arrives.
     pub system_audio_inventory: Option<fm_protocol::SystemAudioInventory>,
+    /// The server's headphone output devices as it last listed them
+    /// (Protocol 2.102); `None` until an `audio_output_devices` reply
+    /// arrives.
+    pub audio_output_inventory: Option<fm_protocol::AudioOutputInventory>,
     /// The web gateway's pairing and paired devices as the daemon last
     /// answered a `web_access_request` (Protocol 2.71); `None` until then.
     pub web_access: Option<fm_protocol::WebAccessMessage>,
@@ -2715,6 +2719,9 @@ pub struct ClientModel {
     /// The system audio capture devices as last listed (Protocol 2.68).
     /// Runtime state that survives resynchronization.
     system_audio_inventory: Option<fm_protocol::SystemAudioInventory>,
+    /// The headphone output devices as last listed (Protocol 2.102).
+    /// Runtime state that survives resynchronization.
+    audio_output_inventory: Option<fm_protocol::AudioOutputInventory>,
     /// The latest web access answer (Protocol 2.71). Runtime state that
     /// survives resynchronization.
     web_access: Option<fm_protocol::WebAccessMessage>,
@@ -2745,6 +2752,7 @@ impl ClientModel {
             display_inventory: None,
             capture_inventory: None,
             system_audio_inventory: None,
+            audio_output_inventory: None,
             web_access: None,
             screen_capture_inventory: None,
         }
@@ -2807,6 +2815,19 @@ impl ClientModel {
     #[must_use]
     pub const fn system_audio_inventory(&self) -> Option<&fm_protocol::SystemAudioInventory> {
         self.system_audio_inventory.as_ref()
+    }
+
+    /// Records the headphone output devices from an `audio_output_devices`
+    /// reply (Protocol 2.102).
+    pub fn apply_audio_output_inventory(&mut self, inventory: fm_protocol::AudioOutputInventory) {
+        self.audio_output_inventory = Some(inventory);
+    }
+
+    /// Returns the headphone output devices as last listed (Protocol
+    /// 2.102).
+    #[must_use]
+    pub const fn audio_output_inventory(&self) -> Option<&fm_protocol::AudioOutputInventory> {
+        self.audio_output_inventory.as_ref()
     }
 
     /// Records the capture devices from a `capture_devices` runtime event
@@ -3054,6 +3075,7 @@ impl ClientModel {
                 .collect(),
             capture_inventory: self.capture_inventory.clone(),
             system_audio_inventory: self.system_audio_inventory.clone(),
+            audio_output_inventory: self.audio_output_inventory.clone(),
             web_access: self.web_access.clone(),
             system_audio_inputs: state
                 .system_audio_inputs

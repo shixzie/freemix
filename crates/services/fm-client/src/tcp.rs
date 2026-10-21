@@ -413,6 +413,11 @@ pub enum SessionEvent {
     SystemAudioDevices {
         message: fm_protocol::SystemAudioDevicesMessage,
     },
+    /// The daemon answered an audio output devices request (Protocol
+    /// 2.102). The list is also in the replicated model.
+    AudioOutputDevices {
+        message: fm_protocol::AudioOutputDevicesMessage,
+    },
     /// The daemon answered a web access request (Protocol 2.71). The
     /// answer is also in the replicated model.
     WebAccess {
@@ -974,6 +979,26 @@ impl TcpSession {
             return Err(TcpSessionError::NotConnected);
         }
         self.send_wire_wait(&WireMessage::SystemAudioDevicesRequest(request), None)?;
+        self.flush_wire_wait(None)
+    }
+
+    /// Asks for the daemon's headphone output devices (Protocol 2.102).
+    /// The answer arrives later as [`SessionEvent::AudioOutputDevices`]
+    /// naming the same `request_id`; the daemon may answer only the newest
+    /// of several requests.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected or when encoding or writing the
+    /// request fails.
+    pub fn send_audio_output_devices_request(
+        &mut self,
+        request: fm_protocol::AudioOutputDevicesRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        self.send_wire_wait(&WireMessage::AudioOutputDevicesRequest(request), None)?;
         self.flush_wire_wait(None)
     }
 
@@ -1704,6 +1729,10 @@ impl TcpSession {
                 self.intake(WireMessage::SystemAudioDevices(message.clone()))?;
                 Ok(SessionEvent::SystemAudioDevices { message })
             }
+            WireMessage::AudioOutputDevices(message) => {
+                self.intake(WireMessage::AudioOutputDevices(message.clone()))?;
+                Ok(SessionEvent::AudioOutputDevices { message })
+            }
             WireMessage::WebAccess(message) => {
                 self.intake(WireMessage::WebAccess(message.clone()))?;
                 Ok(SessionEvent::WebAccess { message })
@@ -1756,6 +1785,7 @@ impl TcpSession {
             | WireMessage::DisplayInventoryRequest(_)
             | WireMessage::CaptureDevicesRequest(_)
             | WireMessage::SystemAudioDevicesRequest(_)
+            | WireMessage::AudioOutputDevicesRequest(_)
             | WireMessage::WebAccessRequest(_)
             | WireMessage::SlideshowSlidesRequest(_)
             | WireMessage::PagedPageRequest(_)

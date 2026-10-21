@@ -1,5 +1,6 @@
 mod animation;
 mod audio_mixer;
+mod audio_output;
 mod capture;
 mod cue;
 mod decode;

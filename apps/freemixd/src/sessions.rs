@@ -737,6 +737,11 @@ pub(super) fn run(
         crate::system_audio_devices::enumerator(native.is_some()),
         crate::system_audio_devices::REUSE_FOR,
     )?;
+    // So are the headphone output devices (AU-001, Protocol 2.102).
+    let audio_output_devices = crate::audio_output_devices::AudioOutputDevices::spawn(
+        crate::audio_output_devices::enumerator(native.is_some()),
+        crate::audio_output_devices::REUSE_FOR,
+    )?;
     // Document pages render off this loop too (IN-014).
     let documents = store.documents().cloned().unwrap_or_default();
     let document_pages = crate::documents::PageWorker::spawn(Arc::clone(&documents))?;
@@ -753,6 +758,7 @@ pub(super) fn run(
         titles,
         title_previews: &title_previews,
         system_audio_devices: &system_audio_devices,
+        audio_output_devices: &audio_output_devices,
         web_access: web.map(WebGateway::access),
         document_pages: &document_pages,
         screen_capture_targets: &screen_capture_targets,
@@ -1214,6 +1220,27 @@ pub(super) fn run(
             ) {
                 Ok(()) => {}
                 Err(refusal) if refusal.transient() => system_audio_devices.defer(id, answer),
+                Err(_) => close[index] = true,
+            }
+        }
+        for (id, answer) in audio_output_devices.take_finished() {
+            let Some(index) = peers.iter().position(|peer| peer.id == id) else {
+                continue;
+            };
+            let peer = &mut peers[index];
+            if close[index] {
+                continue;
+            }
+            if peer.phase != Phase::Active || peer.held_result.is_some() {
+                audio_output_devices.defer(id, answer);
+                continue;
+            }
+            match peer.queue(
+                &WireMessage::AudioOutputDevices(answer.clone()),
+                Accounting::Session,
+            ) {
+                Ok(()) => {}
+                Err(refusal) if refusal.transient() => audio_output_devices.defer(id, answer),
                 Err(_) => close[index] = true,
             }
         }
@@ -1889,6 +1916,8 @@ struct Runtime<'a> {
     title_previews: &'a crate::title_preview::TitlePreviewWorker,
     /// Lists system audio devices off this loop (Protocol 2.68).
     system_audio_devices: &'a crate::system_audio_devices::SystemAudioDevices,
+    /// Lists headphone output devices off this loop (Protocol 2.102).
+    audio_output_devices: &'a crate::audio_output_devices::AudioOutputDevices,
     /// The web gateway's pairing and devices (Protocol 2.71), when it runs.
     web_access: Option<&'a std::sync::Arc<crate::web::WebAccess>>,
     /// Answers document page requests off this loop (IN-014).
@@ -2395,6 +2424,21 @@ impl Runtime<'_> {
                     return Ok(());
                 }
                 self.system_audio_devices
+                    .submit(peer.id, request.request_id);
+                Ok(())
+            }
+            // The headphone output devices (AU-001, Protocol 2.102), listed
+            // off this loop like the system audio devices, and only for a
+            // session that may choose the device.
+            WireMessage::AudioOutputDevicesRequest(request) => {
+                if self.refuse_request(
+                    peer,
+                    &request.request_id,
+                    Session::admit_device_inventory,
+                )? {
+                    return Ok(());
+                }
+                self.audio_output_devices
                     .submit(peer.id, request.request_id);
                 Ok(())
             }

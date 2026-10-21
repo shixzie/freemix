@@ -28,10 +28,23 @@
 //!
 //! A write error, an exited child, or a device that stopped reading (a
 //! write blocked for [`MONITOR_STALL_AFTER`]) marks the output failed; a
-//! stalled child is killed. The failure is logged once as a
+//! stalled child is killed. Each failure is logged as a
 //! `FREEMIXD_MONITOR_OUTPUT_FAILURE` record carrying a bounded, redacted
-//! tail of the child's standard error. Only choosing the device again
-//! reopens a failed device: a later sample-rate or channel change does not.
+//! tail of the child's standard error.
+//!
+//! # Hot-plug
+//!
+//! A failed device is retried on its own (Protocol 2.102): the first retry
+//! waits [`MONITOR_RETRY_FIRST`], doubling after each failed attempt up to
+//! [`MONITOR_RETRY_MAX`], and a device that played for
+//! [`MONITOR_RETRY_RESET_AFTER`] starts the back-off over. Before an
+//! attempt the slot asks whether the device is present (on Linux, whether its ALSA card and PCM are in `/proc/asound`): an
+//! unplugged device is not opened, only looked for again every
+//! [`MONITOR_PRESENCE_POLL`], and is opened as soon as it is back. The
+//! output reads failed until a reopened device has played for
+//! [`MONITOR_RETRY_PROBATION`]. Choosing the device again retries it at
+//! once; a sample-rate or channel change never reopens a failed device
+//! early.
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -61,6 +74,47 @@ pub const MONITOR_BLOCKED_WRITE: Duration = Duration::from_millis(10);
 
 /// A write blocked this long means the device stopped reading.
 pub const MONITOR_STALL_AFTER: Duration = Duration::from_secs(3);
+
+/// The wait before the first retry of a failed device.
+pub const MONITOR_RETRY_FIRST: Duration = Duration::from_secs(1);
+
+/// The longest wait between retries of a failed device.
+pub const MONITOR_RETRY_MAX: Duration = Duration::from_secs(30);
+
+/// A device that played this long starts its retry back-off over.
+pub const MONITOR_RETRY_RESET_AFTER: Duration = Duration::from_secs(10);
+
+/// How often an unplugged device is looked for.
+pub const MONITOR_PRESENCE_POLL: Duration = Duration::from_secs(1);
+
+/// How long a reopened device must play before it no longer reads failed.
+pub const MONITOR_RETRY_PROBATION: Duration = Duration::from_secs(1);
+
+/// Whether an output device is present now: `Some(false)` when it is
+/// known to be unplugged, `None` when that cannot be told.
+pub type MonitorPresence = Box<dyn FnMut(&str) -> Option<bool> + Send>;
+
+/// The presence probe of this platform: ALSA's procfs on Linux, and none
+/// elsewhere (every retry then tries the device).
+pub fn system_presence() -> MonitorPresence {
+    #[cfg(target_os = "linux")]
+    {
+        let lister = fm_io_linux::audio_output::AudioOutputLister::default();
+        Box::new(move |device| lister.present(device))
+    }
+    #[cfg(not(target_os = "linux"))]
+    Box::new(|_| None)
+}
+
+/// The wait before retry `attempt` (counting from zero) of a failed
+/// device: [`MONITOR_RETRY_FIRST`] doubled per attempt, at most
+/// [`MONITOR_RETRY_MAX`].
+#[must_use]
+pub fn retry_delay(attempt: u32) -> Duration {
+    MONITOR_RETRY_FIRST
+        .saturating_mul(1_u32 << attempt.min(16))
+        .min(MONITOR_RETRY_MAX)
+}
 
 /// The longest failure reason logged.
 pub const MAX_MONITOR_FAILURE_BYTES: usize = 240;
@@ -537,15 +591,37 @@ pub struct MonitorOutputSlot {
     format: Option<(u32, usize)>,
     /// Open (or reopen) the device on the next block.
     reopen: bool,
-    /// Why the device failed; cleared only when the device is chosen again.
+    /// Why the device failed; cleared when the device is chosen again or a
+    /// retry has played through its probation.
     failure: Option<String>,
+    /// When the open output started.
+    opened_at: Option<Instant>,
+    /// When a failed device is retried next.
+    retry_at: Option<Instant>,
+    /// Failed attempts since the device was chosen or last played long
+    /// enough.
+    attempts: u32,
+    /// Whether the chosen device is present.
+    presence: MonitorPresence,
 }
 
 impl MonitorOutputSlot {
     /// A slot playing on `device` (if any) through `program` at the given
-    /// level.
+    /// level, asking [`system_presence`] whether a failed device is back.
     #[must_use]
     pub fn new(program: OsString, device: Option<String>, gain_millidb: i32, muted: bool) -> Self {
+        Self::with_presence(program, device, gain_millidb, muted, system_presence())
+    }
+
+    /// [`Self::new`] asking `presence` whether a failed device is back.
+    #[must_use]
+    pub fn with_presence(
+        program: OsString,
+        device: Option<String>,
+        gain_millidb: i32,
+        muted: bool,
+        presence: MonitorPresence,
+    ) -> Self {
         Self {
             program,
             reopen: device.is_some(),
@@ -554,16 +630,23 @@ impl MonitorOutputSlot {
             output: None,
             format: None,
             failure: None,
+            opened_at: None,
+            retry_at: None,
+            attempts: 0,
+            presence,
         }
     }
 
     /// Chooses the device (or none). Choosing a device, even the current
     /// one, closes the open output and reopens it on the next block, so a
-    /// failed device is retried. Nothing else reopens a failed device.
+    /// failed device is retried at once and its back-off starts over.
     pub fn set_device(&mut self, device: Option<String>) {
         self.output = None;
         self.format = None;
         self.failure = None;
+        self.opened_at = None;
+        self.retry_at = None;
+        self.attempts = 0;
         self.reopen = device.is_some();
         self.device = device;
     }
@@ -587,9 +670,15 @@ impl MonitorOutputSlot {
 
     /// Plays one rendered block of the monitor bus: the first `samples`
     /// samples of each of `planes` at `sample_rate`. A playing device is
-    /// reopened in a new format; a failed one stays failed.
+    /// reopened in a new format; a failed one waits for its retry.
     pub fn push(&mut self, planes: &[Vec<f32>], samples: usize, sample_rate: u32) {
-        self.poll();
+        self.push_at(planes, samples, sample_rate, Instant::now());
+    }
+
+    /// [`Self::push`] at `now`.
+    pub fn push_at(&mut self, planes: &[Vec<f32>], samples: usize, sample_rate: u32, now: Instant) {
+        self.poll(now);
+        self.due_retry(now);
         let format = (sample_rate, planes.len());
         if self.output.is_some() && self.format != Some(format) {
             self.output = None;
@@ -609,10 +698,11 @@ impl MonitorOutputSlot {
                     Ok(output) => {
                         self.output = Some(output);
                         self.format = Some(format);
+                        self.opened_at = Some(now);
                     }
                     Err(error) => {
                         let program = self.program.to_string_lossy().into_owned();
-                        self.fail(&format!("could not start {program}: {error}"));
+                        self.fail(&format!("could not start {program}: {error}"), now);
                     }
                 }
             }
@@ -622,9 +712,16 @@ impl MonitorOutputSlot {
         }
     }
 
-    /// Whether the monitor bus is reaching the chosen device.
+    /// Whether the monitor bus is reaching the chosen device. A device
+    /// being retried reads failed until it has played through its
+    /// probation.
     pub fn state(&mut self) -> fm_protocol::AudioMonitorOutputState {
-        self.poll();
+        self.state_at(Instant::now())
+    }
+
+    /// [`Self::state`] at `now`.
+    pub fn state_at(&mut self, now: Instant) -> fm_protocol::AudioMonitorOutputState {
+        self.poll(now);
         if self.device.is_none() {
             fm_protocol::AudioMonitorOutputState::Off
         } else if self.failure.is_some() {
@@ -636,9 +733,16 @@ impl MonitorOutputSlot {
         }
     }
 
+    /// When the failed device is retried next, if it is.
+    #[must_use]
+    pub const fn next_retry(&self) -> Option<Instant> {
+        self.retry_at
+    }
+
     /// Latches a failure of the open output: the output is closed (its
-    /// child reaped) and the reason logged.
-    fn poll(&mut self) {
+    /// child reaped), the reason logged, and a retry scheduled. A retried
+    /// device that played through its probation no longer reads failed.
+    fn poll(&mut self, now: Instant) {
         if self
             .output
             .as_mut()
@@ -648,11 +752,47 @@ impl MonitorOutputSlot {
             let reason = output
                 .into_failure()
                 .unwrap_or_else(|| "the device failed".to_owned());
-            self.fail(&reason);
+            self.fail(&reason, now);
+        } else if self.output.is_some()
+            && self.failure.is_some()
+            && self
+                .opened_at
+                .is_some_and(|at| now.saturating_duration_since(at) >= MONITOR_RETRY_PROBATION)
+        {
+            self.failure = None;
         }
     }
 
-    fn fail(&mut self, reason: &str) {
+    /// Reopens a failed device whose retry is due, unless it is known to
+    /// be unplugged: then it is only looked for again shortly.
+    fn due_retry(&mut self, now: Instant) {
+        let (Some(at), Some(device)) = (self.retry_at, self.device.as_deref()) else {
+            return;
+        };
+        if now < at || self.output.is_some() {
+            return;
+        }
+        if (self.presence)(device) == Some(false) {
+            self.retry_at = Some(now + MONITOR_PRESENCE_POLL);
+            return;
+        }
+        self.retry_at = None;
+        self.reopen = true;
+    }
+
+    fn fail(&mut self, reason: &str, now: Instant) {
+        // A device that played long enough starts its back-off over.
+        if self
+            .opened_at
+            .is_some_and(|at| now.saturating_duration_since(at) >= MONITOR_RETRY_RESET_AFTER)
+        {
+            self.attempts = 0;
+        }
+        if self.device.is_some() {
+            self.retry_at = Some(now + retry_delay(self.attempts));
+            self.attempts = self.attempts.saturating_add(1);
+        }
+        self.opened_at = None;
         let reason = scrub_failure(reason);
         eprintln!(
             "FREEMIXD_MONITOR_OUTPUT_FAILURE\tv=1\tdevice={}\tfailure={reason}",
@@ -878,38 +1018,90 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn fail(slot: &mut MonitorOutputSlot, planes: &[Vec<f32>], sample_rate: u32) {
+    fn fail(slot: &mut MonitorOutputSlot, planes: &[Vec<f32>], sample_rate: u32, at: Instant) {
         let started = Instant::now();
-        while slot.state() != fm_protocol::AudioMonitorOutputState::Failed {
+        while slot.state_at(at) != fm_protocol::AudioMonitorOutputState::Failed {
             assert!(started.elapsed() < Duration::from_secs(10), "never failed");
-            slot.push(planes, 1_024, sample_rate);
+            slot.push_at(planes, 1_024, sample_rate, at);
             thread::sleep(Duration::from_millis(5));
         }
     }
 
-    /// A failed device is reopened only by choosing it again: neither a
-    /// sample-rate nor a channel change retries it. The failure carries the
-    /// child's redacted standard error.
+    /// Pushes a block at `at`, which retries the failed device, and waits
+    /// for that retry to fail.
+    #[cfg(unix)]
+    fn retry_fails(slot: &mut MonitorOutputSlot, planes: &[Vec<f32>], at: Instant) {
+        slot.push_at(planes, 1_024, 48_000, at);
+        assert_eq!(slot.next_retry(), None, "the retry was not due");
+        let started = Instant::now();
+        while slot.next_retry().is_none() {
+            assert!(started.elapsed() < Duration::from_secs(10), "never failed");
+            thread::sleep(Duration::from_millis(5));
+            slot.state_at(at);
+        }
+        assert_eq!(
+            slot.state_at(at),
+            fm_protocol::AudioMonitorOutputState::Failed
+        );
+    }
+
+    #[test]
+    fn retries_back_off_from_one_second_to_thirty() {
+        let delays: Vec<u64> = (0..8).map(|n| retry_delay(n).as_secs()).collect();
+        assert_eq!(delays, [1, 2, 4, 8, 16, 30, 30, 30]);
+        assert_eq!(retry_delay(u32::MAX), MONITOR_RETRY_MAX);
+    }
+
+    /// A failed device is retried on its own with a growing back-off; an
+    /// unplugged device is only looked for until it is back; a format
+    /// change never reopens it early; choosing it again retries it at once;
+    /// and a reopened device reads failed until it has played through its
+    /// probation. The failure carries the child's redacted standard error.
     #[cfg(unix)]
     #[test]
-    fn only_choosing_a_failed_device_again_reopens_it() {
+    #[allow(clippy::too_many_lines)]
+    fn a_failed_device_is_retried_with_back_off_and_reopened_when_back() {
+        use std::sync::atomic::{AtomicU8, AtomicUsize};
+
         let directory = tempfile::tempdir().unwrap();
         let spawns = directory.path().join("spawns");
+        let plays = directory.path().join("plays");
         let program = script(
             directory.path(),
             &format!(
                 "[ -n \"$WARM_UP\" ] && exit 0\n\
                  echo spawn >> '{}'\n\
+                 [ -e '{}' ] && exec cat > /dev/null\n\
                  echo '[alsa @ 0x1] cannot open audio device token=hunter2' >&2\n\
                  exit 1",
-                spawns.display()
+                spawns.display(),
+                plays.display()
             ),
         );
         let spawn_count =
             || std::fs::read_to_string(&spawns).map_or(0, |spawns| spawns.lines().count());
+        // 0: cannot tell, 1: unplugged, 2: present.
+        let presence = Arc::new(AtomicU8::new(0));
+        let probes = Arc::new(AtomicUsize::new(0));
+        let probe = {
+            let presence = Arc::clone(&presence);
+            let probes = Arc::clone(&probes);
+            Box::new(move |device: &str| {
+                assert_eq!(device, "phones");
+                probes.fetch_add(1, Ordering::SeqCst);
+                match presence.load(Ordering::SeqCst) {
+                    1 => Some(false),
+                    2 => Some(true),
+                    _ => None,
+                }
+            })
+        };
         let stereo = vec![vec![0.25; 1_024]; 2];
-        let mut slot = MonitorOutputSlot::new(program, Some("phones".into()), 0, false);
-        fail(&mut slot, &stereo, 48_000);
+        let t0 = Instant::now();
+        let at = |millis: u64| t0 + Duration::from_millis(millis);
+        let mut slot =
+            MonitorOutputSlot::with_presence(program, Some("phones".into()), 0, false, probe);
+        fail(&mut slot, &stereo, 48_000, at(0));
         let reason = slot.failure().unwrap().to_owned();
         assert!(
             reason.starts_with("the device child exited")
@@ -918,18 +1110,81 @@ mod tests {
         );
         assert!(!reason.contains("hunter2"), "{reason}");
         assert_eq!(spawn_count(), 1);
+        assert_eq!(slot.next_retry(), Some(at(1_000)));
 
-        // Another sample rate or channel count keeps the device failed.
-        slot.push(&stereo, 1_024, 44_100);
-        slot.push(&[vec![0.25; 1_024]], 1_024, 44_100);
-        assert_eq!(slot.state(), fm_protocol::AudioMonitorOutputState::Failed);
+        // Before the retry is due, neither a block nor another sample rate
+        // or channel count reopens it.
+        slot.push_at(&stereo, 1_024, 44_100, at(500));
+        slot.push_at(&[vec![0.25; 1_024]], 1_024, 44_100, at(999));
+        assert_eq!(
+            slot.state_at(at(999)),
+            fm_protocol::AudioMonitorOutputState::Failed
+        );
         assert_eq!(spawn_count(), 1, "a format change reopened a failed device");
+        assert_eq!(probes.load(Ordering::SeqCst), 0);
 
-        // Choosing it again retries it.
+        // The retry is due: the device is tried and fails again, so the
+        // next waits twice as long.
+        retry_fails(&mut slot, &stereo, at(1_000));
+        assert_eq!(spawn_count(), 2);
+        assert_eq!(slot.next_retry(), Some(at(3_000)));
+
+        // Unplugged: looked for every second, never opened.
+        presence.store(1, Ordering::SeqCst);
+        slot.push_at(&stereo, 1_024, 48_000, at(3_000));
+        assert_eq!(slot.next_retry(), Some(at(4_000)));
+        slot.push_at(&stereo, 1_024, 48_000, at(4_000));
+        assert_eq!(slot.next_retry(), Some(at(5_000)));
+        assert_eq!(spawn_count(), 2);
+        assert_eq!(probes.load(Ordering::SeqCst), 3, "one per retry or look");
+        assert_eq!(
+            slot.state_at(at(4_500)),
+            fm_protocol::AudioMonitorOutputState::Failed
+        );
+
+        // Back: opened on the next look, and its failure grows the back-off.
+        presence.store(2, Ordering::SeqCst);
+        retry_fails(&mut slot, &stereo, at(5_000));
+        assert_eq!(spawn_count(), 3);
+        assert_eq!(slot.next_retry(), Some(at(9_000)));
+
+        // Choosing it again retries it at once and starts the back-off over.
         slot.set_device(Some("phones".into()));
         assert_eq!(slot.failure(), None);
-        fail(&mut slot, &stereo, 48_000);
-        assert_eq!(spawn_count(), 2);
+        assert_eq!(slot.next_retry(), None);
+        fail(&mut slot, &stereo, 48_000, at(6_000));
+        assert_eq!(spawn_count(), 4);
+        assert_eq!(slot.next_retry(), Some(at(7_000)));
+
+        // The device works again: the retry plays, but reads failed until
+        // its probation is over.
+        std::fs::write(&plays, "").unwrap();
+        slot.push_at(&stereo, 1_024, 48_000, at(7_000));
+        let started = Instant::now();
+        while spawn_count() < 5 {
+            assert!(started.elapsed() < Duration::from_secs(10), "never spawned");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(slot.next_retry(), None);
+        assert_eq!(
+            slot.state_at(at(7_500)),
+            fm_protocol::AudioMonitorOutputState::Failed
+        );
+        slot.push_at(&stereo, 1_024, 48_000, at(8_000));
+        assert_eq!(
+            slot.state_at(at(8_000)),
+            fm_protocol::AudioMonitorOutputState::Playing
+        );
+        assert_eq!(slot.failure(), None);
+        assert_eq!(spawn_count(), 5);
+
+        // Choosing no device stops it and schedules nothing.
+        slot.set_device(None);
+        assert_eq!(
+            slot.state_at(at(9_000)),
+            fm_protocol::AudioMonitorOutputState::Off
+        );
+        assert_eq!(slot.next_retry(), None);
     }
 
     #[test]

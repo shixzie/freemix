@@ -1750,6 +1750,7 @@ pub fn run(command: Command) -> AppResult<()> {
         )?,
         Command::RemoteSystemAudioStatus { address } => remote::system_audio_inputs(address)?,
         Command::RemoteSystemAudioDevices { address } => remote::system_audio_devices(address)?,
+        Command::RemoteAudioOutputDevices { address } => remote::audio_output_devices(address)?,
         Command::RemoteDisplayInventory { address } => remote::display_inventory(address)?,
         Command::RemoteAudioStrip {
             address,
@@ -6344,6 +6345,7 @@ Usage:
   freemix-cli remote-input-add-system-audio <127.0.0.1:port> <input> <name> <pulse|alsa> <device> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-system-audio-status <127.0.0.1:port>
   freemix-cli remote-system-audio-devices <127.0.0.1:port>
+  freemix-cli remote-audio-output-devices <127.0.0.1:port>
   freemix-cli remote-input-add-image <127.0.0.1:port> <input> <name> <asset://key|/absolute/picture on the server> [--fit fit|fill|stretch|1:1] [--key <key>] [--expect <revision>]
   freemix-cli remote-input-add-slideshow <127.0.0.1:port> <input> <name> <--folder <folder> | --picture <picture>[|caption]...> [slideshow options] [--key <key>] [--expect <revision>]
   freemix-cli remote-page-navigate <127.0.0.1:port> <input> <next|previous|first|last|goto <page from 1>> [--key <key>] [--expect <revision>]

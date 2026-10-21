@@ -240,6 +240,19 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
                 inventory: super::system_audio::decode_inventory(&mut fields)?,
             })
         }
+        "audio_output_devices_request" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::AudioOutputDevicesRequest(crate::AudioOutputDevicesRequest { request_id })
+        }
+        "audio_output_devices" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::AudioOutputDevices(crate::AudioOutputDevicesMessage {
+                request_id,
+                inventory: super::audio_output::decode_inventory(&mut fields)?,
+            })
+        }
         "web_access_request" => {
             let request_id = fields.required("request_id")?;
             validate_request_id(&request_id)?;

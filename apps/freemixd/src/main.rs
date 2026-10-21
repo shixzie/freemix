@@ -94,6 +94,7 @@ use fm_switcher::{
 use fm_types::{InputId, ProjectId};
 use freemixd::{ReadinessRecord, StatusReadinessRecord};
 
+mod audio_output_devices;
 // The free-space alert is constructed only by the native render loop; the
 // preflight and its constants are used in every build.
 mod clock_retry;

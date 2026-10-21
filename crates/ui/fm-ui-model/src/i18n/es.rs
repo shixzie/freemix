@@ -1647,7 +1647,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::MonitorNoDeviceHover,
         t(
-            "No hay un dispositivo de auriculares elegido, así que el bus de monitoreo solo se mide; escribe el nombre de un dispositivo en el campo de arriba para escucharlo",
+            "No hay un dispositivo de auriculares elegido, así que el bus de monitoreo solo se mide; elige un dispositivo arriba para escucharlo",
         ),
     ),
     (Msg::MonitorDevicePlaceholder, t("Sin dispositivo")),
@@ -1672,7 +1672,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::MonitorOutputFailedHover,
         t(
-            "No se pudo abrir el dispositivo {device} o dejó de reproducir; revisa el nombre y pulsa Intro en el campo del dispositivo para reintentar",
+            "No se pudo abrir el dispositivo {device} o dejó de reproducir, quizá porque se desconectó. El servidor sigue reintentándolo, esperando más tras cada fallo, y vuelve a reproducirlo en cuanto regresa; elígelo de nuevo arriba para reintentar ahora",
         ),
     ),
     (Msg::MonitorOutputIdle, t("AURIC. EN ESPERA")),
@@ -1693,6 +1693,51 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::MonitorMuteOffHover,
         t("Silenciar solo la señal de auriculares; el Programa sigue sonando"),
+    ),
+    (
+        Msg::MonitorPickerHover,
+        t(
+            "Dispositivo de auriculares para el bus de monitoreo, elegido entre las salidas de audio del servidor; la lista se actualiza cada pocos segundos, así que aparece un dispositivo que se conecta o desconecta. El Programa nunca cambia",
+        ),
+    ),
+    (Msg::MonitorPickNone, t("Solo medidores")),
+    (
+        Msg::MonitorPickNoneHover,
+        t("No reproducir el bus de monitoreo en ningún dispositivo: solo se mide"),
+    ),
+    (
+        Msg::MonitorPickItemHover,
+        t(
+            "Reproducir el bus de monitoreo en {name} ({device}); elígelo de nuevo para reintentar un dispositivo que falló",
+        ),
+    ),
+    (Msg::MonitorPickChannels, t("{count} canales")),
+    (Msg::MonitorPickDefault, t("predeterminado")),
+    (Msg::MonitorPickMissing, t("{device} · no conectado")),
+    (
+        Msg::MonitorPickMissingHover,
+        t(
+            "{device} está elegido pero el servidor no lo lista ahora: está desconectado, o no es una salida que el servidor vea. El servidor sigue intentándolo y lo reproduce en cuanto regresa",
+        ),
+    ),
+    (Msg::MonitorPickTyped, t("Escribir un nombre…")),
+    (
+        Msg::MonitorPickTypedHover,
+        t(
+            "Escribe un nombre de salida ALSA que la lista no muestra, como pulse o hw:CARD=Headset,DEV=0",
+        ),
+    ),
+    (Msg::MonitorPickListing, t("Listando dispositivos…")),
+    (
+        Msg::MonitorPickListingHover,
+        t("Esperando la lista de salidas de audio del servidor"),
+    ),
+    (Msg::MonitorPickListError, t("Salidas sin listar")),
+    (
+        Msg::MonitorPickListErrorHover,
+        t(
+            "El servidor no pudo listar sus salidas de audio: {error}. Escribe un nombre de dispositivo",
+        ),
     ),
     (Msg::SoloModeSip, t("SIP")),
     (Msg::SoloModePfl, t("PFL")),

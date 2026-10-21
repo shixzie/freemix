@@ -2095,8 +2095,39 @@ fn a_simulated_daemon_lists_no_system_audio_devices() {
     }
 }
 
+/// AU-001, Protocol 2.102: a simulated daemon lists its fixed headphone
+/// output devices, by each request's own id, so a picker works without
+/// hardware.
+#[test]
+fn a_simulated_daemon_lists_its_fixed_output_devices() {
+    let directory = TestDirectory::new("audio-output-devices");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+    let mut client = daemon.connect();
+    client.handshake_as(Role::Graphics, None);
+    client.receive_snapshot();
+    for request_id in ["outputs-1", "outputs-2"] {
+        client.send(&WireMessage::AudioOutputDevicesRequest(
+            fm_protocol::AudioOutputDevicesRequest {
+                request_id: request_id.into(),
+            },
+        ));
+        let answer = loop {
+            if let WireMessage::AudioOutputDevices(answer) = client.receive() {
+                break answer;
+            }
+        };
+        assert_eq!(answer.request_id, request_id);
+        assert_eq!(
+            answer.inventory,
+            fm_protocol::AudioOutputInventory::simulated()
+        );
+    }
+}
+
 /// The server's device inventories (capture devices, displays, system audio
-/// devices) and a presentation's slide list and page notes are not shown to
+/// and headphone output devices) and a presentation's slide list and page notes are not shown to
 /// a tally viewer: each request is refused by its own request id
 /// (`permission_denied`). An operator, who steps presentations, is shown a
 /// slide list but no device inventory.
@@ -2117,6 +2148,9 @@ fn inventories_and_presentation_content_are_refused_to_a_viewer() {
             }),
             WireMessage::SystemAudioDevicesRequest(fm_protocol::SystemAudioDevicesRequest {
                 request_id: id("audio"),
+            }),
+            WireMessage::AudioOutputDevicesRequest(fm_protocol::AudioOutputDevicesRequest {
+                request_id: id("outputs"),
             }),
             WireMessage::SlideshowSlidesRequest(fm_protocol::SlideshowSlidesRequest {
                 request_id: id("slides"),
@@ -2141,6 +2175,7 @@ fn inventories_and_presentation_content_are_refused_to_a_viewer() {
             message @ (WireMessage::CaptureDevices(_)
             | WireMessage::DisplayInventory(_)
             | WireMessage::SystemAudioDevices(_)
+            | WireMessage::AudioOutputDevices(_)
             | WireMessage::SlideshowSlides(_)
             | WireMessage::PagedPage(_)) => panic!("answered: {message:?}"),
             _ => {}
@@ -2153,19 +2188,19 @@ fn inventories_and_presentation_content_are_refused_to_a_viewer() {
     for request in requests("viewer") {
         viewer.send(&request);
     }
-    for name in ["capture", "displays", "audio", "slides", "page"] {
+    for name in ["capture", "displays", "audio", "outputs", "slides", "page"] {
         assert_eq!(refused(&mut viewer), format!("viewer-{name}"));
     }
 
     let mut operator = daemon.connect();
     operator.handshake_as(Role::Operator, None);
     operator.receive_snapshot();
-    let [capture, displays, audio, slides, ..] =
-        <[WireMessage; 5]>::try_from(requests("op")).unwrap();
-    for request in [&capture, &displays, &audio] {
+    let [capture, displays, audio, outputs, slides, ..] =
+        <[WireMessage; 6]>::try_from(requests("op")).unwrap();
+    for request in [&capture, &displays, &audio, &outputs] {
         operator.send(request);
     }
-    for name in ["capture", "displays", "audio"] {
+    for name in ["capture", "displays", "audio", "outputs"] {
         assert_eq!(refused(&mut operator), format!("op-{name}"));
     }
     operator.send(&slides);

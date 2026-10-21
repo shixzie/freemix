@@ -1265,6 +1265,11 @@ pub enum Command {
     RemoteSystemAudioDevices {
         address: SocketAddr,
     },
+    /// Lists the headphone output devices of a running daemon's host
+    /// (AU-001, Protocol 2.102).
+    RemoteAudioOutputDevices {
+        address: SocketAddr,
+    },
     /// Adds a screen or window capture input to a project (IN-011).
     ScreenCaptureInputAdd {
         path: PathBuf,
@@ -2156,6 +2161,11 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-audio-monitor-level"
         | "remote-audio-strip-dsp"
         | "remote-audio-loudness-reset") => parse_audio_mixer(mixer, arguments),
+        "remote-audio-output-devices" => {
+            let address = socket_address(&required(&mut arguments, "address")?)?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::RemoteAudioOutputDevices { address })
+        }
         output @ ("ftb-output" | "remote-ftb-output") => {
             parse_fade_to_black_output(output, arguments)
         }

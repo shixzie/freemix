@@ -1266,6 +1266,56 @@ pub fn system_audio_devices(address: SocketAddr) -> RemoteResult<()> {
     Ok(())
 }
 
+/// Lists the headphone output devices of the daemon's host (AU-001,
+/// Protocol 2.102).
+pub fn audio_output_devices(address: SocketAddr) -> RemoteResult<()> {
+    // Like every device inventory, only a session that may edit the
+    // project is answered, which Graphics holds.
+    let mut remote = Remote::connect(address, Role::Graphics)?;
+    let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
+    let request_id = format!("cli-audio-output-{}", unique_client_id()?);
+    remote.write(&WireMessage::AudioOutputDevicesRequest(
+        fm_protocol::AudioOutputDevicesRequest {
+            request_id: request_id.clone(),
+        },
+    ))?;
+    let reply = loop {
+        match remote.read_until(deadline)? {
+            WireMessage::AudioOutputDevices(reply) if reply.request_id == request_id => {
+                break reply;
+            }
+            message @ (WireMessage::Event(_) | WireMessage::RuntimeEvent(_)) => {
+                remote.client.intake(message)?;
+            }
+            WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
+            _ => {
+                return Err(
+                    RemoteFailure("expected audio_output_devices from daemon".into()).into(),
+                );
+            }
+        }
+    };
+    let inventory = &reply.inventory;
+    println!(
+        "AudioOutputDevices(supported={}, devices={}, error={})",
+        if inventory.supported { "on" } else { "off" },
+        inventory.devices.len(),
+        quoted_or_none(inventory.error.as_deref())
+    );
+    for device in &inventory.devices {
+        println!(
+            "Output(device={:?}, description={:?}, channels={}, default={})",
+            device.device,
+            device.description,
+            device
+                .channels
+                .map_or_else(|| "unknown".to_owned(), |channels| channels.to_string()),
+            if device.default { "on" } else { "off" },
+        );
+    }
+    Ok(())
+}
+
 /// Prints a `SystemAudioDevices(...)` header, an `Unlisted(...)` line per
 /// audio system that could not be listed, and a `Device(...)` line per
 /// device.

@@ -839,6 +839,9 @@ pub(crate) fn draw_mixer(
         let holds = ballistics
             .update(MeterKey::Monitor, monitor_channels, dt_ms)
             .to_vec();
+        // The headphone device list is answered only to a session that may
+        // edit the project (Protocol 2.102), so only such a session asks.
+        let list_outputs = enabled && state.can_edit_project;
         if draw_monitor_strip(
             ui,
             view,
@@ -850,6 +853,7 @@ pub(crate) fn draw_mixer(
                 },
                 monitor.is_some_and(|monitor| monitor.solo),
                 monitor.map(|monitor| monitor.output),
+                list_outputs,
             ),
             StripGate {
                 enabled,
@@ -1546,16 +1550,18 @@ fn group_parent_choice(
 
 /// Draws the monitor-bus strip: what the bus carries, its meter, the
 /// solo-mode keys, and the headphone output (device, state, level, and
-/// mute). `output` is the device state the server last metered, if any.
-/// Returns `true` when the operator cleared its clip.
+/// mute). `output` is the device state the server last metered, if any;
+/// `list_outputs` whether this session may list the server's output
+/// devices. Returns `true` when the operator cleared its clip.
 #[allow(clippy::too_many_lines)]
 fn draw_monitor_strip(
     ui: &mut Ui,
     view: &ClientView,
-    (feed, solo, output): (
+    (feed, solo, output, list_outputs): (
         MeterFeed<'_>,
         bool,
         Option<fm_protocol::AudioMonitorOutputState>,
+        bool,
     ),
     gate: StripGate,
     layout: StripLayout,
@@ -1633,39 +1639,25 @@ fn draw_monitor_strip(
                 }
             });
         });
-        draw_monitor_output(ui, view, output, (enabled, reason), intents);
+        draw_monitor_output(ui, view, output, (enabled, reason, list_outputs), intents);
     });
     clear_clip
 }
 
-/// The monitor strip's headphone output: the device field, the device
-/// state, and the feed's own level and mute (AU-001, Protocol 2.53).
+/// The monitor strip's headphone output: the device picker (or field), the
+/// device state, and the feed's own level and mute (AU-001, Protocols 2.53
+/// and 2.102).
 fn draw_monitor_output(
     ui: &mut Ui,
     view: &ClientView,
     output: Option<fm_protocol::AudioMonitorOutputState>,
-    (enabled, reason): (bool, &str),
+    (enabled, reason, list_outputs): (bool, &str, bool),
     intents: &mut Vec<StudioIntent>,
 ) {
     let l = l10n::locale(ui.ctx());
     let monitor = &view.audio_mixer.monitor;
-    let device = monitor.device.as_deref().unwrap_or_default();
     ui.vertical_centered_justified(|ui| {
-        if let Some(text) = device_entry(
-            ui,
-            device,
-            enabled,
-            (
-                l.text(Msg::MonitorDevicePlaceholder),
-                l.text(Msg::MonitorDeviceHover),
-                reason,
-            ),
-        ) {
-            let device = (!text.is_empty()).then_some(text);
-            intents.push(StudioIntent::AudioMixer(
-                fm_protocol::AudioMixerOperation::SetMonitorDevice { device },
-            ));
-        }
+        monitor_device_control(ui, view, (enabled, reason, list_outputs), intents);
     });
     let (text, hover, color) = match (monitor.device.as_deref(), output) {
         (None, _) => (
@@ -1750,6 +1742,264 @@ fn draw_monitor_output(
             },
         ));
     }
+}
+
+/// How often, in seconds, a visible monitor strip asks the server for its
+/// output devices again, so a device plugged in or out shows up.
+const OUTPUT_LIST_REFRESH_SECONDS: f64 = 3.0;
+
+/// One listed output device as the picker shows it: its description (or
+/// name), then its channel count and whether it is the default.
+fn output_device_label(l: Locale, device: &fm_protocol::AudioOutputDevice) -> String {
+    let mut label = if device.description.is_empty() {
+        device.device.clone()
+    } else {
+        device.description.clone()
+    };
+    if let Some(channels) = device.channels {
+        label.push_str(" · ");
+        label.push_str(&l.format(
+            Msg::MonitorPickChannels,
+            &[("count", Arg::from(u64::from(channels)))],
+        ));
+    }
+    if device.default {
+        label.push_str(" · ");
+        label.push_str(l.text(Msg::MonitorPickDefault));
+    }
+    label
+}
+
+/// The chosen device when the server's list is known, readable, and does
+/// not name it: unplugged, or not an output the server sees.
+fn missing_output<'a>(
+    current: Option<&'a str>,
+    inventory: Option<&fm_protocol::AudioOutputInventory>,
+) -> Option<&'a str> {
+    let inventory = inventory?;
+    current.filter(|device| {
+        inventory.supported && inventory.error.is_none() && inventory.device(device).is_none()
+    })
+}
+
+/// What the operator chose in the headphone device picker.
+enum OutputPick {
+    /// Meter only: no device.
+    Off,
+    /// A device (the current one again retries it).
+    Device(String),
+    /// Type a name the list does not show.
+    Type,
+}
+
+/// The headphone device control: a picker of the server's output devices
+/// (Protocol 2.102) with meter-only and a typed name as fallbacks, or the
+/// device field where the server lists none (or this session may not ask).
+/// A chosen device is pushed as `SetMonitorDevice`; choosing the current
+/// device again retries it. While shown, the list is asked for again every
+/// few seconds and whenever the picker opens, so hot-plug changes show.
+fn monitor_device_control(
+    ui: &mut Ui,
+    view: &ClientView,
+    (enabled, reason, list_outputs): (bool, &str, bool),
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
+    let current = view.audio_mixer.monitor.device.as_deref();
+    let inventory = view.audio_output_inventory.as_ref();
+    let id = ui.make_persistent_id("monitor-device");
+    let asked_id = id.with("listed-at");
+    let now = ui.input(|input| input.time);
+    if list_outputs {
+        let asked = ui.data(|data| data.get_temp::<f64>(asked_id));
+        if asked.is_none_or(|asked| now < asked || now - asked >= OUTPUT_LIST_REFRESH_SECONDS) {
+            intents.push(StudioIntent::RequestAudioOutputDevices);
+            ui.data_mut(|data| data.insert_temp(asked_id, now));
+        }
+    }
+    let choose = |intents: &mut Vec<StudioIntent>, device: Option<String>| {
+        intents.push(StudioIntent::AudioMixer(
+            fm_protocol::AudioMixerOperation::SetMonitorDevice { device },
+        ));
+    };
+    let typing = ui.data(|data| data.get_temp::<bool>(id.with("editing")).unwrap_or(false));
+    let listable = list_outputs && inventory.is_none_or(|inventory| inventory.supported);
+    if typing || !listable {
+        if let Some(text) = device_entry(
+            ui,
+            current.unwrap_or_default(),
+            enabled,
+            (
+                l.text(Msg::MonitorDevicePlaceholder),
+                l.text(Msg::MonitorDeviceHover),
+                reason,
+            ),
+        ) {
+            choose(intents, (!text.is_empty()).then_some(text));
+        }
+        return;
+    }
+    let missing = missing_output(current, inventory);
+    let selected = match current {
+        None => l.text(Msg::MonitorPickNone).to_owned(),
+        Some(device) => match inventory.and_then(|inventory| inventory.device(device)) {
+            Some(listed) => output_device_label(l, listed),
+            None if missing.is_some() => {
+                l.format(Msg::MonitorPickMissing, &[("device", Arg::Str(device))])
+            }
+            None => device.to_owned(),
+        },
+    };
+    let mut pick = None;
+    let combo = ui
+        .add_enabled_ui(enabled, |ui| {
+            egui::ComboBox::from_id_salt(id.with("picker"))
+                .width(ui.available_width())
+                .truncate()
+                .selected_text(RichText::new(selected).color(if missing.is_some() {
+                    PROGRAM
+                } else {
+                    text_color()
+                }))
+                .show_ui(ui, |ui| {
+                    pick = output_picker_items(ui, l, current, inventory, missing);
+                })
+        })
+        .inner;
+    let response = combo
+        .response
+        .hint(&output_picker_hover(l, inventory, missing), reason);
+    if response.clicked() && list_outputs {
+        intents.push(StudioIntent::RequestAudioOutputDevices);
+        ui.data_mut(|data| data.insert_temp(asked_id, now));
+    }
+    match pick {
+        Some(OutputPick::Off) => choose(intents, None),
+        Some(OutputPick::Device(device)) => choose(intents, Some(device)),
+        Some(OutputPick::Type) => {
+            ui.data_mut(|data| data.insert_temp(id.with("editing"), true));
+            ui.memory_mut(|memory| memory.request_focus(id.with("field")));
+        }
+        None => {}
+    }
+}
+
+/// The headphone device picker's rows: meter-only, the listing state, the
+/// listed devices, the chosen device when it is no longer listed, and
+/// typing a name. Returns what was clicked.
+fn output_picker_items(
+    ui: &mut Ui,
+    l: Locale,
+    current: Option<&str>,
+    inventory: Option<&fm_protocol::AudioOutputInventory>,
+    missing: Option<&str>,
+) -> Option<OutputPick> {
+    ui.set_min_width(240.0);
+    let mut pick = None;
+    if ui
+        .selectable_label(current.is_none(), l.text(Msg::MonitorPickNone))
+        .on_hover_text(l.text(Msg::MonitorPickNoneHover))
+        .clicked()
+        && current.is_some()
+    {
+        pick = Some(OutputPick::Off);
+    }
+    match inventory {
+        None => {
+            ui.label(RichText::new(l.text(Msg::MonitorPickListing)).weak())
+                .on_hover_text(l.text(Msg::MonitorPickListingHover));
+        }
+        Some(inventory) => {
+            if let Some(error) = &inventory.error {
+                ui.label(RichText::new(l.text(Msg::MonitorPickListError)).color(AMBER))
+                    .on_hover_text(l.format(
+                        Msg::MonitorPickListErrorHover,
+                        &[("error", Arg::Str(error))],
+                    ));
+            }
+            for device in &inventory.devices {
+                let name = if device.description.is_empty() {
+                    device.device.as_str()
+                } else {
+                    device.description.as_str()
+                };
+                if ui
+                    .selectable_label(
+                        current == Some(device.device.as_str()),
+                        output_device_label(l, device),
+                    )
+                    .on_hover_text(l.format(
+                        Msg::MonitorPickItemHover,
+                        &[
+                            ("name", Arg::Str(name)),
+                            ("device", Arg::Str(&device.device)),
+                        ],
+                    ))
+                    .clicked()
+                {
+                    pick = Some(OutputPick::Device(device.device.clone()));
+                }
+            }
+        }
+    }
+    if let Some(device) = missing
+        && ui
+            .selectable_label(
+                true,
+                RichText::new(l.format(Msg::MonitorPickMissing, &[("device", Arg::Str(device))]))
+                    .color(PROGRAM),
+            )
+            .on_hover_text(l.format(
+                Msg::MonitorPickMissingHover,
+                &[("device", Arg::Str(device))],
+            ))
+            .clicked()
+    {
+        pick = Some(OutputPick::Device(device.to_owned()));
+    }
+    if ui
+        .selectable_label(false, l.text(Msg::MonitorPickTyped))
+        .on_hover_text(l.text(Msg::MonitorPickTypedHover))
+        .clicked()
+    {
+        pick = Some(OutputPick::Type);
+    }
+    pick
+}
+
+/// The headphone device picker's help: what it does, then whether the list
+/// is still awaited or could not be read, and whether the chosen device is
+/// no longer listed.
+fn output_picker_hover(
+    l: Locale,
+    inventory: Option<&fm_protocol::AudioOutputInventory>,
+    missing: Option<&str>,
+) -> String {
+    let mut hover = l.text(Msg::MonitorPickerHover).to_owned();
+    match inventory {
+        None => {
+            hover.push('\n');
+            hover.push_str(l.text(Msg::MonitorPickListingHover));
+        }
+        Some(fm_protocol::AudioOutputInventory {
+            error: Some(error), ..
+        }) => {
+            hover.push('\n');
+            hover.push_str(&l.format(
+                Msg::MonitorPickListErrorHover,
+                &[("error", Arg::Str(error))],
+            ));
+        }
+        Some(_) => {}
+    }
+    if let Some(device) = missing {
+        hover.push('\n');
+        hover.push_str(&l.format(
+            Msg::MonitorPickMissingHover,
+            &[("device", Arg::Str(device))],
+        ));
+    }
+    hover
 }
 
 /// The monitor device editor: commits on Enter or focus loss and returns

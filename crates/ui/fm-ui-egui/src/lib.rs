@@ -248,6 +248,9 @@ pub enum StudioIntent {
     /// Protocol 2.68); the reply updates
     /// [`fm_ui_model::ClientView::system_audio_inventory`].
     RequestSystemAudioDevices,
+    /// Asks the server for its headphone output devices (AU-001, Protocol
+    /// 2.102); the reply updates the view's output device list.
+    RequestAudioOutputDevices,
     /// Manages the web gateway's pairing and paired devices (RC-007,
     /// Protocol 2.71); the answer updates
     /// [`fm_ui_model::ClientView::web_access`].
@@ -3295,6 +3298,7 @@ mod tests {
             still_inputs: std::collections::BTreeMap::new(),
             capture_inventory: None,
             system_audio_inventory: None,
+            audio_output_inventory: None,
             web_access: None,
             screen_capture_inventory: None,
             cursor: ProjectCursor::from_resume_cursor(

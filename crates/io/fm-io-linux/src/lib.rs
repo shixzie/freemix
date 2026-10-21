@@ -14,6 +14,8 @@
 //!   recovery under the same input ID).
 //! - [`ffmpeg`]: acquisition through a supervised `ffmpeg -f v4l2` child.
 //! - [`fake`]: a deterministic fake backend for tests and diagnostics.
+//! - [`audio_output`]: the ALSA output devices the headphone (monitor)
+//!   output can play on, and whether a chosen one is present (AU-001).
 //! - [`system_audio`]: the `PulseAudio` and ALSA capture devices a system
 //!   audio input can open (AU-011).
 //! - [`screen_capture`]: the screens and windows of the X11 desktop and
@@ -31,6 +33,7 @@
 #![forbid(unsafe_code)]
 
 pub mod acquire;
+pub mod audio_output;
 pub mod capture_audio;
 pub mod fake;
 pub mod ffmpeg;

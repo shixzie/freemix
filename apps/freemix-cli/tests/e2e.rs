@@ -13954,6 +13954,56 @@ fn remote_capture_commands_send_exact_payloads() {
 /// AU-011: local system audio inputs are validated, persisted with their
 /// audio system and device, and listed idle; a bad replacement device is
 /// refused before anything is sent.
+/// AU-001, Protocol 2.102: the headphone output devices of the daemon's
+/// host, asked for as Graphics.
+#[test]
+fn remote_audio_output_devices_are_listed() {
+    let server = FakeRemoteServer::start_test_peer(move |stream| {
+        let engine = EngineIdentity {
+            engine_id: "audio-output-engine".into(),
+            state_epoch: 1,
+            log_id: "audio-output-log".into(),
+        };
+        stream.set_read_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
+        stream.set_write_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_handshake_request_role(read_message(&mut reader), Role::Graphics);
+        write_handshake_role(&mut writer, &engine, 0, Role::Graphics);
+        let WireMessage::AudioOutputDevicesRequest(request) = read_message(&mut reader) else {
+            panic!("expected an audio output devices request");
+        };
+        assert!(request.request_id.starts_with("cli-audio-output-"));
+        write_message(
+            &mut writer,
+            &WireMessage::AudioOutputDevices(fm_protocol::AudioOutputDevicesMessage {
+                request_id: request.request_id,
+                inventory: fm_protocol::AudioOutputInventory::simulated(),
+            }),
+        );
+    });
+    let output = invoke(&["remote-audio-output-devices", &server.address()]);
+    assert_success(&output);
+    let text = stdout(&output);
+    for line in [
+        "AudioOutputDevices(supported=on, devices=3, error=none)",
+        "Output(device=\"default\", description=\"Default output\", channels=unknown, \
+         default=on)",
+        "Output(device=\"plughw:CARD=Interface,DEV=0\", description=\"Studio Interface: \
+         Monitor Out\", channels=8, default=off)",
+    ] {
+        assert!(
+            text.lines().any(|candidate| candidate == line),
+            "{line}\n{text}"
+        );
+    }
+    server.finish();
+    assert_failure_contains(
+        &invoke_bounded(&["remote-audio-output-devices", "127.0.0.1:9", "extra"]),
+        "extra",
+    );
+}
+
 #[test]
 fn local_system_audio_inputs_persist_and_list_idle() {
     let context = ContractContext::new();

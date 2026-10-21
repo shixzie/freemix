@@ -75,9 +75,14 @@
 //! source editing a system audio input; [`check_system_audio`] audits those
 //! scenes alone and requires each control's help to have been shown.
 //!
+//! The mixer's headphone device picker (AU-001, Protocol 2.102) is audited
+//! with the server's output list (a listed and an unplugged device), none
+//! yet, a listing that failed, and a server without output devices (the
+//! typed field); [`check_monitor_output`] audits those scenes alone.
+//!
 //! The audits are hidden public entry points ([`check`],
 //! [`check_timeline`], [`check_color_panel`], [`check_capture`],
-//! [`check_system_audio`]) so the
+//! [`check_system_audio`], [`check_monitor_output`]) so the
 //! integration target
 //! `tests/hover_audit.rs` runs them in every shipped language. They rely on
 //! the widget info egui records only in debug builds.
@@ -1593,6 +1598,82 @@ fn system_audio_scenes(locale: Locale) -> Vec<Scene> {
             ),
         ),
         Scene::console("dialog/replace-source-system-audio", replace, listed()),
+    ]
+}
+
+/// `state` with `inventory` as the server's headphone output devices and
+/// `device` as the chosen headphone device.
+fn with_audio_outputs(
+    mut state: StudioUiState,
+    inventory: Option<fm_protocol::AudioOutputInventory>,
+    device: Option<&str>,
+) -> StudioUiState {
+    if let Some(view) = state.view.as_mut() {
+        view.audio_output_inventory = inventory;
+        view.audio_mixer.monitor.device = device.map(str::to_owned);
+    }
+    state
+}
+
+/// The mixer's headphone device picker (AU-001, Protocol 2.102): a listed
+/// device, an unplugged one, meter-only, the list not yet known, a listing
+/// that failed, and a server without output devices (the typed field).
+fn monitor_output_scenes(locale: Locale) -> Vec<Scene> {
+    let operator = ready(true, Variant::default());
+    let simulated = fm_protocol::AudioOutputInventory::simulated();
+    let shell = || {
+        let mut shell = StudioShell::default();
+        shell.set_locale(locale);
+        shell
+    };
+    let failed = fm_protocol::AudioOutputInventory {
+        supported: true,
+        devices: Vec::new(),
+        error: Some("no ALSA driver is loaded (no /proc/asound)".into()),
+    };
+    vec![
+        Scene::console(
+            "console/monitor-output-listed",
+            shell(),
+            with_audio_outputs(
+                operator.clone(),
+                Some(simulated.clone()),
+                Some("plughw:CARD=Headset,DEV=0"),
+            ),
+        ),
+        Scene::console(
+            "console/monitor-output-unplugged",
+            shell(),
+            with_audio_outputs(
+                operator.clone(),
+                Some(simulated.clone()),
+                Some("hw:CARD=Gone,DEV=0"),
+            ),
+        ),
+        Scene::console(
+            "console/monitor-output-meter-only",
+            shell(),
+            with_audio_outputs(operator.clone(), Some(simulated), None),
+        ),
+        Scene::console(
+            "console/monitor-output-unknown",
+            shell(),
+            with_audio_outputs(operator.clone(), None, Some("default")),
+        ),
+        Scene::console(
+            "console/monitor-output-failed-list",
+            shell(),
+            with_audio_outputs(operator.clone(), Some(failed), Some("default")),
+        ),
+        Scene::console(
+            "console/monitor-output-unsupported",
+            shell(),
+            with_audio_outputs(
+                operator,
+                Some(fm_protocol::AudioOutputInventory::unsupported()),
+                Some("hw:CARD=Headset,DEV=0"),
+            ),
+        ),
     ]
 }
 
@@ -3548,6 +3629,7 @@ fn scenes(language: Language) -> Vec<Scene> {
     scenes.extend(dock_scenes(locale));
     scenes.extend(capture_scenes(locale));
     scenes.extend(system_audio_scenes(locale));
+    scenes.extend(monitor_output_scenes(locale));
     scenes.extend(still_scenes(locale));
     scenes.extend(screen_capture_scenes(locale));
     scenes.push(Scene::console(
@@ -4905,6 +4987,65 @@ pub fn check_system_audio(language: Language) {
             .any(|tooltip| tooltip.contains(&text))
         {
             let _ = writeln!(failures, "no system audio tooltip shows {text:?}");
+        }
+    }
+    assert!(failures.is_empty(), "{failures}");
+}
+
+/// Audits the mixer's headphone device picker (AU-001, Protocol 2.102) in
+/// `language` under the console rules, and requires the help of the picker,
+/// meter-only, every listed device, an unplugged device, typing a name, the
+/// listing and failed-listing rows, and the typed device field to have been
+/// shown.
+pub fn check_monitor_output(language: Language) {
+    let locale = Locale::new(language);
+    let (findings, controls) = audit(language, monitor_output_scenes(locale));
+    dump("hover-monitor-output", language, &controls);
+    println!("{}", report(language, &findings));
+    let mut failures = String::new();
+    if failed(&findings) {
+        failures.push_str(&report(language, &findings));
+    }
+    let mut required: Vec<String> = [
+        Msg::MonitorPickerHover,
+        Msg::MonitorPickNoneHover,
+        Msg::MonitorPickTypedHover,
+        Msg::MonitorPickListingHover,
+    ]
+    .into_iter()
+    .map(|msg| locale.text(msg).to_owned())
+    .collect();
+    required.push(locale.format(
+        Msg::MonitorDeviceShownHover,
+        &[("device", Arg::Str("hw:CARD=Headset,DEV=0"))],
+    ));
+    required.push(locale.format(
+        Msg::MonitorPickMissingHover,
+        &[("device", Arg::Str("hw:CARD=Gone,DEV=0"))],
+    ));
+    required.push(locale.format(
+        Msg::MonitorPickListErrorHover,
+        &[(
+            "error",
+            Arg::Str("no ALSA driver is loaded (no /proc/asound)"),
+        )],
+    ));
+    for device in fm_protocol::AudioOutputInventory::simulated().devices {
+        required.push(locale.format(
+            Msg::MonitorPickItemHover,
+            &[
+                ("name", Arg::Str(&device.description)),
+                ("device", Arg::Str(&device.device)),
+            ],
+        ));
+    }
+    for text in required {
+        if !controls
+            .iter()
+            .filter_map(|control| control.tooltip.as_deref())
+            .any(|tooltip| tooltip.contains(&text))
+        {
+            let _ = writeln!(failures, "no headphone device tooltip shows {text:?}");
         }
     }
     assert!(failures.is_empty(), "{failures}");

@@ -217,6 +217,9 @@ pub enum Intake {
     /// A `system_audio_devices` reply updated the replicated system audio
     /// device list (Protocol 2.68).
     SystemAudioDevicesApplied,
+    /// An `audio_output_devices` reply updated the replicated headphone
+    /// output device list (Protocol 2.102).
+    AudioOutputDevicesApplied,
     /// A `web_access` reply updated the replicated web access state
     /// (Protocol 2.71).
     WebAccessApplied,
@@ -696,6 +699,10 @@ impl Client {
                 self.model.apply_system_audio_inventory(message.inventory);
                 Ok(Intake::SystemAudioDevicesApplied)
             }
+            WireMessage::AudioOutputDevices(message) => {
+                self.model.apply_audio_output_inventory(message.inventory);
+                Ok(Intake::AudioOutputDevicesApplied)
+            }
             WireMessage::WebAccess(message) => {
                 self.model.apply_web_access(message);
                 Ok(Intake::WebAccessApplied)
@@ -707,6 +714,7 @@ impl Client {
             WireMessage::DisplayInventoryRequest(_)
             | WireMessage::CaptureDevicesRequest(_)
             | WireMessage::SystemAudioDevicesRequest(_)
+            | WireMessage::AudioOutputDevicesRequest(_)
             | WireMessage::WebAccessRequest(_)
             | WireMessage::SlideshowSlidesRequest(_)
             | WireMessage::PagedPageRequest(_)

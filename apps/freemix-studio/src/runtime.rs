@@ -105,6 +105,8 @@ struct WantedLists {
     capture_devices: bool,
     /// The system audio devices (AU-011, Protocol 2.68).
     system_audio_devices: bool,
+    /// The headphone output devices (AU-001, Protocol 2.102).
+    audio_output_devices: bool,
     /// The web gateway status (RC-007, Protocol 2.71).
     web_access: bool,
     /// The screens and windows the server can capture (IN-011).
@@ -315,6 +317,34 @@ impl StudioRuntime {
             && self
                 .session
                 .send_system_audio_devices_request(fm_protocol::SystemAudioDevicesRequest {
+                    request_id,
+                })
+                .is_ok()
+    }
+
+    /// Records that the UI wants the headphone output devices without
+    /// asking now (the session is recovering); the next (re)connect asks
+    /// for them.
+    pub(crate) const fn want_audio_output_devices(&mut self) {
+        self.wanted.audio_output_devices = true;
+    }
+
+    /// Asks the server for its headphone output devices (AU-001, Protocol
+    /// 2.102); the reply updates the replicated device list. Returns
+    /// whether the request went out; one that cannot be sent is dropped,
+    /// and the next (re)connect asks again.
+    pub(crate) fn request_audio_output_devices(&mut self) -> bool {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        self.wanted.audio_output_devices = true;
+        let request_id = format!(
+            "studio-audio-output-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.transport == ControlTransport::Tcp
+            && self.session.is_connected()
+            && self
+                .session
+                .send_audio_output_devices_request(fm_protocol::AudioOutputDevicesRequest {
                     request_id,
                 })
                 .is_ok()
@@ -604,6 +634,7 @@ impl StudioRuntime {
         self.requery_display_inventory();
         self.requery_capture_devices();
         self.requery_system_audio_devices();
+        self.requery_audio_output_devices();
         self.requery_web_access();
         self.requery_screen_capture_targets();
         self.resubscribe_input_thumbnails();
@@ -655,6 +686,22 @@ impl StudioRuntime {
                 .is_some()
         {
             self.request_system_audio_devices();
+        }
+    }
+
+    /// Asks for the headphone output devices again after a (re)connect when
+    /// the UI wanted them or they were known: devices may have been plugged
+    /// in or out while disconnected.
+    fn requery_audio_output_devices(&mut self) {
+        if self.wanted.audio_output_devices
+            || self
+                .session
+                .client()
+                .model()
+                .audio_output_inventory()
+                .is_some()
+        {
+            self.request_audio_output_devices();
         }
     }
 
