@@ -117,6 +117,17 @@
   .scale { position: relative; height: 1rem; margin: .1rem 4.6rem 0 2.1rem; font-size: .7rem; color: var(--muted); }
   .scale span { position: absolute; transform: translateX(-50%); }
   .meters[data-stale="1"] .fill, .meters[data-stale="1"] .hold { opacity: .25; }
+  /* Program loudness (EBU R128): one readout per value, then the reset. */
+  .loudness { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-top: .6rem; }
+  .loudness .readout { display: inline-flex; align-items: baseline; gap: .3rem; padding: .25rem .5rem;
+    border: 1px solid var(--line); border-radius: 6px; background: #0c0c0c; font-variant-numeric: tabular-nums; }
+  .loudness .readout b { font-size: 1rem; }
+  .loudness .readout small, .row .lufs small { color: var(--muted); font-size: .7rem; font-weight: 700; }
+  .loudness .readout[data-hot="1"] b, .row .lufs[data-hot="1"] { color: #ffb347; }
+  .loudness[data-stale="1"] .readout b { opacity: .35; }
+  .loudness button { margin-left: auto; }
+  .row .lufs { flex: 0 1 auto; font-size: .8rem; font-variant-numeric: tabular-nums; color: #ddd; }
+  .row button.reset { min-width: 0; margin-left: 0; }
   .row .state[data-tone="failed"] { color: var(--warn); }
   .row .state[data-tone="starting"] { color: #ffe2a0; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -229,6 +240,15 @@
     <div id="meters" class="meters" role="group" data-i18n-label="metersLabel" aria-label="Program audio level meters"></div>
     <div id="meter-scale" class="scale" aria-hidden="true"></div>
     <p id="meter-note" class="why" style="color:var(--muted)" aria-live="polite"></p>
+    <div id="loudness" class="loudness" role="group" data-i18n-label="loudnessLabel" aria-label="Program loudness">
+      <span class="readout" data-value="momentary"><small>M</small><b></b><small>LUFS</small></span>
+      <span class="readout" data-value="short"><small>S</small><b></b><small>LUFS</small></span>
+      <span class="readout" data-value="integrated"><small>I</small><b></b><small>LUFS</small></span>
+      <span class="readout" data-value="range"><small>LRA</small><b></b><small>LU</small></span>
+      <span class="readout" data-value="peak"><small>TP</small><b></b><small>dBTP</small></span>
+      <button type="button" id="loudness-reset" aria-describedby="why-loudness" data-i18n="loudnessReset">Reset loudness</button>
+    </div>
+    <p id="why-loudness" class="why" aria-live="polite"></p>
   </section>
 
   <section aria-labelledby="audio-heading">
@@ -443,6 +463,22 @@
       meterChannel: "Channel {channel}",
       meterSilent: "−∞",
       meterClip: "CLIP",
+      loudnessLabel: "Program loudness",
+      loudnessMomentaryHover: "Momentary loudness: the last 400 ms, in LUFS",
+      loudnessShortHover: "Short-term loudness: the last 3 seconds, in LUFS",
+      loudnessIntegratedHover: "Integrated loudness: the gated average since metering started or was last reset, in LUFS (EBU R128 broadcast target −23 LUFS)",
+      loudnessRangeHover: "Loudness range (EBU Tech 3342): how widely the short-term loudness varied since metering started or was last reset, in LU",
+      loudnessPeakHover: "True peak now {peak} dBTP; the highest since metering started or was last reset {max} dBTP (EBU R128 allows at most −1 dBTP)",
+      loudnessNone: "—",
+      loudnessWaiting: "No loudness measured yet: momentary loudness needs 400 ms of Program audio.",
+      loudnessReset: "Reset loudness",
+      loudnessResetHover: "Start Program's integrated loudness, loudness range, and highest true peak over from now, for example at the start of a programme; momentary and short-term loudness keep running and every console sees the reset",
+      loudnessResetStrip: "Reset",
+      loudnessResetStripHover: "Start {input}'s integrated loudness, loudness range, and highest true peak over from now; every console sees the reset",
+      loudnessStripHover: "{input}'s share of Program (ITU-R BS.1770 / EBU R128): short-term {short} LUFS, momentary {momentary} LUFS, integrated {integrated} LUFS, loudness range {range} LU; true peak {peak} dBTP, highest {max} dBTP",
+      loudnessStripIdle: "No loudness measured for {input} yet: it is measured while it is heard on Program",
+      commandLoudnessReset: "Reset the loudness of {bus}",
+      programLoudnessBus: "Program",
       audio: "Audio",
       mute: "Mute",
       muted: "MUTED",
@@ -644,6 +680,22 @@
       meterChannel: "Canal {channel}",
       meterSilent: "−∞",
       meterClip: "CLIP",
+      loudnessLabel: "Sonoridad de Programa",
+      loudnessMomentaryHover: "Sonoridad momentánea: los últimos 400 ms, en LUFS",
+      loudnessShortHover: "Sonoridad de corto plazo: los últimos 3 segundos, en LUFS",
+      loudnessIntegratedHover: "Sonoridad integrada: la media con puertas desde que empezó la medición o desde el último reinicio, en LUFS (objetivo de emisión EBU R128: −23 LUFS)",
+      loudnessRangeHover: "Rango de sonoridad (EBU Tech 3342): cuánto varió la sonoridad de corto plazo desde que empezó la medición o desde el último reinicio, en LU",
+      loudnessPeakHover: "Pico real ahora {peak} dBTP; el más alto desde que empezó la medición o desde el último reinicio {max} dBTP (EBU R128 admite como máximo −1 dBTP)",
+      loudnessNone: "—",
+      loudnessWaiting: "Aún no se ha medido la sonoridad: la sonoridad momentánea necesita 400 ms de audio de Programa.",
+      loudnessReset: "Reiniciar sonoridad",
+      loudnessResetHover: "Vuelve a empezar desde ahora la sonoridad integrada, el rango de sonoridad y el pico real más alto de Programa, por ejemplo al comenzar un programa; la sonoridad momentánea y la de corto plazo siguen midiéndose y todas las consolas ven el reinicio",
+      loudnessResetStrip: "Reiniciar",
+      loudnessResetStripHover: "Vuelve a empezar desde ahora la sonoridad integrada, el rango de sonoridad y el pico real más alto de {input}; todas las consolas ven el reinicio",
+      loudnessStripHover: "La parte de {input} en Programa (ITU-R BS.1770 / EBU R128): corto plazo {short} LUFS, momentánea {momentary} LUFS, integrada {integrated} LUFS, rango de sonoridad {range} LU; pico real {peak} dBTP, el más alto {max} dBTP",
+      loudnessStripIdle: "Aún no se ha medido la sonoridad de {input}: se mide mientras se oye en Programa",
+      commandLoudnessReset: "Reiniciar la sonoridad de {bus}",
+      programLoudnessBus: "Programa",
       audio: "Audio",
       mute: "Silenciar",
       muted: "SILENCIADA",
@@ -731,6 +783,7 @@
     whyProgram: $("why-program"), whyPreview: $("why-preview"), whyTransition: $("why-transition"), whyOutputs: $("why-outputs"),
     whyAudio: $("why-audio"), recorderNote: $("recorder-note"), language: $("language"),
     meters: $("meters"), meterScale: $("meter-scale"), meterNote: $("meter-note"),
+    loudness: $("loudness"), loudnessReset: $("loudness-reset"), whyLoudness: $("why-loudness"),
   };
 
   const store = window.sessionStorage;
@@ -816,6 +869,9 @@
     recorders: null, recordersAt: 0, recorderSequence: -1,
     streams: new Map(), streamsAt: 0, streamSequence: -1,
     meters: null, metersAt: 0, meterSequence: -1,
+    // `audio_meters` `loudness` (Protocol 2.95 on the Web): target
+    // ("master" or an input id) -> its readings.
+    loudness: new Map(),
   };
   // Per-channel peak hold and CLIP lamp: { holdDb, holdAt, clipAt }.
   let meterHolds = [];
@@ -953,6 +1009,24 @@
       if (!Number.isFinite(peak) || !Number.isFinite(rms)) throw new Error("malformed meter");
       return { peak: peak / 1e6, rms: rms / 1e6 };
     });
+  }
+  // `audio_meters` `loudness`: comma-separated
+  // `<target>~<momentary>~<short_term>~<integrated>~<true_peak>~<max_true_peak>~<range>`
+  // entries, LUFS, dBTP, and LU in thousandths or `-` while not measured.
+  function parseLoudness(value) {
+    const loudness = new Map();
+    for (const item of value ? value.split(",") : []) {
+      const parts = item.split("~");
+      if (parts.length !== 7) throw new Error("malformed loudness");
+      const [momentary, short, integrated, peak, max, range] = parts.slice(1).map((part) => {
+        if (part === "-") return null;
+        const number = Number(part);
+        if (!Number.isFinite(number)) throw new Error("malformed loudness");
+        return number / 1000;
+      });
+      loudness.set(parts[0], { momentary, short, integrated, peak, max, range });
+    }
+    return loudness;
   }
   // A lossy record of this session's server and a newer sequence; anything
   // else is dropped (it is only telemetry).
@@ -1259,6 +1333,7 @@
     telemetry.meters = null;
     telemetry.metersAt = 0;
     telemetry.meterSequence = -1;
+    telemetry.loudness = new Map();
     meterHolds = [];
   }
   // What `receive` returns for a lossy status record.
@@ -1402,6 +1477,7 @@
         const sequence = freshLossy(record, telemetry.meterSequence);
         if (sequence < 0) return LOSSY;
         telemetry.meters = parseMeterChannels(required(record, "master"));
+        telemetry.loudness = parseLoudness(required(record, "loudness"));
         telemetry.metersAt = Date.now();
         telemetry.meterSequence = sequence;
         paintMeters();
@@ -1779,21 +1855,28 @@
     syncChildren(ui.strips, ids, (id) => {
       const row = document.createElement("div");
       row.className = "row";
-      row.innerHTML = "<span class=\"name\"></span><button type=\"button\" class=\"mute\" aria-describedby=\"why-audio\"></button>";
-      row.querySelector("button").addEventListener("click", () => toggleMute(id));
+      row.innerHTML = "<span class=\"name\"></span><span class=\"lufs\" role=\"status\" aria-live=\"off\"></span><button type=\"button\" class=\"reset\" aria-describedby=\"why-audio\"></button><button type=\"button\" class=\"mute\" aria-describedby=\"why-audio\"></button>";
+      row.querySelector(".mute").addEventListener("click", () => toggleMute(id));
+      row.querySelector(".reset").addEventListener("click", () => resetLoudness(id));
       return row;
     }, (row, id) => {
       const input = inputOf(id);
       const strip = show.strips.get(id);
       row.querySelector(".name").textContent = input.label;
-      const button = row.querySelector("button");
+      const button = row.querySelector(".mute");
       const muted = Boolean(strip && strip.muted);
       button.textContent = tr(muted ? "muted" : "mute");
       button.setAttribute("aria-pressed", String(muted));
       button.setAttribute("aria-label", tr("muteLabel", { input: input.label }));
       setDisabled(button, gate("audio", id));
+      const reset = row.querySelector(".reset");
+      reset.textContent = tr("loudnessResetStrip");
+      reset.setAttribute("aria-label", tr("loudnessResetStripHover", { input: input.label }));
+      setDisabled(reset, gate("audio", id));
+      if (!reset.disabled) reset.title = tr("loudnessResetStripHover", { input: input.label });
     });
     ui.whyAudio.textContent = sectionReason("audio");
+    paintLoudness();
   }
 
   // The short localized reason for one failure token; "" for none.
@@ -1959,6 +2042,58 @@
       return mark;
     }));
   }
+  // ---- Loudness (Protocol 2.95 on the Web): Program's readouts and each
+  // strip's short-term loudness, from the newest `audio_meters` record. ----
+  function loudnessText(value) {
+    return value === null || value === undefined ? tr("loudnessNone")
+      : value.toLocaleString(language, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  }
+  function paintLoudness() {
+    const live = link.phase === "live";
+    const stale = !live || !telemetry.metersAt || Date.now() - telemetry.metersAt > METER_STALE_MS;
+    const master = live ? telemetry.loudness.get("master") : undefined;
+    ui.loudness.hidden = !live || !telemetry.meters;
+    ui.loudness.dataset.stale = stale ? "1" : "0";
+    for (const readout of ui.loudness.querySelectorAll(".readout")) {
+      const kind = readout.dataset.value;
+      const value = master ? master[kind] : null;
+      let text = loudnessText(value);
+      const hover = tr({ momentary: "loudnessMomentaryHover", short: "loudnessShortHover",
+        integrated: "loudnessIntegratedHover", range: "loudnessRangeHover" }[kind] || "loudnessPeakHover",
+      { peak: loudnessText(master ? master.peak : null), max: loudnessText(master ? master.max : null) });
+      if (kind === "peak" && master && master.max !== null) text += " (" + loudnessText(master.max) + ")";
+      const figure = readout.querySelector("b");
+      if (figure.textContent !== text) figure.textContent = text;
+      readout.title = hover;
+      readout.setAttribute("aria-label", hover + ": " + text);
+      readout.dataset.hot = kind === "peak" && master && master.max !== null && master.max > -1 ? "1" : "0";
+    }
+    const reason = gate("audio");
+    ui.loudnessReset.textContent = tr("loudnessReset");
+    ui.loudnessReset.setAttribute("aria-label", tr("loudnessResetHover"));
+    setDisabled(ui.loudnessReset, reason);
+    if (!reason) ui.loudnessReset.title = tr("loudnessResetHover");
+    const why = !live || !telemetry.meters ? "" : reason || (master ? "" : tr("loudnessWaiting"));
+    if (ui.whyLoudness.textContent !== why) ui.whyLoudness.textContent = why;
+    for (const row of ui.strips.children) {
+      const id = row.dataset.key;
+      const input = show.inputs.find((candidate) => candidate.id === id);
+      const lufs = row.querySelector(".lufs");
+      if (!input || !lufs) continue;
+      const reading = live && !stale ? telemetry.loudness.get(id) : undefined;
+      lufs.hidden = !live || !telemetry.meters;
+      const text = "S " + loudnessText(reading ? reading.short : null);
+      if (lufs.textContent !== text) lufs.textContent = text;
+      lufs.dataset.hot = reading && reading.max !== null && reading.max > -1 ? "1" : "0";
+      const hover = reading ? tr("loudnessStripHover", {
+        input: input.label, short: loudnessText(reading.short), momentary: loudnessText(reading.momentary),
+        integrated: loudnessText(reading.integrated), range: loudnessText(reading.range),
+        peak: loudnessText(reading.peak), max: loudnessText(reading.max),
+      }) : tr("loudnessStripIdle", { input: input.label });
+      lufs.title = hover;
+      lufs.setAttribute("aria-label", hover);
+    }
+  }
   // Paints the newest Master reading; called per meter record and by the
   // page tick, so holds decay and stale meters dim without new records.
   function paintMeters() {
@@ -1968,6 +2103,7 @@
     const stale = !live || !telemetry.metersAt || now - telemetry.metersAt > METER_STALE_MS;
     ui.meters.dataset.stale = stale ? "1" : "0";
     ui.meterScale.hidden = channels.length === 0;
+    paintLoudness();
     const noteText = !live ? "" : !telemetry.meters ? tr("meterWaiting") : stale ? tr("meterStale") : tr("meterLegend");
     if (ui.meterNote.textContent !== noteText) ui.meterNote.textContent = noteText;
     if (ui.meters.children.length !== channels.length) {
@@ -2074,6 +2210,14 @@
     if (gate("audio", id)) return;
     sendMute(id, false);
   }
+  // The loudness reset (Protocol 2.92) of Program ("master") or one strip:
+  // a live audio command, never tied to a revision.
+  function resetLoudness(target) {
+    if (gate("audio", target === "master" ? undefined : target)) return;
+    const input = show.inputs.find((candidate) => candidate.id === target);
+    const bus = input ? input.label : tr("programLoudnessBus");
+    sendCommand(tr("commandLoudnessReset", { bus }), [["payload", "audio_loudness_reset"], ["target", target]]);
+  }
   function sendMute(id, retried) {
     const strip = show.strips.get(id);
     const input = show.inputs.find((candidate) => candidate.id === id);
@@ -2125,6 +2269,7 @@
   ui.language.addEventListener("click", toggleLanguage);
   ui.reconnect.addEventListener("click", () => { if (link.phase === "waiting") link.retryAt = Date.now(); });
   ui.signout.addEventListener("click", signOut);
+  ui.loudnessReset.addEventListener("click", () => resetLoudness("master"));
   ui.pair.addEventListener("submit", submitPairing);
   ui.deviceName.addEventListener("input", () => { pairing.nameEdited = true; });
   setInterval(() => { if (pairing.retryUntil > Date.now() || pairing.error) renderPairing(); }, 500);

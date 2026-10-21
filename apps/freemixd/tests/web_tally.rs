@@ -1132,6 +1132,7 @@ fn operator_page_is_served_with_the_tally_security_model() {
         "stream.desired ? \"stream_stop\" : \"stream_start\"",
         "[\"payload\", \"input_audio_strip\"]",
         "[\"payload\", \"shortcut_fire\"], [\"shortcut\", id]",
+        "[\"payload\", \"audio_loudness_reset\"], [\"target\", target]",
     ] {
         assert!(page.contains(payload), "{payload}");
     }
@@ -1225,6 +1226,9 @@ fn operator_page_is_served_with_the_tally_security_model() {
         "case \"audio_meters\":",
         "freshLossy(record, telemetry.recorderSequence)",
         "required(record, \"master\")",
+        "parseLoudness(required(record, \"loudness\"))",
+        "id=\"loudness-reset\"",
+        "resetLoudness(\"master\")",
         "if (full) render(); else renderOutputs();",
         "const TELEMETRY_STALE_MS = 2000;",
         "const METER_HOLD_MS = 1500;",
@@ -1377,6 +1381,10 @@ fn operator_page_commands_drive_the_show_within_the_session_role() {
             format!("payload=select_preview\tinput={}", input(3)),
         ),
         ("viewer-mute", mute(1, 1)),
+        (
+            "viewer-loudness",
+            "payload=audio_loudness_reset\ttarget=master".to_owned(),
+        ),
     ] {
         let expected = (id == "viewer-mute").then_some(snapshot.revision);
         assert_eq!(
@@ -1419,6 +1427,35 @@ fn operator_page_commands_drive_the_show_within_the_session_role() {
         page_command(&mut page, "audio-stale", Some(revision - 1), &mute(1, 0)).unwrap_err(),
         ("revision_conflict".to_owned(), revision)
     );
+    // The page's loudness resets (Protocol 2.95 on the Web): Program's and
+    // one strip's, live audio commands an Audio page may send.
+    for (id, target, wire) in [
+        (
+            "audio-loudness-master",
+            "master".to_owned(),
+            fm_protocol::AudioDspTarget::Master,
+        ),
+        (
+            "audio-loudness-strip",
+            input(2).to_string(),
+            fm_protocol::AudioDspTarget::Input(input(2)),
+        ),
+    ] {
+        let (_, event) = page_command(
+            &mut page,
+            id,
+            None,
+            &format!("payload=audio_loudness_reset\ttarget={target}"),
+        )
+        .unwrap();
+        assert_eq!(
+            event,
+            EventPayload::AudioMixerChanged(fm_protocol::AudioMixerOperation::ResetLoudness {
+                target: wire
+            }),
+            "{id}"
+        );
+    }
     page.close(None).unwrap();
     drop(page);
 

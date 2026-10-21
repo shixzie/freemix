@@ -3612,8 +3612,8 @@ scopes (RC-004, schema 75).
   console's.
 - 2.92 is refused.
 
-Protocol 2.95 adds a delay stage to the strip DSP chain (AU-005, schema
-76).
+Protocol 2.95 adds a delay stage to the strip DSP chain and shows loudness
+on the Web operator page (AU-005, schema 76).
 
 - The chain code gains the delay: flag bit 13 enables it and a big-endian
   u32 after the limiter's release carries its time in microseconds
@@ -3633,6 +3633,15 @@ Protocol 2.95 adds a delay stage to the strip DSP chain (AU-005, schema
   that is announced, snapshotted, undone, and persisted.
 - Durability (schema 76): a chain object gains required `"delay":
   {"enabled", "delay_us"}` after `"bypass"`.
+- Web `audio_meters` records (the operator and tally pages' lossy feed)
+  now keep `loudness` for Master and at most 32 strips, the lowest input
+  ids first (only strips heard on Program have an entry); they still
+  carry no per-input, monitor, or dynamics meters. The operator page shows
+  Program's momentary, short-term, integrated, loudness-range, and true
+  peak (with the highest) readings with a `Reset loudness` key, and each
+  audio strip row its short-term loudness (every value on hover) with a
+  `Reset` key; both send `audio_loudness_reset` (`master` or the input)
+  under the session's `control_audio` permission.
 - Studio's FX window adds the delay key and its time in milliseconds
   beside the polarity key, with hover help.
 - 2.94 is refused.

@@ -2,7 +2,9 @@
 //!
 //! Web peers (the operator and tally pages) with `view_status` receive the
 //! show's live status beside their durable records: Master/Program
-//! `audio_meters` (Master only: no per-input or monitor meters), the
+//! `audio_meters` (Master only: no per-input or monitor meters; since
+//! Protocol 2.95 with the loudness of Master and at most
+//! [`WEB_LOUDNESS_INPUTS`] strips), the
 //! `stream_status` destination samples, and the `recorder_status` slots.
 //! Each kind is latest-wins: a newer record replaces one that has not been
 //! handed to the gateway yet. The scheduler hands at most one feed record to
@@ -134,10 +136,27 @@ impl WebFeed {
     }
 }
 
+/// The most strips whose loudness a Web meter record carries (Protocol
+/// 2.95), the lowest input ids first: only strips heard on Program have a
+/// reading, and the cap keeps the record a few kilobytes however many
+/// inputs the show has.
+pub(crate) const WEB_LOUDNESS_INPUTS: usize = 32;
+
 /// The Master/Program part of `meters` a Web page shows: the same interval
 /// and Master channels, without per-input or monitor meters, so the record
-/// stays small however many inputs the show has.
+/// stays small however many inputs the show has. Loudness (Protocol 2.95)
+/// is kept for Master and the first [`WEB_LOUDNESS_INPUTS`] metered strips,
+/// which the operator page shows with each bus's loudness reset.
 pub(crate) fn web_meters(meters: &AudioMetersMessage) -> AudioMetersMessage {
+    let master = meters
+        .loudness
+        .iter()
+        .filter(|meter| meter.target == fm_protocol::AudioDspTarget::Master);
+    let strips = meters
+        .loudness
+        .iter()
+        .filter(|meter| meter.target != fm_protocol::AudioDspTarget::Master)
+        .take(WEB_LOUDNESS_INPUTS);
     AudioMetersMessage {
         server: meters.server.clone(),
         sequence: meters.sequence,
@@ -148,13 +167,69 @@ pub(crate) fn web_meters(meters: &AudioMetersMessage) -> AudioMetersMessage {
         inputs: Vec::new(),
         monitor: None,
         dynamics: Vec::new(),
-        loudness: Vec::new(),
+        loudness: master.chain(strips).copied().collect(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Web meter record keeps Master's channels and the loudness of
+    /// Master and the first strips (Protocol 2.95), nothing per input else.
+    #[test]
+    fn web_meters_keep_master_and_capped_strip_loudness() {
+        use fm_protocol::{
+            AudioDspTarget, AudioLoudnessMeter, AudioMeterChannel, InputAudioMeters,
+            ServerIdentity, WireInputId,
+        };
+        let loudness = |target| AudioLoudnessMeter {
+            target,
+            momentary_millilufs: Some(-23_000),
+            short_term_millilufs: Some(-22_500),
+            integrated_millilufs: None,
+            true_peak_millidbtp: Some(-3_000),
+            max_true_peak_millidbtp: Some(-1_500),
+            loudness_range_millilu: Some(4_200),
+        };
+        let strip = |value: u128| {
+            AudioDspTarget::Input(WireInputId::new(
+                core::num::NonZeroU128::new(value).unwrap(),
+            ))
+        };
+        let channel = AudioMeterChannel {
+            peak_millionths: 500_000,
+            rms_millionths: 250_000,
+        };
+        let mut all = vec![loudness(AudioDspTarget::Master)];
+        all.extend((1..=40).map(|value| loudness(strip(value))));
+        let meters = AudioMetersMessage {
+            server: ServerIdentity {
+                engine_id: "engine".to_owned(),
+                project_id: "project".to_owned(),
+                state_epoch: 1,
+                log_id: "log".to_owned(),
+            },
+            sequence: 7,
+            frame: 9,
+            start_sample: 100,
+            end_sample: 200,
+            master: vec![channel],
+            inputs: vec![InputAudioMeters {
+                input: WireInputId::new(core::num::NonZeroU128::new(1).unwrap()),
+                channels: vec![channel],
+            }],
+            monitor: None,
+            dynamics: Vec::new(),
+            loudness: all.clone(),
+        };
+        let web = web_meters(&meters);
+        assert_eq!(web.master, meters.master);
+        assert_eq!(web.inputs, Vec::new());
+        assert_eq!(web.loudness, all[..=WEB_LOUDNESS_INPUTS]);
+        // The record still encodes as a valid wire line.
+        assert!(fm_protocol::encode_line(&fm_protocol::WireMessage::AudioMeters(web)).is_ok());
+    }
 
     #[test]
     fn each_kind_is_latest_wins_and_paced() {
