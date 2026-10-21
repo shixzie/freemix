@@ -43,9 +43,9 @@ use super::scene_layout::{
     encode_layout_scenes, encode_scene_clip, encode_scene_layers, encode_scene_list,
 };
 use super::title::{
-    encode_title_field_exposure, encode_title_field_names, encode_title_fields, encode_title_phase,
-    encode_title_phases, encode_title_shown, encode_title_summaries, title_air_requirement,
-    validate_title_name, validate_title_phase,
+    encode_title_field_exposure, encode_title_field_names, encode_title_field_revisions,
+    encode_title_fields, encode_title_phase, encode_title_phases, encode_title_shown,
+    encode_title_summaries, title_air_requirement, validate_title_name, validate_title_phase,
 };
 use super::transition::{encode_favorite, encode_favorites, validate_favorite_slot};
 use super::value::{
@@ -1387,7 +1387,17 @@ fn encode_playlist_command(
 fn encode_title_state(record: &mut Record, message: &TitleStateMessage) -> Result<(), CodecError> {
     validate_title_name(&message.name)?;
     validate_title_phase(message.phase, message.phase_frame, message.phase_frames)?;
-    let (fields, names, exposed) = encode_title_field_statuses(&message.fields)?;
+    let (fields, names, exposed, revisions) = encode_title_field_statuses(&message.fields)?;
+    if message
+        .fields
+        .iter()
+        .any(|status| status.revision > message.field_revision)
+    {
+        return Err(CodecError::InvalidField {
+            field: "field_revisions",
+            value: revisions,
+        });
+    }
     record.kind("title_state");
     record.field("revision", message.revision)?;
     record.field("input", message.input)?;
@@ -1403,14 +1413,16 @@ fn encode_title_state(record: &mut Record, message: &TitleStateMessage) -> Resul
     )?;
     record.field_string("fields", fields)?;
     record.field_string("field_names", names)?;
-    record.field_string("field_exposed", exposed)
+    record.field_string("field_exposed", exposed)?;
+    record.field_string("field_revisions", revisions)
 }
 
-/// A title's complete field state as its `fields`, `field_names`, and
-/// `field_exposed` (Protocol 2.90) values.
+/// A title's complete field state as its `fields`, `field_names`,
+/// `field_exposed` (Protocol 2.90), and `field_revisions` (Protocol 2.97)
+/// values.
 fn encode_title_field_statuses(
     statuses: &[crate::TitleFieldStatus],
-) -> Result<(String, String, String), CodecError> {
+) -> Result<(String, String, String, String), CodecError> {
     let updates = statuses
         .iter()
         .map(|status| TitleFieldUpdate {
@@ -1422,6 +1434,7 @@ fn encode_title_field_statuses(
         encode_title_fields(&updates)?,
         encode_title_field_names(statuses.iter().map(|status| status.name.as_str()))?,
         encode_title_field_exposure(statuses.iter().map(|status| status.exposed)),
+        encode_title_field_revisions(statuses.iter().map(|status| status.revision)),
     ))
 }
 

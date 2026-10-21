@@ -509,12 +509,14 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
                     name: "Name".into(),
                     value: TitleFieldValue::Text("Ana".into()),
                     exposed: true,
+                    revision: 0,
                 },
                 TitleFieldStatus {
                     field: field(2),
                     name: "Score".into(),
                     value: TitleFieldValue::Number(4),
                     exposed: true,
+                    revision: 0,
                 },
                 TitleFieldStatus {
                     field: field(3),
@@ -526,6 +528,7 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
                         alpha: 0xFF,
                     },
                     exposed: true,
+                    revision: 0,
                 },
                 TitleFieldStatus {
                     field: field(4),
@@ -535,6 +538,7 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
                     },
                     // Hidden from the browser title editor (GX-006).
                     exposed: false,
+                    revision: 0,
                 },
             ],
         })

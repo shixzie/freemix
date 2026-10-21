@@ -1753,6 +1753,7 @@ mod titles {
                 name: "Name".into(),
                 value: TitleFieldValue::Text("Ana".into()),
                 exposed: true,
+                revision: 0,
             }],
         }
     }
@@ -2096,6 +2097,7 @@ mod playlists {
                 name: "Name".into(),
                 value: TitleFieldValue::Text("Ana".into()),
                 exposed: true,
+                revision: 0,
             }],
         }
     }

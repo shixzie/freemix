@@ -892,7 +892,8 @@ fn write_title_input(output: &mut String, title: &TitleInput) {
                 output.push('"');
             }
         }
-        output.push('}');
+        write!(output, ", \"revision\": {}}}", entry.revision)
+            .expect("writing to a string cannot fail");
     }
     output.push_str("]}");
 }

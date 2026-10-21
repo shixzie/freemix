@@ -70,11 +70,13 @@ impl TitleFieldValue {
     }
 }
 
-/// One field id and its value.
+/// One field id, its value, and the title field revision that last changed
+/// the value (schema 78; never above the title's `field_revision`).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TitleFieldEntry {
     pub id: TitleFieldId,
     pub value: TitleFieldValue,
+    pub revision: u64,
 }
 
 /// A title input: the stored template it instantiates and its live fields.
@@ -106,6 +108,12 @@ pub enum TitleFieldsError {
     BlankImageUri(TitleFieldId),
     /// Text and image URIs together exceed [`MAX_TITLE_CONTENT_BYTES`].
     ContentTooLarge { bytes: usize },
+    /// A field's revision is newer than the title's field revision.
+    RevisionAhead {
+        field: TitleFieldId,
+        revision: u64,
+        field_revision: u64,
+    },
 }
 
 impl fmt::Display for TitleFieldsError {
@@ -131,18 +139,30 @@ impl fmt::Display for TitleFieldsError {
                 formatter,
                 "title content is {bytes} bytes, maximum is {MAX_TITLE_CONTENT_BYTES}"
             ),
+            Self::RevisionAhead {
+                field,
+                revision,
+                field_revision,
+            } => write!(
+                formatter,
+                "title field {field} is at revision {revision}, after the title's {field_revision}"
+            ),
         }
     }
 }
 
 impl std::error::Error for TitleFieldsError {}
 
-/// Checks the bounds, ordering, and image URIs of a title field list.
+/// Checks the bounds, ordering, image URIs, and per-field revisions (none
+/// above `field_revision`, the title's) of a title field list.
 ///
 /// # Errors
 ///
 /// Returns the first [`TitleFieldsError`] found.
-pub fn validate_title_fields(fields: &[TitleFieldEntry]) -> Result<(), TitleFieldsError> {
+pub fn validate_title_fields(
+    field_revision: u64,
+    fields: &[TitleFieldEntry],
+) -> Result<(), TitleFieldsError> {
     if fields.len() > MAX_TITLE_FIELDS {
         return Err(TitleFieldsError::TooManyFields {
             count: fields.len(),
@@ -159,6 +179,13 @@ pub fn validate_title_fields(fields: &[TitleFieldEntry]) -> Result<(), TitleFiel
     }
     let mut bytes = 0_usize;
     for entry in fields {
+        if entry.revision > field_revision {
+            return Err(TitleFieldsError::RevisionAhead {
+                field: entry.id,
+                revision: entry.revision,
+                field_revision,
+            });
+        }
         match &entry.value {
             TitleFieldValue::Text(text) => {
                 let chars = text.chars().count();

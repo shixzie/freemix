@@ -514,6 +514,7 @@ fn entry(id: u128, value: TitleFieldValue) -> TitleFieldEntry {
     TitleFieldEntry {
         id: TitleFieldId::new(nz(id)),
         value,
+        revision: 0,
     }
 }
 

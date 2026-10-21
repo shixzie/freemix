@@ -3260,6 +3260,7 @@ fn title_field(id: u128, value: fm_model::TitleFieldValue) -> fm_model::TitleFie
     fm_model::TitleFieldEntry {
         id: fm_model::TitleFieldId::new(NonZeroU128::new(id).unwrap()),
         value,
+        revision: 1,
     }
 }
 
@@ -3489,6 +3490,19 @@ fn set_title_fields_replaces_values_atomically() {
             TitleFieldsError::OutOfOrder {
                 previous: fm_model::TitleFieldId::new(NonZeroU128::new(2).unwrap()),
                 next: fm_model::TitleFieldId::new(NonZeroU128::new(1).unwrap()),
+            }
+        ))
+    );
+    // A field may not be newer than its title (schema 78).
+    let mut ahead = title_field(1, TitleFieldValue::Number(1));
+    ahead.revision = 6;
+    assert_eq!(
+        project.set_title_fields(input_id(9), 5, vec![ahead]),
+        Err(SetTitleFieldsError::InvalidFields(
+            TitleFieldsError::RevisionAhead {
+                field: fm_model::TitleFieldId::new(NonZeroU128::new(1).unwrap()),
+                revision: 6,
+                field_revision: 5,
             }
         ))
     );

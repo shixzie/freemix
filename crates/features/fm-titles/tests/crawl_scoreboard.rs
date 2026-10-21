@@ -996,9 +996,10 @@ fn publishing_maps_typed_values_onto_template_fields_atomically() {
     assert_eq!(scene, snapshot);
     assert_eq!(
         board.publish(&binding(), &mut scene, 1, 60),
-        Err(UpdateError::RevisionConflict {
+        Err(UpdateError::StaleField {
+            field: field(6),
             expected: 1,
-            actual: 2
+            changed: 2,
         })
     );
 }

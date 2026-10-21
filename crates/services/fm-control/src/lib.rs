@@ -3718,6 +3718,7 @@ fn title_states(engine: &Engine) -> Vec<TitleStateMessage> {
                             name: definition.name.clone(),
                             value: wire_title_value(value),
                             exposed: definition.exposed,
+                            revision: title.fields.field_revision(*field).unwrap_or(0),
                         }
                     })
                     .collect(),

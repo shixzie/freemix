@@ -4228,6 +4228,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let field = |id: u128, value| fm_model::TitleFieldEntry {
         id: fm_model::TitleFieldId::new(NonZeroU128::new(id).unwrap()),
         value,
+        revision: 0,
     };
     assert_eq!(
         title.kind,

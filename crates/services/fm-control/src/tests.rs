@@ -3635,12 +3635,14 @@ mod titles {
                         name: "Name".into(),
                         value: TitleFieldValue::Text("Ana".into()),
                         exposed: true,
+                        revision: 0,
                     },
                     TitleFieldStatus {
                         field: field(SCORE),
                         name: "Score".into(),
                         value: TitleFieldValue::Number(9),
                         exposed: true,
+                        revision: 2,
                     },
                 ],
             }]

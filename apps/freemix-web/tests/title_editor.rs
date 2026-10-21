@@ -295,10 +295,12 @@ impl TitleControlPort for FakeTitleServer {
                     snapshot: snapshot(hosted),
                 }
             }
-            Err(UpdateError::RevisionConflict { .. }) => TitleReply::Conflict {
-                request,
-                current: snapshot(hosted),
-            },
+            Err(UpdateError::RevisionConflict { .. } | UpdateError::StaleField { .. }) => {
+                TitleReply::Conflict {
+                    request,
+                    current: snapshot(hosted),
+                }
+            }
             Err(error) => reject(hosted, rejection(&error, &fields)),
         }
     }
@@ -325,9 +327,9 @@ fn rejection(
             TitleRejection::InvalidValue(wire_field_id(field))
         }
         UpdateError::ContentTooLarge { .. } => TitleRejection::InvalidValue(fields[0].0),
-        UpdateError::RevisionExhausted | UpdateError::RevisionConflict { .. } => {
-            TitleRejection::RevisionExhausted
-        }
+        UpdateError::RevisionExhausted
+        | UpdateError::RevisionConflict { .. }
+        | UpdateError::StaleField { .. } => TitleRejection::RevisionExhausted,
     }
 }
 
@@ -772,22 +774,42 @@ fn pushed_snapshots_follow_clean_titles_and_stale_dirty_ones() {
         "new content must be previewed before it airs"
     );
 
-    // With a draft on another field, the push makes Bob stale at once.
+    // With a draft on another field, the push moves Bob's base along
+    // (Protocol 2.97): fields are revisioned one by one, so his draft is
+    // not stale and may be saved; airing it needs a fresh preview.
     bob.set_input(lt, field(ROLE), "Bob's Role").unwrap();
+    bob.preview(lt).unwrap();
     alice.set_input(lt, field(NAME), "Changed Again").unwrap();
     alice
         .dispatch(&mut server, lt, TitleOperation::Save)
         .unwrap();
     bob.observe(server.snapshot(LOWER_THIRD)).unwrap();
     let view = bob.presentation(lt).unwrap();
-    assert!(view.stale);
-    assert!(view.fields[0].changed_upstream && !view.fields[0].dirty);
-    assert_eq!(view.fields[0].input, "Changed", "base value until rebase");
+    assert!(!view.stale);
+    assert!(!view.fields[0].changed_upstream && !view.fields[0].dirty);
+    assert_eq!(view.fields[0].input, "Changed Again");
     assert!(view.fields[1].dirty && view.fields[1].conflict.is_none());
+    assert_eq!(state(&bob, LOWER_THIRD, TitleOperation::Save), Ok(()));
+    assert_eq!(
+        state(&bob, LOWER_THIRD, TitleOperation::Take),
+        blocked(TitleBlocked::NotPreviewed)
+    );
+
+    // A change to the drafted field itself makes Bob stale at once.
+    alice.set_input(lt, field(ROLE), "Alice's Role").unwrap();
+    alice
+        .dispatch(&mut server, lt, TitleOperation::Save)
+        .unwrap();
+    bob.observe(server.snapshot(LOWER_THIRD)).unwrap();
+    let view = bob.presentation(lt).unwrap();
+    assert!(view.stale);
+    assert!(view.fields[1].changed_upstream && view.fields[1].dirty);
+    assert!(view.fields[1].conflict.is_some());
     assert_eq!(
         state(&bob, LOWER_THIRD, TitleOperation::Save),
         blocked(TitleBlocked::Stale)
     );
+    assert_eq!(server.value(LOWER_THIRD, ROLE), text("Alice's Role"));
 
     // An out-of-order older snapshot is ignored.
     let mut old = server.snapshot(LOWER_THIRD);
@@ -899,16 +921,19 @@ fn rebase_revalidates_drafts_against_changed_field_types() {
                 id: field(NAME),
                 name: "Name".into(),
                 value: text("Ada"),
+                revision: 0,
             },
             ExposedField {
                 id: field(ROLE),
                 name: "Role".into(),
                 value: text("Analyst"),
+                revision: 0,
             },
             ExposedField {
                 id: field(SCORE),
                 name: "Score".into(),
                 value: text("zero"),
+                revision: 0,
             },
         ],
     };
@@ -927,11 +952,13 @@ fn rebase_revalidates_drafts_against_changed_field_types() {
             id: field(NAME),
             name: "Name".into(),
             value: TitleFieldValue::Number(1),
+            revision: 0,
         },
         ExposedField {
             id: field(SCORE),
             name: "Score".into(),
             value: TitleFieldValue::Number(0),
+            revision: 0,
         },
     ];
     editor.observe(swapped).unwrap();
@@ -996,9 +1023,9 @@ fn air_state_races_are_refused_and_off_air_stays_available() {
         blocked(TitleBlocked::NotPreviewed)
     );
 
-    // Bob updates the live title, so Alice's draft goes stale; she can
-    // still take it off air.
-    bob.set_input(lt, field(ROLE), "Live").unwrap();
+    // Bob updates the live title's name, so Alice's draft of it goes
+    // stale; she can still take it off air.
+    bob.set_input(lt, field(NAME), "Live").unwrap();
     bob.preview(lt).unwrap();
     bob.dispatch(&mut server, lt, TitleOperation::Update)
         .unwrap();
@@ -1084,6 +1111,7 @@ fn malformed_snapshots_are_refused() {
             id: field(id),
             name: format!("f{id}"),
             value: TitleFieldValue::Number(0),
+            revision: 0,
         })
         .collect();
     assert_eq!(editor.observe(oversized), Err(SnapshotError::TooManyFields));

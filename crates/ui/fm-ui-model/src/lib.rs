@@ -5637,8 +5637,13 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                 .find(|title| title.input == input)
                 .expect("validated title change names a title");
             title.field_revision = field_revision;
+            // A field's revision is the title revision that last changed
+            // its value (Protocol 2.97).
             for (current, update) in title.fields.iter_mut().zip(fields) {
-                current.value = update.value;
+                if current.value != update.value {
+                    current.value = update.value;
+                    current.revision = field_revision;
+                }
             }
             state.desired_overlays = overlays;
         }

@@ -43,6 +43,7 @@ pub fn scene_snapshot(
                 id: wire_field_id(definition.id),
                 name: definition.name.clone(),
                 value: wire_field_value(value),
+                revision: scene.field_set().field_revision(definition.id).unwrap_or(0),
             })
         })
         .collect();

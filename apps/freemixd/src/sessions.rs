@@ -191,9 +191,11 @@ struct Peer {
     /// is still closed: its heartbeats wait unanswered behind the held reply
     /// and the session's heartbeat timeout expires.
     held_result: Option<HeldResult>,
-    /// A live event taken from the subscription that met transient
-    /// backpressure; it is queued first on a later pass.
-    deferred_live: Option<WireMessage>,
+    /// Live records taken from the subscription that met transient
+    /// backpressure, queued first on a later pass, in order: an event, and
+    /// after a Web peer's `title_exposure_changed` the `title_state`
+    /// records that resynchronize its titles (Protocol 2.97).
+    deferred_live: VecDeque<WireMessage>,
     /// Bytes written to the raw socket so far, so a pass can tell whether
     /// the last write made progress.
     written: u64,
@@ -387,7 +389,7 @@ impl Peer {
             thumbnails: None,
             lossy: LossyRecords::default(),
             held_result: None,
-            deferred_live: None,
+            deferred_live: VecDeque::new(),
             written: 0,
             over_capacity: false,
         })
@@ -1365,7 +1367,15 @@ pub(super) fn run(
             .iter()
             .any(|peer| peer.transport.is_web())
             .then(|| crate::web_titles::HiddenFields::new(control.borrow().title_hidden_fields()));
-        drain_live(&mut peers, &mut close, &mut live_budget, hidden.as_ref());
+        drain_live(
+            &mut peers,
+            &mut close,
+            &mut live_budget,
+            hidden.as_ref(),
+            &mut |inputs| {
+                crate::web_titles::web_title_states(control.borrow().title_states(), inputs)
+            },
+        );
 
         for (index, peer) in peers.iter_mut().enumerate() {
             if close[index] {
@@ -2676,12 +2686,18 @@ fn web_title_command(peer: &Peer, command: &fm_protocol::CommandMessage) -> bool
 
 /// Queues each active peer's live events, up to its budget. A Web peer's
 /// title records leave out the fields their titles hide (`hidden`, present
-/// whenever a Web peer is connected).
+/// whenever a Web peer is connected), and its `title_exposure_changed` event
+/// is followed by one `title_state` per title it names, as the Web session
+/// may now see it (`title_states`, Protocol 2.97), so a newly exposed
+/// field's name and value reach the page without a reconnect.
 fn drain_live(
     peers: &mut [Peer],
     close: &mut [bool],
     budgets: &mut [usize],
     hidden: Option<&crate::web_titles::HiddenFields>,
+    title_states: &mut dyn FnMut(
+        &[fm_protocol::WireInputId],
+    ) -> Vec<fm_protocol::TitleStateMessage>,
 ) {
     for (index, peer) in peers.iter_mut().enumerate() {
         // A held acknowledgement precedes the events its command published.
@@ -2689,7 +2705,7 @@ fn drain_live(
             continue;
         }
         while budgets[index] > 0 && peer.outbound.len() < OUTBOUND_CAPACITY - REPLY_RESERVE {
-            let message = if let Some(message) = peer.deferred_live.take() {
+            let message = if let Some(message) = peer.deferred_live.pop_front() {
                 message
             } else {
                 match peer
@@ -2700,7 +2716,18 @@ fn drain_live(
                 {
                     Ok(LiveEvent::Durable(event)) => match hidden {
                         Some(hidden) if peer.transport.is_web() => {
-                            crate::web_titles::web_live_message(WireMessage::Event(event), hidden)
+                            let message = crate::web_titles::web_live_message(
+                                WireMessage::Event(event),
+                                hidden,
+                            );
+                            if let Some(inputs) = crate::web_titles::exposure_inputs(&message) {
+                                peer.deferred_live.extend(
+                                    title_states(inputs)
+                                        .into_iter()
+                                        .map(WireMessage::TitleState),
+                                );
+                            }
+                            message
                         }
                         _ => WireMessage::Event(event),
                     },
@@ -2717,7 +2744,7 @@ fn drain_live(
                 // Bounded: the subscription keeps (and bounds) every later
                 // event while this one waits.
                 Err(refusal) if refusal.transient() => {
-                    peer.deferred_live = Some(message);
+                    peer.deferred_live.push_front(message);
                     break;
                 }
                 Err(_) => {

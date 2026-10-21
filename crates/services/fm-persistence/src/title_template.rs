@@ -910,6 +910,7 @@ pub fn title_field_defaults(template: &TitleTemplate) -> Vec<TitleFieldEntry> {
         .map(|field| TitleFieldEntry {
             id: TitleFieldId::new(field.id.get()),
             value: title_field_value(&field.default),
+            revision: 0,
         })
         .collect::<Vec<_>>();
     fields.sort_by_key(|entry| entry.id);
@@ -933,7 +934,7 @@ fn validate_template_body(template: &TitleTemplate) -> Result<(), TitleTemplateE
             return Err(TitleTemplateError::InvalidImageUri { field: field.id });
         }
     }
-    validate_title_fields(&title_field_defaults(template))
+    validate_title_fields(0, &title_field_defaults(template))
         .map_err(TitleTemplateError::InvalidFieldDefaults)
 }
 

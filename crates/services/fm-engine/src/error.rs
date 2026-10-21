@@ -563,10 +563,17 @@ impl TitleRejectionKind {
 /// A typed title command refusal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TitleRejection {
-    /// `base_revision` is not the title's current field revision.
+    /// `base_revision` is newer than the title's field revision.
     RevisionConflict {
         expected: u64,
         actual: u64,
+    },
+    /// A field the edit sets changed after its `base_revision` (Protocol
+    /// 2.97): another editor's change would be overwritten.
+    StaleField {
+        field: FieldId,
+        expected: u64,
+        changed: u64,
     },
     /// The input does not exist or is not a title.
     UnknownTitle(InputId),
@@ -603,7 +610,9 @@ impl TitleRejection {
     #[must_use]
     pub const fn kind(self) -> TitleRejectionKind {
         match self {
-            Self::RevisionConflict { .. } => TitleRejectionKind::RevisionConflict,
+            Self::RevisionConflict { .. } | Self::StaleField { .. } => {
+                TitleRejectionKind::RevisionConflict
+            }
             Self::UnknownTitle(_) => TitleRejectionKind::UnknownTitle,
             Self::UnknownField(_) => TitleRejectionKind::UnknownField,
             Self::DuplicateField(_) => TitleRejectionKind::DuplicateField,
@@ -668,6 +677,15 @@ impl From<UpdateError> for TitleRejection {
             UpdateError::RevisionConflict { expected, actual } => {
                 Self::RevisionConflict { expected, actual }
             }
+            UpdateError::StaleField {
+                field,
+                expected,
+                changed,
+            } => Self::StaleField {
+                field,
+                expected,
+                changed,
+            },
             UpdateError::UnknownField(field) => Self::UnknownField(field),
             UpdateError::DuplicateField(field) => Self::DuplicateField(field),
             UpdateError::TypeMismatch {
@@ -693,6 +711,14 @@ impl fmt::Display for TitleRejection {
             Self::RevisionConflict { expected, actual } => write!(
                 formatter,
                 "title edit is based on revision {expected}, but the title is at revision {actual}"
+            ),
+            Self::StaleField {
+                field,
+                expected,
+                changed,
+            } => write!(
+                formatter,
+                "title edit is based on revision {expected}, but field {field} changed at revision {changed}"
             ),
             Self::UnknownTitle(input) => write!(formatter, "input {input} is not a title"),
             Self::UnknownField(field) => write!(formatter, "the title has no field {field}"),

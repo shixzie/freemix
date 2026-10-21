@@ -184,6 +184,7 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
                 name: "Name".into(),
                 value: TitleFieldValue::Text("Ana".into()),
                 exposed: true,
+                revision: 0,
             }],
         })
         .unwrap();

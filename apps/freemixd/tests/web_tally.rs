@@ -233,10 +233,12 @@ fn create_project_with(path: &Path, title: bool, stream: bool) {
                     fm_model::TitleFieldEntry {
                         id: fm_model::TitleFieldId::new(NonZeroU128::new(1).unwrap()),
                         value: fm_model::TitleFieldValue::Text("Name".into()),
+                        revision: 0,
                     },
                     fm_model::TitleFieldEntry {
                         id: fm_model::TitleFieldId::new(NonZeroU128::new(2).unwrap()),
                         value: fm_model::TitleFieldValue::Text("secret-note".into()),
+                        revision: 0,
                     },
                 ],
             }),
@@ -2714,6 +2716,19 @@ fn web_until<T>(socket: &mut Browser, mut found: impl FnMut(&str, WireMessage) -
     }
 }
 
+/// The next record, which must be a `title_state` (one follows each
+/// `title_exposure_changed` a Web session gets, Protocol 2.97); lossy
+/// status records in between are skipped.
+fn next_title_state(socket: &mut Browser) -> fm_protocol::TitleStateMessage {
+    web_until(socket, |line, message| match message {
+        WireMessage::TitleState(state) => Some(state),
+        WireMessage::Event(_) | WireMessage::CommandResult(_) => {
+            panic!("expected the title_state after the exposure change: {line}")
+        }
+        _ => None,
+    })
+}
+
 fn preview_request(id: &str, width: u16, height: u16, fields: &[(u128, &str)]) -> String {
     encode_line(&WireMessage::TitlePreviewRequest(
         fm_protocol::TitlePreviewRequest {
@@ -2925,6 +2940,46 @@ fn web_title_editor_hides_fields_previews_drafts_and_follows_phases() {
     assert_eq!(exposed.0, [title]);
     assert_eq!(exposed.1.len(), 2);
     assert!(exposed.1.iter().all(|item| item.exposed));
+    // Protocol 2.97: the page's title follows at once, with the newly
+    // exposed field's name, value, and revision, without a reconnect.
+    let resynced = next_title_state(&mut graphics);
+    assert_eq!((resynced.input, resynced.field_revision), (title, 1));
+    assert_eq!(resynced.fields.len(), 2, "{resynced:?}");
+    assert_eq!(resynced.fields[1].name, "Producer note");
+    assert_eq!(
+        resynced.fields[1].value,
+        fm_protocol::TitleFieldValue::Text("new-secret".into())
+    );
+    assert_eq!(resynced.fields[1].revision, 1);
+    // Hidden again, it disappears live: neither the event nor the state
+    // that follows names it.
+    for (key, exposed) in [("studio-hide", false), ("studio-reexpose", true)] {
+        studio.send(&command(
+            key,
+            CommandPayload::SetTitleFieldExposure {
+                input: title,
+                field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(2).unwrap()),
+                exposed,
+            },
+        ));
+        studio.accepted(key);
+        let (line, fields) = web_until(&mut graphics, |line, message| match message {
+            WireMessage::Event(EventMessage {
+                payload: EventPayload::TitleExposureChanged { fields, .. },
+                ..
+            }) => Some((line.to_owned(), fields)),
+            _ => None,
+        });
+        let state = next_title_state(&mut graphics);
+        let shown = if exposed { 2 } else { 1 };
+        assert_eq!(fields.len(), shown, "{line}");
+        assert_eq!(state.fields.len(), shown, "{state:?}");
+        if !exposed {
+            assert!(!line.contains("2%3A0"), "{line}");
+            let encoded = encode_line(&WireMessage::TitleState(state)).unwrap();
+            assert!(!encoded.contains("new-secret"), "{encoded}");
+        }
+    }
     drop((studio, graphics));
     drop(daemon);
     daemon = Daemon::start(&project);
@@ -2934,5 +2989,97 @@ fn web_title_editor_hides_fields_previews_drafts_and_follows_phases() {
     assert_eq!(
         state.fields[1].value,
         fm_protocol::TitleFieldValue::Text("new-secret".into())
+    );
+}
+
+/// GX-006 per-field revisions (Protocol 2.97): Studio and a browser that
+/// both saw the same title revision edit different fields of it and both
+/// edits apply; a stale edit of a field someone else changed is refused as
+/// `title_revision_conflict`, from another browser and from Studio alike,
+/// and changes nothing.
+#[test]
+fn studio_and_browsers_edit_different_fields_of_a_title_without_clobbering() {
+    let directory = TestDirectory::new("title-field-revisions");
+    let project = directory.0.join("show.freemix");
+    create_project_with(&project, true, false);
+    let daemon = Daemon::start(&project);
+    let title = input(4);
+    let mut studio = RawOperator::connect_as(daemon.control, Role::Admin);
+    let (mut page, _, _, _) = web_session(daemon.web, Role::Graphics);
+    let (mut other_page, _, _, _) = web_session(daemon.web, Role::Graphics);
+    let page_edit = |base: u64, text: &str| {
+        format!(
+            "payload=title_fields\tinput={title}\tbase_revision={base}\trequire=off_air\t\
+             fields=1%3At%3A{}%3A{text}",
+            text.len()
+        )
+    };
+    let studio_edit = |field: u128, text: &str| {
+        command(
+            &format!("studio-{field}-{text}"),
+            CommandPayload::SetTitleFields {
+                input: title,
+                base_revision: 0,
+                require: fm_protocol::TitleAirRequirement::OffAir,
+                fields: vec![fm_protocol::TitleFieldUpdate {
+                    field: fm_protocol::WireTitleFieldId::new(NonZeroU128::new(field).unwrap()),
+                    value: fm_protocol::TitleFieldValue::Text(text.into()),
+                }],
+            },
+        )
+    };
+
+    // Both saw revision 0: the page sets the name, Studio the note.
+    page_command(&mut page, "page-name", None, &page_edit(0, "Ana")).unwrap();
+    studio.send(&studio_edit(2, "cue"));
+    studio.accepted("studio-2-cue");
+
+    // Another browser still on revision 0 may not overwrite the name ...
+    assert_eq!(
+        page_command(&mut other_page, "other-name", None, &page_edit(0, "Bea"))
+            .unwrap_err()
+            .0,
+        "conflict"
+    );
+    // ... nor may Studio; the refusal names the field and its revision.
+    studio.send(&studio_edit(1, "Cy"));
+    let refusal = loop {
+        if let WireMessage::CommandResult(result) = studio.receive() {
+            break result;
+        }
+    };
+    let CommandResult::Rejected { code, fields, .. } = &refusal else {
+        panic!("a stale edit of the name is refused: {refusal:?}");
+    };
+    assert_eq!(code, "conflict");
+    assert_eq!(fields[0].code, "title_revision_conflict");
+    assert!(
+        fields[0].message.contains("field 1 changed at revision 1"),
+        "{refusal:?}"
+    );
+    // On the newest revision the other browser's name edit applies.
+    page_command(&mut other_page, "other-name-2", None, &page_edit(2, "Bea")).unwrap();
+
+    // A fresh page sees every edit with the revision that made it.
+    let (_socket, sync) = web_sync(daemon.web, Role::Graphics);
+    let state = title_state_of(&sync);
+    assert_eq!(state.field_revision, 3);
+    assert_eq!(
+        state.fields[0].value,
+        fm_protocol::TitleFieldValue::Text("Bea".into())
+    );
+    assert_eq!(state.fields[0].revision, 3);
+    // Studio sees the hidden note's revision too.
+    drop(studio);
+    let mut studio = RawOperator::connect_as(daemon.control, Role::Admin);
+    studio.send(&studio_edit(2, "stale-note"));
+    let refusal = loop {
+        if let WireMessage::CommandResult(result) = studio.receive() {
+            break result;
+        }
+    };
+    assert!(
+        matches!(&refusal, CommandResult::Rejected { code, .. } if code == "conflict"),
+        "the note changed at revision 2: {refusal:?}"
     );
 }

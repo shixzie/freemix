@@ -33,6 +33,7 @@ use super::{decode_rgba, encode_rgba};
 const FIELDS: &str = "fields";
 const FIELD_NAMES: &str = "field_names";
 const FIELD_EXPOSED: &str = "field_exposed";
+const FIELD_REVISIONS: &str = "field_revisions";
 const TITLES: &str = "titles";
 
 /// Enforces the field-list invariants shared by the encoder and decoder:
@@ -480,6 +481,47 @@ pub(super) fn decode_title_field_exposure(
             b'1' => Ok(true),
             b'0' => Ok(false),
             _ => Err(invalid()),
+        })
+        .collect()
+}
+
+/// Encodes each field's revision (Protocol 2.97) positionally as
+/// comma-separated canonical decimals, one per field.
+pub(super) fn encode_title_field_revisions(revisions: impl IntoIterator<Item = u64>) -> String {
+    revisions
+        .into_iter()
+        .map(|revision| revision.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Strictly decodes exactly `count` positional field revisions, none above
+/// the title's `field_revision`.
+pub(super) fn decode_title_field_revisions(
+    value: &str,
+    count: usize,
+    field_revision: u64,
+) -> Result<Vec<u64>, CodecError> {
+    let invalid = || CodecError::InvalidField {
+        field: FIELD_REVISIONS,
+        value: value.to_owned(),
+    };
+    if count == 0 {
+        return if value.is_empty() {
+            Ok(Vec::new())
+        } else {
+            Err(invalid())
+        };
+    }
+    if value.split(',').take(count + 1).count() != count {
+        return Err(invalid());
+    }
+    value
+        .split(',')
+        .map(|item| {
+            parse_canonical_u64(item)
+                .filter(|revision| *revision <= field_revision)
+                .ok_or_else(invalid)
         })
         .collect()
 }

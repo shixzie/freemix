@@ -57,6 +57,7 @@ fn color_fields(bar: [u8; 3]) -> Vec<TitleFieldEntry> {
     vec![TitleFieldEntry {
         id: TitleFieldId::new(NonZeroU128::MIN),
         value: TitleFieldValue::Color(Rgba8::new(bar[0], bar[1], bar[2], 255)),
+        revision: 0,
     }]
 }
 

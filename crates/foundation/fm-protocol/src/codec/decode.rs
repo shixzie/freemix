@@ -47,9 +47,9 @@ use super::scene_layout::{
     parse_canonical_scene,
 };
 use super::title::{
-    decode_title_field_exposure, decode_title_field_names, decode_title_fields, decode_title_phase,
-    decode_title_phases, decode_title_summaries, decode_title_timeline,
-    parse_title_air_requirement, validate_title_name, validate_title_phase,
+    decode_title_field_exposure, decode_title_field_names, decode_title_field_revisions,
+    decode_title_fields, decode_title_phase, decode_title_phases, decode_title_summaries,
+    decode_title_timeline, parse_title_air_requirement, validate_title_name, validate_title_phase,
 };
 use super::transition::{
     decode_auto_transition_kind, decode_favorite, decode_favorite_slot, decode_favorites,
@@ -1420,7 +1420,8 @@ fn decode_title_preview_frame(fields: &mut Fields) -> Result<TitlePreviewFrameMe
 fn decode_title_state(fields: &mut Fields) -> Result<TitleStateMessage, CodecError> {
     let name = fields.required("name")?;
     validate_title_name(&name)?;
-    let statuses = decode_title_field_statuses(fields)?;
+    let field_revision = fields.canonical_required("field_revision")?;
+    let statuses = decode_title_field_statuses(fields, field_revision)?;
     let phase = decode_title_phase(&fields.required("phase")?)?;
     let phase_frame = fields.canonical_required("phase_frame")?;
     let phase_frames = fields.canonical_required("phase_frames")?;
@@ -1432,7 +1433,7 @@ fn decode_title_state(fields: &mut Fields) -> Result<TitleStateMessage, CodecErr
         revision: fields.canonical_required("revision")?,
         input: fields.canonical_input("input")?,
         name,
-        field_revision: fields.canonical_required("field_revision")?,
+        field_revision,
         phase,
         phase_frame,
         phase_frames,
@@ -1441,21 +1442,32 @@ fn decode_title_state(fields: &mut Fields) -> Result<TitleStateMessage, CodecErr
     })
 }
 
-/// A title's complete field state from its `fields`, `field_names`, and
-/// `field_exposed` (Protocol 2.90) values.
-fn decode_title_field_statuses(fields: &mut Fields) -> Result<Vec<TitleFieldStatus>, CodecError> {
+/// A title's complete field state from its `fields`, `field_names`,
+/// `field_exposed` (Protocol 2.90), and `field_revisions` (Protocol 2.97)
+/// values; no field revision may exceed the title's `field_revision`.
+fn decode_title_field_statuses(
+    fields: &mut Fields,
+    field_revision: u64,
+) -> Result<Vec<TitleFieldStatus>, CodecError> {
     let values = decode_title_fields(&fields.required("fields")?)?;
     let names = decode_title_field_names(&fields.required("field_names")?, values.len())?;
     let exposed = decode_title_field_exposure(&fields.required("field_exposed")?, values.len())?;
+    let revisions = decode_title_field_revisions(
+        &fields.required("field_revisions")?,
+        values.len(),
+        field_revision,
+    )?;
     Ok(values
         .into_iter()
         .zip(names)
         .zip(exposed)
-        .map(|((update, name), exposed)| TitleFieldStatus {
+        .zip(revisions)
+        .map(|(((update, name), exposed), revision)| TitleFieldStatus {
             field: update.field,
             name,
             value: update.value,
             exposed,
+            revision,
         })
         .collect())
 }

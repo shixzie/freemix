@@ -267,7 +267,7 @@ fn apply_draft_fields(
             }
         }
     }
-    validate_title_fields(&title.fields)
+    validate_title_fields(title.field_revision, &title.fields)
         .map_err(|error| refusal("invalid_request", error.to_string()))
 }
 
@@ -485,6 +485,7 @@ mod tests {
                 .map(|value| TitleFieldEntry {
                     id: TitleFieldId::new(id(value)),
                     value: Model::Text("saved".into()),
+                    revision: 0,
                 })
                 .to_vec(),
         };

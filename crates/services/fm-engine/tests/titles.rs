@@ -394,6 +394,52 @@ fn saving_fields_advances_the_revision_once_and_reports_it() {
 }
 
 #[test]
+fn editors_of_different_fields_never_clobber_each_other() {
+    // Two editors both saw revision 0 (GX-006, Protocol 2.97).
+    let mut engine = engine();
+    assert_accepted(&run(
+        &mut engine,
+        "studio",
+        save(0, vec![(field(NAME), text("Ada"))]),
+    ));
+    assert_accepted(&run(
+        &mut engine,
+        "browser",
+        save(0, vec![(field(SCORE), FieldValue::Number(7))]),
+    ));
+    assert_eq!(revision(&engine), 2);
+    let title = fields(&engine, TITLE);
+    assert_eq!(title.value(field(NAME)), Some(&text("Ada")));
+    assert_eq!(title.value(field(SCORE)), Some(&FieldValue::Number(7)));
+    assert_eq!(title.field_revision(field(NAME)), Some(1));
+    assert_eq!(title.field_revision(field(SCORE)), Some(2));
+    assert_eq!(title.field_revision(field(FILL)), Some(0));
+
+    // The browser's stale edit of the name Studio changed is refused and
+    // changes nothing; its message names the field.
+    let before = engine.show().clone();
+    let stale = run(
+        &mut engine,
+        "browser-name",
+        save(0, vec![(field(NAME), text("Bea"))]),
+    );
+    assert_refused(
+        &stale,
+        TitleRejectionKind::RevisionConflict,
+        RejectionCode::Conflict,
+        "base_revision",
+    );
+    assert!(
+        rejection(&stale)
+            .message
+            .contains(&format!("field {} changed at revision 1", field(NAME))),
+        "{:?}",
+        rejection(&stale)
+    );
+    assert_eq!(engine.show(), &before);
+}
+
+#[test]
 fn field_refusals_carry_stable_codes_and_change_nothing() {
     let mut engine = engine();
     assert_accepted(&run(
@@ -1082,9 +1128,14 @@ fn snapshots_round_trip_title_revisions_and_values() {
     assert_eq!(fields(&restored, OTHER_TITLE), fields(&engine, OTHER_TITLE));
     assert_eq!(restored.snapshot().unwrap(), snapshot);
 
-    // The restored title keeps its revision for compare-and-set.
+    // The restored title keeps its per-field revisions for compare-and-set:
+    // the score changed at revision 2, so an edit of it based on 1 is stale.
     assert_refused(
-        &run(&mut restored, "stale", update(1, Vec::new())),
+        &run(
+            &mut restored,
+            "stale",
+            update(1, vec![(field(SCORE), FieldValue::Number(43))]),
+        ),
         TitleRejectionKind::RevisionConflict,
         RejectionCode::Conflict,
         "base_revision",

@@ -1779,6 +1779,7 @@ mod tests {
         vec![fm_model::TitleFieldEntry {
             id: fm_model::TitleFieldId::new(NonZeroU128::new(1).unwrap()),
             value: fm_model::TitleFieldValue::Color(fm_model::Rgba8::new(red, green, blue, 255)),
+            revision: 0,
         }]
     }
 

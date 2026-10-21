@@ -2455,7 +2455,8 @@ impl Project {
                 requested: field_revision,
             });
         }
-        validate_title_fields(&fields).map_err(SetTitleFieldsError::InvalidFields)?;
+        validate_title_fields(field_revision, &fields)
+            .map_err(SetTitleFieldsError::InvalidFields)?;
         *title = TitleInput {
             template_uri: std::mem::take(&mut title.template_uri),
             field_revision,

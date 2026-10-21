@@ -605,8 +605,13 @@ fn parse_title_field(value: Value) -> Result<TitleFieldEntry, DecodeError> {
         },
         value => return Err(unknown_enum("title field type", value)),
     };
+    let revision = object.u64("revision")?;
     object.finish()?;
-    Ok(TitleFieldEntry { id, value })
+    Ok(TitleFieldEntry {
+        id,
+        value,
+        revision,
+    })
 }
 
 /// Parses `#rrggbbaa` (hex digits in either case).

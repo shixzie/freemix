@@ -867,6 +867,15 @@
     if (names.length !== count) throw new Error("field names do not match fields");
     return names;
   }
+  // Field revisions (Protocol 2.97): one decimal per field, positionally:
+  // the title revision that last changed each field's value.
+  function parseFieldRevisions(value, count) {
+    const revisions = value ? value.split(",").map(Number) : [];
+    if (revisions.length !== count || revisions.some((revision) => !Number.isSafeInteger(revision) || revision < 0)) {
+      throw new Error("field revisions do not match fields");
+    }
+    return revisions;
+  }
   // Overlays: `channel:source:active:opacity:...`, `;` separated.
   function parseOverlays(value) {
     return (value ? value.split(";") : []).map((item) => {
@@ -1250,15 +1259,19 @@
         return;
       }
       case "title_state": {
+        // After the snapshot, and live after a title_exposure_changed event
+        // (Protocol 2.97): the title's fields as this page may now see them.
         if (link.phase !== "live") throw new Error("unexpected title state");
         const id = required(record, "input");
         const title = titles.get(id);
         if (!title) throw new Error("title state for an unknown title");
         const fields = parseTitleFields(required(record, "fields"));
         const names = parseFieldNames(required(record, "field_names"), fields.length);
+        const revisions = parseFieldRevisions(required(record, "field_revisions"), fields.length);
         title.name = required(record, "name");
         title.fieldRevision = Number(required(record, "field_revision"));
-        title.fields = fields.map((field, index) => ({ ...field, name: names[index] }));
+        title.fields = fields.map((field, index) => ({ ...field, name: names[index], revision: revisions[index] }));
+        if (picker.title === id && !title.fields.some((field) => field.id === picker.field)) closePicker();
         settleDraft(title);
         setPhase(id, required(record, "phase"), record.fields.get("phase_frame"), record.fields.get("phase_frames"),
           record.fields.get("shown"));
@@ -1363,15 +1376,21 @@
       const title = titles.get(required(record, "input"));
       if (!title) return;
       const values = parseTitleFields(required(record, "fields"));
+      const revision = Number(required(record, "field_revision"));
+      const own = ownChanges.delete(link.revision);
+      // A live title_state written after this event was queued already
+      // holds it (Protocol 2.97).
+      if (title.fields && revision < title.fieldRevision) return;
       const previous = title.fieldRevision;
-      title.fieldRevision = Number(required(record, "field_revision"));
+      title.fieldRevision = revision;
       // This page's own accepted edit is not someone else's change.
       const draft = drafts.get(title.id);
-      if (ownChanges.delete(link.revision) && draft && draft.base === previous) draft.base = title.fieldRevision;
+      if (own && draft && draft.base === previous) draft.base = title.fieldRevision;
       if (title.fields) {
+        // A field's revision is the one that last changed its value.
         title.fields = title.fields.map((field) => {
           const update = values.find((candidate) => candidate.id === field.id);
-          return update ? { ...field, value: update.value } : field;
+          return update && update.value !== field.value ? { ...field, value: update.value, revision } : field;
         });
       }
       settleDraft(title);
@@ -1388,7 +1407,9 @@
       closeSocket();
     } else if (name === "title_exposure_changed") {
       // The fields each title now shows this page (the server names only
-      // exposed ones). A newly exposed field's value comes with a snapshot.
+      // exposed ones). A newly exposed field's name and value follow in a
+      // title_state for each listed title (Protocol 2.97); a hidden one
+      // disappears now.
       const list = required(record, "fields");
       const exposed = new Set((list ? list.split(",") : []).filter((item) => item.endsWith(":1"))
         .map((item) => item.split(":")[0]));
@@ -1396,7 +1417,6 @@
       for (const id of inputs ? inputs.split(",") : []) {
         const title = titles.get(id);
         if (!title || !title.fields) continue;
-        if ([...exposed].some((field) => !title.fields.some((known) => known.id === field))) { closeSocket(); return; }
         title.fields = title.fields.filter((field) => exposed.has(field.id));
         const draft = drafts.get(id);
         if (draft) {
@@ -1634,10 +1654,14 @@
       /* a thumbnail that cannot load stays blank */
     }
   }
-  function pickImage(uri) {
-    const title = titles.get(picker.title);
-    const field = title && title.fields && title.fields.find((candidate) => candidate.id === picker.field);
-    if (!field) { closePicker(); render(); return; }
+  // `target` is the title and field the picker was open for when an upload
+  // began: the operator may have moved the picker to another field (or
+  // closed it) while it was in flight, and the picture belongs to the first.
+  function pickImage(uri, target) {
+    const into = target || { title: picker.title, field: picker.field };
+    const title = titles.get(into.title);
+    const field = title && title.fields && title.fields.find((candidate) => candidate.id === into.field);
+    if (!field) { if (!target) closePicker(); render(); return; }
     setDraft(title, field, uri);
     const row = [...ui.fields.children].find((child) => child.dataset.key === field.id);
     if (row) row.dataset.refresh = "1";
@@ -1645,6 +1669,7 @@
   }
   const UPLOAD_ERRORS = { 413: "uploadTooLarge", 415: "uploadType", 422: "uploadInvalid", 503: "uploadBusy" };
   async function uploadImage(file) {
+    const target = { title: picker.title, field: picker.field };
     const limits = picker.limits || {};
     const mb = Math.round((limits.max_bytes || 8388608) / 1048576);
     const fail = (key, values) => { picker.status = tr(key, values); picker.tone = "warn"; render(); };
@@ -1668,8 +1693,8 @@
     }
     picker.busy = false;
     if ((status === 200 || status === 201) && answer && typeof answer.uri === "string") {
-      pickImage(answer.uri);
-      await loadImages();
+      pickImage(answer.uri, target);
+      if (picker.title) await loadImages();
       picker.status = tr("uploaded", { name: file.name });
       render();
       return;
@@ -1698,16 +1723,31 @@
 
   // Drops edits that now equal the server's value; a draft whose base is
   // older than the server's revision is stale until the operator decides.
+  // Fields are revisioned one by one (Protocol 2.97): another editor's
+  // change to a field this page has no draft for moves the draft's base
+  // along (the server accepts an edit that touches only fields unchanged
+  // since its base); a change to a drafted field leaves it stale.
   function settleDraft(title) {
     const draft = drafts.get(title.id);
     if (!draft || !title.fields) return;
     for (const [field, text] of [...draft.values]) {
       const server = title.fields.find((candidate) => candidate.id === field);
       if (!server) draft.values.delete(field);
-      else if (canonical(server, text) === server.value && draft.base === title.fieldRevision) draft.values.delete(field);
+      else if (canonical(server, text) === server.value && !(server.revision > draft.base)) draft.values.delete(field);
     }
     if (!draft.values.size) { drafts.delete(title.id); return; }
     if (draft.base > title.fieldRevision) draft.base = title.fieldRevision;
+    else if (draft.base < title.fieldRevision && !changedUnder(title, draft)) {
+      draft.base = title.fieldRevision;
+      draft.previewed = null; // other fields changed: preview again
+    }
+  }
+  // Whether a drafted field changed after the draft's base.
+  function changedUnder(title, draft) {
+    return [...draft.values.keys()].some((id) => {
+      const server = title.fields.find((candidate) => candidate.id === id);
+      return !server || server.revision > draft.base;
+    });
   }
 
   function refusalReason(code, issue) {
@@ -1789,7 +1829,7 @@
   function stale(title) {
     const draft = draftOf(title.id);
     if ([...pending.values()].some((sent) => sent.title === title.id)) return false;
-    return Boolean(draft && title.fields && draft.base !== title.fieldRevision);
+    return Boolean(draft && title.fields && draft.base !== title.fieldRevision && changedUnder(title, draft));
   }
   // The changed fields, ascending by id, with what they send.
   function changes(title) {

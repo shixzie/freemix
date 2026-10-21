@@ -9,9 +9,9 @@ use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CodecError, CommandMessage, CommandPayload, EditHistoryStatus,
     EngineIdentity, EventCursor, EventMessage, EventPayload, MAX_LIST_ITEMS,
     MAX_WEB_TITLE_PREVIEW_HEIGHT, MAX_WEB_TITLE_PREVIEW_WIDTH, ProtocolVersion, TitleFieldExposure,
-    TitleFieldUpdate, TitleFieldValue, TitlePhase, TitlePhaseStatus, TitlePhasesMessage,
-    TitlePreviewRequest, TitlePreviewSample, TitleShownOn, TitleTimelineStatus, WireInputId,
-    WireMessage, WireTitleFieldId, decode_line, encode_line,
+    TitleFieldStatus, TitleFieldUpdate, TitleFieldValue, TitlePhase, TitlePhaseStatus,
+    TitlePhasesMessage, TitlePreviewRequest, TitlePreviewSample, TitleShownOn, TitleStateMessage,
+    TitleTimelineStatus, WireInputId, WireMessage, WireTitleFieldId, decode_line, encode_line,
 };
 
 const PREFIX: &str = "command\tprotocol=2.95\tid=a\tidempotency_key=k";
@@ -282,4 +282,58 @@ fn title_phase_records_are_exact_and_strict() {
     }
     assert!(decode_line("title_phases\tframe=900\ttitles=5%3Aidle%3A0%3A0%3Anone%3A3\n").is_err());
     assert!(decode_line("title_phases\tframe=900\n").is_err());
+}
+
+fn title_state(revisions: [u64; 2]) -> WireMessage {
+    WireMessage::TitleState(TitleStateMessage {
+        revision: 30,
+        input: input(2),
+        name: "Lower".to_owned(),
+        field_revision: 6,
+        phase: TitlePhase::Idle,
+        phase_frame: 0,
+        phase_frames: 0,
+        timeline: None,
+        fields: [(1, "Name"), (4, "Role")]
+            .into_iter()
+            .zip(revisions)
+            .map(|((id, name), revision)| TitleFieldStatus {
+                field: field(id),
+                name: name.to_owned(),
+                value: TitleFieldValue::Text("x".to_owned()),
+                exposed: true,
+                revision,
+            })
+            .collect(),
+    })
+}
+
+#[test]
+fn title_states_carry_exact_per_field_revisions() {
+    // Protocol 2.97: each field's revision follows its exposure flag,
+    // positionally, none above the title's field revision.
+    let line = round_trip(&title_state([0, 6]));
+    assert!(
+        line.ends_with("\tfield_exposed=11\tfield_revisions=0%2C6\n"),
+        "{line}"
+    );
+    assert!(encode_line(&title_state([0, 7])).is_err());
+    for (to, why) in [
+        ("field_revisions=0", "too few"),
+        ("field_revisions=0%2C6%2C1", "too many"),
+        ("field_revisions=0%2C7", "after the title"),
+        ("field_revisions=0%2C06", "not canonical"),
+        ("field_revisions=0%2C", "empty item"),
+        ("field_revisions=0%2C-1", "negative"),
+        ("field_revisions=", "missing items"),
+    ] {
+        let tampered = line.replace("field_revisions=0%2C6", to);
+        assert_ne!(tampered, line);
+        assert!(decode_line(&tampered).is_err(), "{why}");
+    }
+    let missing = line.replace("\tfield_revisions=0%2C6", "");
+    assert_eq!(
+        decode_line(&missing),
+        Err(CodecError::MissingField("field_revisions"))
+    );
 }

@@ -400,12 +400,16 @@ fn content_bytes(value: &FieldValue) -> usize {
 /// type, and the values stay within [`MAX_TITLE_FIELDS`],
 /// [`MAX_TITLE_TEXT_CHARS`], and [`MAX_TITLE_CONTENT_BYTES`]. The revision is
 /// an optimistic-concurrency counter that advances once per non-empty
-/// [`Self::update`].
+/// [`Self::update`]. Each field also carries its own revision: the title
+/// revision of the update that last changed its value (GX-006), never above
+/// the title revision. An update is checked per field, so editors changing
+/// different fields of one title never conflict.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TitleFieldSet {
     definitions: Vec<FieldDefinition>,
     field_types: BTreeMap<FieldId, FieldType>,
     values: BTreeMap<FieldId, FieldValue>,
+    field_revisions: BTreeMap<FieldId, u64>,
     revision: u64,
 }
 
@@ -427,7 +431,8 @@ impl TitleFieldSet {
         )
     }
 
-    /// Restores persisted values at `revision` against `template`.
+    /// Restores persisted values at `revision` against `template`, every
+    /// field at that revision (as if each had just changed).
     ///
     /// `values` must cover the template fields exactly, each with the
     /// defined type, and stay within the value bounds.
@@ -439,6 +444,30 @@ impl TitleFieldSet {
         template: &TitleTemplate,
         revision: u64,
         values: impl IntoIterator<Item = (FieldId, FieldValue)>,
+    ) -> Result<Self, FieldSetError> {
+        Self::restore_revisioned(
+            template,
+            revision,
+            values
+                .into_iter()
+                .map(|(field, value)| (field, value, revision)),
+        )
+    }
+
+    /// Restores persisted values and their per-field revisions at
+    /// `revision` against `template`.
+    ///
+    /// `values` must cover the template fields exactly, each with the
+    /// defined type and a field revision no newer than `revision`, and stay
+    /// within the value bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`FieldSetError`] naming the first offending field.
+    pub fn restore_revisioned(
+        template: &TitleTemplate,
+        revision: u64,
+        values: impl IntoIterator<Item = (FieldId, FieldValue, u64)>,
     ) -> Result<Self, FieldSetError> {
         if template.fields.len() > MAX_TITLE_FIELDS {
             return Err(FieldSetError::TooManyFields {
@@ -452,8 +481,9 @@ impl TitleFieldSet {
             }
         }
         let mut restored = BTreeMap::new();
+        let mut field_revisions = BTreeMap::new();
         let mut bytes = 0_usize;
-        for (field, value) in values {
+        for (field, value, field_revision) in values {
             if restored.contains_key(&field) {
                 return Err(FieldSetError::DuplicateField(field));
             }
@@ -462,8 +492,16 @@ impl TitleFieldSet {
             };
             check_value(field, expected, &value)
                 .map_err(|error| FieldSetError::from_value(&error))?;
+            if field_revision > revision {
+                return Err(FieldSetError::FieldRevisionAhead {
+                    field,
+                    field_revision,
+                    revision,
+                });
+            }
             bytes = bytes.saturating_add(content_bytes(&value));
             restored.insert(field, value);
+            field_revisions.insert(field, field_revision);
         }
         if let Some(missing) = field_types.keys().find(|id| !restored.contains_key(id)) {
             return Err(FieldSetError::MissingField(*missing));
@@ -475,6 +513,7 @@ impl TitleFieldSet {
             definitions: template.fields.clone(),
             field_types,
             values: restored,
+            field_revisions,
             revision,
         })
     }
@@ -493,6 +532,7 @@ impl TitleFieldSet {
                 .iter()
                 .map(|field| (field.id, field.default.clone()))
                 .collect(),
+            field_revisions: definitions.iter().map(|field| (field.id, 0)).collect(),
             revision: 0,
         }
     }
@@ -540,6 +580,13 @@ impl TitleFieldSet {
         self.revision
     }
 
+    /// The title revision that last changed `field`'s value (zero for a
+    /// template default never changed), or `None` for an unknown field.
+    #[must_use]
+    pub fn field_revision(&self, field: FieldId) -> Option<u64> {
+        self.field_revisions.get(&field).copied()
+    }
+
     /// Returns the text plus image-asset UTF-8 bytes the values hold.
     #[must_use]
     pub fn content_bytes(&self) -> usize {
@@ -549,20 +596,28 @@ impl TitleFieldSet {
             .fold(0, usize::saturating_add)
     }
 
-    /// Atomically applies typed field values if `expected_revision` is current.
-    /// An empty update is a no-op and does not advance the revision.
+    /// Atomically applies typed field values made against
+    /// `expected_revision`, the title revision the editor last saw.
+    ///
+    /// The update is accepted when `expected_revision` is not ahead of the
+    /// title and no updated field changed after it, so edits to different
+    /// fields made against the same revision all apply, while a stale edit
+    /// of a field someone else changed is refused. An accepted non-empty
+    /// update advances the title revision by one and moves each field whose
+    /// value it changes to that revision. An empty update is a no-op and
+    /// does not advance the revision.
     ///
     /// # Errors
     ///
-    /// Returns a conflict, unknown/duplicate field, type mismatch, blank image
-    /// asset, over-long text, oversized total content, or revision exhaustion
-    /// without changing any field.
+    /// Returns a conflict, stale field, unknown/duplicate field, type
+    /// mismatch, blank image asset, over-long text, oversized total content,
+    /// or revision exhaustion without changing any field.
     pub fn update(
         &mut self,
         expected_revision: u64,
         updates: &[(FieldId, FieldValue)],
     ) -> Result<u64, UpdateError> {
-        if expected_revision != self.revision {
+        if expected_revision > self.revision {
             return Err(UpdateError::RevisionConflict {
                 expected: expected_revision,
                 actual: self.revision,
@@ -582,6 +637,14 @@ impl TitleFieldSet {
                 return Err(UpdateError::UnknownField(*field));
             };
             check_value(*field, expected, value)?;
+            let changed = self.field_revisions.get(field).copied().unwrap_or(0);
+            if changed > expected_revision {
+                return Err(UpdateError::StaleField {
+                    field: *field,
+                    expected: expected_revision,
+                    changed,
+                });
+            }
             let previous = self.values.get(field).map_or(0, content_bytes);
             bytes = bytes
                 .saturating_sub(previous)
@@ -595,7 +658,10 @@ impl TitleFieldSet {
             .checked_add(1)
             .ok_or(UpdateError::RevisionExhausted)?;
         for (field, value) in updates {
-            self.values.insert(*field, value.clone());
+            if self.values.get(field) != Some(value) {
+                self.values.insert(*field, value.clone());
+                self.field_revisions.insert(*field, revision);
+            }
         }
         self.revision = revision;
         Ok(revision)
@@ -652,6 +718,12 @@ pub enum FieldSetError {
     TextTooLong { field: FieldId, chars: usize },
     /// Text and image assets together exceed [`MAX_TITLE_CONTENT_BYTES`].
     ContentTooLarge { bytes: usize },
+    /// A field's revision is newer than the title's.
+    FieldRevisionAhead {
+        field: FieldId,
+        field_revision: u64,
+        revision: u64,
+    },
 }
 
 impl FieldSetError {
@@ -705,6 +777,14 @@ impl fmt::Display for FieldSetError {
                 formatter,
                 "title content is {bytes} bytes, maximum is {MAX_TITLE_CONTENT_BYTES}"
             ),
+            Self::FieldRevisionAhead {
+                field,
+                field_revision,
+                revision,
+            } => write!(
+                formatter,
+                "field {field} is at revision {field_revision}, after the title's {revision}"
+            ),
         }
     }
 }
@@ -713,9 +793,17 @@ impl std::error::Error for FieldSetError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UpdateError {
+    /// The update names a title revision newer than the title's.
     RevisionConflict {
         expected: u64,
         actual: u64,
+    },
+    /// The update was made against revision `expected`, but `field` changed
+    /// at the later revision `changed`.
+    StaleField {
+        field: FieldId,
+        expected: u64,
+        changed: u64,
     },
     UnknownField(FieldId),
     DuplicateField(FieldId),
@@ -748,6 +836,14 @@ impl fmt::Display for UpdateError {
                     "expected revision {expected}, current revision is {actual}"
                 )
             }
+            Self::StaleField {
+                field,
+                expected,
+                changed,
+            } => write!(
+                formatter,
+                "field {field} changed at revision {changed}, after the edit's revision {expected}"
+            ),
             Self::UnknownField(field) => write!(formatter, "unknown field {field}"),
             Self::DuplicateField(field) => write!(formatter, "field {field} is updated twice"),
             Self::TypeMismatch {

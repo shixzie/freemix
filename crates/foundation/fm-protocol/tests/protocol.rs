@@ -4044,6 +4044,7 @@ mod titles {
             name: name.to_owned(),
             value,
             exposed: true,
+            revision: 0,
         }
     }
 
@@ -4057,7 +4058,7 @@ mod titles {
         let encoded = encode_line(&message).unwrap();
         assert_eq!(
             encoded,
-            "title_state\trevision=9\tinput=2\tname=Lower%20third\tfield_revision=4\tphase=in\tphase_frame=3\tphase_frames=20\tshown=none\tsince_frame=0\tfields=1%3At%3A3%3AAna%2C2%3An%3A3\tfield_names=11%3AName%2C%20first%2C5%3AScore\tfield_exposed=11\n"
+            "title_state\trevision=9\tinput=2\tname=Lower%20third\tfield_revision=4\tphase=in\tphase_frame=3\tphase_frames=20\tshown=none\tsince_frame=0\tfields=1%3At%3A3%3AAna%2C2%3An%3A3\tfield_names=11%3AName%2C%20first%2C5%3AScore\tfield_exposed=11\tfield_revisions=0%2C0\n"
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
         // Protocol 2.90: which fields the browser title editor may show.
@@ -4067,7 +4068,10 @@ mod titles {
         hidden.fields[1].exposed = false;
         let hidden = WireMessage::TitleState(hidden);
         let line = encode_line(&hidden).unwrap();
-        assert!(line.ends_with("\tfield_exposed=10\n"), "{line}");
+        assert!(
+            line.ends_with("\tfield_exposed=10\tfield_revisions=0%2C0\n"),
+            "{line}"
+        );
         assert_eq!(decode_line(&line).unwrap(), hidden);
         // Protocol 2.81: where the title is shown and the frame its
         // timeline started on (GX-001).
@@ -4092,7 +4096,9 @@ mod titles {
         }
         let empty = state(Vec::new());
         let encoded_empty = encode_line(&empty).unwrap();
-        assert!(encoded_empty.ends_with("\tfields=\tfield_names=\tfield_exposed=\n"));
+        assert!(
+            encoded_empty.ends_with("\tfields=\tfield_names=\tfield_exposed=\tfield_revisions=\n")
+        );
         assert_eq!(decode_line(&encoded_empty).unwrap(), empty);
 
         let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
@@ -4308,8 +4314,10 @@ mod titles {
             phase_frames: u64::MAX,
             timeline: None,
             fields: ids
-                .map(|id| {
-                    status(
+                .map(|id| TitleFieldStatus {
+                    // The longest field revisions (Protocol 2.97).
+                    revision: u64::MAX,
+                    ..status(
                         id,
                         &",".repeat(per_name),
                         TitleFieldValue::Text("%".repeat(per_field)),

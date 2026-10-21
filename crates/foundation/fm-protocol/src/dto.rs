@@ -1483,6 +1483,12 @@ pub struct TitleFieldStatus {
     /// 2.90). A Web session is never sent a hidden field at all, so every
     /// field it sees is exposed.
     pub exposed: bool,
+    /// The title field revision that last changed this field's value,
+    /// zero for a template default never changed, and never above the
+    /// title's `field_revision` (Protocol 2.97). A `title_fields` or
+    /// `title_take` edit made against a `base_revision` below it is refused
+    /// as a conflict.
+    pub revision: u64,
 }
 
 /// Whether one template field is exposed to the browser title editor

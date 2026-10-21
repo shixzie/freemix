@@ -109,6 +109,81 @@ fn restore_requires_exact_typed_coverage() {
 }
 
 #[test]
+fn field_revisions_restore_and_advance_per_field() {
+    let template = three_fields();
+    let values = |third: u64| {
+        vec![
+            (field_id(1), FieldValue::Text("Grace".into()), 2),
+            (field_id(2), FieldValue::Color(Color::new(1, 2, 3, 4)), 0),
+            (
+                field_id(3),
+                FieldValue::Image(ImageSource::new("asset://x")),
+                third,
+            ),
+        ]
+    };
+    // `restore` puts every field at the title revision.
+    let plain = TitleFieldSet::restore(
+        &template,
+        7,
+        values(7)
+            .into_iter()
+            .map(|(field, value, _)| (field, value)),
+    )
+    .unwrap();
+    assert_eq!(plain.field_revision(field_id(2)), Some(7));
+    assert_eq!(
+        TitleFieldSet::restore_revisioned(&template, 7, values(8)),
+        Err(FieldSetError::FieldRevisionAhead {
+            field: field_id(3),
+            field_revision: 8,
+            revision: 7,
+        })
+    );
+    let mut set = TitleFieldSet::restore_revisioned(&template, 7, values(7)).unwrap();
+    assert_eq!(set.field_revision(field_id(1)), Some(2));
+    assert_eq!(set.field_revision(field_id(2)), Some(0));
+    assert_eq!(set.field_revision(field_id(9)), None);
+
+    // An edit made against revision 2 may set fields 1 and 2 (unchanged
+    // since), but not field 3 (changed at 7).
+    assert_eq!(
+        set.update(
+            2,
+            &[(field_id(3), FieldValue::Image(ImageSource::new("y")))]
+        ),
+        Err(UpdateError::StaleField {
+            field: field_id(3),
+            expected: 2,
+            changed: 7,
+        })
+    );
+    // A value written unchanged keeps its field revision.
+    assert_eq!(
+        set.update(
+            2,
+            &[
+                (field_id(1), FieldValue::Text("Grace".into())),
+                (field_id(2), FieldValue::Color(Color::new(9, 9, 9, 9))),
+            ],
+        ),
+        Ok(8)
+    );
+    assert_eq!(set.field_revision(field_id(1)), Some(2));
+    assert_eq!(set.field_revision(field_id(2)), Some(8));
+    assert_eq!(set.field_revision(field_id(3)), Some(7));
+    // An empty update needs only a base the title has reached.
+    assert_eq!(set.update(0, &[]), Ok(8));
+    assert_eq!(
+        set.update(9, &[]),
+        Err(UpdateError::RevisionConflict {
+            expected: 9,
+            actual: 8,
+        })
+    );
+}
+
+#[test]
 fn template_bounds_are_enforced() {
     let too_many = template(
         (1..=u128::try_from(MAX_TITLE_FIELDS).unwrap() + 1)

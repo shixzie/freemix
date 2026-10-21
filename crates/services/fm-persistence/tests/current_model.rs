@@ -2041,6 +2041,8 @@ fn title_entry(id: u128, value: fm_model::TitleFieldValue) -> fm_model::TitleFie
     fm_model::TitleFieldEntry {
         id: fm_model::TitleFieldId::new(nz(id)),
         value,
+        // Each field last changed at its own revision, below the title's 3.
+        revision: u64::try_from(id).unwrap() - 1,
     }
 }
 
@@ -2101,9 +2103,10 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
     assert!(encoded.starts_with("{\n  \"schema_version\": 77,\n"));
     let title = "{\"type\": \"title\", \"template_uri\": \"asset://titles/lower-third.fmtitle\", \
          \"field_revision\": 3, \"fields\": [{\"id\": 1, \"type\": \"text\", \"value\": \
-         \"Jane \\\"JD\\\" Doe\"}, {\"id\": 2, \"type\": \"number\", \"value\": -4}, {\"id\": 3, \
-         \"type\": \"color\", \"value\": \"#112233ff\"}, {\"id\": 4, \"type\": \"image\", \
-         \"asset_uri\": \"asset://images/logo.png\"}]}";
+         \"Jane \\\"JD\\\" Doe\", \"revision\": 0}, {\"id\": 2, \"type\": \"number\", \"value\": -4, \
+         \"revision\": 1}, {\"id\": 3, \"type\": \"color\", \"value\": \"#112233ff\", \"revision\": 2}, \
+         {\"id\": 4, \"type\": \"image\", \"asset_uri\": \"asset://images/logo.png\", \
+         \"revision\": 3}]}";
     assert!(
         encoded.contains(title),
         "unexpected title encoding in {encoded}"
@@ -2147,6 +2150,9 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
             "\"value\": \"asset://images",
             1,
         ),
+        encoded.replacen(", \"revision\": 1}", "}", 1),
+        encoded.replacen("\"revision\": 1}", "\"revision\": -1}", 1),
+        encoded.replacen("\"revision\": 1}", "\"revision\": \"1\"}", 1),
     ] {
         assert_ne!(malformed, encoded);
         fs::write(store.manifest_path(), &malformed).unwrap();
@@ -2177,6 +2183,8 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
         encoded.replacen("{\"id\": 2, ", "{\"id\": 1, ", 1),
         encoded.replacen("{\"id\": 3, ", "{\"id\": 1, ", 1),
         encoded.replacen("\"asset://images/logo.png\"", "\"\"", 1),
+        // A field may not have changed after its title's field revision.
+        encoded.replacen("\"revision\": 3}", "\"revision\": 4}", 1),
     ] {
         assert_ne!(invalid, encoded);
         fs::write(store.manifest_path(), &invalid).unwrap();

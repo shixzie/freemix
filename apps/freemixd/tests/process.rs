@@ -6128,6 +6128,7 @@ fn create_title_project_with(path: &Path, template: fm_titles::TitleTemplate) {
             fields: vec![fm_model::TitleFieldEntry {
                 id: fm_model::TitleFieldId::new(NonZeroU128::new(1).unwrap()),
                 value: fm_model::TitleFieldValue::Color(Rgba8::new(230, 20, 140, 255)),
+                revision: 0,
             }],
         }),
         required_capabilities: Vec::new(),
@@ -7318,6 +7319,7 @@ fn assert_title_state(
                     alpha: 255,
                 },
                 exposed: true,
+                revision: 0,
             }],
         }
     );

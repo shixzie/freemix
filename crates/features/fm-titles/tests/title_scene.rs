@@ -243,10 +243,20 @@ fn optimistic_conflicts_and_batch_errors_are_atomic() {
     scene
         .update_field(0, field_id(1), FieldValue::Number(10))
         .unwrap();
+    // A stale edit of the field that changed is refused; a base the title
+    // has not reached yet is refused too.
     assert_eq!(
-        scene.update_field(0, field_id(2), FieldValue::Number(20)),
-        Err(UpdateError::RevisionConflict {
+        scene.update_field(0, field_id(1), FieldValue::Number(11)),
+        Err(UpdateError::StaleField {
+            field: field_id(1),
             expected: 0,
+            changed: 1,
+        })
+    );
+    assert_eq!(
+        scene.update_field(2, field_id(2), FieldValue::Number(20)),
+        Err(UpdateError::RevisionConflict {
+            expected: 2,
             actual: 1,
         })
     );
@@ -265,6 +275,23 @@ fn optimistic_conflicts_and_batch_errors_are_atomic() {
     );
     assert_eq!(scene.field_value(field_id(2)), Some(&FieldValue::Number(2)));
     assert_eq!(scene.revision(), 1);
+
+    // Another editor's edit of a different field made against the same
+    // revision applies without clobbering the first (GX-006).
+    assert_eq!(
+        scene.update_field(0, field_id(2), FieldValue::Number(20)),
+        Ok(2)
+    );
+    assert_eq!(
+        scene.field_value(field_id(1)),
+        Some(&FieldValue::Number(10))
+    );
+    assert_eq!(
+        scene.field_value(field_id(2)),
+        Some(&FieldValue::Number(20))
+    );
+    assert_eq!(scene.field_set().field_revision(field_id(1)), Some(1));
+    assert_eq!(scene.field_set().field_revision(field_id(2)), Some(2));
 }
 
 #[test]

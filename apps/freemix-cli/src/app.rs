@@ -3180,13 +3180,14 @@ fn restore_titles(path: &Path, show: &mut ShowState, project: &Project) -> AppRe
         let Ok(stored) = store.load_title_template(&title.template_uri) else {
             continue;
         };
-        let Ok(fields) = fm_titles::TitleFieldSet::restore(
+        let Ok(fields) = fm_titles::TitleFieldSet::restore_revisioned(
             &stored.template,
             title.field_revision,
             title.fields.iter().map(|entry| {
                 (
                     fm_titles::FieldId::new(entry.id.get()),
                     fm_title_render::field_value(&entry.value),
+                    entry.revision,
                 )
             }),
         ) else {
@@ -3201,7 +3202,7 @@ fn restore_titles(path: &Path, show: &mut ShowState, project: &Project) -> AppRe
     Ok(())
 }
 
-/// Copies every title's field values and revision the engine changed (a
+/// Copies every title's field values and revisions the engine changed (a
 /// cue's title text) into the project.
 fn sync_title_fields(project: &mut Project, show: &ShowState) -> AppResult<()> {
     for (&input, title) in show.titles() {
@@ -3212,6 +3213,7 @@ fn sync_title_fields(project: &mut Project, show: &ShowState) -> AppResult<()> {
             .map(|(field, value)| fm_model::TitleFieldEntry {
                 id: fm_model::TitleFieldId::new(field.get()),
                 value: fm_title_render::model_field_value(value),
+                revision: title.fields.field_revision(*field).unwrap_or(0),
             })
             .collect();
         project

@@ -1791,12 +1791,14 @@ mod titles {
                     name: "Name".into(),
                     value: TitleFieldValue::Text("Ana".into()),
                     exposed: true,
+                    revision: 0,
                 },
                 TitleFieldStatus {
                     field: field(2),
                     name: "Score".into(),
                     value: TitleFieldValue::Number(0),
                     exposed: true,
+                    revision: 0,
                 },
             ],
         }
@@ -2001,6 +2003,8 @@ mod titles {
         assert_eq!(title.fields[0].name, "Name", "names are kept");
         assert_eq!(title.fields[0].value, TitleFieldValue::Text("Bea".into()));
         assert_eq!(title.fields[1].value, TitleFieldValue::Number(7));
+        // Each changed field moves to the event's field revision (2.97).
+        assert_eq!((title.fields[0].revision, title.fields[1].revision), (3, 3));
         assert_eq!(
             state.desired_overlays(),
             on_channel_two(input(TITLE)).as_slice()
@@ -2023,6 +2027,19 @@ mod titles {
             ))
             .unwrap();
         assert!(model.state().unwrap().title_on_air(input(TITLE)));
+
+        // Only a field whose value changes moves to the new revision.
+        model
+            .apply_event(event(
+                project(1),
+                engine_a,
+                13,
+                title_changed(4, "Cy", overlays()),
+            ))
+            .unwrap();
+        let state = model.state().unwrap();
+        let title = state.title(input(TITLE)).unwrap();
+        assert_eq!((title.fields[0].revision, title.fields[1].revision), (4, 3));
     }
 
     #[test]

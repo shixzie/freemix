@@ -849,6 +849,7 @@ mod tests {
             field_revision: 1,
             fields: vec![TitleFieldEntry {
                 id: TitleFieldId::new(NonZeroU128::MIN),
+                revision: 0,
                 value: TitleFieldValue::Image {
                     asset_uri: asset_uri.into(),
                 },

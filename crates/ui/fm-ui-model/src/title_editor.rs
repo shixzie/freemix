@@ -2,10 +2,13 @@
 //!
 //! The model keeps, per title input, the last server snapshot, the snapshot
 //! the operator's drafts are based on, and one draft per edited exposed
-//! field. Every value-carrying command names its base revision; a stale base
-//! comes back as a conflict that keeps the drafts and shows the server's
-//! current values until the operator explicitly rebases or discards. Nothing
-//! is ever overwritten silently.
+//! field. Every value-carrying command names its base revision. Fields are
+//! revisioned one by one (Protocol 2.97): another editor's change to a field
+//! without a draft moves the base along with it, while a change to a drafted
+//! field makes the title stale, and a stale base comes back as a conflict
+//! that keeps the drafts and shows the server's current values until the
+//! operator explicitly rebases or discards. Nothing is ever overwritten
+//! silently.
 //!
 //! Titles are keyed by their [`InputId`], fields by [`WireTitleFieldId`],
 //! and values are [`TitleFieldValue`]s, so snapshots come straight from the
@@ -23,8 +26,9 @@
 //!   results back and holds an acceptance until the replicated state has
 //!   applied its revision;
 //! * any synchronous [`TitleControlPort`] (used by tests), which must:
-//!   apply `Save`/`Take`/`Update` fields atomically only when the title's
-//!   field revision equals `base_revision`, and otherwise reply
+//!   apply `Save`/`Take`/`Update` fields atomically only when no field they
+//!   set changed after `base_revision` (and the title has reached it), and
+//!   otherwise reply
 //!   [`TitleReply::Conflict`] with its current snapshot and change nothing;
 //!   reject unknown fields, duplicate fields, and type mismatches without
 //!   changing anything; check the air-state precondition atomically with the
@@ -103,6 +107,9 @@ pub struct ExposedField {
     pub id: WireTitleFieldId,
     pub name: String,
     pub value: TitleFieldValue,
+    /// The title field revision that last changed the value (Protocol
+    /// 2.97): a draft of this field is stale once it passes the draft's base.
+    pub revision: u64,
 }
 
 impl ExposedField {
@@ -142,6 +149,7 @@ impl TitleSnapshot {
                     id: field.field,
                     name: field.name.clone(),
                     value: field.value.clone(),
+                    revision: field.revision,
                 })
                 .collect(),
         })
@@ -772,8 +780,48 @@ impl Entry {
         }
     }
 
-    fn stale(&self) -> bool {
+    /// Whether the server moved past the drafts' base at all.
+    fn behind(&self) -> bool {
         self.live.revision != self.base.revision
+    }
+
+    /// Whether the server changed `field` after the drafts' base: its field
+    /// revision passed the base (Protocol 2.97), its value or type moved,
+    /// or it is no longer there.
+    fn changed_upstream(&self, field: WireTitleFieldId) -> bool {
+        match (self.live.field(field), self.base.field(field)) {
+            (Some(live), Some(base)) => {
+                live.revision > self.base.revision
+                    || live.value != base.value
+                    || live.field_type() != base.field_type()
+            }
+            // Gone from both: the draft is invalid, not stale.
+            (None, None) => false,
+            _ => true,
+        }
+    }
+
+    /// Whether a draft is based on a value someone else has since changed.
+    /// Changes to fields without a draft never make a title stale: the base
+    /// follows them (see [`Self::adopt_live`]), as the authority accepts an
+    /// edit that touches only fields unchanged since its base revision. A
+    /// server that went back to an older revision leaves drafts stale.
+    fn stale(&self) -> bool {
+        (self.dirty() && self.live.revision < self.base.revision)
+            || self
+                .drafts
+                .keys()
+                .any(|field| self.changed_upstream(*field))
+    }
+
+    /// Moves the base up to the server's state when no draft conflicts with
+    /// it; other fields' changes then need a fresh preview.
+    fn catch_up(&mut self) {
+        if self.behind() && !self.stale() {
+            self.base = self.live.clone();
+            self.revalidate();
+            self.touch();
+        }
     }
 
     fn dirty(&self) -> bool {
@@ -817,12 +865,12 @@ impl Entry {
         self.adopt_live(snapshot);
     }
 
-    /// Records the server state whatever its revision.
+    /// Records the server state whatever its revision. The base follows it
+    /// unless a draft's field changed under it.
     fn adopt_live(&mut self, snapshot: TitleSnapshot) {
         self.live = snapshot;
-        if self.drafts.is_empty() && self.live.revision != self.base.revision {
-            self.base = self.live.clone();
-            self.touch();
+        if self.behind() {
+            self.catch_up();
         } else if !self.stale() {
             // Same field revision: names and air state may still change.
             self.base = self.live.clone();
@@ -850,12 +898,13 @@ impl Entry {
                 field.value = value;
             }
         }
-        let concurrent = !ours
-            .fields
-            .iter()
-            .map(|field| (field.id, &field.value))
-            .eq(snapshot.fields.iter().map(|field| (field.id, &field.value)));
-        if concurrent && self.dirty() && ours.revision < snapshot.revision {
+        // Only another editor's change to a field still drafted conflicts
+        // (Protocol 2.97); changes to other fields become the base.
+        let concurrent = self.drafts.keys().any(|id| {
+            ours.field(*id).map(|field| &field.value)
+                != snapshot.field(*id).map(|field| &field.value)
+        });
+        if concurrent && ours.revision < snapshot.revision {
             ours.name.clone_from(&snapshot.name);
             ours.on_air = snapshot.on_air;
             self.base = ours;
@@ -1185,10 +1234,12 @@ impl TitleEditor {
         if entry.drafts.remove(&field).is_some() {
             entry.touch();
         }
-        if entry.drafts.is_empty() && entry.stale() {
-            entry.base = entry.live.clone();
-            entry.notice = None;
-            entry.touch();
+        // Without the discarded draft the rest may no longer conflict.
+        if entry.behind() && !entry.stale() {
+            if entry.drafts.is_empty() {
+                entry.notice = None;
+            }
+            entry.catch_up();
         }
         Ok(())
     }
@@ -1581,6 +1632,7 @@ mod tests {
                     id: field(id),
                     name: format!("Field {id}"),
                     value: text(value),
+                    revision: 0,
                 })
                 .collect(),
         }

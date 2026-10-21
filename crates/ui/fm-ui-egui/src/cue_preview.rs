@@ -1329,6 +1329,7 @@ mod tests {
             name: name.into(),
             value: value_of,
             exposed: true,
+            revision: 0,
         };
         Show {
             inputs: (1..=5).map(id).collect(),

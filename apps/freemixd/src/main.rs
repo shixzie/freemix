@@ -12131,7 +12131,7 @@ fn load_title_templates(
     Ok(templates)
 }
 
-/// Seeds every title input's persisted field values and revision into the
+/// Seeds every title input's persisted field values and revisions into the
 /// restored show, checked against its template.
 fn restore_titles(
     show: &mut ShowState,
@@ -12145,13 +12145,14 @@ fn restore_titles(
         let template = templates.get(&input.id).ok_or_else(|| {
             AppFailure(format!("title input {} has no loaded template", input.id))
         })?;
-        let fields = fm_titles::TitleFieldSet::restore(
+        let fields = fm_titles::TitleFieldSet::restore_revisioned(
             template,
             title.field_revision,
             title.fields.iter().map(|entry| {
                 (
                     fm_titles::FieldId::new(entry.id.get()),
                     title_render::field_value(&entry.value),
+                    entry.revision,
                 )
             }),
         )
@@ -15675,7 +15676,7 @@ fn sync_project_edit_locks(project: &mut fm_model::Project, show: &ShowState) ->
     Ok(())
 }
 
-/// Persists every title's live field values and revision.
+/// Persists every title's live field values and revisions (the title's and each field's).
 fn sync_project_titles(project: &mut fm_model::Project, show: &ShowState) -> AppResult<()> {
     for (&input, title) in show.titles() {
         let fields = title
@@ -15685,6 +15686,7 @@ fn sync_project_titles(project: &mut fm_model::Project, show: &ShowState) -> App
             .map(|(field, value)| fm_model::TitleFieldEntry {
                 id: fm_model::TitleFieldId::new(field.get()),
                 value: title_render::model_field_value(value),
+                revision: title.fields.field_revision(*field).unwrap_or(0),
             })
             .collect();
         project

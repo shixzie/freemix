@@ -1657,7 +1657,7 @@ fn validate_title(
         "kind.title.template_uri",
         &title.template_uri,
     );
-    if let Err(error) = validate_title_fields(&title.fields) {
+    if let Err(error) = validate_title_fields(title.field_revision, &title.fields) {
         let (field, kind) = match error {
             TitleFieldsError::TooManyFields { .. } | TitleFieldsError::ContentTooLarge { .. } => {
                 ("kind.title.fields", ValidationErrorKind::OutOfRange)
@@ -1668,6 +1668,10 @@ fn validate_title(
             TitleFieldsError::OutOfOrder { .. } => {
                 ("kind.title.fields.id", ValidationErrorKind::OutOfOrder)
             }
+            TitleFieldsError::RevisionAhead { .. } => (
+                "kind.title.fields.revision",
+                ValidationErrorKind::OutOfRange,
+            ),
             TitleFieldsError::TextTooLong { .. } => {
                 ("kind.title.fields.value", ValidationErrorKind::OutOfRange)
             }

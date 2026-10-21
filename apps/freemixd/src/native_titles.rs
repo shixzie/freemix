@@ -755,6 +755,7 @@ mod tests {
             fields: vec![TitleFieldEntry {
                 id: TitleFieldId::new(NonZeroU128::new(1).unwrap()),
                 value: TitleFieldValue::Color(fm_model::Rgba8::new(bar[0], bar[1], bar[2], bar[3])),
+                revision: 0,
             }],
         }
     }
@@ -1080,6 +1081,7 @@ mod daemon_tests {
         vec![TitleFieldEntry {
             id: TitleFieldId::new(NonZeroU128::MIN),
             value: TitleFieldValue::Color(fm_model::Rgba8::new(bar[0], bar[1], bar[2], bar[3])),
+            revision: 0,
         }]
     }
 

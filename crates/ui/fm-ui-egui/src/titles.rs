@@ -1763,12 +1763,14 @@ mod tests {
                         name: "Name".into(),
                         value: TitleFieldValue::Text("Ana".into()),
                         exposed: true,
+                        revision: 0,
                     },
                     TitleFieldStatus {
                         field: field(2),
                         name: "Score".into(),
                         value: TitleFieldValue::Number(4),
                         exposed: true,
+                        revision: 0,
                     },
                     TitleFieldStatus {
                         field: field(3),
@@ -1780,6 +1782,7 @@ mod tests {
                             alpha: 0xFF,
                         },
                         exposed: true,
+                        revision: 0,
                     },
                     TitleFieldStatus {
                         field: field(4),
@@ -1788,6 +1791,7 @@ mod tests {
                             asset_uri: "asset://logo.png".into(),
                         },
                         exposed: true,
+                        revision: 0,
                     },
                 ],
             })

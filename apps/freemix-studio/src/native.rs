@@ -7466,6 +7466,7 @@ mod tests {
                     name: "Name".into(),
                     value: TitleFieldValue::Text("Ana".into()),
                     exposed: true,
+                    revision: 0,
                 }],
             }
         }
