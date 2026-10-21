@@ -121,8 +121,9 @@ since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
 Smaller follow-ups found by the audit: the Colour window sends no
 `ScenePreview` (`SW-019`); headphone output needs device enumeration
 (`AU-001`); `fm-observability`'s `MetricRegistry`/`AlertEngine` and CPU/GPU
-utilization are unwired (`RC-015`); native daemons still dispatch one command
-per pass without group commit.
+utilization are unwired (`RC-015`). Native daemons now group commit the
+commands queued at a command turn (see Native group commit below), but the
+group's disk sync still runs in front of its frame.
 
 ## 1. Program expectations
 
@@ -4898,7 +4899,7 @@ and status feed). Because a native command waits for and
 realizes the pacer's next frame, the native scheduler dispatches at most one
 command per loop pass, round-robin across peers, and reads, answers
 heartbeats, and writes every peer between commands; command throughput stays
-one per frame, and no peer's commands hold another's heartbeats or records
+one per frame (until native group commit, below), and no peer's commands hold another's heartbeats or records
 for more than a frame each. An authorized Web upgrade beyond 16 is refused
 with `503`. Process tests (`apps/freemixd/tests/native_sessions.rs`)
 drive cuts from a Studio-like admin, a CLI operator, and an Operator page
@@ -5011,8 +5012,9 @@ host):
 The first 2 s stayed at p99 of about 5 ms, apart from one 180 ms stall
 before (release). The single late frame after the change, in each build,
 came in a run with a host stall. Group commit was evaluated again and not
-implemented for native daemons (the simulated daemon groups commands since
-d62c3a1c; see below). The session loop dispatches at most one command per pass, and
+implemented for native daemons at this point (the simulated daemon groups
+commands since d62c3a1c, and native daemons later did too; see Native group
+commit below). The session loop dispatches at most one command per pass, and
 each journal record carries the position its realization reaches. A shared
 disk sync would therefore need either several commands realized on one frame,
 which changes ordering, or an engine API that prepares a command for a frame
@@ -5046,12 +5048,57 @@ around their append, still run alone. The fairness rule is unchanged: each
 peer still gets one message per pass. Measured with four clients each
 pipelining 12 cuts (debug, local disk): journal appends 48 → 12, `fsync`
 calls for the run (including startup) 60 → 24, all acknowledged in about
-290 → 185 ms. Native daemons are not grouped: a native command is still
-dispatched alone, at most one per pass, and realizes its own frame. Its
-record carries that frame's position, so grouping would mean either
+290 → 185 ms. Native daemons were not grouped at first: a native command
+was dispatched alone, at most one per pass, and realized its own frame.
+Its record carries that frame's position, so grouping meant either
 realizing several commands on one frame or predicting the frames the
-earlier members realize. The command window and the clock retries are
-unchanged.
+earlier members realize.
+
+Native group commit (no protocol, schema, or journal format change): a
+native daemon now takes the first option. At a pass's command turn the
+commands queued at the front of every active session's queue (from the
+turn's session round the list, one per session per round, each session's
+in the order it sent them, at most 8: the group's events reach every live
+subscription at once, and 32 cuts' overflowed its 64-event queue and
+dropped the peers as slow clients) form one group if the turn's own
+command can join and there are at least two. Each runs in order on the
+speculative copy of the control service, on the state the one before it
+left, without realizing a frame: all begin on the frame the pacer realizes
+next, and each record names that frame. Replay already ticks no idle frame
+between records that began on one frame, so it reproduces the group
+exactly. The records go to the journal in one transaction with one disk
+sync; only then is the copy adopted (publishing the members' events in
+order), that one frame realized once for the group (waiting for its
+deadline, as a single command's is), the native runtime's sources, titles,
+documents, and stream targets synced to the project the group left, and
+every session answered in its own order, before the pass drains any live
+events, so each result still precedes the events of its revision. A group
+that cannot be made durable realizes nothing and refuses every member as
+not durable. The native catalogue budget is taken before the group, so a
+member that changes inputs is vetted for every input change the group made
+up to it. A session with several commands in a group has each one's
+in-flight slot released before its next is admitted, as when they run one
+by one. Stinger, recorder, stream, cue, script, and shortcut commands (which
+hand work to the native runtime per command, and a recording start may hold
+its acknowledgement) and host media and LUT imports still take a turn alone,
+as does a lone command. The intermediate state of a group is not rendered:
+two cuts queued together reach air only as the state both leave (every
+revision is still published as an event). A client that waits for each result before it sends the next still gets one
+command per frame. The group commit also now strips a live fire's Preview
+and Program bindings on the simulated daemon, as a fire executed alone
+always did (RC-004). Measured with four CLI sessions pipelining cuts
+(debug, llvmpipe, 25 fps): 48 cuts took 48 appends and frames and 1.95 s
+before (one per frame); 40 cuts now take 5 appends and frames (groups of 8)
+and are all acknowledged in about 220–230 ms, and a `SIGKILL` right after the last
+acknowledgement restarts with exactly those 40 cuts
+(`native_command_bursts_share_passes_and_journal_appends_and_survive_sigkill`).
+The disk sync still runs on the loop in front of the group's frame (behind
+the same command window): the group is adopted only once durable and its
+frame realizes it, so syncing off the loop would mean realizing idle frames
+meanwhile and committing on a later frame than the records name, the
+prediction problem above. One sync now covers the whole group, so the
+loop pays it once per turn instead of once per command. The command window
+and the clock retries are unchanged.
 
 Exit: graphics/data/automation/operator ecosystem `P1` rows pass.
 

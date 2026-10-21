@@ -78,10 +78,18 @@ run as the development principal, each with its own session id). A raw
 connection beyond eight is answered at once with a `handshake_response`
 rejected as `resource_exhausted` with `retryable: true` and then closed; a
 client retries it with its usual reconnect backoff. The gateway is
-unavailable only with `--fullscreen-program`. A native daemon dispatches at
-most one command per scheduler pass, round-robin across the sessions that
-have one waiting, since each realizes a Program frame; heartbeats and records
-of every session are served between commands. A command realizes only its
+unavailable only with `--fullscreen-program`. A native daemon dispatches
+commands on at most one Program frame per scheduler pass, at one session's
+turn, round-robin across the sessions that have one waiting; heartbeats and
+records of every session are served between such frames. The commands
+queued when the turn comes (up to 8, one per session per round, each
+session's in the order it sent them) run together as a group commit: in
+order, each on the state the one before left, all begun on that frame, with
+one journal append and disk sync for the group, and each is answered only
+once the group is durable. Recorder, stream, Stinger, cue, script, and
+shortcut commands and host-media or LUT imports still take a turn alone. A
+client that waits for each result before it sends the next therefore still
+gets one command per frame; one that pipelines does not. A command realizes only its
 first frame before it is answered: the rest of a timed transition, Fade to
 Black, overlay motion, or title In/Out phase is realized on the frame loop
 one frame per pacer tick, like a held T-bar transition, so every session
