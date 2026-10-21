@@ -328,6 +328,69 @@ pub struct RecordConfig {
     /// to the MP4 output, immediately before `-f mp4 pipe:1`. `None` keeps the
     /// output byte for byte as it was before timecodes existed.
     pub timecode: Option<Timecode>,
+    /// Optional `libx264` speed preset.
+    ///
+    /// `Some` adds `-preset {token}` right after the video pixel format, for
+    /// recordings that must keep up in real time at a lower compression
+    /// ratio (instant replay records several sources at once). `None` keeps
+    /// the encoder's default preset and therefore today's output.
+    pub preset: Option<X264Preset>,
+    /// Declares square pixels (`-vf setsar=1`, after the preset).
+    ///
+    /// Raw RGBA input carries no sample aspect ratio, so the MP4 otherwise
+    /// declares none, which players that require square pixels (the
+    /// frame-accurate [`crate::FilePlayer`]) refuse. `false` keeps today's
+    /// output.
+    pub square_pixels: bool,
+}
+
+/// A `libx264` speed preset (see [`RecordConfig::preset`]).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum X264Preset {
+    Ultrafast,
+    Superfast,
+    Veryfast,
+    Faster,
+    Fast,
+}
+
+impl X264Preset {
+    /// The `-preset` token.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Ultrafast => "ultrafast",
+            Self::Superfast => "superfast",
+            Self::Veryfast => "veryfast",
+            Self::Faster => "faster",
+            Self::Fast => "fast",
+        }
+    }
+}
+
+/// Inserts `-preset {token}` and then `-vf setsar=1` after the video pixel
+/// format.
+fn with_encoder_options(
+    mut args: Vec<OsString>,
+    preset: Option<X264Preset>,
+    square_pixels: bool,
+) -> Vec<OsString> {
+    let mut options = Vec::new();
+    if let Some(preset) = preset {
+        options.extend([OsString::from("-preset"), OsString::from(preset.token())]);
+    }
+    if square_pixels {
+        options.extend([OsString::from("-vf"), OsString::from("setsar=1")]);
+    }
+    if options.is_empty() {
+        return args;
+    }
+    let at = args
+        .windows(2)
+        .position(|pair| pair[0] == "-pix_fmt" && pair[1] == "yuv420p")
+        .map_or(args.len(), |index| index + 2);
+    args.splice(at..at, options);
+    args
 }
 
 impl RecordConfig {
@@ -341,6 +404,8 @@ impl RecordConfig {
             video_bitrate_kbps: None,
             audio_bitrate_kbps: None,
             timecode: None,
+            preset: None,
+            square_pixels: false,
         }
     }
 }
@@ -1309,16 +1374,20 @@ impl Recorder {
             (None, Some(path)) => Some(WavDestination::File(path)),
             (None, None) => None,
         };
-        let args = command_args(
-            &config.format,
-            video_address,
-            audio_address,
-            &video_token,
-            &audio_token,
-            wav_destination,
-            config.video_bitrate_kbps,
-            config.audio_bitrate_kbps,
-            config.timecode,
+        let args = with_encoder_options(
+            command_args(
+                &config.format,
+                video_address,
+                audio_address,
+                &video_token,
+                &audio_token,
+                wav_destination,
+                config.video_bitrate_kbps,
+                config.audio_bitrate_kbps,
+                config.timecode,
+            ),
+            config.preset,
+            config.square_pixels,
         );
         let mut redactions = vec![video_token.clone(), audio_token.clone()];
         if let Some((_, _, _, token)) = &wav_upload {
@@ -3808,6 +3877,41 @@ mod tests {
             1
         );
         assert!(RecordConfig::new(format()).timecode.is_none());
+    }
+
+    #[test]
+    fn a_preset_and_square_pixels_follow_the_video_pixel_format() {
+        let args = || {
+            command_args(
+                &format(),
+                "127.0.0.1:1".parse().unwrap(),
+                "127.0.0.1:2".parse().unwrap(),
+                "video-secret",
+                "audio-secret",
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+        assert_eq!(with_encoder_options(args(), None, false), args());
+        assert!(RecordConfig::new(format()).preset.is_none());
+        assert!(!RecordConfig::new(format()).square_pixels);
+        let configured = with_encoder_options(args(), Some(X264Preset::Veryfast), true)
+            .iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let at = configured
+            .iter()
+            .position(|value| value == "-pix_fmt")
+            .unwrap();
+        assert_eq!(
+            configured[at..at + 6],
+            [
+                "-pix_fmt", "yuv420p", "-preset", "veryfast", "-vf", "setsar=1"
+            ]
+        );
+        assert_eq!(configured.len(), args().len() + 4);
     }
 
     #[test]
