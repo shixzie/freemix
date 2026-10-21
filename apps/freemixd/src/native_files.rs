@@ -316,6 +316,10 @@ struct Worker {
     /// The latest engine frame a picture was presented for, so a blank
     /// picture is always dated after it.
     last_frame: Option<u64>,
+    /// An outgoing worker's latest engine frame and transition step, so a
+    /// transition that restarts without it (a re-cue of the incoming file)
+    /// retires it.
+    outgoing_step: Option<(u64, u32)>,
 }
 
 impl Worker {
@@ -515,6 +519,7 @@ fn spawn_worker(
         closed,
         blank_pending: false,
         last_frame: None,
+        outgoing_step: None,
     })
 }
 
@@ -845,6 +850,7 @@ impl NativeMediaFiles {
                 closed,
                 blank_pending: false,
                 last_frame: None,
+                outgoing_step: None,
             }
         };
         self.workers.insert(input, worker);
@@ -1080,29 +1086,7 @@ impl NativeMediaFiles {
         let frame = projected.frame.get();
         self.present_blanks(frame);
         for media in &projected.media {
-            // The outgoing item of a list transition plays its own ticks;
-            // the first frame without one retires it.
-            match &media.outgoing {
-                Some(outgoing) => {
-                    if let Some(worker) = self.outgoing.get_mut(&media.input) {
-                        let request = Some(Request {
-                            frame,
-                            tick: outgoing.tick.clone(),
-                            blend: None,
-                        });
-                        if worker.requested != request {
-                            worker.shared.lock().request.clone_from(&request);
-                            worker.requested = request;
-                            worker.shared.wake.notify_one();
-                        }
-                    }
-                }
-                None => {
-                    if let Some(worker) = self.outgoing.remove(&media.input) {
-                        retire(media.input, worker);
-                    }
-                }
-            }
+            self.observe_outgoing(frame, media.input, media.outgoing.as_ref());
             let Some(worker) = self.workers.get_mut(&media.input) else {
                 continue;
             };
@@ -1129,6 +1113,47 @@ impl NativeMediaFiles {
             state.complete |= media.completion_requested;
             drop(state);
             worker.shared.wake.notify_one();
+        }
+    }
+
+    /// Hands input `input`'s outgoing worker the outgoing item's tick on
+    /// engine frame `frame`. The outgoing item of a list transition plays
+    /// its own ticks; the first frame without one retires it.
+    fn observe_outgoing(
+        &mut self,
+        frame: u64,
+        input: InputId,
+        outgoing: Option<&fm_engine::EngineMediaOutgoing>,
+    ) {
+        let Some(outgoing) = outgoing else {
+            if let Some(worker) = self.outgoing.remove(&input) {
+                retire(input, worker);
+            }
+            return;
+        };
+        // A step no later in the transition on a later frame (or an
+        // earlier step on the same one) is another transition: the item
+        // this worker played is no longer the outgoing one.
+        let restarted = self.outgoing.get(&input).is_some_and(|worker| {
+            worker.outgoing_step.is_some_and(|(last_frame, last_step)| {
+                outgoing.step < last_step || (outgoing.step == last_step && frame > last_frame)
+            })
+        });
+        if restarted && let Some(worker) = self.outgoing.remove(&input) {
+            retire(input, worker);
+        }
+        if let Some(worker) = self.outgoing.get_mut(&input) {
+            worker.outgoing_step = Some((frame, outgoing.step));
+            let request = Some(Request {
+                frame,
+                tick: outgoing.tick.clone(),
+                blend: None,
+            });
+            if worker.requested != request {
+                worker.shared.lock().request.clone_from(&request);
+                worker.requested = request;
+                worker.shared.wake.notify_one();
+            }
         }
     }
 
@@ -1884,6 +1909,7 @@ mod tests {
                 closed: false,
                 blank_pending: false,
                 last_frame: Some(5),
+                outgoing_step: None,
             },
         );
         files
@@ -2212,6 +2238,73 @@ mod tests {
                 .flatten()
                 .all(|sample| (*sample - 0.0).abs() < f32::EPSILON)
         );
+    }
+
+    /// The outgoing item on step `step` of a fade, presenting source frame
+    /// `source`.
+    fn outgoing_at(step: u32, source: u64) -> fm_engine::EngineMediaOutgoing {
+        fm_engine::EngineMediaOutgoing {
+            tick: MediaTick {
+                output_tick: source,
+                frame: Some(FrameIndex::new(source)),
+                repeated: false,
+                dropped_frames: 0,
+                discontinuity: false,
+                state: MediaState::Playing,
+                audio: fm_engine::fm_playback::AudioPlan::None,
+                events: Vec::new(),
+            },
+            kind: fm_model::MediaListTransitionKind::Fade,
+            step,
+            frames: 10,
+            mix_basis_points: 1_000,
+        }
+    }
+
+    /// Items A (a.mp4), B and C (two ranges of b.mov) fade: stepping A to
+    /// B makes A's worker the outgoing one, and stepping on to C mid-fade
+    /// (a re-cue of b.mov, which adopts nothing) restarts the transition
+    /// with B's transport outgoing. A's worker retires instead of being
+    /// handed b.mov's frames, so the incoming item blends over its held
+    /// picture of B.
+    #[test]
+    fn an_outgoing_worker_retires_when_a_re_cue_restarts_the_transition() {
+        for (restart_frame, restart_step) in [(12, 1), (11, 1), (12, 2)] {
+            let mut files = files();
+            let shared = Arc::new(Shared::new(
+                WorkerState {
+                    outgoing: true,
+                    ..WorkerState::default()
+                },
+                false,
+            ));
+            files.outgoing.insert(
+                input(),
+                Worker {
+                    shared: Arc::clone(&shared),
+                    thread: None,
+                    requested: None,
+                    collected: None,
+                    closed: false,
+                    blank_pending: false,
+                    last_frame: None,
+                    outgoing_step: None,
+                },
+            );
+            files.observe_outgoing(10, input(), Some(&outgoing_at(1, 40)));
+            files.observe_outgoing(11, input(), Some(&outgoing_at(2, 41)));
+            // A frame projected again keeps the transition.
+            files.observe_outgoing(11, input(), Some(&outgoing_at(2, 41)));
+            assert!(files.outgoing.contains_key(&input()));
+            assert!(!shared.lock().shutdown);
+
+            files.observe_outgoing(restart_frame, input(), Some(&outgoing_at(restart_step, 25)));
+            assert!(
+                !files.outgoing.contains_key(&input()),
+                "restarted on frame {restart_frame} at step {restart_step}"
+            );
+            assert!(shared.lock().shutdown);
+        }
     }
 
     #[test]
