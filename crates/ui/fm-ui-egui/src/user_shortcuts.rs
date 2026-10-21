@@ -594,7 +594,9 @@ impl Press {
 /// a stroke like a key. A stroke that starts a chord waits for its second
 /// stroke in `chord` (up to [`CHORD_TIMEOUT`] after it, at `now`); the next
 /// key or named-button press then ends the chord, firing the shortcut it
-/// completes, if any, and is never read by anything else. Primary and
+/// completes, if any (any other press, Escape say, cancels the wait), and
+/// is never read by anything else; a held key's repeats neither end nor
+/// cancel it. Primary and
 /// secondary clicks and other pointer events stay.
 /// Keys scoped to a panel answer only while `focus` has that panel, and
 /// keys scoped to a pop-out window only in that window. The repeats of a
@@ -638,17 +640,20 @@ fn take_presses_from(
             _ => return true,
         };
         let matches = |stroke: &WireShortcutKey| press.is(stroke, modifiers);
+        if chord.is_some() && repeat {
+            // A held key's repeat is not a new press: it neither ends nor
+            // cancels the wait (a key held from before the chord would
+            // otherwise drop it), and nothing else reads it meanwhile.
+            return false;
+        }
         if let Some(pending) = chord.as_ref() {
-            if repeat && matches(&pending.first) {
-                return false;
-            }
             // A chord's second stroke, a key or a mouse button, ends it.
             let completed = keys.live(focus).find(|(_, bound)| {
                 bound.same_stroke(&pending.first) && bound.then.as_deref().is_some_and(matches)
             });
-            if let Some((shortcut, _)) = completed
-                && !repeat
-            {
+            // Any other new press (Escape, say) cancels the wait, swallowed
+            // and firing nothing.
+            if let Some((shortcut, _)) = completed {
                 fired.push(shortcut.id);
             }
             *chord = None;
@@ -1242,6 +1247,10 @@ impl StudioShell {
         chord_end_only: bool,
     ) {
         if self.console_keys_blocked(ui.ctx()) || ui.ctx().egui_wants_keyboard_input() {
+            // A text field or dialog took the keyboard: the wait ends, so
+            // the first key after it closes is not swallowed as a chord's
+            // second stroke.
+            self.chord = None;
             return;
         }
         let keys = ConsoleKeys::of(state, &self.shortcut_keys);

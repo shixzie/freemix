@@ -979,6 +979,84 @@ fn a_chord_fires_on_its_second_key_and_lapses() {
     );
 }
 
+/// While a chord waits, a held key's repeats (of its first stroke or of
+/// a key held from before) neither end nor cancel it; Escape, like any
+/// other new press no chord ends with, cancels it, swallowed.
+#[test]
+fn a_waiting_chord_ignores_repeats_and_escape_cancels_it() {
+    let shortcuts = vec![bound(
+        1,
+        chord_key(key("K", true, false, false), key("1", false, false, false)),
+    )];
+    let overrides = ShortcutKeyOverrides::default();
+    let keys = ConsoleKeys {
+        shortcuts: &shortcuts,
+        overrides: &overrides,
+        project: None,
+    };
+    let ctrl = press(true, false, false);
+    let mut chord = None;
+    let take = |events: Vec<Event>, chord: &mut Option<PendingChord>| {
+        let mut events = events;
+        let fired = take_presses(&mut events, keys, KeyFocus::default(), chord, 0.5);
+        (fired, events)
+    };
+    let (fired, _) = take(vec![key_event(Key::K, ctrl, false)], &mut chord);
+    assert!(fired.is_empty() && chord.is_some());
+    // Repeats of Ctrl+K and of a held arrow key keep the wait (swallowed).
+    let (fired, left) = take(
+        vec![
+            key_event(Key::K, ctrl, true),
+            key_event(Key::ArrowDown, Modifiers::NONE, true),
+        ],
+        &mut chord,
+    );
+    assert!(fired.is_empty() && left.is_empty());
+    assert!(chord.is_some());
+    // The second stroke still completes the chord.
+    let (fired, _) = take(
+        vec![key_event(Key::Num1, Modifiers::NONE, false)],
+        &mut chord,
+    );
+    assert_eq!(fired, vec![1]);
+    assert_eq!(chord, None);
+    // Escape cancels a wait: swallowed, nothing fires.
+    take(vec![key_event(Key::K, ctrl, false)], &mut chord);
+    let (fired, left) = take(
+        vec![key_event(Key::Escape, Modifiers::NONE, false)],
+        &mut chord,
+    );
+    assert!(fired.is_empty() && left.is_empty());
+    assert_eq!(chord, None);
+}
+
+/// A text field (or dialog) taking the keyboard ends a waiting chord, so
+/// the first key after it is not swallowed as the chord's second stroke.
+#[test]
+fn a_text_field_taking_focus_ends_a_waiting_chord() {
+    let state = crate::hover_audit::shortcuts_fixture_with(vec![bound(
+        4,
+        chord_key(key("K", true, false, false), key("1", false, false, false)),
+    )]);
+    // The fixture binds F9 to shortcut 1.
+    let mut shell = StudioShell::default();
+    let ctrl_k = key_event(Key::K, press(true, false, false), false);
+    let f9 = key_event(Key::F9, Modifiers::NONE, false);
+    assert_eq!(
+        run_frame(&mut shell, &state, vec![ctrl_k], false),
+        Vec::new()
+    );
+    assert!(shell.chord.is_some());
+    // A field takes focus within the chord's timeout.
+    run_frame(&mut shell, &state, Vec::new(), true);
+    assert_eq!(shell.chord, None);
+    // Back on the console, F9 is F9 again rather than a chord's end.
+    assert_eq!(
+        run_frame(&mut shell, &state, vec![f9], false),
+        vec![fire(1)]
+    );
+}
+
 /// Runs one main-window frame of `events` through the console keys and
 /// then the project's shortcut keys, as the console draws them.
 fn run_console_frame(
