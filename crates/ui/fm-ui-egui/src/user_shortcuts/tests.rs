@@ -1523,3 +1523,182 @@ fn a_fader_shortcut_fires_only_with_a_control_value() {
         assert_ne!(spanish.text(msg), msg.en(), "{msg:?}");
     }
 }
+
+/// RC-004: this console's key may be a chord or scoped to a panel or a
+/// pop-out window, as a project key may; it fires through the same press
+/// handling, and clashes only where strokes and scopes overlap.
+#[test]
+fn console_keys_may_be_chords_and_scoped() {
+    let shortcuts = vec![
+        bound(1, key("F9", false, false, false)),
+        bound(2, key("F10", false, false, false)),
+        bound(3, key("F11", false, false, false)),
+    ];
+    let mut overrides = ShortcutKeyOverrides::default();
+    let ctrl_k_1 = chord_key(key("K", true, false, false), key("1", false, false, false));
+    assert!(overrides.set(project(), 1, Some(ctrl_k_1.clone())));
+    assert!(overrides.set(
+        project(),
+        2,
+        Some(scoped(key("F9", false, false, false), "mixer"))
+    ));
+    assert!(overrides.set(
+        project(),
+        3,
+        Some(windowed(key("F9", false, false, false), "cues"))
+    ));
+    let keys = ConsoleKeys {
+        shortcuts: &shortcuts,
+        overrides: &overrides,
+        project: Some(project()),
+    };
+    let ctrl_k = key_event(Key::K, press(true, false, false), false);
+    let one = key_event(Key::Num1, Modifiers::NONE, false);
+    let f9 = key_event(Key::F9, Modifiers::NONE, false);
+    let mut chord = None;
+    let mut events = vec![ctrl_k, one];
+    assert_eq!(
+        take_presses(&mut events, keys, KeyFocus::default(), &mut chord, 0.0),
+        vec![1]
+    );
+    // F9 is shortcut 2's in the Mixer panel and 3's in the Cues window;
+    // shortcut 1 answers its console chord, not its project F9.
+    let mut events = vec![f9.clone()];
+    assert_eq!(
+        take_presses(&mut events, keys, KeyFocus::default(), &mut chord, 1.0),
+        Vec::<u64>::new()
+    );
+    let mixer = KeyFocus {
+        panel: Some("mixer"),
+        window: None,
+    };
+    let mut events = vec![f9.clone()];
+    assert_eq!(
+        take_presses(&mut events, keys, mixer, &mut chord, 2.0),
+        vec![2]
+    );
+    let cues_window = KeyFocus {
+        panel: Some("cues"),
+        window: Some("cues"),
+    };
+    let mut events = vec![f9];
+    assert_eq!(
+        take_presses(&mut events, keys, cues_window, &mut chord, 3.0),
+        vec![3]
+    );
+
+    // A capture clashes only where strokes and scopes overlap.
+    assert_eq!(
+        local_capture(keys, 2, Captured::Key(ctrl_k_1.clone())),
+        Some(Err(LocalRefusal::Taken("S1".into())))
+    );
+    let ctrl_k_2 = chord_key(key("K", true, false, false), key("2", false, false, false));
+    assert_eq!(
+        local_capture(keys, 2, Captured::Key(ctrl_k_2.clone())),
+        Some(Ok(ctrl_k_2))
+    );
+    assert_eq!(
+        local_capture(keys, 1, Captured::Key(key("F9", false, false, false))),
+        Some(Err(LocalRefusal::Taken("S2".into())))
+    );
+    let in_titles = scoped(key("F9", false, false, false), "titles");
+    assert_eq!(
+        local_capture(keys, 1, Captured::Key(in_titles.clone())),
+        Some(Ok(in_titles))
+    );
+}
+
+/// A console key capture makes a chord's second stroke, or a new first
+/// stroke keeping the key's chord and scope; a mouse button is a single
+/// press.
+#[test]
+fn a_console_key_capture_keeps_the_chord_and_scope() {
+    let mut chord = chord_key(key("K", true, false, false), key("1", false, false, false));
+    chord.scope = Some("cues".into());
+    let local = Some(chord.clone());
+    let j = key("J", false, false, true);
+    let back = key("MouseBack", false, false, false);
+    assert_eq!(
+        local_stroke(Some(&local), Captured::Key(j.clone()), false),
+        Captured::Key(WireShortcutKey {
+            then: chord.then.clone(),
+            scope: Some("cues".into()),
+            ..j.clone()
+        })
+    );
+    assert_eq!(
+        local_stroke(Some(&local), Captured::Key(back.clone()), false),
+        Captured::Key(WireShortcutKey {
+            scope: Some("cues".into()),
+            ..back.clone()
+        })
+    );
+    assert_eq!(
+        local_stroke(Some(&local), Captured::Key(j.clone()), true),
+        Captured::Key(WireShortcutKey {
+            then: Some(Box::new(j.clone())),
+            ..chord
+        })
+    );
+    assert_eq!(
+        local_stroke(Some(&local), Captured::Key(back.clone()), true),
+        Captured::Unsupported
+    );
+    // No console key yet: a second stroke has nothing to follow.
+    assert_eq!(
+        local_stroke(None, Captured::Key(j.clone()), true),
+        Captured::Unsupported
+    );
+    assert_eq!(
+        local_stroke(Some(&None), Captured::Key(j.clone()), false),
+        Captured::Key(j)
+    );
+    assert_eq!(
+        local_stroke(Some(&local), Captured::Cancel, true),
+        Captured::Cancel
+    );
+}
+
+/// "Add second key here" captures the console chord's second stroke into
+/// this console's preferences; the reference and the list show it.
+#[test]
+fn add_second_key_here_makes_the_console_key_a_chord() {
+    let state = shortcuts_fixture(false);
+    let context = egui::Context::default();
+    let mut shell = StudioShell::default();
+    shell.open_user_shortcuts(&state);
+    let mut console = scoped(key("K", true, false, false), "mixer-window");
+    assert!(shell.shortcut_keys.set(project(), 1, Some(console.clone())));
+    shell.user_shortcuts.capturing_local = true;
+    shell.user_shortcuts.capturing_local_then = true;
+    context.begin_pass(egui::RawInput {
+        events: vec![key_event(Key::Num4, Modifiers::NONE, false)],
+        ..Default::default()
+    });
+    let mut intents = Vec::new();
+    shell.draw_user_shortcuts_window(&context, &state, &mut intents);
+    let _ = context.end_pass();
+    assert_eq!(intents, Vec::new());
+    assert!(!shell.user_shortcuts.capturing_local);
+    assert!(!shell.user_shortcuts.capturing_local_then);
+    assert_eq!(shell.user_shortcuts.local_refusal, None);
+    console.then = Some(Box::new(key("4", false, false, false)));
+    assert_eq!(
+        shell.shortcut_key_overrides().get(project(), 1),
+        Some(&Some(console))
+    );
+    let keys = ConsoleKeys::of(&state, shell.shortcut_key_overrides());
+    let row = row_text(Locale::ENGLISH, keys, &audit_shortcuts()[0]);
+    assert!(row.starts_with("Lower third  Ctrl+K, 4"), "{row}");
+    assert!(row.contains("(this console)"), "{row}");
+    // The preference line keeps the chord and the window.
+    assert!(
+        shell
+            .shortcut_key_overrides()
+            .preference_entries()
+            .contains(&(
+                "shortcut.key.1.1".to_owned(),
+                "Ctrl+K, 4 @mixer-window".to_owned()
+            ))
+    );
+}

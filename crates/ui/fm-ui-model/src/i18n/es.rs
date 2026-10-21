@@ -7624,6 +7624,40 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "este atajo toma su ganancia del control que lo dispara: dispárelo con un mensaje OSC con un número decimal de 0 a 1",
         ),
     ),
+    (
+        Msg::UserShortcutLocalThenCapturing,
+        t("Pulse ahora la segunda tecla del acorde de esta consola (Esc deja la tecla como está)"),
+    ),
+    (Msg::UserShortcutLocalChordLabel, t("Acorde de la consola")),
+    (
+        Msg::UserShortcutLocalSetThen,
+        t("Añadir segunda tecla aquí"),
+    ),
+    (
+        Msg::UserShortcutLocalSetThenHover,
+        t(
+            "Convierte la tecla de esta consola en un acorde: captura una segunda tecla pulsada después (Ctrl+K, luego 1), solo en esta consola. La segunda tecla puede ser cualquiera, incluso una que la consola usa sola",
+        ),
+    ),
+    (
+        Msg::UserShortcutLocalClearThen,
+        t("Quitar segunda tecla aquí"),
+    ),
+    (
+        Msg::UserShortcutLocalClearThenHover,
+        t("Vuelve a dejar la tecla de esta consola como una sola tecla, sin su segunda tecla"),
+    ),
+    (Msg::UserShortcutLocalScopeLabel, t("Responde aquí en")),
+    (
+        Msg::UserShortcutLocalScopeHover,
+        t(
+            "Dónde dispara el atajo la tecla de esta consola: en cualquier parte de esta consola, solo mientras un panel tiene el foco, o solo mientras la ventana propia de un panel desacoplado tiene el foco. Las demás consolas conservan la tecla y el ámbito del proyecto",
+        ),
+    ),
+    (
+        Msg::UserShortcutReasonNoLocalKey,
+        t("defina antes una tecla de consola: aquí el atajo responde a la tecla del proyecto"),
+    ),
     (Msg::CueMuteOn, t("Silenciado")),
     (Msg::CueMuteOff, t("Sin silencio")),
     (Msg::CueMuteToggle, t("Alternar silencio")),

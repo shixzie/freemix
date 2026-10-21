@@ -56,9 +56,11 @@ highest-value remaining items, ranked:
    run's bound targets in the cue status (Protocol 2.89), mouse-button
    keys and keys scoped to a pop-out window (Protocol 2.93, schema 75), and
    dynamic value targets (a gain step, a mute toggle, and a gain read from
-   the firing control's OSC value; Protocol 2.99, schema 80); still
-   missing are chorded or scoped console key overrides (see the RC-004
-   boundary below). This is a P0 row.
+   the firing control's OSC value; Protocol 2.99, schema 80), and chorded
+   and panel- or window-scoped console key overrides in Studio's local
+   preferences; still missing are window scopes for Studio's tool windows
+   and an embedded pop-out, and mouse buttons as a chord's stroke (see the
+   RC-004 boundary below). This is a P0 row.
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
    a real input end to end (engine, protocol, persistence, both daemons,
    Studio), and the native daemon prefetches each list's next item so Auto
@@ -1091,10 +1093,15 @@ help, its OSC listener reads an `f` argument (0.0 to 1.0, after the
 optional selected input) on `/freemix/user/<name>`, a key or Fire now of a
 shortcut reading the control is held with its reason, the Web operator
 page holds its button, and the CLI's `shortcut-fire` takes `--value`.
+Studio's console key overrides (its local preferences) may now be chords,
+mouse buttons, and scoped to a panel or a pop-out window like project
+keys, clashing where strokes and scopes overlap; a preference line writes
+`Ctrl+K, 1 @cues-window`, and the Shortcuts window's "This console" rows
+add a second console key and an "Answers here in" picker with hover help.
 Still missing, so RC-004 remains planned: window scopes for the Colour,
 Animation, and Designer tool windows (which read no console keys) and for
-a pop-out the platform embeds in the main window, mouse buttons as a
-chord's stroke, and chorded or scoped console key overrides.
+a pop-out the platform embeds in the main window, and mouse buttons as a
+chord's stroke.
 
 Current implementation boundary for item 8: `fm-scopes` now provides a bounded
 reference color-monitoring session on top of its scope math: an exact

@@ -984,6 +984,9 @@ pub(crate) struct ShortcutsWindow {
     /// Whether the next key press binds the selected shortcut's key on
     /// this console.
     pub(crate) capturing_local: bool,
+    /// Whether that capture binds the console key's second stroke (a
+    /// chord).
+    pub(crate) capturing_local_then: bool,
     /// Why the last console key capture bound nothing.
     pub(crate) local_refusal: Option<LocalRefusal>,
     /// The `.fmshortcuts` path typed in the set file row.
@@ -1003,6 +1006,7 @@ impl ShortcutsWindow {
         self.capturing_then = false;
         self.unsupported = false;
         self.capturing_local = false;
+        self.capturing_local_then = false;
         self.local_refusal = None;
     }
 
@@ -1031,6 +1035,7 @@ impl ShortcutsWindow {
         self.capturing_then = false;
         self.unsupported = false;
         self.capturing_local = false;
+        self.capturing_local_then = false;
         self.local_refusal = None;
     }
 
@@ -1065,12 +1070,14 @@ impl ShortcutsWindow {
                 self.loaded = Some(replicated);
             }
             (Some(_), Some(_)) if !self.dirty() => {
-                let (capturing, capturing_then, capturing_local) =
-                    (self.capturing, self.capturing_then, self.capturing_local);
+                let (capturing, capturing_then) = (self.capturing, self.capturing_then);
+                let (capturing_local, capturing_local_then) =
+                    (self.capturing_local, self.capturing_local_then);
                 self.select(shortcuts, Some(id));
                 self.capturing = capturing;
                 self.capturing_then = capturing_then;
                 self.capturing_local = capturing_local;
+                self.capturing_local_then = capturing_local_then;
             }
             _ => {}
         }
@@ -1147,10 +1154,12 @@ impl StudioShell {
             let keys = ConsoleKeys::of(state, &self.shortcut_keys);
             if let Some(captured) = captured {
                 window.capturing_local = false;
+                let then = core::mem::take(&mut window.capturing_local_then);
                 let bound = window
                     .selected
                     .zip(keys.project)
                     .and_then(|(shortcut, project)| {
+                        let captured = local_stroke(keys.local(shortcut), captured, then);
                         local_capture(keys, shortcut, captured).map(|key| (project, shortcut, key))
                     });
                 match bound {
@@ -1586,6 +1595,36 @@ pub(crate) fn local_capture(
     }
 }
 
+/// What a console key capture of `captured` makes of this console's key
+/// `local` (see [`ConsoleKeys::local`]): with `then`, the second stroke of
+/// its chord; else a new first stroke that keeps the key's second stroke
+/// (unless either is a mouse button, a single press) and its scope.
+pub(crate) fn local_stroke(
+    local: Option<&Option<WireShortcutKey>>,
+    captured: Captured,
+    then: bool,
+) -> Captured {
+    let Captured::Key(stroke) = captured else {
+        return captured;
+    };
+    let current = local.and_then(Option::as_ref);
+    match (current, then) {
+        (Some(key), true) if !stroke.is_mouse() && !key.is_mouse() => {
+            Captured::Key(WireShortcutKey {
+                then: Some(Box::new(stroke)),
+                ..key.clone()
+            })
+        }
+        (_, true) => Captured::Unsupported,
+        (Some(key), false) => Captured::Key(WireShortcutKey {
+            then: key.then.clone().filter(|_| !stroke.is_mouse()),
+            scope: key.scope.clone(),
+            ..stroke
+        }),
+        (None, false) => Captured::Key(stroke),
+    }
+}
+
 /// Why this console cannot keep one more override for `shortcut`, if it
 /// cannot.
 fn override_block(keys: ConsoleKeys<'_>, shortcut: u64) -> Option<&'static str> {
@@ -1627,13 +1666,27 @@ fn draw_console_key(
     let capturing = window.capturing || window.capturing_local;
     // Some(true): use the project key; Some(false): no key here.
     let mut use_project: Option<bool> = None;
+    // This console's key changed by its chord or scope controls.
+    let mut reshaped: Option<WireShortcutKey> = None;
     ui.horizontal_wrapped(|ui| {
         form_label(ui, l.text(Msg::UserShortcutLocalLabel));
         match (&local, window.capturing_local) {
             (_, true) => ui.label(
-                RichText::new(l.text(Msg::UserShortcutLocalCapturing)).color(accent_color()),
+                RichText::new(l.text(if window.capturing_local_then {
+                    Msg::UserShortcutLocalThenCapturing
+                } else {
+                    Msg::UserShortcutLocalCapturing
+                }))
+                .color(accent_color()),
             ),
-            (Some(Some(key)), false) => crate::menu::key_cap(ui, &l.keys(&key_text(key)), 0.0),
+            (Some(Some(key)), false) => {
+                let response = crate::menu::key_cap(ui, &l.keys(&key_text(key)), 0.0);
+                if let Some(scope) = key.scope.as_deref().and_then(AnswerScope::of) {
+                    ui.label(RichText::new(scope.label(l)).color(muted_color()))
+                        .on_hover_text(l.text(Msg::UserShortcutLocalScopeHover));
+                }
+                response
+            }
             (Some(None), false) => {
                 ui.label(RichText::new(l.text(Msg::UserShortcutLocalNone)).color(muted_color()))
             }
@@ -1657,6 +1710,7 @@ fn draw_console_key(
             .clicked()
         {
             window.capturing_local = true;
+            window.capturing_local_then = false;
             window.local_refusal = None;
         }
         let project_key = local
@@ -1692,6 +1746,114 @@ fn draw_console_key(
             use_project = Some(false);
         }
     });
+    // The console key's chord and the panel or window it answers in.
+    let own = match &local {
+        Some(Some(key)) => Some(key.clone()),
+        _ => None,
+    };
+    let reshape_block = if capturing {
+        Some(Msg::UserShortcutReasonCapturing.en())
+    } else if own.is_none() {
+        Some(Msg::UserShortcutReasonNoLocalKey.en())
+    } else {
+        None
+    };
+    ui.horizontal_wrapped(|ui| {
+        form_label(ui, l.text(Msg::UserShortcutLocalChordLabel));
+        if let Some(key) = own.as_ref().filter(|key| key.then.is_some()) {
+            if ui
+                .add_enabled(
+                    reshape_block.is_none(),
+                    small_button(l.text(Msg::UserShortcutLocalClearThen)),
+                )
+                .hint(
+                    l.text(Msg::UserShortcutLocalClearThenHover),
+                    reshape_block.unwrap_or(""),
+                )
+                .clicked()
+            {
+                reshaped = Some(WireShortcutKey {
+                    then: None,
+                    ..key.clone()
+                });
+            }
+        } else {
+            let add = reshape_block.or_else(|| {
+                own.as_ref()
+                    .is_some_and(WireShortcutKey::is_mouse)
+                    .then_some(Msg::UserShortcutReasonMouseChord.en())
+            });
+            if ui
+                .add_enabled(
+                    add.is_none(),
+                    small_button(l.text(Msg::UserShortcutLocalSetThen)),
+                )
+                .hint(
+                    l.text(Msg::UserShortcutLocalSetThenHover),
+                    add.unwrap_or(""),
+                )
+                .clicked()
+            {
+                window.capturing_local = true;
+                window.capturing_local_then = true;
+                window.local_refusal = None;
+            }
+        }
+        ui.add_space(8.0);
+        ui.label(l.text(Msg::UserShortcutLocalScopeLabel))
+            .on_hover_text(l.text(Msg::UserShortcutLocalScopeHover));
+        let current = own
+            .as_ref()
+            .and_then(|key| key.scope.as_deref())
+            .and_then(AnswerScope::of);
+        let name = |scope: Option<AnswerScope>| {
+            scope.map_or_else(
+                || l.text(Msg::UserShortcutScopeAnywhere).to_owned(),
+                |scope| scope.label(l),
+            )
+        };
+        let mut chosen = current;
+        ui.add_enabled_ui(reshape_block.is_none(), |ui| {
+            ComboBox::from_id_salt("studio-user-shortcut-local-scope")
+                .selected_text(name(current))
+                .width(200.0)
+                .show_ui(ui, |ui| {
+                    for scope in core::iter::once(None).chain(AnswerScope::all().map(Some)) {
+                        let hover = if matches!(scope, Some(AnswerScope::Window(_))) {
+                            Msg::UserShortcutScopeWindowHover
+                        } else {
+                            Msg::UserShortcutLocalScopeHover
+                        };
+                        ui.selectable_value(&mut chosen, scope, name(scope))
+                            .on_hover_text(l.text(hover));
+                    }
+                })
+                .response
+                .hint(
+                    l.text(Msg::UserShortcutLocalScopeHover),
+                    reshape_block.unwrap_or(""),
+                );
+        });
+        if chosen != current
+            && let Some(key) = &own
+        {
+            reshaped = Some(WireShortcutKey {
+                scope: chosen.map(AnswerScope::key),
+                ..key.clone()
+            });
+        }
+    });
+    if let Some(key) = reshaped {
+        // A reshaped key is checked like a captured one: it may now clash.
+        match local_capture(keys, shortcut, Captured::Key(key)) {
+            Some(Ok(key)) => {
+                window.local_refusal =
+                    (!overrides.set(project, shortcut, Some(key))).then_some(LocalRefusal::Limit);
+            }
+            Some(Err(refusal)) => window.local_refusal = Some(refusal),
+            None => {}
+        }
+    }
     match use_project {
         Some(true) => {
             overrides.clear(project, shortcut);

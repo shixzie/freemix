@@ -3883,6 +3883,17 @@ Protocol 2.99 adds dynamic value targets to user shortcut and cue actions
   shortcut takes its gain from the control that fires it: fire it from OSC
   or a fader") and asks `control_audio` for every gain and mute token. The
   CLI's `shortcut-fire` and `remote-shortcut-fire` take `--value <0-1000>`.
+- Studio's console key overrides (this console's own key for a project
+  shortcut, kept in its local preferences and never sent) may now be any
+  key a project key may be: a chord, a mouse button, and scoped to a panel
+  or a panel's pop-out window. They clash as project keys do, where strokes
+  and scopes overlap. A preference line writes the key as the console
+  shows it, a chord `Ctrl+K, 1`, then ` @<scope>` when scoped
+  (`shortcut.key.<project>.<shortcut> = Ctrl+K, 1 @cues-window`). The
+  Shortcuts window's "This console" rows add "Add second key here" /
+  "Remove second key here" and an "Answers here in" picker, with English
+  and Spanish hover help; a new console key keeps the chord and scope it
+  had. No wire change.
 - 2.98 is refused.
 
 Command results are ordered before any event bearing the same accepted revision

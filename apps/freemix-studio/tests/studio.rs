@@ -2833,6 +2833,24 @@ fn console_keys_for_project_shortcuts_round_trip_and_save_debounced() {
         })
     ));
     assert!(overrides.set(project, 4, None));
+    // RC-004: a console key may be a chord scoped to a pop-out window.
+    let stroke = |key: &str, command: bool| WireShortcutKey {
+        key: key.into(),
+        command,
+        shift: false,
+        alt: false,
+        then: None,
+        scope: None,
+    };
+    assert!(overrides.set(
+        project,
+        5,
+        Some(WireShortcutKey {
+            then: Some(Box::new(stroke("1", false))),
+            scope: Some("cues-window".into()),
+            ..stroke("K", true)
+        })
+    ));
     let keyed = SavedPreferences {
         shortcut_keys: Some(overrides.clone()),
         ..SavedPreferences::default()
@@ -2840,6 +2858,10 @@ fn console_keys_for_project_shortcuts_round_trip_and_save_debounced() {
     let text = keyed.render();
     assert!(text.contains("shortcut.key.42.3 = Ctrl+Alt+F9\n"), "{text}");
     assert!(text.contains("shortcut.key.42.4 = none\n"), "{text}");
+    assert!(
+        text.contains("shortcut.key.42.5 = Ctrl+K, 1 @cues-window\n"),
+        "{text}"
+    );
     assert_eq!(SavedPreferences::parse(&text), keyed);
     // A bad line is skipped, and is never read as a layout entry.
     let parsed = SavedPreferences::parse("shortcut.key.42.3 = Alt+Ctrl+F9\n");

@@ -9,12 +9,18 @@
 //! On this console a shortcut answers its override when it has one, else
 //! its project key. An override wins over another shortcut's project key
 //! (that shortcut then has no key here until the clash is gone); a key the
-//! console keeps for itself never fires a shortcut.
+//! console keeps for itself never fires a shortcut. An override is any key
+//! a project key may be: a chord (a second stroke after the first), a
+//! mouse button, and scoped to one console panel or a panel's pop-out
+//! window; overrides clash exactly as project keys do, where their strokes
+//! and scopes overlap.
 //!
 //! In the preferences file each override is one line,
 //! `shortcut.key.<project id>.<shortcut id> = <key>`, where the key is
 //! written as the console shows it (`Ctrl+Shift+Alt+F9`, modifiers in that
-//! order) or `none` for no key on this console.
+//! order; a chord `Ctrl+K, 1`), followed by ` @<scope>` when it answers in
+//! one panel or window (`Ctrl+K, 1 @cues-window`), or `none` for no key on
+//! this console.
 
 use std::collections::BTreeMap;
 
@@ -45,12 +51,13 @@ impl ShortcutKeyOverrides {
 
     /// Gives `shortcut` in `project` the key `key` (or no key) on this
     /// console. Returns `false`, changing nothing, when the key is not a
-    /// valid single, unscoped shortcut key or the console already keeps
+    /// key a project shortcut may hold or the console already keeps
     /// [`MAX_KEY_OVERRIDES`] others.
     pub fn set(&mut self, project: ProjectId, shortcut: u64, key: Option<WireShortcutKey>) -> bool {
-        if key.as_ref().is_some_and(|key| {
-            !fm_protocol::shortcut_key_is_valid(key) || key.then.is_some() || key.scope.is_some()
-        }) || shortcut == 0
+        if key
+            .as_ref()
+            .is_some_and(|key| !fm_protocol::shortcut_key_is_valid(key))
+            || shortcut == 0
         {
             return false;
         }
@@ -87,8 +94,7 @@ impl ShortcutKeyOverrides {
             .map(|((project, shortcut), key)| {
                 (
                     format!("{PREFIX}{project}.{shortcut}"),
-                    key.as_ref()
-                        .map_or_else(|| NONE.to_owned(), crate::user_shortcuts::key_text),
+                    key.as_ref().map_or_else(|| NONE.to_owned(), key_preference),
                 )
             })
             .collect()
@@ -132,10 +138,47 @@ fn canonical<T: core::str::FromStr>(text: &str) -> Option<T> {
     .flatten()
 }
 
-/// Parses a key written by [`crate::user_shortcuts::key_text`]
-/// (`Ctrl+Shift+Alt+F9`, each modifier at most once, in that order).
+/// What separates a key from the scope it answers in, in a preference.
+const SCOPE_MARK: &str = " @";
+
+/// A key as its preference writes it: [`crate::user_shortcuts::key_text`]
+/// (a chord `Ctrl+K, 1`) and ` @<scope>` when it is scoped.
+#[must_use]
+pub fn key_preference(key: &WireShortcutKey) -> String {
+    let mut text = crate::user_shortcuts::key_text(key);
+    if let Some(scope) = &key.scope {
+        text.push_str(SCOPE_MARK);
+        text.push_str(scope);
+    }
+    text
+}
+
+/// Parses a key written by [`key_preference`]: one or two strokes
+/// separated by `, `, each as [`parse_stroke_text`] reads it, and an
+/// optional ` @<scope>`; `None` unless it is a key a project shortcut may
+/// hold.
 #[must_use]
 pub fn parse_key_text(text: &str) -> Option<WireShortcutKey> {
+    let (strokes, scope) = match text.split_once(SCOPE_MARK) {
+        Some((strokes, scope)) => (strokes, Some(scope.to_owned())),
+        None => (text, None),
+    };
+    let (first, then) = match strokes.split_once(", ") {
+        Some((first, then)) => (first, Some(parse_stroke_text(then)?)),
+        None => (strokes, None),
+    };
+    let key = WireShortcutKey {
+        then: then.map(Box::new),
+        scope,
+        ..parse_stroke_text(first)?
+    };
+    fm_protocol::shortcut_key_is_valid(&key).then_some(key)
+}
+
+/// Parses one stroke written by [`crate::user_shortcuts::key_text`]
+/// (`Ctrl+Shift+Alt+F9`, each modifier at most once, in that order).
+#[must_use]
+pub fn parse_stroke_text(text: &str) -> Option<WireShortcutKey> {
     let mut rest = text;
     let mut take = |name: &str| {
         let after = rest
@@ -197,14 +240,24 @@ mod tests {
         // Not a key a shortcut may hold, or shortcut id zero.
         assert!(!overrides.set(project(7), 3, Some(key("F+", false, false, false))));
         assert!(!overrides.set(project(7), 0, None));
-        // A console key is a single key that answers anywhere.
+        // A console key may be a chord, a mouse button, and scoped, as a
+        // project key may, but not a chord of a mouse button or a scope
+        // the console lacks.
         let mut chord = key("K", true, false, false);
         chord.then = Some(Box::new(key("1", false, false, false)));
-        assert!(!overrides.set(project(7), 3, Some(chord)));
+        assert!(overrides.set(project(7), 3, Some(chord.clone())));
         let mut scoped = key("K", true, false, false);
-        scoped.scope = Some("cues".into());
-        assert!(!overrides.set(project(7), 3, Some(scoped)));
-        assert_eq!(overrides.len(), 1);
+        scoped.scope = Some("cues-window".into());
+        assert!(overrides.set(project(7), 4, Some(scoped)));
+        let mut mouse = key("MouseBack", false, false, true);
+        mouse.scope = Some("mixer".into());
+        assert!(overrides.set(project(7), 5, Some(mouse.clone())));
+        mouse.then = Some(Box::new(key("1", false, false, false)));
+        assert!(!overrides.set(project(7), 6, Some(mouse)));
+        let mut unknown = chord;
+        unknown.scope = Some("timeline".into());
+        assert!(!overrides.set(project(7), 6, Some(unknown)));
+        assert_eq!(overrides.len(), 4);
     }
 
     #[test]
@@ -213,6 +266,13 @@ mod tests {
         overrides.set(project(42), 3, Some(key("F9", true, true, true)));
         overrides.set(project(42), 4, Some(key("J", false, false, true)));
         overrides.set(project(u128::MAX), 9, None);
+        let mut chord = key("K", true, false, false);
+        chord.then = Some(Box::new(key("1", false, true, false)));
+        chord.scope = Some("cues-window".into());
+        overrides.set(project(42), 5, Some(chord));
+        let mut middle = key("MouseMiddle", true, false, false);
+        middle.scope = Some("mixer".into());
+        overrides.set(project(42), 6, Some(middle));
         let lines = overrides.preference_entries();
         assert_eq!(
             lines,
@@ -222,6 +282,14 @@ mod tests {
                     "Ctrl+Shift+Alt+F9".to_owned()
                 ),
                 ("shortcut.key.42.4".to_owned(), "Alt+J".to_owned()),
+                (
+                    "shortcut.key.42.5".to_owned(),
+                    "Ctrl+K, Shift+1 @cues-window".to_owned()
+                ),
+                (
+                    "shortcut.key.42.6".to_owned(),
+                    "Ctrl+MouseMiddle @mixer".to_owned()
+                ),
                 (format!("shortcut.key.{}.9", u128::MAX), "none".to_owned()),
             ]
         );
@@ -240,6 +308,14 @@ mod tests {
             ("shortcut.key.42.3", "Shift+Ctrl+F9"),
             ("shortcut.key.42.3", "Ctrl+"),
             ("shortcut.key.42.3", ""),
+            ("shortcut.key.42.3", "Ctrl+K,1"),
+            ("shortcut.key.42.3", "Ctrl+K, 1, 2"),
+            ("shortcut.key.42.3", "Ctrl+K, MouseBack"),
+            ("shortcut.key.42.3", "MouseBack, 1"),
+            ("shortcut.key.42.3", "Ctrl+K @timeline"),
+            ("shortcut.key.42.3", "Ctrl+K @"),
+            ("shortcut.key.42.3", "Ctrl+K @cues @mixer"),
+            ("shortcut.key.42.3", " @cues"),
             ("layout.panel", "F9"),
         ] {
             assert!(!ignored.apply_preference(key, value), "{key} = {value}");
