@@ -8,6 +8,18 @@
 //! monitor, camera, and disk counters and gauges). Everything lands in one
 //! bounded [`MetricRegistry`] under the stable names in [`names`].
 //!
+//! Each sample also measures utilization:
+//!
+//! - CPU: the daemon process's CPU time over the wall time since the
+//!   previous sample, as a share of every logical CPU (see [`crate::cpu`]);
+//!   unavailable off Linux.
+//! - GPU: no vendor utilization API is used. The proxy is the GPU time the
+//!   native compositor's timestamped fullscreen render passes took over the
+//!   wall time since the previous sample, so it counts only those passes
+//!   (not uploads, readbacks, encoders, or other processes) and reads low
+//!   when timestamp samples are dropped. It is unavailable on the simulated
+//!   daemon and on adapters without timestamp queries.
+//!
 //! The registry is an additional view: the `FREEMIXD_TELEMETRY` record the
 //! native daemon prints at shutdown keeps its own whole-run aggregation and
 //! fields unchanged.
@@ -29,6 +41,10 @@ pub(crate) const MAX_PENDING_OBSERVATIONS: usize = 1_024;
 
 /// Stable metric names.
 pub(crate) mod names {
+    /// The daemon process's CPU utilization, `0..=1` of every logical CPU.
+    pub(crate) const CPU_UTILIZATION: &str = "cpu.process_utilization";
+    /// Timestamped GPU render-pass time per wall time, `0..=1` (a proxy).
+    pub(crate) const GPU_UTILIZATION: &str = "gpu.utilization";
     /// How late the host woke for each realized frame, in milliseconds.
     pub(crate) const FRAME_LATENESS_MS: &str = "frame.host_lateness_ms";
     /// Frames the native frame loop realized.
@@ -103,6 +119,8 @@ pub(crate) struct NativeStatisticsSample {
     pub(crate) lateness_ms: Vec<f64>,
     /// Each completed GPU pass since the previous sample.
     pub(crate) gpu_pass_ms: Vec<f64>,
+    /// Whether the adapter timestamps GPU passes at all.
+    pub(crate) gpu_timing: bool,
     /// Observations dropped because the buffers were full, in total.
     pub(crate) observations_dropped: u64,
     pub(crate) frames_dropped: u64,
@@ -146,6 +164,12 @@ const fn gauge_value(value: u64) -> f64 {
     value as f64
 }
 
+/// GPU pass time over `wall_ms`, clamped to `0..=1`; `None` without wall
+/// time to divide by.
+fn gpu_utilization(passes_ms: &[f64], wall_ms: f64) -> Option<f64> {
+    (wall_ms > 0.0).then(|| (passes_ms.iter().sum::<f64>() / wall_ms).clamp(0.0, 1.0))
+}
+
 /// The daemon's bounded metric registry and its sampling cadence.
 #[derive(Debug)]
 pub(crate) struct DaemonStatistics {
@@ -154,6 +178,10 @@ pub(crate) struct DaemonStatistics {
     sampled_at: Option<Instant>,
     /// Registry refusals (never fatal to the show).
     errors: u64,
+    cpu: crate::cpu::CpuSampler,
+    /// The latest utilization readings; `None` while unavailable.
+    cpu_utilization: Option<f64>,
+    gpu_utilization: Option<f64>,
 }
 
 impl DaemonStatistics {
@@ -167,6 +195,8 @@ impl DaemonStatistics {
             )
         };
         let descriptors = [
+            (names::CPU_UTILIZATION, MetricDescriptor::Gauge),
+            (names::GPU_UTILIZATION, MetricDescriptor::Gauge),
             (names::FRAME_LATENESS_MS, histogram(&LATENESS_EDGES_MS)),
             (names::FRAMES_REALIZED, MetricDescriptor::Counter),
             (names::FRAMES_LATE, MetricDescriptor::Counter),
@@ -201,7 +231,22 @@ impl DaemonStatistics {
             registry,
             sampled_at: None,
             errors: 0,
+            cpu: crate::cpu::CpuSampler::new(),
+            cpu_utilization: None,
+            gpu_utilization: None,
         }
+    }
+
+    /// The latest process CPU utilization, `0..=1`; `None` while unavailable.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) const fn cpu_utilization(&self) -> Option<f64> {
+        self.cpu_utilization
+    }
+
+    /// The latest GPU utilization proxy, `0..=1`; `None` while unavailable.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) const fn gpu_utilization(&self) -> Option<f64> {
+        self.gpu_utilization
     }
 
     /// The registry every metric lives in.
@@ -240,8 +285,34 @@ impl DaemonStatistics {
         control: ControlSample,
         native: Option<NativeStatisticsSample>,
     ) {
+        let cpu = self.cpu.sample(now);
+        self.record_sample(now, control, native, cpu);
+    }
+
+    /// [`Self::sample`] with the CPU reading already taken.
+    fn record_sample(
+        &mut self,
+        now: Instant,
+        control: ControlSample,
+        native: Option<NativeStatisticsSample>,
+        cpu: Option<f64>,
+    ) {
+        let wall_ms = self
+            .sampled_at
+            .map(|at| now.saturating_duration_since(at).as_secs_f64() * 1_000.0);
         self.sampled_at = Some(now);
         let at = self.millis(now);
+        self.cpu_utilization = cpu;
+        if let Some(cpu) = cpu {
+            self.gauge(names::CPU_UTILIZATION, at, cpu);
+        }
+        self.gpu_utilization = native
+            .as_ref()
+            .filter(|native| native.gpu_timing)
+            .and_then(|native| gpu_utilization(&native.gpu_pass_ms, wall_ms?));
+        if let Some(gpu) = self.gpu_utilization {
+            self.gauge(names::GPU_UTILIZATION, at, gpu);
+        }
         self.gauge(
             names::CONTROL_SUBSCRIBERS,
             at,
@@ -439,6 +510,7 @@ mod tests {
             frame_interval_ms: 1_000.0 / 30.0,
             lateness_ms,
             gpu_pass_ms: vec![2.0, 3.0],
+            gpu_timing: true,
             stream_enqueued_pairs: 10,
             stream_dropped_pairs: 2,
             monitor: [
@@ -459,23 +531,51 @@ mod tests {
         let origin = Instant::now();
         let mut statistics = DaemonStatistics::new(origin);
         assert!(statistics.due(origin));
-        statistics.sample(origin, ControlSample::default(), None);
+        statistics.record_sample(origin, ControlSample::default(), None, None);
         assert!(!statistics.due(origin + Duration::from_millis(999)));
         assert!(statistics.due(origin + STATISTICS_INTERVAL));
+    }
+
+    #[test]
+    fn gpu_proxy_is_pass_time_over_wall_time() {
+        assert_eq!(gpu_utilization(&[4.0, 6.0], 100.0), Some(0.1));
+        assert_eq!(gpu_utilization(&[400.0], 100.0), Some(1.0));
+        assert_eq!(gpu_utilization(&[], 100.0), Some(0.0));
+        assert_eq!(gpu_utilization(&[1.0], 0.0), None);
+
+        // Adapters without timestamps report no proxy.
+        let origin = Instant::now();
+        let mut statistics = DaemonStatistics::new(origin);
+        let mut sample = native(vec![1.0]);
+        sample.gpu_timing = false;
+        statistics.record_sample(origin, ControlSample::default(), Some(sample.clone()), None);
+        statistics.record_sample(
+            origin + STATISTICS_INTERVAL,
+            ControlSample::default(),
+            Some(sample),
+            None,
+        );
+        assert_eq!(statistics.gpu_utilization(), None);
     }
 
     #[test]
     fn simulated_daemon_records_only_the_control_plane() {
         let origin = Instant::now();
         let mut statistics = DaemonStatistics::new(origin);
-        statistics.sample(
+        statistics.record_sample(
             origin,
             ControlSample {
                 subscribers: 3,
                 revision: 42,
             },
             None,
+            Some(0.125),
         );
+        assert_eq!(statistics.value(names::CPU_UTILIZATION), Some(0.125));
+        assert_eq!(statistics.cpu_utilization(), Some(0.125));
+        // No GPU proxy without the native compositor.
+        assert_eq!(statistics.gpu_utilization(), None);
+        assert_eq!(statistics.value(names::GPU_UTILIZATION), None);
         assert_eq!(statistics.value(names::CONTROL_SUBSCRIBERS), Some(3.0));
         assert_eq!(statistics.value(names::CONTROL_REVISION), Some(42.0));
         assert_eq!(statistics.value(names::FRAMES_REALIZED), None);
@@ -488,11 +588,14 @@ mod tests {
         let origin = Instant::now();
         let mut statistics = DaemonStatistics::new(origin);
         // One of four frames woke more than half a 30 fps interval late.
-        statistics.sample(
+        statistics.record_sample(
             origin,
             ControlSample::default(),
             Some(native(vec![0.5, 1.0, 20.0, 2.0])),
+            None,
         );
+        // The first sample has no wall time to measure the GPU proxy over.
+        assert_eq!(statistics.gpu_utilization(), None);
         assert_eq!(statistics.value(names::FRAMES_REALIZED), Some(4.0));
         assert_eq!(statistics.value(names::FRAMES_LATE), Some(1.0));
         assert_eq!(statistics.value(names::FRAME_LATE_RATIO), Some(0.25));
@@ -520,11 +623,16 @@ mod tests {
         // a sample without frames keeps the late ratio.
         let mut next = native(Vec::new());
         next.stream_dropped_pairs = 5;
-        statistics.sample(
+        statistics.record_sample(
             origin + STATISTICS_INTERVAL,
             ControlSample::default(),
             Some(next),
+            None,
         );
+        // 5 ms of timestamped passes over one wall second.
+        assert_eq!(statistics.gpu_utilization(), Some(0.005));
+        assert_eq!(statistics.value(names::GPU_UTILIZATION), Some(0.005));
+        assert_eq!(statistics.cpu_utilization(), None);
         assert_eq!(statistics.value(names::STREAM_DROPPED_PAIRS), Some(5.0));
         assert_eq!(statistics.value(names::FRAMES_REALIZED), Some(4.0));
         assert_eq!(statistics.value(names::FRAME_LATE_RATIO), Some(0.25));

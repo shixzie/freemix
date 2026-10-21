@@ -97,6 +97,7 @@ use freemixd::{ReadinessRecord, StatusReadinessRecord};
 // The free-space alert is constructed only by the native render loop; the
 // preflight and its constants are used in every build.
 mod clock_retry;
+mod cpu;
 mod cue_clock;
 #[cfg(feature = "native-media")]
 mod desktop_capture;
@@ -7576,6 +7577,10 @@ impl NativeDaemon {
             frame_interval_ms,
             lateness_ms: std::mem::take(&mut telemetry.pending_lateness_ms),
             gpu_pass_ms: std::mem::take(&mut telemetry.pending_gpu_pass_ms),
+            gpu_timing: matches!(
+                telemetry.gpu_support,
+                fm_gpu::NativeFullscreenTimingSupport::Supported
+            ),
             observations_dropped: telemetry.pending_dropped,
             frames_dropped: telemetry
                 .stream_dropped_pairs_total
