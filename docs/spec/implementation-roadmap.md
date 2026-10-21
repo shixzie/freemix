@@ -43,8 +43,10 @@ highest-value remaining items, ranked:
    the EBU Tech 3342 loudness range, and true peak per strip and on Master,
    and an operator reset per bus (Protocol 2.92), which the Web operator
    page now shows and resets (Protocol 2.94; see the item 3 boundary
-   below); Web chain editing, an audio render path in the simulated daemon
-   (where the chains are show state only), and hardware acceptance remain.
+   below), and whose chains a browser with `control_audio` edits from the
+   Web operator page's Strip FX disclosures (no protocol change); an audio
+   render path in the simulated daemon (where the chains are show state
+   only), Web gain-reduction readouts, and hardware acceptance remain.
 4. **Finish user shortcuts (`RC-004`).** Project shortcuts now persist, travel
    on the wire, fire on the authority under per-action permissions, and are
    edited and dispatched in Studio (keys and OSC), with `.fmshortcuts`
@@ -1377,11 +1379,28 @@ The Web operator page (Protocol 2.94) shows Program's momentary,
 short-term, integrated, loudness-range, and true-peak readings with a
 `Reset loudness` key and each audio strip's short-term loudness with a
 `Reset` key, from the Web `audio_meters` records, which keep the loudness
-of Master and at most 32 strips. The simulated daemon has no audio render
+of Master and at most 32 strips. Its Strip FX section edits every chain
+(Master and each input) from a browser whose session has `control_audio`
+(the Audio and Operator roles), with the existing `audio_strip_dsp`
+command: one disclosure per chain with bypass, polarity, a preset menu
+(Studio's five presets), Reset chain, and each stage's switch and sliders
+(delay, high-pass, the five EQ bands with their kinds, gate, expander,
+compressor, limiter), every control with English and Spanish hover help
+and disabled with the reason when the session lacks the permission. The
+page carries a JavaScript port of the chain codec that the daemon's tests
+run under Node.js against codes the Rust codec renders (every preset,
+extremes, and refused codes). Each set names the page's revision, one in
+flight per chain: a slider drag sends at most ten sets a second under one
+gesture token (one undo step) plus one on release; a set refused as stale
+is resent once only while the chain is still the one it was based on, and
+otherwise the page shows the server's chain and says why
+(`tests/web_tally.rs`). The Web feed carries no dynamics meters, so the
+page shows no gain reduction. The simulated daemon has no audio render
 path: its chains, the delay included, are accepted, announced,
 snapshotted, undone, and persisted (`tests/process.rs`), and it sends no
-meters. Remaining for `AU-005`: editing chains from the Web, an audio
-render path in the simulated daemon, an allocation-counting real-time
+meters. Remaining for `AU-005`: gain-reduction readouts on the Web (the
+Web `audio_meters` records carry no dynamics), an audio render path in
+the simulated daemon, an allocation-counting real-time
 test (the workspace forbids the `unsafe` a
 counting allocator needs; the no-allocation property rests on preallocated
 buffers and review), and hardware acceptance.
