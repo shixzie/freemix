@@ -225,10 +225,15 @@ impl StudioShell {
         let mut chain = shown;
         let mut header = HeaderOutcome::default();
         let mut reset_loudness = false;
+        // The work area less the window's margins, its header strip, and
+        // the chain keys under it.
+        let body_height = (area.height() - crate::workspace::TOOL_HEADER_HEIGHT - 72.0).max(160.0);
         egui::Window::new(title.clone())
             .id(egui::Id::new("studio-strip-fx"))
             .title_bar(false)
-            .resizable(false)
+            // Sized by its contents, not egui's default window height, so
+            // the body's scroll area alone decides how tall it is.
+            .auto_sized()
             .collapsible(false)
             .constrain_to(area)
             .pivot(Align2::RIGHT_BOTTOM)
@@ -245,13 +250,23 @@ impl StudioShell {
                         ui.set_width(FX_WIDTH);
                         header = draw_header(ui, &mut chain, (enabled, reason), pending, clipboard);
                         ui.add_space(4.0);
-                        draw_curve(ui, &mut chain, (enabled, reason));
-                        ui.add_space(6.0);
-                        draw_bands(ui, &mut chain, (enabled, reason));
-                        ui.separator();
-                        draw_dynamics(ui, &mut chain, (enabled, reason), gr);
-                        ui.separator();
-                        reset_loudness = draw_loudness(ui, loudness.as_ref(), (enabled, reason));
+                        // The chain scrolls under its header when the work
+                        // area is shorter than the window (1280x720), so
+                        // the title and close key stay on screen.
+                        egui::ScrollArea::vertical()
+                            .id_salt("strip-fx-body")
+                            .max_height(body_height)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                draw_curve(ui, &mut chain, (enabled, reason));
+                                ui.add_space(6.0);
+                                draw_bands(ui, &mut chain, (enabled, reason));
+                                ui.separator();
+                                draw_dynamics(ui, &mut chain, (enabled, reason), gr);
+                                ui.separator();
+                                reset_loudness =
+                                    draw_loudness(ui, loudness.as_ref(), (enabled, reason));
+                            });
                     },
                 );
                 header.close |= close;
@@ -534,6 +549,9 @@ fn draw_curve(ui: &mut Ui, chain: &mut StripDsp, (enabled, reason): (bool, &str)
         if enabled && response.hovered() {
             let scroll = ui.input(|input| input.smooth_scroll_delta.y);
             if scroll != 0.0 {
+                // The wheel shapes the band; the window body does not
+                // scroll under it too.
+                ui.input_mut(|input| input.smooth_scroll_delta.y = 0.0);
                 let q = f64::from(band.q_milli) * f64::from((scroll * 0.004).exp());
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped
                 let q = q
@@ -1114,9 +1132,10 @@ fn draw_loudness(
     (enabled, reason): (bool, &str),
 ) -> bool {
     let l = l10n::locale(ui.ctx());
-    let row = egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true);
     let mut reset = false;
-    ui.with_layout(row, |ui| {
+    // A wrapped row as tall as its keys: a bare wrapping layout would
+    // centre the row in all the height left under it.
+    ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
         ui.label(
             RichText::new(l.text(Msg::FxLoudnessLabel).to_uppercase())
