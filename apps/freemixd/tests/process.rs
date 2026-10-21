@@ -7285,6 +7285,7 @@ fn assert_title_state(
     state: &fm_protocol::TitleStateMessage,
     revision: u64,
     field_revision: u64,
+    bar_revision: u64,
     color: (u8, u8, u8),
 ) {
     // The title rests on Preview (GX-001): once the engine has realized a
@@ -7319,7 +7320,7 @@ fn assert_title_state(
                     alpha: 255,
                 },
                 exposed: true,
-                revision: 0,
+                revision: bar_revision,
             }],
         }
     );
@@ -7384,7 +7385,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
             field_revision: 3,
         }]
     );
-    assert_title_state(&states[0], 0, 3, (230, 20, 140));
+    assert_title_state(&states[0], 0, 3, 0, (230, 20, 140));
 
     let mut graphics = daemon.connect();
     graphics.handshake_as(Role::Graphics, None);
@@ -7465,7 +7466,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
         WireMessage::HandshakeResponse(_)
     ));
     let (_, states) = title_sync(&mut studio);
-    assert_title_state(&states[0], 1, 4, (10, 200, 30));
+    assert_title_state(&states[0], 1, 4, 4, (10, 200, 30));
 
     // An operator may not edit fields, even as part of a take.
     permission_denied(
@@ -7618,7 +7619,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
             }]
         );
         assert_eq!(states.len(), 1);
-        assert_title_state(&states[0], 5, 5, (5, 6, 7));
+        assert_title_state(&states[0], 5, 5, 5, (5, 6, 7));
         drop(client);
         daemon.wait_success();
     }

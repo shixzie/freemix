@@ -363,13 +363,13 @@ fn title_number_cues_step_and_set_a_score_locally() {
     succeed(&["go", &project, "1"]);
     // -4 + 1 + 2.
     assert!(
-        manifest().contains("{\"id\": 1, \"type\": \"number\", \"value\": -1}"),
+        manifest().contains("{\"id\": 1, \"type\": \"number\", \"value\": -1, \"revision\": 2}"),
         "{}",
         manifest()
     );
     succeed(&["go", &project, "1"]);
     assert!(
-        manifest().contains("{\"id\": 1, \"type\": \"number\", \"value\": 0}"),
+        manifest().contains("{\"id\": 1, \"type\": \"number\", \"value\": 0, \"revision\": 3}"),
         "{}",
         manifest()
     );
