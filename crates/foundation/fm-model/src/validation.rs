@@ -926,11 +926,10 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
         }
         match &input.kind {
             // A mix feed reads only the previous tick's committed bus frame,
-            // so it has no reference to validate and adds no graph edge.
-            InputKind::Color | InputKind::MixFeed(_) => {}
-            // A replay player plays runtime events; its sources are the
+            // so it has no reference to validate and adds no graph edge; a
+            // replay player plays runtime events, and its sources are the
             // project's replay settings, validated on their own.
-            InputKind::Replay => {}
+            InputKind::Color | InputKind::MixFeed(_) | InputKind::Replay => {}
             // A title is a leaf: its template is a bundle asset checked by
             // persistence, so only its own field list is validated here.
             InputKind::Title(title) => validate_title(entity, title, errors),

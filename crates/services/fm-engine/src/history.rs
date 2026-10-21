@@ -1114,7 +1114,6 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
                 crate::EngineReplayOperation::Configure(Box::new(state.replay().clone())),
             ))
         }
-        EngineCommand::Replay(_) => None,
         EngineCommand::SetDisplayOutput { slot, .. } => Some(EngineCommand::SetDisplayOutput {
             slot: *slot,
             config: state.display_output(*slot).cloned().map(Box::new),

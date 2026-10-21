@@ -3396,6 +3396,7 @@ const fn media_list_command_class(operation: &fm_protocol::MediaListOperation) -
     }
 }
 
+#[allow(clippy::too_many_lines)]
 const fn command_class(payload: &CommandPayload) -> CommandClass {
     match payload {
         // Replay settings edit the project; marking, capturing, and playing

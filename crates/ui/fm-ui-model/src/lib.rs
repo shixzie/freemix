@@ -4902,7 +4902,6 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
                 Err(ModelError::InvalidAudioMixerChange)
             };
         }
-        DurableChange::ReplayChanged { .. } => return Ok(()),
         DurableChange::LiveLanChanged(entry) => {
             return match entry.source {
                 fm_protocol::LiveLanSource::Output(output)
@@ -5086,6 +5085,7 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
             return Ok(());
         }
         DurableChange::RecordingChanged { .. }
+        | DurableChange::ReplayChanged { .. }
         | DurableChange::FadeToBlackCurveChanged { .. }
         | DurableChange::EditLockChanged {
             target: EditLockTarget::Project,
@@ -5567,7 +5567,6 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                 state.display_outputs.remove(&slot);
             }
         },
-        DurableChange::ReplayChanged { .. } => {}
         DurableChange::LiveLanChanged(entry) => {
             // Disabled, it forgets its last report, as the server does.
             if !entry.enabled {
@@ -5750,7 +5749,7 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
         DurableChange::MediaChanged { status } => {
             state.media.insert(status.input.to_domain(), *status);
         }
-        DurableChange::PageNavigated { .. } => {}
+        DurableChange::PageNavigated { .. } | DurableChange::ReplayChanged { .. } => {}
         DurableChange::PagedChanged { status } => {
             state.paged.insert(status.input.to_domain(), *status);
         }

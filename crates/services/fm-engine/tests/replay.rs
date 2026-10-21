@@ -367,14 +367,14 @@ fn retention_drops_old_segments_but_keeps_what_an_event_holds() {
         EngineReplayOperation::CaptureLast { seconds: 5 },
     );
     record(&mut engine, 2);
-    assert!(engine.take_replay_pruned().is_empty());
+    assert_eq!(engine.take_replay_pruned(), Vec::<PathBuf>::new());
     record(&mut engine, 20 * FPS);
     let pruned = engine.take_replay_pruned();
     let status = engine.replay_status();
     // Segments 1..=5 are held by the event; 6 onwards roll off once they
     // end more than ten seconds behind the live edge.
     let kept = status.sources[0].segments;
-    assert!(!pruned.is_empty());
+    assert_ne!(pruned, Vec::<PathBuf>::new());
     for index in 1..=5 {
         let path = PathBuf::from(format!("/srv/replay/one-{index:06}.mp4"));
         assert!(!pruned.contains(&path), "{index} pruned");
@@ -400,10 +400,11 @@ fn retention_drops_old_segments_but_keeps_what_an_event_holds() {
     );
     settle(&mut engine);
     assert_eq!(engine.take_replay_pruned().len(), retained);
-    assert!(engine.replay_status().events.is_empty());
+    assert_eq!(engine.replay_status().events, Vec::new());
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn a_replay_input_plays_its_event_frame_exactly_at_every_speed() {
     let mut engine = engine();
     add_player(&mut engine, 9);
@@ -466,7 +467,7 @@ fn a_replay_input_plays_its_event_frame_exactly_at_every_speed() {
                 .iter()
                 .filter_map(|frame| frame.replay[0].source_frame),
         );
-        let expected: Vec<u64> = (0..40 + 1)
+        let expected: Vec<u64> = (0..=40)
             .map(|index| event.in_frame + index / repeats)
             .collect();
         assert_eq!(shown[..40], expected[..40], "{key}");
