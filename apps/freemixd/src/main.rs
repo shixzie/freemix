@@ -166,6 +166,7 @@ mod scene_render;
 mod screen_capture_targets;
 #[cfg(feature = "native-media")]
 mod source_wait;
+mod statistics;
 mod status_listener;
 mod stills;
 #[cfg(feature = "native-media")]
@@ -390,6 +391,14 @@ impl ProcessShutdown {
         self.operator_published_at.set(Some(now));
         let text = operator_state_text(&control, native);
         self.status.publish_operator_state(&text);
+    }
+
+    /// Publishes the daemon's statistics text (RC-015) for the support
+    /// bundle; rendered only while a status listener consumes it.
+    fn publish_statistics(&self, render: impl FnOnce() -> String) {
+        if self.control.is_some() {
+            self.status.publish_statistics(&render());
+        }
     }
 
     fn requested(&self) -> bool {
@@ -1713,6 +1722,13 @@ struct NativeRuntimeTelemetry {
     /// Disk free-space alert state at the latest sample; `None` until the
     /// first sample evaluated.
     disk_alert: Option<AlertState>,
+    /// Host lateness and GPU pass observations, in milliseconds, since the
+    /// statistics registry last drained them (RC-015); bounded by
+    /// [`statistics::MAX_PENDING_OBSERVATIONS`] each.
+    pending_lateness_ms: Vec<f64>,
+    pending_gpu_pass_ms: Vec<f64>,
+    /// Observations the full buffers refused.
+    pending_dropped: u64,
 }
 
 #[cfg(feature = "native-media")]
@@ -1763,6 +1779,19 @@ impl NativeRuntimeTelemetry {
             monitor_taps: [NativeTapCounters::default(); 2],
             disk_free_bytes: None,
             disk_alert: None,
+            pending_lateness_ms: Vec::new(),
+            pending_gpu_pass_ms: Vec::new(),
+            pending_dropped: 0,
+        }
+    }
+
+    /// Buffers one observation for the statistics registry, counting it
+    /// dropped once the buffer is full.
+    fn buffer_observation(buffer: &mut Vec<f64>, dropped: &mut u64, milliseconds: f64) {
+        if buffer.len() < statistics::MAX_PENDING_OBSERVATIONS {
+            buffer.push(milliseconds);
+        } else {
+            *dropped = dropped.saturating_add(1);
         }
     }
 
@@ -1772,6 +1801,11 @@ impl NativeRuntimeTelemetry {
 
     fn observe_host_lateness(&mut self, deadline: Instant, observed: Instant) {
         let milliseconds = observed.saturating_duration_since(deadline).as_secs_f64() * 1_000.0;
+        Self::buffer_observation(
+            &mut self.pending_lateness_ms,
+            &mut self.pending_dropped,
+            milliseconds,
+        );
         let time = self.monotonic_millis();
         let result =
             self.metrics
@@ -1787,6 +1821,11 @@ impl NativeRuntimeTelemetry {
         self.gpu_unavailable_samples = telemetry.unavailable_samples;
         for sample in telemetry.completed_samples {
             let milliseconds = sample.duration_nanoseconds() / 1_000_000.0;
+            Self::buffer_observation(
+                &mut self.pending_gpu_pass_ms,
+                &mut self.pending_dropped,
+                milliseconds,
+            );
             let time = self.monotonic_millis();
             let result =
                 self.metrics
@@ -7495,6 +7534,71 @@ impl NativeDaemon {
         self.telemetry.observe_gpu(self.runtime.context());
     }
 
+    /// Drains the frame loop's observations since the previous call and
+    /// reports its whole-run totals for the statistics registry (RC-015).
+    fn take_statistics_sample(&mut self) -> statistics::NativeStatisticsSample {
+        let rate = self.pacer.frame_rate();
+        let frame_interval_ms =
+            1_000.0 * f64::from(rate.denominator()) / f64::from(rate.numerator().max(1));
+        let display_dropped = self
+            .display_output_totals()
+            .map_or(0, |(_, _, dropped)| dropped);
+        let streams_failed = self
+            .streams
+            .iter()
+            .filter(|stream| {
+                stream.first_failure.is_some()
+                    || matches!(
+                        self.output_set.state(stream.destination_id),
+                        Some(DestinationState::Failed)
+                    )
+            })
+            .count();
+        let recorders_failed = self
+            .recorders
+            .iter()
+            .filter(|slot| match slot {
+                ProgramRecording::Running(recorder) => recorder.capture.first_failure.is_some(),
+                ProgramRecording::Off => false,
+            })
+            .count();
+        let telemetry = &mut self.telemetry;
+        let tap = |tap: MonitorTap| {
+            let counters = telemetry.monitor_taps[tap.index()];
+            statistics::TapTotals {
+                published: counters.published,
+                failed: counters.failed,
+                skipped: counters.skipped,
+            }
+        };
+        let monitor = [tap(MonitorTap::Program), tap(MonitorTap::Preview)];
+        statistics::NativeStatisticsSample {
+            frame_interval_ms,
+            lateness_ms: std::mem::take(&mut telemetry.pending_lateness_ms),
+            gpu_pass_ms: std::mem::take(&mut telemetry.pending_gpu_pass_ms),
+            observations_dropped: telemetry.pending_dropped,
+            frames_dropped: telemetry
+                .stream_dropped_pairs_total
+                .saturating_add(display_dropped),
+            audio_sink_depth: telemetry.audio_sink_depth,
+            audio_sink_dropped: telemetry.audio_sink_dropped,
+            audio_source_stalls: telemetry.audio_source_stalls,
+            audio_retained_bytes: telemetry.audio_retained_bytes,
+            recorder_outstanding_pairs: telemetry.recorder_outstanding_pairs,
+            recorder_retained_bytes: telemetry.recorder_retained_bytes,
+            stream_enqueued_pairs: telemetry.stream_enqueued_pairs_total,
+            stream_dropped_pairs: telemetry.stream_dropped_pairs_total,
+            monitor,
+            camera_dropped: telemetry
+                .camera
+                .native_dropped
+                .saturating_add(telemetry.camera.queue_dropped),
+            disk_free_bytes: telemetry.disk_free_bytes,
+            outputs_failed: u64::try_from(streams_failed.saturating_add(recorders_failed))
+                .unwrap_or(u64::MAX),
+        }
+    }
+
     fn emit_telemetry(&mut self) {
         if self.telemetry_emitted {
             return;
@@ -8587,6 +8691,11 @@ impl NativeDaemon {
     #[allow(clippy::unused_self)]
     fn source_sync_samples(&self) -> Vec<fm_protocol::SourceSyncSample> {
         Vec::new()
+    }
+
+    #[allow(clippy::unused_self)]
+    fn take_statistics_sample(&mut self) -> statistics::NativeStatisticsSample {
+        statistics::NativeStatisticsSample::default()
     }
 
     #[allow(clippy::unused_self)]

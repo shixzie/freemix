@@ -23,7 +23,9 @@
 //! control loop published, bounded to [`OPERATOR_STATE_MAX_BYTES`]. The cell
 //! is written at most once a second and copied out under one short lock, so a
 //! probe never queues behind rendering and the listener still owns no engine
-//! state.
+//! state. The daemon's named statistics (RC-015) follow it under
+//! `## Statistics`, published the same way and bounded to
+//! [`STATISTICS_MAX_BYTES`].
 
 use std::{
     env,
@@ -41,7 +43,7 @@ use std::{
 
 use fm_observability::{
     Category, ComponentHealth, EventField, EventLog, HealthCheck, HealthRegistry, Metric,
-    MetricStore, Severity, SupportBundle,
+    MetricStore, STATISTICS_HEADING, Severity, SupportBundle,
 };
 use fm_server::{HealthState, ReadinessState, ServiceStatus};
 
@@ -75,6 +77,9 @@ const METRIC_CAPACITY: usize = 8;
 /// own [`BUNDLE_MAX_BYTES`] cap still applies on top.
 const OPERATOR_STATE_MAX_BYTES: usize = 4 * 1024;
 const OPERATOR_STATE_TRUNCATION_MARKER: &str = "\n[TRUNCATED]\n";
+/// The `fm-statistics-v1` text the control loop publishes once a second
+/// (RC-015), truncated and marked like the operator state.
+const STATISTICS_MAX_BYTES: usize = 16 * 1024;
 
 /// Accept-thread sleep while it holds no socket. Matched to the control loop's
 /// own poll interval so a probe is never accepted later than the daemon's
@@ -139,6 +144,9 @@ pub(super) struct DaemonStatus {
     /// Latest sanitized operator-state text, empty until the first publish.
     /// Never larger than [`OPERATOR_STATE_MAX_BYTES`].
     operator_state: Mutex<String>,
+    /// Latest statistics text, empty until the first publish. Never larger
+    /// than [`STATISTICS_MAX_BYTES`].
+    statistics: Mutex<String>,
 }
 
 impl DaemonStatus {
@@ -158,6 +166,7 @@ impl DaemonStatus {
             in_flight: AtomicUsize::new(0),
             live_workers: AtomicUsize::new(CONNECTION_WORKERS),
             operator_state: Mutex::new(String::new()),
+            statistics: Mutex::new(String::new()),
         })
     }
 
@@ -205,24 +214,23 @@ impl DaemonStatus {
     /// marked rather than stored whole, so the cell can never grow past the
     /// documented bound no matter what the caller publishes.
     pub(super) fn publish_operator_state(&self, text: &str) {
-        let mut slot = self
-            .operator_state
+        store_capped(&self.operator_state, text, OPERATOR_STATE_MAX_BYTES);
+    }
+
+    /// Publishes the latest `fm-statistics-v1` text (RC-015), bounded like
+    /// [`Self::publish_operator_state`] to [`STATISTICS_MAX_BYTES`].
+    pub(super) fn publish_statistics(&self, text: &str) {
+        store_capped(&self.statistics, text, STATISTICS_MAX_BYTES);
+    }
+
+    /// Copies the published statistics out of the cell, or `None` when the
+    /// control loop never published any.
+    pub(super) fn statistics(&self) -> Option<Box<str>> {
+        let slot = self
+            .statistics
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if text.len() <= OPERATOR_STATE_MAX_BYTES {
-            if slot.as_str() == text {
-                return;
-            }
-            slot.clear();
-            slot.push_str(text);
-            return;
-        }
-        let mut capped = String::with_capacity(OPERATOR_STATE_MAX_BYTES);
-        let prefix_bytes =
-            OPERATOR_STATE_MAX_BYTES.saturating_sub(OPERATOR_STATE_TRUNCATION_MARKER.len());
-        capped.push_str(utf8_prefix(text, prefix_bytes));
-        capped.push_str(OPERATOR_STATE_TRUNCATION_MARKER);
-        *slot = capped;
+        (!slot.is_empty()).then(|| slot.clone().into_boxed_str())
     }
 
     /// Copies the published operator state out of the cell, or `None` when the
@@ -845,7 +853,8 @@ fn serve_bundle(job: BundleJob, status: &DaemonStatus) {
     } = job;
     if prepare(&mut stream).is_ok() {
         let operator_state = status.operator_state();
-        let response = bundle_response(&snapshot, operator_state.as_deref());
+        let statistics = status.statistics();
+        let response = bundle_response(&snapshot, operator_state.as_deref(), statistics.as_deref());
         status.served.fetch_add(1, Ordering::AcqRel);
         write_response(&mut stream, &response);
         drain(&mut stream);
@@ -1069,7 +1078,51 @@ fn ready_response(snapshot: &StatusSnapshot) -> Response {
 /// ever placed into the bundle inputs. The operator-state section arrives
 /// already sanitized by the control loop and is appended verbatim; the bundle
 /// never re-renders secrets.
-fn bundle_response(snapshot: &StatusSnapshot, operator_state: Option<&str>) -> Response {
+/// Stores `text` in `cell`, truncated at a UTF-8 boundary and marked when it
+/// exceeds `maximum` bytes.
+fn store_capped(cell: &Mutex<String>, text: &str, maximum: usize) {
+    let mut slot = cell.lock().unwrap_or_else(PoisonError::into_inner);
+    if text.len() <= maximum {
+        if slot.as_str() == text {
+            return;
+        }
+        slot.clear();
+        slot.push_str(text);
+        return;
+    }
+    let mut capped = String::with_capacity(maximum);
+    let prefix_bytes = maximum.saturating_sub(OPERATOR_STATE_TRUNCATION_MARKER.len());
+    capped.push_str(utf8_prefix(text, prefix_bytes));
+    capped.push_str(OPERATOR_STATE_TRUNCATION_MARKER);
+    *slot = capped;
+}
+
+/// The operator state followed by the statistics under
+/// [`STATISTICS_HEADING`], as `StatisticsSnapshot::include_in_bundle` lays
+/// them out.
+fn appended_sections(operator_state: Option<&str>, statistics: Option<&str>) -> Option<String> {
+    let Some(statistics) = statistics else {
+        return operator_state.map(str::to_owned);
+    };
+    let mut appended = String::new();
+    if let Some(operator_state) = operator_state {
+        appended.push_str(operator_state);
+        if !operator_state.ends_with('\n') {
+            appended.push('\n');
+        }
+        appended.push('\n');
+    }
+    appended.push_str(STATISTICS_HEADING);
+    appended.push('\n');
+    appended.push_str(statistics);
+    Some(appended)
+}
+
+fn bundle_response(
+    snapshot: &StatusSnapshot,
+    operator_state: Option<&str>,
+    statistics: Option<&str>,
+) -> Response {
     let mut health = HealthRegistry::new();
     health.update(
         HealthCheck::new(
@@ -1140,8 +1193,9 @@ fn bundle_response(snapshot: &StatusSnapshot, operator_state: Option<&str>) -> R
     #[allow(clippy::default_trait_access)]
     let capabilities = Default::default();
     let mut bundle = SupportBundle::new(&events, &metrics, &health, &capabilities);
-    if let Some(operator_state) = operator_state {
-        bundle = bundle.with_operator_state(operator_state);
+    let appended = appended_sections(operator_state, statistics);
+    if let Some(appended) = appended.as_deref() {
+        bundle = bundle.with_operator_state(appended);
     }
     let export = bundle.export(BUNDLE_MAX_BYTES);
     let mut body = format!(
@@ -1296,7 +1350,30 @@ mod tests {
     fn bundle_body(status: &DaemonStatus) -> String {
         let snapshot = status.snapshot();
         let operator_state = status.operator_state();
-        bundle_response(&snapshot, operator_state.as_deref()).body
+        let statistics = status.statistics();
+        bundle_response(&snapshot, operator_state.as_deref(), statistics.as_deref()).body
+    }
+
+    #[test]
+    fn support_bundle_appends_published_statistics_after_operator_state() {
+        let status = DaemonStatus::new();
+        assert!(!bundle_body(&status).contains(STATISTICS_HEADING));
+        status.publish_operator_state("streams=0\n");
+        status.publish_statistics(
+            "# fm-statistics-v1\nmetric control.subscribers gauge value=1 updated_ms=0 updates=1\n",
+        );
+        let body = bundle_body(&status);
+        let operator = body.find("streams=0").expect("operator state is kept");
+        let statistics = body
+            .find("## Statistics\n# fm-statistics-v1\nmetric control.subscribers")
+            .expect("statistics follow under their heading");
+        assert!(operator < statistics);
+
+        let oversized = "x".repeat(STATISTICS_MAX_BYTES + 1);
+        status.publish_statistics(&oversized);
+        let stored = status.statistics().expect("statistics were published");
+        assert!(stored.len() <= STATISTICS_MAX_BYTES);
+        assert!(stored.ends_with(OPERATOR_STATE_TRUNCATION_MARKER));
     }
 
     #[test]

@@ -747,6 +747,9 @@ pub(super) fn run(
         end_triggers: std::cell::RefCell::new(crate::media_clock::EndTriggerFeed::default()),
         grade_cache: std::cell::RefCell::new(crate::grading::GradeCache::default()),
         thumbnail_refresh: std::cell::RefCell::new(false),
+        statistics: std::cell::RefCell::new(crate::statistics::DaemonStatistics::new(
+            Instant::now(),
+        )),
     };
     let mut native = native;
     // Only the native pacer realizes idle frames between commands, so only
@@ -1350,6 +1353,21 @@ pub(super) fn run(
                 publish_source_sync_status(&mut peers, &status);
             }
         }
+        // Both daemons sample their named statistics once a second (RC-015).
+        let now = Instant::now();
+        if runtime.statistics.borrow().due(now) {
+            let diagnostics = control.borrow().diagnostics();
+            let sample = crate::statistics::ControlSample {
+                subscribers: u64::try_from(diagnostics.subscriber_count).unwrap_or(u64::MAX),
+                revision: diagnostics.current_revision,
+            };
+            let native_sample = native
+                .as_deref_mut()
+                .map(NativeDaemon::take_statistics_sample);
+            let mut statistics = runtime.statistics.borrow_mut();
+            statistics.sample(now, sample, native_sample);
+            process_shutdown.publish_statistics(|| statistics.render());
+        }
         let phases_demand = peers.iter().any(Peer::wants_title_phases);
         if let Some(phases) = phase_pacer.poll(Instant::now(), phases_demand, || {
             control.borrow().title_phases()
@@ -1873,6 +1891,8 @@ struct Runtime<'a> {
     /// A peer subscribed to input thumbnails since the last poll, so every
     /// thumbnail is rendered and sent again at once (Protocol 2.59).
     thumbnail_refresh: std::cell::RefCell<bool>,
+    /// The daemon's named statistics (RC-015), sampled once a second.
+    statistics: std::cell::RefCell<crate::statistics::DaemonStatistics>,
 }
 
 impl Runtime<'_> {
