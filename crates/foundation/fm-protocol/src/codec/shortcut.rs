@@ -13,6 +13,8 @@
 //!   taking Program, at most 512 bytes of title text),
 //!   `cue:<list>:go:<cue|->`, `cue:<list>:<stop|back|skip|reset>`, or
 //!   `script:<script>`, every id nonzero canonical decimal.
+//! * `shortcut_fire` carries an optional `value` (Protocol 2.99, RC-004),
+//!   canonical decimal `0..=1000`: the firing control's position, per mille.
 //! * `shortcut_fired` carries `shortcut`, `frame`, `actions`, and the
 //!   desired state fields of `cue_run_changed`.
 
@@ -39,6 +41,21 @@ pub(super) fn validate_shortcut_id(shortcut: u64) -> Result<(), CodecError> {
     } else {
         Ok(())
     }
+}
+
+/// Decodes the optional `value` of a `shortcut_fire` (Protocol 2.99).
+pub(super) fn decode_fire_value(
+    fields: &mut dyn FieldSource,
+) -> Result<Option<fm_types::FireValue>, CodecError> {
+    fields
+        .optional("value")
+        .map(|value| {
+            parse_canonical_u64(&value)
+                .and_then(|parsed| u16::try_from(parsed).ok())
+                .and_then(fm_types::FireValue::new)
+                .ok_or_else(|| invalid("value", value))
+        })
+        .transpose()
 }
 
 /// Decodes a nonzero `shortcut` field.

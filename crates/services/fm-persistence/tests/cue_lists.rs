@@ -158,11 +158,11 @@ fn lists() -> Vec<CueList> {
                         },
                         CueAction::AudioGain {
                             input: fm_types::InputTarget::Fixed(input(10)),
-                            gain_millidb: -6_000,
+                            gain: fm_model::CueGain::Set(-6_000),
                         },
                         CueAction::AudioMute {
                             input: fm_types::InputTarget::Fixed(input(11)),
-                            muted: true,
+                            mute: fm_model::CueMute::Set(true),
                         },
                         CueAction::Record {
                             recorder: RecorderSlot::new(2).unwrap(),
@@ -246,7 +246,7 @@ fn roles_list() -> CueList {
             actions: vec![
                 CueAction::AudioMute {
                     input: InputTarget::Preview,
-                    muted: false,
+                    mute: fm_model::CueMute::Set(false),
                 },
                 CueAction::Wait { frames: 10 },
                 CueAction::Take {
@@ -256,7 +256,7 @@ fn roles_list() -> CueList {
                 },
                 CueAction::AudioGain {
                     input: InputTarget::Program,
-                    gain_millidb: -3_000,
+                    gain: fm_model::CueGain::Set(-3_000),
                 },
             ],
             auto_follow: false,

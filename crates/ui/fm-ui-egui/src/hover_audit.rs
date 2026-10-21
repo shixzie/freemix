@@ -859,12 +859,21 @@ pub(crate) fn audit_shortcuts() -> Vec<fm_protocol::ShortcutStatus> {
                     },
                     WireCueAction::AudioMute {
                         input: target(3),
-                        muted: true,
+                        mute: fm_protocol::CueMute::Set(true),
                     },
                     // RC-004: an action on the console's selected input.
                     WireCueAction::AudioMute {
                         input: fm_protocol::WireInputTarget::Selected,
-                        muted: false,
+                        mute: fm_protocol::CueMute::Set(false),
+                    },
+                    // RC-004 dynamic values: a step and a toggle.
+                    WireCueAction::AudioGain {
+                        input: target(2),
+                        gain: fm_protocol::CueGain::Step(-3_000),
+                    },
+                    WireCueAction::AudioMute {
+                        input: target(2),
+                        mute: fm_protocol::CueMute::Toggle,
                     },
                 ]),
             },
@@ -965,11 +974,11 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
         WireCueAction::PlaylistStop,
         WireCueAction::AudioGain {
             input: target(1),
-            gain_millidb: -6_000,
+            gain: fm_protocol::CueGain::Set(-6_000),
         },
         WireCueAction::AudioMute {
             input: target(2),
-            muted: true,
+            mute: fm_protocol::CueMute::Set(true),
         },
         WireCueAction::Record {
             recorder: WireRecorderSlot::new(1).unwrap(),
@@ -983,7 +992,17 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
         // GO fires.
         WireCueAction::AudioGain {
             input: fm_protocol::WireInputTarget::Program,
-            gain_millidb: 0,
+            gain: fm_protocol::CueGain::Set(0),
+        },
+        // RC-004 dynamic values: a step and a toggle (a cue never reads
+        // the firing control).
+        WireCueAction::AudioGain {
+            input: fm_protocol::WireInputTarget::Program,
+            gain: fm_protocol::CueGain::Step(3_000),
+        },
+        WireCueAction::AudioMute {
+            input: fm_protocol::WireInputTarget::Preview,
+            mute: fm_protocol::CueMute::Toggle,
         },
         WireCueAction::Media {
             input: fm_protocol::WireInputTarget::Preview,

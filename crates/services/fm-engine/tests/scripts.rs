@@ -1199,7 +1199,7 @@ fn runs_due_with_a_cue_join_its_held_frame() {
                         fm_model::CueAction::Wait { frames: 5 },
                         fm_model::CueAction::AudioMute {
                             input: fm_types::InputTarget::Fixed(input(12)),
-                            muted: true,
+                            mute: fm_model::CueMute::Set(true),
                         },
                     ],
                     auto_follow: false,

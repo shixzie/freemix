@@ -19,6 +19,7 @@ pub mod strip_dsp;
 pub mod system_audio;
 mod target;
 mod time;
+mod value_target;
 mod video;
 
 pub use audio::{AudioFormat, Channel, ChannelLayout, DiscreteChannel, SampleFormat, SampleRate};
@@ -38,6 +39,7 @@ pub use target::{InputTarget, TargetBindings};
 pub use time::{
     FrameRate, MediaDuration, MediaTimestamp, RateError, TimeBase, Timecode, TimecodeError,
 };
+pub use value_target::{CUE_GAIN_MAX_MILLIDB, CUE_GAIN_MIN_MILLIDB, CueGain, CueMute, FireValue};
 pub use video::{
     PixelFormat, ScanMode, VideoDimensions, VideoFormat, VideoFrameMetadata,
     VideoFrameMetadataError,

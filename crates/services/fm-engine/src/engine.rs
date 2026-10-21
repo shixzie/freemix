@@ -585,10 +585,13 @@ pub enum EngineCommand {
     /// stands for, or, for cue actions, planned and realized like a cue
     /// GO's first frame. A live operation. Its dynamic targets resolve
     /// under `targets`; a role left unbound there is read from the show
-    /// (Preview and Program) when the fire is planned.
+    /// (Preview and Program) when the fire is planned. An action taking
+    /// its value from the firing control reads `value` (RC-004 dynamic
+    /// values); a cue or script shortcut ignores it.
     FireShortcut {
         shortcut: u64,
         targets: fm_model::TargetBindings,
+        value: Option<fm_model::FireValue>,
     },
 }
 
@@ -1850,7 +1853,7 @@ impl Engine {
     ///
     /// Refuses an unknown or disabled shortcut, as a fire would.
     pub fn shortcut_command(&self, shortcut: u64) -> Result<EngineCommand, Rejection> {
-        crate::shortcut::resolve(self.show(), shortcut, TargetBindings::default())
+        crate::shortcut::resolve(self.show(), shortcut, TargetBindings::default(), None)
     }
 
     /// Whether script `script`'s source holds a `wait`, so a run of it may
@@ -2475,28 +2478,35 @@ impl Engine {
         // A cue GO or advance is planned once, here, like a playlist step:
         // every due action is applied to a copy of the show, which the
         // mutation installs, and realized by one runtime action.
-        let cue =
-            match resolution.as_ref().map(|resolved| &resolved.command) {
-                // The cue clock's list 0 resumes the waiting script run.
-                Ok(EngineCommand::CueAdvance { list: 0, frame }) => {
-                    Some(crate::script::plan_resume(self, *frame, target_frame))
-                }
-                Ok(
-                    command @ (EngineCommand::CueControl { .. } | EngineCommand::CueAdvance { .. }),
-                ) => Some(self.cue_plan(command, target_frame)),
-                // A script run is planned the same way (RC-011).
-                Ok(EngineCommand::RunScript { script }) => {
-                    Some(crate::script::plan(self, *script, target_frame))
-                }
-                Ok(EngineCommand::StopScript { run }) => {
-                    Some(crate::script::plan_stop(self, *run, target_frame))
-                }
-                // A shortcut's cue actions are planned the same way (RC-004).
-                Ok(EngineCommand::FireShortcut { shortcut, targets }) => Some(
-                    crate::shortcut::plan(self, *shortcut, *targets, target_frame),
-                ),
-                _ => None,
-            };
+        let cue = match resolution.as_ref().map(|resolved| &resolved.command) {
+            // The cue clock's list 0 resumes the waiting script run.
+            Ok(EngineCommand::CueAdvance { list: 0, frame }) => {
+                Some(crate::script::plan_resume(self, *frame, target_frame))
+            }
+            Ok(command @ (EngineCommand::CueControl { .. } | EngineCommand::CueAdvance { .. })) => {
+                Some(self.cue_plan(command, target_frame))
+            }
+            // A script run is planned the same way (RC-011).
+            Ok(EngineCommand::RunScript { script }) => {
+                Some(crate::script::plan(self, *script, target_frame))
+            }
+            Ok(EngineCommand::StopScript { run }) => {
+                Some(crate::script::plan_stop(self, *run, target_frame))
+            }
+            // A shortcut's cue actions are planned the same way (RC-004).
+            Ok(EngineCommand::FireShortcut {
+                shortcut,
+                targets,
+                value,
+            }) => Some(crate::shortcut::plan(
+                self,
+                *shortcut,
+                *targets,
+                *value,
+                target_frame,
+            )),
+            _ => None,
+        };
         let cue_transition = match &cue {
             Some(Ok(plan)) => plan.transition,
             _ => None,

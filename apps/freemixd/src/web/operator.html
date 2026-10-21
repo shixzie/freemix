@@ -467,6 +467,7 @@
       fireShortcutSelected: "Fire {name}; actions on the selected input act on {input}",
       fireShortcutPlain: "Fire {name}",
       noSelection: "This shortcut acts on the selected input: select an input first",
+      needsValue: "This shortcut takes its gain from the control that fires it: fire it from OSC or a fader",
       programAudio: "Program audio",
       metersLabel: "Program audio level meters",
       meterWaiting: "Waiting for audio meters (the daemon sends them only with native media).",
@@ -701,6 +702,7 @@
       fireShortcutSelected: "Disparar {name}; las acciones sobre la entrada seleccionada actúan sobre {input}",
       fireShortcutPlain: "Disparar {name}",
       noSelection: "Este atajo actúa sobre la entrada seleccionada: seleccione antes una entrada",
+      needsValue: "Este atajo toma su ganancia del control que lo dispara: dispárelo desde OSC o un fader",
       programAudio: "Audio de Programa",
       metersLabel: "Medidores de nivel del audio de Programa",
       meterWaiting: "Esperando los medidores de audio (el daemon solo los envía con medios nativos).",
@@ -1730,6 +1732,7 @@
   const ACTION_PERMISSION = {
     preview: "select_preview", title_text: "edit_project", title_number: "edit_project",
     audio_gain: "control_audio", audio_mute: "control_audio", run_script: "", wait: "", delay: "",
+    audio_gain_step: "control_audio", audio_gain_fired: "control_audio", audio_mute_toggle: "control_audio",
   };
   function shortcutGate(shortcut) {
     if (link.phase !== "live") return tr("notLive");
@@ -1744,6 +1747,9 @@
       // An action on the selected input (RC-004) needs one selected here.
       if (!selectedInput() && shortcut.action.slice("actions:".length).split("/")
         .some((token) => token.split(".").includes("selected"))) return tr("noSelection");
+      // A gain taken from the firing control (RC-004) needs a value no button sends.
+      if (shortcut.action.slice("actions:".length).split("/")
+        .some((token) => token.startsWith("audio_gain_fired."))) return tr("needsValue");
     }
     return "";
   }

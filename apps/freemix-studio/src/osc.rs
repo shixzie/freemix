@@ -49,8 +49,10 @@ pub(crate) enum OscAction {
     /// selected input (RC-004, see [`OscSelected`]).
     Cue(fm_ui_egui::CueKey, OscSelected),
     /// `/freemix/user/<name>`: the project shortcut with OSC name `name`
-    /// (RC-004), with an optional `i` argument, the selected input.
-    User(OscName, OscSelected),
+    /// (RC-004), with an optional `i` argument, the selected input, and an
+    /// optional `f` argument after it, the control's value from 0.0 to 1.0
+    /// (RC-004 dynamic values).
+    User(OscName, OscSelected, Option<fm_protocol::FireValue>),
 }
 
 /// The input an OSC fire selects (RC-004): its 1-based number in the
@@ -66,6 +68,12 @@ fn selected_argument(argument: [u8; 4]) -> Result<OscSelected, ()> {
         .and_then(core::num::NonZeroU32::new)
         .map(Some)
         .ok_or(())
+}
+
+/// Reads an OSC fire's control value: an `f` argument from 0.0 to 1.0
+/// (RC-004 dynamic values), rounded to the nearest per mille.
+fn value_argument(argument: [u8; 4]) -> Result<fm_protocol::FireValue, ()> {
+    fm_protocol::FireValue::from_unit(f32::from_be_bytes(argument)).ok_or(())
 }
 
 /// A user shortcut's OSC name, held inline so [`OscAction`] stays `Copy`:
@@ -334,10 +342,35 @@ fn decode(datagram: &[u8]) -> Result<OscAction, ()> {
             .map(|in_ms| OscAction::Cue(CueKey::ArmIn(in_ms), selected))
             .ok_or(());
     }
+    // A user shortcut takes an optional selected input (`i`) and an
+    // optional control value (`f`, RC-004 dynamic values), in that order.
+    if let Some(name) = address.strip_prefix(fm_protocol::SHORTCUT_OSC_PREFIX) {
+        let name = OscName::new(name).ok_or(())?;
+        let arguments = datagram.get(end..).ok_or(())?;
+        let word = |index: usize| -> Result<[u8; 4], ()> {
+            arguments
+                .get(index * 4..index * 4 + 4)
+                .and_then(|bytes| bytes.try_into().ok())
+                .ok_or(())
+        };
+        if arguments.len() != 4 * (types.len().saturating_sub(1)) {
+            return Err(());
+        }
+        let (selected, value) = match types {
+            "," => (None, None),
+            ",i" => (selected_argument(word(0)?)?, None),
+            ",f" => (None, Some(value_argument(word(0)?)?)),
+            ",if" => (
+                selected_argument(word(0)?)?,
+                Some(value_argument(word(1)?)?),
+            ),
+            _ => return Err(()),
+        };
+        return Ok(OscAction::User(name, selected, value));
+    }
     // A fire's optional selected input (RC-004): one `i` argument on
-    // `/freemix/cue/go` and `/freemix/user/<name>`.
-    let selectable =
-        address == "/freemix/cue/go" || address.starts_with(fm_protocol::SHORTCUT_OSC_PREFIX);
+    // `/freemix/cue/go`.
+    let selectable = address == "/freemix/cue/go";
     let selected = if selectable && types == ",i" {
         let argument: [u8; 4] = datagram
             .get(end..)
@@ -354,11 +387,6 @@ fn decode(datagram: &[u8]) -> Result<OscAction, ()> {
             Some(fm_protocol::TransitionFavoriteEffect::Cut) | None => Err(()),
             Some(effect) => Ok(OscAction::StartManualTransition(effect)),
         };
-    }
-    if let Some(name) = address.strip_prefix(fm_protocol::SHORTCUT_OSC_PREFIX) {
-        return OscName::new(name)
-            .map(|name| OscAction::User(name, selected))
-            .ok_or(());
     }
     if let Some(input) = address.strip_prefix("/freemix/switcher/preview/") {
         return match input.as_bytes() {
@@ -606,7 +634,7 @@ mod tests {
     fn osc_decoder_accepts_user_shortcut_names() {
         let longest = "a".repeat(fm_protocol::MAX_SHORTCUT_OSC_BYTES);
         for name in ["lower-third", "s_1", "9", longest.as_str()] {
-            let Ok(OscAction::User(decoded, None)) =
+            let Ok(OscAction::User(decoded, None, None)) =
                 decode(&message(&format!("/freemix/user/{name}")))
             else {
                 panic!("{name} was not decoded");
@@ -624,12 +652,18 @@ mod tests {
             with_types("/freemix/user/intro", ",i", &(-1_i32).to_be_bytes()),
             with_types("/freemix/user/intro", ",i", &[0, 0, 1]),
             with_types("/freemix/user/intro", ",ii", &[0, 0, 0, 1, 0, 0, 0, 1]),
-            with_types("/freemix/user/intro", ",f", &[0, 0, 0, 1]),
+            with_types("/freemix/user/intro", ",f", &1.5_f32.to_be_bytes()),
+            with_types("/freemix/user/intro", ",f", &(-0.1_f32).to_be_bytes()),
+            with_types("/freemix/user/intro", ",f", &f32::NAN.to_be_bytes()),
+            with_types("/freemix/user/intro", ",f", &[0, 0, 0]),
+            with_types("/freemix/user/intro", ",fi", &[0; 8]),
+            with_types("/freemix/user/intro", ",ff", &[0; 8]),
+            with_types("/freemix/user/intro", ",if", &3_i32.to_be_bytes()),
         ] {
             assert_eq!(decode(&datagram), Err(()));
         }
         // RC-004: one `i` argument selects input 3 for the fire.
-        let Ok(OscAction::User(name, selected)) = decode(&with_types(
+        let Ok(OscAction::User(name, selected, None)) = decode(&with_types(
             "/freemix/user/intro",
             ",i",
             &3_i32.to_be_bytes(),
@@ -638,10 +672,29 @@ mod tests {
         };
         assert_eq!(name.as_str(), "intro");
         assert_eq!(selected, core::num::NonZeroU32::new(3));
-        let Ok(OscAction::User(_, selected)) = decode(&message("/freemix/user/intro")) else {
+        let Ok(OscAction::User(_, selected, None)) = decode(&message("/freemix/user/intro")) else {
             panic!("a bare fire was not decoded");
         };
         assert_eq!(selected, None);
+        // RC-004 dynamic values: an `f` argument is the control's value,
+        // alone or after the selected input.
+        let Ok(OscAction::User(_, None, value)) = decode(&with_types(
+            "/freemix/user/intro",
+            ",f",
+            &0.25_f32.to_be_bytes(),
+        )) else {
+            panic!("a fire with a value was not decoded");
+        };
+        assert_eq!(value, fm_protocol::FireValue::new(250));
+        let mut both = 2_i32.to_be_bytes().to_vec();
+        both.extend_from_slice(&1.0_f32.to_be_bytes());
+        let Ok(OscAction::User(_, selected, value)) =
+            decode(&with_types("/freemix/user/intro", ",if", &both))
+        else {
+            panic!("a fire with a selection and a value was not decoded");
+        };
+        assert_eq!(selected, core::num::NonZeroU32::new(2));
+        assert_eq!(value, fm_protocol::FireValue::new(1_000));
     }
 
     /// RC-017: the Cues panel's keys, and `arm`'s optional delay.

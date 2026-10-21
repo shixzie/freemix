@@ -105,16 +105,13 @@ pub fn domain_action(action: &WireCueAction) -> CueAction {
         },
         WireCueAction::PlaylistStart => CueAction::PlaylistStart,
         WireCueAction::PlaylistStop => CueAction::PlaylistStop,
-        WireCueAction::AudioGain {
-            input,
-            gain_millidb,
-        } => CueAction::AudioGain {
+        WireCueAction::AudioGain { input, gain } => CueAction::AudioGain {
             input: domain_target(*input),
-            gain_millidb: *gain_millidb,
+            gain: *gain,
         },
-        WireCueAction::AudioMute { input, muted } => CueAction::AudioMute {
+        WireCueAction::AudioMute { input, mute } => CueAction::AudioMute {
             input: domain_target(*input),
-            muted: *muted,
+            mute: *mute,
         },
         WireCueAction::Record { recorder, start } => CueAction::Record {
             recorder: RecorderSlot::new(recorder.get()).expect("wire recorder slots match"),
@@ -203,16 +200,13 @@ pub fn wire_action(action: &CueAction) -> WireCueAction {
         },
         CueAction::PlaylistStart => WireCueAction::PlaylistStart,
         CueAction::PlaylistStop => WireCueAction::PlaylistStop,
-        CueAction::AudioGain {
-            input,
-            gain_millidb,
-        } => WireCueAction::AudioGain {
+        CueAction::AudioGain { input, gain } => WireCueAction::AudioGain {
             input: wire_target(*input),
-            gain_millidb: *gain_millidb,
+            gain: *gain,
         },
-        CueAction::AudioMute { input, muted } => WireCueAction::AudioMute {
+        CueAction::AudioMute { input, mute } => WireCueAction::AudioMute {
             input: wire_target(*input),
-            muted: *muted,
+            mute: *mute,
         },
         CueAction::Record { recorder, start } => WireCueAction::Record {
             recorder: WireRecorderSlot::new(recorder.get()).expect("model recorder slots match"),
@@ -367,7 +361,11 @@ pub fn bind_fire_targets(engine: &Engine, payload: &CommandPayload) -> Option<Co
         selected: targets.selected,
     };
     match payload {
-        CommandPayload::FireShortcut { shortcut, targets } => {
+        CommandPayload::FireShortcut {
+            shortcut,
+            targets,
+            value,
+        } => {
             let dynamic = match show.shortcut(*shortcut).map(|found| &found.action) {
                 Some(fm_model::ShortcutAction::Actions(actions)) => {
                     actions.iter().any(CueAction::is_dynamic)
@@ -381,6 +379,7 @@ pub fn bind_fire_targets(engine: &Engine, payload: &CommandPayload) -> Option<Co
             dynamic.then(|| CommandPayload::FireShortcut {
                 shortcut: *shortcut,
                 targets: bind(*targets),
+                value: *value,
             })
         }
         CommandPayload::CueControl {
@@ -428,12 +427,15 @@ pub fn client_fire_payload(payload: &CommandPayload) -> Option<CommandPayload> {
         })
     };
     match payload {
-        CommandPayload::FireShortcut { shortcut, targets } => {
-            selection(targets).map(|targets| CommandPayload::FireShortcut {
-                shortcut: *shortcut,
-                targets,
-            })
-        }
+        CommandPayload::FireShortcut {
+            shortcut,
+            targets,
+            value,
+        } => selection(targets).map(|targets| CommandPayload::FireShortcut {
+            shortcut: *shortcut,
+            targets,
+            value: *value,
+        }),
         CommandPayload::CueControl {
             list,
             operation: CueOperation::Go { cue, targets },
@@ -730,6 +732,7 @@ mod tests {
         let fire = |targets| CommandPayload::FireShortcut {
             shortcut: 4,
             targets,
+            value: None,
         };
         let payloads: [&dyn Fn(WireTargetBindings) -> CommandPayload; 3] = [&go, &arm, &fire];
         for payload in payloads {

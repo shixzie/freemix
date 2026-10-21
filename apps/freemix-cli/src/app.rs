@@ -6143,8 +6143,8 @@ Usage:
   freemix-cli remote-shortcut-export <127.0.0.1:port> <file.fmshortcuts> [--name <set name>]
   freemix-cli shortcut-import <show.freemix> <file.fmshortcuts>
   freemix-cli remote-shortcut-import <127.0.0.1:port> <file.fmshortcuts>
-  freemix-cli shortcut-fire <show.freemix> <shortcut> [--selected <input>] [--key <key>] [--expect <revision>]
-  freemix-cli remote-shortcut-fire <127.0.0.1:port> <shortcut> [--selected <input>] [--key <key>] [--expect <revision>]
+  freemix-cli shortcut-fire <show.freemix> <shortcut> [--selected <input>] [--value <0-1000>] [--key <key>] [--expect <revision>]
+  freemix-cli remote-shortcut-fire <127.0.0.1:port> <shortcut> [--selected <input>] [--value <0-1000>] [--key <key>] [--expect <revision>]
       Fires project shortcut <shortcut> (its id, as `shortcuts` lists it)
       as the command it stands for. --selected names the input its actions
       on the selected input act on (RC-004); without it such a fire is

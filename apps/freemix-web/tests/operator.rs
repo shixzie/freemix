@@ -571,7 +571,7 @@ fn shortcut_buttons_need_the_permission_of_every_action_they_run() {
             },
             WireCueAction::AudioMute {
                 input: fm_types::InputTarget::Fixed(wire(GUEST)),
-                muted: true,
+                mute: fm_protocol::CueMute::Set(true),
             },
         ]),
     );
@@ -604,7 +604,8 @@ fn shortcut_buttons_need_the_permission_of_every_action_they_run() {
         surface.shortcut_command(&overlay),
         Some(CommandPayload::FireShortcut {
             shortcut: 1,
-            targets: fm_protocol::WireTargetBindings::default()
+            targets: fm_protocol::WireTargetBindings::default(),
+            value: None,
         })
     );
     assert_eq!(surface.shortcut_gate(&mute), Ok(()));
@@ -695,7 +696,8 @@ fn shortcut_buttons_fire_with_the_input_selected_on_the_page() {
         none.shortcut_command(&fixed),
         Some(CommandPayload::FireShortcut {
             shortcut: 2,
-            targets: WireTargetBindings::default()
+            targets: WireTargetBindings::default(),
+            value: None,
         })
     );
 
@@ -709,6 +711,7 @@ fn shortcut_buttons_fire_with_the_input_selected_on_the_page() {
             selected: Some(wire(CAMERA)),
             ..WireTargetBindings::NONE
         },
+        value: None,
     });
     assert_eq!(camera.shortcut_command(&on_selected), selected);
     // Every fire carries the selection; the authority ignores it unless an
@@ -721,6 +724,7 @@ fn shortcut_buttons_fire_with_the_input_selected_on_the_page() {
                 selected: Some(wire(CAMERA)),
                 ..WireTargetBindings::NONE
             },
+            value: None,
         })
     );
 
@@ -734,4 +738,62 @@ fn shortcut_buttons_fire_with_the_input_selected_on_the_page() {
     );
     let offline = OperatorSurface::new(None, &granted_operator).with_selection(Some(input(CAMERA)));
     assert_eq!(offline.selection(), None);
+}
+
+/// RC-004 dynamic values: a button sends no control value, so a shortcut
+/// taking its gain from the firing control is held with its reason, while
+/// a gain step or a mute toggle fires like a fixed gain.
+#[test]
+fn a_shortcut_reading_the_firing_control_is_held_on_the_page() {
+    use fm_protocol::{CueGain, CueMute, WireCueAction, WireShortcutAction};
+    let show = Show::default();
+    let fader = shortcut(
+        1,
+        true,
+        WireShortcutAction::Actions(vec![WireCueAction::AudioGain {
+            input: fm_types::InputTarget::Fixed(wire(SLIDES)),
+            gain: CueGain::Fired {
+                min: -60_000,
+                max: 0,
+            },
+        }]),
+    );
+    let step = shortcut(
+        2,
+        true,
+        WireShortcutAction::Actions(vec![
+            WireCueAction::AudioGain {
+                input: fm_types::InputTarget::Fixed(wire(SLIDES)),
+                gain: CueGain::Step(-3_000),
+            },
+            WireCueAction::AudioMute {
+                input: fm_types::InputTarget::Fixed(wire(SLIDES)),
+                mute: CueMute::Toggle,
+            },
+        ]),
+    );
+    let operator = ready(Role::Operator, &show);
+    let granted_operator = granted(&operator);
+    let view = operator.model().view();
+    let surface = OperatorSurface::new(view.as_ref(), &granted_operator);
+    assert_eq!(
+        surface.shortcut_gate(&fader),
+        Err(OperatorBlock::NeedsValue)
+    );
+    assert_eq!(surface.shortcut_command(&fader), None);
+    assert_eq!(
+        OperatorBlock::NeedsValue.reason(),
+        "This shortcut takes its gain from the control that fires it: fire it from OSC or a fader"
+    );
+    assert_eq!(surface.shortcut_gate(&step), Ok(()));
+    // A step and a toggle need the audio permission like a fixed gain.
+    let no_audio: Vec<String> = granted_operator
+        .iter()
+        .filter(|permission| *permission != "control_audio")
+        .cloned()
+        .collect();
+    assert_eq!(
+        OperatorSurface::new(view.as_ref(), &no_audio).shortcut_gate(&step),
+        Err(OperatorBlock::MissingPermission("control_audio"))
+    );
 }

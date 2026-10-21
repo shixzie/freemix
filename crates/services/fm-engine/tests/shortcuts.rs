@@ -62,6 +62,7 @@ fn fire(shortcut: u64) -> EngineCommand {
     EngineCommand::FireShortcut {
         shortcut,
         targets: fm_types::TargetBindings::default(),
+        value: None,
     }
 }
 
@@ -119,7 +120,7 @@ fn a_fire_runs_every_action_on_one_frame() {
                 },
                 CueAction::AudioMute {
                     input: fm_types::InputTarget::Fixed(input(14)),
-                    muted: true,
+                    mute: fm_model::CueMute::Set(true),
                 },
             ]),
         )),
@@ -471,7 +472,11 @@ fn a_shortcut_running_a_waiting_script_is_refused_when_saved() {
 }
 
 fn fire_with(shortcut: u64, targets: fm_model::TargetBindings) -> EngineCommand {
-    EngineCommand::FireShortcut { shortcut, targets }
+    EngineCommand::FireShortcut {
+        shortcut,
+        targets,
+        value: None,
+    }
 }
 
 /// RC-004: an action on the input on Preview, on Program, or selected on
@@ -494,7 +499,7 @@ fn dynamic_targets_resolve_when_the_shortcut_fires() {
                 },
                 CueAction::AudioMute {
                     input: InputTarget::Program,
-                    muted: true,
+                    mute: fm_model::CueMute::Set(true),
                 },
                 // Runs after the Preview binding: the overlay keeps 14.
                 CueAction::Preview {
@@ -558,11 +563,11 @@ fn a_fire_carrying_bound_targets_replays_on_the_same_inputs() {
         actions(vec![
             CueAction::AudioMute {
                 input: InputTarget::Preview,
-                muted: true,
+                mute: fm_model::CueMute::Set(true),
             },
             CueAction::AudioMute {
                 input: InputTarget::Program,
-                muted: true,
+                mute: fm_model::CueMute::Set(true),
             },
         ]),
     );
@@ -585,4 +590,138 @@ fn a_fire_carrying_bound_targets_replays_on_the_same_inputs() {
         }
     }
     assert_eq!(first.show(), replay.show());
+}
+
+/// RC-004 dynamic values: a gain taken from the firing control reads the
+/// fire's value (refused whole without one), a step moves the strip from
+/// where it stands and stops at its ends, and a toggle flips the mute as
+/// it stands; a cue list never reads a control value.
+#[allow(clippy::too_many_lines)] // one fire per kind of value
+#[test]
+fn dynamic_values_follow_the_control_the_strip_and_the_mute() {
+    use fm_model::{CueGain, CueMute, FireValue};
+    let mut engine = engine();
+    let target = |value| fm_types::InputTarget::Fixed(input(value));
+    accepted(&submit(
+        &mut engine,
+        "set-fader",
+        set(shortcut(
+            1,
+            actions(vec![
+                CueAction::AudioGain {
+                    input: target(12),
+                    gain: CueGain::Fired {
+                        min: -60_000,
+                        max: 0,
+                    },
+                },
+                CueAction::AudioMute {
+                    input: target(12),
+                    mute: CueMute::Toggle,
+                },
+            ]),
+        )),
+    ));
+    let strip = |engine: &Engine, value| engine.show().input_audio_strip(input(value)).unwrap();
+
+    // Without a value the whole fire is refused, the toggle included.
+    let outcome = submit(&mut engine, "bare", fire(1));
+    let rejection = &outcome.receipt.rejected().unwrap().rejection;
+    assert_eq!(rejection.code, RejectionCode::InvalidCommand);
+    assert_eq!(rejection.fields[0].field, "value");
+    assert_eq!(rejection.fields[0].code, "unbound");
+    assert!(
+        rejection.message.contains("action 1"),
+        "{}",
+        rejection.message
+    );
+    assert!(!strip(&engine, 12).muted);
+
+    let with_value = |value| EngineCommand::FireShortcut {
+        shortcut: 1,
+        targets: fm_types::TargetBindings::default(),
+        value: FireValue::new(value),
+    };
+    accepted(&submit(&mut engine, "half", with_value(500)));
+    assert_eq!(strip(&engine, 12).gain_millidb, -30_000);
+    assert!(strip(&engine, 12).muted);
+    accepted(&submit(&mut engine, "top", with_value(1_000)));
+    assert_eq!(strip(&engine, 12).gain_millidb, 0);
+    assert!(!strip(&engine, 12).muted, "a second toggle unmutes");
+
+    // A step from where the strip stands, clamped to the strip's range.
+    accepted(&submit(
+        &mut engine,
+        "set-step",
+        set(shortcut(
+            2,
+            actions(vec![CueAction::AudioGain {
+                input: target(12),
+                gain: CueGain::Step(15_000),
+            }]),
+        )),
+    ));
+    accepted(&submit(&mut engine, "step-1", fire(2)));
+    assert_eq!(strip(&engine, 12).gain_millidb, 15_000);
+    accepted(&submit(&mut engine, "step-2", fire(2)));
+    assert_eq!(strip(&engine, 12).gain_millidb, 24_000);
+    // A value sent to a shortcut reading none changes nothing else.
+    accepted(&submit(
+        &mut engine,
+        "step-3",
+        EngineCommand::FireShortcut {
+            shortcut: 2,
+            targets: fm_types::TargetBindings::default(),
+            value: FireValue::new(0),
+        },
+    ));
+    assert_eq!(strip(&engine, 12).gain_millidb, 24_000);
+
+    // A cue list may step and toggle, but never read a control value.
+    let list = |action| EngineCommand::SetCueList {
+        list: 1,
+        definition: Some(EngineCueListDefinition {
+            name: "Main".into(),
+            cues: vec![Cue {
+                id: 1,
+                name: "One".into(),
+                actions: vec![action],
+                auto_follow: false,
+            }],
+        }),
+        position: None,
+    };
+    accepted(&submit(
+        &mut engine,
+        "list-step",
+        list(CueAction::AudioGain {
+            input: target(13),
+            gain: CueGain::Step(-6_000),
+        }),
+    ));
+    let outcome = submit(
+        &mut engine,
+        "list-fired",
+        list(CueAction::AudioGain {
+            input: target(13),
+            gain: CueGain::Fired {
+                min: -6_000,
+                max: 0,
+            },
+        }),
+    );
+    let rejection = &outcome.receipt.rejected().unwrap().rejection;
+    assert_eq!(rejection.fields[0].code, "fired_value");
+    accepted(&submit(
+        &mut engine,
+        "go",
+        EngineCommand::CueControl {
+            list: 1,
+            operation: EngineCueOperation::Go {
+                cue: None,
+                targets: fm_types::TargetBindings::default(),
+            },
+        },
+    ));
+    assert_eq!(strip(&engine, 13).gain_millidb, -6_000);
 }

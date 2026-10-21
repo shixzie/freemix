@@ -104,7 +104,7 @@ fn shortcuts() -> Vec<Shortcut> {
                 },
                 CueAction::AudioMute {
                     input: fm_types::InputTarget::Fixed(input(2)),
-                    muted: true,
+                    mute: fm_model::CueMute::Set(true),
                 },
             ]),
         },
@@ -339,5 +339,68 @@ fn mouse_buttons_and_window_scopes_round_trip_exactly_and_strictly() {
             "{from} -> {to}: {:?}",
             store.load()
         );
+    }
+}
+
+/// RC-004 dynamic values (schema 80): a gain from the firing control, a
+/// gain step, and a mute toggle round-trip exactly and strictly.
+#[test]
+fn dynamic_values_round_trip_exactly_and_strictly() {
+    use fm_model::{CueGain, CueMute, InputTarget};
+    let directory = TestDirectory::new("values");
+    let store = ProjectStore::new(directory.path("show.freemix")).unwrap();
+    let mut expected = project();
+    expected.set_shortcuts(vec![Shortcut {
+        id: 1,
+        name: "Fader".into(),
+        enabled: true,
+        key: None,
+        osc: Some("fader".into()),
+        action: ShortcutAction::Actions(vec![
+            CueAction::AudioGain {
+                input: InputTarget::Selected,
+                gain: CueGain::Fired {
+                    min: -60_000,
+                    max: 6_000,
+                },
+            },
+            CueAction::AudioGain {
+                input: InputTarget::Program,
+                gain: CueGain::Step(-3_000),
+            },
+            CueAction::AudioMute {
+                input: InputTarget::Preview,
+                mute: CueMute::Toggle,
+            },
+        ]),
+    }]);
+    store.save(&stored(expected.clone()).unwrap()).unwrap();
+    assert_eq!(store.load().unwrap().project(), &expected);
+
+    let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
+    for written in [
+        "{\"type\": \"audio_gain_fired\", \"input\": \"selected\", \"min_milli_db\": -60000, \
+         \"max_milli_db\": 6000}",
+        "{\"type\": \"audio_gain_step\", \"input\": \"program\", \"step_milli_db\": -3000}",
+        "{\"type\": \"audio_mute_toggle\", \"input\": \"preview\"}",
+    ] {
+        assert!(text.contains(written), "{written}\n{text}");
+    }
+    for (from, to) in [
+        ("\"step_milli_db\": -3000", "\"step_milli_db\": 0"),
+        ("\"step_milli_db\": -3000", "\"step_milli_db\": -120001"),
+        ("\"max_milli_db\": 6000", "\"max_milli_db\": -60000"),
+        ("\"min_milli_db\": -60000", "\"min_milli_db\": -97000"),
+        ("\"max_milli_db\": 6000", "\"max\": 6000"),
+        (
+            "\"input\": \"preview\"}",
+            "\"input\": \"preview\", \"muted\": true}",
+        ),
+        ("audio_mute_toggle", "audio_mute_flip"),
+    ] {
+        let invalid = text.replacen(from, to, 1);
+        assert_ne!(invalid, text, "{from}");
+        fs::write(directory.path("show.freemix/project.json"), invalid).unwrap();
+        assert!(store.load().is_err(), "{from} -> {to}");
     }
 }

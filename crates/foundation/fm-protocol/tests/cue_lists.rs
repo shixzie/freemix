@@ -95,11 +95,11 @@ fn every_action() -> Vec<WireCueAction> {
         WireCueAction::PlaylistStop,
         WireCueAction::AudioGain {
             input: fm_types::InputTarget::Fixed(input(3)),
-            gain_millidb: -12_500,
+            gain: fm_protocol::CueGain::Set(-12_500),
         },
         WireCueAction::AudioMute {
             input: fm_types::InputTarget::Fixed(input(4)),
-            muted: true,
+            mute: fm_protocol::CueMute::Set(true),
         },
         WireCueAction::Record {
             recorder: WireRecorderSlot::new(2).unwrap(),

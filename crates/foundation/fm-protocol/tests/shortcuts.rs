@@ -176,7 +176,8 @@ fn shortcut_commands_round_trip_exactly() {
     assert_eq!(
         round_trip(&command(CommandPayload::FireShortcut {
             shortcut: 9,
-            targets: fm_protocol::WireTargetBindings::default()
+            targets: fm_protocol::WireTargetBindings::default(),
+            value: None,
         })),
         format!("{prefix}\tpayload=shortcut_fire\tshortcut=9\n")
     );
@@ -261,7 +262,8 @@ fn shortcut_commands_are_strict() {
     assert!(
         encode_line(&command(CommandPayload::FireShortcut {
             shortcut: 0,
-            targets: fm_protocol::WireTargetBindings::default()
+            targets: fm_protocol::WireTargetBindings::default(),
+            value: None,
         }))
         .is_err()
     );
@@ -652,7 +654,7 @@ fn dynamic_targets_and_fire_bindings_round_trip_exactly_and_strictly() {
         },
         WireCueAction::AudioMute {
             input: WireInputTarget::Program,
-            muted: true,
+            mute: fm_protocol::CueMute::Set(true),
         },
         WireCueAction::OverlayOn {
             channel: WireOverlayChannelId::new(2).unwrap(),
@@ -660,7 +662,7 @@ fn dynamic_targets_and_fire_bindings_round_trip_exactly_and_strictly() {
         },
         WireCueAction::AudioGain {
             input: WireInputTarget::Fixed(input(4)),
-            gain_millidb: -3_000,
+            gain: fm_protocol::CueGain::Set(-3_000),
         },
     ]);
     let mut set = spec(dynamic);
@@ -693,6 +695,7 @@ fn dynamic_targets_and_fire_bindings_round_trip_exactly_and_strictly() {
                 selected: Some(input(7)),
                 ..WireTargetBindings::default()
             },
+            value: None,
         })),
         format!("{prefix}\tpayload=shortcut_fire\tshortcut=9\tselected=7\n")
     );
@@ -700,6 +703,7 @@ fn dynamic_targets_and_fire_bindings_round_trip_exactly_and_strictly() {
         round_trip(&command(CommandPayload::FireShortcut {
             shortcut: 9,
             targets: journaled,
+            value: None,
         })),
         format!(
             "{prefix}\tpayload=shortcut_fire\tshortcut=9\tselected=7\tbound_preview=3\t\
@@ -787,4 +791,104 @@ fn dynamic_targets_and_fire_bindings_round_trip_exactly_and_strictly() {
             duration_frames: 0,
         }])
     );
+}
+
+#[test]
+fn dynamic_values_and_fire_values_round_trip_exactly_and_strictly() {
+    use fm_protocol::{CueGain, CueMute, FireValue, WireInputTarget, WireTargetBindings};
+    let prefix = prefix();
+    let dynamic = WireShortcutAction::Actions(vec![
+        WireCueAction::AudioGain {
+            input: WireInputTarget::Selected,
+            gain: CueGain::Fired {
+                min: -60_000,
+                max: 6_000,
+            },
+        },
+        WireCueAction::AudioGain {
+            input: WireInputTarget::Program,
+            gain: CueGain::Step(-3_000),
+        },
+        WireCueAction::AudioMute {
+            input: WireInputTarget::Preview,
+            mute: CueMute::Toggle,
+        },
+        WireCueAction::AudioMute {
+            input: WireInputTarget::Fixed(input(4)),
+            mute: CueMute::Set(false),
+        },
+    ]);
+    let mut set = spec(dynamic);
+    set.key = None;
+    set.osc = None;
+    let line = round_trip(&command(CommandPayload::SetShortcut {
+        shortcut: 2,
+        spec: Box::new(set),
+        position: None,
+    }));
+    assert!(
+        line.ends_with(
+            "\taction=actions%3Aaudio_gain_fired.selected.-60000.6000%2F\
+             audio_gain_step.program.-3000%2Faudio_mute_toggle.preview%2Faudio_mute.4.0\n"
+        ),
+        "{line}"
+    );
+    let good = line.clone();
+    for (from, to) in [
+        // Out of range, zero, and equal bounds.
+        ("-60000.6000", "-97000.6000"),
+        ("-60000.6000", "6000.6000"),
+        ("step.program.-3000", "step.program.0"),
+        ("step.program.-3000", "step.program.-120001"),
+        // Malformed.
+        ("step.program.-3000", "step.program.+3000"),
+        ("-60000.6000", "-60000"),
+        ("toggle.preview", "toggle.preview.1"),
+        ("audio_mute.4.0", "audio_mute.4.toggle"),
+    ] {
+        let broken = good.replacen(from, to, 1);
+        assert_ne!(broken, good, "{from}");
+        assert!(decode_line(&broken).is_err(), "{from} -> {to}");
+    }
+
+    // A cue list never reads a control value: only a shortcut fire carries one.
+    let list = format!(
+        "{prefix}\tpayload=cue_list_set\tlist=1\tname=A\t\
+         cues=1%7E41%7E0%7Eaudio_gain_step.program.-3000%2Faudio_mute_toggle.selected\n"
+    );
+    assert!(decode_line(&list).is_ok());
+    assert!(
+        decode_line(&list.replacen(
+            "audio_gain_step.program.-3000",
+            "audio_gain_fired.program.0.6000",
+            1
+        ))
+        .is_err()
+    );
+
+    // A fire carries the control's value after its bindings.
+    let fire = round_trip(&command(CommandPayload::FireShortcut {
+        shortcut: 9,
+        targets: WireTargetBindings {
+            selected: Some(input(7)),
+            ..WireTargetBindings::default()
+        },
+        value: FireValue::new(1_000),
+    }));
+    assert_eq!(
+        fire,
+        format!("{prefix}\tpayload=shortcut_fire\tshortcut=9\tselected=7\tvalue=1000\n")
+    );
+    assert_eq!(
+        round_trip(&command(CommandPayload::FireShortcut {
+            shortcut: 9,
+            targets: WireTargetBindings::default(),
+            value: FireValue::new(0),
+        })),
+        format!("{prefix}\tpayload=shortcut_fire\tshortcut=9\tvalue=0\n")
+    );
+    for to in ["value=1001", "value=01", "value=-1", "value=0.5", "value="] {
+        let broken = fire.replacen("value=1000", to, 1);
+        assert!(decode_line(&broken).is_err(), "{to}");
+    }
 }

@@ -469,3 +469,89 @@ fn mouse_buttons_and_window_scopes_are_bounded_and_clash_with_keys() {
         Err(ShortcutError::InvalidKey)
     );
 }
+
+/// RC-004 dynamic values: a shortcut's gain may be fixed, a step, or read
+/// from the firing control, each within the strip's range; a mute may
+/// toggle; a cue list may step and toggle but never read a control value.
+#[test]
+fn dynamic_values_are_bounded_and_only_a_shortcut_reads_the_control() {
+    use fm_model::{
+        Cue, CueGain, CueListError, CueMute, FireValue, InputTarget, validate_cue_list_definition,
+    };
+    let gain = |gain| CueAction::AudioGain {
+        input: InputTarget::Selected,
+        gain,
+    };
+    let fired = gain(CueGain::Fired {
+        min: -60_000,
+        max: 0,
+    });
+    for action in [
+        fired.clone(),
+        gain(CueGain::Step(-3_000)),
+        gain(CueGain::Set(24_000)),
+        CueAction::AudioMute {
+            input: InputTarget::Program,
+            mute: CueMute::Toggle,
+        },
+    ] {
+        assert_eq!(
+            validate_shortcut_definition(&with_action(ShortcutAction::Actions(vec![
+                action.clone()
+            ]))),
+            Ok(()),
+            "{action:?}"
+        );
+    }
+    for bad in [
+        CueGain::Set(24_001),
+        CueGain::Step(0),
+        CueGain::Step(120_001),
+        CueGain::Fired { min: 0, max: 0 },
+        CueGain::Fired {
+            min: -96_001,
+            max: 0,
+        },
+    ] {
+        assert_eq!(
+            validate_shortcut_definition(&with_action(ShortcutAction::Actions(vec![gain(bad)]))),
+            Err(ShortcutError::InvalidAction { action: 0 }),
+            "{bad:?}"
+        );
+    }
+
+    // The fire's value fixes a gain read from the control; nothing else
+    // reads it.
+    assert!(fired.reads_fire_value());
+    assert!(!gain(CueGain::Step(1)).reads_fire_value());
+    assert_eq!(fired.with_fire_value(None), None);
+    assert_eq!(
+        fired.with_fire_value(FireValue::new(500)),
+        Some(gain(CueGain::Set(-30_000)))
+    );
+    let step = gain(CueGain::Step(1));
+    assert_eq!(step.with_fire_value(None), Some(step.clone()));
+
+    let cue = |actions| Cue {
+        id: 4,
+        name: "Fader".into(),
+        actions,
+        auto_follow: false,
+    };
+    assert_eq!(
+        validate_cue_list_definition(
+            "Main",
+            &[cue(vec![
+                gain(CueGain::Step(-3_000)),
+                CueAction::AudioMute {
+                    input: InputTarget::Preview,
+                    mute: CueMute::Toggle,
+                },
+            ])]
+        ),
+        Ok(())
+    );
+    let refused = validate_cue_list_definition("Main", &[cue(vec![step, fired])]);
+    assert_eq!(refused, Err(CueListError::FiredValue { cue: 4, action: 1 }));
+    assert!(refused.unwrap_err().to_string().contains("firing control"));
+}

@@ -618,6 +618,10 @@ fn replace(
                     return Rejection::new(RejectionCode::InvalidCommand, message.clone())
                         .with_field(FieldIssue::new("cues", "conflicting_follow_takes", message));
                 }
+                fm_model::CueListError::FiredValue { .. } => {
+                    return Rejection::new(RejectionCode::InvalidCommand, message.clone())
+                        .with_field(FieldIssue::new("cues", "fired_value", message));
+                }
                 fm_model::CueListError::InvalidAction { .. }
                 | fm_model::CueListError::ConflictingTakes { .. }
                 | fm_model::CueListError::InvalidState => {
@@ -859,26 +863,40 @@ pub(crate) fn expand(
         CueAction::PlaylistStop => vec![EngineCommand::PlaylistControl(
             EnginePlaylistOperation::Stop,
         )],
-        CueAction::AudioGain {
-            input,
-            gain_millidb,
-        } => state
+        // A step or toggle reads the strip as it stands on this frame,
+        // after the frame's earlier actions (RC-004 dynamic values); a
+        // control value was fixed before the action was planned.
+        CueAction::AudioGain { input, gain } => state
             .input_audio_strip(*input)
-            .map(|strip| EngineCommand::SetInputAudioStrip {
-                input: *input,
-                state: crate::EngineInputAudioStripState {
-                    gain_millidb: *gain_millidb,
-                    ..strip
-                },
+            .map(|strip| {
+                let gain_millidb = gain.apply(strip.gain_millidb, None).ok_or_else(|| {
+                    Rejection::new(
+                        RejectionCode::InvalidCommand,
+                        "the action takes its gain from the firing control, which sent no value",
+                    )
+                    .with_field(FieldIssue::new(
+                        "value",
+                        "unbound",
+                        "fire the shortcut from a control that sends a value",
+                    ))
+                })?;
+                Ok(EngineCommand::SetInputAudioStrip {
+                    input: *input,
+                    state: crate::EngineInputAudioStripState {
+                        gain_millidb,
+                        ..strip
+                    },
+                })
             })
+            .transpose()?
             .into_iter()
             .collect(),
-        CueAction::AudioMute { input, muted } => state
+        CueAction::AudioMute { input, mute } => state
             .input_audio_strip(*input)
             .map(|strip| EngineCommand::SetInputAudioStrip {
                 input: *input,
                 state: crate::EngineInputAudioStripState {
-                    muted: *muted,
+                    muted: mute.apply(strip.muted),
                     ..strip
                 },
             })

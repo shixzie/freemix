@@ -7585,8 +7585,48 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::CueParamGainHover, t("Nivel del fader en dB")),
     (
         Msg::CueParamMuteHover,
-        t("Marcado silencia el canal; sin marcar lo reactiva"),
+        t(
+            "Silenciado acalla el canal, Sin silencio lo devuelve y Alternar silencio lo invierte según esté cuando la acción se ejecuta",
+        ),
     ),
+    (
+        Msg::CueParamGainModeHover,
+        t(
+            "Fijar nivel pone el fader en un nivel; Mover lo desplaza desde donde esté cuando la acción se ejecuta; Desde el control sigue el valor del control OSC o fader que dispara el atajo",
+        ),
+    ),
+    (
+        Msg::CueParamGainStepHover,
+        t(
+            "Cuánto mover el fader, en dB: un valor positivo lo sube y uno negativo lo baja; el fader se detiene en sus extremos",
+        ),
+    ),
+    (
+        Msg::CueParamGainMinHover,
+        t("El nivel que fija el control al fondo de su recorrido (0, o un valor OSC de 0.0)"),
+    ),
+    (
+        Msg::CueParamGainMaxHover,
+        t("El nivel que fija el control al tope de su recorrido (un valor OSC de 1.0)"),
+    ),
+    (Msg::CueGainSet, t("Fijar nivel")),
+    (Msg::CueGainStep, t("Mover")),
+    (Msg::CueGainFired, t("Desde el control")),
+    (
+        Msg::CueReasonFiredOnlyInShortcuts,
+        t(
+            "solo un atajo disparado desde un control OSC o un fader lleva un valor; un GO de cue no lleva ninguno",
+        ),
+    ),
+    (
+        Msg::UserShortcutReasonNeedsValue,
+        t(
+            "este atajo toma su ganancia del control que lo dispara: dispárelo con un mensaje OSC con un número decimal de 0 a 1",
+        ),
+    ),
+    (Msg::CueMuteOn, t("Silenciado")),
+    (Msg::CueMuteOff, t("Sin silencio")),
+    (Msg::CueMuteToggle, t("Alternar silencio")),
     (Msg::CueParamRecorderHover, t("Grabador 1 o 2")),
     (
         Msg::CueParamStartHover,
@@ -7743,6 +7783,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::CuePvGain, t("Poner el fader de {input} a {gain}")),
     (Msg::CuePvMute, t("Silenciar {input}")),
     (Msg::CuePvUnmute, t("Quitar el silencio de {input}")),
+    (Msg::CuePvGainStep, t("Mover el fader de {input} {gain}")),
+    (
+        Msg::CuePvGainFired,
+        t("Poner el fader de {input} según el control que dispara, de {min} a {max}"),
+    ),
+    (Msg::CuePvMuteToggle, t("Alternar el silencio de {input}")),
     (Msg::CuePvRecordStart, t("Empezar a grabar en REC {slot}")),
     (Msg::CuePvRecordStop, t("Dejar de grabar en REC {slot}")),
     (Msg::CuePvStreamStart, t("Empezar a emitir a {target}")),

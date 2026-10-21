@@ -7035,7 +7035,9 @@ fn parse_shortcut_set(
 /// Parses `shortcut-fire <project> <shortcut>` and
 /// `remote-shortcut-fire <address> <shortcut>` (RC-004): fires project shortcut `<shortcut>` as
 /// the command it stands for, with `--selected <input>` the input its
-/// actions on the selected input act on. The fire travels like a cue
+/// actions on the selected input act on, and `--value <0..1000>` the
+/// value an action taking its gain from the firing control reads (per
+/// mille of the control's travel). The fire travels like a cue
 /// command: a local fire restores, runs, and saves the project.
 fn parse_shortcut_fire(
     command: &str,
@@ -7051,13 +7053,36 @@ fn parse_shortcut_fire(
         (Some(required_path(&mut arguments, "project path")?), None)
     };
     let shortcut = number(&required(&mut arguments, "shortcut")?, "shortcut")?;
-    let (selected, key, expected_revision) = fire_options(arguments, true)?;
+    let mut value = None;
+    let mut rest = Vec::new();
+    while let Some(argument) = arguments.next() {
+        if argument == "--value" {
+            if value.is_some() {
+                return Err(ArgsError::UnexpectedArgument(argument));
+            }
+            let text = required(&mut arguments, "fire value")?;
+            value = Some(
+                text.parse::<u16>()
+                    .ok()
+                    .filter(|_| !text.starts_with('+'))
+                    .and_then(fm_protocol::FireValue::new)
+                    .ok_or(ArgsError::InvalidNumber {
+                        field: "fire value",
+                        value: text,
+                    })?,
+            );
+        } else {
+            rest.push(argument);
+        }
+    }
+    let (selected, key, expected_revision) = fire_options(rest.into_iter(), true)?;
     let payload = fm_protocol::CommandPayload::FireShortcut {
         shortcut,
         targets: fm_protocol::WireTargetBindings {
             selected,
             ..fm_protocol::WireTargetBindings::NONE
         },
+        value,
     };
     Ok(match (path, address) {
         (Some(path), _) => Command::Cue {
@@ -9688,6 +9713,7 @@ mod tests {
                 payload: CommandPayload::FireShortcut {
                     shortcut: 9,
                     targets: selected(7),
+                    value: None,
                 },
                 key: None,
                 expected_revision: None,
@@ -9706,11 +9732,68 @@ mod tests {
                 payload: CommandPayload::FireShortcut {
                     shortcut: 9,
                     targets: WireTargetBindings::NONE,
+                    value: None,
                 },
                 key: Some("fire-1".into()),
                 expected_revision: None,
             })
         );
+        // RC-004 dynamic values: the firing control's value, per mille.
+        assert_eq!(
+            parse(strings(&[
+                "remote-shortcut-fire",
+                "127.0.0.1:9123",
+                "9",
+                "--value",
+                "750",
+                "--selected",
+                "7"
+            ])),
+            Ok(Command::RemoteCue {
+                address,
+                payload: CommandPayload::FireShortcut {
+                    shortcut: 9,
+                    targets: selected(7),
+                    value: fm_protocol::FireValue::new(750),
+                },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        for bad in ["1001", "-1", "0.5", "+5", "x"] {
+            assert!(
+                matches!(
+                    parse(strings(&[
+                        "shortcut-fire",
+                        "show.freemix",
+                        "9",
+                        "--value",
+                        bad
+                    ])),
+                    Err(ArgsError::InvalidNumber {
+                        field: "fire value",
+                        ..
+                    })
+                ),
+                "{bad}"
+            );
+        }
+        assert!(matches!(
+            parse(strings(&[
+                "shortcut-fire",
+                "show.freemix",
+                "9",
+                "--value",
+                "1",
+                "--value",
+                "2"
+            ])),
+            Err(ArgsError::UnexpectedArgument(_))
+        ));
+        assert!(matches!(
+            parse(strings(&["go", "show.freemix", "3", "--value", "5"])),
+            Err(ArgsError::UnknownOption(_))
+        ));
         for bad in ["0", "camera", "-1"] {
             assert!(
                 matches!(

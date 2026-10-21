@@ -3839,6 +3839,52 @@ Protocol 2.98 names a snapshot's in-flight timed Program operations
   selection disabled meanwhile, as the authority refuses them.
 - 2.97 is refused.
 
+Protocol 2.99 adds dynamic value targets to user shortcut and cue actions
+(RC-004, schema 80).
+
+- A gain action's value may be fixed, stepped, or read from the firing
+  control: besides `audio_gain.<input>.<millidB>`, the cue action tokens
+  `audio_gain_step.<input>.<millidB>` (a nonzero step, at most the strip's
+  whole range of 120000 millidB, added to the strip's gain when the action
+  runs and clamped to `-96000..=24000`) and
+  `audio_gain_fired.<input>.<min millidB>.<max millidB>` (two distinct
+  gains in `-96000..=24000`; the firing control's value maps linearly in
+  dB from `min` at 0 to `max` at 1000, rounded to the nearest millidB, so
+  `min` above `max` turns the control around). A mute may toggle:
+  `audio_mute_toggle.<input>` mutes an unmuted strip and unmutes a muted
+  one, as it stands when the action runs. Every gain token is now
+  range-checked (`audio_gain` too). A step or toggle reads the show on the
+  frame its action runs, after the frame's earlier actions, so a replay of
+  the journal reproduces it.
+- `shortcut_fire` gains an optional `value` after the target bindings:
+  canonical decimal `0..=1000`, the firing control's position per mille.
+  The client sends it and the journal keeps it as sent. A fire whose
+  actions read the control and that carries no value is refused whole
+  `invalid_command` with field `value` / `unbound`, naming the action. A
+  cue list or script shortcut ignores the value. A cue never reads one: a
+  `cue_list_set` naming `audio_gain_fired` is refused at decode, and the
+  authority refuses such a list `invalid_command` with field `cues` /
+  `fired_value`.
+- Durability (schema 80): a cue or shortcut action may also be
+  `{"type": "audio_gain_step", "input", "step_milli_db"}`,
+  `{"type": "audio_gain_fired", "input", "min_milli_db", "max_milli_db"}`
+  (only in a shortcut), or `{"type": "audio_mute_toggle", "input"}`.
+  `.fmshortcuts` files (schema 80) carry the same tokens.
+- Studio's action editors give a gain action a mode (Set level, Move by,
+  and, in a shortcut's actions, From the control with its two ends) and a
+  mute action Muted, Unmuted, or Toggle mute, each with English and
+  Spanish hover help; the cue standby preview reads a step and a toggle
+  from the strip it simulates. Studio's OSC listener takes an optional
+  `f` argument from 0.0 to 1.0 on `/freemix/user/<name>`, alone (`,f`) or
+  after the selected input (`,if`); a value outside the range or not a
+  number is malformed. A shortcut reading the control is not fired by its
+  key or by Fire now (the console says why), only by an OSC message with a
+  value. The Web operator page holds such a shortcut's button ("This
+  shortcut takes its gain from the control that fires it: fire it from OSC
+  or a fader") and asks `control_audio` for every gain and mute token. The
+  CLI's `shortcut-fire` and `remote-shortcut-fire` take `--value <0-1000>`.
+- 2.98 is refused.
+
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
 `(state_epoch, log_id)`. Runtime realization events reference a durable revision

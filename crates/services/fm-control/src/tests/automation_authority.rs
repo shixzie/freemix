@@ -173,7 +173,7 @@ fn cut(value: u128) -> WireCueAction {
 fn mute(value: u128) -> WireCueAction {
     WireCueAction::AudioMute {
         input: fm_types::InputTarget::Fixed(wire(value)),
-        muted: true,
+        mute: fm_model::CueMute::Set(true),
     }
 }
 
@@ -302,14 +302,14 @@ fn each_cue_action_needs_the_class_of_its_direct_command() {
         (
             CueAction::AudioGain {
                 input: input(2),
-                gain_millidb: -6_000,
+                gain: fm_model::CueGain::Set(-6_000),
             },
             audio_strip(2, -6_000, false),
         ),
         (
             CueAction::AudioMute {
                 input: input(2),
-                muted: true,
+                mute: fm_model::CueMute::Set(true),
             },
             audio_strip(2, 0, true),
         ),
@@ -474,7 +474,7 @@ fn scripts_and_cues_need_the_class_of_every_action_category() {
             "gain 3, -6000",
             WireCueAction::AudioGain {
                 input: fm_types::InputTarget::Fixed(wire(3)),
-                gain_millidb: -6_000,
+                gain: fm_model::CueGain::Set(-6_000),
             },
             Some(CommandClass::ControlAudio),
         ),

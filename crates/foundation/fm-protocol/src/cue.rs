@@ -120,13 +120,17 @@ pub enum WireCueAction {
     },
     PlaylistStart,
     PlaylistStop,
+    /// Sets `input`'s strip gain: fixed, a step from its gain when the
+    /// action runs, or from the firing control's value (Protocol 2.99,
+    /// RC-004; the latter only in a shortcut).
     AudioGain {
         input: WireInputTarget,
-        gain_millidb: i32,
+        gain: fm_types::CueGain,
     },
+    /// Mutes, unmutes, or (Protocol 2.99) toggles `input`'s strip.
     AudioMute {
         input: WireInputTarget,
-        muted: bool,
+        mute: fm_types::CueMute,
     },
     Record {
         recorder: WireRecorderSlot,

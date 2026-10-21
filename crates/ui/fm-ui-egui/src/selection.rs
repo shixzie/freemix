@@ -74,6 +74,7 @@ mod tests {
             StudioIntent::Shortcut(ShortcutIntent::Fire {
                 shortcut: 1,
                 targets: WireTargetBindings::default(),
+                value: None,
             }),
             StudioIntent::Cue(CueIntent::Control {
                 list: 1,
@@ -120,6 +121,7 @@ mod tests {
         let mut intents = vec![StudioIntent::Shortcut(ShortcutIntent::Fire {
             shortcut: 1,
             targets: WireTargetBindings::default(),
+            value: None,
         })];
         let before = intents.clone();
         bind(None, &mut intents);

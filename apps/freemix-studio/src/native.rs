@@ -573,10 +573,10 @@ impl StudioApp {
                 }
                 // A project shortcut fires under its key's gates (RC-004);
                 // one this session cannot fire is announced.
-                OscAction::User(name, selected) => {
-                    let intent = self
-                        .shell
-                        .user_shortcut_osc_intent(&self.state, name.as_str());
+                OscAction::User(name, selected, value) => {
+                    let intent =
+                        self.shell
+                            .user_shortcut_osc_intent(&self.state, name.as_str(), value);
                     self.enqueue_osc_fire(intent, selected);
                     continue;
                 }
@@ -3069,9 +3069,15 @@ fn shortcut_payload(intent: fm_ui_egui::ShortcutIntent) -> CommandPayload {
         fm_ui_egui::ShortcutIntent::Remove { shortcut } => {
             CommandPayload::RemoveShortcut { shortcut }
         }
-        fm_ui_egui::ShortcutIntent::Fire { shortcut, targets } => {
-            CommandPayload::FireShortcut { shortcut, targets }
-        }
+        fm_ui_egui::ShortcutIntent::Fire {
+            shortcut,
+            targets,
+            value,
+        } => CommandPayload::FireShortcut {
+            shortcut,
+            targets,
+            value,
+        },
     }
 }
 

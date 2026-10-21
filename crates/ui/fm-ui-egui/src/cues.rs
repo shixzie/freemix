@@ -40,9 +40,9 @@ use egui::{Button, ComboBox, DragValue, Frame, RichText, Stroke, TextEdit, Ui, V
 use std::time::{Duration, Instant};
 
 use fm_protocol::{
-    AutoTransitionKind, CueFaultStatus, CueListSpec, CueListStatus, CueOperation, CueRunStatus,
-    MAX_CUE_ACTIONS, MAX_CUE_ARM_MS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LISTS,
-    MAX_CUE_TITLE_NUMBER, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES,
+    AutoTransitionKind, CueFaultStatus, CueGain, CueListSpec, CueListStatus, CueMute, CueOperation,
+    CueRunStatus, MAX_CUE_ACTIONS, MAX_CUE_ARM_MS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_SCRIPT_STEPS,
+    MAX_CUE_LISTS, MAX_CUE_TITLE_NUMBER, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES, MAX_CUES,
     PagedNavigation, ScriptStatus, TitleFieldStatus, TitleFieldValue, TransitionFavoriteEffect,
     WireCue, WireCueAction, WireCueMediaOperation, WireInputId, WireInputTarget,
     WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
@@ -65,8 +65,11 @@ use crate::theme::{
 use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
 
 /// The strip gain range the engine accepts, in millidecibels.
-const MIN_GAIN_MILLIDB: i32 = -96_000;
-const MAX_GAIN_MILLIDB: i32 = 24_000;
+const MIN_GAIN_MILLIDB: i32 = fm_protocol::CUE_GAIN_MIN_MILLIDB;
+const MAX_GAIN_MILLIDB: i32 = fm_protocol::CUE_GAIN_MAX_MILLIDB;
+/// The low end a new "from the control" gain starts at: a fader's useful
+/// travel, not the strip's floor.
+const MIN_FADER_MILLIDB: i32 = -60_000;
 
 /// Every cue that would take Program a second time on one frame, with the
 /// cue whose take it collides with: `(offending cue, earlier taker)`, the
@@ -757,11 +760,11 @@ impl ActionKind {
             Self::PlaylistStop => WireCueAction::PlaylistStop,
             Self::AudioGain => WireCueAction::AudioGain {
                 input: input()?,
-                gain_millidb: 0,
+                gain: CueGain::Set(0),
             },
             Self::AudioMute => WireCueAction::AudioMute {
                 input: input()?,
-                muted: true,
+                mute: CueMute::Set(true),
             },
             Self::Record => WireCueAction::Record {
                 recorder: WireRecorderSlot::new(1)?,
@@ -872,6 +875,7 @@ pub(crate) struct CuePanel {
 const DEFAULT_ARM_DELAY: &str = "1:00";
 
 /// One edit the rows asked for this frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Change {
     /// Send the working copy now.
     Commit,
@@ -1312,6 +1316,7 @@ impl CuePanel {
                 .iter()
                 .map(|cue| count_key_width(ui, &count_label(l, cue.actions.len())))
                 .fold(COUNT_KEY_WIDTH, f32::max),
+            fired_values: false,
         };
         let mut edit_row = None;
         let conflicts = take_conflicts(&draft.spec.cues);
@@ -1468,6 +1473,9 @@ struct Names<'a> {
     /// One width for every row's action-count key, so the rows' keys
     /// line up.
     count_width: f32,
+    /// Whether an action may take its value from the firing control: a
+    /// shortcut's may, a cue's never (RC-004 dynamic values).
+    fired_values: bool,
 }
 
 impl Names<'_> {
@@ -2115,6 +2123,7 @@ pub(crate) fn draw_action_list(
         scripts_full: false,
         show: None,
         count_width: COUNT_KEY_WIDTH,
+        fired_values: true,
     };
     let mut cue = WireCue {
         id: 1,
@@ -2310,6 +2319,172 @@ fn channel(
     if let Some(channel) = WireOverlayChannelId::new(number_value) {
         *value = channel;
     }
+    change
+}
+
+/// Which gain a [`gain_field`] edits.
+#[derive(Clone, Copy)]
+enum GainField {
+    Level,
+    Step,
+    Min,
+    Max,
+}
+
+/// A gain in dB, edited as millidecibels within the strip's range (a step
+/// within the range's span); reports the edit like [`number`].
+fn gain_field(
+    ui: &mut Ui,
+    millidb: &mut i32,
+    field: GainField,
+    (l, enabled): (Locale, (bool, &str)),
+) -> Option<Change> {
+    let (hover, low, high) = match field {
+        GainField::Level => (Msg::CueParamGainHover, MIN_GAIN_MILLIDB, MAX_GAIN_MILLIDB),
+        GainField::Step => (
+            Msg::CueParamGainStepHover,
+            MIN_GAIN_MILLIDB - MAX_GAIN_MILLIDB,
+            MAX_GAIN_MILLIDB - MIN_GAIN_MILLIDB,
+        ),
+        GainField::Min => (
+            Msg::CueParamGainMinHover,
+            MIN_GAIN_MILLIDB,
+            MAX_GAIN_MILLIDB,
+        ),
+        GainField::Max => (
+            Msg::CueParamGainMaxHover,
+            MIN_GAIN_MILLIDB,
+            MAX_GAIN_MILLIDB,
+        ),
+    };
+    let mut decibels = f64::from(*millidb) / 1000.0;
+    let change = number(
+        ui,
+        &mut decibels,
+        f64::from(low) / 1000.0..=f64::from(high) / 1000.0,
+        (l.text(hover), " dB"),
+        enabled,
+    );
+    #[allow(clippy::cast_possible_truncation)] // clamped to the range
+    {
+        *millidb = (decibels * 1000.0)
+            .round()
+            .clamp(f64::from(low), f64::from(high)) as i32;
+    }
+    change
+}
+
+/// The label of a gain action's mode (RC-004 dynamic values).
+const fn gain_mode_label(gain: CueGain) -> Msg {
+    match gain {
+        CueGain::Set(_) => Msg::CueGainSet,
+        CueGain::Step(_) => Msg::CueGainStep,
+        CueGain::Fired { .. } => Msg::CueGainFired,
+    }
+}
+
+/// The mode of a gain action: set a level, step from the strip's level,
+/// or (`fired`, a shortcut's action only) follow the firing control.
+/// Switching keeps the gain the operator had where it fits.
+fn gain_mode_picker(
+    ui: &mut Ui,
+    l: Locale,
+    gain: &mut CueGain,
+    fired: bool,
+    edit: Option<&'static str>,
+) -> Option<Change> {
+    let hover = l.text(Msg::CueParamGainModeHover);
+    let level = match *gain {
+        CueGain::Set(value) => value,
+        CueGain::Step(_) => 0,
+        CueGain::Fired { max, .. } => max,
+    };
+    let mut options = vec![
+        CueGain::Set(level),
+        CueGain::Step(if let CueGain::Step(step) = *gain {
+            step
+        } else {
+            3_000
+        }),
+    ];
+    if fired || gain.is_fired() {
+        options.push(if let CueGain::Fired { .. } = *gain {
+            *gain
+        } else {
+            CueGain::Fired {
+                min: MIN_FADER_MILLIDB,
+                max: if level > MIN_FADER_MILLIDB { level } else { 0 },
+            }
+        });
+    }
+    let mut change = None;
+    let width = fit_width(ui, 96.0);
+    ui.add_enabled_ui(edit.is_none(), |ui| {
+        ComboBox::from_id_salt("gain_mode")
+            .width(width)
+            .truncate()
+            .selected_text(RichText::new(l.text(gain_mode_label(*gain))).size(legible(11.0)))
+            .show_ui(ui, |ui| {
+                for option in options {
+                    let same = core::mem::discriminant(&option) == core::mem::discriminant(gain);
+                    let response = ui
+                        .add_enabled(
+                            fired || !option.is_fired() || same,
+                            egui::Button::selectable(same, l.text(gain_mode_label(option))),
+                        )
+                        .hint(hover, l.text(Msg::CueReasonFiredOnlyInShortcuts));
+                    if response.clicked() && !same {
+                        *gain = option;
+                        change = Some(Change::Commit);
+                    }
+                }
+            })
+            .response
+            .hint(hover, edit.unwrap_or(""));
+    });
+    change
+}
+
+/// The label of a mute action's mode (toggle since RC-004 dynamic values).
+const fn mute_mode_label(mute: CueMute) -> Msg {
+    match mute {
+        CueMute::Set(true) => Msg::CueMuteOn,
+        CueMute::Set(false) => Msg::CueMuteOff,
+        CueMute::Toggle => Msg::CueMuteToggle,
+    }
+}
+
+/// The mode of a mute action: mute, unmute, or toggle the strip.
+fn mute_mode_picker(
+    ui: &mut Ui,
+    l: Locale,
+    mute: &mut CueMute,
+    edit: Option<&'static str>,
+) -> Option<Change> {
+    let hover = l.text(Msg::CueParamMuteHover);
+    let mut change = None;
+    let width = fit_width(ui, 80.0);
+    ui.add_enabled_ui(edit.is_none(), |ui| {
+        ComboBox::from_id_salt("mute_mode")
+            .width(width)
+            .truncate()
+            .selected_text(RichText::new(l.text(mute_mode_label(*mute))).size(legible(11.0)))
+            .show_ui(ui, |ui| {
+                for option in [CueMute::Set(true), CueMute::Set(false), CueMute::Toggle] {
+                    if ui
+                        .selectable_label(*mute == option, l.text(mute_mode_label(option)))
+                        .on_hover_text(hover)
+                        .clicked()
+                        && *mute != option
+                    {
+                        *mute = option;
+                        change = Some(Change::Commit);
+                    }
+                }
+            })
+            .response
+            .hint(hover, edit.unwrap_or(""));
+    });
     change
 }
 
@@ -2549,31 +2724,39 @@ fn draw_params(
             .or(change)
         }
         WireCueAction::PlaylistStart | WireCueAction::PlaylistStop => None,
-        WireCueAction::AudioGain {
-            input,
-            gain_millidb,
-        } => {
+        WireCueAction::AudioGain { input, gain } => {
             let change = pick(ui, "input", input, (inputs, Roles::ALL));
-            let mut decibels = f64::from(*gain_millidb) / 1000.0;
-            let gain = number(
-                ui,
-                &mut decibels,
-                f64::from(MIN_GAIN_MILLIDB) / 1000.0..=f64::from(MAX_GAIN_MILLIDB) / 1000.0,
-                (l.text(Msg::CueParamGainHover), " dB"),
-                enabled,
-            );
-            #[allow(clippy::cast_possible_truncation)] // clamped to the strip range
-            {
-                *gain_millidb = (decibels * 1000.0)
-                    .round()
-                    .clamp(f64::from(MIN_GAIN_MILLIDB), f64::from(MAX_GAIN_MILLIDB))
-                    as i32;
-            }
-            gain.or(change)
+            let mode = gain_mode_picker(ui, l, gain, names.fired_values, edit);
+            let values = match gain {
+                CueGain::Set(value) => gain_field(ui, value, GainField::Level, (l, enabled)),
+                CueGain::Step(step) => {
+                    let response = gain_field(ui, step, GainField::Step, (l, enabled));
+                    // A step of nothing is refused; zero passes only while
+                    // it is still being typed or dragged through.
+                    if *step == 0 && response.is_some_and(|change| change == Change::Commit) {
+                        *step = 1_000;
+                    }
+                    response
+                }
+                CueGain::Fired { min, max } => {
+                    let low = gain_field(ui, min, GainField::Min, (l, enabled));
+                    let high = gain_field(ui, max, GainField::Max, (l, enabled));
+                    // Equal ends leave the control nothing to move.
+                    if min == max && high.or(low) == Some(Change::Commit) {
+                        if *max < MAX_GAIN_MILLIDB {
+                            *max += 1_000;
+                        } else {
+                            *min -= 1_000;
+                        }
+                    }
+                    high.or(low)
+                }
+            };
+            values.or(mode).or(change)
         }
-        WireCueAction::AudioMute { input, muted } => {
+        WireCueAction::AudioMute { input, mute } => {
             let change = pick(ui, "input", input, (inputs, Roles::ALL));
-            flag(ui, muted, l.text(Msg::CueParamMuteHover), edit).or(change)
+            mute_mode_picker(ui, l, mute, edit).or(change)
         }
         WireCueAction::Record { recorder, start } => {
             let mut slot = recorder.get();
@@ -3152,7 +3335,7 @@ mod tests {
         }];
         status.spec.cues[1].actions = vec![WireCueAction::AudioMute {
             input: fm_types::InputTarget::Fixed(wire(2)),
-            muted: true,
+            mute: CueMute::Set(true),
         }];
         status.spec.cues[2].actions = vec![
             WireCueAction::Preview {

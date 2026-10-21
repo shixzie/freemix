@@ -166,6 +166,9 @@ pub enum OperatorBlock {
     /// The shortcut acts on the selected input and the page selects none
     /// (RC-004).
     NoSelection,
+    /// The shortcut takes a gain from the control that fires it, and a
+    /// button sends no value (RC-004 dynamic values).
+    NeedsValue,
 }
 
 impl OperatorBlock {
@@ -184,6 +187,9 @@ impl OperatorBlock {
             Self::NoSelection => {
                 "This shortcut acts on the selected input: select an input first".to_owned()
             }
+            Self::NeedsValue => "This shortcut takes its gain from the control that fires it: \
+                                 fire it from OSC or a fader"
+                .to_owned(),
         }
     }
 }
@@ -440,6 +446,19 @@ impl<'a> OperatorSurface<'a> {
         {
             return Err(OperatorBlock::NoSelection);
         }
+        if let WireShortcutAction::Actions(actions) = &shortcut.spec.action
+            && actions.iter().any(|action| {
+                matches!(
+                    action,
+                    WireCueAction::AudioGain {
+                        gain: fm_protocol::CueGain::Fired { .. },
+                        ..
+                    }
+                )
+            })
+        {
+            return Err(OperatorBlock::NeedsValue);
+        }
         Ok(())
     }
 
@@ -454,6 +473,7 @@ impl<'a> OperatorSurface<'a> {
                 selected: self.selection().map(WireInputId::from_domain),
                 ..fm_protocol::WireTargetBindings::NONE
             },
+            value: None,
         })
     }
 

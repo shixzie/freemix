@@ -1183,6 +1183,13 @@ fn operator_page_is_served_with_the_tally_security_model() {
         "[\"shortcut\", id], ...(selected ? [[\"selected\", selected]] : [])",
         "token.split(\".\").includes(\"selected\")",
         "noSelection: \"This shortcut acts on the selected input: select an input first\"",
+        // RC-004 dynamic values: a gain read from the firing control is
+        // held (freemix-web's OperatorBlock::NeedsValue); steps and toggles
+        // need control_audio like a fixed gain.
+        "token.startsWith(\"audio_gain_fired.\"))) return tr(\"needsValue\")",
+        "needsValue: \"This shortcut takes its gain from the control that fires it: fire it from OSC or a fader\"",
+        "needsValue: \"Este atajo toma su ganancia del control que lo dispara: dispárelo desde OSC o un fader\"",
+        "audio_gain_step: \"control_audio\", audio_gain_fired: \"control_audio\", audio_mute_toggle: \"control_audio\"",
         "selectTile: \"Select {input}: shortcut actions on the selected input act on it\"",
         "selectTile: \"Seleccionar {input}: las acciones de atajo sobre la entrada seleccionada actúan sobre ella\"",
         "button.title = hover;",

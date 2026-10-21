@@ -27,7 +27,10 @@ mod system_audio;
 mod version;
 mod web_access;
 
-pub use fm_types::{FadeToBlackCurve, MAX_FADE_TO_BLACK_DURATION_FRAMES};
+pub use fm_types::{
+    CUE_GAIN_MAX_MILLIDB, CUE_GAIN_MIN_MILLIDB, CueGain, CueMute, FadeToBlackCurve, FireValue,
+    MAX_FADE_TO_BLACK_DURATION_FRAMES,
+};
 
 pub use audio_mixer::{
     AUDIO_GROUP_COUNT, AudioDspTarget, AudioDynamicsMeter, AudioGroupStatus, AudioLoudnessMeter,

@@ -450,7 +450,7 @@ fn dynamic_targets_resolve_when_fired_and_name_no_input_before() {
     use fm_model::{InputTarget, TargetBindings};
     let preview: CueAction = CueAction::AudioMute {
         input: InputTarget::Preview,
-        muted: true,
+        mute: fm_model::CueMute::Set(true),
     };
     let selected: CueAction = CueAction::TitleOn {
         input: InputTarget::Selected,
@@ -484,7 +484,7 @@ fn dynamic_targets_resolve_when_fired_and_name_no_input_before() {
         preview.resolve(&bindings),
         Ok(CueAction::AudioMute {
             input: input(2),
-            muted: true,
+            mute: fm_model::CueMute::Set(true),
         })
     );
     assert_eq!(

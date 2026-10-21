@@ -4300,6 +4300,9 @@ pub struct InputGainMilliDb(i32);
 impl InputGainMilliDb {
     pub const MIN: i32 = -96_000;
     pub const MAX: i32 = 24_000;
+    const _MATCHES_CUE_GAIN: () = assert!(
+        Self::MIN == fm_types::CUE_GAIN_MIN_MILLIDB && Self::MAX == fm_types::CUE_GAIN_MAX_MILLIDB
+    );
     pub const UNITY: Self = Self(0);
 
     #[must_use]

@@ -94,6 +94,7 @@ fn fire(shortcut: u64) -> StudioIntent {
     StudioIntent::Shortcut(ShortcutIntent::Fire {
         shortcut,
         targets: fm_protocol::WireTargetBindings::default(),
+        value: None,
     })
 }
 
@@ -303,31 +304,35 @@ fn an_osc_name_fires_its_shortcut_under_the_same_gates() {
     let state = shortcuts_fixture(true);
     let mut shell = StudioShell::default();
     assert_eq!(
-        shell.user_shortcut_osc_intent(&state, "lower-third"),
+        shell.user_shortcut_osc_intent(&state, "lower-third", None),
         Some(fire(1))
     );
     assert_eq!(
-        shell.user_shortcut_osc_intent(&state, "open"),
+        shell.user_shortcut_osc_intent(&state, "open", None),
         Some(fire(2))
     );
-    assert_eq!(shell.user_shortcut_osc_intent(&state, "unknown"), None);
+    assert_eq!(
+        shell.user_shortcut_osc_intent(&state, "unknown", None),
+        None
+    );
     assert_eq!(toasts(&shell), Vec::<String>::new());
     // RC-004: an OSC fire carries the console's selection, as a key does.
     let selected = fm_types::InputId::new(core::num::NonZeroU128::new(3).unwrap());
     shell.selected_input = Some(selected);
     assert_eq!(
-        shell.user_shortcut_osc_intent(&state, "open"),
+        shell.user_shortcut_osc_intent(&state, "open", None),
         Some(StudioIntent::Shortcut(ShortcutIntent::Fire {
             shortcut: 2,
             targets: fm_protocol::WireTargetBindings {
                 selected: Some(fm_protocol::WireInputId::from_domain(selected)),
                 ..fm_protocol::WireTargetBindings::default()
             },
+            value: None,
         }))
     );
     shell.selected_input = None;
     let viewer = shortcuts_fixture(false);
-    assert_eq!(shell.user_shortcut_osc_intent(&viewer, "open"), None);
+    assert_eq!(shell.user_shortcut_osc_intent(&viewer, "open", None), None);
     assert_eq!(toasts(&shell).len(), 1);
 }
 
@@ -1448,4 +1453,73 @@ fn a_console_key_may_be_a_mouse_button() {
     let mut restored = ShortcutKeyOverrides::default();
     assert!(restored.apply_preference(&lines[0].0, &lines[0].1));
     assert_eq!(restored, overrides);
+}
+
+/// RC-004 dynamic values: a shortcut taking its gain from the firing
+/// control fires only from an OSC message carrying a value; its key and
+/// the editor's Fire now announce why they cannot.
+#[test]
+fn a_fader_shortcut_fires_only_with_a_control_value() {
+    let fader = ShortcutStatus {
+        spec: ShortcutSpec {
+            osc: Some("fader".into()),
+            action: WireShortcutAction::Actions(vec![WireCueAction::AudioGain {
+                input: fm_types::InputTarget::Selected,
+                gain: fm_protocol::CueGain::Fired {
+                    min: -60_000,
+                    max: 0,
+                },
+            }]),
+            ..bound(7, key("F11", false, false, false)).spec
+        },
+        id: 7,
+    };
+    assert_eq!(
+        value_block(&fader, None),
+        Some(Msg::UserShortcutReasonNeedsValue.en())
+    );
+    assert_eq!(value_block(&fader, fm_protocol::FireValue::new(0)), None);
+    assert_eq!(
+        value_block(&bound(8, key("F12", false, false, false)), None),
+        None
+    );
+    let state = crate::hover_audit::shortcuts_fixture_with(vec![fader]);
+    let mut shell = StudioShell::default();
+    // The key sends no value: nothing fires, and the console says why.
+    assert_eq!(
+        run_frame(
+            &mut shell,
+            &state,
+            vec![key_event(Key::F11, Modifiers::NONE, false)],
+            false
+        ),
+        Vec::new()
+    );
+    let said = toasts(&shell);
+    assert_eq!(said.len(), 1);
+    assert!(said[0].contains("control that fires it"), "{said:?}");
+    assert_eq!(shell.user_shortcut_osc_intent(&state, "fader", None), None);
+    let value = fm_protocol::FireValue::new(640);
+    assert_eq!(
+        shell.user_shortcut_osc_intent(&state, "fader", value),
+        Some(StudioIntent::Shortcut(ShortcutIntent::Fire {
+            shortcut: 7,
+            targets: fm_protocol::WireTargetBindings::default(),
+            value,
+        }))
+    );
+    // Every reason is translated.
+    let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
+    for msg in [
+        Msg::UserShortcutReasonNeedsValue,
+        Msg::CueParamGainModeHover,
+        Msg::CueParamGainStepHover,
+        Msg::CueParamGainMinHover,
+        Msg::CueParamGainMaxHover,
+        Msg::CueGainFired,
+        Msg::CueReasonFiredOnlyInShortcuts,
+        Msg::CueMuteToggle,
+    ] {
+        assert_ne!(spanish.text(msg), msg.en(), "{msg:?}");
+    }
 }

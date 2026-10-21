@@ -36,7 +36,10 @@
 //! (`input`),
 //! `fade_to_black` (`active`, `duration_frames`), `playlist_start`,
 //! `playlist_stop`, `audio_gain` (`input`, `gain_milli_db`), `audio_mute`
-//! (`input`, `muted`), `record` (`recorder`, `start`), `stream` (`target`,
+//! (`input`, `muted`), and since schema 80 (RC-004 dynamic values)
+//! `audio_gain_step` (`input`, `step_milli_db`), `audio_gain_fired`
+//! (`input`, `min_milli_db`, `max_milli_db`; only in a shortcut), and
+//! `audio_mute_toggle` (`input`), `record` (`recorder`, `start`), `stream` (`target`,
 //! `start`), `media_play`, `media_pause`, and `media_restart` (`input`),
 //! `media_seek` (`input`, `frame`), `wait` (`frames`), `delay`
 //! (`millis`), and `run_script` (`script`, a project script id; schema 55).
@@ -45,8 +48,9 @@
 use core::fmt::Write as _;
 
 use fm_model::{
-    Cue, CueAction, CueArmed, CueFault, CueList, CueMediaOperation, CueNumberUpdate, CuePending,
-    CueRunState, RecorderSlot, StingerSlotNumber, StreamTargetId, TitleFieldId, TransitionEffect,
+    Cue, CueAction, CueArmed, CueFault, CueGain, CueList, CueMediaOperation, CueMute,
+    CueNumberUpdate, CuePending, CueRunState, RecorderSlot, StingerSlotNumber, StreamTargetId,
+    TitleFieldId, TransitionEffect,
 };
 use fm_types::{InputId, InputTarget, TargetBindings};
 
@@ -199,17 +203,31 @@ pub(crate) fn write_action(output: &mut String, action: &CueAction) {
         ),
         CueAction::PlaylistStart => write!(output, "{{\"type\": \"playlist_start\"}}"),
         CueAction::PlaylistStop => write!(output, "{{\"type\": \"playlist_stop\"}}"),
-        CueAction::AudioGain {
-            input,
-            gain_millidb,
-        } => write!(
-            output,
-            "{{\"type\": \"audio_gain\", \"input\": {input}, \"gain_milli_db\": {gain_millidb}}}"
-        ),
-        CueAction::AudioMute { input, muted } => write!(
-            output,
-            "{{\"type\": \"audio_mute\", \"input\": {input}, \"muted\": {muted}}}"
-        ),
+        CueAction::AudioGain { input, gain } => match gain {
+            CueGain::Set(gain) => write!(
+                output,
+                "{{\"type\": \"audio_gain\", \"input\": {input}, \"gain_milli_db\": {gain}}}"
+            ),
+            CueGain::Step(step) => write!(
+                output,
+                "{{\"type\": \"audio_gain_step\", \"input\": {input}, \"step_milli_db\": {step}}}"
+            ),
+            CueGain::Fired { min, max } => write!(
+                output,
+                "{{\"type\": \"audio_gain_fired\", \"input\": {input}, \
+                 \"min_milli_db\": {min}, \"max_milli_db\": {max}}}"
+            ),
+        },
+        CueAction::AudioMute { input, mute } => match mute {
+            CueMute::Set(muted) => write!(
+                output,
+                "{{\"type\": \"audio_mute\", \"input\": {input}, \"muted\": {muted}}}"
+            ),
+            CueMute::Toggle => write!(
+                output,
+                "{{\"type\": \"audio_mute_toggle\", \"input\": {input}}}"
+            ),
+        },
         CueAction::Record { recorder, start } => write!(
             output,
             "{{\"type\": \"record\", \"recorder\": {}, \"start\": {start}}}",
@@ -483,11 +501,30 @@ pub(crate) fn parse_action(value: Value) -> Result<CueAction, DecodeError> {
         "playlist_stop" => CueAction::PlaylistStop,
         "audio_gain" => CueAction::AudioGain {
             input: input(&mut object)?,
-            gain_millidb: object.i32("gain_milli_db")?,
+            gain: CueGain::Set(object.i32("gain_milli_db")?),
         },
+        "audio_gain_step" => CueAction::AudioGain {
+            input: input(&mut object)?,
+            gain: CueGain::Step(object.i32("step_milli_db")?),
+        },
+        "audio_gain_fired" => {
+            let input = input(&mut object)?;
+            let min = object.i32("min_milli_db")?;
+            CueAction::AudioGain {
+                input,
+                gain: CueGain::Fired {
+                    min,
+                    max: object.i32("max_milli_db")?,
+                },
+            }
+        }
         "audio_mute" => CueAction::AudioMute {
             input: input(&mut object)?,
-            muted: object.boolean("muted")?,
+            mute: CueMute::Set(object.boolean("muted")?),
+        },
+        "audio_mute_toggle" => CueAction::AudioMute {
+            input: input(&mut object)?,
+            mute: CueMute::Toggle,
         },
         "record" => CueAction::Record {
             recorder: RecorderSlot::new(object.u8("recorder")?)

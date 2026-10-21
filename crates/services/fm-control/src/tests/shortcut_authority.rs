@@ -107,7 +107,7 @@ fn cut(value: u128) -> WireCueAction {
 fn mute(value: u128) -> WireCueAction {
     WireCueAction::AudioMute {
         input: fm_types::InputTarget::Fixed(wire(value)),
-        muted: true,
+        mute: fm_protocol::CueMute::Set(true),
     }
 }
 
@@ -140,6 +140,7 @@ fn fire(shortcut: u64) -> CommandPayload {
     CommandPayload::FireShortcut {
         shortcut,
         targets: fm_protocol::WireTargetBindings::default(),
+        value: None,
     }
 }
 
@@ -364,7 +365,7 @@ fn a_dynamic_fire_is_journaled_with_the_inputs_it_bound() {
     let dynamic = WireShortcutAction::Actions(vec![
         WireCueAction::AudioMute {
             input: WireInputTarget::Preview,
-            muted: true,
+            mute: fm_protocol::CueMute::Set(true),
         },
         WireCueAction::Take {
             input: Some(WireInputTarget::Selected),
@@ -390,6 +391,7 @@ fn a_dynamic_fire_is_journaled_with_the_inputs_it_bound() {
         CommandPayload::FireShortcut {
             shortcut: 1,
             targets: sent,
+            value: None,
         },
     );
     let staged = prepared(
@@ -408,6 +410,7 @@ fn a_dynamic_fire_is_journaled_with_the_inputs_it_bound() {
         CommandPayload::FireShortcut {
             shortcut: 1,
             targets: bound,
+            value: None,
         }
     );
     assert!(staged.commit().unwrap().is_accepted());
@@ -448,4 +451,89 @@ fn a_dynamic_fire_is_journaled_with_the_inputs_it_bound() {
     assert!(muted(&replayed, 2));
     assert!(!muted(&replayed, 3));
     assert_eq!(program(&replayed), input(3));
+}
+
+/// RC-004 dynamic values: a gain taken from the firing control needs the
+/// audio class like a fixed gain, runs with the value the fire carries
+/// (journaled as sent, so a replay sets the same gain), and is refused
+/// whole on field `value` without one.
+#[test]
+fn a_fire_carries_the_value_of_its_control() {
+    use fm_protocol::{CueGain, CueMute, FireValue, WireInputTarget, WireTargetBindings};
+    let fader = WireShortcutAction::Actions(vec![
+        WireCueAction::AudioGain {
+            input: WireInputTarget::Fixed(wire(3)),
+            gain: CueGain::Fired {
+                min: -40_000,
+                max: 0,
+            },
+        },
+        WireCueAction::AudioMute {
+            input: WireInputTarget::Fixed(wire(3)),
+            mute: CueMute::Toggle,
+        },
+    ]);
+    let mut control = granted(TRANSITION_ONLY);
+    submit(&mut control, &admin(), "set", set_shortcut(1, fader));
+    let at = |value| CommandPayload::FireShortcut {
+        shortcut: 1,
+        targets: WireTargetBindings::default(),
+        value: FireValue::new(value),
+    };
+    assert_denied(
+        &submit(&mut control, &session(), "denied", at(250)),
+        "ControlAudio",
+    );
+
+    let mut control = granted(TRANSITION_AND_AUDIO);
+    submit(
+        &mut control,
+        &admin(),
+        "set",
+        set_shortcut(
+            1,
+            WireShortcutAction::Actions(vec![WireCueAction::AudioGain {
+                input: WireInputTarget::Fixed(wire(3)),
+                gain: CueGain::Fired {
+                    min: -40_000,
+                    max: 0,
+                },
+            }]),
+        ),
+    );
+    let refused = submit(&mut control, &session(), "bare", fire(1));
+    let CommandResult::Rejected { code, fields, .. } = &refused.output.result else {
+        panic!(
+            "a fire without a value is refused: {:?}",
+            refused.output.result
+        );
+    };
+    assert_eq!(code, "invalid_command");
+    assert_eq!(fields[0].field, "value");
+    assert_eq!(fields[0].code, "unbound");
+
+    let message = command("fire", "fire", at(250));
+    let staged = prepared(
+        control
+            .prepare_submit(&session(), message.clone(), 0)
+            .unwrap(),
+    );
+    // The value is the client's: it is journaled exactly as sent.
+    assert_eq!(staged.replay_command(&message).payload, at(250));
+    assert!(staged.commit().unwrap().is_accepted());
+    control.tick(&server_identity()).unwrap();
+    let gain = |control: &ControlService<Grants>| {
+        control
+            .engine
+            .show()
+            .input_audio_strip(input(3))
+            .unwrap()
+            .gain_millidb
+    };
+    assert_eq!(gain(&control), -30_000);
+    let line = fm_protocol::encode_line(&WireMessage::Command(message)).unwrap();
+    assert!(line.contains("\tvalue=250"), "{line}");
+    let accepted = submit(&mut control, &session(), "top", at(1_000));
+    assert!(accepted.is_accepted(), "{:?}", accepted.output.result);
+    assert_eq!(gain(&control), 0);
 }

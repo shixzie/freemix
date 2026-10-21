@@ -430,14 +430,14 @@ fn cue_action(state: &ShowState, action: &ScriptAction) -> Result<CueAction, Str
             millidb,
         } => CueAction::AudioGain {
             input: input(reference)?,
-            gain_millidb: *millidb,
+            gain: fm_model::CueGain::Set(*millidb),
         },
         ScriptAction::Mute {
             input: reference,
             muted,
         } => CueAction::AudioMute {
             input: input(reference)?,
-            muted: *muted,
+            mute: fm_model::CueMute::Set(*muted),
         },
         ScriptAction::Record { recorder, start } => CueAction::Record {
             recorder: RecorderSlot::new(*recorder)

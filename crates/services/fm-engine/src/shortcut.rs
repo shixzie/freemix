@@ -20,10 +20,18 @@
 //!   the show; one refused action refuses the whole fire, and the accepted
 //!   actions are realized together on the command's target frame. A fire is
 //!   a journaled live operation without undo.
+//!
+//! An action taking its gain from the firing control (RC-004 dynamic
+//! values, [`fm_model::CueGain::Fired`]) reads the fire's value, fixed
+//! into a set gain before the fire is planned; a fire without one is
+//! refused whole (field `value`, `unbound`). A step or toggle reads the
+//! strip as it stands when the action runs.
 
 use fm_automation::FiredCueAction;
 use fm_command::{FieldIssue, IdKind, RefusalReason, Rejection, RejectionCode};
-use fm_model::{Shortcut, ShortcutAction, ShortcutCueOperation, ShortcutError, TargetBindings};
+use fm_model::{
+    FireValue, Shortcut, ShortcutAction, ShortcutCueOperation, ShortcutError, TargetBindings,
+};
 use fm_scheduler::FrameNumber;
 
 use crate::engine::{CueFrame, CuePlan};
@@ -144,6 +152,7 @@ pub(crate) fn resolve(
     state: &ShowState,
     shortcut: u64,
     targets: TargetBindings,
+    value: Option<FireValue>,
 ) -> Result<EngineCommand, Rejection> {
     let found = state
         .shortcut(shortcut)
@@ -160,7 +169,11 @@ pub(crate) fn resolve(
         )));
     }
     Ok(match &found.action {
-        ShortcutAction::Actions(_) => EngineCommand::FireShortcut { shortcut, targets },
+        ShortcutAction::Actions(_) => EngineCommand::FireShortcut {
+            shortcut,
+            targets,
+            value,
+        },
         ShortcutAction::Cue { list, operation } => EngineCommand::CueControl {
             list: *list,
             operation: match operation {
@@ -175,6 +188,24 @@ pub(crate) fn resolve(
     })
 }
 
+/// The refusal of a fire without a value of an action taking its value
+/// from the firing control (RC-004).
+fn unbound_value(owner: &str, step: usize) -> Rejection {
+    Rejection::new(
+        RejectionCode::InvalidCommand,
+        format!(
+            "{owner} action {}: the action takes its value from the firing control, \
+             but the fire carries none",
+            step + 1
+        ),
+    )
+    .with_field(FieldIssue::new(
+        "value",
+        "unbound",
+        "fire the shortcut from a control that sends a value (an OSC float from 0 to 1)",
+    ))
+}
+
 /// Plans a fire of `shortcut`'s cue actions for `target_frame` (see the
 /// module documentation).
 ///
@@ -186,6 +217,7 @@ pub(crate) fn plan(
     engine: &Engine,
     shortcut: u64,
     targets: TargetBindings,
+    value: Option<FireValue>,
     target_frame: FrameNumber,
 ) -> Result<CuePlan, Rejection> {
     let state = engine.show();
@@ -199,7 +231,9 @@ pub(crate) fn plan(
         ));
     };
     if !found.enabled {
-        return Err(resolve(state, shortcut, targets).expect_err("a disabled shortcut is refused"));
+        return Err(
+            resolve(state, shortcut, targets, value).expect_err("a disabled shortcut is refused")
+        );
     }
     let owner = format!("shortcut {shortcut}");
     // Dynamic targets bind to the show the fire is planned on (RC-004).
@@ -214,15 +248,22 @@ pub(crate) fn plan(
             crate::cue::check_action_references(state, action, &owner)?;
         }
     }
-    let fired: Vec<FiredCueAction<fm_model::CueAction>> = actions
+    // A value read from the firing control is fixed before the actions
+    // are planned (RC-004 dynamic values).
+    let fired = actions
         .iter()
         .enumerate()
-        .map(|(step, action)| FiredCueAction {
-            cue: shortcut,
-            step,
-            action: action.clone(),
+        .map(|(step, action)| {
+            action
+                .with_fire_value(value)
+                .map(|action| FiredCueAction {
+                    cue: shortcut,
+                    step,
+                    action,
+                })
+                .ok_or_else(|| unbound_value(&owner, step))
         })
-        .collect();
+        .collect::<Result<Vec<FiredCueAction<fm_model::CueAction>>, Rejection>>()?;
     let mut show = state.clone();
     let mut runtime = Vec::new();
     let mut transition = None;

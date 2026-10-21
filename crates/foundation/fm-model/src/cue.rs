@@ -33,7 +33,7 @@
 
 use core::fmt;
 
-use fm_types::{InputId, InputTarget, TargetBindings};
+use fm_types::{CueGain, CueMute, FireValue, InputId, InputTarget, TargetBindings};
 
 use crate::{RecorderSlot, StreamTargetId, TitleFieldId, TransitionEffect};
 
@@ -116,10 +116,14 @@ pub enum CueAction<I = InputTarget> {
     PlaylistStart,
     /// Stops the project playlist.
     PlaylistStop,
-    /// Sets `input`'s mixer strip gain.
-    AudioGain { input: I, gain_millidb: i32 },
-    /// Mutes or unmutes `input`'s mixer strip.
-    AudioMute { input: I, muted: bool },
+    /// Sets `input`'s mixer strip gain: fixed, stepped from the strip's
+    /// gain when the action runs, or from the firing control's value
+    /// (RC-004 dynamic values, schema 80; see [`CueGain`]). Only a
+    /// shortcut's action reads the firing control.
+    AudioGain { input: I, gain: CueGain },
+    /// Mutes, unmutes, or toggles `input`'s mixer strip (toggle since
+    /// schema 80, see [`CueMute`]).
+    AudioMute { input: I, mute: CueMute },
     /// Starts or stops recorder `recorder`.
     Record { recorder: RecorderSlot, start: bool },
     /// Starts or stops stream target `target`.
@@ -317,16 +321,13 @@ impl<I: Copy> CueAction<I> {
             },
             Self::PlaylistStart => CueAction::PlaylistStart,
             Self::PlaylistStop => CueAction::PlaylistStop,
-            Self::AudioGain {
-                input,
-                gain_millidb,
-            } => CueAction::AudioGain {
+            Self::AudioGain { input, gain } => CueAction::AudioGain {
                 input: map(*input)?,
-                gain_millidb: *gain_millidb,
+                gain: *gain,
             },
-            Self::AudioMute { input, muted } => CueAction::AudioMute {
+            Self::AudioMute { input, mute } => CueAction::AudioMute {
                 input: map(*input)?,
-                muted: *muted,
+                mute: *mute,
             },
             Self::Record { recorder, start } => CueAction::Record {
                 recorder: *recorder,
@@ -356,6 +357,33 @@ impl<I: Copy> CueAction<I> {
         match self {
             Self::RunScript { script } => Some(*script),
             _ => None,
+        }
+    }
+
+    /// Whether the action reads the value of the control that fires it
+    /// (RC-004, schema 80): only a shortcut fire carries one.
+    #[must_use]
+    pub const fn reads_fire_value(&self) -> bool {
+        matches!(
+            self,
+            Self::AudioGain {
+                gain: CueGain::Fired { .. },
+                ..
+            }
+        )
+    }
+
+    /// The action with the firing control's `value` in place of a value
+    /// read from it ([`Self::reads_fire_value`]); `None` when it reads one
+    /// and the fire carries none.
+    #[must_use]
+    pub fn with_fire_value(&self, value: Option<FireValue>) -> Option<Self> {
+        match self {
+            Self::AudioGain { input, gain } => Some(Self::AudioGain {
+                input: *input,
+                gain: gain.with_value(value)?,
+            }),
+            other => Some(other.clone()),
         }
     }
 
@@ -562,6 +590,12 @@ pub enum CueListError {
         cue: u64,
         action: usize,
     },
+    /// Action `action` of cue `cue` reads the value of the control that
+    /// fires it, which only a shortcut fire carries (schema 80).
+    FiredValue {
+        cue: u64,
+        action: usize,
+    },
     /// Cue `cue` takes Program more than once on one frame.
     ConflictingTakes {
         cue: u64,
@@ -615,6 +649,11 @@ impl fmt::Display for CueListError {
             Self::InvalidAction { cue, action } => {
                 write!(formatter, "cue {cue} action {action} is out of range")
             }
+            Self::FiredValue { cue, action } => write!(
+                formatter,
+                "cue {cue} action {action} takes its value from the firing control; \
+                 only a shortcut fire carries one"
+            ),
             Self::ConflictingTakes { cue } => write!(
                 formatter,
                 "cue {cue} takes Program more than once on one frame"
@@ -663,9 +702,7 @@ pub fn cue_action_is_valid(action: &CueAction) -> bool {
         CueAction::FadeToBlack {
             duration_frames, ..
         } => transition(*duration_frames),
-        CueAction::AudioGain { gain_millidb, .. } => {
-            crate::InputGainMilliDb::new(*gain_millidb).is_some()
-        }
+        CueAction::AudioGain { gain, .. } => gain.is_valid(),
         CueAction::Wait { frames } => (1..=MAX_CUE_WAIT_FRAMES).contains(frames),
         CueAction::Delay { millis } => (1..=MAX_CUE_DELAY_MS).contains(millis),
         CueAction::RunScript { script } => *script != 0,
@@ -727,6 +764,12 @@ pub fn validate_cue_list_definition(name: &str, cues: &[Cue]) -> Result<(), CueL
         for (position, action) in cue.actions.iter().enumerate() {
             if !cue_action_is_valid(action) {
                 return Err(CueListError::InvalidAction {
+                    cue: cue.id,
+                    action: position,
+                });
+            }
+            if action.reads_fire_value() {
+                return Err(CueListError::FiredValue {
                     cue: cue.id,
                     action: position,
                 });

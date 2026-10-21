@@ -11,7 +11,11 @@
 //!   signed decimal),
 //!   `title_off.<input>`, `fade_to_black.<active 0|1>.<frames>`,
 //!   `playlist_start`, `playlist_stop`, `audio_gain.<input>.<millidB>`,
-//!   `audio_mute.<input>.<0|1>`, `record.<recorder>.<0|1>`,
+//!   `audio_mute.<input>.<0|1>`, and since Protocol 2.99 (RC-004 dynamic
+//!   values) `audio_gain_step.<input>.<millidB>` (a nonzero step from the
+//!   strip's gain), `audio_gain_fired.<input>.<min millidB>.<max millidB>`
+//!   (the firing control's value mapped from `min` to `max`, only in a
+//!   shortcut), and `audio_mute_toggle.<input>`, `record.<recorder>.<0|1>`,
 //!   `stream.<target>.<0|1>`, `media_play.<input>`, `media_pause.<input>`,
 //!   `media_restart.<input>`, `media_seek.<input>.<frame>`, `wait.<frames>`,
 //!   `delay.<millis>` (the media and delay tokens since Protocol 2.51),
@@ -128,6 +132,7 @@ pub(super) fn action_is_valid(action: &WireCueAction) -> bool {
         WireCueAction::Wait { frames } => (1..=MAX_CUE_WAIT_FRAMES).contains(frames),
         WireCueAction::Delay { millis } => (1..=MAX_CUE_DELAY_MS).contains(millis),
         WireCueAction::RunScript { script } => *script != 0,
+        WireCueAction::AudioGain { gain, .. } => gain.is_valid(),
         _ => true,
     }
 }
@@ -159,7 +164,16 @@ pub fn validate_spec(spec: &CueListSpec) -> Result<(), CodecError> {
         }
         actions += cue.actions.len();
         for action in &cue.actions {
-            if !action_is_valid(action) {
+            // Only a shortcut fire carries a control value (Protocol 2.99).
+            if !action_is_valid(action)
+                || matches!(
+                    action,
+                    WireCueAction::AudioGain {
+                        gain: fm_types::CueGain::Fired { .. },
+                        ..
+                    }
+                )
+            {
                 return Err(invalid("cues", format!("{action:?}")));
             }
             if let WireCueAction::TitleText { text: value, .. } = action {
@@ -219,11 +233,17 @@ pub fn cue_action_token(action: &WireCueAction) -> String {
         } => format!("fade_to_black.{}.{duration_frames}", flag(*active)),
         WireCueAction::PlaylistStart => "playlist_start".to_owned(),
         WireCueAction::PlaylistStop => "playlist_stop".to_owned(),
-        WireCueAction::AudioGain {
-            input,
-            gain_millidb,
-        } => format!("audio_gain.{input}.{gain_millidb}"),
-        WireCueAction::AudioMute { input, muted } => format!("audio_mute.{input}.{}", flag(*muted)),
+        WireCueAction::AudioGain { input, gain } => match gain {
+            fm_types::CueGain::Set(gain) => format!("audio_gain.{input}.{gain}"),
+            fm_types::CueGain::Step(step) => format!("audio_gain_step.{input}.{step}"),
+            fm_types::CueGain::Fired { min, max } => {
+                format!("audio_gain_fired.{input}.{min}.{max}")
+            }
+        },
+        WireCueAction::AudioMute { input, mute } => match mute {
+            fm_types::CueMute::Set(muted) => format!("audio_mute.{input}.{}", flag(*muted)),
+            fm_types::CueMute::Toggle => format!("audio_mute_toggle.{input}"),
+        },
         WireCueAction::Record { recorder, start } => format!("record.{recorder}.{}", flag(*start)),
         WireCueAction::Stream { target, start } => format!("stream.{target}.{}", flag(*start)),
         WireCueAction::Media { input, operation } => match operation {
@@ -287,6 +307,26 @@ fn parse_channel(value: &str) -> Option<WireOverlayChannelId> {
         .and_then(WireOverlayChannelId::new)
 }
 
+/// Parses an audio action token's `kind`, input `id`, and the parts after
+/// them; `None` when malformed.
+fn parse_audio_token(kind: &str, id: &str, rest: &[&str]) -> Option<WireCueAction> {
+    let input = parse_target(id)?;
+    let gain = |gain| Some(WireCueAction::AudioGain { input, gain });
+    let mute = |mute| Some(WireCueAction::AudioMute { input, mute });
+    match (kind, rest) {
+        ("audio_gain", [gain_millidb]) => gain(fm_types::CueGain::Set(parse_i32(gain_millidb)?)),
+        // A step and a gain from the firing control (Protocol 2.99).
+        ("audio_gain_step", [step]) => gain(fm_types::CueGain::Step(parse_i32(step)?)),
+        ("audio_gain_fired", [min, max]) => gain(fm_types::CueGain::Fired {
+            min: parse_i32(min)?,
+            max: parse_i32(max)?,
+        }),
+        ("audio_mute", [muted]) => mute(fm_types::CueMute::Set(parse_flag(muted)?)),
+        ("audio_mute_toggle", []) => mute(fm_types::CueMute::Toggle),
+        _ => None,
+    }
+}
+
 /// Parses one canonical cue action token; `None` when it is malformed.
 /// Bounds are checked by [`validate_spec`], not here.
 #[must_use]
@@ -333,14 +373,7 @@ pub fn parse_cue_action_token(value: &str) -> Option<WireCueAction> {
         },
         ["playlist_start"] => WireCueAction::PlaylistStart,
         ["playlist_stop"] => WireCueAction::PlaylistStop,
-        ["audio_gain", id, gain] => WireCueAction::AudioGain {
-            input: input(id)?,
-            gain_millidb: parse_i32(gain)?,
-        },
-        ["audio_mute", id, muted] => WireCueAction::AudioMute {
-            input: input(id)?,
-            muted: parse_flag(muted)?,
-        },
+        [kind, id, rest @ ..] if kind.starts_with("audio_") => parse_audio_token(kind, id, rest)?,
         ["record", recorder, start] => WireCueAction::Record {
             recorder: parse_canonical_u64(recorder)
                 .and_then(|value| u8::try_from(value).ok())

@@ -536,13 +536,20 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             super::shortcut::validate_shortcut_id(*shortcut)?;
             record.field("shortcut", shortcut)?;
         }
-        CommandPayload::FireShortcut { shortcut, targets } => {
+        CommandPayload::FireShortcut {
+            shortcut,
+            targets,
+            value,
+        } => {
             record.field("payload", "shortcut_fire")?;
             super::shortcut::validate_shortcut_id(*shortcut)?;
             record.field("shortcut", shortcut)?;
             super::cue::encode_targets(targets, &mut |name, value| {
                 record.field_string(name, value)
             })?;
+            if let Some(value) = value {
+                record.field("value", value.get())?;
+            }
         }
         CommandPayload::StopScript { run } => {
             record.field("payload", "script_stop")?;

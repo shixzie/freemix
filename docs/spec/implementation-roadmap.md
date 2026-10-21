@@ -53,10 +53,12 @@ highest-value remaining items, ranked:
    (Protocol 2.83, schema 70), dynamic input targets (the input on
    Preview, on Program, or selected on the firing console; Protocol 2.88,
    schema 73) with a selection from the Web pages, OSC, and the CLI and a
-   run's bound targets in the cue status (Protocol 2.89), and mouse-button
-   keys and keys scoped to a pop-out window (Protocol 2.93, schema 75); still
-   missing are dynamic value targets and chorded or scoped console key
-   overrides (see the RC-004 boundary below). This is a P0 row.
+   run's bound targets in the cue status (Protocol 2.89), mouse-button
+   keys and keys scoped to a pop-out window (Protocol 2.93, schema 75), and
+   dynamic value targets (a gain step, a mute toggle, and a gain read from
+   the firing control's OSC value; Protocol 2.99, schema 80); still
+   missing are chorded or scoped console key overrides (see the RC-004
+   boundary below). This is a P0 row.
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
    a real input end to end (engine, protocol, persistence, both daemons,
    Studio), and the native daemon prefetches each list's next item so Auto
@@ -1074,11 +1076,25 @@ other panel or window. Studio's Set key and Set console key capture a
 button; the "Answers in" picker lists each panel's window (English and
 Spanish, with hover help); each popped-out panel's native window now fires
 the project shortcuts answering in it (unscoped, its panel's, and its
-window's), and the main window never fires a window-scoped key. Still
-missing, so RC-004 remains planned: dynamic value targets, window scopes
-for the Colour, Animation, and Designer tool windows (which read no console
-keys) and for a pop-out the platform embeds in the main window, mouse
-buttons as a chord's stroke, and chorded or scoped console key overrides.
+window's), and the main window never fires a window-scoped key.
+Protocol 2.99 / schema 80 add dynamic value targets (`fm_types::CueGain`,
+`fm_types::CueMute`): a gain action sets a level, moves the strip's gain by
+a nonzero step from where it stands when the action runs (clamped to the
+strip's range), or, in a shortcut only, follows the firing control's value
+(`fm_types::FireValue`, 0 to 1000 per mille, mapped linearly in dB between
+the action's two ends); a mute action may toggle the strip as it stands.
+`shortcut_fire` carries the control's optional `value`, journaled as
+sent; a fire whose actions read it without one is refused whole (field
+`value`), and a cue list naming one is refused (a GO carries no value).
+Studio's action editors offer the modes with English and Spanish hover
+help, its OSC listener reads an `f` argument (0.0 to 1.0, after the
+optional selected input) on `/freemix/user/<name>`, a key or Fire now of a
+shortcut reading the control is held with its reason, the Web operator
+page holds its button, and the CLI's `shortcut-fire` takes `--value`.
+Still missing, so RC-004 remains planned: window scopes for the Colour,
+Animation, and Designer tool windows (which read no console keys) and for
+a pop-out the platform embeds in the main window, mouse buttons as a
+chord's stroke, and chorded or scoped console key overrides.
 
 Current implementation boundary for item 8: `fm-scopes` now provides a bounded
 reference color-monitoring session on top of its scope math: an exact

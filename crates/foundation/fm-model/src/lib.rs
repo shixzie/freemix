@@ -43,7 +43,10 @@ pub use display_output::{
     MAX_DISPLAY_OUTPUTS, SetDisplayOutputError, check_display_output, display_selector_is_valid,
 };
 pub use fm_animation;
-pub use fm_types::{InputTarget, TargetBindings};
+pub use fm_types::{
+    CUE_GAIN_MAX_MILLIDB, CUE_GAIN_MIN_MILLIDB, CueGain, CueMute, FireValue, InputTarget,
+    TargetBindings,
+};
 pub use grade::{
     GradeEditError, GradeId, GradeSource, LutId, MAX_GRADE_NAME_BYTES, MAX_LUT_FILE_BYTES,
     MAX_LUT_NAME_BYTES, MAX_PROJECT_GRADES, MAX_PROJECT_LAYER_GRADES, MAX_PROJECT_LUTS,

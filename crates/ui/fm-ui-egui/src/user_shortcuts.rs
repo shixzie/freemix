@@ -83,10 +83,12 @@ pub enum ShortcutIntent {
     /// Deletes one shortcut (`shortcut_remove`): an undoable project edit.
     Remove { shortcut: u64 },
     /// Fires one shortcut (`shortcut_fire`): an operator control. The
-    /// console's selected input rides along in `targets` (RC-004).
+    /// console's selected input rides along in `targets` (RC-004), and an
+    /// OSC control's value in `value` (RC-004 dynamic values).
     Fire {
         shortcut: u64,
         targets: fm_protocol::WireTargetBindings,
+        value: Option<fm_protocol::FireValue>,
     },
 }
 
@@ -741,6 +743,32 @@ pub fn fire_block(state: &StudioUiState, shortcut: &ShortcutStatus) -> Option<&'
     })
 }
 
+/// Why a fire of `shortcut` carrying `value` cannot run, if it cannot: an
+/// action taking its gain from the firing control needs a value, which
+/// only an OSC message sends (RC-004 dynamic values).
+#[must_use]
+pub fn value_block(
+    shortcut: &ShortcutStatus,
+    value: Option<fm_protocol::FireValue>,
+) -> Option<&'static str> {
+    let WireShortcutAction::Actions(actions) = &shortcut.spec.action else {
+        return None;
+    };
+    (value.is_none() && actions.iter().any(reads_fire_value))
+        .then(|| Msg::UserShortcutReasonNeedsValue.en())
+}
+
+/// Whether `action` takes its value from the firing control.
+fn reads_fire_value(action: &WireCueAction) -> bool {
+    matches!(
+        action,
+        WireCueAction::AudioGain {
+            gain: fm_protocol::CueGain::Fired { .. },
+            ..
+        }
+    )
+}
+
 /// The shortcut OSC name `name` answers to.
 #[must_use]
 pub fn by_osc<'a>(shortcuts: &'a [ShortcutStatus], name: &str) -> Option<&'a ShortcutStatus> {
@@ -1199,26 +1227,28 @@ impl StudioShell {
                 .request_repaint_after(std::time::Duration::from_secs_f64(left.max(0.0) + 0.05));
         }
         for shortcut in fired {
-            if let Some(intent) = self.user_shortcut_intent(state, shortcut) {
+            if let Some(intent) = self.user_shortcut_intent(state, shortcut, None) {
                 intents.push(intent);
             }
         }
     }
 
-    /// The intent that fires `shortcut`, or `None` after announcing why
-    /// this session cannot.
+    /// The intent that fires `shortcut` with the firing control's `value`,
+    /// or `None` after announcing why this session cannot.
     fn user_shortcut_intent(
         &mut self,
         state: &StudioUiState,
         shortcut: u64,
+        value: Option<fm_protocol::FireValue>,
     ) -> Option<StudioIntent> {
         let found = replicated(state)
             .iter()
             .find(|found| found.id == shortcut)?;
-        match fire_block(state, found) {
+        match fire_block(state, found).or_else(|| value_block(found, value)) {
             None => Some(StudioIntent::Shortcut(ShortcutIntent::Fire {
                 shortcut,
                 targets: fm_protocol::WireTargetBindings::default(),
+                value,
             })),
             Some(reason) => {
                 let l = self.locale;
@@ -1240,13 +1270,16 @@ impl StudioShell {
     /// `None` (after announcing why, for a known name) when it cannot fire.
     /// The fire carries this console's selected input, as a key's does
     /// (RC-004): it is sent outside [`StudioShell::draw`], which binds it.
+    /// `value` is the message's float argument, the control's position (an
+    /// action taking its gain from the firing control needs one).
     pub fn user_shortcut_osc_intent(
         &mut self,
         state: &StudioUiState,
         name: &str,
+        value: Option<fm_protocol::FireValue>,
     ) -> Option<StudioIntent> {
         let shortcut = by_osc(replicated(state), name)?.id;
-        let mut intent = self.user_shortcut_intent(state, shortcut)?;
+        let mut intent = self.user_shortcut_intent(state, shortcut, value)?;
         crate::selection::bind(self.selected_input, core::slice::from_mut(&mut intent));
         Some(intent)
     }
@@ -2057,7 +2090,7 @@ fn draw_editor(
             shortcuts
                 .iter()
                 .find(|found| found.id == shortcut)
-                .and_then(|found| fire_block(state, found))
+                .and_then(|found| fire_block(state, found).or_else(|| value_block(found, None)))
         };
         if ui
             .add_enabled(
@@ -2070,6 +2103,7 @@ fn draw_editor(
             intents.push(StudioIntent::Shortcut(ShortcutIntent::Fire {
                 shortcut,
                 targets: fm_protocol::WireTargetBindings::default(),
+                value: None,
             }));
         }
         let remove = edit.or_else(|| (!saved).then_some(Msg::UserShortcutReasonNotSaved.en()));

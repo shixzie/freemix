@@ -30,9 +30,9 @@ use std::num::NonZeroU128;
 
 use egui::{RichText, Ui};
 use fm_protocol::{
-    MAX_CUE_TITLE_NUMBER, ScriptStatus, StingerReadiness, TitleFieldStatus, TitleFieldValue,
-    TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation, WireInputId,
-    WireInputTarget, WireTargetBindings, WireTitleFieldId,
+    CueGain, CueMute, MAX_CUE_TITLE_NUMBER, ScriptStatus, StingerReadiness, TitleFieldStatus,
+    TitleFieldValue, TransitionFavoriteEffect, WireCue, WireCueAction, WireCueMediaOperation,
+    WireInputId, WireInputTarget, WireTargetBindings, WireTitleFieldId,
 };
 use fm_types::{FrameRate, InputId};
 use fm_ui_model::{check_script_syntax, script_verbs, script_waits};
@@ -887,19 +887,34 @@ impl Walk<'_> {
             WireCueAction::PlaylistStop => {
                 (LineKind::Action, l.text(Msg::CuePvPlaylistStop).to_owned())
             }
-            WireCueAction::AudioGain {
-                input,
-                gain_millidb,
-            } => {
+            WireCueAction::AudioGain { input, gain: level } => {
                 let target = resolved(*input);
                 let gain = |millidb: i32| l.decibels(f64::from(millidb) / 1_000.0, -1_000.0);
-                let text = l.format(
-                    Msg::CuePvGain,
-                    &[
-                        ("input", Arg::Str(&name(input))),
-                        ("gain", Arg::Str(&gain(*gain_millidb))),
-                    ],
-                );
+                let input_name = name(input);
+                let text = match *level {
+                    CueGain::Set(value) => l.format(
+                        Msg::CuePvGain,
+                        &[
+                            ("input", Arg::Str(&input_name)),
+                            ("gain", Arg::Str(&gain(value))),
+                        ],
+                    ),
+                    CueGain::Step(step) => l.format(
+                        Msg::CuePvGainStep,
+                        &[
+                            ("input", Arg::Str(&input_name)),
+                            ("gain", Arg::Str(&gain(step))),
+                        ],
+                    ),
+                    CueGain::Fired { min, max } => l.format(
+                        Msg::CuePvGainFired,
+                        &[
+                            ("input", Arg::Str(&input_name)),
+                            ("min", Arg::Str(&gain(min))),
+                            ("max", Arg::Str(&gain(max))),
+                        ],
+                    ),
+                };
                 let strip = self
                     .sim
                     .strips
@@ -907,8 +922,10 @@ impl Walk<'_> {
                     .find(|(found, ..)| *found == target);
                 let now = if let Some((_, current, _)) = strip {
                     let now = gain(*current);
-                    let same = *current == *gain_millidb;
-                    *current = *gain_millidb;
+                    // A control's value is known only when it fires.
+                    let next = level.apply(*current, None).unwrap_or(*current);
+                    let same = *current == next && !level.is_fired();
+                    *current = next;
                     if same && !self.sim.scripted {
                         issues.push(self.no_change(Msg::CuePvAlreadyState));
                     }
@@ -921,12 +938,12 @@ impl Walk<'_> {
                 };
                 (LineKind::Action, self.with_now(text, now))
             }
-            WireCueAction::AudioMute { input, muted } => {
+            WireCueAction::AudioMute { input, mute } => {
                 let target = resolved(*input);
-                let msg = if *muted {
-                    Msg::CuePvMute
-                } else {
-                    Msg::CuePvUnmute
+                let msg = match mute {
+                    CueMute::Set(true) => Msg::CuePvMute,
+                    CueMute::Set(false) => Msg::CuePvUnmute,
+                    CueMute::Toggle => Msg::CuePvMuteToggle,
                 };
                 let text = l.format(msg, &[("input", Arg::Str(&name(input)))]);
                 let scripted = self.sim.scripted;
@@ -937,8 +954,9 @@ impl Walk<'_> {
                     .find(|(found, ..)| *found == target)
                 {
                     Some((_, _, current)) => {
-                        let same = *current == *muted;
-                        *current = *muted;
+                        let next = mute.apply(*current);
+                        let same = *current == next;
+                        *current = next;
                         if same && !scripted {
                             issues.push(self.no_change(Msg::CuePvAlreadyState));
                         }
@@ -1841,15 +1859,15 @@ mod tests {
                 },
                 WireCueAction::AudioGain {
                     input: fm_types::InputTarget::Fixed(wire(1)),
-                    gain_millidb: -6_000,
+                    gain: CueGain::Set(-6_000),
                 },
                 WireCueAction::AudioGain {
                     input: fm_types::InputTarget::Fixed(wire(3)),
-                    gain_millidb: 0,
+                    gain: CueGain::Set(0),
                 },
                 WireCueAction::AudioMute {
                     input: fm_types::InputTarget::Fixed(wire(2)),
-                    muted: false,
+                    mute: CueMute::Set(false),
                 },
                 WireCueAction::Record {
                     recorder: WireRecorderSlot::new(2).unwrap(),
