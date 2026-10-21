@@ -13,9 +13,9 @@ use std::num::NonZeroU128;
 use fm_compositor::{
     AlphaMode, ChromaKey, CpuSourceFrame, CropRect, Effect, FlattenError, FlattenExecutionError,
     FlattenLimits, FlattenMode, FlattenOutput, FlattenPlan, FlattenStep, HoistedLayer, Key,
-    KeyFill, LumaKey, OutputInclusion, OutputTarget, RectMask, Rgba8, Rotation, Scene, SceneGraph,
-    SourceId, SourceLayer, Transform, compile_scene, execute_cpu, execute_flatten_cpu,
-    execute_flatten_cpu_frame, plan_flatten,
+    KeyFill, KeyRefinement, LightWrap, LumaKey, OutputInclusion, OutputTarget, RectMask, Rgba8,
+    Rotation, Scene, SceneGraph, SourceId, SourceLayer, Transform, compile_scene, execute_cpu,
+    execute_flatten_cpu, execute_flatten_cpu_frame, plan_flatten,
 };
 use fm_frame::{
     ClockDomainId, CpuVideoFrame, CpuVideoPayload, CpuVideoPlane, MediaTimestamp, MediaTiming,
@@ -584,6 +584,25 @@ fn hoisting_applies_only_when_it_is_exact_and_refusals_still_match() {
                 8,
                 Rgba8::new(8, 8, 8, 64),
                 vec![SourceLayer::new(L1, 0, inside)],
+            ),
+            FlattenMode::Auto,
+            plain_outer(),
+        ),
+        (
+            // The wrap takes the light of what lies beneath it: inside the
+            // wrapper that is its transparent background, not Root's layers.
+            "light-wrapped inner layer",
+            scene(
+                10,
+                8,
+                TRANSPARENT,
+                vec![
+                    SourceLayer::new(L1, 0, inside)
+                        .with_key(Key::Luma(LumaKey::new(60, 10, false)))
+                        .with_key_refinement(
+                            KeyRefinement::new().with_light_wrap(LightWrap::new(255, 4)),
+                        ),
+                ],
             ),
             FlattenMode::Auto,
             plain_outer(),

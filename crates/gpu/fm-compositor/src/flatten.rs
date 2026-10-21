@@ -357,7 +357,8 @@ impl FlattenPlan {
 /// - `S` is [`FlattenMode::Auto`], has a fully transparent background,
 ///   exactly one planned layer, and no planned safe-area guides;
 /// - that layer's transformed rectangle lies inside `S`'s canvas, so
-///   precomposition clips nothing;
+///   precomposition clips nothing, and it has no light wrap, whose edges
+///   take the light of `S`'s transparent background;
 /// - the consumer layer is premultiplied, fully opaque, unrotated, sized
 ///   exactly to `S`, has no crop, mask, key, key/fill, refinement, effects,
 ///   or border, and the summed translation does not overflow.
@@ -628,6 +629,15 @@ fn hoisted_layer(
     // A tilted inner layer can reach past the nested scene's edges, which
     // the nested render clips; hoisting would not.
     if inner.is_tilted() {
+        return None;
+    }
+    // A light wrap takes the light of what lies beneath its layer: inside
+    // the nested scene that is its transparent background, hoisted it
+    // would be the consumer's layers.
+    if inner
+        .key_refinement()
+        .is_some_and(|refinement| refinement.light_wrap.is_some())
+    {
         return None;
     }
     let inner_transform = inner.transform();
