@@ -1251,10 +1251,11 @@ fn draw_canvas(
     let at_pointer = response.interact_pointer_pos().or(response.hover_pos());
     // Esc abandons a running drag wherever the keyboard focus is (egui
     // ends the drag on Esc too, so this comes before the release).
-    if document.gesture_kind().is_some()
+    if (document.gesture_kind().is_some() || window.matte_drag.is_some())
         && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
     {
         document.cancel();
+        window.matte_drag = None;
         window.feedback = GestureFeedback::default();
     }
     if look.lock.is_none() {

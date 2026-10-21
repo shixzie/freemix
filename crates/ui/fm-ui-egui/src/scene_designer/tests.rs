@@ -848,6 +848,53 @@ fn dragging_a_garbage_matte_point_moves_only_that_point_as_one_step() {
     );
 }
 
+/// Esc during a garbage matte point drag puts the point back, as it does
+/// for every other canvas drag.
+#[test]
+fn esc_cancels_a_garbage_matte_point_drag() {
+    use fm_ui_model::scene_designer::Field;
+    let (mut driver, mut shell, state, scene) = opened(true, false);
+    let document = shell.scene_layout_draft_mut(scene).unwrap();
+    document.select(layer(1), false);
+    let _ = document.set_key_kind(Some(true));
+    assert!(document.set_field(Field::Matte, 1.0));
+    driver.frame(&mut shell, &state, Vec::new());
+    driver.frame(&mut shell, &state, Vec::new());
+    let matte = |shell: &StudioShell| {
+        shell
+            .designer
+            .document()
+            .unwrap()
+            .layer(layer(1))
+            .and_then(|layer| layer.key)
+            .and_then(|key| key.refinement().garbage_matte)
+            .expect("the matte stays on")
+            .points()[0]
+    };
+    let before = matte(&shell);
+    let undo = shell.designer.document().unwrap().undo_label();
+    let from = on_canvas(&shell, 96.0, 324.0);
+    driver.frame(&mut shell, &state, vec![Event::PointerMoved(from)]);
+    driver.frame(&mut shell, &state, vec![press(from, true, Modifiers::NONE)]);
+    for step in 1..=3_u8 {
+        let at = from + vec2(30.0 * f32::from(step), 30.0 * f32::from(step));
+        driver.frame(&mut shell, &state, vec![Event::PointerMoved(at)]);
+    }
+    assert_ne!(matte(&shell), before);
+    driver.frame(&mut shell, &state, key(Key::Escape, Modifiers::NONE));
+    assert_eq!(matte(&shell), before);
+    driver.frame(
+        &mut shell,
+        &state,
+        vec![press(from + vec2(90.0, 90.0), false, Modifiers::NONE)],
+    );
+    driver.frame(&mut shell, &state, Vec::new());
+    assert_eq!(matte(&shell), before);
+    let document = shell.designer.document().unwrap();
+    assert!(!document.editing());
+    assert_eq!(document.undo_label(), undo);
+}
+
 /// The compositors cut a layer's garbage matte before its effects, so on a
 /// flipped layer the matte's points show (and drag) mirrored with it.
 #[test]
