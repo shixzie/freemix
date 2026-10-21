@@ -10,6 +10,28 @@
 //! `title_take` (refused as if the field did not exist) and may not change
 //! exposure itself; Studio does that.
 //!
+//! Cue lists, shortcuts, and scripts (Protocol 2.104) set title fields too.
+//! A Web session's `cue_list_state`, `cue_list_changed`, `shortcut_state`,
+//! and `shortcut_changed` carry each title text or number action that sets
+//! a field hidden from it as the `TitleHidden` marker
+//! ([`fm_protocol::HIDDEN_TITLE_VALUE`]) in place of its value, and its
+//! `script_state` and `script_changed` withhold every script's source (a
+//! script's verbs cannot be reliably redacted). An action whose target is
+//! bound only when it fires (`preview`, `program`, or `selected`) sets a
+//! hidden field when any title hides a field of that id: the title it will
+//! reach is unknown, so the value is withheld whenever it might be hidden.
+//! After a `title_exposure_changed` a Web session is re-sent each cue list
+//! and shortcut that sets a title field, as it may now see them.
+//!
+//! A Web session's `cue_list_set` or `shortcut_set` may send a marker back
+//! where the stored definition has the action it stands for (same cue id
+//! and action position, same title target, field, and kind, still hidden):
+//! the stored action is kept, so redaction never overwrites real data. A
+//! marker anywhere else is refused `invalid_command`; an action that sets a
+//! hidden field with a value of its own is refused `permission_denied`
+//! whatever the value, so an edit cannot test a guess; and `script_set` is
+//! refused `permission_denied`.
+//!
 //! [`PhasePacer`] decides when the lossy `title_phases` record is sent to
 //! the sessions that take it (Web pages and raw Studio sessions).
 
@@ -17,8 +39,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use fm_protocol::{
-    CommandMessage, CommandPayload, CommandResult, EventPayload, TitlePhase, TitlePhasesMessage,
-    TitleStateMessage, TitleTimelineStatus, WireInputId, WireMessage, WireTitleFieldId,
+    CommandMessage, CommandPayload, CommandResult, CueListSpec, CueListStatus, EventPayload,
+    ShortcutSpec, ShortcutStatus, TitlePhase, TitlePhasesMessage, TitleStateMessage,
+    TitleTimelineStatus, WireCueAction, WireInputId, WireInputTarget, WireMessage,
+    WireShortcutAction, WireTitleFieldId,
 };
 
 /// How often the daemon looks at the titles' phases.
@@ -103,6 +127,59 @@ impl HiddenFields {
             .get(&input)
             .is_some_and(|fields| fields.contains(&field))
     }
+
+    /// Whether a cue or shortcut action aimed at `target`'s `field` may set
+    /// a hidden field: a fixed title's own hidden field, or for a target
+    /// bound only when the action fires, a field of that id hidden on any
+    /// title (Protocol 2.104).
+    fn hides_target(&self, target: WireInputTarget, field: WireTitleFieldId) -> bool {
+        match target.fixed() {
+            Some(input) => self.hides(input, field),
+            None => self.0.values().any(|fields| fields.contains(&field)),
+        }
+    }
+
+    /// The marker standing for `action` when it sets a field hidden from a
+    /// Web session; `None` when the session may see its value.
+    fn marker(&self, action: &WireCueAction) -> Option<WireCueAction> {
+        let (target, field, _) = action.title_value_field()?;
+        if self.hides_target(target, field) {
+            action.hidden_marker()
+        } else {
+            None
+        }
+    }
+
+    fn redact(&self, actions: &mut [WireCueAction]) {
+        for action in actions {
+            if let Some(marker) = self.marker(action) {
+                *action = marker;
+            }
+        }
+    }
+}
+
+/// A cue list as a Web session sees it: each action setting a field hidden
+/// from it carries the marker in place of its value (Protocol 2.104).
+pub(crate) fn web_cue_list(list: &mut CueListStatus, hidden: &HiddenFields) {
+    for cue in &mut list.spec.cues {
+        hidden.redact(&mut cue.actions);
+    }
+}
+
+/// A shortcut as a Web session sees it (see [`web_cue_list`]).
+pub(crate) fn web_shortcut(shortcut: &mut ShortcutStatus, hidden: &HiddenFields) {
+    if let WireShortcutAction::Actions(actions) = &mut shortcut.spec.action {
+        hidden.redact(actions);
+    }
+}
+
+/// Whether `actions` set any title field, and so may read differently to
+/// a Web session after an exposure change.
+pub(crate) fn sets_title_values(actions: &[WireCueAction]) -> bool {
+    actions
+        .iter()
+        .any(|action| action.title_value_field().is_some())
 }
 
 /// A title's state as a Web session sees it: hidden fields left out.
@@ -184,9 +261,188 @@ pub(crate) fn web_live_message(message: WireMessage, hidden: &HiddenFields) -> W
                 .titles
                 .retain(|text| !hidden.hides(text.input, text.field));
         }
+        EventPayload::CueListChanged(list) => web_cue_list(list, hidden),
+        EventPayload::ShortcutChanged(shortcut) => web_shortcut(shortcut, hidden),
+        EventPayload::ScriptChanged(script) => withhold_source(script),
         _ => {}
     }
     WireMessage::Event(event)
+}
+
+fn withhold_source(script: &mut fm_protocol::ScriptStatus) {
+    script.spec.source.clear();
+    script.source_hidden = true;
+}
+
+/// A record a Web session is sent (Protocol 2.104): a live event as
+/// [`web_live_message`] filters it, and a cue list, shortcut, or script
+/// state record redacted as the matching `_changed` event is. A
+/// `title_state` must already be a Web session's (see [`web_title_state`]).
+pub(crate) fn web_message(message: WireMessage, hidden: &HiddenFields) -> WireMessage {
+    match message {
+        WireMessage::CueListState(mut state) => {
+            web_cue_list(&mut state.list, hidden);
+            WireMessage::CueListState(state)
+        }
+        WireMessage::ShortcutState(mut state) => {
+            web_shortcut(&mut state.shortcut, hidden);
+            WireMessage::ShortcutState(state)
+        }
+        WireMessage::ScriptState(mut state) => {
+            withhold_source(&mut state.script);
+            WireMessage::ScriptState(state)
+        }
+        message => web_live_message(message, hidden),
+    }
+}
+
+/// Whether `message` changes which title fields Web sessions see, so the
+/// cue lists and shortcuts that set title fields are re-sent to them
+/// (Protocol 2.104).
+pub(crate) fn exposure_changed(message: &WireMessage) -> bool {
+    matches!(
+        message,
+        WireMessage::Event(event)
+            if matches!(event.payload, EventPayload::TitleExposureChanged { .. })
+    )
+}
+
+/// Why a Web session's edit is refused (Protocol 2.104).
+#[derive(Debug, Eq, PartialEq)]
+enum EditRefusal {
+    /// A marker with no stored hidden value behind it.
+    Invalid(String),
+    /// A value of its own for a hidden field, or a script edit.
+    Denied(String),
+}
+
+/// Puts back each stored action a marker in `incoming` stands for:
+/// `stored` is the stored definition's actions at the same place (`place`
+/// names it in a refusal).
+fn resolve_actions(
+    incoming: &mut [WireCueAction],
+    stored: &[WireCueAction],
+    hidden: &HiddenFields,
+    place: &str,
+) -> Result<(), EditRefusal> {
+    for (index, action) in incoming.iter_mut().enumerate() {
+        let position = index + 1;
+        if let WireCueAction::TitleHidden { input, field, .. } = *action {
+            let kept = stored.get(index).filter(|stored| {
+                stored.hidden_marker().as_ref() == Some(&*action)
+                    && hidden.hides_target(input, field)
+            });
+            let Some(kept) = kept else {
+                return Err(EditRefusal::Invalid(format!(
+                    "{place} action {position}: the hidden title value marker stands for no \
+                     stored hidden value there"
+                )));
+            };
+            *action = kept.clone();
+        } else if let Some((target, field, _)) = action.title_value_field()
+            && hidden.hides_target(target, field)
+        {
+            return Err(EditRefusal::Denied(format!(
+                "{place} action {position}: a web session cannot set title field {field} of \
+                 {target}, which is hidden from the browser"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn resolve_cue_list(
+    spec: &mut CueListSpec,
+    stored: Option<&CueListSpec>,
+    hidden: &HiddenFields,
+) -> Result<(), EditRefusal> {
+    for cue in &mut spec.cues {
+        let stored_actions = stored
+            .and_then(|stored| stored.cues.iter().find(|found| found.id == cue.id))
+            .map_or(&[][..], |found| found.actions.as_slice());
+        let place = format!("cue {}", cue.id);
+        resolve_actions(&mut cue.actions, stored_actions, hidden, &place)?;
+    }
+    Ok(())
+}
+
+fn resolve_shortcut(
+    spec: &mut ShortcutSpec,
+    stored: Option<&ShortcutSpec>,
+    hidden: &HiddenFields,
+) -> Result<(), EditRefusal> {
+    let WireShortcutAction::Actions(actions) = &mut spec.action else {
+        return Ok(());
+    };
+    let stored_actions = match stored.map(|stored| &stored.action) {
+        Some(WireShortcutAction::Actions(stored)) => stored.as_slice(),
+        _ => &[],
+    };
+    resolve_actions(actions, stored_actions, hidden, "shortcut")
+}
+
+/// The stored definitions a Web session's edit may keep hidden values of.
+pub(crate) struct StoredDefinitions {
+    pub(crate) cue_lists: Vec<CueListStatus>,
+    pub(crate) shortcuts: Vec<ShortcutStatus>,
+}
+
+/// Whether `command` is a cue list, shortcut, or script edit that
+/// [`web_definition_edit`] must see before a Web session's command runs.
+pub(crate) const fn is_definition_edit(command: &CommandMessage) -> bool {
+    matches!(
+        command.payload,
+        CommandPayload::SetCueList { .. }
+            | CommandPayload::SetShortcut { .. }
+            | CommandPayload::SetScript { .. }
+    )
+}
+
+/// A Web session's cue list, shortcut, or script edit as it executes
+/// (Protocol 2.104): each marker it sends back replaced by the stored
+/// action it stands for, or the refusal it meets. `None` lets it run.
+pub(crate) fn web_definition_edit(
+    command: &mut CommandMessage,
+    hidden: &HiddenFields,
+    stored: &StoredDefinitions,
+    current_revision: u64,
+) -> Option<CommandResult> {
+    let refusal = match &mut command.payload {
+        CommandPayload::SetCueList { list, spec, .. } => {
+            let stored = stored
+                .cue_lists
+                .iter()
+                .find(|found| found.id == *list)
+                .map(|found| &found.spec);
+            resolve_cue_list(spec, stored, hidden).err()
+        }
+        CommandPayload::SetShortcut { shortcut, spec, .. } => {
+            let stored = stored
+                .shortcuts
+                .iter()
+                .find(|found| found.id == *shortcut)
+                .map(|found| &found.spec);
+            resolve_shortcut(spec, stored, hidden).err()
+        }
+        CommandPayload::SetScript { .. } => Some(EditRefusal::Denied(
+            "a web session cannot edit scripts: their source is withheld from the browser"
+                .to_owned(),
+        )),
+        _ => None,
+    }?;
+    let (code, message) = match refusal {
+        EditRefusal::Invalid(message) => ("invalid_command", message),
+        EditRefusal::Denied(message) => ("permission_denied", message),
+    };
+    Some(CommandResult::Rejected {
+        id: command.id.clone(),
+        code: code.to_owned(),
+        message,
+        fields: Vec::new(),
+        current_revision,
+        retryable: false,
+        reason: None,
+    })
 }
 
 /// The refusal a Web session's command meets before it executes: changing
@@ -659,5 +915,329 @@ mod tests {
             )),
             None
         );
+    }
+
+    fn text(target: WireInputTarget, id: u128, value: &str) -> WireCueAction {
+        WireCueAction::TitleText {
+            input: target,
+            field: field(id),
+            text: value.into(),
+        }
+    }
+
+    fn fixed(value: u128) -> WireInputTarget {
+        WireInputTarget::Fixed(input(value))
+    }
+
+    /// A list whose cue 1 sets title 3's exposed name and hidden note, then
+    /// title 5's field 2 (exposed there), and whose cue 2 sets field 2 of
+    /// whichever title is on Preview when it fires, and steps a number.
+    fn list() -> CueListStatus {
+        CueListStatus {
+            id: 7,
+            spec: CueListSpec {
+                name: "Show".into(),
+                cues: vec![
+                    fm_protocol::WireCue {
+                        id: 1,
+                        name: "Names".into(),
+                        auto_follow: false,
+                        actions: vec![
+                            text(fixed(3), 1, "Ana"),
+                            text(fixed(3), 2, "producer note"),
+                            text(fixed(5), 2, "kept"),
+                        ],
+                    },
+                    fm_protocol::WireCue {
+                        id: 2,
+                        name: "Dynamic".into(),
+                        auto_follow: false,
+                        actions: vec![
+                            WireCueAction::Preview { input: fixed(5) },
+                            text(WireInputTarget::Preview, 2, "dynamic secret"),
+                            WireCueAction::TitleNumber {
+                                input: fixed(3),
+                                field: field(2),
+                                add: true,
+                                value: 424_242,
+                            },
+                        ],
+                    },
+                ],
+            },
+            state: fm_protocol::CueRunStatus::default(),
+        }
+    }
+
+    fn shortcut() -> ShortcutStatus {
+        ShortcutStatus {
+            id: 9,
+            spec: ShortcutSpec {
+                name: "Note".into(),
+                enabled: true,
+                key: None,
+                osc: None,
+                action: WireShortcutAction::Actions(vec![
+                    text(fixed(3), 1, "Bo"),
+                    text(fixed(3), 2, "shortcut secret"),
+                ]),
+            },
+        }
+    }
+
+    fn marker(target: WireInputTarget, id: u128, number: bool) -> WireCueAction {
+        WireCueAction::TitleHidden {
+            input: target,
+            field: field(id),
+            number,
+        }
+    }
+
+    #[test]
+    fn cue_lists_shortcuts_and_scripts_reach_a_web_session_without_hidden_values() {
+        let records = [
+            WireMessage::CueListState(fm_protocol::CueListStateMessage {
+                revision: 4,
+                frame: 0,
+                list: list(),
+            }),
+            event(EventPayload::CueListChanged(Box::new(list()))),
+            WireMessage::ShortcutState(fm_protocol::ShortcutStateMessage {
+                revision: 4,
+                shortcut: shortcut(),
+            }),
+            event(EventPayload::ShortcutChanged(Box::new(shortcut()))),
+            WireMessage::ScriptState(fm_protocol::ScriptStateMessage {
+                revision: 4,
+                script: fm_protocol::ScriptStatus::new(
+                    1,
+                    fm_protocol::ScriptSpec {
+                        name: "Open".into(),
+                        source: "title_text 3, 2, \"script secret\"".into(),
+                    },
+                ),
+                run: fm_protocol::ScriptRunStatus::Idle,
+            }),
+            event(EventPayload::ScriptChanged(Box::new(
+                fm_protocol::ScriptStatus::new(
+                    1,
+                    fm_protocol::ScriptSpec {
+                        name: "Open".into(),
+                        source: "title_text 3, 2, \"script secret\"".into(),
+                    },
+                ),
+            ))),
+        ];
+        for record in records {
+            let web = web_message(record, &hidden());
+            let line = fm_protocol::encode_line(&web).unwrap();
+            for secret in [
+                "producer note",
+                "dynamic secret",
+                "shortcut secret",
+                "script secret",
+            ] {
+                let hex: String = secret.bytes().fold(String::new(), |mut hex, byte| {
+                    use std::fmt::Write as _;
+                    write!(hex, "{byte:02x}").unwrap();
+                    hex
+                });
+                assert!(
+                    !line.contains(&hex) && !line.contains(secret),
+                    "{secret} leaked: {line}"
+                );
+            }
+            assert!(!line.contains("424242"), "{line}");
+            assert_eq!(fm_protocol::decode_line(&line).unwrap(), web);
+            match web {
+                WireMessage::CueListState(fm_protocol::CueListStateMessage { list, .. }) => {
+                    assert_web_list(&list);
+                }
+                WireMessage::Event(EventMessage {
+                    payload: EventPayload::CueListChanged(list),
+                    ..
+                }) => assert_web_list(&list),
+                WireMessage::ShortcutState(fm_protocol::ShortcutStateMessage {
+                    shortcut, ..
+                }) => assert_web_shortcut(&shortcut),
+                WireMessage::Event(EventMessage {
+                    payload: EventPayload::ShortcutChanged(shortcut),
+                    ..
+                }) => assert_web_shortcut(&shortcut),
+                WireMessage::ScriptState(fm_protocol::ScriptStateMessage { script, .. }) => {
+                    assert!(script.source_hidden && script.spec.source.is_empty());
+                    assert_eq!(script.spec.name, "Open");
+                    assert!(line.contains("\tsource=hidden"), "{line}");
+                }
+                WireMessage::Event(EventMessage {
+                    payload: EventPayload::ScriptChanged(script),
+                    ..
+                }) => {
+                    assert!(script.source_hidden && script.spec.source.is_empty());
+                    assert!(line.contains("\tsource=hidden"), "{line}");
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        // Without hidden fields only the scripts' sources are withheld.
+        let mut open = list();
+        web_cue_list(&mut open, &HiddenFields::default());
+        assert_eq!(open, list());
+    }
+
+    fn assert_web_list(list: &CueListStatus) {
+        assert_eq!(
+            list.spec.cues[0].actions,
+            [
+                text(fixed(3), 1, "Ana"),
+                marker(fixed(3), 2, false),
+                text(fixed(5), 2, "kept"),
+            ]
+        );
+        // A role target may reach title 3, whose field 2 is hidden.
+        assert_eq!(
+            list.spec.cues[1].actions,
+            [
+                WireCueAction::Preview { input: fixed(5) },
+                marker(WireInputTarget::Preview, 2, false),
+                marker(fixed(3), 2, true),
+            ]
+        );
+    }
+
+    fn assert_web_shortcut(shortcut: &ShortcutStatus) {
+        assert_eq!(
+            shortcut.spec.action,
+            WireShortcutAction::Actions(vec![text(fixed(3), 1, "Bo"), marker(fixed(3), 2, false)])
+        );
+    }
+
+    fn edit(payload: CommandPayload) -> CommandMessage {
+        CommandMessage {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            id: "edit".into(),
+            idempotency_key: "edit".into(),
+            expected_revision: None,
+            deadline_ms: None,
+            payload,
+        }
+    }
+
+    fn stored() -> StoredDefinitions {
+        StoredDefinitions {
+            cue_lists: vec![list()],
+            shortcuts: vec![shortcut()],
+        }
+    }
+
+    fn set_list(spec: CueListSpec) -> CommandMessage {
+        edit(CommandPayload::SetCueList {
+            list: 7,
+            spec: Box::new(spec),
+            position: None,
+        })
+    }
+
+    fn refusal(command: &mut CommandMessage) -> Option<(String, String)> {
+        match web_definition_edit(command, &hidden(), &stored(), 4) {
+            Some(CommandResult::Rejected { code, message, .. }) => Some((code, message)),
+            Some(other) => panic!("{other:?}"),
+            None => None,
+        }
+    }
+
+    #[test]
+    fn a_web_edit_keeps_the_hidden_values_its_markers_stand_for() {
+        // The list as the page has it, renamed and with a new exposed text.
+        let mut web = list();
+        web_cue_list(&mut web, &hidden());
+        web.spec.name = "Renamed".into();
+        web.spec.cues[0].actions[0] = text(fixed(3), 1, "Cy");
+        let mut command = set_list(web.spec);
+        assert_eq!(refusal(&mut command), None);
+        let CommandPayload::SetCueList { spec, .. } = &command.payload else {
+            panic!("{command:?}")
+        };
+        let mut expected = list().spec;
+        expected.name = "Renamed".into();
+        expected.cues[0].actions[0] = text(fixed(3), 1, "Cy");
+        assert_eq!(**spec, expected);
+
+        let mut web = shortcut();
+        web_shortcut(&mut web, &hidden());
+        web.spec.enabled = false;
+        let mut command = edit(CommandPayload::SetShortcut {
+            shortcut: 9,
+            spec: Box::new(web.spec),
+            position: None,
+        });
+        assert_eq!(refusal(&mut command), None);
+        let CommandPayload::SetShortcut { spec, .. } = &command.payload else {
+            panic!("{command:?}")
+        };
+        assert_eq!(spec.action, shortcut().spec.action);
+        assert!(!spec.enabled);
+    }
+
+    #[test]
+    fn a_web_edit_may_not_set_a_hidden_field_nor_place_a_marker_freely() {
+        let code = |command: &mut CommandMessage| refusal(command).map(|(code, _)| code);
+        let page = || {
+            let mut web = list();
+            web_cue_list(&mut web, &hidden());
+            web.spec
+        };
+        // A value of its own for the hidden note, even the stored one.
+        for value in ["guess", "producer note"] {
+            let mut spec = page();
+            spec.cues[0].actions[1] = text(fixed(3), 2, value);
+            let refused = refusal(&mut set_list(spec)).unwrap();
+            assert_eq!(refused.0, "permission_denied");
+            assert!(refused.1.contains("cue 1 action 2"), "{}", refused.1);
+            assert!(!refused.1.contains("producer"), "{}", refused.1);
+        }
+        // A role target that may reach the hidden field.
+        let mut spec = page();
+        spec.cues[1].actions[1] = text(WireInputTarget::Selected, 2, "x");
+        assert_eq!(
+            code(&mut set_list(spec)).as_deref(),
+            Some("permission_denied")
+        );
+        // A marker moved to another place, title, field, or kind, or in a
+        // new cue or list, stands for nothing.
+        let moved: [fn(&mut CueListSpec); 5] = [
+            |spec| spec.cues[0].actions.swap(1, 2),
+            |spec| spec.cues[0].actions[1] = marker(fixed(5), 2, false),
+            |spec| spec.cues[0].actions[1] = marker(fixed(3), 1, false),
+            |spec| spec.cues[0].actions[1] = marker(fixed(3), 2, true),
+            |spec| spec.cues[0].id = 3,
+        ];
+        for change in moved {
+            let mut spec = page();
+            change(&mut spec);
+            assert_eq!(
+                code(&mut set_list(spec)).as_deref(),
+                Some("invalid_command")
+            );
+        }
+        let mut command = edit(CommandPayload::SetCueList {
+            list: 8,
+            spec: Box::new(page()),
+            position: None,
+        });
+        assert_eq!(code(&mut command).as_deref(), Some("invalid_command"));
+        // Exposed fields stay editable, and scripts are not.
+        let mut spec = page();
+        spec.cues[0].actions[2] = text(fixed(5), 2, "new");
+        assert_eq!(code(&mut set_list(spec)), None);
+        let mut script = edit(CommandPayload::SetScript {
+            script: 1,
+            spec: Box::new(fm_protocol::ScriptSpec {
+                name: "Open".into(),
+                source: "cut 2".into(),
+            }),
+            position: None,
+        });
+        assert_eq!(code(&mut script).as_deref(), Some("permission_denied"));
     }
 }

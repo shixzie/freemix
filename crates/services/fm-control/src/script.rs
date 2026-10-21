@@ -21,13 +21,13 @@ const _: () = {
 /// The wire form of a project script.
 #[must_use]
 pub fn wire_script(script: &Script) -> ScriptStatus {
-    ScriptStatus {
-        id: script.id,
-        spec: ScriptSpec {
+    ScriptStatus::new(
+        script.id,
+        ScriptSpec {
             name: script.name.clone(),
             source: script.source.clone(),
         },
-    }
+    )
 }
 
 /// Maps the script commands.

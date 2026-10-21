@@ -330,6 +330,8 @@ enum PreparedSubmissionKind {
         /// empty history could not resolve again.
         replay_payload: Option<Box<CommandPayload>>,
     },
+    /// A refusal decided before the engine: an authorization denial, or
+    /// (never remembered) an edit carrying a hidden title value marker.
     AuthorizationDenial {
         /// False when the key already owns a durable engine receipt, which a
         /// cached denial must never shadow.
@@ -2479,6 +2481,36 @@ impl<A: AuthorizationHook> ControlService<A> {
             }));
         }
 
+        // A hidden title value marker (Protocol 2.104, GX-006) stands for a
+        // stored value only in a Web session's edit, which the daemon
+        // resolves before submitting it; any that reaches the authority
+        // names no value and is refused, never stored.
+        if carries_hidden_title_value(&message.payload) {
+            let result = CommandResult::Rejected {
+                id: message.id,
+                code: RejectionCode::InvalidCommand.as_str().to_owned(),
+                message: "a hidden title value marker names no stored hidden value".to_owned(),
+                fields: Vec::new(),
+                current_revision: self.engine.revision().get(),
+                retryable: false,
+                reason: None,
+            };
+            return Ok(PrepareSubmitOutcome::Prepared(PreparedSubmission {
+                control: self,
+                idempotency_key,
+                kind: PreparedSubmissionKind::AuthorizationDenial { remember: false },
+                submission: CommandSubmission {
+                    output: ResultBeforeEvents {
+                        result,
+                        events: Vec::new(),
+                    },
+                    replayed: false,
+                    accepted: None,
+                    subscriber_failures: Vec::new(),
+                },
+            }));
+        }
+
         // A fire's dynamic targets are bound here, on the show it is
         // prepared on, and the bound payload is what executes and what the
         // journal records (RC-004).
@@ -3592,6 +3624,16 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         | CommandPayload::RemoveAnimationPreset { .. }) => {
             animation_preset::animation_preset_engine_command(payload)
         }
+    }
+}
+
+/// Whether `payload` is a cue list or shortcut edit carrying a hidden
+/// title value marker (Protocol 2.104).
+fn carries_hidden_title_value(payload: &CommandPayload) -> bool {
+    match payload {
+        CommandPayload::SetCueList { spec, .. } => spec.has_hidden_title_value(),
+        CommandPayload::SetShortcut { spec, .. } => spec.has_hidden_title_value(),
+        _ => false,
     }
 }
 

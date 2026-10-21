@@ -858,6 +858,18 @@ impl Walk<'_> {
                     self.title_number(target, *field, *add, *value, bad_reference, &mut issues);
                 (LineKind::Action, self.with_now(line, now))
             }
+            // Only a Web session is sent the hidden marker (Protocol
+            // 2.104); Studio never sees one, so it reads as a value-less set.
+            WireCueAction::TitleHidden { input, field, .. } => {
+                let target = resolved(*input);
+                let line = self.title_line(
+                    target,
+                    *field,
+                    Msg::CuePvTitleSet,
+                    &[("value", quoted(l, "…"))],
+                );
+                (LineKind::Action, line)
+            }
             WireCueAction::FadeToBlack {
                 active,
                 duration_frames,
@@ -1410,6 +1422,7 @@ mod tests {
                 name: name.into(),
                 source: source.into(),
             },
+            source_hidden: false,
         }
     }
 

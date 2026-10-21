@@ -3,10 +3,13 @@
 //! `script` is a nonzero canonical id, `name` the script name (validated by
 //! [`crate::script_name_is_valid`]), and `source` the lowercase hex of the
 //! source's UTF-8 bytes, so newlines and separators never reach the record.
+//! A `script_state` or `script_changed` whose source is withheld from the
+//! session carries `source=hidden` (Protocol 2.104); `script_set` never
+//! does.
 
 use crate::{
-    CodecError, MAX_SCRIPTS, ScriptRunStatus, ScriptSpec, ScriptStatus, script_name_is_valid,
-    script_source_is_valid,
+    CodecError, HIDDEN_SCRIPT_SOURCE, MAX_SCRIPTS, ScriptRunStatus, ScriptSpec, ScriptStatus,
+    script_name_is_valid, script_source_is_valid,
 };
 
 use super::cue::{hex, unhex};
@@ -70,16 +73,41 @@ pub(super) fn decode_spec(fields: &mut dyn FieldSource) -> Result<ScriptSpec, Co
     Ok(spec)
 }
 
-/// Encodes a whole script.
+/// Encodes a whole script; a withheld source is written as
+/// [`HIDDEN_SCRIPT_SOURCE`] (Protocol 2.104).
 pub(super) fn encode_status(status: &ScriptStatus, push: &mut Push<'_>) -> Result<(), CodecError> {
-    encode_spec(status.id, &status.spec, push)
+    if !status.source_hidden {
+        return encode_spec(status.id, &status.spec, push);
+    }
+    validate_script_id(status.id)?;
+    validate_spec(&status.spec)?;
+    if !status.spec.source.is_empty() {
+        return Err(invalid("source", "a withheld source is empty"));
+    }
+    push("script", status.id.to_string())?;
+    push("name", status.spec.name.clone())?;
+    push("source", HIDDEN_SCRIPT_SOURCE.to_owned())
 }
 
-/// Decodes a whole script.
+/// Decodes a whole script, its source possibly withheld.
 pub(super) fn decode_status(fields: &mut dyn FieldSource) -> Result<ScriptStatus, CodecError> {
+    let id = decode_script_id(fields)?;
+    let name = fields.required("name")?;
+    let source = fields.required("source")?;
+    let source_hidden = source == HIDDEN_SCRIPT_SOURCE;
+    let spec = ScriptSpec {
+        name,
+        source: if source_hidden {
+            String::new()
+        } else {
+            unhex("source", &source)?
+        },
+    };
+    validate_spec(&spec)?;
     Ok(ScriptStatus {
-        id: decode_script_id(fields)?,
-        spec: decode_spec(fields)?,
+        id,
+        spec,
+        source_hidden,
     })
 }
 

@@ -828,3 +828,81 @@ fn cue_list_set_carries_an_optional_position_exactly() {
         .is_err()
     );
 }
+
+/// Protocol 2.104 (GX-006): a title action whose value is hidden from the
+/// session travels as `title_text.<input>.<field>.hidden` or
+/// `title_number.<input>.<field>.hidden` in cue lists and shortcuts, exactly;
+/// nothing else stands for it.
+#[test]
+fn the_hidden_title_value_marker_round_trips_exactly() {
+    let field = WireTitleFieldId::new(NonZeroU128::new(2).unwrap());
+    let text = WireCueAction::TitleHidden {
+        input: fm_protocol::WireInputTarget::Fixed(input(3)),
+        field,
+        number: false,
+    };
+    let number = WireCueAction::TitleHidden {
+        input: fm_protocol::WireInputTarget::Preview,
+        field,
+        number: true,
+    };
+    assert_eq!(
+        fm_protocol::cue_action_token(&text),
+        "title_text.3.2.hidden"
+    );
+    assert_eq!(
+        fm_protocol::cue_action_token(&number),
+        "title_number.preview.2.hidden"
+    );
+    for action in [&text, &number] {
+        let token = fm_protocol::cue_action_token(action);
+        assert_eq!(
+            fm_protocol::parse_cue_action_token(&token).as_ref(),
+            Some(action)
+        );
+    }
+    // The marker each title action stands for.
+    let set = WireCueAction::TitleText {
+        input: fm_protocol::WireInputTarget::Fixed(input(3)),
+        field,
+        text: "note".into(),
+    };
+    assert_eq!(set.hidden_marker(), Some(text.clone()));
+    assert_eq!(text.hidden_marker(), None);
+    let mut spec = spec();
+    assert!(!spec.has_hidden_title_value());
+    spec.cues[0].actions = vec![text, number];
+    assert!(spec.has_hidden_title_value());
+    let list = CueListStatus {
+        id: 3,
+        spec: spec.clone(),
+        state: CueRunStatus::default(),
+    };
+    let line = round_trip(&event(EventPayload::CueListChanged(Box::new(list.clone()))));
+    assert!(
+        line.contains("title_text.3.2.hidden%2Ftitle_number.preview.2.hidden"),
+        "{line}"
+    );
+    round_trip(&WireMessage::CueListState(CueListStateMessage {
+        revision: 4,
+        frame: 0,
+        list,
+    }));
+    round_trip(&command(CommandPayload::SetCueList {
+        list: 3,
+        spec: Box::new(spec),
+        position: None,
+    }));
+    // Strict: only the exact marker, without a set/add mode or a value.
+    for bad in [
+        "title_text.3.2.HIDDEN",
+        "title_text.3.2.hidde",
+        "title_number.3.2.set.hidden",
+        "title_number.3.2.hidden.1",
+        "title_text.3.2.hidden.1",
+        "title_text.3.hidden",
+        "title_text.3.0.hidden",
+    ] {
+        assert_eq!(fm_protocol::parse_cue_action_token(bad), None, "{bad}");
+    }
+}

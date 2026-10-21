@@ -15392,7 +15392,13 @@ fn stored_project_from_snapshot(
         .iter()
         .any(|receipt| receipt.key() == command.idempotency_key)
     {
-        if !matches!(result, CommandResult::Rejected { code, .. } if code == "permission_denied") {
+        // Refused before the engine: an authorization denial, or an edit
+        // carrying a hidden title value marker (Protocol 2.104).
+        if !matches!(
+            result,
+            CommandResult::Rejected { code, .. }
+                if code == "permission_denied" || code == "invalid_command"
+        ) {
             return Err(AppFailure(
                 "projected engine snapshot is missing the staged command receipt".into(),
             )

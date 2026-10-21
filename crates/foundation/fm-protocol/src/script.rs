@@ -21,6 +21,11 @@
 //! | [`crate::EventPayload::ScriptRunChanged`] | `script_run_changed` | `script`, `frame`, `run` (Protocol 2.62) |
 //! | [`crate::EventPayload::ScriptRunsStopped`] | `script_runs_stopped` | `frame`, `scripts` (Protocol 2.69) |
 //!
+//! Since Protocol 2.104 (GX-006) a Web session's `script_state` and
+//! `script_changed` carry `source=hidden` ([`HIDDEN_SCRIPT_SOURCE`]) in
+//! place of the source ([`ScriptStatus::source_hidden`]), and its
+//! `script_set` is refused with `permission_denied`.
+//!
 //! A snapshot names how many `script_state` records follow it
 //! ([`crate::SnapshotMessage::script_states`]), one per script in project
 //! order, after its cue list states; each carries the script's `run`
@@ -83,8 +88,41 @@ pub struct ScriptSpec {
 pub struct ScriptStatus {
     /// Nonzero, unique within the project.
     pub id: u64,
+    /// The script's name and source; the source is empty when
+    /// `source_hidden`.
     pub spec: ScriptSpec,
+    /// Whether the source is withheld from this session (Protocol 2.104,
+    /// GX-006): a script may set title fields hidden from Web sessions, and
+    /// its source cannot be reliably redacted, so a Web session sees only
+    /// its name and run state. Wire `source=hidden`, which is not lowercase
+    /// hex, so no real source encodes to it.
+    pub source_hidden: bool,
 }
+
+impl ScriptStatus {
+    /// A script as sent: the whole source.
+    #[must_use]
+    pub const fn new(id: u64, spec: ScriptSpec) -> Self {
+        Self {
+            id,
+            spec,
+            source_hidden: false,
+        }
+    }
+
+    /// The script as a session without access to hidden title fields sees
+    /// it: name only, its source withheld (Protocol 2.104).
+    #[must_use]
+    pub fn source_withheld(mut self) -> Self {
+        self.spec.source.clear();
+        self.source_hidden = true;
+        self
+    }
+}
+
+/// The `source` marker of a script whose source is withheld (Protocol
+/// 2.104, GX-006).
+pub const HIDDEN_SCRIPT_SOURCE: &str = "hidden";
 
 /// A script's run (Protocol 2.62). Since Protocol 2.69 several scripts
 /// run at once, at most [`MAX_SCRIPT_RUNS`] waiting, and each run names

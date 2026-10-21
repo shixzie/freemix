@@ -1470,9 +1470,7 @@ pub(super) fn run(
             &mut close,
             &mut live_budget,
             hidden.as_ref(),
-            &mut |inputs| {
-                crate::web_titles::web_title_states(control.borrow().title_states(), inputs)
-            },
+            &mut |message| web_resync(&runtime, &control.borrow(), message),
         );
 
         for (index, peer) in peers.iter_mut().enumerate() {
@@ -2142,8 +2140,8 @@ impl Runtime<'_> {
         }
         let mut native = native;
         match message {
-            WireMessage::Command(command) => {
-                if let Some(refused) = self.web_command_refusal(peer, &command) {
+            WireMessage::Command(mut command) => {
+                if let Some(refused) = self.web_command_refusal(peer, &mut command) {
                     peer.reply(WireMessage::CommandResult(refused))?;
                     return Ok(());
                 }
@@ -2496,21 +2494,48 @@ impl Runtime<'_> {
     }
 
     /// The refusal a Web peer's command meets before it executes (see
-    /// [`crate::web_titles`]); `None` for raw peers and allowed commands.
+    /// [`crate::web_titles`]); `None` for raw peers and allowed commands. A
+    /// Web peer's cue list or shortcut edit gets back the stored values
+    /// its hidden markers stand for (Protocol 2.104).
     fn web_command_refusal(
         &self,
         peer: &Peer,
-        command: &fm_protocol::CommandMessage,
+        command: &mut fm_protocol::CommandMessage,
     ) -> Option<fm_protocol::CommandResult> {
         if !web_title_command(peer, command) {
             return None;
         }
         let control = self.control.borrow();
-        crate::web_titles::web_command_refusal(
-            command,
-            &crate::web_titles::HiddenFields::new(control.title_hidden_fields()),
-            control.diagnostics().current_revision,
-        )
+        let hidden = crate::web_titles::HiddenFields::new(control.title_hidden_fields());
+        let current_revision = control.diagnostics().current_revision;
+        if crate::web_titles::is_definition_edit(command) {
+            let stored = crate::web_titles::StoredDefinitions {
+                cue_lists: control
+                    .cue_list_states()
+                    .into_iter()
+                    .map(|state| state.list)
+                    .collect(),
+                shortcuts: control
+                    .shortcut_states()
+                    .into_iter()
+                    .map(|state| state.shortcut)
+                    .collect(),
+            };
+            return crate::web_titles::web_definition_edit(
+                command,
+                &hidden,
+                &stored,
+                current_revision,
+            );
+        }
+        crate::web_titles::web_command_refusal(command, &hidden, current_revision)
+    }
+
+    /// The fields titles hide from Web sessions, when `web`.
+    fn web_hidden(&self, web: bool) -> Option<crate::web_titles::HiddenFields> {
+        web.then(|| {
+            crate::web_titles::HiddenFields::new(self.control.borrow().title_hidden_fields())
+        })
     }
 
     /// Hands the engine's title templates to the title renderers: an
@@ -2680,27 +2705,29 @@ impl Runtime<'_> {
                     .into_iter()
                     .map(WireMessage::MediaState),
             );
-            // A waiting cue's countdown reads the show's wall-clock frame on
-            // the simulated daemon, as the playlist state does.
-            peer.initial_sync
-                .extend(control.cue_list_states().into_iter().map(|mut state| {
-                    state.frame =
-                        self.cue_clock
-                            .borrow()
-                            .observed_frame(state.frame, rate, Instant::now());
-                    WireMessage::CueListState(state)
-                }));
+            // A Web page is never sent a hidden field's value in a cue list
+            // or shortcut, nor any script's source (Protocol 2.104).
+            let hidden = self.web_hidden(web);
+            let web_record = |message: WireMessage| match &hidden {
+                Some(hidden) => crate::web_titles::web_message(message, hidden),
+                None => message,
+            };
+            peer.initial_sync.extend(
+                self.cue_list_states(&control)
+                    .into_iter()
+                    .map(|state| web_record(WireMessage::CueListState(state))),
+            );
             peer.initial_sync.extend(
                 control
                     .script_states()
                     .into_iter()
-                    .map(WireMessage::ScriptState),
+                    .map(|state| web_record(WireMessage::ScriptState(state))),
             );
             peer.initial_sync.extend(
                 control
                     .shortcut_states()
                     .into_iter()
-                    .map(WireMessage::ShortcutState),
+                    .map(|state| web_record(WireMessage::ShortcutState(state))),
             );
             peer.initial_sync.extend(
                 control
@@ -2727,6 +2754,26 @@ impl Runtime<'_> {
                     .map(WireMessage::PagedState),
             );
         }
+    }
+
+    /// Every cue list's state. A waiting cue's countdown reads the show's
+    /// wall-clock frame on the simulated daemon, as the playlist state does.
+    fn cue_list_states(
+        &self,
+        control: &fm_control::ControlService<fm_auth::Policy>,
+    ) -> Vec<fm_protocol::CueListStateMessage> {
+        let rate = control.snapshot().snapshot.frame_rate;
+        control
+            .cue_list_states()
+            .into_iter()
+            .map(|mut state| {
+                state.frame =
+                    self.cue_clock
+                        .borrow()
+                        .observed_frame(state.frame, rate, Instant::now());
+                state
+            })
+            .collect()
     }
 
     /// Answers a raw connection beyond [`MAX_PEERS`] with a retryable
@@ -2818,9 +2865,17 @@ impl Runtime<'_> {
             SyncPayload::Snapshot(snapshot) => peer
                 .initial_sync
                 .push_back(WireMessage::Snapshot(*snapshot)),
-            SyncPayload::Resume(events) => peer
-                .initial_sync
-                .extend(events.into_iter().map(WireMessage::Event)),
+            // Resumed events reach a Web page filtered as live ones do.
+            SyncPayload::Resume(events) => {
+                let hidden = self.web_hidden(peer.transport.is_web());
+                peer.initial_sync
+                    .extend(events.into_iter().map(|event| match &hidden {
+                        Some(hidden) => {
+                            crate::web_titles::web_message(WireMessage::Event(event), hidden)
+                        }
+                        None => WireMessage::Event(event),
+                    }));
+            }
         }
         let sync_limit = self
             .control
@@ -2888,16 +2943,69 @@ fn make_retryable(response: &mut HandshakeResponse) {
     }
 }
 
-/// Whether `command` is a Web peer's title command that must first be
-/// checked against the fields its title hides (see [`crate::web_titles`]).
+/// Whether `command` is a Web peer's title command, or cue list, shortcut,
+/// or script edit (Protocol 2.104), that must first be checked against the
+/// fields titles hide (see [`crate::web_titles`]).
 fn web_title_command(peer: &Peer, command: &fm_protocol::CommandMessage) -> bool {
     peer.transport.is_web()
-        && matches!(
+        && (matches!(
             command.payload,
             CommandPayload::SetTitleFieldExposure { .. }
                 | CommandPayload::SetTitleFields { .. }
                 | CommandPayload::TakeTitle { .. }
-        )
+        ) || crate::web_titles::is_definition_edit(command))
+}
+
+/// The records that resynchronize a Web session after `message`, unfiltered
+/// (see [`drain_live`]): one `title_state` per title it names (see
+/// [`crate::web_titles::resync_inputs`]) as the session may now see it, and
+/// after a `title_exposure_changed` one `cue_list_state` per cue list and
+/// one `shortcut_state` per shortcut that sets a title field (Protocol
+/// 2.104), whose hidden values may have changed.
+fn web_resync(
+    runtime: &Runtime<'_>,
+    control: &fm_control::ControlService<fm_auth::Policy>,
+    message: &WireMessage,
+) -> Vec<WireMessage> {
+    let inputs = crate::web_titles::resync_inputs(message);
+    let mut records: Vec<WireMessage> = if inputs.is_empty() {
+        Vec::new()
+    } else {
+        crate::web_titles::web_title_states(control.title_states(), &inputs)
+            .into_iter()
+            .map(WireMessage::TitleState)
+            .collect()
+    };
+    if crate::web_titles::exposure_changed(message) {
+        records.extend(
+            runtime
+                .cue_list_states(control)
+                .into_iter()
+                .filter(|state| {
+                    state
+                        .list
+                        .spec
+                        .cues
+                        .iter()
+                        .any(|cue| crate::web_titles::sets_title_values(&cue.actions))
+                })
+                .map(WireMessage::CueListState),
+        );
+        records.extend(
+            control
+                .shortcut_states()
+                .into_iter()
+                .filter(|state| {
+                    matches!(
+                        &state.shortcut.spec.action,
+                        fm_protocol::WireShortcutAction::Actions(actions)
+                            if crate::web_titles::sets_title_values(actions)
+                    )
+                })
+                .map(WireMessage::ShortcutState),
+        );
+    }
+    records
 }
 
 /// Queues each active peer's live events, up to its budget. A Web peer's
@@ -2908,14 +3016,16 @@ fn web_title_command(peer: &Peer, command: &fm_protocol::CommandMessage) -> bool
 /// field's name and value reach the page without a reconnect. A cue,
 /// script, or shortcut run that set title fields is followed the same way
 /// by each title it set, so the page's values and field revisions follow.
+/// Its cue lists, shortcuts, and scripts are redacted (Protocol 2.104), and
+/// an exposure change is also followed by the cue lists and shortcuts that
+/// set title fields. `resync` names those follow-on records (see
+/// [`web_resync`]); each is redacted as the event is.
 fn drain_live(
     peers: &mut [Peer],
     close: &mut [bool],
     budgets: &mut [usize],
     hidden: Option<&crate::web_titles::HiddenFields>,
-    title_states: &mut dyn FnMut(
-        &[fm_protocol::WireInputId],
-    ) -> Vec<fm_protocol::TitleStateMessage>,
+    resync: &mut dyn FnMut(&WireMessage) -> Vec<WireMessage>,
 ) {
     for (index, peer) in peers.iter_mut().enumerate() {
         // A held acknowledgement precedes the events its command published.
@@ -2937,14 +3047,11 @@ fn drain_live(
                             let message = WireMessage::Event(event);
                             // Named before filtering: a run that set only a
                             // hidden field still moves the field revision.
-                            let inputs = crate::web_titles::resync_inputs(&message);
-                            if !inputs.is_empty() {
-                                peer.deferred_live.extend(
-                                    title_states(&inputs)
-                                        .into_iter()
-                                        .map(WireMessage::TitleState),
-                                );
-                            }
+                            peer.deferred_live.extend(
+                                resync(&message)
+                                    .into_iter()
+                                    .map(|record| crate::web_titles::web_message(record, hidden)),
+                            );
                             crate::web_titles::web_live_message(message, hidden)
                         }
                         _ => WireMessage::Event(event),

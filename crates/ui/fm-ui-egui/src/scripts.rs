@@ -961,6 +961,7 @@ mod tests {
                 name: format!("Script {id}"),
                 source: source.into(),
             },
+            source_hidden: false,
         }
     }
 

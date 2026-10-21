@@ -617,8 +617,12 @@ impl ActionKind {
             WireCueAction::OverlayOn { .. } => Self::OverlayOn,
             WireCueAction::OverlayOff { .. } => Self::OverlayOff,
             WireCueAction::TitleOn { .. } => Self::TitleOn,
-            WireCueAction::TitleText { .. } => Self::TitleText,
-            WireCueAction::TitleNumber { .. } => Self::TitleNumber,
+            WireCueAction::TitleText { .. } | WireCueAction::TitleHidden { number: false, .. } => {
+                Self::TitleText
+            }
+            WireCueAction::TitleNumber { .. } | WireCueAction::TitleHidden { number: true, .. } => {
+                Self::TitleNumber
+            }
             WireCueAction::TitleOff { .. } => Self::TitleOff,
             WireCueAction::FadeToBlack { .. } => Self::FadeToBlack,
             WireCueAction::PlaylistStart => Self::PlaylistStart,
@@ -2723,7 +2727,10 @@ fn draw_params(
             )
             .or(change)
         }
-        WireCueAction::PlaylistStart | WireCueAction::PlaylistStop => None,
+        // Only a Web session is sent the hidden marker (Protocol 2.104).
+        WireCueAction::PlaylistStart
+        | WireCueAction::PlaylistStop
+        | WireCueAction::TitleHidden { .. } => None,
         WireCueAction::AudioGain { input, gain } => {
             let change = pick(ui, "input", input, (inputs, Roles::ALL));
             let mode = gain_mode_picker(ui, l, gain, names.fired_values, edit);
@@ -3397,6 +3404,7 @@ mod tests {
                 name: "Open".into(),
                 source: source.into(),
             },
+            source_hidden: false,
         };
         status.spec.cues[2].actions = vec![WireCueAction::RunScript { script: 5 }];
         let muting = [script("if program == 9\n  mute 2\nend\ncut 1\n")];
@@ -3466,6 +3474,7 @@ mod tests {
                 name: "Open".into(),
                 source: "if program == 9\n  mute 2\nend\ncut 1\n".into(),
             },
+            source_hidden: false,
         }];
         let transition_only = StudioUiState::new(StudioConnectionStatus::Ready)
             .with_switcher_permissions(false, true);

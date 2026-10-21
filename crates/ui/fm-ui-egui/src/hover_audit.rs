@@ -918,6 +918,7 @@ fn audit_scripts() -> Vec<fm_protocol::ScriptStatus> {
             name: name.into(),
             source: source.into(),
         },
+        source_hidden: false,
     };
     vec![
         script(

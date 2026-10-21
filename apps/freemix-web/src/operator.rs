@@ -35,9 +35,9 @@ pub const OPERATOR_EDIT_PERMISSION: &str = "edit_project";
 pub const fn cue_action_permission(action: &WireCueAction) -> Option<&'static str> {
     Some(match action {
         WireCueAction::Preview { .. } => OPERATOR_PREVIEW_PERMISSION,
-        WireCueAction::TitleText { .. } | WireCueAction::TitleNumber { .. } => {
-            OPERATOR_EDIT_PERMISSION
-        }
+        WireCueAction::TitleText { .. }
+        | WireCueAction::TitleNumber { .. }
+        | WireCueAction::TitleHidden { .. } => OPERATOR_EDIT_PERMISSION,
         WireCueAction::AudioGain { .. } | WireCueAction::AudioMute { .. } => {
             OPERATOR_AUDIO_PERMISSION
         }

@@ -26,6 +26,10 @@
 //! command's own event (`cue_run_changed`, `script_ran`); `shortcut_fired`
 //! reports a shortcut that ran cue actions.
 //!
+//! Since Protocol 2.104 (GX-006) a Web session's `shortcut_state` and
+//! `shortcut_changed` carry a title action setting a field hidden from it
+//! as [`WireCueAction::TitleHidden`]; see [`crate::HIDDEN_TITLE_VALUE`].
+//!
 //! A snapshot names how many `shortcut_state` records follow it
 //! ([`crate::SnapshotMessage::shortcut_states`]), one per shortcut in
 //! project order, after its script states.
@@ -210,6 +214,18 @@ pub struct ShortcutSpec {
     /// `-`, and `_`, but not a lone `-`.
     pub osc: Option<String>,
     pub action: WireShortcutAction,
+}
+
+impl ShortcutSpec {
+    /// Whether the shortcut's cue actions carry a
+    /// [`WireCueAction::TitleHidden`] marker (Protocol 2.104).
+    #[must_use]
+    pub fn has_hidden_title_value(&self) -> bool {
+        matches!(&self.action, WireShortcutAction::Actions(actions)
+            if actions
+                .iter()
+                .any(|action| matches!(action, WireCueAction::TitleHidden { .. })))
+    }
 }
 
 /// One project shortcut.

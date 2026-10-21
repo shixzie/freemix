@@ -15555,7 +15555,11 @@ fn remote_script_set_sends_the_exact_source() {
             spec: Box::new(spec.clone()),
             position: None,
         },
-        event: EventPayload::ScriptChanged(Box::new(fm_protocol::ScriptStatus { id: 3, spec })),
+        event: EventPayload::ScriptChanged(Box::new(fm_protocol::ScriptStatus {
+            id: 3,
+            spec,
+            source_hidden: false,
+        })),
         domain: "project",
     });
     let output = invoke(&[

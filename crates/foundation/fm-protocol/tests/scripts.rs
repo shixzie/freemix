@@ -189,6 +189,7 @@ fn script_events_and_the_snapshot_record_round_trip_exactly() {
     let status = ScriptStatus {
         id: 4,
         spec: spec(),
+        source_hidden: false,
     };
     round_trip(&event(EventPayload::ScriptChanged(Box::new(
         status.clone(),
@@ -477,6 +478,7 @@ fn faulted_runs_carry_the_refusal_reason_and_a_bounded_message() {
         script: ScriptStatus {
             id: 2,
             spec: spec(),
+            source_hidden: false,
         },
         run,
     }));
@@ -627,4 +629,37 @@ fn script_set_carries_an_optional_position_exactly() {
         ))
         .is_err()
     );
+}
+
+/// Protocol 2.104 (GX-006): a source withheld from a Web session travels
+/// as `source=hidden`, never a real source's hex; `script_set` cannot
+/// carry it, and a withheld source is empty.
+#[test]
+fn a_withheld_source_round_trips_as_the_hidden_marker() {
+    let withheld = ScriptStatus::new(4, spec()).source_withheld();
+    assert!(withheld.source_hidden && withheld.spec.source.is_empty());
+    let line = round_trip(&event(EventPayload::ScriptChanged(Box::new(
+        withheld.clone(),
+    ))));
+    assert!(line.contains("\tsource=hidden"), "{line}");
+    let line = round_trip(&WireMessage::ScriptState(ScriptStateMessage {
+        revision: 3,
+        script: withheld.clone(),
+        run: ScriptRunStatus::Idle,
+    }));
+    assert!(line.contains("\tsource=hidden"), "{line}");
+    // A withheld source must be empty.
+    let mut both = withheld;
+    both.spec.source = "cut 2".into();
+    assert!(encode_line(&event(EventPayload::ScriptChanged(Box::new(both)))).is_err());
+    // An edit names a real source only.
+    for bad in ["hidden", "HIDDEN", "hidde"] {
+        assert!(
+            decode_line(&format!(
+                "{PREFIX}\tpayload=script_set\tscript=4\tname=Open\tsource={bad}\n"
+            ))
+            .is_err(),
+            "{bad}"
+        );
+    }
 }

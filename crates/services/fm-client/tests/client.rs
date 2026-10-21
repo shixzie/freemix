@@ -3360,6 +3360,7 @@ mod cue_lists {
                             name: "Opening".into(),
                             source: "preview 2\ncut".into(),
                         },
+                        source_hidden: false,
                     })),
                 ))
                 .unwrap();
@@ -3947,6 +3948,7 @@ mod scripts {
                 name: format!("Script {id}"),
                 source: "cut 2".into(),
             },
+            source_hidden: false,
         }
     }
 

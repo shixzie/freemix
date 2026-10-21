@@ -29,6 +29,13 @@
 //! (set or step one number field of a title, such as a score) and carries
 //! the value each title field received as a [`CueTitleValue`]: text for a
 //! text field, an integer for a number field.
+//!
+//! Protocol 2.104 (GX-006) withholds a hidden title field's value from a
+//! Web session: an action that sets a field hidden from the session is sent
+//! to it as [`WireCueAction::TitleHidden`], whose token carries the marker
+//! [`HIDDEN_TITLE_VALUE`] in place of the value. A Web session's edit that
+//! sends the marker back keeps the stored action's value; the authority
+//! never stores or runs the marker, and refuses it from any other session.
 
 use crate::{
     FadeToBlackState, InputAudioStripStatus, ManualTransitionStatus, MediaTime,
@@ -111,6 +118,17 @@ pub enum WireCueAction {
         add: bool,
         value: i64,
     },
+    /// A [`Self::TitleText`] (`number` false) or [`Self::TitleNumber`]
+    /// (`number` true) whose value (and, for a number, whether it sets or
+    /// adds) is hidden from the session it is sent to (Protocol 2.104,
+    /// GX-006): token `title_text.<input>.<field>.hidden` or
+    /// `title_number.<input>.<field>.hidden`. Never stored or run: a Web
+    /// session sends it back in an edit to keep the stored value.
+    TitleHidden {
+        input: WireInputTarget,
+        field: WireTitleFieldId,
+        number: bool,
+    },
     TitleOff {
         input: WireInputTarget,
     },
@@ -192,6 +210,7 @@ impl WireCueAction {
             | Self::TitleOn { input, .. }
             | Self::TitleText { input, .. }
             | Self::TitleNumber { input, .. }
+            | Self::TitleHidden { input, .. }
             | Self::TitleOff { input }
             | Self::AudioGain { input, .. }
             | Self::AudioMute { input, .. }
@@ -214,6 +233,7 @@ impl WireCueAction {
             | Self::TitleOn { input, .. }
             | Self::TitleText { input, .. }
             | Self::TitleNumber { input, .. }
+            | Self::TitleHidden { input, .. }
             | Self::TitleOff { input }
             | Self::AudioGain { input, .. }
             | Self::AudioMute { input, .. }
@@ -230,6 +250,49 @@ impl WireCueAction {
             | Self::Delay { .. }
             | Self::RunScript { .. } => None,
         }
+    }
+
+    /// The title field a title text or number action sets, and whether it
+    /// is a number action; `None` for every other action, the hidden
+    /// marker included.
+    #[must_use]
+    pub const fn title_value_field(&self) -> Option<(WireInputTarget, WireTitleFieldId, bool)> {
+        match self {
+            Self::TitleText { input, field, .. } => Some((*input, *field, false)),
+            Self::TitleNumber { input, field, .. } => Some((*input, *field, true)),
+            _ => None,
+        }
+    }
+
+    /// The [`Self::TitleHidden`] marker standing for this title text or
+    /// number action (Protocol 2.104); `None` for every other action.
+    #[must_use]
+    pub const fn hidden_marker(&self) -> Option<Self> {
+        match self.title_value_field() {
+            Some((input, field, number)) => Some(Self::TitleHidden {
+                input,
+                field,
+                number,
+            }),
+            None => None,
+        }
+    }
+}
+
+/// The marker a title action's token carries in place of a value hidden
+/// from the session (Protocol 2.104, GX-006). Not lowercase hex and not a
+/// `set`/`add` mode, so no real title text or number token can carry it.
+pub const HIDDEN_TITLE_VALUE: &str = "hidden";
+
+impl CueListSpec {
+    /// Whether any cue carries a [`WireCueAction::TitleHidden`] marker.
+    #[must_use]
+    pub fn has_hidden_title_value(&self) -> bool {
+        self.cues.iter().any(|cue| {
+            cue.actions
+                .iter()
+                .any(|action| matches!(action, WireCueAction::TitleHidden { .. }))
+        })
     }
 }
 

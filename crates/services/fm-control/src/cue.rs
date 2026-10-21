@@ -41,6 +41,32 @@ fn wire_channel(channel: u8) -> WireOverlayChannelId {
     WireOverlayChannelId::new(channel).expect("validated cue overlay channels are 1..=8")
 }
 
+/// The hidden marker (Protocol 2.104) is never stored or run:
+/// `ControlService::prepare_submit` refuses an edit carrying it before it
+/// reaches the engine. Classifying such an edit's actions reads it as the
+/// title action it stands for, with no value.
+fn hidden_action(
+    input: fm_protocol::WireInputTarget,
+    field: fm_protocol::WireTitleFieldId,
+    number: bool,
+) -> CueAction {
+    let input = domain_target(input);
+    let field = TitleFieldId::new(field.get());
+    if number {
+        CueAction::TitleNumber {
+            input,
+            field,
+            update: CueNumberUpdate::Set(0),
+        }
+    } else {
+        CueAction::TitleText {
+            input,
+            field,
+            text: String::new(),
+        }
+    }
+}
+
 /// The project form of a wire action.
 #[must_use]
 pub fn domain_action(action: &WireCueAction) -> CueAction {
@@ -93,6 +119,11 @@ pub fn domain_action(action: &WireCueAction) -> CueAction {
                 CueNumberUpdate::Set(*value)
             },
         },
+        WireCueAction::TitleHidden {
+            input,
+            field,
+            number,
+        } => hidden_action(*input, *field, *number),
         WireCueAction::TitleOff { input } => CueAction::TitleOff {
             input: domain_target(*input),
         },

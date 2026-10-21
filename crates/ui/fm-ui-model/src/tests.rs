@@ -2138,6 +2138,7 @@ mod titles {
                         name: "Script".into(),
                         source: "cut 2".into(),
                     },
+                    source_hidden: false,
                 })),
             ))
             .unwrap();
@@ -3574,6 +3575,7 @@ fn scripts_replicate_from_snapshot_records_and_events() {
             name: format!("Script {id}"),
             source: source.into(),
         },
+        source_hidden: false,
     };
     let waiting = fm_protocol::ScriptRunStatus::Waiting {
         run: 1,
@@ -3787,6 +3789,7 @@ fn an_edit_of_the_faulted_script_clears_its_fault() {
             name: format!("Script {id}"),
             source: source.into(),
         },
+        source_hidden: false,
     };
     let faulted = fm_protocol::ScriptRunStatus::Faulted {
         run: 1,
@@ -3861,6 +3864,7 @@ fn concurrent_script_runs_replicate_and_stop() {
             name: format!("Script {id}"),
             source: "wait 5\ncut 2".into(),
         },
+        source_hidden: false,
     };
     let waiting = |run: u64| fm_protocol::ScriptRunStatus::Waiting {
         run,
@@ -3982,6 +3986,7 @@ fn a_cue_run_records_the_last_run_of_each_script_it_ran() {
                     name: format!("Script {id}"),
                     source: "cut 2".into(),
                 },
+                source_hidden: false,
             })),
         )
         .unwrap();
@@ -4142,6 +4147,7 @@ fn a_script_changed_past_the_bound_is_refused() {
             name: format!("Script {id}"),
             source: "cut 2".into(),
         },
+        source_hidden: false,
     };
     let project_id = project(10);
     let identity = engine("engine-a", 1, "log-a");

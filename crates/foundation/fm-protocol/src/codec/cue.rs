@@ -22,7 +22,12 @@
 //!   `run_script.<script>` (Protocol 2.60, a nonzero project script id).
 //!   Since Protocol 2.88 (RC-004) every `<input>` of an action is an input
 //!   id or a role resolved when the action is fired: `preview`, `program`,
-//!   or `selected` (see [`crate::WireInputTarget`]).
+//!   or `selected` (see [`crate::WireInputTarget`]). Since Protocol 2.104
+//!   (GX-006) `title_text.<input>.<field>.hidden` and
+//!   `title_number.<input>.<field>.hidden` stand for a title action whose
+//!   value is hidden from the session ([`WireCueAction::TitleHidden`]): the
+//!   marker is exactly [`crate::HIDDEN_TITLE_VALUE`], which is neither
+//!   lowercase hex nor a `set`/`add` mode.
 //! * `cue_go` and `cue_arm` (and `shortcut_fire`) carry the optional
 //!   target bindings `selected`, `bound_preview`, and `bound_program`
 //!   (Protocol 2.88, see [`crate::WireTargetBindings`]).
@@ -56,7 +61,7 @@ use core::num::NonZeroU128;
 use crate::{
     CodecError, CueArmedStatus, CueFaultStatus, CueListSpec, CueListStatus, CueMediaTransport,
     CueOperation, CuePendingStatus, CueRunStatus, CueScriptRun, CueTitleText, CueTitleValue,
-    MAX_CUE_ACTIONS, MAX_CUE_ARM_MS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_ACTIONS,
+    HIDDEN_TITLE_VALUE, MAX_CUE_ACTIONS, MAX_CUE_ARM_MS, MAX_CUE_DELAY_MS, MAX_CUE_LIST_ACTIONS,
     MAX_CUE_LIST_SCRIPT_STEPS, MAX_CUE_LIST_TEXT_BYTES, MAX_CUE_LISTS, MAX_CUE_NAME_BYTES,
     MAX_CUE_TEXT_BYTES, MAX_CUE_TITLE_NUMBER, MAX_CUE_TRANSITION_FRAMES, MAX_CUE_WAIT_FRAMES,
     MAX_CUES, MediaTime, MediaTransportState, TransitionFavoriteEffect, WireCue, WireCueAction,
@@ -226,6 +231,18 @@ pub fn cue_action_token(action: &WireCueAction) -> String {
             "title_number.{input}.{field}.{}.{value}",
             if *add { "add" } else { "set" }
         ),
+        WireCueAction::TitleHidden {
+            input,
+            field,
+            number,
+        } => format!(
+            "{}.{input}.{field}.{HIDDEN_TITLE_VALUE}",
+            if *number {
+                "title_number"
+            } else {
+                "title_text"
+            }
+        ),
         WireCueAction::TitleOff { input } => format!("title_off.{input}"),
         WireCueAction::FadeToBlack {
             active,
@@ -350,6 +367,16 @@ pub fn parse_cue_action_token(value: &str) -> Option<WireCueAction> {
         ["title_on", id, channel] => WireCueAction::TitleOn {
             input: input(id)?,
             channel: parse_channel(channel)?,
+        },
+        [
+            kind @ ("title_text" | "title_number"),
+            id,
+            field,
+            HIDDEN_TITLE_VALUE,
+        ] => WireCueAction::TitleHidden {
+            input: input(id)?,
+            field: WireTitleFieldId::new(parse_u128(field)?),
+            number: *kind == "title_number",
         },
         ["title_text", id, field, text] => WireCueAction::TitleText {
             input: input(id)?,

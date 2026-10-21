@@ -3790,10 +3790,9 @@ fn a_cue_title_text_resynchronizes_the_web_title_editor() {
 
     let mut leaked = Vec::new();
     let state = web_until(&mut page, |line, message| {
-        // The run's records (a cue list's own spec still names its text).
-        if line.contains("cue-secret")
-            && matches!(message, WireMessage::Event(_) | WireMessage::TitleState(_))
-        {
+        // No record names it: not the run's, nor (Protocol 2.104) the cue
+        // list's own spec, as text or as the hex it travels in there.
+        if carries(line, "cue-secret") {
             leaked.push(line.to_owned());
         }
         match message {
@@ -3825,4 +3824,309 @@ fn a_cue_title_text_resynchronizes_the_web_title_editor() {
         ),
     )
     .unwrap();
+}
+
+/// Whether `line` carries `secret` as written or as the lowercase hex cue
+/// texts and script sources travel in.
+fn carries(line: &str, secret: &str) -> bool {
+    let hex: String = secret.bytes().fold(String::new(), |mut hex, byte| {
+        use std::fmt::Write as _;
+        write!(hex, "{byte:02x}").unwrap();
+        hex
+    });
+    line.contains(secret) || line.contains(&hex)
+}
+
+/// Reads `page` until a record starting with `kind`, keeping every record
+/// in `seen`.
+fn next_kind(page: &mut Browser, seen: &mut Vec<String>, kind: &str) -> WireMessage {
+    web_until(page, |line, message| {
+        seen.push(line.to_owned());
+        line.starts_with(kind).then_some(message)
+    })
+}
+
+/// Sends `payload` from `page` as command `id` and waits for its result,
+/// keeping every record in `seen`; the result's code or `accepted`.
+fn scanned_result(
+    page: &mut Browser,
+    seen: &mut Vec<String>,
+    id: &str,
+    payload: CommandPayload,
+) -> String {
+    send(page, &command(id, payload));
+    web_until(page, |line, message| {
+        seen.push(line.to_owned());
+        match message {
+            WireMessage::CommandResult(CommandResult::Accepted { id: found, .. })
+                if found == id =>
+            {
+                Some("accepted".to_owned())
+            }
+            WireMessage::CommandResult(CommandResult::Rejected {
+                id: found, code, ..
+            }) if found == id => Some(code),
+            _ => None,
+        }
+    })
+}
+
+/// GX-006, Protocol 2.104: a browser never receives the value of a field
+/// hidden from it inside a cue list, shortcut, or script. Every record a
+/// Graphics page gets (initial sync, its own edits' events, refusals) is
+/// scanned; actions setting a hidden field carry the marker, a role target
+/// that may reach one too, and scripts carry no source. The page's edits
+/// that send the markers back keep the stored values; an edit setting a
+/// hidden field, a misplaced marker, and a script edit are refused, as is a
+/// marker from Studio. An exposure change re-sends the lists and shortcuts.
+#[test]
+#[allow(clippy::too_many_lines)] // one end-to-end scenario
+fn web_sessions_never_see_hidden_values_in_cue_lists_shortcuts_or_scripts() {
+    use fm_protocol::{
+        CueListSpec, ScriptSpec, ShortcutSpec, WireCue, WireCueAction, WireShortcutAction,
+        WireTitleFieldId,
+    };
+    use fm_types::InputTarget;
+
+    let directory = TestDirectory::new("web-hidden-definitions");
+    let project = directory.0.join("show.freemix");
+    create_project_with(&project, true, false);
+    let daemon = Daemon::start(&project);
+    let field = |value: u128| WireTitleFieldId::new(NonZeroU128::new(value).unwrap());
+    let title = InputTarget::Fixed(input(4));
+    let text = |target, id, value: &str| WireCueAction::TitleText {
+        input: target,
+        field: field(id),
+        text: value.into(),
+    };
+    let marker = |target, id| WireCueAction::TitleHidden {
+        input: target,
+        field: field(id),
+        number: false,
+    };
+    let set_list = |spec: CueListSpec| CommandPayload::SetCueList {
+        list: 7,
+        spec: Box::new(spec),
+        position: None,
+    };
+
+    let mut admin = RawOperator::connect_as(daemon.control, Role::Admin);
+    let list = CueListSpec {
+        name: "Show".into(),
+        cues: vec![
+            WireCue {
+                id: 1,
+                name: "Names".into(),
+                auto_follow: false,
+                actions: vec![text(title, 1, "Bea"), text(title, 2, "cue-secret")],
+            },
+            WireCue {
+                id: 2,
+                name: "Dynamic".into(),
+                auto_follow: false,
+                actions: vec![text(InputTarget::Preview, 2, "dyn-secret")],
+            },
+        ],
+    };
+    let shortcut = ShortcutSpec {
+        name: "Note".into(),
+        enabled: true,
+        key: None,
+        osc: None,
+        action: WireShortcutAction::Actions(vec![text(title, 2, "short-secret")]),
+    };
+    for (id, payload) in [
+        ("set-cues", set_list(list.clone())),
+        (
+            "set-shortcut",
+            CommandPayload::SetShortcut {
+                shortcut: 3,
+                spec: Box::new(shortcut.clone()),
+                position: None,
+            },
+        ),
+        (
+            "set-script",
+            CommandPayload::SetScript {
+                script: 5,
+                spec: Box::new(ScriptSpec {
+                    name: "Note".into(),
+                    source: "title_text \"Lower third\", 2, \"script-secret\"\n".into(),
+                }),
+                position: None,
+            },
+        ),
+    ] {
+        admin.send(&command(id, payload));
+        admin.accepted(id);
+    }
+
+    // Every record the page gets is kept and scanned.
+    let mut seen = Vec::new();
+    let (mut page, _, _, _) = web_session(daemon.web, Role::Graphics);
+    let WireMessage::CueListState(state) = next_kind(&mut page, &mut seen, "cue_list_state") else {
+        unreachable!()
+    };
+    let web_list = state.list;
+    assert_eq!(
+        web_list.spec.cues[0].actions,
+        [text(title, 1, "Bea"), marker(title, 2)]
+    );
+    assert_eq!(
+        web_list.spec.cues[1].actions,
+        [marker(InputTarget::Preview, 2)]
+    );
+    let WireMessage::ScriptState(script) = next_kind(&mut page, &mut seen, "script_state") else {
+        unreachable!()
+    };
+    assert!(script.script.source_hidden && script.script.spec.source.is_empty());
+    assert_eq!(script.script.spec.name, "Note");
+    let WireMessage::ShortcutState(state) = next_kind(&mut page, &mut seen, "shortcut_state")
+    else {
+        unreachable!()
+    };
+    let web_shortcut = state.shortcut;
+    assert_eq!(
+        web_shortcut.spec.action,
+        WireShortcutAction::Actions(vec![marker(title, 2)])
+    );
+
+    // The page's edits round-trip: what it sends back keeps the values.
+    let mut renamed = web_list.spec.clone();
+    renamed.name = "Renamed".into();
+    let mut disabled = web_shortcut.spec.clone();
+    disabled.enabled = false;
+    assert_eq!(
+        scanned_result(&mut page, &mut seen, "page-rename", set_list(renamed)),
+        "accepted"
+    );
+    assert_eq!(
+        scanned_result(
+            &mut page,
+            &mut seen,
+            "page-disable",
+            CommandPayload::SetShortcut {
+                shortcut: 3,
+                spec: Box::new(disabled),
+                position: None,
+            },
+        ),
+        "accepted"
+    );
+    let stored_list = loop {
+        if let WireMessage::Event(EventMessage {
+            payload: EventPayload::CueListChanged(list),
+            ..
+        }) = admin.receive()
+        {
+            break *list;
+        }
+    };
+    let mut expected = list.clone();
+    expected.name = "Renamed".into();
+    assert_eq!(stored_list.spec, expected);
+    let stored_shortcut = loop {
+        if let WireMessage::Event(EventMessage {
+            payload: EventPayload::ShortcutChanged(shortcut),
+            ..
+        }) = admin.receive()
+        {
+            break *shortcut;
+        }
+    };
+    assert!(!stored_shortcut.spec.enabled);
+    assert_eq!(stored_shortcut.spec.action, shortcut.action);
+
+    // Refused: a value of the page's own for the hidden field, a marker
+    // moved elsewhere, and a script edit.
+    let mut guess = web_list.spec.clone();
+    guess.cues[0].actions[1] = text(title, 2, "guess");
+    assert_eq!(
+        scanned_result(&mut page, &mut seen, "page-guess", set_list(guess)),
+        "permission_denied"
+    );
+    let mut moved = web_list.spec.clone();
+    moved.cues[0].actions.swap(0, 1);
+    assert_eq!(
+        scanned_result(&mut page, &mut seen, "page-moved", set_list(moved)),
+        "invalid_command"
+    );
+    assert_eq!(
+        scanned_result(
+            &mut page,
+            &mut seen,
+            "page-script",
+            CommandPayload::SetScript {
+                script: 5,
+                spec: Box::new(ScriptSpec {
+                    name: "Note".into(),
+                    source: "cut 2\n".into(),
+                }),
+                position: None,
+            },
+        ),
+        "permission_denied"
+    );
+    // Studio has no use for the marker: it stands for nothing there.
+    admin.send(&command("studio-marker", set_list(web_list.spec.clone())));
+    let refused = loop {
+        if let WireMessage::CommandResult(result) = admin.receive() {
+            break result;
+        }
+    };
+    assert!(
+        matches!(&refused, CommandResult::Rejected { code, .. } if code == "invalid_command"),
+        "{refused:?}"
+    );
+
+    // Studio exposes the note: the list and the shortcut follow with it.
+    let expose = |admin: &mut RawOperator, id: &str, exposed| {
+        admin.send(&command(
+            id,
+            CommandPayload::SetTitleFieldExposure {
+                input: input(4),
+                field: field(2),
+                exposed,
+            },
+        ));
+        admin.accepted(id);
+    };
+    expose(&mut admin, "studio-expose", true);
+    let WireMessage::CueListState(state) = next_kind(&mut page, &mut seen, "cue_list_state") else {
+        unreachable!()
+    };
+    let exposed_list = state.list;
+    let WireMessage::ShortcutState(state) = next_kind(&mut page, &mut seen, "shortcut_state")
+    else {
+        unreachable!()
+    };
+    // Up to the exposure the page never saw a hidden value.
+    let before = seen
+        .iter()
+        .position(|line| line.contains("\tevent=title_exposure_changed\t"))
+        .expect("the exposure change reached the page");
+    for line in &seen[..before] {
+        for secret in [
+            "cue-secret",
+            "dyn-secret",
+            "short-secret",
+            "script-secret",
+            "secret-note",
+        ] {
+            assert!(!carries(line, secret), "{secret} reached the page: {line}");
+        }
+    }
+    assert_eq!(exposed_list.spec, expected);
+    assert_eq!(state.shortcut.spec.action, shortcut.action);
+    // Hidden again, they follow without it.
+    expose(&mut admin, "studio-hide", false);
+    let WireMessage::CueListState(state) = next_kind(&mut page, &mut seen, "cue_list_state") else {
+        unreachable!()
+    };
+    assert_eq!(
+        state.list.spec.cues[0].actions,
+        [text(title, 1, "Bea"), marker(title, 2)]
+    );
+    let line = seen.last().unwrap();
+    assert!(!carries(line, "cue-secret"), "{line}");
 }
