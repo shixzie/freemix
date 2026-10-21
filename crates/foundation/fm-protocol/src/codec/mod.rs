@@ -46,7 +46,7 @@ pub const MAX_LINE_BYTES: usize = 64 * 1024;
 /// outgrew 64).
 pub const MAX_FIELDS_PER_MESSAGE: usize = 96;
 pub const MAX_FIELD_NAME_BYTES: usize = 64;
-/// Longest field value (63.5 KiB since Protocol 2.98, so the worst-case
+/// Longest field value (63.5 KiB since Protocol 2.97, so the worst-case
 /// scene layout with key refinements, light wraps, and garbage mattes fits
 /// one field and its line).
 pub const MAX_FIELD_VALUE_BYTES: usize = 63 * 1024 + 512;

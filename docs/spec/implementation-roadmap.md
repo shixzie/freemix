@@ -66,7 +66,7 @@ highest-value remaining items, ranked:
    BT.709 Cb/Cr distance, and one-click auto key (Studio's Auto key button
    and eyedropper, `scene-layer-auto-key`) sets a whole chroma key from a
    picture of the input up to 640x360 that Studio asks the server for
-   (Protocol 2.98). What remains: the CLI's remote auto key still needs a
+   (Protocol 2.97). What remains: the CLI's remote auto key still needs a
    saved picture, key/fill is not tied to paired SDI/NDI fill and key
    inputs, and mattes are not animatable or feathered.
 7. **Source clock drift on real devices and other OSes (`AU-004`).** Every
@@ -2405,7 +2405,7 @@ key button and a Pick colour eyedropper; either applies one
 journaled on the server) that keeps the layer's clip, choke, and edge
 softness. `freemix-cli scene-layer-auto-key` samples a layer's simulated
 input at the project size or a saved PPM, and `remote-scene-layer-auto-key`
-sends the key derived from a saved PPM as one live edit. Since Protocol 2.98
+sends the key derived from a saved PPM as one live edit. Since Protocol 2.97
 and schema 79 every refinement also carries a light wrap (amount and a
 1..=8 pixel width: each kept pixel near the layer's edge takes the mean
 background of 25 taps around it, weighted by how transparent the layer is

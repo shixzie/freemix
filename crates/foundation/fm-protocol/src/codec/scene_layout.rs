@@ -24,8 +24,8 @@
 //!          1 alpha) low high softness (bytes) invert(byte 0 or 1) refine
 //! refine = clip_black clip_white (bytes) choke(zigzag) edge_softness(byte)
 //!          despill(byte: 0 off, 1 green, 2 blue) strength(byte, 0 when off)
-//!          light_wrap light_wrap_width (bytes, 2.98; width 0 exactly when
-//!          light_wrap is 0) matte(byte, 2.98: 0 none, else count << 1 |
+//!          light_wrap light_wrap_width (bytes, 2.97; width 0 exactly when
+//!          light_wrap is 0) matte(byte, 2.97: 0 none, else count << 1 |
 //!          outside, count 3..=8) [points, unless none]
 //! points = the count x, y pairs as 10-bit coordinates (each 0..=1000),
 //!          packed least significant bit first into ceil(20 * count / 8)
@@ -521,7 +521,7 @@ impl Reader<'_> {
         })
     }
 
-    /// A refinement's garbage matte (2.98): `Some(None)` for none.
+    /// A refinement's garbage matte (2.97): `Some(None)` for none.
     #[allow(clippy::option_option)] // malformed, none, or a matte
     fn garbage_matte(&mut self) -> Option<Option<fm_types::GarbageMatte>> {
         let header = self.byte()?;

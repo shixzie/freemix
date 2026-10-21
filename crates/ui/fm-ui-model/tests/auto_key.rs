@@ -63,7 +63,7 @@ impl Frame {
 }
 
 /// The chroma key's distance: the larger of the BT.709 Cb and Cr
-/// differences (Protocol 2.98).
+/// differences (Protocol 2.97).
 fn distance(a: [u8; 3], b: [u8; 3]) -> u8 {
     let (left, right) = (
         fm_ui_model::auto_key::chroma(a),

@@ -18,7 +18,7 @@ use fm_protocol::{
     encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.96\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.97\tid=a\tidempotency_key=k";
 
 fn scene(value: u128) -> WireSceneId {
     WireSceneId::new(NonZeroU128::new(value).unwrap())
@@ -211,7 +211,7 @@ fn operations() -> Vec<SceneLayerOperation> {
 
 #[test]
 fn protocol_is_2_43() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 96));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 97));
 }
 
 #[test]
@@ -384,12 +384,12 @@ fn scene_layer_commands_are_strict() {
         fill_line.replace("despill=blue", "despill=red"),
         fill_line.replace("despill=blue", "despill=off"),
         fill_line.replace("\tdespill_strength=90", ""),
-        // Light wrap (2.98): a width exactly when an amount, at most 8.
+        // Light wrap (2.97): a width exactly when an amount, at most 8.
         fill_line.replace("light_wrap_width=8", "light_wrap_width=9"),
         fill_line.replace("light_wrap_width=8", "light_wrap_width=0"),
         fill_line.replace("light_wrap=200", "light_wrap=0"),
         fill_line.replace("\tlight_wrap_width=8", ""),
-        // Garbage mattes (2.98): a known side with three to eight canonical,
+        // Garbage mattes (2.97): a known side with three to eight canonical,
         // in-range points; `off` carries none.
         fill_line.replace("matte=inside", "matte=both"),
         fill_line.replace("\tmatte=inside", ""),

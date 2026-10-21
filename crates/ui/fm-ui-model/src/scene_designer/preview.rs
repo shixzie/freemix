@@ -10,7 +10,7 @@
 //! is given up after [`PREVIEW_TIMEOUT`].
 //!
 //! [`KeyPicturePacer`] asks for the selected layer's input picture the same
-//! way (Protocol 2.98: a `scene_preview_request` naming a non-Scene input
+//! way (Protocol 2.97: a `scene_preview_request` naming a non-Scene input
 //! answers with its own picture), so auto key samples a picture as large as
 //! the preview cap instead of the input thumbnail. The server keeps one
 //! preview per session (latest wins), so the designer never has both kinds

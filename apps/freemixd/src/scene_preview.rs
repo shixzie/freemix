@@ -48,7 +48,7 @@
 //! no picture, nesting past the bounds, an effect it rejects) is refused
 //! with `render_failed` rather than approximated.
 //!
-//! # Input pictures (Protocol 2.98)
+//! # Input pictures (Protocol 2.97)
 //!
 //! A request naming an input that is not a Scene input asks for that
 //! input's own picture, as a layer key sees it (before any grade): the

@@ -27,7 +27,7 @@ use crate::{WireInputId, WireSceneId, WireSceneLayerId, WireSceneLayerOutline};
 pub const MAX_KEY_CHOKE: u8 = 8;
 /// Largest key edge-softness radius, in pixels (Protocol 2.70).
 pub const MAX_KEY_EDGE_SOFTNESS: u8 = 8;
-/// Largest key light wrap width, in pixels (Protocol 2.98).
+/// Largest key light wrap width, in pixels (Protocol 2.97).
 pub const MAX_KEY_LIGHT_WRAP_WIDTH: u8 = 8;
 
 /// The far edge of a layer anchor coordinate, in basis points.
@@ -194,11 +194,11 @@ pub enum WireKeyDespill {
 /// A key's matte refinement (Protocol 2.70): clip, then choke (`> 0`) or
 /// spread (`< 0`), then edge softness, then the mask; despill adjusts
 /// colour. `clip_black < clip_white`, `|choke| <= MAX_KEY_CHOKE`,
-/// `edge_softness <= MAX_KEY_EDGE_SOFTNESS`. Light wrap (Protocol 2.98)
+/// `edge_softness <= MAX_KEY_EDGE_SOFTNESS`. Light wrap (Protocol 2.97)
 /// bleeds the background into the layer's edges: `light_wrap` is its
 /// amount (`0` off) and `light_wrap_width` its reach, `0` exactly when the
 /// amount is `0` and otherwise at most `MAX_KEY_LIGHT_WRAP_WIDTH`. A
-/// polygon garbage matte (Protocol 2.98, [`fm_types::GarbageMatte`])
+/// polygon garbage matte (Protocol 2.97, [`fm_types::GarbageMatte`])
 /// removes the pixels outside it, or inside when inverted.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct WireKeyRefinement {

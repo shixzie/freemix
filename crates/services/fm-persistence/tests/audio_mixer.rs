@@ -192,7 +192,7 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
     );
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 78"));
+    assert!(text.contains("\"schema_version\": 79"));
     assert!(text.contains(
         "{\"input\": 10, \"gain_milli_db\": 0, \"balance_basis_points\": 0, \"pan_basis_points\": -2500, \"delay_samples\": 0, \"muted\": false, \"soloed\": false, \"follow_video\": true, \"label\": \"Host \\\"mic\\\" 1\", \"group\": 2, \"dsp\": null}"
     ), "{text}");

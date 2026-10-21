@@ -12,7 +12,7 @@
 //! names its `kind` (`chroma`, `luma`, or `fill` since 2.70) and that kind's
 //! fields, then (since 2.70) the refinement's `clip_black`, `clip_white`,
 //! `choke` (signed), `edge_softness`, `despill` (`off`, `green`, or `blue`),
-//! and `despill_strength` (`0` when `despill` is `off`), then (since 2.98)
+//! and `despill_strength` (`0` when `despill` is `off`), then (since 2.97)
 //! `light_wrap` and `light_wrap_width` (`0` exactly when `light_wrap` is),
 //! and `matte` (`off`, `inside`, or `outside`) with, unless `off`,
 //! `matte_points`: three to eight canonical `x:y` points (each

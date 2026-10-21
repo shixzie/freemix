@@ -799,7 +799,7 @@ fn previews_are_paced_held_during_gestures_and_refreshed() {
     );
 }
 
-/// SW-008, Protocol 2.98: the selected layer's input picture is asked for
+/// SW-008, Protocol 2.97: the selected layer's input picture is asked for
 /// once per input, kept, refreshed, retried after a refusal only once the
 /// refresh passes, and never while the designer's own preview flies.
 #[test]

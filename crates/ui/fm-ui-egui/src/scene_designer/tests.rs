@@ -848,7 +848,7 @@ fn dragging_a_garbage_matte_point_moves_only_that_point_as_one_step() {
     );
 }
 
-/// SW-008, Protocol 2.98: with a layer selected, the designer asks the
+/// SW-008, Protocol 2.97: with a layer selected, the designer asks the
 /// server for its input's own picture (never while its canvas preview
 /// flies), and Auto key samples that larger picture instead of the
 /// thumbnail.

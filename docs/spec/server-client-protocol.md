@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.96 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.97 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1223,7 +1223,7 @@ each crop, transform, key, and effect capable.
   `similarity`, `smoothness`, `spill`; every field `0..=255`) or a luma key
   (`low`, `high`, `softness` in `0..=255` with `low < high`, and `invert`).
   A chroma key keeps pixels whose chroma distance from the key colour
-  (since 2.98 the larger of the BT.709 Cb and Cr differences; before, the
+  (since 2.97 the larger of the BT.709 Cb and Cr differences; before, the
   largest RGB channel difference) exceeds `similarity`, ramping over `smoothness`, and pulls `spill`
   of the key colour out of what it keeps; a luma key (BT.709 luma) keeps
   `low < luma < high` (`high = 255` keeps everything above `low`), ramping
@@ -3743,7 +3743,7 @@ title editors in step with exposure changes (GX-006, schema 78).
   `"field_revision"`; restore refuses a field revision ahead of its title.
 - 2.95 is refused.
 
-Protocol 2.98 completes the keyer refinements (SW-008, schema 79): light
+Protocol 2.97 completes the keyer refinements (SW-008, schema 79): light
 wrap, polygon garbage mattes, a perceptual chroma distance, and larger
 auto key pictures.
 
@@ -3798,7 +3798,7 @@ auto key pictures.
   canvas; every control has hover help and each edit is one undo step. The
   CLI adds `--light-wrap <amount> <width>` and `--matte inside|outside
   <x:y,...>` to the key commands and lists both.
-- 2.97 is refused.
+- 2.96 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

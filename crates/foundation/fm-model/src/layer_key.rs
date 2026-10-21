@@ -10,7 +10,7 @@
 //!   its full-range BT.709 fixed-point Cb and Cr from the key colour's
 //!   (`cb = (32896 - 29 r - 99 g + 128 b) / 256`,
 //!   `cr = (32896 + 128 r - 116 g - 12 b) / 256`, clamped to `0..=255`), so
-//!   brightness alone does not move a pixel off the key (Protocol 2.98).
+//!   brightness alone does not move a pixel off the key (Protocol 2.97).
 //!   Alpha is `0` while the distance is at most
 //!   `similarity`, rises linearly to `255` over the next `smoothness`
 //!   codes, and spill suppression (`spill`, `0` = off) pulls the key

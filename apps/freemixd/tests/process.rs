@@ -7355,11 +7355,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.96.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 96));
+    // The previous protocol is refused; the current one is 2.97.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 97));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 95),
+        protocol: ProtocolVersion::new(2, 96),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -7375,7 +7375,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 96)
+        ProtocolVersion::new(2, 97)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
@@ -8569,7 +8569,7 @@ fn scene_preview(
 
 /// GX-011, Protocol 2.32: an exact scene preview needs `EditProject`,
 /// composes the engine's scene (or an unsaved draft clip) at the requested
-/// size, answers another input with its own picture (2.98), and refuses
+/// size, answers another input with its own picture (2.97), and refuses
 /// unknown inputs and frames past the phase.
 #[test]
 #[allow(clippy::too_many_lines)]
@@ -8669,7 +8669,7 @@ fn scene_previews_compose_the_scene_or_a_draft_exactly() {
     assert_eq!((draft.animation_revision, draft.draft), (0, true));
     assert_ne!(draft.rgba, saved.rgba);
 
-    // Protocol 2.98: another input answers with its own picture (what a
+    // Protocol 2.97: another input answers with its own picture (what a
     // layer key samples), without a draft clip; an unknown input is
     // refused.
     let picture = scene_preview(
