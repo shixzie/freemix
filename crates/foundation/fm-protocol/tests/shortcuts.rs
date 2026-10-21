@@ -588,8 +588,9 @@ fn chorded_and_scoped_keys_round_trip_exactly_and_strictly() {
     assert!(!alone.clashes(&key("K", true, true, false)));
 }
 
-/// Protocol 2.93 (RC-004): a key may name a mouse button, a single stroke,
-/// and may be scoped to a panel's pop-out window (`<panel>-window`).
+/// Protocol 2.93 (RC-004): a key may name a mouse button (since 2.99 either
+/// stroke of a chord), and may be scoped to a panel's pop-out window
+/// (`<panel>-window`).
 #[test]
 fn mouse_buttons_and_window_scopes_round_trip_exactly_and_strictly() {
     let mut mouse = spec(WireShortcutAction::Script { script: 2 });
@@ -611,8 +612,10 @@ fn mouse_buttons_and_window_scopes_round_trip_exactly_and_strictly() {
         ("key=MouseMiddle.0.0.0", true),
         ("key=MouseForward.0.1.1%40cues", true),
         ("key=K.1.0.0%40cues-window", true),
-        ("key=MouseBack.1.0.0%2B1.0.0.0", false),
-        ("key=K.1.0.0%2BMouseBack.0.0.0", false),
+        // Since 2.99 a mouse button may be either stroke of a chord.
+        ("key=MouseBack.1.0.0%2B1.0.0.0", true),
+        ("key=K.1.0.0%2BMouseBack.0.0.0", true),
+        ("key=MouseMiddle.0.0.0%2BMouseForward.0.1.0", true),
         ("key=K.1.0.0%40timeline-window", false),
         ("key=K.1.0.0%40-window", false),
         ("key=K.1.0.0%40cues-window-window", false),
@@ -891,4 +894,45 @@ fn dynamic_values_and_fire_values_round_trip_exactly_and_strictly() {
         let broken = fire.replacen("value=1000", to, 1);
         assert!(decode_line(&broken).is_err(), "{to}");
     }
+}
+
+/// Protocol 2.99 (RC-004): a mouse button may be a chord's first or second
+/// stroke, round-tripping exactly; such a chord clashes with its first
+/// button alone and with a chord ending on the same stroke.
+#[test]
+fn mouse_chords_round_trip_exactly_and_clash_by_stroke() {
+    let back_then_one = WireShortcutKey {
+        then: Some(Box::new(key("1", false, false, false))),
+        scope: Some("mixer-window".to_owned()),
+        ..key("MouseBack", false, true, false)
+    };
+    let k_then_middle = WireShortcutKey {
+        then: Some(Box::new(key("MouseMiddle", false, false, false))),
+        ..key("K", true, false, false)
+    };
+    for (chord, text) in [
+        (
+            back_then_one.clone(),
+            "key=MouseBack.0.1.0%2B1.0.0.0%40mixer-window",
+        ),
+        (k_then_middle.clone(), "key=K.1.0.0%2BMouseMiddle.0.0.0"),
+    ] {
+        let mut shortcut = spec(WireShortcutAction::Script { script: 2 });
+        shortcut.key = Some(chord);
+        let line = round_trip(&command(CommandPayload::SetShortcut {
+            shortcut: 4,
+            spec: Box::new(shortcut),
+            position: None,
+        }));
+        assert!(line.contains(&format!("\t{text}\t")), "{line}");
+    }
+    assert!(back_then_one.clashes(&key("MouseBack", false, true, false)));
+    assert!(!back_then_one.clashes(&key("MouseBack", false, false, false)));
+    assert!(k_then_middle.clashes(&k_then_middle.clone()));
+    let k_then_back = WireShortcutKey {
+        then: Some(Box::new(key("MouseBack", false, false, false))),
+        ..key("K", true, false, false)
+    };
+    assert!(!k_then_middle.clashes(&k_then_back));
+    assert!(!k_then_middle.clashes(&key("MouseMiddle", false, false, false)));
 }

@@ -1150,9 +1150,10 @@ fn a_capture_takes_a_mouse_button_with_its_modifiers() {
     assert_eq!(events.len(), 1);
 }
 
-/// A mouse button fires its shortcut at once with exactly its modifiers,
-/// takes only its own press, ends a waiting chord, and never ends a chord
-/// itself; the primary button stays the console's.
+/// A mouse button fires its shortcut at once with exactly its modifiers
+/// and takes only its own press; as a stroke like a key it ends a waiting
+/// chord, firing only the chord it completes; the primary button stays the
+/// console's.
 #[test]
 fn a_mouse_button_fires_its_shortcut_with_exactly_its_modifiers() {
     let shortcuts = vec![
@@ -1193,16 +1194,89 @@ fn a_mouse_button_fires_its_shortcut_with_exactly_its_modifiers() {
     );
     assert_eq!(events, vec![primary, release, ctrl_back]);
 
-    // A bound button ends a waiting chord and fires.
+    // A button no chord ends with ends the wait, swallowed, firing nothing.
     let mut events = vec![
         key_event(Key::K, press(true, false, false), false),
         mouse_event(egui::PointerButton::Extra1, Modifiers::NONE),
     ];
     assert_eq!(
         take_presses(&mut events, keys, KeyFocus::default(), &mut chord, 1.0),
+        Vec::<u64>::new()
+    );
+    assert_eq!(events, Vec::<Event>::new());
+    assert_eq!(chord, None);
+}
+
+/// RC-004 (schema 80): a mouse button may be either stroke of a chord. A
+/// chord started by a button waits for its second stroke; a key chord may
+/// end on a button; a primary click never touches a waiting chord.
+#[test]
+fn a_mouse_button_may_start_or_end_a_chord() {
+    let shortcuts = vec![
+        bound(
+            1,
+            chord_key(
+                key("MouseBack", false, false, false),
+                key("1", false, false, false),
+            ),
+        ),
+        bound(
+            2,
+            chord_key(
+                key("K", true, false, false),
+                key("MouseMiddle", false, false, false),
+            ),
+        ),
+        bound(3, key("MouseMiddle", false, false, false)),
+    ];
+    let overrides = ShortcutKeyOverrides::default();
+    let keys = ConsoleKeys {
+        shortcuts: &shortcuts,
+        overrides: &overrides,
+        project: None,
+    };
+    let mut chord = None;
+    let primary = mouse_event(egui::PointerButton::Primary, Modifiers::NONE);
+    // Back starts shortcut 1's chord; the primary click stays and the
+    // chord keeps waiting; 1 ends it and fires.
+    let mut events = vec![
+        mouse_event(egui::PointerButton::Extra1, Modifiers::NONE),
+        primary.clone(),
+    ];
+    assert_eq!(
+        take_presses(&mut events, keys, KeyFocus::default(), &mut chord, 0.0),
+        Vec::<u64>::new()
+    );
+    assert_eq!(events, vec![primary.clone()]);
+    assert_eq!(
+        chord.as_ref().map(|pending| key_text(&pending.first)),
+        Some("MouseBack".to_owned())
+    );
+    let mut events = vec![key_event(Key::Num1, Modifiers::NONE, false)];
+    assert_eq!(
+        take_presses(&mut events, keys, KeyFocus::default(), &mut chord, 1.0),
         vec![1]
     );
     assert_eq!(chord, None);
+
+    // Ctrl+K waits; the middle button ends the chord and fires 2, not the
+    // middle button's own shortcut 3.
+    let mut events = vec![
+        key_event(Key::K, press(true, false, false), false),
+        mouse_event(egui::PointerButton::Middle, Modifiers::NONE),
+    ];
+    assert_eq!(
+        take_presses(&mut events, keys, KeyFocus::default(), &mut chord, 2.0),
+        vec![2]
+    );
+    assert_eq!(events, Vec::<Event>::new());
+    assert_eq!(chord, None);
+    // Alone, the middle button fires 3.
+    let mut events = vec![mouse_event(egui::PointerButton::Middle, Modifiers::NONE)];
+    assert_eq!(
+        take_presses(&mut events, keys, KeyFocus::default(), &mut chord, 3.0),
+        vec![3]
+    );
 }
 
 /// A key or button scoped to a pop-out window answers only in that
@@ -1322,10 +1396,10 @@ fn a_pop_out_window_fires_its_own_keys_and_buttons() {
     );
 }
 
-/// A captured mouse button is a single press: it replaces a chord's
-/// strokes but keeps the scope, and is refused as a second stroke.
+/// A captured mouse button may be either stroke of a chord (schema 80): as
+/// the second stroke it ends the chord; as the first it keeps the scope.
 #[test]
-fn set_key_binds_a_mouse_button_as_a_single_press() {
+fn set_key_binds_a_mouse_button_as_either_stroke() {
     let state = shortcuts_fixture(true);
     let context = egui::Context::default();
     let mut shell = StudioShell::default();
@@ -1343,7 +1417,7 @@ fn set_key_binds_a_mouse_button_as_a_single_press() {
         chord_key(key("K", true, false, false), key("1", false, false, false)),
         "mixer",
     ));
-    // A button as the second stroke is refused, keeping the chord.
+    // A button as the second stroke ends the chord.
     shell.user_shortcuts.capturing = true;
     shell.user_shortcuts.capturing_then = true;
     frame(
@@ -1351,7 +1425,7 @@ fn set_key_binds_a_mouse_button_as_a_single_press() {
         mouse_event(egui::PointerButton::Extra2, Modifiers::NONE),
     );
     assert!(!shell.user_shortcuts.capturing);
-    assert!(shell.user_shortcuts.unsupported);
+    assert!(!shell.user_shortcuts.unsupported);
     let draft_key = |shell: &StudioShell| {
         shell
             .user_shortcuts
@@ -1362,8 +1436,20 @@ fn set_key_binds_a_mouse_button_as_a_single_press() {
             .clone()
             .unwrap()
     };
-    assert_eq!(key_text(&draft_key(&shell)), "Ctrl+K, 1");
-    // As the first stroke it drops the second and keeps the window.
+    assert_eq!(
+        draft_key(&shell),
+        windowed(
+            chord_key(
+                key("K", true, false, false),
+                key("MouseForward", false, false, false)
+            ),
+            "mixer"
+        )
+    );
+    assert_eq!(key_text(&draft_key(&shell)), "Ctrl+K, MouseForward");
+    // As the first stroke of a single key it keeps the window.
+    shell.user_shortcuts.draft.as_mut().unwrap().key =
+        Some(windowed(key("K", true, false, false), "mixer"));
     shell.user_shortcuts.capturing = true;
     shell.user_shortcuts.capturing_then = false;
     frame(
@@ -1609,8 +1695,8 @@ fn console_keys_may_be_chords_and_scoped() {
 }
 
 /// A console key capture makes a chord's second stroke, or a new first
-/// stroke keeping the key's chord and scope; a mouse button is a single
-/// press.
+/// stroke keeping the key's chord and scope; a mouse button may be either
+/// stroke.
 #[test]
 fn a_console_key_capture_keeps_the_chord_and_scope() {
     let mut chord = chord_key(key("K", true, false, false), key("1", false, false, false));
@@ -1629,6 +1715,7 @@ fn a_console_key_capture_keeps_the_chord_and_scope() {
     assert_eq!(
         local_stroke(Some(&local), Captured::Key(back.clone()), false),
         Captured::Key(WireShortcutKey {
+            then: chord.then.clone(),
             scope: Some("cues".into()),
             ..back.clone()
         })
@@ -1637,12 +1724,15 @@ fn a_console_key_capture_keeps_the_chord_and_scope() {
         local_stroke(Some(&local), Captured::Key(j.clone()), true),
         Captured::Key(WireShortcutKey {
             then: Some(Box::new(j.clone())),
-            ..chord
+            ..chord.clone()
         })
     );
     assert_eq!(
         local_stroke(Some(&local), Captured::Key(back.clone()), true),
-        Captured::Unsupported
+        Captured::Key(WireShortcutKey {
+            then: Some(Box::new(back.clone())),
+            ..chord
+        })
     );
     // No console key yet: a second stroke has nothing to follow.
     assert_eq!(

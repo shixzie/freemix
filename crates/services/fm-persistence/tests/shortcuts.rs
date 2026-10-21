@@ -272,7 +272,7 @@ fn the_shortcut_count_is_bounded() {
 }
 
 /// Schema 75: a key may name a mouse button and be scoped to a panel's
-/// pop-out window; both round-trip exactly, and a mouse button in a chord
+/// pop-out window; both round-trip exactly, and a bad chord second stroke
 /// or an unknown window is project validation.
 #[test]
 fn mouse_buttons_and_window_scopes_round_trip_exactly_and_strictly() {
@@ -313,12 +313,12 @@ fn mouse_buttons_and_window_scopes_round_trip_exactly_and_strictly() {
         "{text}"
     );
     for (from, to) in [
-        // A mouse button is a single stroke.
+        // A chord's second stroke is a valid key name.
         (
             "\"key\": \"MouseMiddle\", \"command\": false, \"shift\": false, \"alt\": false, \
              \"then\": null",
             "\"key\": \"MouseMiddle\", \"command\": false, \"shift\": false, \"alt\": false, \
-             \"then\": {\"key\": \"1\", \"command\": false, \"shift\": false, \"alt\": false}",
+             \"then\": {\"key\": \"Mouse+\", \"command\": false, \"shift\": false, \"alt\": false}",
         ),
         (
             "\"scope\": \"mixer-window\"",
@@ -403,4 +403,54 @@ fn dynamic_values_round_trip_exactly_and_strictly() {
         fs::write(directory.path("show.freemix/project.json"), invalid).unwrap();
         assert!(store.load().is_err(), "{from} -> {to}");
     }
+}
+
+/// Schema 80 (RC-004): a mouse button may be either stroke of a chord, and
+/// both round-trip exactly.
+#[test]
+fn mouse_chords_round_trip_exactly() {
+    let directory = TestDirectory::new("mouse-chords");
+    let store = ProjectStore::new(directory.path("show.freemix")).unwrap();
+    let mut expected = project();
+    let chord = |id: u64, first: ShortcutKey, then: &str| Shortcut {
+        id,
+        name: format!("Chord {id}"),
+        enabled: true,
+        key: Some(ShortcutKey {
+            then: Some(Box::new(ShortcutKey::plain(then))),
+            ..first
+        }),
+        osc: None,
+        action: ShortcutAction::Script { script: id },
+    };
+    expected.set_shortcuts(vec![
+        chord(
+            1,
+            ShortcutKey {
+                shift: true,
+                scope: Some("mixer-window".into()),
+                ..ShortcutKey::plain("MouseBack")
+            },
+            "1",
+        ),
+        chord(
+            2,
+            ShortcutKey {
+                command: true,
+                ..ShortcutKey::plain("K")
+            },
+            "MouseMiddle",
+        ),
+    ]);
+    store.save(&stored(expected.clone()).unwrap()).unwrap();
+    assert_eq!(store.load().unwrap().project(), &expected);
+    let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
+    assert!(
+        text.contains("\"key\": \"MouseBack\", \"command\": false, \"shift\": true"),
+        "{text}"
+    );
+    assert!(
+        text.contains("\"then\": {\"key\": \"MouseMiddle\""),
+        "{text}"
+    );
 }

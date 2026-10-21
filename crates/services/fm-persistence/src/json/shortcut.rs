@@ -21,8 +21,8 @@
 //! A chord's `then` is its second stroke, `{"key", "command", "shift",
 //! "alt"}`; `scope` is `null`, the console panel the key answers in, or that
 //! panel's pop-out window (`"mixer-window"`). A `key` may name a mouse
-//! button (`MouseMiddle`, `MouseBack`, `MouseForward`), a single stroke
-//! whose `then` is `null`.
+//! button (`MouseMiddle`, `MouseBack`, `MouseForward`), and since schema
+//! 80 either stroke of a chord may.
 //!
 //! An `actions` action holds cue actions in the cue list form (see
 //! [`super::cue`]). A `cue` action's `operation` is `go` (with `cue`, a cue

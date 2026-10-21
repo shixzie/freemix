@@ -31,7 +31,7 @@
 //! [`shortcut_scope_is_valid`]), answering only while that window has the
 //! system's focus. A key name may instead be one of
 //! [`SHORTCUT_MOUSE_BUTTONS`], a press of that mouse button with the same
-//! modifiers: a single stroke, never a chord's. Two enabled-or-not
+//! modifiers, as either stroke of a chord (schema 80). Two enabled-or-not
 //! shortcuts may not share an OSC name or hold clashing keys
 //! ([`ShortcutKey::clashes`]).
 //!
@@ -154,17 +154,13 @@ impl ShortcutKey {
     }
 
     /// Whether the key names are within their bounds, a second stroke is
-    /// plain, a mouse button is a single stroke, and the scope is a known
-    /// panel or pop-out window.
+    /// plain, and the scope is a known panel or pop-out window. Either
+    /// stroke may be a mouse button (schema 80).
     #[must_use]
     pub fn is_valid(&self) -> bool {
         self.stroke_is_valid()
             && self.then.as_deref().is_none_or(|then| {
-                !self.is_mouse()
-                    && !then.is_mouse()
-                    && then.stroke_is_valid()
-                    && then.then.is_none()
-                    && then.scope.is_none()
+                then.stroke_is_valid() && then.then.is_none() && then.scope.is_none()
             })
             && self.scope.as_deref().is_none_or(shortcut_scope_is_valid)
     }

@@ -241,8 +241,8 @@ mod tests {
         assert!(!overrides.set(project(7), 3, Some(key("F+", false, false, false))));
         assert!(!overrides.set(project(7), 0, None));
         // A console key may be a chord, a mouse button, and scoped, as a
-        // project key may, but not a chord of a mouse button or a scope
-        // the console lacks.
+        // project key may (a mouse button as either stroke of a chord),
+        // but not a scope the console lacks.
         let mut chord = key("K", true, false, false);
         chord.then = Some(Box::new(key("1", false, false, false)));
         assert!(overrides.set(project(7), 3, Some(chord.clone())));
@@ -253,11 +253,11 @@ mod tests {
         mouse.scope = Some("mixer".into());
         assert!(overrides.set(project(7), 5, Some(mouse.clone())));
         mouse.then = Some(Box::new(key("1", false, false, false)));
-        assert!(!overrides.set(project(7), 6, Some(mouse)));
+        assert!(overrides.set(project(7), 6, Some(mouse)));
         let mut unknown = chord;
         unknown.scope = Some("timeline".into());
-        assert!(!overrides.set(project(7), 6, Some(unknown)));
-        assert_eq!(overrides.len(), 4);
+        assert!(!overrides.set(project(7), 7, Some(unknown)));
+        assert_eq!(overrides.len(), 5);
     }
 
     #[test]
@@ -273,6 +273,9 @@ mod tests {
         let mut middle = key("MouseMiddle", true, false, false);
         middle.scope = Some("mixer".into());
         overrides.set(project(42), 6, Some(middle));
+        let mut back_chord = key("MouseBack", false, false, false);
+        back_chord.then = Some(Box::new(key("MouseForward", false, false, true)));
+        overrides.set(project(42), 7, Some(back_chord));
         let lines = overrides.preference_entries();
         assert_eq!(
             lines,
@@ -289,6 +292,10 @@ mod tests {
                 (
                     "shortcut.key.42.6".to_owned(),
                     "Ctrl+MouseMiddle @mixer".to_owned()
+                ),
+                (
+                    "shortcut.key.42.7".to_owned(),
+                    "MouseBack, Alt+MouseForward".to_owned()
                 ),
                 (format!("shortcut.key.{}.9", u128::MAX), "none".to_owned()),
             ]
@@ -310,8 +317,7 @@ mod tests {
             ("shortcut.key.42.3", ""),
             ("shortcut.key.42.3", "Ctrl+K,1"),
             ("shortcut.key.42.3", "Ctrl+K, 1, 2"),
-            ("shortcut.key.42.3", "Ctrl+K, MouseBack"),
-            ("shortcut.key.42.3", "MouseBack, 1"),
+            ("shortcut.key.42.3", "Ctrl+K, Mouse+"),
             ("shortcut.key.42.3", "Ctrl+K @timeline"),
             ("shortcut.key.42.3", "Ctrl+K @"),
             ("shortcut.key.42.3", "Ctrl+K @cues @mixer"),

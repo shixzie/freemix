@@ -69,8 +69,8 @@ pub const SHORTCUT_SCOPES: [&str; 12] = [
 ];
 
 /// The mouse buttons a shortcut key may name in place of a key (Protocol
-/// 2.93): the middle button and the two side buttons, back and forward. A
-/// mouse button is a single stroke, never part of a chord.
+/// 2.93): the middle button and the two side buttons, back and forward.
+/// Since Protocol 2.99 a mouse button may be either stroke of a chord.
 pub const SHORTCUT_MOUSE_BUTTONS: [&str; 3] = ["MouseMiddle", "MouseBack", "MouseForward"];
 
 /// What a window scope adds to a panel name (Protocol 2.93):
@@ -109,8 +109,9 @@ pub fn shortcut_scopes_overlap(first: Option<&str>, second: Option<&str>) -> boo
 /// stroke pressed after it (Ctrl+K, then 1), and may be scoped to one
 /// console panel. The second stroke is a plain stroke: no `then` or
 /// `scope` of its own. Since 2.93 `key` may name a mouse button
-/// ([`SHORTCUT_MOUSE_BUTTONS`]), a single stroke, and the scope may be a
-/// panel's pop-out window ([`shortcut_scope_is_valid`]).
+/// ([`SHORTCUT_MOUSE_BUTTONS`]) and the scope may be a panel's pop-out
+/// window ([`shortcut_scope_is_valid`]); since 2.99 a mouse button may be
+/// a chord's first or second stroke.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct WireShortcutKey {
     /// 1 to [`MAX_SHORTCUT_KEY_BYTES`] ASCII letters and digits: a key's
@@ -261,8 +262,7 @@ pub fn shortcut_name_is_valid(name: &str) -> bool {
 }
 
 /// Whether `key` names a valid key: names within their bounds, a plain
-/// second stroke, a mouse button only as a single stroke, and a known
-/// panel or pop-out window as its scope.
+/// second stroke, and a known panel or pop-out window as its scope.
 #[must_use]
 pub fn shortcut_key_is_valid(key: &WireShortcutKey) -> bool {
     let stroke = |key: &WireShortcutKey| {
@@ -271,13 +271,10 @@ pub fn shortcut_key_is_valid(key: &WireShortcutKey) -> bool {
             && key.key.bytes().all(|byte| byte.is_ascii_alphanumeric())
     };
     stroke(key)
-        && key.then.as_deref().is_none_or(|then| {
-            !key.is_mouse()
-                && !then.is_mouse()
-                && stroke(then)
-                && then.then.is_none()
-                && then.scope.is_none()
-        })
+        && key
+            .then
+            .as_deref()
+            .is_none_or(|then| stroke(then) && then.then.is_none() && then.scope.is_none())
         && key.scope.as_deref().is_none_or(shortcut_scope_is_valid)
 }
 

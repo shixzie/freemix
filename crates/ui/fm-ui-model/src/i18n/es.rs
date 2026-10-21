@@ -9201,10 +9201,6 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("la tecla no tiene segunda tecla"),
     ),
     (
-        Msg::UserShortcutReasonMouseChord,
-        t("un botón del ratón es una pulsación sola, nunca parte de un acorde"),
-    ),
-    (
         Msg::UserShortcutScopeWindow,
         t("Ventana de {panel} (desacoplada)"),
     ),

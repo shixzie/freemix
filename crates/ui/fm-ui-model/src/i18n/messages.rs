@@ -3278,7 +3278,6 @@ messages! {
     UserShortcutChordPending => t("{keys} pressed: press the second key"),
     UserShortcutReasonNoFirstKey => t("the shortcut has no key yet"),
     UserShortcutReasonNoThen => t("the key has no second key"),
-    UserShortcutReasonMouseChord => t("a mouse button is a single press, never part of a chord"),
     UserShortcutScopeWindow => t("{panel} window (popped out)"),
     UserShortcutScopeWindowHover => t("Fire only while this panel is popped out into its own window and that window has the focus; the main console window never answers the key"),
     UserShortcutInWindow => t("{keys} in the {panel} window"),

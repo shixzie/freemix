@@ -3894,6 +3894,18 @@ Protocol 2.99 adds dynamic value targets to user shortcut and cue actions
   "Remove second key here" and an "Answers here in" picker, with English
   and Spanish hover help; a new console key keeps the chord and scope it
   had. No wire change.
+- A mouse button (`MouseMiddle`, `MouseBack`, `MouseForward`) may now be
+  either stroke of a chord, lifting the 2.93 single-stroke rule: `key=`
+  accepts `MouseBack.0.1.0%2B1.0.0.0` and `K.1.0.0%2BMouseMiddle.0.0.0`
+  (the second stroke stays plain: no chord or scope of its own). Such a
+  chord clashes as any chord does: with its first stroke alone, and with a
+  chord ending on the same second stroke, in overlapping scopes. Project
+  durability (schema 80), `.fmshortcuts` files, and Studio's console key
+  preference lines (`MouseBack, Alt+MouseForward`) accept it. Studio's Set
+  key, Add second key, and their console counterparts capture a button as
+  either stroke, and a named button press starts or ends a waiting chord
+  as a key press does (a button no chord ends with ends the wait,
+  swallowed); primary and secondary clicks never touch a chord.
 - 2.98 is refused.
 
 Command results are ordered before any event bearing the same accepted revision

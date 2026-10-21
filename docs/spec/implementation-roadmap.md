@@ -58,9 +58,10 @@ highest-value remaining items, ranked:
    dynamic value targets (a gain step, a mute toggle, and a gain read from
    the firing control's OSC value; Protocol 2.99, schema 80), and chorded
    and panel- or window-scoped console key overrides in Studio's local
-   preferences; still missing are window scopes for Studio's tool windows
-   and an embedded pop-out, and mouse buttons as a chord's stroke (see the
-   RC-004 boundary below). This is a P0 row.
+   preferences, and mouse buttons as either stroke of a chord (Protocol
+   2.99, schema 80); still missing are window scopes for Studio's tool
+   windows and an embedded pop-out (see the RC-004 boundary below). This
+   is a P0 row.
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
    a real input end to end (engine, protocol, persistence, both daemons,
    Studio), and the native daemon prefetches each list's next item so Auto
@@ -1070,7 +1071,7 @@ Arm GO; the CLI's `go`, `cue-arm`, and new `shortcut-fire` take
 Protocol 2.93 / schema 75 add mouse bindings and pop-out window scopes: a
 key may name the middle, back, or forward mouse button
 (`MouseMiddle`, `MouseBack`, `MouseForward`) with Ctrl/Cmd, Shift, and Alt,
-a single stroke never part of a chord, and may be scoped to a panel's
+a single stroke never part of a chord (lifted in 2.99), and may be scoped to a panel's
 pop-out window (`<panel>-window`), answering only while that native window
 has the system's focus. Buttons clash with keys and chords exactly as keys
 do, and a window scope overlaps the whole console and its own panel but no
@@ -1098,10 +1099,13 @@ mouse buttons, and scoped to a panel or a pop-out window like project
 keys, clashing where strokes and scopes overlap; a preference line writes
 `Ctrl+K, 1 @cues-window`, and the Shortcuts window's "This console" rows
 add a second console key and an "Answers here in" picker with hover help.
+A mouse button may now be either stroke of a chord (Protocol 2.99, schema
+80; `.fmshortcuts` and console keys too), clashing as any chord does;
+Studio captures a button as either stroke, and a named button press starts
+or ends a waiting chord as a key press does.
 Still missing, so RC-004 remains planned: window scopes for the Colour,
 Animation, and Designer tool windows (which read no console keys) and for
-a pop-out the platform embeds in the main window, and mouse buttons as a
-chord's stroke.
+a pop-out the platform embeds in the main window.
 
 Current implementation boundary for item 8: `fm-scopes` now provides a bounded
 reference color-monitoring session on top of its scope math: an exact

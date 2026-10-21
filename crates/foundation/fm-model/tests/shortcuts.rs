@@ -378,9 +378,9 @@ fn chords_and_scopes_are_bounded_and_clash_only_where_they_overlap() {
     );
 }
 
-/// Schema 75: a key may name a mouse button, a single stroke never part of
-/// a chord, and may be scoped to a panel's pop-out window, which overlaps
-/// that panel and the whole console but no other panel or window.
+/// Schema 75: a key may name a mouse button, and may be scoped to a panel's
+/// pop-out window, which overlaps that panel and the whole console but no
+/// other panel or window.
 #[test]
 fn mouse_buttons_and_window_scopes_are_bounded_and_clash_with_keys() {
     let mouse = |name: &str, scope: Option<&str>| ShortcutKey {
@@ -393,14 +393,6 @@ fn mouse_buttons_and_window_scopes_are_bounded_and_clash_with_keys() {
         assert!(mouse(name, None).is_mouse(), "{name}");
     }
     assert!(!ShortcutKey::plain("F9").is_mouse());
-    // A mouse button is a single stroke: never a chord's first or second.
-    let mut chorded = mouse("MouseBack", None);
-    chorded.then = Some(Box::new(ShortcutKey::plain("1")));
-    assert!(!chorded.is_valid());
-    let mut ending = ShortcutKey::plain("K");
-    ending.then = Some(Box::new(ShortcutKey::plain("MouseBack")));
-    assert!(!ending.is_valid());
-
     assert!(mouse("MouseBack", Some("mixer-window")).is_valid());
     assert!(mouse("MouseBack", Some("cues-window")).is_valid());
     assert!(!mouse("MouseBack", Some("timeline-window")).is_valid());
@@ -464,8 +456,68 @@ fn mouse_buttons_and_window_scopes_are_bounded_and_clash_with_keys() {
         ]),
         Ok(())
     );
+}
+
+/// Schema 80 (RC-004): a mouse button may be either stroke of a chord,
+/// clashing as any chord does.
+#[test]
+fn mouse_buttons_may_be_either_stroke_of_a_chord() {
+    let mouse = |name: &str, scope: Option<&str>| ShortcutKey {
+        shift: true,
+        scope: scope.map(str::to_owned),
+        ..ShortcutKey::plain(name)
+    };
+    let with_key = |id: u64, key: ShortcutKey| Shortcut {
+        key: Some(key),
+        ..shortcut(id)
+    };
+    // Schema 80: a mouse button may be a chord's first or second stroke;
+    // the second stroke stays plain (no chord, no scope of its own).
+    let mut chorded = mouse("MouseBack", None);
+    chorded.then = Some(Box::new(ShortcutKey::plain("1")));
+    assert!(chorded.is_valid());
+    assert_eq!(chorded.to_string(), "Shift+MouseBack, 1");
+    let mut ending = ShortcutKey::plain("K");
+    ending.then = Some(Box::new(ShortcutKey::plain("MouseBack")));
+    assert!(ending.is_valid());
+    let mut both = mouse("MouseMiddle", None);
+    both.then = Some(Box::new(ShortcutKey::plain("MouseForward")));
+    assert!(both.is_valid());
+    let mut scoped_then = ShortcutKey::plain("K");
+    scoped_then.then = Some(Box::new(mouse("MouseBack", Some("mixer"))));
+    assert!(!scoped_then.is_valid());
+    // A chord started by a button clashes with that button alone, and
+    // two such chords clash only when they end on the same stroke.
     assert_eq!(
-        validate_shortcuts(&[with_key(1, chorded)]),
+        validate_shortcuts(&[
+            with_key(1, chorded.clone()),
+            with_key(2, mouse("MouseBack", None)),
+        ]),
+        Err(ShortcutError::DuplicateKey {
+            first: 1,
+            second: 2
+        })
+    );
+    let mut other = chorded.clone();
+    other.then = Some(Box::new(ShortcutKey::plain("MouseMiddle")));
+    assert_eq!(
+        validate_shortcuts(&[
+            with_key(1, chorded.clone()),
+            with_key(2, other.clone()),
+            with_key(3, ending),
+            with_key(4, both),
+        ]),
+        Ok(())
+    );
+    assert_eq!(
+        validate_shortcuts(&[with_key(1, other.clone()), with_key(2, other)]),
+        Err(ShortcutError::DuplicateKey {
+            first: 1,
+            second: 2
+        })
+    );
+    assert_eq!(
+        validate_shortcuts(&[with_key(1, scoped_then)]),
         Err(ShortcutError::InvalidKey)
     );
 }

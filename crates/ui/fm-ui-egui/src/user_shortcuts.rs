@@ -9,8 +9,8 @@
 //!
 //! The window lists the shortcuts and edits one at a time as a draft. "Set
 //! key" captures the next key or mouse button pressed (with Ctrl or Cmd,
-//! Shift, and Alt; the middle, back, and forward buttons, a single press
-//! never part of a chord);
+//! Shift, and Alt; the middle, back, and forward buttons, which may also
+//! be either stroke of a chord);
 //! a key the console already uses for one of its own commands, or another
 //! shortcut's key or OSC name, is flagged and holds Save. Save sends the
 //! whole shortcut (`shortcut_set`, a padlocked, undoable project edit);
@@ -570,18 +570,32 @@ pub(crate) struct PendingChord {
 // The shell compares its state whole; an input time is never NaN.
 impl Eq for PendingChord {}
 
-/// Whether a press of `key` with `modifiers` is `stroke`, matched exactly.
-fn is_stroke(stroke: &WireShortcutKey, key: Key, modifiers: Modifiers) -> bool {
-    Key::from_name(&stroke.key) == Some(key) && modifiers.matches_exact(pattern(stroke))
+/// One press a shortcut stroke may name: a key, or a named mouse button.
+#[derive(Clone, Copy)]
+enum Press {
+    Key(Key),
+    Mouse(&'static str),
+}
+
+impl Press {
+    /// Whether this press with `modifiers` is `stroke`, matched exactly.
+    fn is(self, stroke: &WireShortcutKey, modifiers: Modifiers) -> bool {
+        let named = match self {
+            Self::Key(key) => Key::from_name(&stroke.key) == Some(key),
+            Self::Mouse(name) => stroke.key == name,
+        };
+        named && modifiers.matches_exact(pattern(stroke))
+    }
 }
 
 /// Removes this frame's presses of shortcut keys and mouse buttons from
 /// `events`, so nothing else reads them, and returns the shortcuts the new
-/// presses name, in order. A key that starts a chord waits for its second
-/// key in `chord` (up to [`CHORD_TIMEOUT`] after it, at `now`); the next
-/// key press then ends the chord, firing the shortcut it completes, if
-/// any, and is never read by anything else. A shortcut's mouse button
-/// fires at once (ending any waiting chord); other pointer events stay.
+/// presses name, in order. A named mouse button (middle, back, forward) is
+/// a stroke like a key. A stroke that starts a chord waits for its second
+/// stroke in `chord` (up to [`CHORD_TIMEOUT`] after it, at `now`); the next
+/// key or named-button press then ends the chord, firing the shortcut it
+/// completes, if any, and is never read by anything else. Primary and
+/// secondary clicks and other pointer events stay.
 /// Keys scoped to a panel answer only while `focus` has that panel, and
 /// keys scoped to a pop-out window only in that window. The repeats of a
 /// held key are swallowed without firing again.
@@ -600,56 +614,43 @@ pub(crate) fn take_presses(
         *chord = None;
     }
     events.retain(|event| {
-        if let Event::PointerButton {
-            button,
-            pressed: true,
-            modifiers,
-            ..
-        } = event
-        {
-            let Some((shortcut, _)) = mouse_button_name(*button).and_then(|name| {
-                keys.live(focus)
-                    .find(|(_, bound)| bound.key == name && modifiers.matches_exact(pattern(bound)))
-            }) else {
-                return true;
-            };
-            *chord = None;
-            fired.push(shortcut.id);
-            return false;
-        }
-        let Event::Key {
-            key,
-            pressed: true,
-            repeat,
-            modifiers,
-            ..
-        } = event
-        else {
-            return true;
+        let (press, repeat, modifiers) = match event {
+            Event::PointerButton {
+                button,
+                pressed: true,
+                modifiers,
+                ..
+            } => match mouse_button_name(*button) {
+                Some(name) => (Press::Mouse(name), false, *modifiers),
+                None => return true,
+            },
+            Event::Key {
+                key,
+                pressed: true,
+                repeat,
+                modifiers,
+                ..
+            } if !modifier_only(*key) => (Press::Key(*key), *repeat, *modifiers),
+            _ => return true,
         };
-        if modifier_only(*key) {
-            return true;
-        }
+        let matches = |stroke: &WireShortcutKey| press.is(stroke, modifiers);
         if let Some(pending) = chord.as_ref() {
-            if *repeat && is_stroke(&pending.first, *key, *modifiers) {
+            if repeat && matches(&pending.first) {
                 return false;
             }
-            if let Some((shortcut, _)) = keys.live(focus).find(|(_, bound)| {
-                bound.same_stroke(&pending.first)
-                    && bound
-                        .then
-                        .as_deref()
-                        .is_some_and(|then| is_stroke(then, *key, *modifiers))
-            }) && !repeat
+            // A chord's second stroke, a key or a mouse button, ends it.
+            let completed = keys.live(focus).find(|(_, bound)| {
+                bound.same_stroke(&pending.first) && bound.then.as_deref().is_some_and(matches)
+            });
+            if let Some((shortcut, _)) = completed
+                && !repeat
             {
                 fired.push(shortcut.id);
             }
             *chord = None;
             return false;
         }
-        let mut starts = keys
-            .live(focus)
-            .filter(|(_, bound)| is_stroke(bound, *key, *modifiers));
+        let mut starts = keys.live(focus).filter(|(_, bound)| matches(bound));
         let Some((shortcut, bound)) = starts.next() else {
             return true;
         };
@@ -1114,11 +1115,6 @@ impl StudioShell {
         window.follow(replicated(state));
         if window.capturing {
             match context.input_mut(|input| capture(&mut input.events)) {
-                // A mouse button is never a chord's second stroke.
-                Some(Captured::Key(stroke)) if window.capturing_then && stroke.is_mouse() => {
-                    window.capturing = false;
-                    window.unsupported = true;
-                }
                 Some(Captured::Key(stroke)) => {
                     if let Some(draft) = &mut window.draft {
                         draft.key = Some(match (draft.key.take(), window.capturing_then) {
@@ -1127,11 +1123,10 @@ impl StudioShell {
                                 key.then = Some(Box::new(stroke));
                                 key
                             }
-                            // A new first stroke keeps the second (unless
-                            // it is a mouse button, a single press) and
-                            // the scope.
+                            // A new first stroke keeps the second and the
+                            // scope.
                             (Some(key), false) => WireShortcutKey {
-                                then: key.then.filter(|_| !stroke.is_mouse()),
+                                then: key.then,
                                 scope: key.scope,
                                 ..stroke
                             },
@@ -1598,7 +1593,7 @@ pub(crate) fn local_capture(
 /// What a console key capture of `captured` makes of this console's key
 /// `local` (see [`ConsoleKeys::local`]): with `then`, the second stroke of
 /// its chord; else a new first stroke that keeps the key's second stroke
-/// (unless either is a mouse button, a single press) and its scope.
+/// and its scope. Either stroke may be a mouse button.
 pub(crate) fn local_stroke(
     local: Option<&Option<WireShortcutKey>>,
     captured: Captured,
@@ -1609,15 +1604,13 @@ pub(crate) fn local_stroke(
     };
     let current = local.and_then(Option::as_ref);
     match (current, then) {
-        (Some(key), true) if !stroke.is_mouse() && !key.is_mouse() => {
-            Captured::Key(WireShortcutKey {
-                then: Some(Box::new(stroke)),
-                ..key.clone()
-            })
-        }
+        (Some(key), true) => Captured::Key(WireShortcutKey {
+            then: Some(Box::new(stroke)),
+            ..key.clone()
+        }),
         (_, true) => Captured::Unsupported,
         (Some(key), false) => Captured::Key(WireShortcutKey {
-            then: key.then.clone().filter(|_| !stroke.is_mouse()),
+            then: key.then.clone(),
             scope: key.scope.clone(),
             ..stroke
         }),
@@ -1778,11 +1771,7 @@ fn draw_console_key(
                 });
             }
         } else {
-            let add = reshape_block.or_else(|| {
-                own.as_ref()
-                    .is_some_and(WireShortcutKey::is_mouse)
-                    .then_some(Msg::UserShortcutReasonMouseChord.en())
-            });
+            let add = reshape_block;
             if ui
                 .add_enabled(
                     add.is_none(),
@@ -2069,13 +2058,6 @@ fn draw_editor(
                         .key
                         .is_none()
                         .then_some(Msg::UserShortcutReasonNoFirstKey.en())
-                })
-                .or_else(|| {
-                    draft
-                        .key
-                        .as_ref()
-                        .is_some_and(WireShortcutKey::is_mouse)
-                        .then_some(Msg::UserShortcutReasonMouseChord.en())
                 });
             if ui
                 .add_enabled(
