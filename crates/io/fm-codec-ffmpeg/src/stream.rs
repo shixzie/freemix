@@ -777,7 +777,8 @@ const MAX_PRESET_VALUE: usize = 960;
 /// RTMP(S): the URL keeps only its scheme and authority, and `rtmp_app` and
 /// `rtmp_playpath` carry the application and stream name exactly as
 /// `ffmpeg`'s RTMP protocol would have parsed them out of the full URL
-/// path. SRT: the URL loses its `?streamid=` query, and `streamid` carries
+/// path, each left out when empty (`ffmpeg` refuses an empty preset value,
+/// and reads the same empty value from the bare URL). SRT: the URL loses its `?streamid=` query, and `streamid` carries
 /// its value. `None` (the URL is passed whole) for HLS, a destination
 /// without a key, off Unix, an SRT stream id holding `%` or `+`, or a value
 /// longer than a preset line carries.
@@ -792,10 +793,18 @@ fn split_secret(destination: &StreamDestination) -> Option<(String, Vec<(&'stati
             // `av_url_split`: the path starts at the first `/`, `?`, or `#`.
             let at = rest.find(['/', '?', '#'])?;
             let (app, playpath) = rtmp_app_and_playpath(&rest[at..]);
-            (
-                format!("{scheme}://{}", &rest[..at]),
-                vec![("rtmp_app", app), ("rtmp_playpath", playpath)],
-            )
+            // `ffmpeg` refuses a preset line without a value ("Invalid
+            // syntax"), so an empty application (`rtmp://host//key`) or
+            // stream name is left out: parsed from the bare URL's empty
+            // path, it is empty there too.
+            let options: Vec<_> = [("rtmp_app", app), ("rtmp_playpath", playpath)]
+                .into_iter()
+                .filter(|(_, value)| !value.is_empty())
+                .collect();
+            if options.is_empty() {
+                return None;
+            }
+            (format!("{scheme}://{}", &rest[..at]), options)
         }
         DestinationKind::Srt => {
             let (authority, query) = rest.split_once('?')?;
@@ -4048,6 +4057,51 @@ mod tests {
         }
     }
 
+    /// The local `ffmpeg` reads every RTMP preset the streamer writes: an
+    /// empty application or stream name has no line, since `ffmpeg` refuses
+    /// `rtmp_app=` with "Invalid syntax".
+    #[test]
+    #[cfg(unix)]
+    fn ffmpeg_accepts_every_rtmp_preset() {
+        let available = std::process::Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .is_ok_and(|output| output.status.success());
+        if !available {
+            assert!(
+                std::env::var("FM_REQUIRE_FFMPEG").as_deref() != Ok("1"),
+                "FM_REQUIRE_FFMPEG=1 but ffmpeg is unavailable"
+            );
+            eprintln!("ffmpeg_accepts_every_rtmp_preset skipped: no ffmpeg");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        for url in [
+            "rtmp://ingest.test:1935/live/live_9Xq7Zr2Kp",
+            "rtmp://ingest.test:1935//live_9Xq7Zr2Kp",
+        ] {
+            let config = StreamConfig::new(format(), StreamDestination::parse(url).unwrap());
+            let preset = output_preset(&config).unwrap();
+            let path = root.path().join("rtmp.ffpreset");
+            std::fs::write(&path, &preset).unwrap();
+            // The preset is an output option of a null muxer, which ignores
+            // the protocol options it carries.
+            let output = std::process::Command::new("ffmpeg")
+                .args(["-hide_banner", "-nostdin", "-f", "lavfi", "-i"])
+                .arg("nullsrc=s=16x16:d=0.04")
+                .arg("-fpre")
+                .arg(&path)
+                .args(["-f", "null", "-"])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{url}: {preset:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
     /// The stream key never reaches argv, which every local user can read in
     /// `/proc/<pid>/cmdline` and `ps` shows: the spawned command names only
     /// the scheme and authority and reads the key from its stdin preset.
@@ -4069,6 +4123,12 @@ mod tests {
             (
                 format!("rtmps://ingest.test:443/app/inst/{KEY}?sig=a/b"),
                 format!("rtmp_app=app/inst\nrtmp_playpath={KEY}?sig=a/b\n"),
+            ),
+            // An empty application has no preset line: ffmpeg refuses
+            // `rtmp_app=` as invalid syntax.
+            (
+                format!("rtmp://ingest.test:1935//{KEY}"),
+                format!("rtmp_playpath={KEY}\n"),
             ),
             (
                 format!("srt://ingest.test:9000?streamid={KEY}"),
