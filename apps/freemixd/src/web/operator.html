@@ -172,7 +172,7 @@
   .fx .band { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .6rem; padding-top: .35rem;
     border-top: 1px solid #ffffff10; }
   .fx .band .params { flex: 1 0 100%; }
-  /* A dynamics stage's gain reduction (Protocol 2.104): a bar growing from
+  /* A dynamics stage's gain reduction (Protocol 2.103): a bar growing from
      the right, full at 24 dB, and the value; dimmed while meters are stale. */
   .fx .gr { display: inline-flex; align-items: center; gap: .35rem; margin-left: auto; font-size: .8rem; }
   .fx .gr small { color: var(--muted); font-weight: 700; letter-spacing: .04em; }
@@ -330,7 +330,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.102";
+  const PROTOCOL = "2.103";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -1203,7 +1203,7 @@
     // `audio_meters` `loudness` (Protocol 2.94 on the Web): target
     // ("master" or an input id) -> its readings.
     loudness: new Map(),
-    // `audio_meters` `dynamics` (Protocol 2.104 on the Web): target ->
+    // `audio_meters` `dynamics` (Protocol 2.103 on the Web): target ->
     // each running dynamics stage's gain reduction (FX_GR.parse).
     dynamics: new Map(),
     // `source_sync_status` `sources` (Protocol 2.101 on the Web): one
@@ -2962,7 +2962,7 @@
   // on; otherwise the page shows the server's chain and says why.
   const FX_SEND_INTERVAL_MS = 100;
   // ---- Strip FX gain reduction (AU-005) begin ----
-  // `audio_meters` `dynamics` (Protocol 2.104 on the Web): comma-separated
+  // `audio_meters` `dynamics` (Protocol 2.103 on the Web): comma-separated
   // `<target>~<gate>~<expander>~<compressor>~<limiter>` entries for Master
   // and at most 32 strips whose chain has a running dynamics stage, each a
   // canonical reduction in millidecibels (at most 200 dB) or `-` for a

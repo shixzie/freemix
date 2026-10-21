@@ -24,7 +24,7 @@
 //! replaces one that has not started. The session's title preview rate
 //! bounds them (a 320x180 preview is at most nine 32 KiB parts).
 //!
-//! Protocol 2.104 adds the gain reduction of Master and at most
+//! Protocol 2.103 adds the gain reduction of Master and at most
 //! [`WEB_LOUDNESS_INPUTS`] strips to the meter record, only for chains
 //! with a running dynamics stage (gate, expander, compressor, or limiter),
 //! which the operator page's Strip FX section shows.
@@ -166,7 +166,7 @@ pub(crate) const WEB_LOUDNESS_INPUTS: usize = 32;
 /// stays small however many inputs the show has. Loudness (Protocol 2.94)
 /// is kept for Master and the first [`WEB_LOUDNESS_INPUTS`] metered strips,
 /// which the operator page shows with each bus's loudness reset; gain
-/// reduction (Protocol 2.104) likewise for Master and the first
+/// reduction (Protocol 2.103) likewise for Master and the first
 /// [`WEB_LOUDNESS_INPUTS`] strips whose chain has a running dynamics stage
 /// (a bypassed chain or one with every dynamics stage off has no entry).
 pub(crate) fn web_meters(meters: &AudioMetersMessage) -> AudioMetersMessage {
@@ -271,7 +271,7 @@ mod tests {
         assert!(fm_protocol::encode_line(&fm_protocol::WireMessage::AudioMeters(web)).is_ok());
     }
 
-    /// Gain reduction (Protocol 2.104) reaches a Web page only for chains
+    /// Gain reduction (Protocol 2.103) reaches a Web page only for chains
     /// with a running dynamics stage: Master and at most
     /// [`WEB_LOUDNESS_INPUTS`] strips, the lowest input ids first.
     #[test]

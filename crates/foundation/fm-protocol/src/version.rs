@@ -1,5 +1,5 @@
 /// The only protocol accepted by a current-development client or server.
-pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(2, 102);
+pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(2, 103);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ProtocolVersion {

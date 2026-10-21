@@ -2350,7 +2350,7 @@ fn operator_page_strip_dsp_codec_matches_the_rust_codec() {
 }
 
 /// The operator page's Strip FX gain reduction block (AU-005, Protocol
-/// 2.104), which uses nothing else on the page.
+/// 2.103), which uses nothing else on the page.
 fn page_fx_gain_reduction(page: &str) -> &str {
     let begin = "  // ---- Strip FX gain reduction (AU-005) begin ----\n";
     let start = page.find(begin).expect("gain reduction block begin");
@@ -2360,7 +2360,7 @@ fn page_fx_gain_reduction(page: &str) -> &str {
     &page[start..start + end]
 }
 
-/// The Web `audio_meters` `dynamics` (Protocol 2.104) on the operator
+/// The Web `audio_meters` `dynamics` (Protocol 2.103) on the operator
 /// page: each FX disclosure shows its switched-on dynamics stages' gain
 /// reduction as a bar with the value in dB and hover help, dimmed while the
 /// meters are stale; the page's parser reads exactly what the Rust codec

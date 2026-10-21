@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.102 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.103 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4044,7 +4044,7 @@ change.
 - `freemix-cli remote-audio-output-devices <address>` prints the list.
 - 2.101 is refused.
 
-Protocol 2.104 shows strip FX gain reduction on the Web operator page
+Protocol 2.103 shows strip FX gain reduction on the Web operator page
 (AU-005). The project schema is unchanged.
 
 - Web `audio_meters` records (the operator and tally pages' lossy feed)
@@ -4061,7 +4061,7 @@ Protocol 2.104 shows strip FX gain reduction on the Web operator page
   with the value in dB, with English and Spanish hover help; the bars dim
   (and say so on hover) when no meter record arrived for a second, and
   a stage without an entry shows `—`.
-- 2.103 is refused.
+- 2.102 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

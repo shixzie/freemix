@@ -1399,7 +1399,7 @@ flight per chain: a slider drag sends at most ten sets a second under one
 gesture token (one undo step) plus one on release; a set refused as stale
 is resent once only while the chain is still the one it was based on, and
 otherwise the page shows the server's chain and says why
-(`tests/web_tally.rs`). Since Protocol 2.104 the Web `audio_meters`
+(`tests/web_tally.rs`). Since Protocol 2.103 the Web `audio_meters`
 records also keep the gain reduction of Master and at most 32 strips,
 only for chains with a running gate, expander, compressor, or limiter
 (a bypassed chain or one with every dynamics stage off sends none), and
