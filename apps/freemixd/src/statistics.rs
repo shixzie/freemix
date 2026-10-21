@@ -368,7 +368,7 @@ pub(crate) struct DaemonStatistics {
     alerts: AlertEngine,
     /// The most recent notifications, oldest first.
     recent: VecDeque<AlertNotification>,
-    /// The last `health_status` sequence sent (Protocol 2.99).
+    /// The last `health_status` sequence sent (Protocol 2.100).
     health_sequence: u64,
 }
 
@@ -473,7 +473,7 @@ impl DaemonStatistics {
         self.recent.iter()
     }
 
-    /// The wire health sample at `now` (Protocol 2.99).
+    /// The wire health sample at `now` (Protocol 2.100).
     pub(crate) fn health(&self, now: Instant) -> DaemonHealth {
         let uptime_ms = self.millis(now);
         let alerts = self
@@ -514,7 +514,7 @@ impl DaemonStatistics {
         }
     }
 
-    /// The next `health_status` record (Protocol 2.99) for the sample just
+    /// The next `health_status` record (Protocol 2.100) for the sample just
     /// taken at `now`.
     pub(crate) fn health_status(
         &mut self,

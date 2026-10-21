@@ -270,7 +270,7 @@ enum LossySlot {
     SourceSyncStatus,
     /// The latest `title_phases` (Protocol 2.90).
     TitlePhases,
-    /// The latest `health_status` (Protocol 2.99).
+    /// The latest `health_status` (Protocol 2.100).
     HealthStatus,
 }
 
@@ -527,7 +527,7 @@ impl Peer {
         }
     }
 
-    /// Coalesces the latest daemon health in its own slot (Protocol 2.99);
+    /// Coalesces the latest daemon health in its own slot (Protocol 2.100);
     /// Web pages do not take it.
     fn replace_health_status(&mut self, bytes: Vec<u8>) {
         if self.phase == Phase::Active && self.web_feed.is_none() && self.recorder_status {
@@ -3199,7 +3199,7 @@ fn publish_source_sync_status(peers: &mut [Peer], status: &SourceSyncStatusMessa
     }
 }
 
-/// Daemon health (Protocol 2.99) goes to raw Studio peers in its own
+/// Daemon health (Protocol 2.100) goes to raw Studio peers in its own
 /// latest-wins slot, once a statistics sample.
 fn publish_health_status(peers: &mut [Peer], status: &fm_protocol::HealthStatusMessage) {
     let Ok(bytes) = encode_line(&WireMessage::HealthStatus(status.clone())).map(String::into_bytes)

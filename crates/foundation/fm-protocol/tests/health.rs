@@ -1,4 +1,4 @@
-//! Protocol 2.99 `health_status` and the `diagnostics_response` health
+//! Protocol 2.100 `health_status` and the `diagnostics_response` health
 //! fields: the exact lossy daemon utilization and alert record (RC-015).
 
 use fm_protocol::{

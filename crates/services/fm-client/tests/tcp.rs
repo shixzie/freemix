@@ -2279,7 +2279,7 @@ fn health_status(sequence: u64, cpu_permille: u16) -> fm_protocol::HealthStatusM
     }
 }
 
-/// Protocol 2.99: `health_status` is lossy, retained latest-wins, and
+/// Protocol 2.100: `health_status` is lossy, retained latest-wins, and
 /// strictly ordered like `source_sync_status`; a replayed sequence
 /// disconnects and forgets it, as does a foreign server identity.
 #[test]

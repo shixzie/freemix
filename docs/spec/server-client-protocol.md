@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.99 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.100 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -3919,6 +3919,53 @@ Protocol 2.99 adds dynamic value targets to user shortcut and cue actions
   as a key press does (a button no chord ends with ends the wait,
   swallowed); primary and secondary clicks never touch a chord.
 - 2.98 is refused.
+
+Protocol 2.100 reports the daemon's utilization and alerts (`RC-015`). No
+schema change.
+
+- A raw Studio session receives `health_status` about once a second: the
+  server identity (`engine_id`, `project_id`, `state_epoch`, `log_id`), a
+  strictly increasing `sequence`, then the health fields below. It is
+  lossy and latest-wins: a slow peer keeps only the newest record, and a
+  client keeps the newest one for its server. Web and viewer sessions do
+  not receive it.
+- The health fields, in order: `uptime_ms` (milliseconds since the daemon
+  started); optional `cpu_permille` and `gpu_permille` (canonical
+  `0..=1000`, absent when there is no reading); `alerts`, the firing
+  alerts as `;`-joined `<rule>:<severity>:<since_ms>:<value>` entries in
+  ascending rule order, each `since_ms` at most `uptime_ms`; and
+  `notifications`, the most recent firing, resolved, and reminder
+  notifications as at most 16 `;`-joined
+  `<sequence>:<rule>:<severity>:<kind>:<at_ms>:<value>` entries in strictly
+  ascending sequence, each `at_ms` at most `uptime_ms`. `<value>` is the
+  reading times 1000 as a canonical signed decimal, or `none`. Rules are
+  `cpu_saturated`, `disk_low`, `frame_late`, `frames_dropped`,
+  `gpu_saturated`, and `output_failed`; severities `info`, `warning`, and
+  `critical`; kinds `firing`, `resolved`, and `reminder`. Anything else is
+  refused.
+- `diagnostics_response` gains the same health fields after
+  `source_sync`, so `freemix-cli remote-diagnostics` prints a `Health`
+  line, one `Alert` line per firing alert, and one `AlertNotification` line
+  per recent notification.
+- `cpu_permille` is the daemon process's CPU time over the last wall
+  second divided by the logical CPU count (Linux `/proc/self/stat`; absent
+  on other platforms). `gpu_permille` is a proxy, not a vendor
+  utilization counter: the native compositor's timestamped render-pass
+  time per wall second, absent on the simulated daemon and on adapters
+  without timestamp queries. It omits encode, upload, and other processes'
+  GPU work.
+- The default rules: `cpu_saturated` (warning) from 0.9 held 10 s,
+  clearing below 0.75; `gpu_saturated` (warning) from 0.9 held 5 s,
+  clearing below 0.7; `frame_late` (warning) when a quarter of the last
+  second's frames are late, held 5 s, clearing below 5%; `frames_dropped`
+  (warning) from one dropped picture a second held 3 s; `disk_low`
+  (critical) when a recording or output disk runs low; `output_failed`
+  (critical) while any output has failed. The daemon also prints each
+  notification as a `FREEMIXD_ALERT` line on stderr and writes its
+  metrics under `## Statistics` in the support bundle.
+- Studio's health strip adds CPU, GPU, and alert lamps with English and
+  Spanish hover help naming each firing alert and the latest notification.
+- 2.99 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

@@ -383,7 +383,7 @@ pub enum SessionEvent {
     SourceSyncStatus {
         status: SourceSyncStatusMessage,
     },
-    /// The daemon's utilization and alerts (Protocol 2.99); the latest is
+    /// The daemon's utilization and alerts (Protocol 2.100); the latest is
     /// retained in [`TcpSession::latest_health_status`].
     HealthStatus {
         status: fm_protocol::HealthStatusMessage,
@@ -773,7 +773,7 @@ impl TcpSession {
         self.latest_source_sync_status.as_ref()
     }
 
-    /// The latest daemon health (Protocol 2.99): CPU and GPU utilization,
+    /// The latest daemon health (Protocol 2.100): CPU and GPU utilization,
     /// firing alerts, and recent notifications. Cleared on disconnect.
     #[must_use]
     pub const fn latest_health_status(&self) -> Option<&fm_protocol::HealthStatusMessage> {

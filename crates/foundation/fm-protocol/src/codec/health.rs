@@ -1,4 +1,4 @@
-//! Daemon health fields (Protocol 2.99): `uptime_ms`, optional
+//! Daemon health fields (Protocol 2.100): `uptime_ms`, optional
 //! `cpu_permille` and `gpu_permille`, `alerts` as
 //! `<rule>:<severity>:<since_ms>:<value>` entries and `notifications` as
 //! `<sequence>:<rule>:<severity>:<kind>:<at_ms>:<value>` entries, each list

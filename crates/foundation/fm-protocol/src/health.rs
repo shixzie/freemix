@@ -1,4 +1,4 @@
-//! Daemon health: CPU and GPU utilization and alerts (Protocol 2.99,
+//! Daemon health: CPU and GPU utilization and alerts (Protocol 2.100,
 //! `RC-015`).
 //!
 //! Both daemons sample their statistics once a second and evaluate a fixed
@@ -233,7 +233,7 @@ impl DaemonHealth {
     }
 }
 
-/// Lossy, non-resumable daemon health (Protocol 2.99).
+/// Lossy, non-resumable daemon health (Protocol 2.100).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HealthStatusMessage {
     pub server: ServerIdentity,
