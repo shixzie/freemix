@@ -5117,3 +5117,67 @@ fn srt_listener() -> fm_protocol::NetworkStreamConfig {
     config.stream_id = Some("cam1".into());
     config
 }
+
+/// Renders the audited console scenes whose names contain one of the
+/// comma-separated `$FM_SCENE_RENDER` words to `$FM_SCENE_RENDER_DIR`, at
+/// 1920x1080 and 1280x720, in English and Spanish, for visual review
+/// (`FM_SCENE_RENDER_DIR=<dir> FM_SCENE_RENDER=strip-fx,colour cargo test
+/// -p fm-ui-egui --lib render_scenes_for_review -- --ignored`).
+#[test]
+#[ignore = "writes review screenshots"]
+fn render_scenes_for_review() {
+    use crate::offscreen::{Canvas, Textures, encode_png};
+    let Ok(dir) = std::env::var("FM_SCENE_RENDER_DIR") else {
+        return;
+    };
+    let wanted = std::env::var("FM_SCENE_RENDER").unwrap_or_default();
+    let wanted: Vec<&str> = wanted.split(',').filter(|word| !word.is_empty()).collect();
+    for language in [Language::English, Language::Spanish] {
+        for size in [Vec2::new(1920.0, 1080.0), Vec2::new(1280.0, 720.0)] {
+            for Scene { name, mut draw } in scenes(language) {
+                if !wanted.is_empty() && !wanted.iter().any(|word| name.contains(word)) {
+                    continue;
+                }
+                let context = egui::Context::default();
+                let mut textures = Textures::default();
+                let mut last = None;
+                for step in 0..30 {
+                    context.begin_pass(egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, size)),
+                        time: Some(1.0 + f64::from(step) * 0.1),
+                        ..egui::RawInput::default()
+                    });
+                    let mut ui = egui::Ui::new(
+                        context.clone(),
+                        Id::new("scene-review"),
+                        egui::UiBuilder::new()
+                            .layer_id(LayerId::background())
+                            .max_rect(context.viewport_rect()),
+                    );
+                    draw(&mut ui);
+                    drop(ui);
+                    let output = context.end_pass();
+                    textures.apply(&output);
+                    last = Some(output);
+                }
+                let full = last.unwrap();
+                let primitives = context.tessellate(full.shapes, full.pixels_per_point);
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let mut canvas = Canvas::new(
+                    size.x as usize,
+                    size.y as usize,
+                    crate::theme::graphite_color(),
+                );
+                canvas.paint(&primitives, &textures, full.pixels_per_point);
+                let (width, height, rgba) =
+                    canvas.crop_rgba8(Rect::from_min_size(egui::Pos2::ZERO, size));
+                let file = format!(
+                    "{dir}/{}-{width}x{height}-{}.png",
+                    name.replace('/', "-"),
+                    language.code()
+                );
+                std::fs::write(file, encode_png(width, height, &rgba)).unwrap();
+            }
+        }
+    }
+}
