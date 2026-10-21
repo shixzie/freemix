@@ -4514,6 +4514,8 @@ fn restore_project_edit_state(show: &mut ShowState, project: &Project) -> AppRes
         project.input_categories().to_vec(),
         project.input_lifecycles(),
     )?;
+    // What is recorded for replay (OR-012).
+    show.set_replay(project.replay().clone())?;
     // Scripts first: a cue may run one (schema 55).
     show.set_scripts(project.scripts().to_vec())?;
     show.set_cue_lists(project.cue_lists().to_vec())?;
@@ -4943,6 +4945,11 @@ fn sync_display_outputs(project: &mut Project, show: &ShowState) -> AppResult<()
         project
             .set_live_lan(show.live_lan().clone())
             .map_err(|error| format!("project cannot take LiveLAN: {error}"))?;
+    }
+    if project.replay() != show.replay() {
+        project
+            .set_replay(show.replay().clone())
+            .map_err(|error| format!("project cannot take replay: {error}"))?;
     }
     if project.display_outputs() == show.display_outputs() {
         return Ok(());
@@ -5945,6 +5952,7 @@ const fn input_kind_name(kind: &InputKind) -> &'static str {
         InputKind::MixFeed(fm_model::MixFeed::Preview) => "preview-feed",
         InputKind::Title(_) => "title",
         InputKind::Document(_) => "document",
+        InputKind::Replay => "replay",
     }
 }
 

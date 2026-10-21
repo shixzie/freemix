@@ -13,6 +13,7 @@ pub mod media_list_files;
 mod memory;
 pub mod network_stream;
 pub mod paged;
+pub mod replay;
 mod scaling;
 pub mod screen_capture;
 pub mod still;

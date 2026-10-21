@@ -1287,6 +1287,8 @@ messages! {
     AdviceSceneLayer => t("Remove that layer from the scene first."),
     AdvicePlaylist => t("Remove it from the playlist first."),
     AdviceSceneOffAir => t("Take that scene off air first."),
+    InUseReplaySource => t("\"{name}\" is recorded for replay."),
+    AdviceReplaySource => t("Stop recording it for replay first."),
 
     // Typed command refusals (Protocol 2.45).
     CommandRefused => t("Command refused: {reason}"),

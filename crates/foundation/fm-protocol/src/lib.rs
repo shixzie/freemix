@@ -18,6 +18,7 @@ mod network_stream;
 mod output_failure;
 mod paged;
 mod recorder_status;
+mod replay;
 mod scene_layer;
 pub mod screen_capture;
 mod script;
@@ -201,6 +202,14 @@ pub use paged::{
 };
 pub use recorder_status::{
     MAX_RECORDER_STATUS_SAMPLES, RecorderRealizedState, RecorderStatusMessage, RecorderStatusSample,
+};
+pub use replay::{
+    DEFAULT_REPLAY_RETENTION_SECONDS, MAX_REPLAY_EVENT_NAME_BYTES, MAX_REPLAY_EVENTS,
+    MAX_REPLAY_INPUTS, MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS,
+    MAX_REPLAY_STORAGE_ROOT_BYTES, MIN_REPLAY_RETENTION_SECONDS, REPLAY_LAST_SECONDS,
+    ReplayEventStatus, ReplayFeed, ReplayOperation, ReplayPlayerStatus, ReplaySettings,
+    ReplaySettingsError, ReplaySourceStatus, ReplaySpeed, ReplayStatusMessage, ReplayStatusRequest,
+    replay_event_name_is_valid, replay_storage_root_is_valid,
 };
 pub use scene_layer::{MAX_KEY_CHOKE, MAX_KEY_EDGE_SOFTNESS, MAX_KEY_LIGHT_WRAP_WIDTH};
 pub use scene_layer::{

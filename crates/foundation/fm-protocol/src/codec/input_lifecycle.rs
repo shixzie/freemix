@@ -222,6 +222,7 @@ pub(super) fn encode_source(source: &WireInputSource) -> Result<String, CodecErr
             "screen_capture:{}",
             escape_bounded(&super::screen_capture::encode_compact(config)?)?
         ),
+        WireInputSource::Replay => "replay".to_owned(),
         WireInputSource::SystemAudio(config) => {
             config
                 .validate()
@@ -275,6 +276,7 @@ pub(super) fn decode_source(value: &str) -> Result<WireInputSource, CodecError> 
         "media" => WireInputSource::Media {
             uri: locator(rest)?,
         },
+        "replay" if value == "replay" => WireInputSource::Replay,
         "device" => WireInputSource::Device {
             stable_key: locator(rest)?,
         },

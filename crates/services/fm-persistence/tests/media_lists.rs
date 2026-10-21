@@ -134,7 +134,7 @@ fn media_lists_round_trip_exactly_and_strictly() {
              \"items\": [{\"id\": 1, \"uri\": \"asset://media/a.mp4\", \
              \"title\": \"Intro \\\"cold\\\"\", \"mark_in\": 12, \"mark_out\": 250}, {\"id\": 4, \
              \"uri\": \"asset://media/b.wav\", \"title\": null, \"mark_in\": 0, \"mark_out\": \
-             null}]}\n    ],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": []\n  },"
+             null}]}\n    ],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null}\n  },"
         ),
         "{text}"
     );

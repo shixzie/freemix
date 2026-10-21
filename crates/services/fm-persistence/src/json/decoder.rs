@@ -88,6 +88,7 @@ struct ProjectDto {
         fm_types::display::DisplayOutputConfig,
     )>,
     live_lan: fm_types::live_lan::LiveLanConfig,
+    replay: fm_types::replay::ReplaySettings,
     scripts: Vec<fm_model::Script>,
     script_run: fm_model::ScriptRunState,
     shortcuts: Vec<fm_model::Shortcut>,
@@ -153,6 +154,7 @@ impl ProjectDto {
             fade_to_black_curve: super::audio_mixer::parse_fade_to_black_curve(&mut object)?,
             display_outputs: super::display_output::parse_display_outputs(&mut object)?,
             live_lan: super::live_lan::parse_live_lan(&mut object)?,
+            replay: super::replay::parse_replay(&mut object)?,
             scripts: super::script::parse_scripts(&mut object)?,
             script_run: super::script::parse_script_run(&mut object)?,
             shortcuts: super::shortcut::parse_shortcuts(&mut object)?,
@@ -278,6 +280,8 @@ impl ProjectDto {
         // An unknown source output and a viewer limit out of range are
         // reported by project validation.
         project.restore_live_lan(self.live_lan);
+        // Replay sources and bounds are reported by project validation.
+        project.restore_replay(self.replay);
         // Script bounds and duplicate ids are reported by project
         // validation.
         project.set_scripts(self.scripts);
@@ -564,6 +568,7 @@ fn parse_input_kind(value: Value) -> Result<InputKind, DecodeError> {
         "image" => super::still::parse_image_input(&mut object)?,
         "slideshow" => super::still::parse_slideshow_input(&mut object)?,
         "document" => super::document::parse_document_input(&mut object)?,
+        "replay" => InputKind::Replay,
         "screen_capture" => super::screen_capture::parse_screen_capture_input(&mut object)?,
         "scene" => InputKind::Scene {
             scene_id: SceneId::new(object.nonzero_u128("scene_id")?),

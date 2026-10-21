@@ -8921,6 +8921,7 @@ fn resolve_native_sources(
             // worker ingests its page (IN-014), and a screen capture
             // ingests its captures after it (IN-011).
             InputKind::NetworkStream(_)
+            | InputKind::Replay
             | InputKind::SystemAudio(_)
             | InputKind::Document(_)
             | InputKind::ScreenCapture(_) => {
@@ -12356,6 +12357,10 @@ fn restore_presets_favorites_and_media(
         canonical.input_categories().to_vec(),
         canonical.input_lifecycles(),
     )?;
+    // What is recorded for replay (OR-012), once every input's source is
+    // known.
+    show.set_replay(canonical.replay().clone())
+        .map_err(|error| AppFailure(format!("project replay cannot be restored: {error}")))?;
     Ok(())
 }
 
@@ -12712,6 +12717,11 @@ fn sync_project_display_outputs(
         project
             .set_live_lan(show.live_lan().clone())
             .map_err(|error| AppFailure(format!("project cannot take LiveLAN: {error}")))?;
+    }
+    if project.replay() != show.replay() {
+        project
+            .set_replay(show.replay().clone())
+            .map_err(|error| AppFailure(format!("project cannot take replay: {error}")))?;
     }
     if project.display_outputs() == show.display_outputs() {
         return Ok(());
@@ -15313,6 +15323,7 @@ fn command_base_ticks(
         | CommandPayload::SetDisplayOutput { .. }
         | CommandPayload::ClearDisplayOutput { .. }
         | CommandPayload::SetLiveLan { .. }
+        | CommandPayload::Replay(_)
         | CommandPayload::SetNetworkStream { .. }
         | CommandPayload::SetCaptureSettings { .. }
         | CommandPayload::UpdateOverlay { .. }
@@ -15603,6 +15614,7 @@ fn input_reference_use(reference: fm_model::InputReference) -> fm_protocol::Inpu
         },
         InputReference::PlaylistEntry(entry) => InputUse::PlaylistEntry { entry },
         InputReference::CueAction { list, cue } => InputUse::CueAction { list, cue },
+        InputReference::ReplaySource => InputUse::ReplaySource,
     }
 }
 
@@ -15799,6 +15811,19 @@ fn sync_project_inputs(
                         id: input,
                         name,
                         kind: fm_model::InputKind::ScreenCapture(*config),
+                        required_capabilities: Vec::new(),
+                    })
+                    .map_err(|error| {
+                        AppFailure(format!("input {input} could not be added: {error}"))
+                    })?;
+                continue;
+            }
+            fm_protocol::LiveInputSource::Replay => {
+                project
+                    .add_input_checked(fm_model::Input {
+                        id: input,
+                        name,
+                        kind: fm_model::InputKind::Replay,
                         required_capabilities: Vec::new(),
                     })
                     .map_err(|error| {

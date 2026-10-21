@@ -131,6 +131,7 @@ fn write_project_runtime(output: &mut String, project: &fm_model::Project) {
     super::media_list::write_media_lists(output, project);
     super::title_timeline::write_title_timelines(output, project);
     super::screen_capture_tokens::write_screen_capture_restore_tokens(output, project);
+    super::replay::write_replay(output, project);
     output.push_str("\n  },");
 }
 
@@ -875,6 +876,7 @@ fn write_input_kind(output: &mut String, kind: &InputKind) {
                 .expect("writing to a string cannot fail");
         }
         InputKind::Title(title) => write_title_input(output, title),
+        InputKind::Replay => output.push_str("{\"type\": \"replay\"}"),
     }
 }
 

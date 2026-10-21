@@ -272,10 +272,12 @@ enum LossySlot {
     TitlePhases,
     /// The latest `health_status` (Protocol 2.100).
     HealthStatus,
+    /// The latest `replay_status` (OR-012).
+    ReplayStatus,
 }
 
 impl LossySlot {
-    const COUNT: usize = 10;
+    const COUNT: usize = 11;
 
     const fn index(self) -> usize {
         match self {
@@ -289,6 +291,7 @@ impl LossySlot {
             Self::SourceSyncStatus => 7,
             Self::TitlePhases => 8,
             Self::HealthStatus => 9,
+            Self::ReplayStatus => 10,
         }
     }
 
@@ -533,6 +536,14 @@ impl Peer {
         }
     }
 
+    /// Coalesces the latest replay status in its own slot (OR-012); Web
+    /// pages do not take it.
+    fn replace_replay_status(&mut self, bytes: Vec<u8>) {
+        if self.phase == Phase::Active && self.web_feed.is_none() && self.recorder_status {
+            self.lossy.replace(LossySlot::ReplayStatus, bytes);
+        }
+    }
+
     /// Coalesces the latest daemon health in its own slot (Protocol 2.100);
     /// Web pages do not take it.
     fn replace_health_status(&mut self, bytes: Vec<u8>) {
@@ -773,6 +784,7 @@ pub(super) fn run(
         statistics: std::cell::RefCell::new(crate::statistics::DaemonStatistics::new(
             Instant::now(),
         )),
+        replay_pacer: std::cell::RefCell::new(ReplayStatusPacer::default()),
     };
     let mut native = native;
     // Only the native pacer realizes idle frames between commands, so only
@@ -1397,6 +1409,17 @@ pub(super) fn run(
                 publish_source_sync_status(&mut peers, &status);
             }
         }
+        // Both daemons announce their replay recording (OR-012).
+        if peers.iter().any(|peer| peer.recorder_status) {
+            let status = runtime.replay_pacer.borrow_mut().poll(
+                &control.borrow(),
+                authority,
+                Instant::now(),
+            );
+            if let Some(status) = status {
+                publish_replay_status(&mut peers, status);
+            }
+        }
         // Both daemons sample their named statistics once a second (RC-015).
         let now = Instant::now();
         if runtime.statistics.borrow().due(now) {
@@ -1940,6 +1963,8 @@ struct Runtime<'a> {
     thumbnail_refresh: std::cell::RefCell<bool>,
     /// The daemon's named statistics (RC-015), sampled once a second.
     statistics: std::cell::RefCell<crate::statistics::DaemonStatistics>,
+    /// Paces `replay_status` (OR-012).
+    replay_pacer: std::cell::RefCell<ReplayStatusPacer>,
 }
 
 impl Runtime<'_> {
@@ -2413,6 +2438,21 @@ impl Runtime<'_> {
                 if let Some(native) = native {
                     native.pick_screen_capture(input);
                 }
+                Ok(())
+            }
+            // The replay status (OR-012), to any session that may view
+            // status.
+            WireMessage::ReplayStatusRequest(request) => {
+                if self.refuse_request(peer, &request.request_id, Session::admit_view_status)? {
+                    return Ok(());
+                }
+                let sequence = self.replay_pacer.borrow_mut().next_sequence();
+                let status = self.control.borrow().replay_status(
+                    self.authority,
+                    sequence,
+                    Some(request.request_id),
+                );
+                peer.reply(WireMessage::ReplayStatus(Box::new(status)))?;
                 Ok(())
             }
             WireMessage::SystemAudioDevicesRequest(request) => {
@@ -3383,6 +3423,62 @@ fn publish_title_phases(peers: &mut [Peer], phases: fm_protocol::TitlePhasesMess
     };
     for peer in peers {
         peer.replace_title_phases(&bytes);
+    }
+}
+
+/// The replay status (OR-012) goes to raw Studio peers in its own
+/// latest-wins slot.
+fn publish_replay_status(peers: &mut [Peer], status: fm_protocol::ReplayStatusMessage) {
+    let Ok(bytes) =
+        encode_line(&WireMessage::ReplayStatus(Box::new(status))).map(String::into_bytes)
+    else {
+        return;
+    };
+    for peer in peers {
+        peer.replace_replay_status(bytes.clone());
+    }
+}
+
+/// Paces `replay_status` (OR-012): at most four a second while it changes,
+/// one a second otherwise (the live edge moves every frame).
+#[derive(Debug, Default)]
+pub(crate) struct ReplayStatusPacer {
+    sequence: u64,
+    generation: Option<u64>,
+    sent_at: Option<Instant>,
+}
+
+impl ReplayStatusPacer {
+    const CHANGED: std::time::Duration = std::time::Duration::from_millis(250);
+    const IDLE: std::time::Duration = std::time::Duration::from_secs(1);
+
+    /// The next status to publish, if one is due.
+    fn poll(
+        &mut self,
+        control: &fm_control::ControlService,
+        authority: &ServerIdentity,
+        now: Instant,
+    ) -> Option<fm_protocol::ReplayStatusMessage> {
+        let generation = control.replay_generation();
+        let elapsed = self.sent_at.map(|sent| now.saturating_duration_since(sent));
+        let due = match elapsed {
+            None => true,
+            Some(elapsed) if self.generation != Some(generation) => elapsed >= Self::CHANGED,
+            Some(elapsed) => elapsed >= Self::IDLE,
+        };
+        if !due {
+            return None;
+        }
+        self.generation = Some(generation);
+        self.sent_at = Some(now);
+        self.sequence = self.sequence.wrapping_add(1);
+        Some(control.replay_status(authority, self.sequence, None))
+    }
+
+    /// The sequence of a status answering a request.
+    fn next_sequence(&mut self) -> u64 {
+        self.sequence = self.sequence.wrapping_add(1);
+        self.sequence
     }
 }
 

@@ -3105,6 +3105,14 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::AdviceSceneOffAir,
         t("Saque esa escena del aire primero."),
     ),
+    (
+        Msg::InUseReplaySource,
+        t("«{name}» se graba para la repetición."),
+    ),
+    (
+        Msg::AdviceReplaySource,
+        t("Deje de grabarla para la repetición primero."),
+    ),
     // Typed command refusals (Protocol 2.45).
     (Msg::CommandRefused, t("Comando rechazado: {reason}")),
     (Msg::ToastReasonCode, t("Código del motivo: {code}")),

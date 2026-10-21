@@ -62,6 +62,8 @@ pub enum InputReference {
     PlaylistEntry(u64),
     /// An action of cue `cue` in cue list `list` (RC-017).
     CueAction { list: u64, cue: u64 },
+    /// One of the inputs recorded for replay (OR-012).
+    ReplaySource,
 }
 
 impl std::fmt::Display for InputReference {
@@ -77,6 +79,7 @@ impl std::fmt::Display for InputReference {
             Self::AliasTarget(input) => write!(formatter, "the target of alias input {input}"),
             Self::PlaylistEntry(entry) => write!(formatter, "playlist entry {entry}"),
             Self::CueAction { list, cue } => write!(formatter, "cue {cue} of cue list {list}"),
+            Self::ReplaySource => formatter.write_str("a replay source"),
         }
     }
 }
@@ -987,6 +990,8 @@ pub struct Project {
     /// The desktop restore token each screen capture input's last screen
     /// sharing grant returned (IN-011, schema 72), by input.
     screen_capture_restore_tokens: BTreeMap<InputId, String>,
+    /// What the server records for replay (OR-012, schema 81).
+    replay: fm_types::replay::ReplaySettings,
 }
 
 impl Project {
@@ -1031,6 +1036,7 @@ impl Project {
             display_outputs: BTreeMap::new(),
             live_lan: fm_types::live_lan::LiveLanConfig::default(),
             screen_capture_restore_tokens: BTreeMap::new(),
+            replay: fm_types::replay::ReplaySettings::default(),
         }
     }
 
@@ -1397,6 +1403,48 @@ impl Project {
         slot: fm_types::display::DisplayOutputSlot,
     ) -> Option<fm_types::display::DisplayOutputConfig> {
         self.display_outputs.remove(&slot)
+    }
+
+    /// What the server records for replay and how long it keeps it
+    /// (OR-012, schema 81).
+    #[must_use]
+    pub const fn replay(&self) -> &fm_types::replay::ReplaySettings {
+        &self.replay
+    }
+
+    /// How input `input` may be recorded for replay: an existing input that
+    /// is not itself a Replay input.
+    #[must_use]
+    pub fn replay_source_check(&self, input: InputId) -> fm_types::replay::ReplaySourceCheck {
+        match self.inputs.iter().find(|candidate| candidate.id == input) {
+            None => fm_types::replay::ReplaySourceCheck::Unknown,
+            Some(found) if matches!(found.kind, InputKind::Replay) => {
+                fm_types::replay::ReplaySourceCheck::Unrecordable
+            }
+            Some(_) => fm_types::replay::ReplaySourceCheck::Recordable,
+        }
+    }
+
+    /// Replaces the replay settings and returns the previous ones.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`fm_types::replay::ReplaySettingsError`] of settings
+    /// that name unknown or Replay inputs, too many or repeated sources, an
+    /// out-of-range retention, or an unusable storage root. Nothing changes
+    /// on error.
+    pub fn set_replay(
+        &mut self,
+        settings: fm_types::replay::ReplaySettings,
+    ) -> Result<fm_types::replay::ReplaySettings, fm_types::replay::ReplaySettingsError> {
+        settings.check(|input| self.replay_source_check(input))?;
+        Ok(std::mem::replace(&mut self.replay, settings))
+    }
+
+    /// Restores persisted replay settings without checking them; problems
+    /// are reported by [`Self::validate`].
+    pub fn restore_replay(&mut self, settings: fm_types::replay::ReplaySettings) {
+        self.replay = settings;
     }
 
     /// The `LiveLAN` viewer stream's configuration (OR-017, schema 53).
@@ -1916,6 +1964,9 @@ impl Project {
         {
             return Some(InputReference::Stinger(stinger.slot));
         }
+        if self.replay.sources.contains(&input) {
+            return Some(InputReference::ReplaySource);
+        }
         if let Some(scene) = self.scenes.iter().find(|scene| {
             scene.layers.iter().any(|layer| {
                 layer.source == SourceRef::Input(input)
@@ -1940,6 +1991,7 @@ impl Project {
                 | InputKind::Media { .. }
                 | InputKind::Device { .. }
                 | InputKind::NetworkStream(_)
+                | InputKind::Replay
                 | InputKind::SystemAudio(_)
                 | InputKind::Image(_)
                 | InputKind::Slideshow(_)
@@ -4526,6 +4578,10 @@ pub enum InputKind {
     /// A title scene instantiated from a stored template. It is a leaf: it
     /// renders its own picture, is silent, and references no other input.
     Title(TitleInput),
+    /// A replay player (OR-012, schema 81): a leaf whose picture and sound
+    /// are the recorded replay event it plays, at the angle and speed the
+    /// operator chose. What it plays is runtime state, never persisted.
+    Replay,
 }
 
 impl InputKind {

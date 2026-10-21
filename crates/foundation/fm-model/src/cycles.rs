@@ -41,6 +41,7 @@ pub(crate) fn mark_scene_cycles(project: &Project, errors: &mut Vec<ValidationEr
                             | InputKind::Media { .. }
                             | InputKind::Device { .. }
                             | InputKind::NetworkStream(_)
+                            | InputKind::Replay
                             | InputKind::SystemAudio(_)
                             | InputKind::Image(_)
                             | InputKind::Slideshow(_)
@@ -94,6 +95,7 @@ pub(crate) fn mark_audio_input_cycles(project: &Project, errors: &mut Vec<Valida
                 | InputKind::Media { .. }
                 | InputKind::Device { .. }
                 | InputKind::NetworkStream(_)
+                | InputKind::Replay
                 | InputKind::SystemAudio(_)
                 | InputKind::Image(_)
                 | InputKind::Slideshow(_)
@@ -161,6 +163,7 @@ fn alias_target(kind: &InputKind) -> Option<InputId> {
         | InputKind::Media { .. }
         | InputKind::Device { .. }
         | InputKind::NetworkStream(_)
+        | InputKind::Replay
         | InputKind::SystemAudio(_)
         | InputKind::Image(_)
         | InputKind::Slideshow(_)

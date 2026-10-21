@@ -72,6 +72,7 @@ pub fn wire_source(source: &InputSourceSpec) -> WireInputSource {
         InputSourceSpec::Image(config) => WireInputSource::Image(config.clone()),
         InputSourceSpec::Slideshow(config) => WireInputSource::Slideshow(Box::new(config.clone())),
         InputSourceSpec::ScreenCapture(config) => WireInputSource::ScreenCapture(config.clone()),
+        InputSourceSpec::Replay => WireInputSource::Replay,
     }
 }
 
@@ -99,6 +100,7 @@ pub fn model_source(source: &WireInputSource) -> InputSourceSpec {
         WireInputSource::Image(config) => InputSourceSpec::Image(config.clone()),
         WireInputSource::Slideshow(config) => InputSourceSpec::Slideshow((**config).clone()),
         WireInputSource::ScreenCapture(config) => InputSourceSpec::ScreenCapture(config.clone()),
+        WireInputSource::Replay => InputSourceSpec::Replay,
     }
 }
 

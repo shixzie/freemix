@@ -497,6 +497,10 @@ pub enum EngineCommand {
     /// undone by restoring the previous configuration; the daemon realizes
     /// it live.
     SetLiveLan(Box<fm_types::live_lan::LiveLanConfig>),
+    /// One replay command (OR-012): a settings change is a project edit,
+    /// everything else a live operation realized on its target frame
+    /// (see [`crate::EngineReplayOperation`]).
+    Replay(crate::EngineReplayOperation),
     /// Reconfigures network stream input `input` (IN-015). A project edit
     /// that honours the input's padlock, undone by restoring the previous
     /// configuration; the daemon reconnects the stream live.
@@ -836,6 +840,12 @@ pub enum EngineEvent {
     /// The `LiveLAN` configuration changed (or the edit was undone or redone)
     /// (OR-017); it is read from [`ShowState::live_lan`].
     LiveLanChanged(Box<fm_types::live_lan::LiveLanConfig>),
+    /// A replay command was accepted for frame `frame` (OR-012); settings
+    /// are read from [`ShowState::replay`].
+    ReplayChanged {
+        frame: u64,
+        operation: crate::EngineReplayOperation,
+    },
     /// A network stream input was reconfigured (or the edit was undone or
     /// redone) (IN-015).
     NetworkStreamChanged {
@@ -1085,6 +1095,9 @@ pub struct FrameResult {
     pub media: Vec<crate::EngineMediaFrame>,
     /// Every slideshow input this frame, ascending by input (IN-009).
     pub slideshows: Vec<crate::EngineSlideshowFrame>,
+    /// What every Replay input shows this frame, ascending by input
+    /// (OR-012).
+    pub replay: Vec<crate::EngineReplayFrame>,
     pub revision: Revision,
     pub runtime_generation: RuntimeGeneration,
 }
@@ -1258,6 +1271,9 @@ pub struct Engine {
     /// Every paged input's page count as the media plane reported it
     /// (IN-014). Runtime only: never snapshotted.
     paged_counts: BTreeMap<InputId, u32>,
+    /// The replay recording, events, and players (OR-012). Runtime state:
+    /// never snapshotted, so a restored engine starts a new recording.
+    replay: crate::replay::ReplayRuntime,
 }
 
 impl Engine {
@@ -1286,6 +1302,7 @@ impl Engine {
             media: BTreeMap::new(),
             slideshows: BTreeMap::new(),
             paged_counts: BTreeMap::new(),
+            replay: crate::replay::ReplayRuntime::new(frame_rate),
         }
     }
 
@@ -3015,6 +3032,7 @@ impl Engine {
             titles_shown,
             media: self.tick_media(&media_operations),
             slideshows: self.tick_slideshows(&page_operations),
+            replay: self.replay.step(self.commands.state(), frame),
             revision: self.commands.revision(),
             runtime_generation: self.runtime_generation,
         })
@@ -3044,7 +3062,10 @@ impl Engine {
         {
             realized.audio_mixer_updates.push(update);
         }
-        let command_events = if let EngineCommand::Media(command) = action {
+        let command_events = if let EngineCommand::Replay(operation) = &action {
+            self.replay.realize(self.commands.state(), operation, frame);
+            Vec::new()
+        } else if let EngineCommand::Media(command) = action {
             *realized.media_operations.entry(command.input).or_default() += 1;
             Vec::new()
         } else if let EngineCommand::PageNavigate { input, .. } = action {
@@ -3107,6 +3128,84 @@ impl Engine {
                 .titles_on_air()
                 .iter()
                 .any(|title| title.frame.phase != TitleAirPhase::Hold)
+    }
+
+    /// How the replay recording is fed (OR-012).
+    #[must_use]
+    pub const fn replay_feed(&self) -> crate::EngineReplayFeed {
+        self.replay.feed()
+    }
+
+    /// Feeds the replay recording synthetically or from a media plane; a
+    /// change starts a new recording (OR-012).
+    pub fn set_replay_feed(&mut self, feed: crate::EngineReplayFeed) {
+        self.replay.set_feed(feed);
+    }
+
+    /// The storage root replay uses when the show's settings name none; a
+    /// change starts a new recording (OR-012).
+    pub fn set_replay_default_root(&mut self, root: std::path::PathBuf) {
+        self.replay.set_default_root(root);
+    }
+
+    /// The storage root replay records into (OR-012).
+    #[must_use]
+    pub fn replay_root(&self) -> &std::path::Path {
+        self.replay.root()
+    }
+
+    /// Reports that an external replay recording recorded engine frame
+    /// `frame` of source `input` as stream frame `stream_frame` (OR-012).
+    /// Returns whether it was taken: the input is recorded and the frame
+    /// follows the previous one.
+    pub fn replay_observe(&mut self, input: InputId, frame: u64, stream_frame: u64) -> bool {
+        self.replay.observe(input, frame, stream_frame)
+    }
+
+    /// Catalogs a finished segment file of an external replay recording
+    /// (OR-012): `frames` stream frames from `first_stream_frame`, the first
+    /// recorded on engine frame `first_frame`. Returns whether it was
+    /// taken.
+    #[allow(clippy::too_many_arguments)]
+    pub fn replay_segment_closed(
+        &mut self,
+        input: InputId,
+        recorder_index: u64,
+        path: std::path::PathBuf,
+        first_frame: u64,
+        first_stream_frame: u64,
+        frames: u64,
+        bytes: u64,
+    ) -> bool {
+        self.replay.segment_closed(
+            input,
+            recorder_index,
+            path,
+            first_frame,
+            first_stream_frame,
+            frames,
+            bytes,
+        )
+    }
+
+    /// Takes the segment files of an external recording that retention or
+    /// a new recording dropped, to be deleted (OR-012).
+    pub fn take_replay_pruned(&mut self) -> Vec<std::path::PathBuf> {
+        self.replay.take_pruned()
+    }
+
+    /// The replay recording, events, and players as clients see them
+    /// (OR-012).
+    #[must_use]
+    pub fn replay_status(&self) -> crate::EngineReplayStatus {
+        self.replay.status(self.commands.state())
+    }
+
+    /// A counter that moves whenever [`Self::replay_status`] may have
+    /// changed (OR-012).
+    #[must_use]
+    pub const fn replay_generation(&self) -> u64 {
+        self.replay.generation()
     }
 
     /// Captures durable and realized state at an idle frame boundary.
@@ -3218,6 +3317,7 @@ impl Engine {
             media: BTreeMap::new(),
             slideshows: BTreeMap::new(),
             paged_counts: BTreeMap::new(),
+            replay: crate::replay::ReplayRuntime::new(frame_rate),
         })
     }
 }
@@ -3898,6 +3998,16 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::Replay(operation) = &self.command {
+            crate::replay::accept(state, operation)?;
+            events.push(EngineEvent::ReplayChanged {
+                frame: self.target_frame.get(),
+                operation: operation.clone(),
+            });
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::Media(command) = &self.command {
             let settings = crate::media::accept(state, command, self.media_tracks.as_deref())?;
             state.set_media_settings(command.input, settings);
@@ -4266,6 +4376,7 @@ impl EngineMutation {
             | EngineCommand::SetFadeToBlackCurve { .. }
             | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::SetLiveLan(_)
+            | EngineCommand::Replay(_)
             | EngineCommand::SetNetworkStream { .. }
             | EngineCommand::SetCaptureSettings { .. }
             | EngineCommand::AnimationPreset(_)
@@ -4356,6 +4467,9 @@ fn apply_input_catalogue_mutation(
                 config.validate().map_err(screen_capture_rejection)?;
                 check_screen_capture_room(state)?;
             }
+            if matches!(source, EngineInputSource::Replay) {
+                check_replay_room(state)?;
+            }
             state
                 .add_input(input, name.clone())
                 .map_err(input_catalogue_rejection)?;
@@ -4424,6 +4538,18 @@ pub(crate) fn check_screen_capture_room(state: &ShowState) -> Result<(), Rejecti
                 message,
             )),
         );
+    }
+    Ok(())
+}
+
+/// Refuses one more Replay input once the show holds the most it may
+/// (OR-012).
+pub(crate) fn check_replay_room(state: &ShowState) -> Result<(), Rejection> {
+    let count = state.replay_inputs().count();
+    if count >= fm_types::replay::MAX_REPLAY_INPUTS {
+        let message = format!("the show already has {count} replay inputs, the most it may hold");
+        return Err(Rejection::new(RejectionCode::Conflict, message.clone())
+            .with_field(FieldIssue::new("kind", "too_many_replay_inputs", message)));
     }
     Ok(())
 }
@@ -4572,7 +4698,8 @@ fn input_catalogue_rejection(error: InputCatalogueError) -> Rejection {
         InputCatalogueError::InUse { .. }
         | InputCatalogueError::InPlaylist { .. }
         | InputCatalogueError::InCueList { .. }
-        | InputCatalogueError::BoundByCueRun { .. } => {
+        | InputCatalogueError::BoundByCueRun { .. }
+        | InputCatalogueError::ReplaySource(_) => {
             (RejectionCode::Conflict, "input", "input_in_use")
         }
     };
@@ -4874,6 +5001,7 @@ fn apply_runtime(
             | EngineCommand::AudioMixer(_)
             | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::SetLiveLan(_)
+            | EngineCommand::Replay(_)
             | EngineCommand::SetNetworkStream { .. }
             | EngineCommand::SetCaptureSettings { .. }
             | EngineCommand::AnimationPreset(_)
@@ -5069,6 +5197,7 @@ fn apply_runtime(
         | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLiveLan(_)
+        | EngineCommand::Replay(_)
         | EngineCommand::SetNetworkStream { .. }
         | EngineCommand::SetCaptureSettings { .. }
         | EngineCommand::AnimationPreset(_)
@@ -5267,6 +5396,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLiveLan(_)
+        | EngineCommand::Replay(_)
         | EngineCommand::SetNetworkStream { .. }
         | EngineCommand::SetCaptureSettings { .. }
         | EngineCommand::AnimationPreset(_)
@@ -5306,6 +5436,7 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::SetFadeToBlackCurve { .. })
         && !matches!(command, EngineCommand::SetDisplayOutput { .. })
         && !matches!(command, EngineCommand::SetLiveLan(_))
+        && !matches!(command, EngineCommand::Replay(_))
         && !matches!(command, EngineCommand::SetNetworkStream { .. })
         && !matches!(command, EngineCommand::SetCaptureSettings { .. })
         && !matches!(command, EngineCommand::AnimationPreset(_))

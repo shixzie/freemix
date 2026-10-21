@@ -193,6 +193,8 @@ pub enum InputCatalogueError {
         list: u64,
         cue: u64,
     },
+    /// The input is recorded for replay (OR-012).
+    ReplaySource(InputId),
 }
 
 impl fmt::Display for InputCatalogueError {
@@ -228,6 +230,10 @@ impl fmt::Display for InputCatalogueError {
                 "input {input} cannot be removed: the run of cue list {list} bound it for cue \
                  {cue}; stop or disarm the list first"
             ),
+            Self::ReplaySource(input) => write!(
+                formatter,
+                "input {input} cannot be removed: it is recorded for replay"
+            ),
         }
     }
 }
@@ -261,6 +267,10 @@ impl InputCatalogueError {
                     usage: InputUse::CueAction { list, cue },
                 }
             }
+            Self::ReplaySource(input) => RefusalReason::InputInUse {
+                input: input.get().get(),
+                usage: InputUse::ReplaySource,
+            },
         }
     }
 }

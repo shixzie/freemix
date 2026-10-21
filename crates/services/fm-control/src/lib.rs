@@ -30,6 +30,7 @@ mod media_list;
 mod network_stream;
 mod paged;
 mod playlist;
+mod replay;
 mod scene_animation;
 mod scene_layer;
 mod screen_capture;
@@ -1436,6 +1437,88 @@ impl<A: AuthorizationHook> ControlService<A> {
     #[must_use]
     pub fn live_lan(&self) -> &fm_protocol::LiveLanConfig {
         self.engine.show().live_lan()
+    }
+
+    /// What the show records for replay (OR-012).
+    #[must_use]
+    pub fn replay_settings(&self) -> &fm_protocol::ReplaySettings {
+        self.engine.show().replay()
+    }
+
+    /// Feeds replay synthetically or from the media plane (see
+    /// [`Engine::set_replay_feed`]).
+    pub fn set_replay_feed(&mut self, feed: fm_engine::EngineReplayFeed) {
+        self.engine.set_replay_feed(feed);
+    }
+
+    /// How replay is fed (OR-012).
+    #[must_use]
+    pub const fn replay_feed(&self) -> fm_engine::EngineReplayFeed {
+        self.engine.replay_feed()
+    }
+
+    /// Sets the storage root replay uses when the show names none (see
+    /// [`Engine::set_replay_default_root`]).
+    pub fn set_replay_default_root(&mut self, root: std::path::PathBuf) {
+        self.engine.set_replay_default_root(root);
+    }
+
+    /// The storage root replay records into (OR-012).
+    #[must_use]
+    pub fn replay_root(&self) -> &std::path::Path {
+        self.engine.replay_root()
+    }
+
+    /// Reports one recorded replay frame (see [`Engine::replay_observe`]).
+    pub fn replay_observe(&mut self, input: InputId, frame: u64, stream_frame: u64) -> bool {
+        self.engine.replay_observe(input, frame, stream_frame)
+    }
+
+    /// Catalogs a finished replay segment file (see
+    /// [`Engine::replay_segment_closed`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn replay_segment_closed(
+        &mut self,
+        input: InputId,
+        recorder_index: u64,
+        path: std::path::PathBuf,
+        first_frame: u64,
+        first_stream_frame: u64,
+        frames: u64,
+        bytes: u64,
+    ) -> bool {
+        self.engine.replay_segment_closed(
+            input,
+            recorder_index,
+            path,
+            first_frame,
+            first_stream_frame,
+            frames,
+            bytes,
+        )
+    }
+
+    /// Takes the replay segment files to delete (see
+    /// [`Engine::take_replay_pruned`]).
+    pub fn take_replay_pruned(&mut self) -> Vec<std::path::PathBuf> {
+        self.engine.take_replay_pruned()
+    }
+
+    /// A counter that moves whenever the replay status may have changed.
+    #[must_use]
+    pub const fn replay_generation(&self) -> u64 {
+        self.engine.replay_generation()
+    }
+
+    /// The replay status as clients see it (OR-012).
+    #[must_use]
+    pub fn replay_status(
+        &self,
+        server: &ServerIdentity,
+        sequence: u64,
+        request_id: Option<String>,
+    ) -> fm_protocol::ReplayStatusMessage {
+        replay::status_message(self.engine.replay_status(), server, sequence, request_id)
     }
 
     /// The `LiveLAN` status as clients see it (OR-017).
@@ -3258,6 +3341,8 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetNetworkStream { .. }
         | EngineCommand::SetCaptureSettings { .. }
         | EngineCommand::SetStreamTarget { .. } => "project",
+        EngineCommand::Replay(operation) if !operation.is_live() => "project",
+        EngineCommand::Replay(_) => "replay",
         EngineCommand::AudioMixer(edit) if !edit.is_live() => "project",
         EngineCommand::SetInputAudioStrip { .. } | EngineCommand::AudioMixer(_) => "audio",
         EngineCommand::MediaList(edit) if !edit.operation.is_live() => "project",
@@ -3313,6 +3398,15 @@ const fn media_list_command_class(operation: &fm_protocol::MediaListOperation) -
 
 const fn command_class(payload: &CommandPayload) -> CommandClass {
     match payload {
+        // Replay settings edit the project; marking, capturing, and playing
+        // replays is an operator control, like a media transport (OR-012).
+        CommandPayload::Replay(operation) => {
+            if operation.is_live() {
+                CommandClass::Transition
+            } else {
+                CommandClass::EditProject
+            }
+        }
         CommandPayload::MediaList { operation, .. } => media_list_command_class(operation),
         CommandPayload::SetTitleAnimation { .. }
         | CommandPayload::ApplyTitleAnimationPreset { .. }
@@ -3463,6 +3557,9 @@ fn input_audio_strip_engine_command(payload: &CommandPayload) -> EngineCommand {
 #[allow(clippy::too_many_lines)] // one arm per payload family
 fn engine_command(payload: &CommandPayload) -> EngineCommand {
     match payload {
+        CommandPayload::Replay(operation) => {
+            EngineCommand::Replay(replay::engine_operation(operation))
+        }
         payload @ (CommandPayload::ReorderInputs { .. }
         | CommandPayload::RenameInput { .. }
         | CommandPayload::AddInput { .. }
@@ -3859,6 +3956,7 @@ fn engine_input_source(source: &LiveInputSource) -> EngineInputSource {
         LiveInputSource::Image(config) => EngineInputSource::Image(config.clone()),
         LiveInputSource::Slideshow(config) => EngineInputSource::Slideshow(config.clone()),
         LiveInputSource::ScreenCapture(config) => EngineInputSource::ScreenCapture(config.clone()),
+        LiveInputSource::Replay => EngineInputSource::Replay,
     }
 }
 
@@ -3882,6 +3980,7 @@ fn wire_input_source(source: &EngineInputSource) -> LiveInputSource {
         EngineInputSource::Image(config) => LiveInputSource::Image(config.clone()),
         EngineInputSource::Slideshow(config) => LiveInputSource::Slideshow(config.clone()),
         EngineInputSource::ScreenCapture(config) => LiveInputSource::ScreenCapture(config.clone()),
+        EngineInputSource::Replay => LiveInputSource::Replay,
     }
 }
 
@@ -4036,6 +4135,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         }
         command @ EngineCommand::SetLiveLan(_) => {
             return live_lan::wire_edit_payload(command);
+        }
+        command @ EngineCommand::Replay(_) => {
+            return replay::wire_payload(command);
         }
         command @ EngineCommand::SetNetworkStream { .. } => {
             return network_stream::wire_edit_payload(command);
@@ -4529,6 +4631,13 @@ fn accepted_event_payload(
         .events
         .iter()
         .find_map(|event| live_lan::changed(&event.payload))
+    {
+        return payload;
+    }
+    if let Some(payload) = outcome
+        .events
+        .iter()
+        .find_map(|event| replay::changed(&event.payload))
     {
         return payload;
     }

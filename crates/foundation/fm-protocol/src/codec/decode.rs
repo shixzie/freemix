@@ -209,6 +209,20 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
             validate_request_id(&request_id)?;
             WireMessage::SystemAudioDevicesRequest(crate::SystemAudioDevicesRequest { request_id })
         }
+        "replay_status" => {
+            let server = decode_server_identity(&mut fields)?;
+            let sequence = fields.canonical_required("sequence")?;
+            let message = super::replay::decode_status(server, sequence, &mut fields)?;
+            if let Some(request_id) = &message.request_id {
+                validate_request_id(request_id)?;
+            }
+            WireMessage::ReplayStatus(Box::new(message))
+        }
+        "replay_status_request" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::ReplayStatusRequest(crate::ReplayStatusRequest { request_id })
+        }
         "screen_capture_targets_request" => {
             let request_id = fields.required("request_id")?;
             validate_request_id(&request_id)?;
@@ -706,6 +720,14 @@ fn decode_command_payload(
         "clear_display_output" => CommandPayload::ClearDisplayOutput {
             slot: super::display_output::decode_slot(fields)?,
         },
+        replay if replay.starts_with("replay_") => {
+            CommandPayload::Replay(super::replay::decode_operation(replay, fields)?.ok_or_else(
+                || CodecError::InvalidField {
+                    field: "payload",
+                    value: replay.to_owned(),
+                },
+            )?)
+        }
         "live_lan_set" => {
             let (config, pin) = super::live_lan::decode_set(fields)?;
             CommandPayload::SetLiveLan { config, pin }
@@ -1539,6 +1561,7 @@ fn decode_live_input_source(fields: &mut Fields) -> Result<LiveInputSource, Code
         "screen_capture" => Ok(LiveInputSource::ScreenCapture(Box::new(
             super::screen_capture::decode_config(fields)?,
         ))),
+        "replay" => Ok(LiveInputSource::Replay),
         _ => Err(CodecError::InvalidField {
             field: "kind",
             value: kind,
@@ -2754,6 +2777,17 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
         },
         "live_lan_changed" => {
             EventPayload::LiveLanChanged(super::live_lan::decode_changed(fields)?)
+        }
+        "replay_changed" => {
+            let frame = fields.canonical_required("frame")?;
+            let token = fields.required("operation")?;
+            let operation = super::replay::decode_operation(&token, fields)?.ok_or(
+                CodecError::InvalidField {
+                    field: "operation",
+                    value: token,
+                },
+            )?;
+            EventPayload::ReplayChanged { frame, operation }
         }
         "display_output_changed" => {
             let (slot, config) = super::display_output::decode_changed(fields)?;

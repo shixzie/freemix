@@ -1786,7 +1786,8 @@ pub fn execute(
         | CommandCompletion::Playlist { edit: true }
         | CommandCompletion::Cue { edit: true }
         | CommandCompletion::Script { run: false }
-        | CommandCompletion::Media { transport: false } => Role::Graphics,
+        | CommandCompletion::Media { transport: false }
+        | CommandCompletion::Replay { live: false } => Role::Graphics,
         CommandCompletion::Audio | CommandCompletion::Mixer { .. } => Role::Audio,
         CommandCompletion::FadeToBlackOutput
         | CommandCompletion::Switcher
@@ -1795,6 +1796,7 @@ pub fn execute(
         | CommandCompletion::Cue { edit: false }
         | CommandCompletion::Script { run: true }
         | CommandCompletion::Media { transport: true }
+        | CommandCompletion::Replay { live: true }
         | CommandCompletion::TitleTake {
             edits_fields: false,
         } => Role::Operator,
@@ -1867,6 +1869,11 @@ enum CommandCompletion {
     /// A Fade-to-Black output choice (Protocol 2.40): completes on
     /// `fade_to_black_output_changed` and project realization.
     FadeToBlackOutput,
+    /// A replay command (OR-012): completes on `replay_changed` and
+    /// project (settings) or replay (live operations) realization.
+    Replay {
+        live: bool,
+    },
 }
 
 impl CommandCompletion {
@@ -1899,6 +1906,9 @@ impl CommandCompletion {
                 edits_fields: !fields.is_empty(),
             },
             CommandPayload::SetPlaylist { .. } => Self::Playlist { edit: true },
+            CommandPayload::Replay(operation) => Self::Replay {
+                live: operation.is_live(),
+            },
             CommandPayload::SetTransitionFavorite { .. } => Self::Favorite,
             CommandPayload::Media { operation, .. } => Self::Media {
                 transport: operation.is_transport(),
@@ -1934,7 +1944,9 @@ impl CommandCompletion {
             | Self::Cue { edit: true }
             | Self::Script { run: false }
             | Self::Mixer { live: false }
+            | Self::Replay { live: false }
             | Self::FadeToBlackOutput => domain == "project",
+            Self::Replay { live: true } => domain == "replay",
             Self::Audio | Self::Mixer { live: true } => domain == "audio",
             Self::Media { .. } => domain == "media",
             Self::Switcher
@@ -2246,6 +2258,10 @@ impl Remote {
                         EventPayload::MediaChanged { .. } => {
                             matches!(completion, CommandCompletion::Media { .. })
                         }
+                        EventPayload::ReplayChanged { .. } => matches!(
+                            completion,
+                            CommandCompletion::Replay { .. } | CommandCompletion::History
+                        ),
                         // A slideshow step answers `page_navigated`, a
                         // document step `paged_changed` (IN-014).
                         EventPayload::PageNavigated { .. } | EventPayload::PagedChanged { .. } => {

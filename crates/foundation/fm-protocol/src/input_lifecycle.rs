@@ -175,6 +175,8 @@ pub enum WireInputSource {
     Slideshow(Box<crate::SlideshowConfig>),
     /// A screen or window capture (IN-011).
     ScreenCapture(crate::ScreenCaptureConfig),
+    /// A replay player (OR-012): `replay`.
+    Replay,
 }
 
 /// One requested item of a batch import.

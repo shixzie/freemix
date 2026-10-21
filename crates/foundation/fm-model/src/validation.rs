@@ -171,6 +171,7 @@ fn validate_input_audio_strips(project: &Project, errors: &mut Vec<ValidationErr
     }
     validate_display_outputs(project, errors);
     validate_live_lan(project, errors);
+    validate_replay(project, errors);
     for &output in project.fade_to_black_excluded_outputs() {
         if !project
             .outputs()
@@ -927,6 +928,9 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
             // A mix feed reads only the previous tick's committed bus frame,
             // so it has no reference to validate and adds no graph edge.
             InputKind::Color | InputKind::MixFeed(_) => {}
+            // A replay player plays runtime events; its sources are the
+            // project's replay settings, validated on their own.
+            InputKind::Replay => {}
             // A title is a leaf: its template is a bundle asset checked by
             // persistence, so only its own field list is validated here.
             InputKind::Title(title) => validate_title(entity, title, errors),
@@ -1802,6 +1806,61 @@ fn validate_live_lan(project: &Project, errors: &mut Vec<ValidationError>) {
             });
         }
     }
+}
+
+fn validate_replay(project: &Project, errors: &mut Vec<ValidationError>) {
+    use fm_types::replay::ReplaySettingsError;
+    let replay_inputs = project
+        .inputs()
+        .iter()
+        .filter(|input| matches!(input.kind, InputKind::Replay))
+        .count();
+    if replay_inputs > fm_types::replay::MAX_REPLAY_INPUTS {
+        errors.push(ValidationError {
+            entity: None,
+            field: "inputs.replay",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+    let error = match project
+        .replay()
+        .check(|input| project.replay_source_check(input))
+    {
+        Ok(()) => return,
+        Err(error) => error,
+    };
+    errors.push(match error {
+        ReplaySettingsError::TooManySources => ValidationError {
+            entity: None,
+            field: "replay.sources",
+            kind: ValidationErrorKind::OutOfRange,
+        },
+        ReplaySettingsError::DuplicateSource(input) => ValidationError {
+            entity: Some(EntityRef::Input(input)),
+            field: "replay.sources",
+            kind: ValidationErrorKind::DuplicateReference,
+        },
+        ReplaySettingsError::UnknownSource(input) => ValidationError {
+            entity: None,
+            field: "replay.sources",
+            kind: ValidationErrorKind::MissingReference(EntityRef::Input(input)),
+        },
+        ReplaySettingsError::UnrecordableSource(input) => ValidationError {
+            entity: Some(EntityRef::Input(input)),
+            field: "replay.sources",
+            kind: ValidationErrorKind::SelfReference,
+        },
+        ReplaySettingsError::Retention => ValidationError {
+            entity: None,
+            field: "replay.retention_seconds",
+            kind: ValidationErrorKind::OutOfRange,
+        },
+        ReplaySettingsError::StorageRoot => ValidationError {
+            entity: None,
+            field: "replay.storage_root",
+            kind: ValidationErrorKind::OutOfRange,
+        },
+    });
 }
 
 fn validate_display_outputs(project: &Project, errors: &mut Vec<ValidationError>) {

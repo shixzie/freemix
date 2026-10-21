@@ -60,6 +60,10 @@ fn every_reason() -> Vec<(RefusalReason, &'static str)> {
         ),
         (in_use(InputUse::SceneOnAir), "input_in_use:2:scene_on_air"),
         (
+            in_use(InputUse::ReplaySource),
+            "input_in_use:2:replay_source",
+        ),
+        (
             in_use(InputUse::Overlay { channel: 8 }),
             "input_in_use:2:overlay:8",
         ),

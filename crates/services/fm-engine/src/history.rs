@@ -174,6 +174,13 @@ impl EngineCommand {
                     EngineCommandKind::ProjectEdit
                 }
             }
+            Self::Replay(operation) => {
+                if operation.is_live() {
+                    EngineCommandKind::LiveOperation
+                } else {
+                    EngineCommandKind::ProjectEdit
+                }
+            }
             Self::Media(command) => {
                 if command.operation.is_transport() {
                     EngineCommandKind::LiveOperation
@@ -1102,6 +1109,12 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
         EngineCommand::SetLiveLan(_) => Some(EngineCommand::SetLiveLan(Box::new(
             state.live_lan().clone(),
         ))),
+        EngineCommand::Replay(crate::EngineReplayOperation::Configure(_)) => {
+            Some(EngineCommand::Replay(
+                crate::EngineReplayOperation::Configure(Box::new(state.replay().clone())),
+            ))
+        }
+        EngineCommand::Replay(_) => None,
         EngineCommand::SetDisplayOutput { slot, .. } => Some(EngineCommand::SetDisplayOutput {
             slot: *slot,
             config: state.display_output(*slot).cloned().map(Box::new),

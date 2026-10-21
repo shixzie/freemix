@@ -18,6 +18,7 @@ mod paged;
 mod playlist;
 mod recorder_status;
 mod refusal;
+mod replay;
 mod scene_layer;
 mod scene_layout;
 mod screen_capture;

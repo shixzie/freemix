@@ -810,6 +810,12 @@ pub enum DurableChange {
     },
     /// The `LiveLAN` configuration changed (Protocol 2.57); never the PIN.
     LiveLanChanged(fm_protocol::LiveLanEntry),
+    /// A replay command was accepted (OR-012). The recording, events, and
+    /// players arrive in `replay_status`; the project keeps nothing else.
+    ReplayChanged {
+        frame: u64,
+        operation: fm_protocol::ReplayOperation,
+    },
     /// A network stream input was reconfigured (Protocol 2.46); the URL is
     /// redacted.
     NetworkStreamChanged {
@@ -1127,6 +1133,9 @@ impl DurableProjectEvent {
                 DurableChange::DisplayOutputChanged { slot, config }
             }
             EventPayload::LiveLanChanged(entry) => DurableChange::LiveLanChanged(entry),
+            EventPayload::ReplayChanged { frame, operation } => {
+                DurableChange::ReplayChanged { frame, operation }
+            }
             EventPayload::CueListChanged(list) => DurableChange::CueListChanged(list),
             EventPayload::CueListRemoved { list } => DurableChange::CueListRemoved { list },
             EventPayload::CueRunChanged(change) => {
@@ -4893,6 +4902,7 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
                 Err(ModelError::InvalidAudioMixerChange)
             };
         }
+        DurableChange::ReplayChanged { .. } => return Ok(()),
         DurableChange::LiveLanChanged(entry) => {
             return match entry.source {
                 fm_protocol::LiveLanSource::Output(output)
@@ -5557,6 +5567,7 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                 state.display_outputs.remove(&slot);
             }
         },
+        DurableChange::ReplayChanged { .. } => {}
         DurableChange::LiveLanChanged(entry) => {
             // Disabled, it forgets its last report, as the server does.
             if !entry.enabled {

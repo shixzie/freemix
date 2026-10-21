@@ -52,6 +52,8 @@ pub enum EngineInputSource {
     Slideshow(Box<fm_types::still::SlideshowConfig>),
     /// A screen or window capture (IN-011).
     ScreenCapture(Box<fm_types::screen_capture::ScreenCaptureConfig>),
+    /// A replay player (OR-012).
+    Replay,
 }
 
 impl EngineInputSource {
@@ -86,6 +88,7 @@ impl EngineInputSource {
             Self::ScreenCapture(config) => {
                 return fm_model::InputSourceSpec::ScreenCapture((**config).clone());
             }
+            Self::Replay => return fm_model::InputSourceSpec::Replay,
         };
         fm_model::InputSourceSpec::Generator {
             video,
@@ -246,6 +249,8 @@ pub struct ShowState {
         BTreeMap<fm_types::display::DisplayOutputSlot, fm_types::display::DisplayOutputConfig>,
     /// The `LiveLAN` viewer stream's configuration (OR-017).
     live_lan: fm_types::live_lan::LiveLanConfig,
+    /// What is recorded for replay (OR-012).
+    replay: fm_types::replay::ReplaySettings,
     /// Every configured stream destination's authored configuration in
     /// authored order (OR-006), parallel to the switcher's stream inventory.
     /// The switcher owns the desired running flags; each entry's own
@@ -340,6 +345,7 @@ impl ShowState {
             audio_monitor: crate::EngineAudioMonitor::default(),
             display_outputs: BTreeMap::new(),
             live_lan: fm_types::live_lan::LiveLanConfig::default(),
+            replay: fm_types::replay::ReplaySettings::default(),
             stream_targets: Vec::new(),
         })
     }
@@ -633,6 +639,9 @@ impl ShowState {
             .iter()
             .position(|candidate| *candidate == input)
             .ok_or(InputCatalogueError::UnknownInput(input))?;
+        if self.replay.sources.contains(&input) {
+            return Err(InputCatalogueError::ReplaySource(input));
+        }
         if let Some(entry) = self
             .playlist
             .entries()
@@ -929,6 +938,40 @@ impl ShowState {
         crate::audio_mixer::validate_group_state(monitor.state)
             .map_err(|_| ShowError::InvalidAudioMonitorGain(monitor.state.gain_millidb))?;
         self.audio_monitor = monitor;
+        Ok(())
+    }
+
+    /// What is recorded for replay (OR-012).
+    #[must_use]
+    pub const fn replay(&self) -> &fm_types::replay::ReplaySettings {
+        &self.replay
+    }
+
+    /// Replaces the replay settings, checked against the show's inputs
+    /// exactly as [`fm_model::Project::set_replay`] checks them: a source
+    /// must be an input of the show and not a Replay input.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`fm_types::replay::ReplaySettingsError`]. Nothing
+    /// changes on error.
+    pub fn set_replay(
+        &mut self,
+        settings: fm_types::replay::ReplaySettings,
+    ) -> Result<(), fm_types::replay::ReplaySettingsError> {
+        settings.check(|input| {
+            if !self.inputs.contains(&input) {
+                fm_types::replay::ReplaySourceCheck::Unknown
+            } else if matches!(
+                self.input_sources.get(&input),
+                Some(fm_model::InputSourceSpec::Replay)
+            ) {
+                fm_types::replay::ReplaySourceCheck::Unrecordable
+            } else {
+                fm_types::replay::ReplaySourceCheck::Recordable
+            }
+        })?;
+        self.replay = settings;
         Ok(())
     }
 
@@ -1701,6 +1744,14 @@ impl ShowState {
                 fm_model::InputSourceSpec::ScreenCapture(config) => Some((*input, config)),
                 _ => None,
             })
+    }
+
+    /// Every Replay input, ascending (OR-012).
+    pub fn replay_inputs(&self) -> impl Iterator<Item = InputId> + '_ {
+        self.input_sources
+            .iter()
+            .filter(|(_, source)| matches!(source, fm_model::InputSourceSpec::Replay))
+            .map(|(input, _)| *input)
     }
 
     /// Every system audio input and its device, ascending by input

@@ -9856,6 +9856,7 @@ mod tests {
             scenes: Vec::new(),
             titles_shown: Vec::new(),
             slideshows: Vec::new(),
+            replay: Vec::new(),
             media: Vec::new(),
             frame: FrameNumber::new(frame),
             deadline: ClockTime::ZERO,

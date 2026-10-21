@@ -122,6 +122,8 @@ pub enum InputUse {
     },
     /// Shown by a scene on air.
     SceneOnAir,
+    /// Recorded for replay (OR-012).
+    ReplaySource,
 }
 
 impl fmt::Display for InputUse {
@@ -144,6 +146,7 @@ impl fmt::Display for InputUse {
                 write!(formatter, "named by cue {cue} of cue list {list}")
             }
             Self::SceneOnAir => formatter.write_str("shown by a scene on air"),
+            Self::ReplaySource => formatter.write_str("recorded for replay"),
         }
     }
 }

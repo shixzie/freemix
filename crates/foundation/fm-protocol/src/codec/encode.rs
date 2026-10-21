@@ -188,6 +188,22 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             validate_request_id(&message.request_id)?;
             record.field_str("request_id", &message.request_id)?;
         }
+        WireMessage::ReplayStatus(message) => {
+            record.kind("replay_status");
+            encode_server_identity(&mut record, &message.server)?;
+            record.field("sequence", message.sequence)?;
+            if let Some(request_id) = &message.request_id {
+                validate_request_id(request_id)?;
+            }
+            super::replay::encode_status(message, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        WireMessage::ReplayStatusRequest(message) => {
+            record.kind("replay_status_request");
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+        }
         WireMessage::ScreenCaptureTargetsRequest(message) => {
             record.kind("screen_capture_targets_request");
             validate_request_id(&message.request_id)?;
@@ -674,6 +690,12 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
             record.field("payload", "clear_display_output")?;
             record.field("slot", slot)?;
         }
+        CommandPayload::Replay(operation) => {
+            record.field("payload", operation.token())?;
+            super::replay::encode_operation(operation, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         CommandPayload::SetLiveLan { config, pin } => {
             record.field("payload", "live_lan_set")?;
             super::live_lan::encode_set(config, pin, &mut |name, value| {
@@ -890,6 +912,7 @@ fn encode_input_catalogue_command(
                         record.field_string(name, value)
                     })
                 }
+                LiveInputSource::Replay => record.field("kind", "replay"),
             }
         }
         CommandPayload::RemoveInput { input } => {
@@ -2748,6 +2771,14 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
         EventPayload::FadeToBlackCurveChanged { curve } => {
             record.field("event", "fade_to_black_curve_changed")?;
             record.field("curve", curve.token())?;
+        }
+        EventPayload::ReplayChanged { frame, operation } => {
+            record.field("event", "replay_changed")?;
+            record.field("frame", frame)?;
+            record.field("operation", operation.token())?;
+            super::replay::encode_operation(operation, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
         }
         EventPayload::LiveLanChanged(entry) => {
             record.field("event", "live_lan_changed")?;
