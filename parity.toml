@@ -490,8 +490,8 @@ commands = ["cargo test -p freemix-web --test tally", "cargo test -p freemix-web
 [[tests]]
 id = "accept-rc-015"
 state = "present"
-paths = ["crates/services/fm-observability/tests/statistics_alerts.rs"]
-commands = ["cargo test -p fm-observability --test statistics_alerts"]
+paths = ["crates/services/fm-observability/tests/statistics_alerts.rs", "crates/foundation/fm-protocol/tests/health.rs", "apps/freemixd/tests/process.rs"]
+commands = ["cargo test -p fm-observability --test statistics_alerts", "cargo test -p fm-protocol --test health", "cargo test -p freemixd --test process simulated_studio_peer_receives_health_status_once_a_second -- --exact"]
 [[tests]]
 id = "accept-rc-016"
 state = "present"

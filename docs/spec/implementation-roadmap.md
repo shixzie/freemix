@@ -120,8 +120,11 @@ since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
 
 Smaller follow-ups found by the audit: the Colour window sends no
 `ScenePreview` (`SW-019`); headphone output needs device enumeration
-(`AU-001`); `fm-observability`'s `MetricRegistry`/`AlertEngine` and CPU/GPU
-utilization are unwired (`RC-015`). Native daemons now group commit the
+(`AU-001`). `fm-observability`'s `MetricRegistry` and `AlertEngine` now run in
+both daemons with CPU and GPU-proxy utilization, default alert rules, and a
+`health_status` view in Studio and `remote-diagnostics` (`RC-015`); network,
+sync, and encoder-capacity sampling, operator acknowledgement and silencing,
+and configurable rules remain. Native daemons now group commit the
 commands queued at a command turn (see Native group commit below), but the
 group's disk sync still runs in front of its frame.
 
@@ -3207,10 +3210,38 @@ undercounting; and an alert engine with threshold, rate-of-change, and
 staleness rules, hysteresis, hold durations, pending, firing, and resolved
 states, deduplicated notifications in a bounded severity-aware queue, and
 expiring acknowledgements and silences. A redacted, sorted text snapshot can
-be appended to the support bundle under its byte cap. Remaining gaps: the
-daemon, engine, outputs, and Studio do not record into it or drain
-notifications; there is no GPU, CPU, disk, network, sync, or encoder-capacity
-sampling; no protocol or UI view; and no persisted rules or silences.
+be appended to the support bundle under its byte cap.
+
+Both daemons now own one registry for the run and sample it once a second
+from the session loop (`apps/freemixd/src/statistics.rs`): the control plane's
+subscriber count and revision, and on a native daemon host frame lateness and
+GPU pass time histograms, realized, late, and dropped frame counts with the
+late share, audio sink, recorder, stream, monitor tap, camera, disk, and
+failed-output counters and gauges under stable names. Each sample also
+records `cpu.process_utilization`, the daemon process's user plus system time
+from `/proc/self/stat` over wall time as a share of every logical CPU
+(unavailable off Linux; FFmpeg children are not counted), and
+`gpu.utilization`, which is a proxy rather than a vendor counter: the GPU
+time of the native compositor's timestamped fullscreen render passes over
+wall time, so it omits uploads, readbacks, encoders, and other processes, is
+a lower bound when timestamp samples drop, and is unavailable on the
+simulated daemon and on adapters without timestamp queries. An `AlertEngine`
+evaluates six fixed default rules after every sample (`cpu_saturated`,
+`disk_low`, `frame_late`, `frames_dropped`, `gpu_saturated`,
+`output_failed`) with hysteresis and hold times; each notification prints a
+`FREEMIXD_ALERT` line, the support bundle carries the registry and rule
+states under `## Statistics`, and `FREEMIXD_TELEMETRY` is unchanged. Protocol
+2.100 sends raw Studio sessions a lossy `health_status` once a second and
+adds the same sample to `diagnostics_response`: utilization permille, firing
+alerts, and the 16 most recent fired, resolved, and reminder notifications.
+Studio's health strip shows `CPU`, `GPU`, and alert lamps with hover help in
+English and Spanish, and `freemix-cli remote-diagnostics` prints `Health`,
+`Alert`, and `AlertNotification` lines. Remaining gaps: no network, sync
+(beyond the AU-004 drift records), queue-depth, input health, or
+hardware-encoder session sampling; rules are fixed in code, so there is no
+operator acknowledgement, silencing, threshold editing, or persistence of
+any of them; the CPU reading excludes child encoders and the GPU reading is a
+compositor-pass proxy; and Web pages receive no health view.
 `RC-015` remains planned.
 
 
