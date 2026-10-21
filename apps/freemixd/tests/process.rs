@@ -3944,7 +3944,7 @@ fn simulated_daemon_realizes_a_title_off_air_when_its_out_phase_ends() {
     );
 }
 /// A Studio client subscribing while a fade runs holds its realized buses
-/// until the fade itself completes (Protocol 2.97): its snapshot names the
+/// until the fade itself completes (Protocol 2.98): its snapshot names the
 /// fade in flight, and a title off-air committed before the snapshot whose
 /// Out phase ends first is realized with a revision up to the snapshot's
 /// without ending the hold.
@@ -7503,11 +7503,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.97.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 97));
+    // The previous protocol is refused; the current one is 2.98.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 98));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 96),
+        protocol: ProtocolVersion::new(2, 97),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -7523,7 +7523,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 97)
+        ProtocolVersion::new(2, 98)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(
