@@ -57,6 +57,9 @@ pub const fn fade_to_black_availability(
     }
 }
 
+/// Below this width the Fade to Black label goes over the block.
+const NARROW_FTB_WIDTH: f32 = 300.0;
+
 #[allow(clippy::too_many_lines)] // one immediate-mode region
 pub(super) fn draw_fade_to_black(
     ui: &mut Ui,
@@ -77,6 +80,13 @@ pub(super) fn draw_fade_to_black(
     let reason = unavailable_reason(state, Capability::Transition);
     let l = l10n::locale(ui.ctx());
 
+    // A narrow column (the Transitions panel at 1280x720) puts the section
+    // label over the block and a smaller key beside the controls, so the
+    // label is one line and the block one row rather than three.
+    let narrow = ui.available_width() < NARROW_FTB_WIDTH;
+    if narrow {
+        ui.label(section_label(l.text(Msg::FadeToBlack)));
+    }
     ui.horizontal(|ui| {
         // One console key: it offers exactly the reversal the replicated
         // desired target permits (to black while live, to live while black).
@@ -108,7 +118,11 @@ pub(super) fn draw_fade_to_black(
                 Button::new(RichText::new(label).strong().size(13.0).color(text_color()))
                     .fill(fill)
                     .stroke(Stroke::new(crate::theme::line_width(), stroke))
-                    .min_size(Vec2::new(100.0, 40.0)),
+                    .min_size(if narrow {
+                        Vec2::new(64.0, 30.0)
+                    } else {
+                        Vec2::new(100.0, 40.0)
+                    }),
             )
             .hint(&hover, reason)
             .clicked()
@@ -120,9 +134,11 @@ pub(super) fn draw_fade_to_black(
         }
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
-            ui.label(section_label(l.text(Msg::FadeToBlack)));
+            if !narrow {
+                ui.label(section_label(l.text(Msg::FadeToBlack)));
+            }
             // Duration and outputs share one row, so the block is as tall
-            // as the FTB key beside it; a narrow column wraps them.
+            // as the FTB key beside it; a very narrow column wraps them.
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(6.0, 2.0);
                 ui.add_enabled(
