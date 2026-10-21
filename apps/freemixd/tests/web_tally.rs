@@ -1427,7 +1427,7 @@ fn operator_page_commands_drive_the_show_within_the_session_role() {
         page_command(&mut page, "audio-stale", Some(revision - 1), &mute(1, 0)).unwrap_err(),
         ("revision_conflict".to_owned(), revision)
     );
-    // The page's loudness resets (Protocol 2.95 on the Web): Program's and
+    // The page's loudness resets (Protocol 2.94 on the Web): Program's and
     // one strip's, live audio commands an Audio page may send.
     for (id, target, wire) in [
         (

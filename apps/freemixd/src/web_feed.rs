@@ -3,7 +3,7 @@
 //! Web peers (the operator and tally pages) with `view_status` receive the
 //! show's live status beside their durable records: Master/Program
 //! `audio_meters` (Master only: no per-input or monitor meters; since
-//! Protocol 2.95 with the loudness of Master and at most
+//! Protocol 2.94 with the loudness of Master and at most
 //! [`WEB_LOUDNESS_INPUTS`] strips), the
 //! `stream_status` destination samples, and the `recorder_status` slots.
 //! Each kind is latest-wins: a newer record replaces one that has not been
@@ -137,14 +137,14 @@ impl WebFeed {
 }
 
 /// The most strips whose loudness a Web meter record carries (Protocol
-/// 2.95), the lowest input ids first: only strips heard on Program have a
+/// 2.94), the lowest input ids first: only strips heard on Program have a
 /// reading, and the cap keeps the record a few kilobytes however many
 /// inputs the show has.
 pub(crate) const WEB_LOUDNESS_INPUTS: usize = 32;
 
 /// The Master/Program part of `meters` a Web page shows: the same interval
 /// and Master channels, without per-input or monitor meters, so the record
-/// stays small however many inputs the show has. Loudness (Protocol 2.95)
+/// stays small however many inputs the show has. Loudness (Protocol 2.94)
 /// is kept for Master and the first [`WEB_LOUDNESS_INPUTS`] metered strips,
 /// which the operator page shows with each bus's loudness reset.
 pub(crate) fn web_meters(meters: &AudioMetersMessage) -> AudioMetersMessage {
@@ -176,7 +176,7 @@ mod tests {
     use super::*;
 
     /// A Web meter record keeps Master's channels and the loudness of
-    /// Master and the first strips (Protocol 2.95), nothing per input else.
+    /// Master and the first strips (Protocol 2.94), nothing per input else.
     #[test]
     fn web_meters_keep_master_and_capped_strip_loudness() {
         use fm_protocol::{

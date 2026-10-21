@@ -520,7 +520,7 @@ fn native_daemon_applies_strip_and_master_dsp_and_meters_gain_reduction() {
                 .is_some_and(|reduction| reduction > 15_000)
     });
 
-    // Delay (Protocol 2.95): a one-second strip delay fades into its
+    // Delay (Protocol 2.94): a one-second strip delay fades into its
     // silent history, so Master falls silent, and the tone arrives a
     // second later.
     let mut delayed = StripDsp::DEFAULT;

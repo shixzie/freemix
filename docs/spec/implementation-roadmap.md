@@ -32,10 +32,10 @@ highest-value remaining items, ranked:
    strip and Master now carry a persisted, undoable delay / polarity /
    high-pass / five-band EQ / gate / expander / compressor / limiter chain
    that the native daemon applies and meters (the sample-accurate delay
-   stage since Protocol 2.95, schema 76), with BS.1770 / EBU R128 loudness,
+   stage since Protocol 2.94, schema 76), with BS.1770 / EBU R128 loudness,
    the EBU Tech 3342 loudness range, and true peak per strip and on Master,
    and an operator reset per bus (Protocol 2.92), which the Web operator
-   page now shows and resets (Protocol 2.95; see the item 3 boundary
+   page now shows and resets (Protocol 2.94; see the item 3 boundary
    below); Web chain editing, an audio render path in the simulated daemon
    (where the chains are show state only), and hardware acceptance remain.
 4. **Finish user shortcuts (`RC-004`).** Project shortcuts now persist, travel
@@ -1250,7 +1250,7 @@ formats or non-finite samples before mutating state.
 
 Current implementation boundary for item 3 strip DSP on the live mix
 (`AU-005`; polarity, the expander, and loudness since Protocol 2.82 and
-schema 69, the delay since Protocol 2.95 and schema 76): every input strip
+schema 69, the delay since Protocol 2.94 and schema 76): every input strip
 and the Master bus carry an ordered chain
 (`fm_types::strip_dsp::StripDsp`): a delay (0 to 1 s in microseconds,
 ahead of every other stage and after a strip's sync delay), a polarity
@@ -1325,7 +1325,7 @@ and `audio-loudness-reset` / `remote-audio-loudness-reset`.
 Each mixer strip and Master
 show a loudness readout under their keys (short-term per strip, integrated
 on Master; amber past -1 dBTP) whose hover lists every value.
-The Web operator page (Protocol 2.95) shows Program's momentary,
+The Web operator page (Protocol 2.94) shows Program's momentary,
 short-term, integrated, loudness-range, and true-peak readings with a
 `Reset loudness` key and each audio strip's short-term loudness with a
 `Reset` key, from the Web `audio_meters` records, which keep the loudness

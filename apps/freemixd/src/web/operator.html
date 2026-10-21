@@ -262,7 +262,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.93";
+  const PROTOCOL = "2.94";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -869,7 +869,7 @@
     recorders: null, recordersAt: 0, recorderSequence: -1,
     streams: new Map(), streamsAt: 0, streamSequence: -1,
     meters: null, metersAt: 0, meterSequence: -1,
-    // `audio_meters` `loudness` (Protocol 2.95 on the Web): target
+    // `audio_meters` `loudness` (Protocol 2.94 on the Web): target
     // ("master" or an input id) -> its readings.
     loudness: new Map(),
   };
@@ -2042,7 +2042,7 @@
       return mark;
     }));
   }
-  // ---- Loudness (Protocol 2.95 on the Web): Program's readouts and each
+  // ---- Loudness (Protocol 2.94 on the Web): Program's readouts and each
   // strip's short-term loudness, from the newest `audio_meters` record. ----
   function loudnessText(value) {
     return value === null || value === undefined ? tr("loudnessNone")

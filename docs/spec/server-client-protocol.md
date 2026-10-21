@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.93 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.94 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -3612,7 +3612,7 @@ scopes (RC-004, schema 75).
   console's.
 - 2.92 is refused.
 
-Protocol 2.95 adds a delay stage to the strip DSP chain and shows loudness
+Protocol 2.94 adds a delay stage to the strip DSP chain and shows loudness
 on the Web operator page (AU-005, schema 76).
 
 - The chain code gains the delay: flag bit 13 enables it and a big-endian
@@ -3644,7 +3644,7 @@ on the Web operator page (AU-005, schema 76).
   under the session's `control_audio` permission.
 - Studio's FX window adds the delay key and its time in milliseconds
   beside the polarity key, with hover help.
-- 2.94 is refused.
+- 2.93 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
