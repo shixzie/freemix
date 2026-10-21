@@ -39,6 +39,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     num::NonZeroU128,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use fm_command::{FieldIssue, Rejection, RejectionCode};
@@ -247,6 +248,21 @@ struct Event {
     angles: Vec<InputId>,
 }
 
+/// The recorded media and the events: shared between an engine and its
+/// clones (a projected frame clones the engine every frame) until one of
+/// them changes it.
+#[derive(Clone, Debug)]
+struct Store {
+    catalog: RollingSegmentCatalog,
+    timeline: SourceTimeline,
+    segments: BTreeMap<SegmentId, Segment>,
+    /// Each source's open synthetic segment and its next stream frame.
+    recording: BTreeMap<InputId, (Option<SegmentId>, u64)>,
+    last_frames: BTreeMap<InputId, u64>,
+    events: EventDatabase,
+    event_frames: BTreeMap<u32, Event>,
+}
+
 /// The replay runtime (see the module documentation).
 #[derive(Clone, Debug)]
 pub(crate) struct ReplayRuntime {
@@ -255,15 +271,8 @@ pub(crate) struct ReplayRuntime {
     default_root: PathBuf,
     settings: ReplaySettings,
     root: PathBuf,
-    catalog: RollingSegmentCatalog,
-    timeline: SourceTimeline,
-    segments: BTreeMap<SegmentId, Segment>,
-    /// Each source's open synthetic segment and its next stream frame.
-    recording: BTreeMap<InputId, (Option<SegmentId>, u64)>,
-    last_frames: BTreeMap<InputId, u64>,
+    store: Arc<Store>,
     next_segment: u128,
-    events: EventDatabase,
-    event_frames: BTreeMap<u32, Event>,
     next_event: u32,
     mark_in: Option<u64>,
     mark_out: Option<u64>,
@@ -279,6 +288,17 @@ fn camera(input: InputId) -> CameraId {
     CameraId::new(input.get())
 }
 
+/// The synchronized time of frame `frame` at `rate`.
+fn time_of(rate: FrameRate, frame: u64) -> NormalizedTimestamp {
+    let nanos = u128::from(frame) * 1_000_000_000 * u128::from(rate.denominator())
+        / u128::from(rate.numerator());
+    NormalizedTimestamp::from_nanos(i64::try_from(nanos).unwrap_or(i64::MAX))
+}
+
+fn range_of(rate: FrameRate, first: u64, end: u64) -> Option<TimelineRange> {
+    TimelineRange::new(time_of(rate, first), time_of(rate, end)).ok()
+}
+
 impl ReplayRuntime {
     pub(crate) fn new(frame_rate: FrameRate) -> Self {
         let mut runtime = Self {
@@ -287,14 +307,16 @@ impl ReplayRuntime {
             default_root: PathBuf::from(DEFAULT_REPLAY_ROOT),
             settings: ReplaySettings::default(),
             root: PathBuf::from(DEFAULT_REPLAY_ROOT),
-            catalog: RollingSegmentCatalog::default(),
-            timeline: SourceTimeline::new(&SourceCatalog::default()),
-            segments: BTreeMap::new(),
-            recording: BTreeMap::new(),
-            last_frames: BTreeMap::new(),
+            store: Arc::new(Store {
+                catalog: RollingSegmentCatalog::default(),
+                timeline: SourceTimeline::new(&SourceCatalog::default()),
+                segments: BTreeMap::new(),
+                recording: BTreeMap::new(),
+                last_frames: BTreeMap::new(),
+                events: EventDatabase::default(),
+                event_frames: BTreeMap::new(),
+            }),
             next_segment: 1,
-            events: EventDatabase::default(),
-            event_frames: BTreeMap::new(),
             next_event: 1,
             mark_in: None,
             mark_out: None,
@@ -345,22 +367,26 @@ impl ReplayRuntime {
 
     /// The synchronized time of frame `frame`.
     fn at(&self, frame: u64) -> NormalizedTimestamp {
-        let nanos = u128::from(frame) * 1_000_000_000 * u128::from(self.frame_rate.denominator())
-            / u128::from(self.frame_rate.numerator());
-        NormalizedTimestamp::from_nanos(i64::try_from(nanos).unwrap_or(i64::MAX))
+        time_of(self.frame_rate, frame)
     }
 
     fn range(&self, first: u64, end: u64) -> Option<TimelineRange> {
-        TimelineRange::new(self.at(first), self.at(end)).ok()
+        range_of(self.frame_rate, first, end)
+    }
+
+    /// The store, copied first if a clone of the engine shares it.
+    fn store_mut(&mut self) -> &mut Store {
+        Arc::make_mut(&mut self.store)
     }
 
     /// Drops every recorded segment and event and starts recording
     /// `settings` anew.
     fn restart(&mut self, settings: ReplaySettings) {
         self.pruned.extend(
-            self.segments
+            self.store
+                .segments
                 .keys()
-                .filter_map(|id| self.catalog.segment(*id))
+                .filter_map(|id| self.store.catalog.segment(*id))
                 .filter(|_| self.feed == EngineReplayFeed::External)
                 .map(|segment| segment.path.clone()),
         );
@@ -390,17 +416,19 @@ impl ReplayRuntime {
             let _ = catalog.assign_camera(camera(*input), ROOT);
         }
         let sources = SourceCatalog::new(sources).unwrap_or_default();
-        self.catalog = catalog;
-        self.timeline = SourceTimeline::new(&sources);
-        self.segments.clear();
-        self.recording = settings
-            .sources
-            .iter()
-            .map(|input| (*input, (None, 0)))
-            .collect();
-        self.last_frames.clear();
-        self.events = EventDatabase::default();
-        self.event_frames.clear();
+        self.store = Arc::new(Store {
+            catalog,
+            timeline: SourceTimeline::new(&sources),
+            segments: BTreeMap::new(),
+            recording: settings
+                .sources
+                .iter()
+                .map(|input| (*input, (None, 0)))
+                .collect(),
+            last_frames: BTreeMap::new(),
+            events: EventDatabase::default(),
+            event_frames: BTreeMap::new(),
+        });
         self.mark_in = None;
         self.mark_out = None;
         for player in self.players.values_mut() {
@@ -432,20 +460,22 @@ impl ReplayRuntime {
     /// Records frame `frame` of source `input` as stream frame
     /// `stream_frame` of its recording.
     pub(crate) fn observe(&mut self, input: InputId, frame: u64, stream_frame: u64) -> bool {
-        if !self.recording.contains_key(&input) {
+        if !self.store.recording.contains_key(&input) {
             return false;
         }
-        let observed = self
+        let at = self.at(frame);
+        let store = self.store_mut();
+        let observed = store
             .timeline
             .observe(
                 camera(input),
-                self.at(frame),
+                at,
                 SequenceNumber::new(frame),
                 FrameIndex::new(stream_frame),
             )
             .is_ok();
         if observed {
-            self.last_frames.insert(input, frame);
+            store.last_frames.insert(input, frame);
         }
         observed
     }
@@ -453,6 +483,7 @@ impl ReplayRuntime {
     /// Catalogs a finished segment file of source `input`: `frames` stream
     /// frames from `first_stream_frame`, the first recorded on engine frame
     /// `first_frame`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn segment_closed(
         &mut self,
         input: InputId,
@@ -463,7 +494,7 @@ impl ReplayRuntime {
         frames: u64,
         bytes: u64,
     ) -> bool {
-        if !self.recording.contains_key(&input) || frames == 0 {
+        if !self.store.recording.contains_key(&input) || frames == 0 {
             return false;
         }
         let Some(timeline) = self.range(first_frame, first_frame + frames) else {
@@ -471,6 +502,7 @@ impl ReplayRuntime {
         };
         let id = SegmentId::new(NonZeroU128::new(self.next_segment).unwrap_or(NonZeroU128::MIN));
         let inserted = self
+            .store_mut()
             .catalog
             .insert_segment(SegmentMetadata {
                 id,
@@ -486,7 +518,7 @@ impl ReplayRuntime {
             .is_ok();
         if inserted {
             self.next_segment += 1;
-            self.segments.insert(
+            self.store_mut().segments.insert(
                 id,
                 Segment {
                     input,
@@ -504,15 +536,19 @@ impl ReplayRuntime {
     /// Protects every segment an event overlaps, including segments
     /// cataloged after the event was captured.
     fn protect_events(&mut self) {
-        for (id, event) in &self.event_frames {
-            let Some(range) = self.range(event.in_frame, event.out_frame) else {
+        let rate = self.frame_rate;
+        let store = self.store_mut();
+        for (id, event) in &store.event_frames {
+            let Some(range) = range_of(rate, event.in_frame, event.out_frame) else {
                 continue;
             };
             let reference = ProtectionReference::Event(EventId::new(
                 NonZeroU128::new(u128::from(*id)).unwrap_or(NonZeroU128::MIN),
             ));
             for angle in &event.angles {
-                let _ = self.catalog.protect_range(camera(*angle), range, reference);
+                let _ = store
+                    .catalog
+                    .protect_range(camera(*angle), range, reference);
             }
         }
     }
@@ -522,16 +558,17 @@ impl ReplayRuntime {
     /// [`SYNTHETIC_REPLAY_SEGMENT_SECONDS`].
     fn record_synthetic(&mut self, frame: u64) {
         let per_segment = self.frames_in(SYNTHETIC_REPLAY_SEGMENT_SECONDS).max(1);
-        let sources: Vec<InputId> = self.recording.keys().copied().collect();
+        let sources: Vec<InputId> = self.store.recording.keys().copied().collect();
         for input in sources {
-            let (open, stream_frame) = self.recording[&input];
+            let (open, stream_frame) = self.store.recording[&input];
             if !self.observe(input, frame, stream_frame) {
                 continue;
             }
             let id = if let Some(id) = open {
                 let end = self.at(frame + 1);
-                let _ = self.catalog.extend_open_segment(id, end);
-                if let Some(segment) = self.segments.get_mut(&id) {
+                let store = self.store_mut();
+                let _ = store.catalog.extend_open_segment(id, end);
+                if let Some(segment) = store.segments.get_mut(&id) {
                     segment.frames += 1;
                 }
                 id
@@ -547,6 +584,7 @@ impl ReplayRuntime {
                     .join(format!("synthetic-{input}"))
                     .join(fm_replay::segment_path(Path::new(""), "segment", index));
                 if self
+                    .store_mut()
                     .catalog
                     .insert_segment(SegmentMetadata {
                         id,
@@ -564,7 +602,7 @@ impl ReplayRuntime {
                     continue;
                 }
                 self.next_segment += 1;
-                self.segments.insert(
+                self.store_mut().segments.insert(
                     id,
                     Segment {
                         input,
@@ -575,18 +613,25 @@ impl ReplayRuntime {
                 );
                 id
             };
-            let frames = self.segments.get(&id).map_or(0, |segment| segment.frames);
+            let frames = self
+                .store
+                .segments
+                .get(&id)
+                .map_or(0, |segment| segment.frames);
             let open = if frames >= per_segment {
-                let _ = self.catalog.close_segment(
+                let end = self.at(frame + 1);
+                let _ = self.store_mut().catalog.close_segment(
                     id,
-                    self.at(frame + 1),
+                    end,
                     frames * SYNTHETIC_REPLAY_FRAME_BYTES,
                 );
                 None
             } else {
                 Some(id)
             };
-            self.recording.insert(input, (open, stream_frame + 1));
+            self.store_mut()
+                .recording
+                .insert(input, (open, stream_frame + 1));
             self.protect_events();
         }
     }
@@ -598,29 +643,40 @@ impl ReplayRuntime {
         let Some(cutoff_frame) = frame.checked_sub(window) else {
             return;
         };
+        // Only a store with something to drop is changed (and so copied
+        // away from the clones that share it).
+        let droppable = self.store.segments.iter().any(|(id, segment)| {
+            segment.first_frame + segment.frames <= cutoff_frame
+                && self.store.catalog.segment(*id).is_some_and(|metadata| {
+                    metadata.state == SegmentState::Closed && metadata.protections.is_empty()
+                })
+        });
+        if !droppable {
+            return;
+        }
         let cutoff = self.at(cutoff_frame);
-        let Ok(dropped) = self.catalog.reclaim_ended_before(ROOT, cutoff) else {
+        let Ok(dropped) = self.store_mut().catalog.reclaim_ended_before(ROOT, cutoff) else {
             return;
         };
         if dropped.is_empty() {
             return;
         }
         for segment in dropped {
-            self.segments.remove(&segment.id);
+            self.store_mut().segments.remove(&segment.id);
             if self.feed == EngineReplayFeed::External {
                 self.pruned.push(segment.path);
             }
         }
         // Observations an event still needs stay.
         let oldest_event = self
+            .store
             .event_frames
             .values()
             .map(|event| event.in_frame)
             .min()
             .unwrap_or(u64::MAX);
-        let _ = self
-            .timeline
-            .prune_before(self.at(cutoff_frame.min(oldest_event)));
+        let prune = self.at(cutoff_frame.min(oldest_event));
+        let _ = self.store_mut().timeline.prune_before(prune);
         self.touch();
     }
 
@@ -640,8 +696,8 @@ impl ReplayRuntime {
             return;
         }
         // The oldest event makes room for the newest.
-        while self.event_frames.len() >= MAX_REPLAY_EVENTS {
-            let Some((&oldest, _)) = self.event_frames.iter().next() else {
+        while self.store.event_frames.len() >= MAX_REPLAY_EVENTS {
+            let Some((&oldest, _)) = self.store.event_frames.iter().next() else {
                 break;
             };
             self.delete(oldest);
@@ -659,15 +715,16 @@ impl ReplayRuntime {
             note: String::new(),
             folders: BTreeSet::new(),
         };
-        if self.events.insert_event(event).is_err() {
+        if self.store_mut().events.insert_event(event).is_err() {
             return;
         }
-        self.event_frames.insert(
+        let angles = self.settings.sources.clone();
+        self.store_mut().event_frames.insert(
             id,
             Event {
                 in_frame,
                 out_frame,
-                angles: self.settings.sources.clone(),
+                angles,
             },
         );
         self.protect_events();
@@ -675,12 +732,13 @@ impl ReplayRuntime {
     }
 
     fn delete(&mut self, id: u32) {
-        if self.event_frames.remove(&id).is_none() {
+        let store = self.store_mut();
+        if store.event_frames.remove(&id).is_none() {
             return;
         }
-        let _ = self
+        let _ = store
             .events
-            .remove_event(Self::event_id(id), &mut self.catalog);
+            .remove_event(Self::event_id(id), &mut store.catalog);
         for player in self.players.values_mut() {
             if player.event == Some(id) {
                 *player = Player {
@@ -725,13 +783,14 @@ impl ReplayRuntime {
                 self.capture(in_frame, frame, Some(format!("Last {seconds} s")));
             }
             EngineReplayOperation::RenameEvent { event, name } => {
-                if self.event_frames.contains_key(event)
-                    && let Some(stored) = self.events.event(Self::event_id(*event)).cloned()
+                if self.store.event_frames.contains_key(event)
+                    && let Some(stored) = self.store.events.event(Self::event_id(*event)).cloned()
                 {
-                    let _ = self
+                    let store = self.store_mut();
+                    let _ = store
                         .events
-                        .remove_event(Self::event_id(*event), &mut self.catalog);
-                    let _ = self.events.insert_event(ReplayEvent {
+                        .remove_event(Self::event_id(*event), &mut store.catalog);
+                    let _ = store.events.insert_event(ReplayEvent {
                         name: name.clone(),
                         ..stored
                     });
@@ -745,7 +804,7 @@ impl ReplayRuntime {
                 event,
                 angle,
             } => {
-                if let Some(stored) = self.event_frames.get(event) {
+                if let Some(stored) = self.store.event_frames.get(event) {
                     let angle = angle
                         .filter(|angle| stored.angles.contains(angle))
                         .or_else(|| stored.angles.first().copied());
@@ -759,7 +818,8 @@ impl ReplayRuntime {
             }
             EngineReplayOperation::Angle { input, angle } => {
                 if let Some(player) = self.players.get_mut(input)
-                    && let Some(event) = player.event.and_then(|id| self.event_frames.get(&id))
+                    && let Some(event) =
+                        player.event.and_then(|id| self.store.event_frames.get(&id))
                     && event.angles.contains(angle)
                 {
                     player.angle = Some(*angle);
@@ -793,12 +853,12 @@ impl ReplayRuntime {
     /// Where frame `frame` of source `input` was recorded.
     fn locate(&self, input: InputId, frame: u64) -> Option<EngineReplayLocation> {
         let at = self.at(frame);
-        let observation = self.timeline.resolve(camera(input), at).ok()?;
-        let metadata = self.catalog.segment_at(camera(input), at)?;
+        let observation = self.store.timeline.resolve(camera(input), at).ok()?;
+        let metadata = self.store.catalog.segment_at(camera(input), at)?;
         if metadata.state != SegmentState::Closed {
             return None;
         }
-        let segment = self.segments.get(&metadata.id)?;
+        let segment = self.store.segments.get(&metadata.id)?;
         let index = observation
             .source_frame
             .get()
@@ -826,7 +886,7 @@ impl ReplayRuntime {
         let mut finished = false;
         for input in inputs {
             let player = self.players.entry(input).or_default().clone();
-            let event = player.event.and_then(|id| self.event_frames.get(&id));
+            let event = player.event.and_then(|id| self.store.event_frames.get(&id));
             let source_frame = event.map(|event| {
                 (event.in_frame + player.position / 4).min(event.out_frame.saturating_sub(1))
             });
@@ -869,6 +929,7 @@ impl ReplayRuntime {
         std::mem::take(&mut self.pruned)
     }
 
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn status(&self, show: &ShowState) -> EngineReplayStatus {
         let sources = self
             .settings
@@ -879,6 +940,7 @@ impl ReplayRuntime {
                 let mut bytes = 0_u64;
                 let mut first_frame: Option<u64> = None;
                 for segment in self
+                    .store
                     .segments
                     .values()
                     .filter(|segment| segment.input == *input)
@@ -890,32 +952,39 @@ impl ReplayRuntime {
                     );
                 }
                 for (id, _) in self
+                    .store
                     .segments
                     .iter()
                     .filter(|(_, segment)| segment.input == *input)
                 {
-                    bytes += self.catalog.segment(*id).map_or(0, |segment| segment.bytes);
+                    bytes += self
+                        .store
+                        .catalog
+                        .segment(*id)
+                        .map_or(0, |segment| segment.bytes);
                 }
                 EngineReplaySourceStatus {
                     input: *input,
                     segments,
                     bytes,
                     first_frame,
-                    last_frame: self.last_frames.get(input).copied(),
+                    last_frame: self.store.last_frames.get(input).copied(),
                 }
             })
             .collect();
         let events = self
+            .store
             .event_frames
             .iter()
             .filter_map(|(id, event)| {
-                let stored = self.events.event(Self::event_id(*id))?;
+                let stored = self.store.events.event(Self::event_id(*id))?;
                 let range = self.range(event.in_frame, event.out_frame)?;
                 let complete = event.angles.iter().all(|angle| {
-                    let coverage = self.catalog.coverage(camera(*angle), range);
+                    let coverage = self.store.catalog.coverage(camera(*angle), range);
                     coverage.is_complete()
                         && coverage.segments.iter().all(|segment| {
-                            self.catalog
+                            self.store
+                                .catalog
                                 .segment(*segment)
                                 .is_some_and(|segment| segment.state == SegmentState::Closed)
                         })
@@ -937,7 +1006,7 @@ impl ReplayRuntime {
                 let player = self.players.get(&input).cloned().unwrap_or_default();
                 let frame = player
                     .event
-                    .and_then(|id| self.event_frames.get(&id))
+                    .and_then(|id| self.store.event_frames.get(&id))
                     .map(|event| {
                         (event.in_frame + player.position / 4)
                             .min(event.out_frame.saturating_sub(1))
@@ -956,7 +1025,7 @@ impl ReplayRuntime {
             settings: self.settings.clone(),
             storage_root: self.root.to_string_lossy().into_owned(),
             feed: self.feed,
-            live_frame: self.last_frames.values().copied().max(),
+            live_frame: self.store.last_frames.values().copied().max(),
             sources,
             mark_in: self.mark_in,
             mark_out: self.mark_out,
