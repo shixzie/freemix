@@ -2,9 +2,11 @@
 //! peer, a CLI raw peer, and Web pages through the `--web-listen` gateway
 //! drive one show together, each within its own role, and see each other's
 //! cuts in revision order; the raw and Web session bounds refuse the client
-//! beyond them at once; a Web tally keeps up with a cut every frame; and a
-//! Studio peer that stops reading delays neither the other sessions nor
-//! Program pacing or the recording.
+//! beyond them at once; a Web tally keeps up with a cut every frame; bursts
+//! of commands several sessions queued share group commits (passes, frames
+//! and journal appends) and survive `SIGKILL`; and a Studio peer that stops
+//! reading delays neither the other sessions nor Program pacing or the
+//! recording.
 //!
 //! The tests need a native GPU adapter and `FFmpeg`/`ffprobe`. Without an
 //! adapter they are skipped unless `FM_REQUIRE_NATIVE_MEDIA=1`; without the
@@ -181,6 +183,11 @@ impl DaemonProcess {
     /// --web-listen`, or returns `None` when this host has no native media
     /// runtime (unless `FM_REQUIRE_NATIVE_MEDIA=1`).
     fn start(project: &Path, output: &Path) -> Option<Self> {
+        Self::start_with_env(project, output, &[])
+    }
+
+    /// [`Self::start`] with `env` added to the daemon's environment.
+    fn start_with_env(project: &Path, output: &Path, env: &[(&str, &str)]) -> Option<Self> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_freemixd"))
             .arg("serve")
             .arg(project)
@@ -189,6 +196,7 @@ impl DaemonProcess {
             .arg(output)
             .env("FREEMIXD_WEB_TOKEN", TOKEN)
             .env("FREEMIXD_PACING_TRACE", "1")
+            .envs(env.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -231,6 +239,18 @@ impl DaemonProcess {
         );
         eprintln!("native sessions test skipped: {message}");
         None
+    }
+
+    /// `SIGKILL`: the daemon gets no chance to checkpoint or write anything
+    /// more. Returns everything it wrote to stderr.
+    fn kill(mut self) -> String {
+        self.child.kill().unwrap();
+        self.child.wait().unwrap();
+        let mut stderr = String::new();
+        while let Ok(chunk) = self.stderr.recv_timeout(Duration::from_secs(2)) {
+            stderr.push_str(&chunk);
+        }
+        stderr
     }
 
     /// Cooperative stop (SIGTERM); returns everything written to stderr.
@@ -477,7 +497,21 @@ impl Session {
     }
 
     fn send(&mut self, message: &WireMessage) {
-        let line = encode_line(message).unwrap();
+        self.send_lines(&encode_line(message).unwrap());
+    }
+
+    /// Sends `messages` on a raw session in one write, so the daemon finds
+    /// them all queued together.
+    fn send_all(&mut self, messages: &[WireMessage]) {
+        assert!(matches!(self.transport, Transport::Raw { .. }));
+        let lines: String = messages
+            .iter()
+            .map(|message| encode_line(message).unwrap())
+            .collect();
+        self.send_lines(&lines);
+    }
+
+    fn send_lines(&mut self, line: &str) {
         match &mut self.transport {
             Transport::Raw { writer, .. } => {
                 writer.write_all(line.as_bytes()).unwrap();
@@ -1010,10 +1044,12 @@ fn a_stalled_studio_reader_never_delays_other_sessions_or_program_pacing() {
 }
 
 /// A Viewer tally page follows a CLI that cuts as fast as the native daemon
-/// takes commands (one per frame): it sees every cut, in revision order, and
-/// is never dropped as a slow client. An Operator page that sends a burst of
+/// answers it (one cut per frame: each waits for its own result, so none
+/// shares a group commit): it sees every cut, in revision order, and is
+/// never dropped as a slow client. An Operator page that sends a burst of
 /// commands larger than the gateway and session queues is slowed by
-/// backpressure, never dropped, and every command is answered in order.
+/// backpressure, never dropped, and every command is answered in order
+/// (the burst's queued cuts share group commits).
 #[test]
 fn web_pages_keep_up_with_a_cut_every_frame() {
     const CUTS: u64 = 100;
@@ -1082,6 +1118,151 @@ fn web_pages_keep_up_with_a_cut_every_frame() {
         !stderr.contains("closed="),
         "a session was dropped: {stderr}"
     );
+}
+
+/// Group commit on a native daemon: several CLI sessions that each pipeline
+/// a burst of cuts have them accepted in far fewer passes (journal appends,
+/// each realized on one Program frame) than cuts. Every session is answered
+/// in its own order, each result before the event of its revision, every
+/// revision is acknowledged exactly once and a Viewer page sees them all in
+/// revision order, as if the cuts had run one by one. A `SIGKILL` right
+/// after the last acknowledgement loses none of them: the journal holds
+/// exactly the acknowledged cuts and the restarted daemon replays them.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn native_command_bursts_share_passes_and_journal_appends_and_survive_sigkill() {
+    const CLIENTS: usize = 4;
+    /// Below the 48 mutations at which a native daemon folds the journal
+    /// in the background, so every cut is still a journal batch when the
+    /// daemon is killed.
+    const COMMANDS: usize = 10;
+    const TOTAL: usize = CLIENTS * COMMANDS;
+    const NAMES: [&str; CLIENTS] = ["cli-0", "cli-1", "cli-2", "cli-3"];
+
+    if !tools_available() {
+        return;
+    }
+    let directory = TestDirectory::new("group-commit");
+    let project = directory.0.join("show.freemix");
+    save_project(&project);
+    let Some(daemon) = DaemonProcess::start_with_env(
+        &project,
+        &directory.0.join("program.mp4"),
+        &[("FREEMIXD_JOURNAL_TRACE", "1")],
+    ) else {
+        return;
+    };
+    let (mut tally, _) = Session::web("tally", daemon.web, Role::Viewer);
+    let follower = thread::spawn(move || {
+        tally.sees(TOTAL as u64);
+        tally
+    });
+    let mut clients: Vec<Session> = NAMES
+        .iter()
+        .map(|name| Session::raw(name, daemon.control, ClientType::Cli, Role::Operator).0)
+        .collect();
+
+    let started = Instant::now();
+    for (index, client) in clients.iter_mut().enumerate() {
+        let burst: Vec<WireMessage> = (0..COMMANDS)
+            .map(|sent| {
+                WireMessage::Command(CommandMessage {
+                    protocol: CURRENT_PROTOCOL_VERSION,
+                    id: format!("cut-{index}-{sent}"),
+                    idempotency_key: format!("cut-key-{index}-{sent}"),
+                    expected_revision: None,
+                    deadline_ms: None,
+                    payload: CommandPayload::Cut,
+                })
+            })
+            .collect();
+        client.send_all(&burst);
+    }
+    let mut acknowledged = Vec::new();
+    for (index, client) in clients.iter_mut().enumerate() {
+        let mut previous = 0;
+        let mut sent = 0;
+        let deadline = Instant::now() + EVENT_TIMEOUT;
+        while sent < COMMANDS {
+            assert!(Instant::now() < deadline, "{index}: only {sent} answered");
+            match client.receive() {
+                Some(WireMessage::CommandResult(CommandResult::Accepted {
+                    id, revision, ..
+                })) => {
+                    assert_eq!(id, format!("cut-{index}-{sent}"));
+                    assert!(revision > previous, "{revision} after {previous}");
+                    assert!(
+                        client
+                            .observed
+                            .switcher
+                            .iter()
+                            .all(|(seen, _)| *seen != revision),
+                        "{index}: the event of revision {revision} came before its result"
+                    );
+                    previous = revision;
+                    acknowledged.push(revision);
+                    sent += 1;
+                }
+                Some(WireMessage::CommandResult(rejected)) => panic!("{rejected:?}"),
+                _ => {}
+            }
+        }
+    }
+    let elapsed = started.elapsed();
+    acknowledged.sort_unstable();
+    assert_eq!(acknowledged, (1..=TOTAL as u64).collect::<Vec<_>>());
+    let tally = follower
+        .join()
+        .expect("the tally fell behind or was dropped");
+    tally.assert_in_order(TOTAL as u64);
+
+    // Every acknowledgement is in hand: kill the daemon outright.
+    let stderr = daemon.kill();
+    let appends: Vec<usize> = stderr
+        .lines()
+        .filter(|line| line.starts_with("FREEMIXD_JOURNAL\tv=1\tappend=end\t"))
+        .map(|line| {
+            line.split('\t')
+                .find_map(|field| field.strip_prefix("batches="))
+                .unwrap()
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(appends.iter().sum::<usize>(), TOTAL, "{stderr}");
+    eprintln!(
+        "native group commit: {TOTAL} cuts from {CLIENTS} sessions took {} journal appends \
+         (command passes), largest group {}, all acknowledged in {elapsed:?}",
+        appends.len(),
+        appends.iter().max().unwrap()
+    );
+    assert!(
+        appends.len() <= TOTAL / 4,
+        "cuts queued together must share passes and appends: {appends:?}"
+    );
+
+    let store = ProjectStore::new(&project).unwrap();
+    let crashed = store.scan_journal().unwrap();
+    assert_eq!(crashed.batches().len(), TOTAL);
+    let Some(restarted) = DaemonProcess::start(&project, &directory.0.join("restarted.mp4")) else {
+        panic!("the native daemon started once but not again");
+    };
+    let (_session, snapshot) = Session::raw(
+        "restarted",
+        restarted.control,
+        ClientType::Cli,
+        Role::Operator,
+    );
+    assert_eq!(snapshot.revision, TOTAL as u64);
+    assert_eq!(snapshot.desired_program, program_at(TOTAL as u64));
+    let stderr = restarted.stop();
+    assert!(
+        !stderr.contains("closed="),
+        "a session was dropped: {stderr}"
+    );
+    let persisted = store.load().unwrap();
+    assert_eq!(persisted.position().revision, TOTAL as u64);
+    assert_eq!(persisted.idempotency_receipts().len(), TOTAL);
 }
 
 /// The latest `recorder_status` sample `session` saw for `slot`.
