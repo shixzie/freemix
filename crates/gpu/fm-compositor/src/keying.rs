@@ -6,6 +6,7 @@
 
 use core::fmt;
 
+use fm_types::GarbageMatte;
 use fm_video::{CropRect, FrameError, ImageFrame, Rgba8};
 
 use crate::cpu::{apply_spill, key_factor, mask_factor, multiply_u8, straight_key_color};
@@ -111,7 +112,7 @@ impl Despill {
 ///
 /// Order per layer: the raw key alpha (chroma, luma, or key/fill matte) is
 /// clipped, then choked, then softened, then multiplied with the rectangular
-/// (garbage) mask.
+/// mask and the polygon garbage matte.
 ///
 /// Clip: alpha `<= clip_black` becomes `0`, alpha `>= clip_white` becomes
 /// `255`, and otherwise
@@ -132,6 +133,11 @@ impl Despill {
 /// alpha. The optional [`Despill`] is applied to every pixel's color before
 /// alpha scaling, independent of the matte. The optional [`LightWrap`] is
 /// applied when the layer is composited.
+///
+/// The optional polygon [`GarbageMatte`] multiplies the refined matte
+/// together with the rectangular mask: a pixel it removes (see
+/// [`fm_types::garbage_matte`] for the exact coverage over the cropped
+/// layer) gets alpha `0`, one it keeps is unchanged.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KeyRefinement {
     pub clip_black: u8,
@@ -140,6 +146,7 @@ pub struct KeyRefinement {
     pub edge_softness: u8,
     pub despill: Option<Despill>,
     pub light_wrap: Option<LightWrap>,
+    pub garbage_matte: Option<GarbageMatte>,
 }
 
 impl Default for KeyRefinement {
@@ -159,6 +166,7 @@ impl KeyRefinement {
             edge_softness: 0,
             despill: None,
             light_wrap: None,
+            garbage_matte: None,
         }
     }
 
@@ -190,6 +198,12 @@ impl KeyRefinement {
     #[must_use]
     pub const fn with_light_wrap(mut self, light_wrap: LightWrap) -> Self {
         self.light_wrap = Some(light_wrap);
+        self
+    }
+
+    #[must_use]
+    pub const fn with_garbage_matte(mut self, matte: GarbageMatte) -> Self {
+        self.garbage_matte = Some(matte);
         self
     }
 
@@ -730,6 +744,9 @@ pub(crate) fn apply_layer_keying(
         matte = soften_matte(&matte, width_usize, height_usize, refinement.edge_softness);
     }
 
+    let garbage = refinement
+        .garbage_matte
+        .map(|garbage| (garbage.half_pixel_points(width, height), garbage.invert()));
     let mut bytes = Vec::with_capacity(area * 4);
     for (index, alpha) in matte.into_iter().enumerate() {
         let x = u32::try_from(index % width_usize).map_err(|_| FrameError::LayoutOverflow)?;
@@ -744,7 +761,14 @@ pub(crate) fn apply_layer_keying(
             adjusted = despill.apply(adjusted);
         }
         let mask_alpha = mask.map_or(u8::MAX, |mask| mask_factor(x, y, mask));
-        let factor = multiply_u8(alpha, mask_alpha);
+        let kept = garbage.as_ref().is_none_or(|(points, invert)| {
+            fm_types::garbage_matte::polygon_contains(points, x, y) != *invert
+        });
+        let factor = if kept {
+            multiply_u8(alpha, mask_alpha)
+        } else {
+            0
+        };
         match alpha_mode {
             AlphaMode::Straight => adjusted.a = multiply_u8(adjusted.a, factor),
             AlphaMode::Premultiplied => {

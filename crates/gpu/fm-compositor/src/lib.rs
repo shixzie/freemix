@@ -35,6 +35,7 @@ pub use flatten::{
     FlattenStep, FlattenedScene, HoistedLayer, SceneGraph, execute_flatten_cpu,
     execute_flatten_cpu_frame, plan_flatten,
 };
+pub use fm_types::{GARBAGE_MATTE_UNIT, GarbageMatte, MattePoint};
 pub use keying::{
     AutoKey, AutoKeyError, AutoKeyOptions, AutoKeyRegion, Backing, Despill, KeyChannel, KeyFill,
     KeyRefinement, KeyRefinementError, LightWrap, MAX_AUTO_KEY_SAMPLES, MAX_CHOKE_RADIUS,

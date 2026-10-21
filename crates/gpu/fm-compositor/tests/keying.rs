@@ -774,3 +774,45 @@ fn light_wrap_bounds_are_validated() {
         Ok(())
     );
 }
+
+#[test]
+fn a_garbage_matte_removes_pixels_outside_its_polygon() {
+    use fm_compositor::{GarbageMatte, MattePoint};
+    // A 4x4 white layer keyed by a luma key that keeps everything, with a
+    // triangle matte over its top-left half (see fm_types::garbage_matte:
+    // centres on the diagonal fall outside).
+    let white = uniform(4, 4, gray(255));
+    let triangle = GarbageMatte::new(
+        &[
+            MattePoint::new(0, 0),
+            MattePoint::new(10_000, 0),
+            MattePoint::new(0, 10_000),
+        ],
+        false,
+    )
+    .unwrap();
+    let render = |matte: GarbageMatte, crop: Option<CropRect>| {
+        let mut layer = layer(4, 4)
+            .with_key(Key::Luma(LumaKey::new(0, 0, false)))
+            .with_key_refinement(KeyRefinement::new().with_garbage_matte(matte));
+        if let Some(crop) = crop {
+            layer = layer.with_crop(crop);
+        }
+        let mut scene = Scene::new(4, 4, CLEAR).unwrap();
+        scene.push_layer(layer);
+        let plan = compile_scene(&scene, OutputTarget::Program).unwrap().0;
+        let output = execute_cpu(&plan, &[CpuSourceFrame::new(SourceId::new(1), &white)]).unwrap();
+        pixels(&output)
+            .iter()
+            .map(|pixel| if pixel.a == 255 { '#' } else { '.' })
+            .collect::<String>()
+    };
+    assert_eq!(render(triangle, None), "###.##..#.......");
+    assert_eq!(render(triangle.with_invert(true), None), "...#..##.#######");
+    // The matte covers the cropped layer: a 2x2 crop scaled to 4x4 keeps
+    // only its top-left pixel, shown 2x2.
+    assert_eq!(
+        render(triangle, Some(CropRect::new(1, 1, 2, 2))),
+        "##..##.........."
+    );
+}

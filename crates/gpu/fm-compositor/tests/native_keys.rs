@@ -729,6 +729,30 @@ fn refined_key_fill_with_crop_garbage_mask_and_effects_matches_the_cpu_reference
         layer,
         budget(GREEN_SOFTNESS, u8::MAX),
     ));
+    // Polygon garbage mattes, kept inside and outside, on a cropped and
+    // scaled layer.
+    let polygon = fm_compositor::GarbageMatte::new(
+        &[
+            fm_compositor::MattePoint::new(500, 800),
+            fm_compositor::MattePoint::new(9_000, 1_500),
+            fm_compositor::MattePoint::new(7_200, 6_000),
+            fm_compositor::MattePoint::new(9_600, 9_400),
+            fm_compositor::MattePoint::new(2_000, 8_700),
+            fm_compositor::MattePoint::new(4_100, 4_300),
+        ],
+        false,
+    )
+    .unwrap();
+    for (case, matte) in [
+        ("polygon garbage matte", polygon),
+        ("inverted polygon garbage matte", polygon.with_invert(true)),
+    ] {
+        let layer = SourceLayer::new(FILL, 0, Transform::new(1, 2, 30, 21, Rotation::Deg0))
+            .with_crop(CropRect::new(3, 2, 25, 19))
+            .with_key(Key::Chroma(green_screen(0)))
+            .with_key_refinement(KeyRefinement::new().with_choke(1).with_garbage_matte(matte));
+        worst.add(harness.check(case, layer, budget(GREEN_SOFTNESS, u8::MAX)));
+    }
     worst.report("refined combinations");
 }
 

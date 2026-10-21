@@ -5,6 +5,7 @@ pub mod capture;
 mod color;
 pub mod display;
 mod fade_to_black;
+pub mod garbage_matte;
 mod id;
 pub mod live_lan;
 pub mod media_list_files;
@@ -26,6 +27,10 @@ pub use color::{
     TransferFunction,
 };
 pub use fade_to_black::{FadeToBlackCurve, MAX_FADE_TO_BLACK_DURATION_FRAMES};
+pub use garbage_matte::{
+    GARBAGE_MATTE_UNIT, GarbageMatte, GarbageMatteError, MAX_GARBAGE_MATTE_POINTS,
+    MIN_GARBAGE_MATTE_POINTS, MattePoint,
+};
 pub use id::{BusId, InputId, OutputId, ProjectId, SceneId};
 pub use memory::MemoryDomain;
 pub use scaling::{OutputScaling, ParseOutputScalingError, ScaledViewport};

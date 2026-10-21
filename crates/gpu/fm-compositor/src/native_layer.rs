@@ -9,8 +9,9 @@
 //! `Rgba16Float` textures:
 //!
 //! 1. the *key stage* (when the layer has a key, or a mask together with
-//!    effects): key alpha (`key_factor`) times rect-mask alpha, chroma spill,
-//!    and `alpha = alpha * factor / 255`, all with the CPU's exact integer
+//!    effects): key alpha (`key_factor`) times rect-mask alpha (and zero
+//!    outside a polygon garbage matte), chroma spill, and
+//!    `alpha = alpha * factor / 255`, all with the CPU's exact integer
 //!    formulas;
 //! 2. one pass per non-`passthrough` effect, in order, with the exact integer
 //!    formula of [`crate::apply_reference_effect`] (`sharpen` reads
@@ -53,7 +54,7 @@ use crate::{
     PlanLayer, RectMask, ReferenceEffect,
 };
 
-pub(crate) const LAYER_UNIFORM_SIZE: usize = 128;
+pub(crate) const LAYER_UNIFORM_SIZE: usize = 192;
 
 const OPERATION_KEY: u32 = 0;
 const OPERATION_LEVELS: u32 = 1;
@@ -195,9 +196,13 @@ struct LayerOperation {
     clip_white: u32,
     despill_backing: u32,
     despill_strength: u32,
+    // The polygon garbage matte: its point count (0 none), whether it keeps
+    // the outside, and its points in half-pixel units, two per vector.
+    matte_count: u32,
+    matte_invert: u32,
     padding_0: u32,
     padding_1: u32,
-    padding_2: u32,
+    matte_points: array<vec4<i32>, 4>,
 };
 
 @group(0) @binding(0) var source_texture: texture_2d<f32>;
@@ -266,6 +271,41 @@ fn mask_factor(pixel: vec2<u32>) -> i32 {
         return 0;
     }
     return 255;
+}
+
+fn matte_point(index: u32) -> vec2<i32> {
+    let pair = op.matte_points[index / 2u];
+    if (index & 1u) == 0u {
+        return pair.xy;
+    }
+    return pair.zw;
+}
+
+// Whether the polygon garbage matte keeps `pixel` (even-odd rule at the
+// pixel centre, in half-pixel units; fm_types::garbage_matte).
+fn garbage_keeps(pixel: vec2<u32>) -> bool {
+    if op.matte_count == 0u {
+        return true;
+    }
+    let p = vec2<i32>(pixel) * 2 + vec2<i32>(1);
+    var inside = false;
+    for (var index = 0u; index < op.matte_count; index++) {
+        let a = matte_point(index);
+        let b = matte_point((index + 1u) % op.matte_count);
+        if (a.y > p.y) == (b.y > p.y) {
+            continue;
+        }
+        let left = (p.x - a.x) * (b.y - a.y);
+        let right = (p.y - a.y) * (b.x - a.x);
+        var crosses = left > right;
+        if b.y > a.y {
+            crosses = left < right;
+        }
+        if crosses {
+            inside = !inside;
+        }
+    }
+    return inside != (op.matte_invert != 0u);
 }
 
 fn interpolate(value: i32, neutral: i32, amount: i32) -> i32 {
@@ -353,7 +393,10 @@ fn key_stage(pixel: vec2<u32>) -> vec4<i32> {
     } else {
         key_alpha = key_factor(codes);
     }
-    let factor = multiply_u8(key_alpha, mask_factor(pixel));
+    var factor = multiply_u8(key_alpha, mask_factor(pixel));
+    if !garbage_keeps(pixel) {
+        factor = 0;
+    }
     let spill = i32(op.key_spill);
     if op.key_kind == 1u && spill != 0 && key_alpha != 255 {
         let amount = multiply_u8(spill, 255 - key_alpha);
@@ -586,7 +629,7 @@ impl LayerPreparation {
         if !keyed && effects.is_empty() {
             return Ok(None);
         }
-        let key = KeyStage::of(layer);
+        let key = KeyStage::of(layer, crop);
         let mut passes = Vec::with_capacity(effects.len() + 4);
         let offset = (crop.x, crop.y);
         let (width, height) = (crop.width, crop.height);
@@ -691,15 +734,20 @@ struct KeyStage {
     fill: Option<KeyFill>,
     mask: Option<RectMask>,
     refinement: KeyRefinement,
+    /// The cropped layer size the garbage matte covers.
+    width: u32,
+    height: u32,
 }
 
 impl KeyStage {
-    fn of(layer: &PlanLayer) -> Self {
+    fn of(layer: &PlanLayer, crop: CropRect) -> Self {
         Self {
             key: layer.key(),
             fill: layer.key_fill(),
             mask: layer.mask(),
             refinement: layer.key_refinement().unwrap_or_default(),
+            width: crop.width,
+            height: crop.height,
         }
     }
 }
@@ -772,6 +820,15 @@ fn encode_key_words(words: &mut [u32; LAYER_UNIFORM_SIZE / 4], stage: KeyStage) 
     };
     words[26] = backing;
     words[27] = u32::from(strength);
+    if let Some(matte) = stage.refinement.garbage_matte {
+        let points = matte.half_pixel_points(stage.width, stage.height);
+        words[28] = u32::try_from(points.len()).unwrap_or(0);
+        words[29] = u32::from(matte.invert());
+        for (index, (x, y)) in points.into_iter().enumerate() {
+            words[32 + 2 * index] = x.cast_unsigned();
+            words[33 + 2 * index] = y.cast_unsigned();
+        }
+    }
 }
 
 fn encode_layer_uniform(
@@ -1000,7 +1057,7 @@ mod tests {
             key,
             [
                 0, 1, 2, 3, 5, 4, 0, 0, 1, 10, 200, 30, 40, 20, 128, 255, 0, 1, 1, 1, 1, 3, 3, 0,
-                0, 255, 0, 0, 0, 0, 0, 0
+                0, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
             ]
         );
         assert_eq!(preparation.passes[0].input, PassInput::Source);
@@ -1107,6 +1164,32 @@ mod tests {
         );
         assert_eq!(words(&preparation.passes[1].uniform)[6..8], [2, 1]);
         assert_eq!(words(&preparation.passes[2].uniform)[1], 1 | 2 | 4);
+    }
+
+    #[test]
+    fn a_garbage_matte_reaches_the_key_stage_in_half_pixels_of_the_crop() {
+        let crop = CropRect::new(2, 1, 10, 4);
+        let matte = crate::GarbageMatte::new(
+            &[
+                crate::MattePoint::new(0, 0),
+                crate::MattePoint::new(10_000, 2_500),
+                crate::MattePoint::new(5_000, 10_000),
+            ],
+            true,
+        )
+        .unwrap();
+        let keyed = layer(
+            base()
+                .with_crop(crop)
+                .with_key(Key::Luma(LumaKey::new(0, 0, false)))
+                .with_key_refinement(KeyRefinement::new().with_garbage_matte(matte)),
+        );
+        let preparation = LayerPreparation::plan(0, &keyed, crop).unwrap().unwrap();
+        let key = words(&preparation.passes.last().unwrap().uniform);
+        assert_eq!(key[28..30], [3, 1]);
+        // 10x4 crop: x in twentieths, y in eighths.
+        assert_eq!(key[32..38], [0, 0, 20, 2, 10, 8]);
+        assert!(key[38..].iter().all(|word| *word == 0));
     }
 
     #[test]
