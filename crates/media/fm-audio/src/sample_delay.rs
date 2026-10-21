@@ -1,5 +1,6 @@
 use core::fmt;
 
+use crate::ring_version::RingVersion;
 use crate::{MAX_CHANNELS, MAX_SAMPLES_PER_BLOCK};
 
 const BYTES_PER_SAMPLE: usize = size_of::<f32>();
@@ -119,6 +120,8 @@ pub struct SampleDelay {
     delay_samples: usize,
     cursor: usize,
     ring: Vec<f32>,
+    /// What `ring` holds, so a mirror copies only what changed.
+    version: RingVersion,
 }
 
 impl SampleDelay {
@@ -129,6 +132,7 @@ impl SampleDelay {
             delay_samples: 0,
             cursor: 0,
             ring: Vec::new(),
+            version: RingVersion::default(),
         }
     }
 
@@ -150,6 +154,7 @@ impl SampleDelay {
             delay_samples,
             cursor: 0,
             ring,
+            version: RingVersion::fresh(),
         })
     }
 
@@ -203,6 +208,7 @@ impl SampleDelay {
                 self.ring[ring_index] = source[sample];
             }
         }
+        self.version.wrote(self.cursor, samples, self.delay_samples);
         self.cursor = (self.cursor + samples % self.delay_samples) % self.delay_samples;
         Ok(())
     }
@@ -210,6 +216,7 @@ impl SampleDelay {
     /// Clears retained samples and returns to leading-silence state.
     pub fn reset(&mut self) {
         self.ring.fill(0.0);
+        self.version.rewrote();
         self.cursor = 0;
     }
 
@@ -233,8 +240,11 @@ impl SampleDelay {
         }
     }
 
+    /// Moves past `samples` positions, each of which [`Self::commit_sample`]
+    /// wrote in every channel.
     pub(crate) fn advance(&mut self, samples: usize) {
         if self.delay_samples != 0 {
+            self.version.wrote(self.cursor, samples, self.delay_samples);
             self.cursor = (self.cursor + samples % self.delay_samples) % self.delay_samples;
         }
     }
@@ -242,7 +252,13 @@ impl SampleDelay {
     pub(crate) fn copy_runtime_state_from(&mut self, other: &Self) {
         debug_assert_eq!(self.channels, other.channels);
         debug_assert_eq!(self.delay_samples, other.delay_samples);
-        self.ring.copy_from_slice(&other.ring);
+        // Only what changed since this ring last matched `other`'s.
+        self.version.mirror(
+            &mut self.ring,
+            &other.version,
+            &other.ring,
+            self.delay_samples,
+        );
         self.cursor = other.cursor;
     }
 

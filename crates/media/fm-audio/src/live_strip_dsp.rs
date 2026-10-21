@@ -221,6 +221,8 @@ struct DelayLine {
     /// The history missed samples (the stage or the chain was skipped) and
     /// must start over silent.
     stale: bool,
+    /// What `ring` holds, so a mirror copies only what changed.
+    version: crate::ring_version::RingVersion,
 }
 
 impl DelayLine {
@@ -234,6 +236,7 @@ impl DelayLine {
     /// Clears the history and settles the read positions.
     fn clear(&mut self) {
         self.ring.fill(0.0);
+        self.version.rewrote();
         self.write = 0;
         self.settle();
         self.stale = false;
@@ -561,6 +564,7 @@ impl LiveStripDsp {
             self.delay.ring = vec![0.0; len * self.channels.len()];
             self.delay.len = len;
             self.delay.write = 0;
+            self.delay.version = crate::ring_version::RingVersion::fresh();
         }
         if self.fades[DELAY].is_off() {
             self.delay.settle();
@@ -739,7 +743,11 @@ impl LiveStripDsp {
 
     /// Copies the complete runtime state of an identically shaped chain,
     /// the delay history included, without allocating once this chain's
-    /// history is as long as `other`'s.
+    /// history is as long as `other`'s. The history is copied only where it
+    /// differs: nothing when this chain already holds `other`'s, and only
+    /// the samples `other` wrote since when it holds the history `other`
+    /// last copied from it (the native daemon's committed and pending
+    /// mixers, synchronized every frame, copy one block per frame).
     ///
     /// # Errors
     ///
@@ -747,7 +755,12 @@ impl LiveStripDsp {
     /// differ; nothing changes.
     pub fn copy_state_from(&mut self, other: &Self) -> Result<(), DspError> {
         self.copy_render_state_from(other)?;
-        self.delay.ring.clone_from(&other.delay.ring);
+        self.delay.version.mirror(
+            &mut self.delay.ring,
+            &other.delay.version,
+            &other.delay.ring,
+            other.delay.len,
+        );
         self.delay.len = other.delay.len;
         Ok(())
     }
@@ -780,6 +793,7 @@ impl LiveStripDsp {
             delay: DelayLine {
                 ring: Vec::new(),
                 len: 0,
+                version: crate::ring_version::RingVersion::default(),
                 ..self.delay
             },
             dynamics: self.dynamics,
@@ -1090,6 +1104,7 @@ impl LiveStripDsp {
                 io.write(index, start, buffer);
             }
             if delaying {
+                self.delay.version.wrote(write, length, ring_len);
                 self.delay.write = (write + length) % ring_len;
             }
             start += length;
@@ -1599,6 +1614,69 @@ mod delay_tests {
                 planes[0].iter().find(|sample| **sample != 0.0)
             );
         }
+    }
+
+    /// The native daemon's committed and pending chains: every block the
+    /// pending one is synchronized from the committed one, renders, and
+    /// they swap. Synchronizing copies only the block the other chain wrote
+    /// (not the whole delay history), and the pair sounds exactly like one
+    /// chain, including across a rejected render and a delay toggle.
+    #[test]
+    fn a_synchronized_chain_pair_copies_only_the_last_block_of_history() {
+        let settings = delayed(250_000);
+        let mut reference = LiveStripDsp::new(48_000.0, 2, &settings).unwrap();
+        let mut committed = reference.clone();
+        let mut pending = reference.clone();
+        let input = |block: usize, channel: usize| -> Vec<f32> {
+            (0..960_u16)
+                .map(|index| {
+                    f32::from(index % 89) / 89.0
+                        - f32::from(u16::try_from(block % 7).unwrap()) * 0.01
+                        + f32::from(u16::try_from(channel).unwrap()) * 0.25
+                })
+                .collect()
+        };
+        for block in 0..40 {
+            if block == 20 {
+                let mut off = settings;
+                off.delay.enabled = false;
+                for chain in [&mut reference, &mut committed] {
+                    chain.set_settings(&off).unwrap();
+                }
+            }
+            if block == 30 {
+                for chain in [&mut reference, &mut committed] {
+                    chain.set_settings(&settings).unwrap();
+                }
+            }
+            pending.copy_state_from(&committed).unwrap();
+            assert_eq!(pending.delay.ring, committed.delay.ring, "block {block}");
+            if block == 10 {
+                // A render rejected after the chain ran: discarded, not
+                // swapped in.
+                let mut garbage = vec![vec![0.7_f32; 960]; 2];
+                pending.process(960, &mut InPlacePlanes(&mut garbage));
+                pending.copy_state_from(&committed).unwrap();
+                assert_eq!(pending.delay.ring, committed.delay.ring);
+            }
+            let mut ours = vec![input(block, 0), input(block, 1)];
+            pending.process(960, &mut InPlacePlanes(&mut ours));
+            let mut theirs = vec![input(block, 0), input(block, 1)];
+            reference.process(960, &mut InPlacePlanes(&mut theirs));
+            assert_eq!(ours, theirs, "block {block}");
+            core::mem::swap(&mut committed, &mut pending);
+        }
+        // In the steady state a synchronization copies one block per
+        // channel, not the history.
+        let mut probe = pending.delay.version;
+        let copied = probe.mirror(
+            &mut pending.delay.ring.clone(),
+            &committed.delay.version,
+            &committed.delay.ring,
+            committed.delay.len,
+        );
+        assert_eq!(copied, 2 * 960);
+        assert!(committed.delay.ring.len() > 20 * copied);
     }
 
     #[test]

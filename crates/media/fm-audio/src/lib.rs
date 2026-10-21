@@ -22,6 +22,7 @@ mod loudness;
 mod monitor;
 mod multichannel;
 mod resampler;
+mod ring_version;
 mod sample_delay;
 mod source_sync;
 mod synchronizer;
