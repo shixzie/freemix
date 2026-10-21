@@ -64,9 +64,15 @@ const ROOT_PREFIX: &str = "freemixd-live-lan-";
 const ROOT_SUFFIX_DIGITS: usize = 16;
 
 /// The process id in a `freemixd-live-lan-<pid>-<16 hex digits>` name.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(test)]
 fn root_pid(name: &str) -> Option<u32> {
-    let (pid, suffix) = name.strip_prefix(ROOT_PREFIX)?.split_once('-')?;
+    prefixed_root_pid(name, ROOT_PREFIX)
+}
+
+/// The process id in a `<prefix><pid>-<16 hex digits>` name.
+#[cfg(any(target_os = "linux", test))]
+fn prefixed_root_pid(name: &str, prefix: &str) -> Option<u32> {
+    let (pid, suffix) = name.strip_prefix(prefix)?.split_once('-')?;
     let well_formed = !pid.is_empty()
         && pid.len() <= 10
         && pid.bytes().all(|byte| byte.is_ascii_digit())
@@ -83,6 +89,12 @@ fn root_pid(name: &str) -> Option<u32> {
 /// how many were removed. Only Linux can tell a running process (by
 /// `/proc/<pid>`) and who this user is; elsewhere nothing is removed.
 pub(crate) fn remove_stale_roots(parent: &Path) -> usize {
+    remove_stale_prefixed_roots(parent, ROOT_PREFIX)
+}
+
+/// [`remove_stale_roots`] for `<prefix><pid>-<16 hex digits>` directories
+/// (instant replay's session directories use their own prefix).
+pub(crate) fn remove_stale_prefixed_roots(parent: &Path, prefix: &str) -> usize {
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::MetadataExt as _;
@@ -96,7 +108,10 @@ pub(crate) fn remove_stale_roots(parent: &Path) -> usize {
         let mut removed = 0;
         for entry in entries.flatten() {
             let name = entry.file_name();
-            let Some(pid) = name.to_str().and_then(root_pid) else {
+            let Some(pid) = name
+                .to_str()
+                .and_then(|name| prefixed_root_pid(name, prefix))
+            else {
                 continue;
             };
             if pid == own || Path::new("/proc").join(pid.to_string()).exists() {
@@ -118,7 +133,7 @@ pub(crate) fn remove_stale_roots(parent: &Path) -> usize {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = parent;
+        let _ = (parent, prefix);
         0
     }
 }

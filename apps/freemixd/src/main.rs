@@ -130,6 +130,8 @@ mod native_live_lan;
 #[cfg(feature = "native-media")]
 mod native_portal_capture;
 #[cfg(feature = "native-media")]
+mod native_replay;
+#[cfg(feature = "native-media")]
 mod native_screen_capture;
 #[cfg(feature = "native-media")]
 mod native_slides;
@@ -837,6 +839,8 @@ struct NativeDaemon {
     preview_failed: bool,
     /// The `LiveLAN` viewer stream (OR-017), while `--live-lan-listen` runs.
     live_lan: Option<native_live_lan::NativeLiveLan>,
+    /// The instant replay recording and Replay inputs (OR-012).
+    replay: Option<native_replay::NativeReplay>,
 }
 
 #[cfg(feature = "native-media")]
@@ -5202,7 +5206,29 @@ impl NativeDaemon {
             latest_preview: None,
             preview_failed: false,
             live_lan: None,
+            replay: None,
         })
+    }
+
+    /// Records replay sources into `root` (unless the show names a root)
+    /// and plays Replay inputs from the files (OR-012).
+    fn attach_replay(
+        &mut self,
+        control: &mut ControlService<Policy>,
+        root: PathBuf,
+        settings: &fm_model::ProjectSettings,
+    ) {
+        control.set_replay_default_root(root);
+        control.set_replay_feed(fm_engine::EngineReplayFeed::External);
+        let video = settings.video.dimensions;
+        self.replay = Some(native_replay::NativeReplay::new(
+            native_replay::ReplayFormat {
+                width: video.width(),
+                height: video.height(),
+                rate: settings.frame_rate,
+                clock_domain: native_clock_domain(),
+            },
+        ));
     }
 
     /// Streams `LiveLAN` to the running `--live-lan-listen` listener (OR-017).
@@ -6982,6 +7008,7 @@ impl NativeDaemon {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn service_playback(&mut self, control: &ControlService<Policy>) -> AppResult<bool> {
         #[cfg(target_os = "macos")]
         self.cameras.poll_into(&self.runtime, &mut self.playback)?;
@@ -7024,10 +7051,21 @@ impl NativeDaemon {
         if self.projected_frame.is_none() {
             self.projected_frame = Some(control.project_next_frame()?);
         }
+        let replay_deadline = self.next_deadline()?;
         let projected = self
             .projected_frame
             .as_ref()
             .expect("next frame projection was initialized");
+        // Replay inputs show their recorded frames (OR-012).
+        let replay_covered = match &mut self.replay {
+            Some(replay) => replay.present(
+                projected,
+                replay_deadline,
+                &self.runtime,
+                &mut self.playback,
+            ),
+            None => true,
+        };
         // Network streams hand over the projected frame's picture and audio
         // from their jitter buffers, once per frame; they never wait.
         let captured = self
@@ -7078,7 +7116,12 @@ impl NativeDaemon {
                 .map_err(Box::<dyn Error>::from)?,
             None => true,
         };
-        Ok(audio_covered && video_covered && stinger_covered && titles_covered && files_covered)
+        Ok(audio_covered
+            && video_covered
+            && stinger_covered
+            && titles_covered
+            && files_covered
+            && replay_covered)
     }
 
     /// Attaches the grades of `control`'s current revision to the project
@@ -7346,6 +7389,11 @@ impl NativeDaemon {
         }
         if let (Some(live_lan), Some(sequence)) = (&mut self.live_lan, next_sequence) {
             live_lan.sync(control.live_lan(), &self.runtime, sequence);
+        }
+        // The replay recording (OR-012) takes every source's newest picture.
+        if let (Some(replay), Some((frame, _))) = (&mut self.replay, monitor_frame) {
+            let latest = self.playback.latest_frames();
+            replay.record(control, frame, &|input| latest.get(input));
         }
         // Monitor taps finish earlier readbacks without waiting, then start
         // this frame's; neither waits for the GPU.
@@ -8632,6 +8680,15 @@ impl NativeDaemon {
     #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
     fn attach_media_sources(&mut self, _control: &mut ControlService<Policy>) -> AppResult<()> {
         Ok(())
+    }
+
+    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
+    fn attach_replay(
+        &mut self,
+        _control: &mut ControlService<Policy>,
+        _root: PathBuf,
+        _settings: &fm_model::ProjectSettings,
+    ) {
     }
 
     fn start(
@@ -11278,6 +11335,12 @@ fn serve_inner(
     };
     if let Some(native) = native.as_mut() {
         native.attach_media_sources(&mut control.borrow_mut())?;
+        // Replay records beside the journal unless the show names a root.
+        native.attach_replay(
+            &mut control.borrow_mut(),
+            store.root().join("replay"),
+            project.project().settings(),
+        );
         // Document inputs show their pages from the start (IN-014).
         #[cfg(feature = "native-media")]
         if let Some(pages) = journal.documents() {

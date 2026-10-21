@@ -2223,6 +2223,7 @@ dependencies = [
  "fm-presentations",
  "fm-protocol",
  "fm-record",
+ "fm-replay",
  "fm-scheduler",
  "fm-server",
  "fm-sim",
