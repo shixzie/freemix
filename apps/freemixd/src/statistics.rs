@@ -370,6 +370,8 @@ pub(crate) struct DaemonStatistics {
     recent: VecDeque<AlertNotification>,
     /// The last `health_status` sequence sent (Protocol 2.100).
     health_sequence: u64,
+    /// The whole-run total each counter last advanced to, by series.
+    totals: std::collections::BTreeMap<(&'static str, LabelSet), u64>,
 }
 
 impl DaemonStatistics {
@@ -420,6 +422,7 @@ impl DaemonStatistics {
             alerts,
             recent: VecDeque::with_capacity(MAX_RECENT_NOTIFICATIONS),
             health_sequence: 0,
+            totals: std::collections::BTreeMap::new(),
             registry,
             sampled_at: None,
             errors: 0,
@@ -768,21 +771,21 @@ impl DaemonStatistics {
         self.record(result);
     }
 
-    /// Advances a counter to a whole-run `total`. A total below the
-    /// counter (a source that restarted its count) adds nothing; the counter
+    /// Advances a counter by the growth of a whole-run `total` since the
+    /// previous sample. A total below the previous one (a source that
+    /// restarted its count, or an output that stopped and left a sum) adds
+    /// nothing, and later growth from there still counts; the counter
     /// still updates, so rate rules see a zero rate.
     fn total(&mut self, name: &'static str, labels: &LabelSet, at: u64, total: u64) {
-        let current = self.value_with(name, labels).map_or(0, |value| {
-            // Counters convert exactly well past any count reachable here.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let value = value as u64;
-            value
-        });
+        let previous = self
+            .totals
+            .insert((name, labels.clone()), total)
+            .unwrap_or(0);
         let result = self.registry.increment_counter(
             &metric(name),
             labels,
             at,
-            total.saturating_sub(current),
+            total.saturating_sub(previous),
         );
         self.record(result);
     }
@@ -1123,5 +1126,30 @@ mod tests {
         assert_eq!(statistics.value(names::FRAMES_REALIZED), Some(4.0));
         assert_eq!(statistics.value(names::FRAME_LATE_RATIO), Some(0.25));
         assert_eq!(statistics.errors(), 0);
+    }
+
+    /// A whole-run total summed over the outputs running now falls when one
+    /// stops; the drops after that still count and still fire the rule.
+    #[test]
+    fn a_total_that_falls_keeps_counting_its_growth() {
+        let origin = Instant::now();
+        let mut statistics = DaemonStatistics::new(origin);
+        let at = |seconds| origin + Duration::from_secs(seconds);
+        let sample = |statistics: &mut DaemonStatistics, seconds: u64, dropped: u64| {
+            let mut sample = native(Vec::new());
+            sample.frames_dropped = dropped;
+            sample.disk_free_bytes = None;
+            statistics.record_sample(at(seconds), ControlSample::default(), Some(sample), None);
+        };
+        // A stream that dropped 500 pictures stops; a new one starts at 0.
+        sample(&mut statistics, 0, 500);
+        sample(&mut statistics, 1, 0);
+        assert_eq!(statistics.value(names::FRAMES_DROPPED), Some(500.0));
+        // The new one drops two pictures a second.
+        for seconds in 2..=6 {
+            sample(&mut statistics, seconds, 2 * (seconds - 1));
+        }
+        assert_eq!(statistics.value(names::FRAMES_DROPPED), Some(510.0));
+        assert_eq!(rule_ids(&statistics.active_alerts()), ["frames_dropped"]);
     }
 }
