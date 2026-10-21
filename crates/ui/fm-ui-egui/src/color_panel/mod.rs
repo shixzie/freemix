@@ -488,6 +488,7 @@ pub struct ColorPanelWidget<'a> {
     document: &'a mut GradeDocument,
     state: &'a mut ColorPanelState,
     locale: Option<Locale>,
+    titled: bool,
 }
 
 impl<'a> ColorPanelWidget<'a> {
@@ -499,7 +500,16 @@ impl<'a> ColorPanelWidget<'a> {
             document,
             state,
             locale: None,
+            titled: true,
         }
+    }
+
+    /// Leaves out the panel's own "Colour grade" title, for a host whose
+    /// window or tab already shows it.
+    #[must_use]
+    pub const fn untitled(mut self) -> Self {
+        self.titled = false;
+        self
     }
 
     /// Words the panel in `locale` instead of the frame's locale.
@@ -515,6 +525,7 @@ impl<'a> ColorPanelWidget<'a> {
             document,
             state,
             locale,
+            titled,
         } = self;
         let l = locale.unwrap_or_else(|| l10n::locale(ui.ctx()));
         state.locale = l;
@@ -539,7 +550,7 @@ impl<'a> ColorPanelWidget<'a> {
             .inner_margin(Margin::same(10))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
-                for action in header(ui, l, document, state, &mut rects) {
+                for action in header(ui, l, titled, document, state, &mut rects) {
                     match perform(action, document, state) {
                         Ok(()) => {
                             actions.push(action);
@@ -602,6 +613,7 @@ impl<'a> ColorPanelWidget<'a> {
 fn header(
     ui: &mut Ui,
     l: Locale,
+    titled: bool,
     document: &GradeDocument,
     state: &ColorPanelState,
     rects: &mut PanelRects,
@@ -609,9 +621,11 @@ fn header(
     let mut clicked = Vec::new();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        ui.label(section_label(l.text(Msg::GradeTitle)))
-            .on_hover_text(l.text(Msg::GradeTitleHover));
-        ui.add_space(10.0);
+        if titled {
+            ui.label(section_label(l.text(Msg::GradeTitle)))
+                .on_hover_text(l.text(Msg::GradeTitleHover));
+            ui.add_space(10.0);
+        }
         for action in GradeAction::ALL {
             if matches!(
                 action,

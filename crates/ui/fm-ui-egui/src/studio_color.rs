@@ -355,6 +355,43 @@ fn name_reason(problem: GradeNameProblem, lut: bool) -> &'static str {
 }
 
 /// The LUT name a path imports as: its file name without `.cube`.
+/// The labels of the window's rows, in order.
+const ROW_LABELS: [Msg; 4] = [
+    Msg::ColorTarget,
+    Msg::ColorLibrary,
+    Msg::ColorLut,
+    Msg::ColorGradeFile,
+];
+
+/// A row's label in a column as wide as the widest row label in this
+/// language, so Target, Library, Import LUT, and Grade file start their
+/// fields at one edge.
+fn row_label(ui: &mut Ui, l: Locale, label: Msg, hover: Msg) {
+    let width = ROW_LABELS
+        .iter()
+        .map(|label| {
+            egui::WidgetText::from(section_label(l.text(*label)))
+                .into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Body,
+                )
+                .size()
+                .x
+        })
+        .fold(0.0, f32::max);
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_width(width);
+            ui.label(section_label(l.text(label)))
+                .on_hover_text(l.text(hover));
+        },
+    );
+}
+
 fn lut_name(path: &str) -> String {
     let path = path.trim();
     let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
@@ -823,8 +860,7 @@ impl StudioShell {
         });
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            ui.label(section_label(l.text(Msg::ColorTarget)))
-                .on_hover_text(l.text(Msg::ColorTargetHover));
+            row_label(ui, l, Msg::ColorTarget, Msg::ColorTargetHover);
             let mut targets = vec![GradeTarget::Program];
             targets.extend(picture_inputs(state).map(GradeTarget::Input));
             targets.extend(layer_targets(state));
@@ -913,8 +949,10 @@ impl StudioShell {
             if lock.is_some() {
                 self.color.panel.keyboard_active = false;
             }
+            // The window's header (or dock tab) already says Colour grade.
             let _ = ColorPanelWidget::new(binding.document_mut(), &mut self.color.panel)
                 .locale(l)
+                .untitled()
                 .show(ui);
         } else {
             ui.label(caption(l10n::unavailable(
@@ -1111,8 +1149,7 @@ impl StudioShell {
         let project_lock = project_lock_reason(state);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            ui.label(section_label(l.text(Msg::ColorLibrary)))
-                .on_hover_text(l.text(Msg::ColorLibraryHover));
+            row_label(ui, l, Msg::ColorLibrary, Msg::ColorLibraryHover);
             let pick = self.color.library_pick;
             let shown = pick
                 .and_then(|pick| grading.library_grade(pick))
@@ -1221,8 +1258,7 @@ impl StudioShell {
         });
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            ui.label(section_label(l.text(Msg::ColorLut)))
-                .on_hover_text(l.text(Msg::ColorLutHover));
+            row_label(ui, l, Msg::ColorLut, Msg::ColorLutHover);
             ui.add_enabled(
                 project_lock.is_none(),
                 TextEdit::singleline(&mut self.color.lut_path)
@@ -1285,8 +1321,7 @@ impl StudioShell {
         let l = self.locale;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            ui.label(section_label(l.text(Msg::ColorGradeFile)))
-                .on_hover_text(l.text(Msg::ColorGradeFileHover));
+            row_label(ui, l, Msg::ColorGradeFile, Msg::ColorGradeFileHover);
             ui.add(
                 TextEdit::singleline(&mut self.color.grade_path)
                     .hint_text(l.text(Msg::ColorGradePathHint))
