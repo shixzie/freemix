@@ -990,17 +990,21 @@ fn a_stalled_studio_reader_never_delays_other_sessions_or_program_pacing() {
     // whose cores are all busy, slow realization makes frames late whatever
     // the sessions do, and only the loop's own stalls above say anything.
     let realize: Vec<f64> = traced.iter().map(|&(_, realize)| realize).collect();
+    let host_busy = percentile(&realize, 95) >= frame_ms / 2.0;
     let p50 = telemetry_field(&stderr, "host_lateness_p50_ms");
     assert!(
-        percentile(&realize, 95) >= frame_ms / 2.0 || p50 < frame_ms / 2.0,
+        host_busy || p50 < frame_ms / 2.0,
         "Program pacing slipped: host lateness p50 {p50} ms"
     );
     // The recorder started before readiness, so it holds at least every
-    // frame paced while the sessions were served.
+    // frame paced while the sessions were served; a host too busy to realize
+    // frames on time drops some whatever the sessions do, so there it need
+    // only hold most of them.
     let frames = decoded_video_frames(&recording);
     let paced = served.as_secs_f64() * f64::from(FRAME_RATE);
+    let share = if host_busy { 0.75 } else { 0.95 };
     assert!(
-        f64::from(u32::try_from(frames).unwrap()) >= paced * 0.95,
+        f64::from(u32::try_from(frames).unwrap()) >= paced * share,
         "the recording holds {frames} frames of about {paced:.0} paced: {stderr}"
     );
 }
