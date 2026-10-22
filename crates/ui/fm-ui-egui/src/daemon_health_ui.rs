@@ -5,7 +5,12 @@
 //! lamps: `CPU` (the daemon process's share of every logical CPU), `GPU` (the
 //! proxy: timestamped compositor render-pass time per wall second), and an
 //! alert lamp that is green while nothing fires and names every firing alert
-//! otherwise, with the most recent notification in its help.
+//! otherwise, with the most recent notification in its help. Once no
+//! `health_status` has arrived for [`HEALTH_STALE_AFTER`] while connected,
+//! all three read stale (amber) rather than showing the last report as
+//! current.
+
+use std::time::Duration;
 
 use fm_protocol::{
     DaemonHealth, HealthAlert, HealthAlertRule, HealthNotification, HealthNotificationKind,
@@ -20,11 +25,41 @@ use crate::theme::Tone;
 /// Utilization at or above this permille reads amber.
 const BUSY_PERMILLE: u16 = 750;
 
-/// The health strip's daemon lamps, when the daemon reports its health.
-pub(crate) fn health_items(l: Locale, state: &StudioUiState) -> Vec<HealthItem> {
+/// The daemon samples its health every second; a report older than this
+/// reads stale.
+pub(crate) const HEALTH_STALE_AFTER: Duration = Duration::from_secs(5);
+
+/// The health strip's daemon lamps, when the daemon reports its health;
+/// `age` is how long ago the latest report arrived.
+pub(crate) fn health_items(
+    l: Locale,
+    state: &StudioUiState,
+    age: Option<Duration>,
+) -> Vec<HealthItem> {
     let Some(status) = state.health.as_ref() else {
         return Vec::new();
     };
+    if let Some(age) = age.filter(|age| *age > HEALTH_STALE_AFTER) {
+        let hover = l.format(
+            Msg::HealthDaemonStaleHover,
+            &[(
+                "age",
+                Arg::Str(&l.seconds_tenths(u64::try_from(age.as_millis()).unwrap_or(u64::MAX))),
+            )],
+        );
+        return [
+            Msg::HealthCpuStale,
+            Msg::HealthGpuStale,
+            Msg::HealthAlertsStale,
+        ]
+        .into_iter()
+        .map(|label| HealthItem {
+            label: l.text(label).to_owned(),
+            tone: Tone::Pending,
+            hover: hover.clone(),
+        })
+        .collect();
+    }
     let health = &status.health;
     vec![
         utilization_item(l, health, Utilization::Cpu),
@@ -202,7 +237,7 @@ mod tests {
     fn no_health_adds_no_lamp() {
         let l = Locale::new(Language::English);
         let state = StudioUiState::new(crate::StudioConnectionStatus::Ready);
-        assert_eq!(health_items(l, &state), []);
+        assert_eq!(health_items(l, &state, None), []);
     }
 
     #[test]
@@ -215,6 +250,7 @@ mod tests {
                 cpu_permille: Some(124),
                 ..DaemonHealth::default()
             }),
+            None,
         );
         let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
         assert_eq!(labels, ["CPU 12%", "GPU —", "NO ALERTS"]);
@@ -238,8 +274,8 @@ mod tests {
             }],
             ..DaemonHealth::default()
         };
-        let en = health_items(Locale::new(Language::English), &state(health.clone()));
-        let es = health_items(Locale::new(Language::Spanish), &state(health));
+        let en = health_items(Locale::new(Language::English), &state(health.clone()), None);
+        let es = health_items(Locale::new(Language::Spanish), &state(health), None);
         assert_eq!(es[2].label, "1 ALERTA");
         for (en, es) in en.iter().zip(&es) {
             assert_ne!(en.hover, es.hover);
@@ -248,9 +284,50 @@ mod tests {
         let quiet = health_items(
             Locale::new(Language::Spanish),
             &state(DaemonHealth::default()),
+            None,
         );
         assert_eq!(quiet[0].label, "CPU —");
         assert_eq!(quiet[2].label, "SIN ALERTAS");
+    }
+
+    /// While connected, a daemon whose `health_status` stopped arriving
+    /// reads stale on every lamp instead of its last report as current.
+    #[test]
+    fn a_report_that_stops_arriving_reads_stale() {
+        let l = Locale::new(Language::English);
+        let state = state(DaemonHealth {
+            uptime_ms: 20_000,
+            cpu_permille: Some(950),
+            alerts: vec![HealthAlert {
+                rule: HealthAlertRule::CpuSaturated,
+                severity: HealthSeverity::Warning,
+                since_ms: 8_000,
+                value_milli: Some(950),
+            }],
+            ..DaemonHealth::default()
+        });
+        let current = health_items(l, &state, Some(Duration::from_secs(1)));
+        assert_eq!(current[0].label, "CPU 95%");
+        assert_eq!(current[0].tone, Tone::Fault);
+
+        let mut tracker = crate::health::HealthTracker::default();
+        let arrived = std::time::Instant::now();
+        tracker.observe(&state, arrived);
+        // The same report seen again later does not refresh it.
+        tracker.observe(&state, arrived + Duration::from_secs(4));
+        let items =
+            crate::health::health_items(l, &state, &tracker, arrived + Duration::from_secs(6));
+        let labels: Vec<_> = items
+            .iter()
+            .rev()
+            .take(3)
+            .map(|item| item.label.as_str())
+            .collect();
+        assert_eq!(labels, ["ALERTS STALE", "GPU STALE", "CPU STALE"]);
+        for item in items.iter().rev().take(3) {
+            assert_eq!(item.tone, Tone::Pending);
+            assert!(item.hover.contains("6.0 s"), "{}", item.hover);
+        }
     }
 
     #[test]
@@ -283,7 +360,7 @@ mod tests {
                 value_milli: Some(1_000),
             }],
         };
-        let items = health_items(l, &state(health));
+        let items = health_items(l, &state(health), None);
         assert_eq!(items[0].label, "CPU 95%");
         assert_eq!(items[0].tone, Tone::Fault);
         assert_eq!(items[1].tone, Tone::Pending);

@@ -589,17 +589,17 @@ impl DaemonStatistics {
             .map(|at| now.saturating_duration_since(at).as_secs_f64() * 1_000.0);
         self.sampled_at = Some(now);
         let at = self.millis(now);
+        // A utilization that is unavailable now clears its gauge rather
+        // than keeping the last reading, so its saturation rule reads
+        // unknown (it holds its state with no value) instead of firing on
+        // an old value.
         self.cpu_utilization = cpu;
-        if let Some(cpu) = cpu {
-            self.gauge(names::CPU_UTILIZATION, at, cpu);
-        }
+        self.utilization_gauge(names::CPU_UTILIZATION, at, cpu);
         self.gpu_utilization = native
             .as_ref()
             .filter(|native| native.gpu_timing)
             .and_then(|native| gpu_utilization(&native.gpu_pass_ms, wall_ms?));
-        if let Some(gpu) = self.gpu_utilization {
-            self.gauge(names::GPU_UTILIZATION, at, gpu);
-        }
+        self.utilization_gauge(names::GPU_UTILIZATION, at, self.gpu_utilization);
         self.gauge(
             names::CONTROL_SUBSCRIBERS,
             at,
@@ -755,6 +755,17 @@ impl DaemonStatistics {
             .registry
             .set_gauge(&metric(name), &LabelSet::new(), at, value);
         self.record(result);
+    }
+
+    /// Sets a utilization gauge, or removes it while it is unavailable.
+    fn utilization_gauge(&mut self, name: &'static str, at: u64, value: Option<f64>) {
+        match value {
+            Some(value) => self.gauge(name, at, value),
+            None => {
+                self.registry
+                    .remove_series(&SeriesKey::new(metric(name), LabelSet::new()));
+            }
+        }
     }
 
     fn observe(&mut self, name: &'static str, at: u64, value: f64) {
@@ -975,6 +986,72 @@ mod tests {
             record,
             "FREEMIXD_ALERT\tv=1\trule=cpu_saturated\tseverity=warning\tkind=firing\tat_ms=10000\tvalue=0.950"
         );
+    }
+
+    /// A CPU or GPU reading that becomes unavailable clears its gauge: the
+    /// saturation rule no longer reads the old value (it reads unknown,
+    /// holding its state with no value) and resolves once a reading is
+    /// back below its band.
+    #[test]
+    fn an_unavailable_utilization_stops_feeding_its_alert() {
+        let origin = Instant::now();
+        let mut statistics = DaemonStatistics::new(origin);
+        let second = |seconds| origin + Duration::from_secs(seconds);
+        let cpu = SeriesKey::new(metric(names::CPU_UTILIZATION), LabelSet::new());
+        let gpu = SeriesKey::new(metric(names::GPU_UTILIZATION), LabelSet::new());
+        for seconds in 0..=10 {
+            let mut sample = native(Vec::new());
+            sample.gpu_timing = true;
+            sample.gpu_pass_ms = vec![950.0];
+            sample.disk_free_bytes = None;
+            sample.outputs_failed = 0;
+            statistics.record_sample(
+                second(seconds),
+                ControlSample::default(),
+                Some(sample),
+                Some(0.95),
+            );
+        }
+        assert_eq!(
+            rule_ids(&statistics.active_alerts()),
+            ["cpu_saturated", "gpu_saturated"]
+        );
+        // Both readings become unavailable.
+        for seconds in 11..30 {
+            statistics.record_sample(
+                second(seconds),
+                ControlSample::default(),
+                Some(NativeStatisticsSample {
+                    gpu_timing: false,
+                    disk_free_bytes: None,
+                    outputs_failed: 0,
+                    ..native(Vec::new())
+                }),
+                None,
+            );
+        }
+        assert!(statistics.registry().get(&cpu).is_none());
+        assert!(statistics.registry().get(&gpu).is_none());
+        let health = statistics.health(second(29));
+        assert_eq!(health.cpu_permille, None);
+        assert_eq!(health.gpu_permille, None);
+        assert!(
+            health
+                .alerts
+                .iter()
+                .all(|alert| alert.value_milli.is_none()),
+            "{:?}",
+            health.alerts
+        );
+        assert!(
+            statistics
+                .active_alerts()
+                .iter()
+                .all(|alert| alert.value.is_none())
+        );
+        // A reading back below the band resolves the alert.
+        statistics.record_sample(second(30), ControlSample::default(), None, Some(0.2));
+        assert_eq!(rule_ids(&statistics.active_alerts()), ["gpu_saturated"]);
     }
 
     #[test]

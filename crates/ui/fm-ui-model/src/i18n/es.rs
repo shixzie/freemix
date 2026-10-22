@@ -413,6 +413,15 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::HealthAlertsHover,
         t("Alertas del daemon activas ahora:"),
     ),
+    (Msg::HealthCpuStale, t("CPU OBSOLETA")),
+    (Msg::HealthGpuStale, t("GPU OBSOLETA")),
+    (Msg::HealthAlertsStale, t("ALERTAS OBSOLETAS")),
+    (
+        Msg::HealthDaemonStaleHover,
+        t(
+            "Sin informe de salud del daemon desde hace {age}: su CPU, su GPU y sus alertas están desactualizadas",
+        ),
+    ),
     (
         Msg::HealthAlertsNoneHover,
         t(

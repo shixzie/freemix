@@ -13,7 +13,9 @@
 //! * `Pending` + hold or clear: back to `Inactive` (the trigger condition must
 //!   hold continuously).
 //! * `Firing` + clear: `Resolved`; hold or trigger keeps it `Firing`.
-//! * unknown: no change.
+//! * unknown: no change of state; a threshold rule's last value is
+//!   cleared, so a held state is not reported with a reading it no longer
+//!   has.
 //!
 //! Notifications are deduplicated per firing episode: one `Firing`
 //! notification is delivered per episode (late, after a silence expires, if it
@@ -736,6 +738,8 @@ impl RuleRuntime {
             }
             RuleCondition::Threshold(policy) => {
                 let Some(reading) = entry.and_then(|entry| read(&entry.value, rule.reading)) else {
+                    // No reading: the state holds, but not an old value.
+                    self.status.last_value = None;
                     return Condition::Unknown;
                 };
                 self.status.last_value = Some(reading);
