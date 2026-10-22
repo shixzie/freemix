@@ -619,6 +619,7 @@ mod page;
 mod settings;
 mod tls;
 mod worker;
+pub(crate) use worker::peer_group_at;
 use worker::{address_limit, listener_loop};
 
 #[cfg(test)]
