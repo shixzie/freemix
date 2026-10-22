@@ -120,8 +120,10 @@ pub(crate) fn item_done(
 /// active item, the output frames it had left on its last playing frame,
 /// and whether that frame was the item's first observed one; the lead
 /// fires once, on the frame the item crosses it, never on an item's first
-/// observed frame: an item shorter than its transition (already within it
-/// on its first frame) steps on its first played frame after the first, so
+/// observed frame (a new item's, or the same item's again when its frames
+/// left grew, as when a list of one looping item restarts it): an item
+/// shorter than its transition (already within it on its first frame)
+/// steps on its first played frame after the first, every pass, so
 /// the list keeps its length and the item plays on under the next one
 /// instead of freezing on its last frame for the whole transition.
 pub(crate) fn transition_lead_reached(
@@ -159,18 +161,17 @@ pub(crate) fn transition_lead_reached(
         engine.frame_rate(),
         status.settings.speed_basis_points,
     );
-    let first = previous_item(leads.get(&input)) != Some(list.active);
+    // A new item, or the same item starting another pass (a list of one
+    // looping item, or the item played again): its frames left grew.
+    let first = leads
+        .get(&input)
+        .is_none_or(|&(active, before, _)| active != list.active || remaining > before);
     let previous = leads.insert(input, (list.active, remaining, first));
     next_plays
         && remaining <= lead
         && previous.is_some_and(|(active, before, was_first)| {
             active == list.active && (before > lead || was_first)
         })
-}
-
-/// The active item a lead record describes.
-fn previous_item(record: Option<&(u32, u64, bool)>) -> Option<u32> {
-    record.map(|(active, _, _)| *active)
 }
 
 /// How many output frames `source_frames` source frames at `source_rate`
