@@ -4014,6 +4014,147 @@ fn a_web_fire_cannot_write_a_hidden_value_where_the_page_can_read_it() {
     admin_accept(&mut admin, fire);
 }
 
+/// GX-006, Protocols 2.96 and 2.104: a raw Web client that resumes past an
+/// exposure change converges as a live one does. After the replayed
+/// `title_exposure_changed` it gets the title's state with the newly
+/// exposed field, and the cue list and shortcut that set it, now with the
+/// value they carried as the hidden marker before.
+#[test]
+#[allow(clippy::too_many_lines)] // one end-to-end scenario
+fn a_resumed_web_session_converges_after_an_exposure_change() {
+    use fm_protocol::{
+        CueListSpec, ResumeCursor, ShortcutSpec, WireCue, WireCueAction, WireShortcutAction,
+        WireTitleFieldId,
+    };
+    use fm_types::InputTarget;
+
+    let directory = TestDirectory::new("web-resume-exposure");
+    let project = directory.0.join("show.freemix");
+    create_project_with(&project, true, false);
+    let daemon = Daemon::start(&project);
+    let field = |value: u128| WireTitleFieldId::new(NonZeroU128::new(value).unwrap());
+    let note = WireCueAction::TitleText {
+        input: InputTarget::Fixed(input(4)),
+        field: field(2),
+        text: "cue-secret".into(),
+    };
+    let mut admin = RawOperator::connect_as(daemon.control, Role::Admin);
+    for (id, payload) in [
+        (
+            "set-cues",
+            CommandPayload::SetCueList {
+                list: 7,
+                spec: Box::new(CueListSpec {
+                    name: "Show".into(),
+                    cues: vec![WireCue {
+                        id: 1,
+                        name: "Note".into(),
+                        auto_follow: false,
+                        actions: vec![note.clone()],
+                    }],
+                }),
+                position: None,
+            },
+        ),
+        (
+            "set-shortcut",
+            CommandPayload::SetShortcut {
+                shortcut: 3,
+                spec: Box::new(ShortcutSpec {
+                    name: "Note".into(),
+                    enabled: true,
+                    key: None,
+                    osc: None,
+                    action: WireShortcutAction::Actions(vec![note.clone()]),
+                }),
+                position: None,
+            },
+        ),
+    ] {
+        admin.send(&command(id, payload));
+        admin.accepted(id);
+    }
+
+    // A page syncs, then goes away.
+    let (page, server, _, snapshot) = web_session(daemon.web, Role::Graphics);
+    drop(page);
+    // Studio exposes the note meanwhile.
+    admin.send(&command(
+        "expose",
+        CommandPayload::SetTitleFieldExposure {
+            input: input(4),
+            field: field(2),
+            exposed: true,
+        },
+    ));
+    admin.accepted("expose");
+
+    // The client resumes from where it was.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut socket = loop {
+        assert!(
+            Instant::now() < deadline,
+            "the gateway never took the client"
+        );
+        if let Some(socket) = browser_connect(daemon.web) {
+            break socket;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    send(
+        &mut socket,
+        &WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            build: "freemix-raw-web".into(),
+            client_type: ClientType::Web,
+            desired_role: Role::Graphics,
+            resume_cursor: Some(ResumeCursor {
+                server,
+                revision: snapshot.revision,
+            }),
+        }),
+    );
+    let WireMessage::HandshakeResponse(response) = receive(&mut socket) else {
+        panic!("expected a handshake response");
+    };
+    assert!(
+        matches!(response.outcome, HandshakeOutcome::Resume { .. }),
+        "{:?}",
+        response.outcome
+    );
+    let mut exposure = false;
+    let mut state = None;
+    let mut list = None;
+    let mut shortcut = None;
+    web_until(&mut socket, |_, message| {
+        match message {
+            WireMessage::Event(EventMessage {
+                payload: EventPayload::TitleExposureChanged { .. },
+                ..
+            }) => exposure = true,
+            WireMessage::TitleState(found) if found.input == input(4) => {
+                assert!(exposure, "the title state follows the replayed event");
+                state = Some(found);
+            }
+            WireMessage::CueListState(found) => list = Some(found.list),
+            WireMessage::ShortcutState(found) => shortcut = Some(found.shortcut),
+            _ => {}
+        }
+        (state.is_some() && list.is_some() && shortcut.is_some()).then_some(())
+    });
+    let state = state.unwrap();
+    assert!(
+        state.fields.iter().any(|status| status.field == field(2)
+            && status.value == fm_protocol::TitleFieldValue::Text("secret-note".into())),
+        "{state:?}"
+    );
+    assert_eq!(list.unwrap().spec.cues[0].actions, [note.clone()]);
+    assert_eq!(
+        shortcut.unwrap().spec.action,
+        WireShortcutAction::Actions(vec![note])
+    );
+}
+
 /// Whether `line` carries `secret` as written or as the lowercase hex cue
 /// texts and script sources travel in.
 fn carries(line: &str, secret: &str) -> bool {

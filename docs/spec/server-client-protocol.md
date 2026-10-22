@@ -4087,7 +4087,12 @@ schema change.
 - After a `title_exposure_changed` (and the `title_state` records that
   follow it, Protocol 2.96), a Web session receives one `cue_list_state`
   per cue list and one `shortcut_state` per shortcut that sets a title
-  field, in project order, as it may now see them.
+  field, in project order, as it may now see them. A Web session that
+  resumes gets the same records after its replayed events: one current
+  `title_state` per title the replayed `title_exposure_changed`,
+  `cue_run_changed`, `script_ran`, and `shortcut_fired` events name and,
+  when one of them is a `title_exposure_changed`, the cue lists and
+  shortcuts, so a resumed client converges as a live one does.
 - A Web session's `cue_list_set` or `shortcut_set` may send a marker back
   where the stored definition has the action it stands for: the same cue
   id (for a shortcut, the same shortcut) and action position, the same

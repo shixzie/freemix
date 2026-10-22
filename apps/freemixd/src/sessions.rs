@@ -2877,16 +2877,39 @@ impl Runtime<'_> {
             SyncPayload::Snapshot(snapshot) => peer
                 .initial_sync
                 .push_back(WireMessage::Snapshot(*snapshot)),
-            // Resumed events reach a Web page filtered as live ones do.
+            // Resumed events reach a Web page filtered as live ones do,
+            // and followed by what the live path would have sent after
+            // them: the current state of each title they name and, after
+            // an exposure change, the cue lists and shortcuts that set
+            // title fields (see `web_resync`).
             SyncPayload::Resume(events) => {
                 let hidden = self.web_hidden(peer.transport.is_web());
-                peer.initial_sync
-                    .extend(events.into_iter().map(|event| match &hidden {
-                        Some(hidden) => {
-                            crate::web_titles::web_message(WireMessage::Event(event), hidden)
+                let mut inputs = Vec::new();
+                let mut exposure = false;
+                for event in events {
+                    let message = WireMessage::Event(event);
+                    let Some(hidden) = &hidden else {
+                        peer.initial_sync.push_back(message);
+                        continue;
+                    };
+                    for input in crate::web_titles::resync_inputs(&message) {
+                        if !inputs.contains(&input) {
+                            inputs.push(input);
                         }
-                        None => WireMessage::Event(event),
-                    }));
+                    }
+                    exposure |= crate::web_titles::exposure_changed(&message);
+                    peer.initial_sync
+                        .push_back(crate::web_titles::web_message(message, hidden));
+                }
+                if let Some(hidden) = &hidden {
+                    let records =
+                        web_resync_records(self, &self.control.borrow(), &inputs, exposure);
+                    peer.initial_sync.extend(
+                        records
+                            .into_iter()
+                            .map(|record| crate::web_titles::web_message(record, hidden)),
+                    );
+                }
             }
         }
         let sync_limit = self
@@ -2981,16 +3004,32 @@ fn web_resync(
     control: &fm_control::ControlService<fm_auth::Policy>,
     message: &WireMessage,
 ) -> Vec<WireMessage> {
-    let inputs = crate::web_titles::resync_inputs(message);
+    web_resync_records(
+        runtime,
+        control,
+        &crate::web_titles::resync_inputs(message),
+        crate::web_titles::exposure_changed(message),
+    )
+}
+
+/// The resynchronizing records of [`web_resync`] for the titles `inputs`
+/// and, with `exposure`, the cue lists and shortcuts too: what follows a
+/// live event, or the events a resumed Web session is replayed.
+fn web_resync_records(
+    runtime: &Runtime<'_>,
+    control: &fm_control::ControlService<fm_auth::Policy>,
+    inputs: &[fm_protocol::WireInputId],
+    exposure: bool,
+) -> Vec<WireMessage> {
     let mut records: Vec<WireMessage> = if inputs.is_empty() {
         Vec::new()
     } else {
-        crate::web_titles::web_title_states(control.title_states(), &inputs)
+        crate::web_titles::web_title_states(control.title_states(), inputs)
             .into_iter()
             .map(WireMessage::TitleState)
             .collect()
     };
-    if crate::web_titles::exposure_changed(message) {
+    if exposure {
         records.extend(
             runtime
                 .cue_list_states(control)
