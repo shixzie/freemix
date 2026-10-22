@@ -15,7 +15,9 @@
 //! answers a non-Scene input with its ungraded picture and a Scene input
 //! with its composed scene), one at a time and every
 //! [`KEY_PICTURE_REFRESH`], and previews a test still only until one
-//! arrives.
+//! arrives. A fresh server picture of the same source input serves another
+//! target at once (a layer over the input just previewed, say), since the
+//! pacer asks for that input again only once its picture is stale.
 //!
 //! A scene layer's grade applies after its source's input grade, so its
 //! clean picture is its source as a monitor shows it: the layer's input on
@@ -665,7 +667,7 @@ impl ColorWindow {
     }
 
     /// Feeds the preview an ungraded picture of the target.
-    fn refresh_source(&mut self, state: &StudioUiState, now: Instant) {
+    fn refresh_source(&mut self, state: &StudioUiState, now: Instant, time: Duration) {
         let dragging = self
             .binding
             .as_ref()
@@ -710,6 +712,25 @@ impl ColorWindow {
             return;
         }
         if self.source == Some((target, SourceKind::Server)) {
+            return;
+        }
+        // A fresh server picture of this target's source input, fetched for
+        // another target, serves this one too.
+        if let Some(picture) = grading(state)
+            .and_then(|grading| fetch_target(state, grading, target))
+            .and_then(|(input, grade)| {
+                let image = self.picture.fresh_picture(input, time)?;
+                self.fetched_picture(image, grade.as_ref())
+            })
+        {
+            self.panel.set_source(&picture);
+            if self.held.len() >= HELD_SOURCES && !self.held.contains_key(&target) {
+                self.held.pop_first();
+            }
+            self.held.insert(target, picture);
+            self.source = Some((target, SourceKind::Server));
+            self.source_frame = None;
+            self.source_at = Some(now);
             return;
         }
         let kind = if self.held.contains_key(&target) {
@@ -928,7 +949,7 @@ impl StudioShell {
         self.color.receive_picture(state, time);
         if self.color.open {
             self.color.sync(state);
-            self.color.refresh_source(state, now);
+            self.color.refresh_source(state, now, time);
             // The server keeps one preview per session: never ask while the
             // layer designer's own picture is in flight.
             let busy = self.designer.preview_in_flight();
@@ -2154,6 +2175,38 @@ mod tests {
         assert_ne!(expected, raw.to_vec());
         assert_eq!(
             layered.color.panel.preview().source().unwrap().pixels(),
+            expected.as_slice()
+        );
+
+        // Switching from input 2 to the layer over it reuses the fresh
+        // picture of input 2 (graded here) at once: no test still while the
+        // pacer waits to ask for input 2 again, and no new request.
+        let mut switched = StudioShell::default();
+        switched.open_color_window(GradeTarget::Input(input(2)));
+        let intents = draw(&context, &mut switched, &state);
+        let [StudioIntent::ScenePreview(request)] = intents.as_slice() else {
+            panic!("{intents:?}");
+        };
+        let mut answered = state.clone();
+        answered.title_preview = Some(TitlePreviewImage {
+            request_id: request.request_id.clone(),
+            input: wire(2),
+            animation_revision: 0,
+            draft: false,
+            width: 2,
+            height: 1,
+            rgba: raw.to_vec().into(),
+        });
+        let _ = draw(&context, &mut switched, &answered);
+        assert_eq!(
+            switched.color.source,
+            Some((GradeTarget::Input(input(2)), SourceKind::Server))
+        );
+        switched.open_color_window(host);
+        assert_eq!(draw(&context, &mut switched, &answered), Vec::new());
+        assert_eq!(switched.color.source, Some((host, SourceKind::Server)));
+        assert_eq!(
+            switched.color.panel.preview().source().unwrap().pixels(),
             expected.as_slice()
         );
     }

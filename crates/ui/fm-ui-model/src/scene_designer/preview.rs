@@ -316,6 +316,21 @@ impl KeyPicturePacer {
             .filter(|image| image.input == WireInputId::from_domain(input))
     }
 
+    /// The newest picture of `input` while it is still fresh at `now`
+    /// (asked for less than [`KEY_PICTURE_REFRESH`] ago): what another
+    /// subject showing the same input may reuse instead of waiting for the
+    /// next request.
+    #[must_use]
+    pub fn fresh_picture(&self, input: InputId, now: Duration) -> Option<&TitlePreviewImage> {
+        self.picture
+            .as_ref()
+            .filter(|(image, at)| {
+                image.input == WireInputId::from_domain(input)
+                    && now.saturating_sub(*at) < KEY_PICTURE_REFRESH
+            })
+            .map(|(image, _)| image)
+    }
+
     /// Whether `request_id` is a designer input picture.
     #[must_use]
     pub fn owns(request_id: &str) -> bool {
