@@ -149,6 +149,12 @@ const TITLE_TEMPLATE_KEY: &str = "titles/tally-title.fmtitle";
 /// Writes the stored template of a lower third with two text fields: the
 /// name, and a producer note hidden from browsers (GX-006).
 fn write_title_template(store: &ProjectStore) {
+    write_template(store, TITLE_TEMPLATE_KEY, false);
+}
+
+/// Writes the lower third template at `key`, its note exposed to browsers
+/// or hidden from them.
+fn write_template(store: &ProjectStore, key: &str, note_exposed: bool) {
     use fm_titles::{FieldDefinition, FieldId, FieldValue, TemplateId, TitleTemplate};
 
     let template = TitleTemplate {
@@ -168,7 +174,7 @@ fn write_title_template(store: &ProjectStore) {
                 id: FieldId::new(NonZeroU128::new(2).unwrap()),
                 name: "Producer note".into(),
                 default: FieldValue::Text("Note".into()),
-                exposed: false,
+                exposed: note_exposed,
             },
         ],
         elements: Vec::new(),
@@ -180,7 +186,7 @@ fn write_title_template(store: &ProjectStore) {
         clocks: Vec::new(),
     })
     .unwrap();
-    let template_path = store.assets_root().join(TITLE_TEMPLATE_KEY);
+    let template_path = store.assets_root().join(key);
     fs::create_dir_all(template_path.parent().unwrap()).unwrap();
     fs::write(&template_path, document).unwrap();
 }
@@ -3824,6 +3830,188 @@ fn a_cue_title_text_resynchronizes_the_web_title_editor() {
         ),
     )
     .unwrap();
+}
+
+/// The title project with a second title, input 5 ("Open third"), of a
+/// template like input 4's that shows its note (field 2) to browsers.
+fn create_project_with_two_titles(path: &Path) {
+    const OPEN_TEMPLATE_KEY: &str = "titles/open-title.fmtitle";
+    create_project_with(path, true, false);
+    let store = ProjectStore::new(path).unwrap();
+    write_template(&store, OPEN_TEMPLATE_KEY, true);
+    let stored = store.load().unwrap();
+    let mut project = stored.project().clone();
+    project.add_input(Input {
+        id: domain_input(5),
+        name: "Open third".into(),
+        kind: InputKind::Title(fm_model::TitleInput {
+            template_uri: format!("asset://{OPEN_TEMPLATE_KEY}"),
+            field_revision: 0,
+            fields: vec![
+                fm_model::TitleFieldEntry {
+                    id: fm_model::TitleFieldId::new(NonZeroU128::new(1).unwrap()),
+                    value: fm_model::TitleFieldValue::Text("Name".into()),
+                    revision: 0,
+                },
+                fm_model::TitleFieldEntry {
+                    id: fm_model::TitleFieldId::new(NonZeroU128::new(2).unwrap()),
+                    value: fm_model::TitleFieldValue::Text("open-note".into()),
+                    revision: 0,
+                },
+            ],
+        }),
+        required_capabilities: Vec::new(),
+    });
+    store.save(&stored.with_project(project).unwrap()).unwrap();
+}
+
+/// GX-006, Protocol 2.104: a Web session cannot read back a value hidden
+/// from it by firing a cue or shortcut whose `preview` action sets a field
+/// id another title hides, after arranging for Preview to show a title
+/// exposing that field. The whole run is refused `permission_denied` and
+/// nothing is written; the same fire is accepted while Preview is the
+/// title hiding the field, a fixed action writing a hidden value into the
+/// hidden field runs, and Studio's fire is never checked.
+#[test]
+#[allow(clippy::too_many_lines)] // one end-to-end scenario
+fn a_web_fire_cannot_write_a_hidden_value_where_the_page_can_read_it() {
+    use fm_protocol::{
+        CueListSpec, CueOperation, ShortcutSpec, WireCue, WireCueAction, WireShortcutAction,
+        WireTargetBindings, WireTitleFieldId,
+    };
+    use fm_types::InputTarget;
+
+    let directory = TestDirectory::new("web-fire-hidden");
+    let project = directory.0.join("show.freemix");
+    create_project_with_two_titles(&project);
+    let daemon = Daemon::start(&project);
+    let field = |value: u128| WireTitleFieldId::new(NonZeroU128::new(value).unwrap());
+    let text = |target, id, value: &str| WireCueAction::TitleText {
+        input: target,
+        field: field(id),
+        text: value.into(),
+    };
+    let mut admin = RawOperator::connect_as(daemon.control, Role::Admin);
+    let mut sent = 0;
+    let mut admin_accept = |admin: &mut RawOperator, payload: CommandPayload| {
+        sent += 1;
+        let id = format!("admin-{sent}");
+        admin.send(&command(&id, payload));
+        admin.accepted(&id);
+    };
+    admin_accept(
+        &mut admin,
+        CommandPayload::SetCueList {
+            list: 7,
+            spec: Box::new(CueListSpec {
+                name: "Show".into(),
+                cues: vec![
+                    WireCue {
+                        id: 1,
+                        name: "Preview note".into(),
+                        auto_follow: false,
+                        actions: vec![text(InputTarget::Preview, 2, "dyn-secret")],
+                    },
+                    WireCue {
+                        id: 2,
+                        name: "Fixed note".into(),
+                        auto_follow: false,
+                        actions: vec![text(InputTarget::Fixed(input(4)), 2, "fixed-secret")],
+                    },
+                ],
+            }),
+            position: None,
+        },
+    );
+    admin_accept(
+        &mut admin,
+        CommandPayload::SetShortcut {
+            shortcut: 3,
+            spec: Box::new(ShortcutSpec {
+                name: "Note".into(),
+                enabled: true,
+                key: None,
+                osc: None,
+                action: WireShortcutAction::Actions(vec![text(
+                    InputTarget::Preview,
+                    2,
+                    "short-secret",
+                )]),
+            }),
+            position: None,
+        },
+    );
+    let go = |cue| CommandPayload::CueControl {
+        list: 7,
+        operation: CueOperation::Go {
+            cue: Some(cue),
+            targets: WireTargetBindings::default(),
+        },
+    };
+    let arm = CommandPayload::CueControl {
+        list: 7,
+        operation: CueOperation::Arm {
+            cue: Some(1),
+            in_ms: 60_000,
+            targets: WireTargetBindings::default(),
+        },
+    };
+    let fire = CommandPayload::FireShortcut {
+        shortcut: 3,
+        targets: WireTargetBindings::default(),
+        value: None,
+    };
+
+    let mut seen = Vec::new();
+    // Even an Admin page is a Web session: it may fire cues and title
+    // actions, but not read a value hidden from browsers.
+    let (mut page, _, _, _) = web_session(daemon.web, Role::Admin);
+    // The title exposing the note goes on Preview (Studio puts it there,
+    // or the page waits for it), and the page fires.
+    admin_accept(
+        &mut admin,
+        CommandPayload::SelectPreview { input: input(5) },
+    );
+    for (id, payload) in [
+        ("page-go", go(1)),
+        ("page-arm", arm.clone()),
+        ("page-fire", fire.clone()),
+    ] {
+        assert_eq!(
+            scanned_result(&mut page, &mut seen, id, payload),
+            "permission_denied",
+            "{id}"
+        );
+    }
+    // With the title hiding the note on Preview, the same fires run, as
+    // does a fixed action into the hidden field.
+    admin_accept(
+        &mut admin,
+        CommandPayload::SelectPreview { input: input(4) },
+    );
+    for (id, payload) in [
+        ("page-go-hidden", go(1)),
+        ("page-fire-hidden", fire.clone()),
+        ("page-go-fixed", go(2)),
+    ] {
+        assert_eq!(
+            scanned_result(&mut page, &mut seen, id, payload),
+            "accepted",
+            "{id}"
+        );
+    }
+    for line in &seen {
+        for secret in ["dyn-secret", "short-secret", "fixed-secret"] {
+            assert!(!carries(line, secret), "{secret} reached the page: {line}");
+        }
+    }
+    // Studio's fire onto the exposed note is not checked.
+    admin_accept(
+        &mut admin,
+        CommandPayload::SelectPreview { input: input(5) },
+    );
+    admin_accept(&mut admin, go(1));
+    admin_accept(&mut admin, fire);
 }
 
 /// Whether `line` carries `secret` as written or as the lowercase hex cue

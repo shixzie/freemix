@@ -32,6 +32,17 @@
 //! whatever the value, so an edit cannot test a guess; and `script_set` is
 //! refused `permission_denied`.
 //!
+//! A Web session's `cue_go`, `cue_arm`, or `shortcut_fire` may not use a
+//! value withheld from it either. Before it executes, each title text or
+//! number action of the run (the chain a GO or arm reaches, or the
+//! shortcut's actions) is resolved to the title its target reaches under
+//! the bindings the authority gives the fire; a run with an action whose
+//! value the session sees only as the marker but whose title shows it the
+//! field (a `preview` action whose field id another title hides, aimed
+//! now at a title exposing that field) is refused `permission_denied` as
+//! a whole, so the session cannot read the value back. Studio and raw
+//! sessions, and the daemon's own cue clock, are not checked.
+//!
 //! [`PhasePacer`] decides when the lossy `title_phases` record is sent to
 //! the sessions that take it (Web pages and raw Studio sessions).
 
@@ -443,6 +454,68 @@ pub(crate) fn web_definition_edit(
         retryable: false,
         reason: None,
     })
+}
+
+/// Whether `command` is a fire [`web_fire_refusal`] must see before a Web
+/// session's command runs.
+pub(crate) const fn is_fire(command: &CommandMessage) -> bool {
+    matches!(
+        command.payload,
+        CommandPayload::CueControl {
+            operation: fm_protocol::CueOperation::Go { .. } | fm_protocol::CueOperation::Arm { .. },
+            ..
+        } | CommandPayload::FireShortcut { .. }
+    )
+}
+
+/// The refusal a Web session's fire meets before it executes (Protocol
+/// 2.104): `writes` are the title text and number actions the run would
+/// perform, each with the title its target resolves to now
+/// ([`fm_control::ControlService::fire_title_writes`]), and `visible` the
+/// title fields the session sees. An action whose value the session sees
+/// only as the hidden marker may not write into a field it sees. `None`
+/// lets the fire run.
+pub(crate) fn web_fire_refusal(
+    command: &CommandMessage,
+    writes: &[(WireCueAction, Option<WireInputId>)],
+    hidden: &HiddenFields,
+    visible: &BTreeSet<(WireInputId, WireTitleFieldId)>,
+    current_revision: u64,
+) -> Option<CommandResult> {
+    let (field, input) = writes.iter().find_map(|(action, input)| {
+        hidden.marker(action)?;
+        let (_, field, _) = action.title_value_field()?;
+        let input = (*input)?;
+        visible.contains(&(input, field)).then_some((field, input))
+    })?;
+    Some(CommandResult::Rejected {
+        id: command.id.clone(),
+        code: "permission_denied".to_owned(),
+        message: format!(
+            "this run would set title field {field} of {input}, which the browser shows, to a \
+             value hidden from it; run it from Studio"
+        ),
+        fields: Vec::new(),
+        current_revision,
+        retryable: false,
+        reason: None,
+    })
+}
+
+/// The title fields a Web session sees: each title's exposed fields.
+pub(crate) fn visible_fields(
+    states: &[TitleStateMessage],
+) -> BTreeSet<(WireInputId, WireTitleFieldId)> {
+    states
+        .iter()
+        .flat_map(|state| {
+            state
+                .fields
+                .iter()
+                .filter(|status| status.exposed)
+                .map(|status| (state.input, status.field))
+        })
+        .collect()
 }
 
 /// The refusal a Web session's command meets before it executes: changing

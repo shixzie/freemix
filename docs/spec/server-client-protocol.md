@@ -4097,6 +4097,17 @@ schema change.
   field with a value of its own is refused `permission_denied` whatever the
   value (so an edit cannot test a guess); and its `script_set` is refused
   `permission_denied`. Removing an action, cue, or list is allowed.
+- A Web session's `cue_go`, `cue_arm`, or `shortcut_fire` is checked before
+  it executes: each title text or number action of the run (the whole chain
+  a GO or arm reaches, or the shortcut's actions, or the chain its cue GO
+  reaches) is resolved to the title its target reaches under the bindings
+  the authority gives the fire. A run with an action whose value the
+  session sees only as the marker, aimed now at a title that shows the
+  session that field (a `preview` action whose field id another title
+  hides, while Preview shows a title exposing it), is refused
+  `permission_denied` as a whole, so the value never lands where the
+  session can read it. Studio and raw sessions, and the daemon's own cue
+  clock, are not checked.
 - The authority never stores or runs a marker: a `cue_list_set` or
   `shortcut_set` that still carries one (from any raw session, Studio
   included) is refused `invalid_command` before it reaches the engine.

@@ -443,6 +443,64 @@ pub fn bind_fire_targets(engine: &Engine, payload: &CommandPayload) -> Option<Co
     }
 }
 
+/// The title text and number actions a client's live fire (`payload`: a
+/// `cue_go`, `cue_arm`, or `shortcut_fire`) would run on `engine`'s show
+/// now, each with the title input its target resolves to under the
+/// bindings the authority gives the fire ([`client_fire_payload`], then
+/// [`bind_fire_targets`]): the actions of the whole chain a GO or an arm
+/// reaches (waits and auto-follows included, which keep the targets bound
+/// at the GO or arm), or a shortcut's own actions or the chain its cue GO
+/// reaches. `None` where the target stays unbound (no selection). Empty
+/// for any other command, and for an unknown list, cue, or shortcut.
+#[must_use]
+pub fn fire_title_writes(
+    engine: &Engine,
+    payload: &CommandPayload,
+) -> Vec<(WireCueAction, Option<WireInputId>)> {
+    let stripped = client_fire_payload(payload);
+    let payload = stripped.as_ref().unwrap_or(payload);
+    let bound = bind_fire_targets(engine, payload);
+    let payload = bound.as_ref().unwrap_or(payload);
+    let show = engine.show();
+    let chain = |list: u64, cue: Option<u64>| -> Vec<&CueAction> {
+        show.cue_list(list)
+            .and_then(|found| {
+                let cue = cue.or(found.state.standby)?;
+                Some(fm_model::cue_chain_actions(&found.cues, cue, 0))
+            })
+            .unwrap_or_default()
+    };
+    let (actions, targets) = match payload {
+        CommandPayload::CueControl {
+            list,
+            operation: CueOperation::Go { cue, targets } | CueOperation::Arm { cue, targets, .. },
+        } => (chain(*list, *cue), *targets),
+        CommandPayload::FireShortcut {
+            shortcut, targets, ..
+        } => {
+            let actions = match show.shortcut(*shortcut).map(|found| &found.action) {
+                Some(fm_model::ShortcutAction::Actions(actions)) => actions.iter().collect(),
+                Some(fm_model::ShortcutAction::Cue {
+                    list,
+                    operation: fm_model::ShortcutCueOperation::Go { cue },
+                }) => chain(*list, *cue),
+                _ => Vec::new(),
+            };
+            (actions, *targets)
+        }
+        _ => return Vec::new(),
+    };
+    actions
+        .into_iter()
+        .map(wire_action)
+        .filter_map(|action| {
+            let (target, _, _) = action.title_value_field()?;
+            let input = target.resolve(&targets);
+            Some((action, input))
+        })
+        .collect()
+}
+
 /// `payload` without the Preview and Program bindings a client sent with a
 /// live fire (RC-004), or `None` when it carries none: the authority binds
 /// them itself on the show the fire is prepared on (see

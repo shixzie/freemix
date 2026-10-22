@@ -1980,6 +1980,18 @@ impl<A: AuthorizationHook> ControlService<A> {
             .collect()
     }
 
+    /// The title text and number actions a client's live fire would run
+    /// now, with the input each one's target resolves to (GX-006, Protocol
+    /// 2.104; see [`cue::fire_title_writes`]): what a Web session's fire is
+    /// checked against before it executes.
+    #[must_use]
+    pub fn fire_title_writes(
+        &self,
+        payload: &CommandPayload,
+    ) -> Vec<(fm_protocol::WireCueAction, Option<WireInputId>)> {
+        cue::fire_title_writes(&self.engine, payload)
+    }
+
     /// Every title input's animation phase and timeline at the engine's
     /// frame cursor (Protocol 2.90 `title_phases`), ascending by input.
     #[must_use]

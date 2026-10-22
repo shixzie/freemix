@@ -2141,11 +2141,13 @@ impl Runtime<'_> {
         let mut native = native;
         match message {
             WireMessage::Command(mut command) => {
+                // Caught up first, so a Web fire is checked against the
+                // show it runs on.
+                self.catch_up_playlist(&command, durable, native.is_none())?;
                 if let Some(refused) = self.web_command_refusal(peer, &mut command) {
                     peer.reply(WireMessage::CommandResult(refused))?;
                     return Ok(());
                 }
-                self.catch_up_playlist(&command, durable, native.is_none())?;
                 let delivery = execute_session_command(
                     peer.session.as_mut().expect("active peers have sessions"),
                     self.control,
@@ -2496,7 +2498,8 @@ impl Runtime<'_> {
     /// The refusal a Web peer's command meets before it executes (see
     /// [`crate::web_titles`]); `None` for raw peers and allowed commands. A
     /// Web peer's cue list or shortcut edit gets back the stored values
-    /// its hidden markers stand for (Protocol 2.104).
+    /// its hidden markers stand for, and its fire may not write a value
+    /// hidden from it where it can read it (Protocol 2.104).
     fn web_command_refusal(
         &self,
         peer: &Peer,
@@ -2525,6 +2528,15 @@ impl Runtime<'_> {
                 command,
                 &hidden,
                 &stored,
+                current_revision,
+            );
+        }
+        if crate::web_titles::is_fire(command) {
+            return crate::web_titles::web_fire_refusal(
+                command,
+                &control.fire_title_writes(&command.payload),
+                &hidden,
+                &crate::web_titles::visible_fields(&control.title_states()),
                 current_revision,
             );
         }
@@ -2943,9 +2955,10 @@ fn make_retryable(response: &mut HandshakeResponse) {
     }
 }
 
-/// Whether `command` is a Web peer's title command, or cue list, shortcut,
-/// or script edit (Protocol 2.104), that must first be checked against the
-/// fields titles hide (see [`crate::web_titles`]).
+/// Whether `command` is a Web peer's title command, cue list, shortcut,
+/// or script edit, or cue or shortcut fire (Protocol 2.104), that must
+/// first be checked against the fields titles hide (see
+/// [`crate::web_titles`]).
 fn web_title_command(peer: &Peer, command: &fm_protocol::CommandMessage) -> bool {
     peer.transport.is_web()
         && (matches!(
@@ -2953,7 +2966,8 @@ fn web_title_command(peer: &Peer, command: &fm_protocol::CommandMessage) -> bool
             CommandPayload::SetTitleFieldExposure { .. }
                 | CommandPayload::SetTitleFields { .. }
                 | CommandPayload::TakeTitle { .. }
-        ) || crate::web_titles::is_definition_edit(command))
+        ) || crate::web_titles::is_definition_edit(command)
+            || crate::web_titles::is_fire(command))
 }
 
 /// The records that resynchronize a Web session after `message`, unfiltered
