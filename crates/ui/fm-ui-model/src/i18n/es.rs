@@ -10094,6 +10094,14 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Tiempo de retardo en milisegundos (hasta 1 s), exacto a la muestra: retrasa el sonido, por ejemplo para alinear un micrófono con la imagen retrasada de una cámara",
         ),
     ),
+    (Msg::NameReplay, t("Entrada de repetición")),
+    (Msg::KindReplayKey, t("REPETICIÓN")),
+    (
+        Msg::KindReplayHover,
+        t(
+            "Un reproductor de repetición instantánea: carga un evento capturado y reprodúcelo al 25–100 % de velocidad; graba y captura eventos en el panel Repetición",
+        ),
+    ),
     (Msg::TabReplay, t("Repetición")),
     (
         Msg::TabReplayHover,

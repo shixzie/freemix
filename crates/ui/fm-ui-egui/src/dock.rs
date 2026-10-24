@@ -140,14 +140,13 @@ impl PanelId {
     /// Where a reopened panel goes: beside the first of these panels that
     /// is docked, else along this edge of the whole layout.
     const fn home(self) -> (&'static [(Self, DropZone)], DropZone) {
-        const SIDE: [(PanelId, DropZone); 8] = [
+        const SIDE: [(PanelId, DropZone); 7] = [
             (PanelId::Overlays, DropZone::Center),
             (PanelId::Stingers, DropZone::Center),
             (PanelId::Titles, DropZone::Center),
             (PanelId::Playlist, DropZone::Center),
             (PanelId::Media, DropZone::Center),
             (PanelId::Cues, DropZone::Center),
-            (PanelId::Replay, DropZone::Center),
             (PanelId::Outputs, DropZone::Bottom),
         ];
         match self {
@@ -191,8 +190,10 @@ impl PanelId {
             | Self::Titles
             | Self::Playlist
             | Self::Media
-            | Self::Cues
-            | Self::Replay => (&SIDE, DropZone::Right),
+            | Self::Cues => (&SIDE, DropZone::Right),
+            // Replay shares the default layout's tab group with the outputs
+            // it feeds.
+            Self::Replay => (&[(Self::Outputs, DropZone::Center)], DropZone::Right),
         }
     }
 }

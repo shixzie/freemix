@@ -1,8 +1,8 @@
 use super::*;
 
 use PanelId::{
-    Cues, InputBank, Media, Mixer, Outputs, Overlays, Playlist, Preview, Program, Stingers, Titles,
-    Transitions,
+    Cues, InputBank, Media, Mixer, Outputs, Overlays, Playlist, Preview, Program, Replay, Stingers,
+    Titles, Transitions,
 };
 
 const DEFAULT_TREE: &str = "h765(v500(h375([preview],h394([transitions],[program])),\
@@ -150,6 +150,23 @@ fn close_and_reopen_restore_panels_to_their_home() {
 }
 
 #[test]
+fn closing_and_reopening_replay_restores_it_beside_the_outputs() {
+    let mut layout = DockLayout::default();
+    assert_eq!(group_of(&layout, Outputs), vec![Outputs, Replay]);
+    assert!(layout.close(Replay));
+    assert!(!layout.is_visible(Replay));
+    assert_eq!(group_of(&layout, Outputs), vec![Outputs]);
+    layout.show(Replay);
+    assert_eq!(group_of(&layout, Replay), vec![Outputs, Replay]);
+    assert!(layout.is_showing(Replay));
+    all_shown_once(&layout);
+    // Docking a popped-out Replay back uses the same home.
+    assert!(layout.pop_out(Replay, None));
+    assert!(layout.dock_back(Replay));
+    assert_eq!(group_of(&layout, Replay), vec![Outputs, Replay]);
+}
+
+#[test]
 fn closing_the_shown_tab_shows_its_left_neighbour() {
     let mut layout = DockLayout::default();
     layout.activate(Titles);
@@ -180,7 +197,7 @@ fn a_whole_tab_group_moves_with_its_tabs_and_shown_tab() {
         "{}",
         layout.encode_tree()
     );
-    // Its old split collapsed into Recording & streams and Replay alone.
+    // Its old split collapsed into the Outputs and Replay tab group.
     assert!(layout.encode_tree().ends_with(",[outputs|replay])"));
     assert!(layout.is_showing(Titles));
 

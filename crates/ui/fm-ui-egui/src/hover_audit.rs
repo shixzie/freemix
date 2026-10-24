@@ -2545,9 +2545,6 @@ fn daemon_health() -> fm_protocol::HealthStatusMessage {
     }
 }
 
-/// Live source drift telemetry (AU-004): input 2's loop runs clean, input
-/// 3's recovers after underruns, so both `SYNC` keys and the amber health
-/// lamp are audited.
 /// OR-012: two recorded sources, a mark, a complete and a partial event,
 /// and two Replay inputs, one playing and one with nothing cued.
 pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
@@ -2629,6 +2626,9 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
     }
 }
 
+/// Live source drift telemetry (AU-004): input 2's loop runs clean, input
+/// 3's recovers after underruns, so both `SYNC` keys and the amber health
+/// lamp are audited.
 fn source_sync() -> fm_protocol::SourceSyncStatusMessage {
     let sample = |id, state, underruns| fm_protocol::SourceSyncSample {
         input: wire(id),

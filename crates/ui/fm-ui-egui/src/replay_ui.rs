@@ -27,6 +27,7 @@ use fm_protocol::{
 };
 use fm_types::{FrameRate, InputId};
 
+use crate::edit_history::stinger_edit_lock_reason;
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::monitors::input_name;
@@ -56,7 +57,10 @@ pub(crate) fn settings_block(state: &StudioUiState) -> Option<&'static str> {
     let ready = state.connection_status == StudioConnectionStatus::Ready
         && state.view.is_some()
         && state.can_edit_project;
-    (!ready).then(|| unavailable_reason(state, Capability::EditProject))
+    if !ready {
+        return Some(unavailable_reason(state, Capability::EditProject));
+    }
+    stinger_edit_lock_reason(state)
 }
 
 /// Why marks and captures cannot be taken, live gates first.
@@ -72,6 +76,23 @@ pub(crate) fn capture_block(
             .is_empty()
             .then_some(Msg::ReplayReasonNotRecording.en())
     })
+}
+
+/// The inputs the operator may tick for recording: every input except the
+/// Replay inputs. The server's `replay_status` lists one player per Replay
+/// input, and the server refuses to record a Replay input.
+#[must_use]
+pub(crate) fn recordable_sources(inputs: &[InputId], status: &ReplayStatusMessage) -> Vec<InputId> {
+    inputs
+        .iter()
+        .copied()
+        .filter(|input| {
+            !status
+                .players
+                .iter()
+                .any(|player| player.input.to_domain() == *input)
+        })
+        .collect()
 }
 
 /// `settings` with `input` recorded (appended as the last angle) or not.
@@ -196,18 +217,13 @@ fn draw_recording(
         }
     });
     let block = settings_block(state);
-    let players: Vec<InputId> = status
-        .players
-        .iter()
-        .map(|player| player.input.to_domain())
-        .collect();
     let inputs = state
         .view
         .as_ref()
         .map(|view| view.inputs.clone())
         .unwrap_or_default();
     ui.horizontal_wrapped(|ui| {
-        for input in inputs.into_iter().filter(|input| !players.contains(input)) {
+        for input in recordable_sources(&inputs, status) {
             let recorded = status.settings.sources.contains(&input);
             let full = !recorded && status.settings.sources.len() >= MAX_REPLAY_RECORD_SOURCES;
             let reason = block.or_else(|| full.then_some(Msg::ReplayReasonFull.en()));
@@ -466,8 +482,9 @@ fn draw_player(
     });
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        if let Some(event) = event {
-            let shown = player.angle.unwrap_or(event.angles[0]);
+        if let Some(event) = event
+            && let Some(shown) = player.angle.or(event.angles.first().copied())
+        {
             ComboBox::from_id_salt(("studio-replay-angle", input))
                 .selected_text(name_of(state, l, shown.to_domain()))
                 .width(110.0)
@@ -497,7 +514,7 @@ fn draw_player(
         }
         for speed in SPEEDS {
             let lit = player.playing && player.speed == speed;
-            let label = format!("{}%", speed.percent());
+            let label = l.percent(i64::from(speed.percent()));
             if ui
                 .add_enabled(
                     cued_reason.is_none(),
@@ -602,6 +619,34 @@ mod tests {
         );
     }
 
+    /// OR-012: a Replay input is a player, never a recording source.
+    #[test]
+    fn replay_inputs_are_not_offered_as_recording_sources() {
+        let status = crate::hover_audit::replay_status();
+        let inputs = [input(1), input(4), input(5), input(6)];
+        assert_eq!(
+            recordable_sources(&inputs, &status),
+            vec![input(1), input(6)]
+        );
+    }
+
+    /// OR-012: an event the server reports without angles draws without
+    /// panicking.
+    #[test]
+    fn an_event_without_angles_draws_without_panicking() {
+        let mut state = crate::hover_audit::bank_fixture();
+        let mut status = crate::hover_audit::replay_status();
+        status.events[0].angles.clear();
+        status.players[0].angle = None;
+        state.replay = Some(Box::new(status));
+        let context = egui::Context::default();
+        let mut intents = Vec::new();
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            draw_replay(ui, &state, &mut intents);
+        });
+        assert_eq!(intents, Vec::new());
+    }
+
     #[test]
     fn keys_follow_the_session_gates_and_the_recording() {
         let view = crate::hover_audit::bank_fixture().view.unwrap();
@@ -616,6 +661,16 @@ mod tests {
         assert!(live_block(&ready(false, true)).is_some());
         assert_eq!(settings_block(&ready(false, true)), None);
         assert!(settings_block(&ready(true, false)).is_some());
+        // A locked show keeps its live keys but not the recording settings.
+        let mut locked = ready(true, true);
+        if let Some(view) = locked.view.as_mut() {
+            view.edit_locks.project = true;
+        }
+        assert_eq!(live_block(&locked), None);
+        assert_eq!(
+            settings_block(&locked),
+            Some(crate::edit_history::PROJECT_LOCKED_REASON)
+        );
         assert_eq!(capture_block(&ready(true, false), &status), None);
         status.settings.sources.clear();
         assert_eq!(
