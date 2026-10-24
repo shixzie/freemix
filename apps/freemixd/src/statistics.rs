@@ -5,8 +5,10 @@
 //! subscriber count and revision on either daemon, and on a native daemon the
 //! frame loop's telemetry drained since the previous sample (host frame
 //! lateness and GPU pass times as histograms, audio, recorder, stream,
-//! monitor, camera, and disk counters and gauges). Everything lands in one
-//! bounded [`MetricRegistry`] under the stable names in [`names`].
+//! monitor, camera, and disk counters and gauges), plus bounded snapshots of
+//! the stream targets' network state, the live sources' clock sync, and the
+//! running encoders' queue depth. Everything lands in one bounded
+//! [`MetricRegistry`] under the stable names in [`names`].
 //!
 //! Each sample also measures utilization:
 //!
@@ -19,6 +21,9 @@
 //!   (not uploads, readbacks, encoders, or other processes) and reads low
 //!   when timestamp samples are dropped. It is unavailable on the simulated
 //!   daemon and on adapters without timestamp queries.
+//! - Encoder: the fullest pair queue across the running recorder slots and
+//!   started stream targets, as a share of its configured capacity. It is
+//!   unavailable while no output reports a queue.
 //!
 //! An [`AlertEngine`] evaluates the [`DEFAULT_RULES`] after every sample.
 //! Each fired, resolved, or reminder notification prints one
@@ -44,6 +49,7 @@ use fm_observability::{
 use fm_protocol::{
     DaemonHealth, HealthAlert, HealthAlertRule, HealthNotification, HealthNotificationKind,
     HealthSeverity, HealthStatusMessage, MAX_UTILIZATION_PERMILLE, ServerIdentity,
+    SourceClockState, SourceSyncSample,
 };
 
 /// The shortest spacing of two statistics samples.
@@ -105,6 +111,34 @@ pub(crate) mod names {
     pub(crate) const DISK_FREE_BYTES: &str = "disk.free_bytes";
     /// Outputs (stream targets and recorder slots) that latched a failure.
     pub(crate) const OUTPUTS_FAILED: &str = "output.failed";
+    /// Started stream targets that have not latched a failure and were not
+    /// deliberately stopped.
+    pub(crate) const NETWORK_ACTIVE_TARGETS: &str = "network.active_targets";
+    /// Active stream targets whose transport is delivering or awaiting its
+    /// first random-access pair.
+    pub(crate) const NETWORK_CONNECTED_TARGETS: &str = "network.connected_targets";
+    /// Active stream targets waiting out a reconnect backoff.
+    pub(crate) const NETWORK_RECONNECTING_TARGETS: &str = "network.reconnecting_targets";
+    /// Encoded outgoing bitrate summed over the active stream targets.
+    pub(crate) const NETWORK_BITRATE_KBPS: &str = "network.bitrate_kbps";
+    /// The worst packet loss an active target's transport reported, in parts
+    /// per million; absent while no transport reports one.
+    pub(crate) const NETWORK_PACKET_LOSS_PPM: &str = "network.packet_loss_ppm";
+    /// Running live sources.
+    pub(crate) const SYNC_SOURCES: &str = "sync.sources";
+    /// Live sources whose clock loop is not running healthy.
+    pub(crate) const SYNC_DEGRADED_SOURCES: &str = "sync.degraded_sources";
+    /// The largest absolute estimated drift across the live sources, in ppm.
+    pub(crate) const SYNC_MAX_DRIFT_PPM: &str = "sync.max_drift_ppm";
+    /// The largest audio backlog over its target across the live sources.
+    pub(crate) const SYNC_MAX_BACKLOG_RATIO: &str = "sync.max_backlog_ratio";
+    /// A/V pairs queued across the running encoders whose queue was read.
+    pub(crate) const ENCODER_OUTSTANDING_PAIRS: &str = "encoder.outstanding_pairs";
+    /// Those encoders' configured queue capacity, in pairs.
+    pub(crate) const ENCODER_CAPACITY_PAIRS: &str = "encoder.capacity_pairs";
+    /// The fullest running encoder queue, `0..=1`; absent while no output
+    /// reports a queue.
+    pub(crate) const ENCODER_QUEUE_UTILIZATION: &str = "encoder.queue_utilization";
     /// Sessions subscribed to the control plane.
     pub(crate) const CONTROL_SUBSCRIBERS: &str = "control.subscribers";
     /// The control plane's current revision.
@@ -130,9 +164,10 @@ pub(crate) struct DefaultRule {
     pub(crate) for_millis: u64,
 }
 
-/// Every default rule, in ID order.
+/// Every default rule, in [`HealthAlertRule::ALL`] order (which is also the
+/// wire order), so the engine's insertion order matches the protocol.
 #[allow(clippy::cast_precision_loss)] // the disk thresholds are exact in an f64
-pub(crate) const DEFAULT_RULES: [DefaultRule; 6] = [
+pub(crate) const DEFAULT_RULES: [DefaultRule; 9] = [
     // The process keeps most of the machine busy for ten seconds.
     DefaultRule {
         id: "cpu_saturated",
@@ -201,6 +236,39 @@ pub(crate) const DEFAULT_RULES: [DefaultRule; 6] = [
         clear: 0.0,
         for_millis: 0,
     },
+    // An encoder's queue stayed nearly full for five seconds.
+    DefaultRule {
+        id: "encoder_saturated",
+        metric: names::ENCODER_QUEUE_UTILIZATION,
+        severity: AlertSeverity::Warning,
+        rate: false,
+        direction: ThresholdDirection::Above,
+        trigger: 0.9,
+        clear: 0.6,
+        for_millis: 5_000,
+    },
+    // A stream target kept waiting out reconnect backoff for ten seconds.
+    DefaultRule {
+        id: "stream_reconnecting",
+        metric: names::NETWORK_RECONNECTING_TARGETS,
+        severity: AlertSeverity::Warning,
+        rate: false,
+        direction: ThresholdDirection::Above,
+        trigger: 1.0,
+        clear: 0.0,
+        for_millis: 10_000,
+    },
+    // A live source's clock loop stayed degraded for ten seconds.
+    DefaultRule {
+        id: "sync_degraded",
+        metric: names::SYNC_DEGRADED_SOURCES,
+        severity: AlertSeverity::Warning,
+        rate: false,
+        direction: ThresholdDirection::Above,
+        trigger: 1.0,
+        clear: 0.0,
+        for_millis: 10_000,
+    },
 ];
 
 /// One firing alert.
@@ -268,6 +336,113 @@ pub(crate) struct TapTotals {
     pub(crate) skipped: u64,
 }
 
+/// The active stream targets' aggregate network state, from the shared
+/// output set's bounded per-target telemetry.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct NetworkSample {
+    /// Started targets that have not latched a failure and were not
+    /// deliberately stopped.
+    pub(crate) active_targets: u64,
+    /// Active targets whose transport is delivering or awaiting its first
+    /// random-access pair.
+    pub(crate) connected_targets: u64,
+    /// Active targets waiting out a reconnect backoff.
+    pub(crate) reconnecting_targets: u64,
+    /// Encoded outgoing bitrate summed over the active targets, in kilobits
+    /// per second.
+    pub(crate) bitrate_kbps: u64,
+    /// The worst packet loss an active target's transport reported, in parts
+    /// per million; `None` while none reports one.
+    pub(crate) packet_loss_ppm: Option<u32>,
+}
+
+/// The running live sources' clock-sync health (Protocol 2.76).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct SyncSample {
+    /// Running live sources.
+    pub(crate) sources: u64,
+    /// Sources whose clock loop is not running healthy: not
+    /// [`SourceClockState::Running`], drifting more than
+    /// [`SYNC_DEGRADED_DRIFT_PPM`], or holding more than
+    /// [`SYNC_DEGRADED_BACKLOG_MULTIPLIER`] times their target backlog.
+    pub(crate) degraded_sources: u64,
+    /// The largest absolute estimated drift across the sources, in ppm.
+    pub(crate) max_drift_ppm: f64,
+    /// The largest audio backlog over its target across the sources, as a
+    /// ratio; zero when no source reports a target.
+    pub(crate) max_backlog_ratio: f64,
+}
+
+/// A source counts as degraded past this absolute drift, in ppm.
+const SYNC_DEGRADED_DRIFT_PPM: u64 = 1_000;
+/// A source counts as degraded past this multiple of its target backlog.
+const SYNC_DEGRADED_BACKLOG_MULTIPLIER: u64 = 2;
+
+impl SyncSample {
+    /// Aggregates one bounded wire sample per running live source.
+    #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
+    pub(crate) fn from_samples(samples: &[SourceSyncSample]) -> Self {
+        let mut sync = Self {
+            sources: u64::try_from(samples.len()).unwrap_or(u64::MAX),
+            ..Self::default()
+        };
+        for sample in samples {
+            let drift_ppm = sample.drift_ppm().abs();
+            let degraded_backlog = sample
+                .target_us
+                .saturating_mul(SYNC_DEGRADED_BACKLOG_MULTIPLIER);
+            if sample.state != SourceClockState::Running
+                || sample.drift_mppm.unsigned_abs() > SYNC_DEGRADED_DRIFT_PPM * 1_000
+                || sample.buffer_us > degraded_backlog
+            {
+                sync.degraded_sources = sync.degraded_sources.saturating_add(1);
+            }
+            sync.max_drift_ppm = sync.max_drift_ppm.max(drift_ppm);
+            // A source without a target has no backlog to judge; it does not
+            // fabricate a ratio of zero for the others.
+            if sample.target_us > 0 {
+                sync.max_backlog_ratio = sync
+                    .max_backlog_ratio
+                    .max(sample.buffer_ms() / sample.target_ms());
+            }
+        }
+        sync
+    }
+}
+
+/// The running encoders' bounded queue state, from the running recorder
+/// slots and started stream targets.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct EncoderSample {
+    /// A/V pairs queued across the outputs whose queue was readable.
+    pub(crate) outstanding_pairs: u64,
+    /// Those outputs' configured queue capacity, in pairs.
+    pub(crate) capacity_pairs: u64,
+    /// The fullest of those queues, `0..=1`; `None` when no output reported
+    /// a queue this sample.
+    pub(crate) queue_utilization: Option<f64>,
+}
+
+impl EncoderSample {
+    /// Folds one running output's queue into the aggregate. An output whose
+    /// queue cannot be read this sample is skipped by the caller, never
+    /// folded as a fabricated empty queue.
+    #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
+    pub(crate) fn observe(&mut self, outstanding_pairs: u64, capacity_pairs: u64) {
+        self.outstanding_pairs = self.outstanding_pairs.saturating_add(outstanding_pairs);
+        self.capacity_pairs = self.capacity_pairs.saturating_add(capacity_pairs);
+        if capacity_pairs == 0 {
+            return;
+        }
+        #[allow(clippy::cast_precision_loss)] // queue depths are bounded far below 2^53
+        let utilization = (outstanding_pairs as f64 / capacity_pairs as f64).clamp(0.0, 1.0);
+        self.queue_utilization = Some(
+            self.queue_utilization
+                .map_or(utilization, |fullest| fullest.max(utilization)),
+        );
+    }
+}
+
 /// What the native frame loop observed since the previous sample (the
 /// observation lists) and in total (everything else).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -298,6 +473,12 @@ pub(crate) struct NativeStatisticsSample {
     pub(crate) disk_free_bytes: Option<u64>,
     /// Outputs currently latched failed.
     pub(crate) outputs_failed: u64,
+    /// The active stream targets' aggregate network state.
+    pub(crate) network: NetworkSample,
+    /// The running live sources' clock-sync health.
+    pub(crate) sync: SyncSample,
+    /// The running recorders' and stream targets' encoder queues.
+    pub(crate) encoder: EncoderSample,
 }
 
 /// What the control plane reports on either daemon.
@@ -408,6 +589,18 @@ impl DaemonStatistics {
             (names::CAMERA_DROPPED, MetricDescriptor::Counter),
             (names::DISK_FREE_BYTES, MetricDescriptor::Gauge),
             (names::OUTPUTS_FAILED, MetricDescriptor::Gauge),
+            (names::NETWORK_ACTIVE_TARGETS, MetricDescriptor::Gauge),
+            (names::NETWORK_CONNECTED_TARGETS, MetricDescriptor::Gauge),
+            (names::NETWORK_RECONNECTING_TARGETS, MetricDescriptor::Gauge),
+            (names::NETWORK_BITRATE_KBPS, MetricDescriptor::Gauge),
+            (names::NETWORK_PACKET_LOSS_PPM, MetricDescriptor::Gauge),
+            (names::SYNC_SOURCES, MetricDescriptor::Gauge),
+            (names::SYNC_DEGRADED_SOURCES, MetricDescriptor::Gauge),
+            (names::SYNC_MAX_DRIFT_PPM, MetricDescriptor::Gauge),
+            (names::SYNC_MAX_BACKLOG_RATIO, MetricDescriptor::Gauge),
+            (names::ENCODER_OUTSTANDING_PAIRS, MetricDescriptor::Gauge),
+            (names::ENCODER_CAPACITY_PAIRS, MetricDescriptor::Gauge),
+            (names::ENCODER_QUEUE_UTILIZATION, MetricDescriptor::Gauge),
             (names::CONTROL_SUBSCRIBERS, MetricDescriptor::Gauge),
             (names::CONTROL_REVISION, MetricDescriptor::Gauge),
         ];
@@ -455,7 +648,8 @@ impl DaemonStatistics {
             .render()
     }
 
-    /// Every firing alert, in rule order.
+    /// Every firing alert, in rule ID order. The wire orders them by
+    /// [`HealthAlertRule`] instead; [`Self::health`] sorts them.
     pub(crate) fn active_alerts(&self) -> Vec<ActiveAlert> {
         self.alerts
             .statuses()
@@ -479,7 +673,7 @@ impl DaemonStatistics {
     /// The wire health sample at `now` (Protocol 2.100).
     pub(crate) fn health(&self, now: Instant) -> DaemonHealth {
         let uptime_ms = self.millis(now);
-        let alerts = self
+        let mut alerts: Vec<HealthAlert> = self
             .active_alerts()
             .into_iter()
             .filter_map(|alert| {
@@ -491,6 +685,10 @@ impl DaemonStatistics {
                 })
             })
             .collect();
+        // The engine reports in rule ID order, but the wire requires the
+        // protocol's rule order; the two differ where a newer rule ID sorts
+        // before an older one (`encoder_saturated` before `frame_late`).
+        alerts.sort_unstable_by_key(|alert| alert.rule);
         let notifications = self
             .recent_notifications()
             .filter_map(|notification| {
@@ -594,12 +792,12 @@ impl DaemonStatistics {
         // unknown (it holds its state with no value) instead of firing on
         // an old value.
         self.cpu_utilization = cpu;
-        self.utilization_gauge(names::CPU_UTILIZATION, at, cpu);
+        self.optional_gauge(names::CPU_UTILIZATION, at, cpu);
         self.gpu_utilization = native
             .as_ref()
             .filter(|native| native.gpu_timing)
             .and_then(|native| gpu_utilization(&native.gpu_pass_ms, wall_ms?));
-        self.utilization_gauge(names::GPU_UTILIZATION, at, self.gpu_utilization);
+        self.optional_gauge(names::GPU_UTILIZATION, at, self.gpu_utilization);
         self.gauge(
             names::CONTROL_SUBSCRIBERS,
             at,
@@ -727,6 +925,62 @@ impl DaemonStatistics {
             at,
             gauge_value(native.outputs_failed),
         );
+        self.gauge(
+            names::NETWORK_ACTIVE_TARGETS,
+            at,
+            gauge_value(native.network.active_targets),
+        );
+        self.gauge(
+            names::NETWORK_CONNECTED_TARGETS,
+            at,
+            gauge_value(native.network.connected_targets),
+        );
+        self.gauge(
+            names::NETWORK_RECONNECTING_TARGETS,
+            at,
+            gauge_value(native.network.reconnecting_targets),
+        );
+        self.gauge(
+            names::NETWORK_BITRATE_KBPS,
+            at,
+            gauge_value(native.network.bitrate_kbps),
+        );
+        // An unreported packet loss has no reading; the series is removed so
+        // a stale value never stands in for it.
+        self.optional_gauge(
+            names::NETWORK_PACKET_LOSS_PPM,
+            at,
+            native.network.packet_loss_ppm.map(f64::from),
+        );
+        self.gauge(names::SYNC_SOURCES, at, gauge_value(native.sync.sources));
+        self.gauge(
+            names::SYNC_DEGRADED_SOURCES,
+            at,
+            gauge_value(native.sync.degraded_sources),
+        );
+        self.gauge(names::SYNC_MAX_DRIFT_PPM, at, native.sync.max_drift_ppm);
+        self.gauge(
+            names::SYNC_MAX_BACKLOG_RATIO,
+            at,
+            native.sync.max_backlog_ratio,
+        );
+        self.gauge(
+            names::ENCODER_OUTSTANDING_PAIRS,
+            at,
+            gauge_value(native.encoder.outstanding_pairs),
+        );
+        self.gauge(
+            names::ENCODER_CAPACITY_PAIRS,
+            at,
+            gauge_value(native.encoder.capacity_pairs),
+        );
+        // No readable output queue means no utilization; the series is
+        // removed so the saturation rule reads unknown and holds its state.
+        self.optional_gauge(
+            names::ENCODER_QUEUE_UTILIZATION,
+            at,
+            native.encoder.queue_utilization,
+        );
     }
 
     /// The current value of an unlabelled counter or gauge.
@@ -757,8 +1011,8 @@ impl DaemonStatistics {
         self.record(result);
     }
 
-    /// Sets a utilization gauge, or removes it while it is unavailable.
-    fn utilization_gauge(&mut self, name: &'static str, at: u64, value: Option<f64>) {
+    /// Sets a gauge, or removes it while the reading is unavailable.
+    fn optional_gauge(&mut self, name: &'static str, at: u64, value: Option<f64>) {
         match value {
             Some(value) => self.gauge(name, at, value),
             None => {
@@ -939,15 +1193,310 @@ mod tests {
     }
 
     #[test]
-    fn default_rules_are_sorted_and_valid() {
+    fn default_rules_follow_wire_order_and_are_valid() {
         let ids: Vec<_> = DEFAULT_RULES.iter().map(|rule| rule.id).collect();
-        let mut sorted = ids.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(ids, sorted);
+        let expected: Vec<_> = HealthAlertRule::ALL
+            .iter()
+            .copied()
+            .map(HealthAlertRule::token)
+            .collect();
+        assert_eq!(ids, expected);
+        for rule in DEFAULT_RULES {
+            // A trigger at zero would fire on an idle daemon.
+            assert!(rule.trigger > 0.0, "{} triggers at zero", rule.id);
+            match rule.direction {
+                ThresholdDirection::Above => {
+                    assert!(rule.clear < rule.trigger, "{} has no band", rule.id);
+                }
+                ThresholdDirection::Below => {
+                    assert!(rule.clear > rule.trigger, "{} has no band", rule.id);
+                }
+            }
+        }
+        // The RC-015 rules: one degraded output or a 90%-full encoder queue,
+        // each held before firing.
+        let rule = |id: &str| DEFAULT_RULES.iter().find(|rule| rule.id == id).unwrap();
+        let encoder = rule("encoder_saturated");
+        assert_eq!(encoder.metric, names::ENCODER_QUEUE_UTILIZATION);
+        assert_eq!(
+            (encoder.trigger, encoder.clear, encoder.for_millis),
+            (0.9, 0.6, 5_000)
+        );
+        let reconnecting = rule("stream_reconnecting");
+        assert_eq!(reconnecting.metric, names::NETWORK_RECONNECTING_TARGETS);
+        assert_eq!(
+            (
+                reconnecting.trigger,
+                reconnecting.clear,
+                reconnecting.for_millis
+            ),
+            (1.0, 0.0, 10_000)
+        );
+        let sync = rule("sync_degraded");
+        assert_eq!(sync.metric, names::SYNC_DEGRADED_SOURCES);
+        assert_eq!(
+            (sync.trigger, sync.clear, sync.for_millis),
+            (1.0, 0.0, 10_000)
+        );
         let statistics = DaemonStatistics::new(Instant::now());
         assert_eq!(statistics.alerts.statuses().len(), DEFAULT_RULES.len());
         assert_eq!(statistics.active_alerts().len(), 0);
+    }
+
+    #[test]
+    fn idle_native_reads_zero_while_simulated_reads_unknown() {
+        let zero_on_native = [
+            names::NETWORK_ACTIVE_TARGETS,
+            names::NETWORK_CONNECTED_TARGETS,
+            names::NETWORK_RECONNECTING_TARGETS,
+            names::NETWORK_BITRATE_KBPS,
+            names::SYNC_SOURCES,
+            names::SYNC_DEGRADED_SOURCES,
+            names::SYNC_MAX_DRIFT_PPM,
+            names::SYNC_MAX_BACKLOG_RATIO,
+            names::ENCODER_OUTSTANDING_PAIRS,
+            names::ENCODER_CAPACITY_PAIRS,
+        ];
+        let origin = Instant::now();
+        let mut native_daemon = DaemonStatistics::new(origin);
+        native_daemon.record_sample(
+            origin,
+            ControlSample::default(),
+            Some(NativeStatisticsSample::default()),
+            None,
+        );
+        for name in zero_on_native {
+            assert_eq!(native_daemon.value(name), Some(0.0), "{name}");
+        }
+        // An idle native daemon has no queue and no reported loss: those read
+        // unknown, not a fabricated zero.
+        assert_eq!(native_daemon.value(names::NETWORK_PACKET_LOSS_PPM), None);
+        assert_eq!(native_daemon.value(names::ENCODER_QUEUE_UTILIZATION), None);
+
+        // A simulated daemon reports no native sample at all: the same series
+        // are absent rather than zero.
+        let mut simulated = DaemonStatistics::new(origin);
+        simulated.record_sample(origin, ControlSample::default(), None, None);
+        for name in zero_on_native {
+            assert_eq!(simulated.value(name), None, "{name}");
+        }
+        assert_eq!(simulated.value(names::NETWORK_PACKET_LOSS_PPM), None);
+        assert_eq!(simulated.value(names::ENCODER_QUEUE_UTILIZATION), None);
+    }
+
+    #[test]
+    fn encoder_utilization_is_the_fullest_output_queue() {
+        let mut encoder = EncoderSample::default();
+        assert_eq!(encoder.queue_utilization, None);
+        encoder.observe(1, 4);
+        assert_eq!(encoder.outstanding_pairs, 1);
+        assert_eq!(encoder.capacity_pairs, 4);
+        assert_eq!(encoder.queue_utilization, Some(0.25));
+        // A second output with a fuller queue sets the aggregate reading.
+        encoder.observe(3, 4);
+        assert_eq!(encoder.outstanding_pairs, 4);
+        assert_eq!(encoder.capacity_pairs, 8);
+        assert_eq!(encoder.queue_utilization, Some(0.75));
+        // A reading deeper than the configured capacity still reads full.
+        encoder.observe(8, 4);
+        assert_eq!(encoder.queue_utilization, Some(1.0));
+        // A zero-capacity output contributes no utilization.
+        let mut empty = EncoderSample::default();
+        empty.observe(2, 0);
+        assert_eq!(empty.outstanding_pairs, 2);
+        assert_eq!(empty.capacity_pairs, 0);
+        assert_eq!(empty.queue_utilization, None);
+    }
+
+    #[test]
+    fn sync_sample_counts_degraded_sources() {
+        let sample = |state, drift_mppm, buffer_us, target_us| SourceSyncSample {
+            input: fm_protocol::WireInputId::new(std::num::NonZeroU128::new(1).unwrap()),
+            kind: fm_protocol::SourceSyncKind::Capture,
+            state,
+            input_rate_hz: 48_000,
+            output_rate_hz: 48_000,
+            drift_mppm,
+            correction_mppm: 0,
+            buffer_us,
+            target_us,
+            resyncs: 0,
+            underruns: 0,
+            overruns: 0,
+            picture_drops: 0,
+            picture_repeats: 0,
+            restarts: 0,
+        };
+        assert_eq!(SyncSample::from_samples(&[]), SyncSample::default());
+        let sync = SyncSample::from_samples(&[
+            // Healthy: running, well inside the drift band, backlog at its
+            // target.
+            sample(SourceClockState::Running, 250_000, 40_000, 40_000),
+            // Priming is not running yet.
+            sample(SourceClockState::Priming, 0, 40_000, 40_000),
+            // Drifting past 1000 ppm.
+            sample(SourceClockState::Running, -1_500_000, 40_000, 40_000),
+            // Backlog past twice its target.
+            sample(SourceClockState::Running, 0, 121_000, 60_000),
+        ]);
+        assert_eq!(sync.sources, 4);
+        assert_eq!(sync.degraded_sources, 3);
+        assert!((sync.max_drift_ppm - 1_500.0).abs() < 1e-9);
+        assert!((2.0..2.1).contains(&sync.max_backlog_ratio));
+    }
+
+    #[test]
+    fn degraded_stream_sync_and_encoder_samples_raise_and_clear_their_alerts() {
+        let origin = Instant::now();
+        let mut statistics = DaemonStatistics::new(origin);
+        let at = |seconds: u64| origin + Duration::from_secs(seconds);
+        // One target reconnecting, one degraded live source, and a 90%-full
+        // encoder queue, sampled once a second. The disk gauge stays absent
+        // and no output has failed, so only the three new rules are in play.
+        let degraded = |statistics: &mut DaemonStatistics, seconds: u64| {
+            let mut sample = native(Vec::new());
+            sample.disk_free_bytes = None;
+            sample.network.active_targets = 2;
+            sample.network.connected_targets = 1;
+            sample.network.reconnecting_targets = 1;
+            sample.sync.sources = 2;
+            sample.sync.degraded_sources = 1;
+            sample.sync.max_drift_ppm = 1_500.0;
+            sample.sync.max_backlog_ratio = 2.5;
+            sample.encoder.outstanding_pairs = 9;
+            sample.encoder.capacity_pairs = 10;
+            sample.encoder.queue_utilization = Some(0.9);
+            statistics.record_sample(at(seconds), ControlSample::default(), Some(sample), None);
+        };
+        for seconds in 0..5 {
+            degraded(&mut statistics, seconds);
+            assert!(
+                statistics.active_alerts().is_empty(),
+                "pending at {seconds} s"
+            );
+        }
+        // The encoder holds for five seconds; the other two for ten.
+        degraded(&mut statistics, 5);
+        assert_eq!(rule_ids(&statistics.active_alerts()), ["encoder_saturated"]);
+        for seconds in 6..10 {
+            degraded(&mut statistics, seconds);
+            assert_eq!(rule_ids(&statistics.active_alerts()), ["encoder_saturated"]);
+        }
+        degraded(&mut statistics, 10);
+        assert_eq!(
+            rule_ids(&statistics.active_alerts()),
+            ["encoder_saturated", "stream_reconnecting", "sync_degraded"]
+        );
+        let health = statistics.health(at(10));
+        assert!(health.is_valid());
+        assert_eq!(
+            health.alerts,
+            [
+                HealthAlert {
+                    rule: HealthAlertRule::EncoderSaturated,
+                    severity: HealthSeverity::Warning,
+                    since_ms: 5_000,
+                    value_milli: Some(900),
+                },
+                HealthAlert {
+                    rule: HealthAlertRule::StreamReconnecting,
+                    severity: HealthSeverity::Warning,
+                    since_ms: 10_000,
+                    value_milli: Some(1_000),
+                },
+                HealthAlert {
+                    rule: HealthAlertRule::SyncDegraded,
+                    severity: HealthSeverity::Warning,
+                    since_ms: 10_000,
+                    value_milli: Some(1_000),
+                },
+            ]
+        );
+
+        // Every reading recovers: the queue falls into the hysteresis band's
+        // clear side, and the target and source counts reach zero.
+        let mut healthy = native(Vec::new());
+        healthy.disk_free_bytes = None;
+        healthy.network.active_targets = 2;
+        healthy.network.connected_targets = 2;
+        healthy.encoder.capacity_pairs = 10;
+        healthy.encoder.queue_utilization = Some(0.5);
+        statistics.record_sample(at(11), ControlSample::default(), Some(healthy), None);
+        assert!(statistics.active_alerts().is_empty());
+        let health = statistics.health(at(11));
+        assert!(health.is_valid());
+        assert!(health.alerts.is_empty());
+        let notifications: Vec<_> = health
+            .notifications
+            .iter()
+            .map(|notification| (notification.rule, notification.kind))
+            .collect();
+        assert_eq!(
+            notifications,
+            [
+                (
+                    HealthAlertRule::EncoderSaturated,
+                    HealthNotificationKind::Firing
+                ),
+                (
+                    HealthAlertRule::StreamReconnecting,
+                    HealthNotificationKind::Firing
+                ),
+                (
+                    HealthAlertRule::SyncDegraded,
+                    HealthNotificationKind::Firing
+                ),
+                (
+                    HealthAlertRule::EncoderSaturated,
+                    HealthNotificationKind::Resolved
+                ),
+                (
+                    HealthAlertRule::StreamReconnecting,
+                    HealthNotificationKind::Resolved
+                ),
+                (
+                    HealthAlertRule::SyncDegraded,
+                    HealthNotificationKind::Resolved
+                ),
+            ]
+        );
+    }
+
+    /// The engine reports in rule ID order, where `encoder_saturated` sorts
+    /// before `frame_late`; the protocol orders `frame_late` first, and the
+    /// wire rejects a health sample whose alerts are out of that order.
+    #[test]
+    fn health_orders_alerts_by_protocol_rule_not_id() {
+        let origin = Instant::now();
+        let mut statistics = DaemonStatistics::new(origin);
+        let second = |seconds| origin + Duration::from_secs(seconds);
+        for seconds in 0..=5 {
+            let mut sample = native(vec![40.0]);
+            sample.disk_free_bytes = None;
+            sample.encoder.capacity_pairs = 10;
+            sample.encoder.queue_utilization = Some(0.95);
+            statistics.record_sample(
+                second(seconds),
+                ControlSample::default(),
+                Some(sample),
+                None,
+            );
+        }
+        // Both hold for five seconds and fire together.
+        assert_eq!(
+            rule_ids(&statistics.active_alerts()),
+            ["encoder_saturated", "frame_late"]
+        );
+        let health = statistics.health(second(5));
+        assert!(health.is_valid());
+        let rules: Vec<_> = health.alerts.iter().map(|alert| alert.rule).collect();
+        assert_eq!(
+            rules,
+            [
+                HealthAlertRule::FrameLate,
+                HealthAlertRule::EncoderSaturated
+            ]
+        );
     }
 
     #[test]

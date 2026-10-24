@@ -2102,6 +2102,9 @@ struct NativeProgramRecorder {
     audio_bitrate_kbps: Option<u32>,
     /// Estimated recording bitrate, for the free-space preflight.
     bitrate_bits_per_second: u64,
+    /// Configured capacity of the open recorder's own pair queue, for the
+    /// encoder statistics sample.
+    queue_capacity: usize,
     /// WAV sidecar bitrate with `--record-wav`, which also gives the segment
     /// its WAV session.
     wav_bits_per_second: Option<u64>,
@@ -2466,6 +2469,7 @@ impl NativeProgramRecorder {
                 video_bitrate_kbps,
                 audio_bitrate_kbps,
                 bitrate_bits_per_second,
+                queue_capacity: config.limits.max_outstanding_pairs,
                 wav_bits_per_second,
                 session: None,
             },
@@ -2631,6 +2635,17 @@ impl NativeProgramRecorder {
             saturating_u64(pairs).saturating_add(saturating_u64(self.backlog.len())),
             saturating_u64(bytes).saturating_add(saturating_u64(self.backlog_bytes)),
         )
+    }
+
+    /// The open recorder's own pair queue against its configured capacity,
+    /// for the encoder statistics sample. The pre-recorder backlog is not
+    /// part of it; `None` while the segment has not opened.
+    fn queue_load(&self) -> Option<(u64, u64)> {
+        let telemetry = self.recorder()?.telemetry();
+        Some((
+            saturating_u64(telemetry.outstanding_pairs),
+            saturating_u64(self.queue_capacity),
+        ))
     }
 
     fn should_rotate(&self, segment_seconds: Option<NonZeroU32>) -> bool {
@@ -3396,6 +3411,9 @@ struct NativeProgramStream {
     started: bool,
     /// Uptime and encoded bitrate for the status record.
     meter: StreamLinkMeter,
+    /// Configured capacity of the sink's pair queue, for the encoder
+    /// statistics sample.
+    queue_capacity: usize,
     /// The authored configuration this runtime realizes, with its running
     /// flag cleared: a destination edit that changes it rebuilds the runtime
     /// (OR-006).
@@ -4144,6 +4162,7 @@ impl NativeProgramStream {
         sink_config.stream_key = split.stream_key;
         sink_config.ladder = stream_ladder(split.target);
         sink_config.srt = stream_srt_options(split.target);
+        let queue_capacity = sink_config.limits.max_outstanding_pairs;
         output_set
             .add_destination(
                 DestinationConfig::new(
@@ -4184,6 +4203,7 @@ impl NativeProgramStream {
             enqueue_backpressure: false,
             started: false,
             meter: StreamLinkMeter::default(),
+            queue_capacity,
             authored: split.target.clone().set_running(false),
         }
     }
@@ -4193,6 +4213,20 @@ impl NativeProgramStream {
     /// boundary starts it again with a fresh reconnect budget.
     fn retry(&mut self, output_set: &mut OutputSet) {
         self.stop_requested(output_set);
+    }
+
+    /// This target's own pair queue against its configured capacity, for the
+    /// encoder statistics sample; `None` before the target started, while a
+    /// transport job holds the sink, or before its streamer opened.
+    fn queue_load(&self) -> Option<(u64, u64)> {
+        if !self.started {
+            return None;
+        }
+        let telemetry = self.sink.idle_sink()?.stream_telemetry()?;
+        Some((
+            saturating_u64(telemetry.outstanding_pairs),
+            saturating_u64(self.queue_capacity),
+        ))
     }
 
     /// Marks this target running in the shared output set. Connection trouble
@@ -4382,6 +4416,72 @@ fn route_active(stream: &NativeProgramStream, output_set: &OutputSet) -> bool {
             output_set.state(stream.destination_id),
             Some(DestinationState::Stopped)
         )
+}
+
+/// The active stream targets' aggregate network state, bounded to the
+/// configured target count (RC-015).
+#[cfg(feature = "native-media")]
+fn network_sample(
+    output_set: &OutputSet,
+    streams: &[NativeProgramStream],
+) -> statistics::NetworkSample {
+    let mut network = statistics::NetworkSample::default();
+    for stream in streams.iter().take(fm_switcher::MAX_STREAM_COUNT) {
+        if !route_active(stream, output_set) {
+            continue;
+        }
+        network.active_targets = network.active_targets.saturating_add(1);
+        match output_set.state(stream.destination_id) {
+            Some(
+                DestinationState::Live
+                | DestinationState::Congested
+                | DestinationState::AwaitingRandomAccess,
+            ) => network.connected_targets = network.connected_targets.saturating_add(1),
+            Some(DestinationState::WaitingToReconnect { .. }) => {
+                network.reconnecting_targets = network.reconnecting_targets.saturating_add(1);
+            }
+            _ => {}
+        }
+        network.bitrate_kbps = network
+            .bitrate_kbps
+            .saturating_add(u64::from(stream.meter.bitrate_kbps));
+        if let Some(loss) = output_set
+            .telemetry(stream.destination_id)
+            .and_then(NetworkTelemetry::packet_loss_ppm)
+        {
+            network.packet_loss_ppm = Some(
+                network
+                    .packet_loss_ppm
+                    .map_or(loss, |worst| worst.max(loss)),
+            );
+        }
+    }
+    network
+}
+
+/// The running recorder slots' and started stream targets' encoder queues,
+/// bounded to the two slots and the configured target count (RC-015). An
+/// output whose queue cannot be read this sample is skipped, never folded as
+/// an empty queue.
+#[cfg(feature = "native-media")]
+fn encoder_sample(
+    recorders: &[ProgramRecording; RECORDER_SLOTS],
+    streams: &[NativeProgramStream],
+) -> statistics::EncoderSample {
+    let mut encoder = statistics::EncoderSample::default();
+    for slot in recorders {
+        if let ProgramRecording::Running(recorder) = slot
+            && let Some((outstanding, capacity)) = recorder.queue_load()
+        {
+            encoder.observe(outstanding, capacity);
+        }
+    }
+    for stream in streams.iter().take(fm_switcher::MAX_STREAM_COUNT) {
+        if let Some((outstanding, capacity)) = stream.queue_load() {
+            encoder.observe(outstanding, capacity);
+        }
+    }
+    encoder
 }
 
 /// One rendition group's share of the frame pipeline.
@@ -7606,7 +7706,9 @@ impl NativeDaemon {
     }
 
     /// Drains the frame loop's observations since the previous call and
-    /// reports its whole-run totals for the statistics registry (RC-015).
+    /// reports its whole-run totals, the active stream targets' network
+    /// state, the live sources' clock sync, and the running encoders' queues
+    /// for the statistics registry (RC-015).
     fn take_statistics_sample(&mut self) -> statistics::NativeStatisticsSample {
         let rate = self.pacer.frame_rate();
         let frame_interval_ms =
@@ -7633,6 +7735,10 @@ impl NativeDaemon {
                 ProgramRecording::Off => false,
             })
             .count();
+        let network = network_sample(&self.output_set, &self.streams);
+        let sync_samples = self.source_sync_samples();
+        let sync = statistics::SyncSample::from_samples(&sync_samples);
+        let encoder = encoder_sample(&self.recorders, &self.streams);
         let telemetry = &mut self.telemetry;
         let tap = |tap: MonitorTap| {
             let counters = telemetry.monitor_taps[tap.index()];
@@ -7671,6 +7777,9 @@ impl NativeDaemon {
             disk_free_bytes: telemetry.disk_free_bytes,
             outputs_failed: u64::try_from(streams_failed.saturating_add(recorders_failed))
                 .unwrap_or(u64::MAX),
+            network,
+            sync,
+            encoder,
         }
     }
 
@@ -28090,12 +28199,14 @@ mod tests {
         let mut set = OutputSet::new();
         set.add_destination(mock_destination(1)).unwrap();
         let destination_id = DestinationId::new(1).unwrap();
+        let sink_config = RtmpSinkConfig::new(test_rendition(1), test_stream_format());
+        let queue_capacity = sink_config.limits.max_outstanding_pairs;
         let mut stream = NativeProgramStream {
             target: SwitcherStreamTargetId::from_non_zero(NonZeroU128::new(7).unwrap()),
             destination_id,
             redacted_destination: "rtmp://primary.example.test:1935/live".to_owned(),
             sink: stream_transport::BackgroundTransport::new(
-                FfmpegRtmpSink::new(RtmpSinkConfig::new(test_rendition(1), test_stream_format())),
+                FfmpegRtmpSink::new(sink_config),
                 "freemix-native-stream-test".to_owned(),
             ),
             ledger: StreamPairLedger::default(),
@@ -28104,6 +28215,7 @@ mod tests {
             enqueue_backpressure: false,
             started: false,
             meter: StreamLinkMeter::default(),
+            queue_capacity,
             authored: test_authored_target(7),
         };
         stream.start(&mut set);
