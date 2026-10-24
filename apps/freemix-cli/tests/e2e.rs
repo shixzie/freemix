@@ -19,9 +19,9 @@ use fm_persistence::{MutationBatch, ProjectStore, StoredProject};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CapabilityReportSummary, ClientType, CommandMessage, CommandPayload,
     CommandResult, EngineIdentity, EventCursor, EventMessage, EventPayload, HandshakeOutcome,
-    HandshakeResponse, MAX_LINE_BYTES, OverlayStatus, ProtocolVersion, Role, RuntimeDomainBoundary,
-    RuntimeEventMessage, RuntimeLifecycleEvent, ServerIdentity, SnapshotMessage, SnapshotReason,
-    WireInputId, WireMessage, decode_line, encode_line,
+    HandshakeResponse, MAX_LINE_BYTES, OverlayStatus, ProtocolVersion, ReelClip, ReelSpec, Role,
+    RuntimeDomainBoundary, RuntimeEventMessage, RuntimeLifecycleEvent, ServerIdentity,
+    SnapshotMessage, SnapshotReason, WireInputId, WireMessage, decode_line, encode_line,
 };
 use fm_types::{BusId, InputId, OutputId, SceneId};
 
@@ -29,6 +29,8 @@ static TEST_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const TEST_PEER_TIMEOUT: Duration = Duration::from_secs(4);
 const TEST_CLI_TIMEOUT: Duration = Duration::from_secs(4);
+/// The absolute destination the OR-013 fake export writes to.
+const REEL_EXPORT_DESTINATION: &str = "/srv/reels/highlights.mp4";
 
 struct FakeRemoteServer {
     address: SocketAddr,
@@ -198,6 +200,15 @@ impl FakeRemoteServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let worker = thread::spawn(move || serve_record_start(&listener));
+        Self { address, worker }
+    }
+
+    /// OR-013: serves one Viewer `remote-reel` listing and one Operator
+    /// `remote-reel-export` whose status moves from running to completed.
+    fn start_reel_sessions() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || serve_reel_sessions(&listener));
         Self { address, worker }
     }
 
@@ -749,6 +760,140 @@ fn serve_record_start(listener: &TcpListener) {
         Vec::new(),
         recording_roster([true, false]),
     );
+}
+
+/// OR-013: one Viewer `remote-reel` session, one Operator
+/// `remote-reel-export` command session, and one Viewer polling session
+/// whose job moves from running to completed.
+#[allow(clippy::too_many_lines)]
+fn serve_reel_sessions(listener: &TcpListener) {
+    let engine = EngineIdentity {
+        engine_id: "project-42".into(),
+        state_epoch: 1,
+        log_id: "fake-remote-log".into(),
+    };
+    let spec = ReelSpec {
+        id: 1,
+        name: "Highlights".into(),
+        clips: vec![
+            ReelClip {
+                event: 7,
+                angle: InputId::new(NonZeroU128::new(1).unwrap()),
+                trim_in_frames: 0,
+                trim_out_frames: 0,
+                speed_percent: 100,
+            },
+            ReelClip {
+                event: 8,
+                angle: InputId::new(NonZeroU128::new(2).unwrap()),
+                trim_in_frames: 5,
+                trim_out_frames: 6,
+                speed_percent: 50,
+            },
+        ],
+    };
+    let status = |sequence: u64,
+                  request_id: Option<String>,
+                  state: fm_protocol::ReelExportState,
+                  completed_frames: u64,
+                  bytes: Option<u64>| fm_protocol::ReelStatusMessage {
+        server: server_identity(&engine),
+        sequence,
+        request_id,
+        reels: vec![fm_protocol::ReelStatus {
+            id: spec.id,
+            spec: spec.clone(),
+            total_frames: Some(120),
+            error: None,
+        }],
+        exports: vec![fm_protocol::ReelExportStatus {
+            job: 4,
+            reel: spec.id,
+            destination: REEL_EXPORT_DESTINATION.into(),
+            state,
+            completed_frames,
+            total_frames: Some(120),
+            bytes,
+            failure: None,
+        }],
+    };
+
+    // `remote-reel`: a Viewer asks for the status.
+    let (stream, _) = listener.accept().unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    assert_handshake_request_viewer(read_message(&mut reader));
+    write_handshake_role(&mut writer, &engine, 0, Role::Viewer);
+    let WireMessage::ReelStatusRequest(request) = read_message(&mut reader) else {
+        panic!("expected reel_status_request");
+    };
+    write_message(
+        &mut writer,
+        &WireMessage::ReelStatus(Box::new(status(
+            1,
+            Some(request.request_id),
+            fm_protocol::ReelExportState::Completed,
+            120,
+            Some(4_096),
+        ))),
+    );
+    drop(reader);
+    drop(writer);
+
+    // `remote-reel-export`: an Operator sends the export; the CLI then polls
+    // on a fresh Viewer session.
+    let (stream, _) = listener.accept().unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    assert_handshake_request(read_message(&mut reader));
+    write_handshake_role(&mut writer, &engine, 0, Role::Operator);
+    let WireMessage::Command(command) = read_message(&mut reader) else {
+        panic!("expected remote reel export command");
+    };
+    assert_command(
+        &command,
+        &CommandPayload::Reel(fm_protocol::ReelOperation::Export {
+            job: 4,
+            reel: 1,
+            destination: REEL_EXPORT_DESTINATION.into(),
+        }),
+        "remote-reel-export",
+        0,
+    );
+    write_message(
+        &mut writer,
+        &WireMessage::CommandResult(CommandResult::Accepted {
+            id: command.id,
+            revision: 1,
+            scheduled_frame: Some(1),
+        }),
+    );
+    drop(reader);
+    drop(writer);
+
+    let (stream, _) = listener.accept().unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    assert_handshake_request_viewer(read_message(&mut reader));
+    write_handshake_role(&mut writer, &engine, 1, Role::Viewer);
+    for (sequence, state, completed_frames, bytes) in [
+        (2, fm_protocol::ReelExportState::Running, 60, None),
+        (3, fm_protocol::ReelExportState::Completed, 120, Some(4_096)),
+    ] {
+        let WireMessage::ReelStatusRequest(request) = read_message(&mut reader) else {
+            panic!("expected reel_status_request while polling");
+        };
+        write_message(
+            &mut writer,
+            &WireMessage::ReelStatus(Box::new(status(
+                sequence,
+                Some(request.request_id),
+                state,
+                completed_frames,
+                bytes,
+            ))),
+        );
+    }
 }
 
 /// Serves a Viewer session whose initial snapshot reports the durable streams
@@ -7841,6 +7986,262 @@ fn local_replay_set_refuses_bad_sources_retention_and_root_without_touching_the_
         );
     }
     fs::remove_dir_all(context.root).unwrap();
+}
+
+/// OR-013 / Protocol 2.107: a local reel persists its ordered clips,
+/// replacement keeps its place, and `reel` prints the stored spec with the
+/// plan error a local project has without recorded replay events.
+#[test]
+fn local_reel_set_persists_and_reel_prints_the_plan() {
+    let context = ContractContext::new();
+    assert_success(&invoke_bounded(&["new", context.project_path()]));
+    assert_success(&invoke_bounded(&[
+        "reel-set",
+        context.project_path(),
+        "--id",
+        "1",
+        "--name",
+        "Highlights",
+        "--clips",
+        "7/1/0/0/100,8/2/5/6/50",
+    ]));
+    let store = ProjectStore::new(&context.project).unwrap();
+    let stored = store.load().unwrap();
+    let reel = &stored.project().reels()[0];
+    assert_eq!(reel.id, 1);
+    assert_eq!(reel.name, "Highlights");
+    assert_eq!(
+        reel.clips,
+        vec![
+            ReelClip {
+                event: 7,
+                angle: InputId::new(NonZeroU128::new(1).unwrap()),
+                trim_in_frames: 0,
+                trim_out_frames: 0,
+                speed_percent: 100,
+            },
+            ReelClip {
+                event: 8,
+                angle: InputId::new(NonZeroU128::new(2).unwrap()),
+                trim_in_frames: 5,
+                trim_out_frames: 6,
+                speed_percent: 50,
+            },
+        ]
+    );
+    let shown = invoke_bounded(&["reel", context.project_path()]);
+    assert_success(&shown);
+    assert_eq!(
+        stdout(&shown),
+        concat!(
+            "Reel(id=1, name=\"Highlights\", clips=2, total_frames=none, ",
+            "error=\"unknown replay event 7\")\n",
+            "ReelClip(reel=1, event=7, angle=1, in=0, out=0, speed=100)\n",
+            "ReelClip(reel=1, event=8, angle=2, in=5, out=6, speed=50)"
+        )
+    );
+
+    // Replacing the same id keeps its place and rewrites its clips.
+    assert_success(&invoke_bounded(&[
+        "reel-set",
+        context.project_path(),
+        "--id",
+        "1",
+        "--name",
+        "Second",
+        "--clips",
+        "9/2/0/0/75",
+    ]));
+    let stored = store.load().unwrap();
+    assert_eq!(stored.project().reels().len(), 1);
+    assert_eq!(stored.project().reels()[0].name, "Second");
+    assert_eq!(stored.project().reels()[0].clips.len(), 1);
+    assert_eq!(
+        stdout(&invoke_bounded(&["reel", context.project_path()])),
+        concat!(
+            "Reel(id=1, name=\"Second\", clips=1, total_frames=none, ",
+            "error=\"unknown replay event 9\")\n",
+            "ReelClip(reel=1, event=9, angle=2, in=0, out=0, speed=75)"
+        )
+    );
+
+    assert_success(&invoke_bounded(&[
+        "reel-delete",
+        context.project_path(),
+        "--id",
+        "1",
+    ]));
+    assert!(store.load().unwrap().project().reels().is_empty());
+    assert_eq!(
+        stdout(&invoke_bounded(&["reel", context.project_path()])),
+        ""
+    );
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+/// OR-013 / Protocol 2.107: `reel-set` refuses a bad speed, angle, event,
+/// clip shape, trim, name, id, repeated `--id`, more than 64 clips, and a
+/// ninth reel before touching the project.
+#[allow(clippy::too_many_lines)]
+#[test]
+fn local_reel_set_refuses_bad_clips_and_leaves_the_project_untouched() {
+    let context = ContractContext::new();
+    assert_success(&invoke_bounded(&["new", context.project_path()]));
+    let store = ProjectStore::new(&context.project).unwrap();
+    let manifest = context.project.join("project.json");
+    let before = fs::read(&manifest).unwrap();
+    let many = (1..=65)
+        .map(|_| "1/1/0/0/100")
+        .collect::<Vec<_>>()
+        .join(",");
+    let cases: [(&[&str], &str); 9] = [
+        (
+            &["--id", "1", "--name", "Speed", "--clips", "1/1/0/0/60"],
+            "invalid reel: reel clip speed must be 25, 50, 75, or 100 percent, got 60",
+        ),
+        (
+            &["--id", "1", "--name", "Angle", "--clips", "1/0/0/0/100"],
+            "invalid reel clip angle value `0`",
+        ),
+        (
+            &["--id", "1", "--name", "Unknown", "--clips", "1/9/0/0/100"],
+            "invalid reel: input 9 cannot be used as a reel angle",
+        ),
+        (
+            &["--id", "1", "--name", "Event", "--clips", "0/1/0/0/100"],
+            "invalid reel clip event value `0`",
+        ),
+        (
+            &["--id", "1", "--name", "Shape", "--clips", "1/1/0/0"],
+            "invalid reel clip `1/1/0/0`; expected \
+             <event>/<angle>/<trim-in>/<trim-out>/<speed>",
+        ),
+        (
+            &["--id", "1", "--name", "Trim", "--clips", "1/1/216001/0/100"],
+            "invalid reel: reel clip trims must be at most 216000 frames",
+        ),
+        (
+            &["--id", "1", "--name", " ", "--clips", "1/1/0/0/100"],
+            "invalid reel: a reel name must be non-blank, at most 64 bytes, and free of \
+             control characters",
+        ),
+        (
+            &["--id", "0", "--name", "Zero", "--clips", "1/1/0/0/100"],
+            "invalid reel id value `0`",
+        ),
+        (
+            &[
+                "--id",
+                "1",
+                "--id",
+                "2",
+                "--name",
+                "Twice",
+                "--clips",
+                "1/1/0/0/100",
+            ],
+            "--id is given more than once",
+        ),
+    ];
+    for (options, expected) in cases {
+        let mut arguments = vec!["reel-set", context.project_path()];
+        arguments.extend_from_slice(options);
+        let output = invoke_bounded(&arguments);
+        assert_failure_contains(&output, expected);
+        assert_eq!(
+            fs::read(&manifest).unwrap(),
+            before,
+            "project.json changed for {options:?}"
+        );
+        assert!(store.load().unwrap().project().reels().is_empty());
+    }
+
+    // The 65-clip list is built at run time.
+    let too_many = invoke_bounded(&[
+        "reel-set",
+        context.project_path(),
+        "--id",
+        "1",
+        "--name",
+        "Many",
+        "--clips",
+        many.as_str(),
+    ]);
+    assert_failure_contains(&too_many, "invalid reel: a reel holds at most 64 clips");
+    assert_eq!(fs::read(&manifest).unwrap(), before);
+    assert!(store.load().unwrap().project().reels().is_empty());
+
+    // A project takes eight reels; the ninth is refused without a write.
+    for id in 1..=8 {
+        assert_success(&invoke_bounded(&[
+            "reel-set",
+            context.project_path(),
+            "--id",
+            &id.to_string(),
+            "--name",
+            &format!("Reel {id}"),
+            "--clips",
+            "1/1/0/0/100",
+        ]));
+    }
+    assert_eq!(store.load().unwrap().project().reels().len(), 8);
+    let full = fs::read(&manifest).unwrap();
+    let ninth = invoke_bounded(&[
+        "reel-set",
+        context.project_path(),
+        "--id",
+        "9",
+        "--name",
+        "Ninth",
+        "--clips",
+        "1/1/0/0/100",
+    ]);
+    assert_failure_contains(&ninth, "invalid reel: a project holds at most 8 reels");
+    assert_eq!(fs::read(&manifest).unwrap(), full);
+    assert_eq!(store.load().unwrap().project().reels().len(), 8);
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+/// OR-013 / Protocol 2.107: `remote-reel` prints the daemon's reels and
+/// export jobs, and `remote-reel-export` polls the lossy reel status until
+/// the job is terminal and prints one `ReelExport` line.
+#[test]
+fn remote_reel_prints_status_and_export_polls_to_completed() {
+    let server = FakeRemoteServer::start_reel_sessions();
+    let address = server.address();
+    let shown = invoke_bounded(&["remote-reel", &address]);
+    assert_success(&shown);
+    assert_eq!(
+        stdout(&shown),
+        concat!(
+            "Reel(id=1, name=\"Highlights\", clips=2, total_frames=120, error=none)\n",
+            "ReelClip(reel=1, event=7, angle=1, in=0, out=0, speed=100)\n",
+            "ReelClip(reel=1, event=8, angle=2, in=5, out=6, speed=50)\n",
+            "ReelExport(job=4, reel=1, ",
+            "destination=\"/srv/reels/highlights.mp4\", state=completed, ",
+            "frames=120/120, bytes=4096, failure=none)"
+        )
+    );
+    let exported = invoke_bounded(&[
+        "remote-reel-export",
+        &address,
+        "--job",
+        "4",
+        "--reel",
+        "1",
+        "--destination",
+        REEL_EXPORT_DESTINATION,
+        "--key",
+        "remote-reel-export",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&exported);
+    assert_eq!(
+        stdout(&exported),
+        "ReelExport(job=4, state=completed, path=\"/srv/reels/highlights.mp4\", bytes=4096)"
+    );
+    server.finish();
 }
 
 #[test]

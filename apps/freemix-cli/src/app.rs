@@ -1425,6 +1425,117 @@ pub fn run(command: Command) -> AppResult<()> {
             operation,
             key,
         } => remote::replay_do(address, operation, key)?,
+        Command::Reel { path } => {
+            let project = inspect_engine(&path)?;
+            let summaries = project.engine.reel_status().reels;
+            let reels = project
+                .project
+                .reels()
+                .iter()
+                .map(|spec| {
+                    let summary = summaries.iter().find(|summary| summary.id == spec.id);
+                    fm_protocol::ReelStatus {
+                        id: spec.id,
+                        spec: spec.clone(),
+                        total_frames: summary.and_then(|summary| summary.total_frames),
+                        error: summary.and_then(|summary| summary.error.clone()),
+                    }
+                })
+                .collect::<Vec<_>>();
+            // Export jobs are engine runtime; a fresh local inspection
+            // starts with none.
+            remote::print_reels(&reels, &[]);
+        }
+        Command::ReelSet {
+            path,
+            spec,
+            key,
+            expected_revision,
+        } => {
+            let project = inspect_engine(&path)?;
+            // Check the reel against the project before mutating: a bad
+            // angle or clip list is a local argument error, and the bundle
+            // stays untouched.
+            spec.check(|input| {
+                project.project.replay_source_check(input)
+                    == fm_types::replay::ReplaySourceCheck::Recordable
+            })
+            .map_err(crate::args::ArgsError::InvalidReel)?;
+            // A new reel beyond the project's eight is refused the same way.
+            let replaces = project
+                .project
+                .reels()
+                .iter()
+                .any(|reel| reel.id == spec.id);
+            if !replaces && project.project.reels().len() >= fm_protocol::MAX_REELS {
+                return Err(crate::args::ArgsError::InvalidReel(
+                    fm_protocol::ReelSpecError::TooManyReels,
+                )
+                .into());
+            }
+            mutate(
+                &path,
+                EngineCommand::Reel(fm_engine::EngineReelOperation::Set(spec)),
+                1,
+                key,
+                expected_revision,
+            )?;
+        }
+        Command::ReelDelete {
+            path,
+            id,
+            key,
+            expected_revision,
+        } => mutate(
+            &path,
+            EngineCommand::Reel(fm_engine::EngineReelOperation::Delete { reel: id }),
+            1,
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteReel { address } => remote::reel(address)?,
+        Command::RemoteReelSet {
+            address,
+            spec,
+            key,
+            expected_revision,
+        } => remote::set_reel(address, spec, key, expected_revision)?,
+        Command::RemoteReelDelete {
+            address,
+            id,
+            key,
+            expected_revision,
+        } => remote::delete_reel(address, id, key, expected_revision)?,
+        Command::RemoteReelExport {
+            address,
+            job,
+            reel,
+            destination,
+            key,
+            expected_revision,
+        } => remote::export_reel(address, job, reel, destination, key, expected_revision)?,
+        Command::RemoteReelCancel {
+            address,
+            job,
+            key,
+            expected_revision,
+        } => remote::reel_control(
+            address,
+            fm_protocol::ReelOperation::CancelExport { job },
+            key,
+            expected_revision,
+        )?,
+        Command::RemoteReelForget {
+            address,
+            job,
+            key,
+            expected_revision,
+        } => remote::reel_control(
+            address,
+            fm_protocol::ReelOperation::ForgetExport { job },
+            key,
+            expected_revision,
+        )?,
         Command::LiveLan { path } => {
             let project = inspect_engine(&path)?;
             let config = project.engine.show().live_lan();
@@ -3171,6 +3282,8 @@ fn save_engine(path: &Path, project_engine: &ProjectEngine) -> AppResult<()> {
     project.set_shortcuts(snapshot.show().shortcuts().to_vec());
     project.set_media_lists(snapshot.show().media_lists().clone());
     project.set_title_timelines(snapshot.title_timelines().clone());
+    // The project's highlight reels (OR-013).
+    project.restore_reels(snapshot.show().reels().to_vec());
     sync_title_fields(&mut project, snapshot.show())?;
     // A document's page lives beside its asset (IN-014).
     for (&input, &page) in snapshot.show().paged_inputs() {
@@ -4578,6 +4691,8 @@ fn restore_project_edit_state(show: &mut ShowState, project: &Project) -> AppRes
     )?;
     // What is recorded for replay (OR-012).
     show.set_replay(project.replay().clone())?;
+    // The project's highlight reels (OR-013).
+    show.restore_reels(project.reels().to_vec());
     // Scripts first: a cue may run one (schema 55).
     show.set_scripts(project.scripts().to_vec())?;
     show.set_cue_lists(project.cue_lists().to_vec())?;
@@ -6385,6 +6500,18 @@ Usage:
       (at most four; none turns recording off), the retention window in
       seconds, and an absolute storage root or the default root. Absent
       options keep their value.
+  freemix-cli reel <show.freemix>
+  freemix-cli reel-set <show.freemix> --id <1..=18446744073709551615> --name <name> --clips <event>/<angle>/<in>/<out>/<speed>[,...] [--key <key>] [--expect <revision>]
+  freemix-cli reel-delete <show.freemix> --id <1..=18446744073709551615> [--key <key>] [--expect <revision>]
+      Prints a project's highlight reels (id, name, clip count, and the
+      compiled total frames when the local engine can plan them), replaces or
+      creates one, or deletes one (Protocol 2.107, OR-013). --clips lists 1 to
+      64 comma-separated <event>/<angle>/<trim-in>/<trim-out>/<speed> records:
+      a nonzero event (1..=4294967295) and nonzero input angle, trims of
+      0..=216000 frames, a name of 1..=64 bytes, and a speed of 25, 50, 75,
+      or 100 percent. A project holds at most 8 reels. The compiled plan
+      needs recorded replay events, which a local project does not hold, so
+      reel prints the stored clips and the plan error.
   freemix-cli live-lan <show.freemix>
   freemix-cli live-lan-set <show.freemix> [--enable|--disable] [--source program|output:<id>] [--max-viewers <1..=32>] [--pin <4-12 digits>|--clear-pin] [--key <key>] [--expect <revision>]
   freemix-cli input-add-stream <show.freemix> <nonzero-input-id> <name> <rtsp|rtp|udp|tcp|http|https|rtmp|rtmps|srt URL or .m3u8> [stream options]
@@ -6520,6 +6647,19 @@ Usage:
       capture the marks or the last 5, 10, or 20 seconds, rename or delete an
       event, cue an event angle on a Replay input, switch angle, play at 25,
       50, 75, or 100 percent, pause, or jump back to the cue-in point.
+  freemix-cli remote-reel <127.0.0.1:port>
+  freemix-cli remote-reel-set <127.0.0.1:port> [reel-set options]
+  freemix-cli remote-reel-delete <127.0.0.1:port> --id <1..=18446744073709551615> [--key <key>] [--expect <revision>]
+  freemix-cli remote-reel-export <127.0.0.1:port> --job <1..=18446744073709551615> --reel <1..=18446744073709551615> --destination <absolute-path> [--key <key>] [--expect <revision>]
+  freemix-cli remote-reel-cancel <127.0.0.1:port> --job <1..=18446744073709551615> [--key <key>] [--expect <revision>]
+  freemix-cli remote-reel-forget <127.0.0.1:port> --job <1..=18446744073709551615> [--key <key>] [--expect <revision>]
+      Prints the daemon's highlight reels and export jobs, replaces or creates
+      a reel, deletes one, or controls an export (Protocol 2.107, OR-013).
+      remote-reel-export sends reel_export and polls the lossy reel status
+      until the job is completed, failed, or cancelled within an hour, then
+      prints one ReelExport(job=..., state=..., path=..., bytes=...) line;
+      a failed job appends its failure text. --destination must be an
+      absolute path of at most 1024 bytes.
   freemix-cli remote-live-lan <127.0.0.1:port>
   freemix-cli remote-live-lan-set <127.0.0.1:port> [live-lan-set options]
   freemix-cli remote-stream-start <127.0.0.1:port> <existing-stream-id> [--key <key>] [--expect <revision>]
