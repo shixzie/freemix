@@ -5,7 +5,8 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); item 1 updated 2026-10-20. Every parity row is still `planned` (or `blocked`); these are the
+(2026-10-19); items refreshed through protocol 2.105 / schema 81 (2026-10-24).
+Every parity row is still `planned` (or `blocked`); these are the
 highest-value remaining items, ranked:
 
 1. **Web gateway on the LAN: trust and reach (`RC-007`, `RC-014`, `RC-008`).**
@@ -44,9 +45,10 @@ highest-value remaining items, ranked:
    and an operator reset per bus (Protocol 2.92), which the Web operator
    page now shows and resets (Protocol 2.94; see the item 3 boundary
    below), and whose chains a browser with `control_audio` edits from the
-   Web operator page's Strip FX disclosures (no protocol change); an audio
-   render path in the simulated daemon (where the chains are show state
-   only), Web gain-reduction readouts, and hardware acceptance remain.
+   Web operator page's Strip FX disclosures (no protocol change), with each
+   strip's gain reduction shown there too (Protocol 2.103); an audio render
+   path in the simulated daemon (where the chains are show state only) and
+   hardware acceptance remain.
 4. **Finish user shortcuts (`RC-004`).** Project shortcuts now persist, travel
    on the wire, fire on the authority under per-action permissions, and are
    edited and dispatched in Studio (keys and OSC), with `.fmshortcuts`
@@ -64,7 +66,7 @@ highest-value remaining items, ranked:
    2.99, schema 80), and keys scoped to the Colour, Animation, and
    Designer tool windows, with a pop-out the platform embeds in the main
    window answering its panel's and window's keys (Protocol 2.105, schema
-   82). This closes the gaps this item named; the row stays planned until
+   81). This closes the gaps this item named; the row stays planned until
    its acceptance evidence covers its Windows and macOS profiles (see the
    RC-004 boundary below). This is a P0 row.
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
@@ -126,6 +128,14 @@ highest-value remaining items, ranked:
    sent, and its edits keep the stored values. Still missing: the
    rendered preview draws hidden fields as on air, and `GX-006` awaits its
    capability-profile certification.
+
+In progress, not yet on this branch: an end-to-end replay slice (`OR-012`)
+that persists replay settings, records up to four inputs into rolling
+segment files on the native daemon, and plays events back through Replay
+inputs, with a Studio Replay panel and CLI commands. Its engine, protocol,
+persistence, and native recording commits exist; the Studio panel and CLI
+commands were saved unfinished and unverified. It will take Protocol 2.106
+and schema 82 when it lands.
 
 Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
 since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
