@@ -1313,6 +1313,7 @@ fn run_worker(
                     | SessionEvent::StreamStatus { .. }
                     | SessionEvent::RecorderStatus { .. }
                     | SessionEvent::ReplayStatus { .. }
+                    | SessionEvent::ReelStatus { .. }
                     | SessionEvent::TitlePhases { .. }
                     | SessionEvent::SourceSyncStatus { .. }
                     | SessionEvent::HealthStatus { .. }
@@ -1872,6 +1873,7 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::StreamStatus { .. }
                         | SessionEvent::RecorderStatus { .. }
                         | SessionEvent::ReplayStatus { .. }
+                        | SessionEvent::ReelStatus { .. }
                         | SessionEvent::TitlePhases { .. }
                         | SessionEvent::SourceSyncStatus { .. }
                         | SessionEvent::HealthStatus { .. }
@@ -2428,6 +2430,7 @@ fn receive_command_event(
                 | SessionEvent::StreamStatus { .. }
                 | SessionEvent::RecorderStatus { .. }
                 | SessionEvent::ReplayStatus { .. }
+                | SessionEvent::ReelStatus { .. }
                 | SessionEvent::TitlePhases { .. }
                 | SessionEvent::SourceSyncStatus { .. }
                 | SessionEvent::HealthStatus { .. }
@@ -2991,6 +2994,7 @@ fn intent_payload(
         StudioIntent::ClearDisplayOutput { slot } => CommandPayload::ClearDisplayOutput { slot },
         StudioIntent::SetLiveLan { config, pin } => CommandPayload::SetLiveLan { config, pin },
         StudioIntent::Replay(operation) => CommandPayload::Replay(operation),
+        StudioIntent::Reel(operation) => CommandPayload::Reel(operation),
         StudioIntent::RemoveInput { input } => {
             let view = view.ok_or_else(|| "Project state is not synchronized".to_owned())?;
             if !view.inputs.contains(&input) {
@@ -3320,6 +3324,9 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
                 .latest_replay_status()
                 .cloned()
                 .map(Box::new);
+            if let Some(status) = runtime.session().latest_reel_status() {
+                state.set_reel_status(status.clone());
+            }
             state.health = runtime
                 .session()
                 .latest_health_status()
@@ -6812,6 +6819,34 @@ mod tests {
             assert_eq!(
                 intent_payload(StudioIntent::Replay(operation.clone()), None),
                 Ok(CommandPayload::Replay(operation))
+            );
+        }
+        // OR-013: every Reel panel key is its reel command as is.
+        let reel = fm_protocol::ReelSpec {
+            id: 2,
+            name: "Reel 2".into(),
+            clips: vec![fm_protocol::ReelClip {
+                event: 1,
+                angle: fm_types::InputId::new(core::num::NonZeroU128::new(3).unwrap()),
+                trim_in_frames: 0,
+                trim_out_frames: 0,
+                speed_percent: 100,
+            }],
+        };
+        for operation in [
+            fm_protocol::ReelOperation::Set(Box::new(reel)),
+            fm_protocol::ReelOperation::Delete { reel: 2 },
+            fm_protocol::ReelOperation::Export {
+                job: 1,
+                reel: 2,
+                destination: "/srv/exports/reel-2.mp4".into(),
+            },
+            fm_protocol::ReelOperation::CancelExport { job: 1 },
+            fm_protocol::ReelOperation::ForgetExport { job: 1 },
+        ] {
+            assert_eq!(
+                intent_payload(StudioIntent::Reel(operation.clone()), None),
+                Ok(CommandPayload::Reel(operation))
             );
         }
         assert!(intent_payload(StudioIntent::RequestDisplayInventory, None).is_err());

@@ -274,10 +274,12 @@ enum LossySlot {
     HealthStatus,
     /// The latest `replay_status` (OR-012).
     ReplayStatus,
+    /// The latest `reel_status` (OR-013).
+    ReelStatus,
 }
 
 impl LossySlot {
-    const COUNT: usize = 11;
+    const COUNT: usize = 12;
 
     const fn index(self) -> usize {
         match self {
@@ -292,6 +294,7 @@ impl LossySlot {
             Self::TitlePhases => 8,
             Self::HealthStatus => 9,
             Self::ReplayStatus => 10,
+            Self::ReelStatus => 11,
         }
     }
 
@@ -544,6 +547,14 @@ impl Peer {
         }
     }
 
+    /// Coalesces the latest highlight reel status in its own slot (OR-013);
+    /// Web pages do not take it.
+    fn replace_reel_status(&mut self, bytes: Vec<u8>) {
+        if self.phase == Phase::Active && self.web_feed.is_none() && self.recorder_status {
+            self.lossy.replace(LossySlot::ReelStatus, bytes);
+        }
+    }
+
     /// Coalesces the latest daemon health in its own slot (Protocol 2.100);
     /// Web pages do not take it.
     fn replace_health_status(&mut self, bytes: Vec<u8>) {
@@ -785,6 +796,7 @@ pub(super) fn run(
             Instant::now(),
         )),
         replay_pacer: std::cell::RefCell::new(ReplayStatusPacer::default()),
+        reel_pacer: std::cell::RefCell::new(ReelStatusPacer::default()),
     };
     let mut native = native;
     // Only the native pacer realizes idle frames between commands, so only
@@ -1420,6 +1432,17 @@ pub(super) fn run(
                 publish_replay_status(&mut peers, status);
             }
         }
+        // Both daemons announce their highlight reels (OR-013).
+        if peers.iter().any(|peer| peer.recorder_status) {
+            let status =
+                runtime
+                    .reel_pacer
+                    .borrow_mut()
+                    .poll(&control.borrow(), authority, Instant::now());
+            if let Some(status) = status {
+                publish_reel_status(&mut peers, status);
+            }
+        }
         // Both daemons sample their named statistics once a second (RC-015).
         let now = Instant::now();
         if runtime.statistics.borrow().due(now) {
@@ -1965,6 +1988,8 @@ struct Runtime<'a> {
     statistics: std::cell::RefCell<crate::statistics::DaemonStatistics>,
     /// Paces `replay_status` (OR-012).
     replay_pacer: std::cell::RefCell<ReplayStatusPacer>,
+    /// Paces `reel_status` (OR-013).
+    reel_pacer: std::cell::RefCell<ReelStatusPacer>,
 }
 
 impl Runtime<'_> {
@@ -2453,6 +2478,21 @@ impl Runtime<'_> {
                     Some(request.request_id),
                 );
                 peer.reply(WireMessage::ReplayStatus(Box::new(status)))?;
+                Ok(())
+            }
+            // The highlight reel status (OR-013), to any session that may
+            // view status.
+            WireMessage::ReelStatusRequest(request) => {
+                if self.refuse_request(peer, &request.request_id, Session::admit_view_status)? {
+                    return Ok(());
+                }
+                let sequence = self.reel_pacer.borrow_mut().next_sequence();
+                let status = self.control.borrow().reel_status(
+                    self.authority,
+                    sequence,
+                    Some(request.request_id),
+                );
+                peer.reply(WireMessage::ReelStatus(Box::new(status)))?;
                 Ok(())
             }
             WireMessage::SystemAudioDevicesRequest(request) => {
@@ -3439,6 +3479,18 @@ fn publish_replay_status(peers: &mut [Peer], status: fm_protocol::ReplayStatusMe
     }
 }
 
+/// The highlight reel status (OR-013) goes to raw Studio peers in its own
+/// latest-wins slot.
+fn publish_reel_status(peers: &mut [Peer], status: fm_protocol::ReelStatusMessage) {
+    let Ok(bytes) = encode_line(&WireMessage::ReelStatus(Box::new(status))).map(String::into_bytes)
+    else {
+        return;
+    };
+    for peer in peers {
+        peer.replace_reel_status(bytes.clone());
+    }
+}
+
 /// Paces `replay_status` (OR-012): at most four a second while it changes,
 /// one a second otherwise (the live edge moves every frame).
 #[derive(Debug, Default)]
@@ -3473,6 +3525,49 @@ impl ReplayStatusPacer {
         self.sent_at = Some(now);
         self.sequence = self.sequence.wrapping_add(1);
         Some(control.replay_status(authority, self.sequence, None))
+    }
+
+    /// The sequence of a status answering a request.
+    fn next_sequence(&mut self) -> u64 {
+        self.sequence = self.sequence.wrapping_add(1);
+        self.sequence
+    }
+}
+
+/// Paces `reel_status` (OR-013): at most four a second while it changes,
+/// one a second otherwise (export progress moves while a job runs).
+#[derive(Debug, Default)]
+pub(crate) struct ReelStatusPacer {
+    sequence: u64,
+    generation: Option<u64>,
+    sent_at: Option<Instant>,
+}
+
+impl ReelStatusPacer {
+    const CHANGED: std::time::Duration = std::time::Duration::from_millis(250);
+    const IDLE: std::time::Duration = std::time::Duration::from_secs(1);
+
+    /// The next status to publish, if one is due.
+    fn poll(
+        &mut self,
+        control: &fm_control::ControlService,
+        authority: &ServerIdentity,
+        now: Instant,
+    ) -> Option<fm_protocol::ReelStatusMessage> {
+        let generation = control.reel_generation();
+        let elapsed = self.sent_at.map(|sent| now.saturating_duration_since(sent));
+        let due = match elapsed {
+            None => true,
+            Some(elapsed) if self.generation != Some(generation) => elapsed >= Self::CHANGED,
+            Some(elapsed) => elapsed >= Self::IDLE,
+        };
+        if !due {
+            return None;
+        }
+        self.generation = Some(generation);
+        self.sent_at = Some(now);
+        self.sequence = self.sequence.wrapping_add(1);
+        Some(control.reel_status(authority, self.sequence, None))
     }
 
     /// The sequence of a status answering a request.
@@ -4594,6 +4689,41 @@ mod tests {
         }
     }
 
+    fn reel_status_message(sequence: u64) -> fm_protocol::ReelStatusMessage {
+        fm_protocol::ReelStatusMessage {
+            server: identity(),
+            sequence,
+            request_id: None,
+            reels: vec![fm_protocol::ReelStatus {
+                id: 1,
+                spec: fm_protocol::ReelSpec {
+                    id: 1,
+                    name: "Goals".to_owned(),
+                    clips: vec![fm_protocol::ReelClip {
+                        event: 1,
+                        angle: fm_protocol::WireInputId::new(NonZeroU128::new(1).unwrap())
+                            .to_domain(),
+                        trim_in_frames: 0,
+                        trim_out_frames: 0,
+                        speed_percent: 100,
+                    }],
+                },
+                total_frames: Some(300),
+                error: None,
+            }],
+            exports: vec![fm_protocol::ReelExportStatus {
+                job: 1,
+                reel: 1,
+                destination: "/srv/reels/goals.mp4".to_owned(),
+                state: fm_protocol::ReelExportState::Running,
+                completed_frames: 120,
+                total_frames: Some(300),
+                bytes: None,
+                failure: None,
+            }],
+        }
+    }
+
     /// Protocol 2.66: a Web peer that may view status gets a lossy feed of
     /// Master meters, recorder status, and stream status. One feed record is
     /// handed over at a time, only behind a nearly idle queue and never
@@ -4748,6 +4878,25 @@ mod tests {
         publish_recorder_status(std::slice::from_mut(&mut peer), recorder_status_message(2));
         assert!(!peer.lossy.slot(LossySlot::RecorderStatus).is_empty());
         let expected = encode_line(&WireMessage::RecorderStatus(recorder_status_message(2)))
+            .unwrap()
+            .into_bytes();
+        while !peer.lossy.is_empty() {
+            assert!(!matches!(write_peer(&mut peer), WriteOutcome::Failed));
+        }
+        assert_eq!(read_exact(&mut client, expected.len()), expected);
+    }
+
+    /// Raw Studio peers keep the highlight reel status in its own lossy
+    /// slot (OR-013).
+    #[test]
+    fn raw_peers_take_reel_status_in_its_own_slot() {
+        let (mut peer, mut client) = active_eligible_peer();
+        publish_reel_status(std::slice::from_mut(&mut peer), reel_status_message(1));
+        assert!(peer.lossy.slot(LossySlot::ReelStatus).is_empty());
+        peer.recorder_status = true;
+        publish_reel_status(std::slice::from_mut(&mut peer), reel_status_message(2));
+        assert!(!peer.lossy.slot(LossySlot::ReelStatus).is_empty());
+        let expected = encode_line(&WireMessage::ReelStatus(Box::new(reel_status_message(2))))
             .unwrap()
             .into_bytes();
         while !peer.lossy.is_empty() {

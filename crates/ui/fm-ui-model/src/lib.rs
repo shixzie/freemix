@@ -816,6 +816,15 @@ pub enum DurableChange {
         frame: u64,
         operation: fm_protocol::ReplayOperation,
     },
+    /// A reel edit or export was accepted (OR-013). The reel specs and
+    /// export jobs arrive in `reel_status`; the project keeps the specs.
+    ReelChanged {
+        status: fm_protocol::ReelStatus,
+    },
+    /// A reel was removed (OR-013).
+    ReelRemoved {
+        reel: u64,
+    },
     /// A network stream input was reconfigured (Protocol 2.46); the URL is
     /// redacted.
     NetworkStreamChanged {
@@ -1136,6 +1145,8 @@ impl DurableProjectEvent {
             EventPayload::ReplayChanged { frame, operation } => {
                 DurableChange::ReplayChanged { frame, operation }
             }
+            EventPayload::ReelChanged(status) => DurableChange::ReelChanged { status: *status },
+            EventPayload::ReelRemoved { reel } => DurableChange::ReelRemoved { reel },
             EventPayload::CueListChanged(list) => DurableChange::CueListChanged(list),
             EventPayload::CueListRemoved { list } => DurableChange::CueListRemoved { list },
             EventPayload::CueRunChanged(change) => {
@@ -1220,6 +1231,9 @@ pub struct ProjectState {
     stingers: Vec<StingerStatus>,
     streams: Vec<StreamStatus>,
     recordings: Vec<RecordingStatus>,
+    /// Every highlight reel (OR-013), ascending by id, kept current by
+    /// `reel_changed` and `reel_removed`.
+    reels: Vec<fm_protocol::ReelStatus>,
     desired_overlays: Vec<OverlayStatus>,
     realized_overlays: Vec<OverlayStatus>,
     switcher: SwitcherState,
@@ -1340,6 +1354,18 @@ impl ProjectState {
     #[must_use]
     pub fn live_lan_status(&self) -> fm_protocol::LiveLanStatus {
         self.live_lan_status.for_config(self.live_lan.enabled)
+    }
+
+    /// Every highlight reel, ascending by id (OR-013).
+    #[must_use]
+    pub fn reels(&self) -> &[fm_protocol::ReelStatus] {
+        &self.reels
+    }
+
+    /// Highlight reel `id`, when the project holds it (OR-013).
+    #[must_use]
+    pub fn reel(&self, id: u64) -> Option<&fm_protocol::ReelStatus> {
+        self.reels.iter().find(|reel| reel.id == id)
     }
 
     /// Network stream input `input`'s redacted config and latest status
@@ -3308,6 +3334,7 @@ impl ClientModel {
             stingers: snapshot.stingers,
             streams: snapshot.streams,
             recordings: snapshot.recordings,
+            reels: Vec::new(),
             desired_overlays: snapshot.desired_overlays,
             realized_overlays: snapshot.realized_overlays,
             switcher: snapshot.switcher,
@@ -5086,6 +5113,8 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
         }
         DurableChange::RecordingChanged { .. }
         | DurableChange::ReplayChanged { .. }
+        | DurableChange::ReelChanged { .. }
+        | DurableChange::ReelRemoved { .. }
         | DurableChange::FadeToBlackCurveChanged { .. }
         | DurableChange::EditLockChanged {
             target: EditLockTarget::Project,
@@ -5750,6 +5779,18 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             state.media.insert(status.input.to_domain(), *status);
         }
         DurableChange::PageNavigated { .. } | DurableChange::ReplayChanged { .. } => {}
+        DurableChange::ReelChanged { status } => {
+            match state.reels.iter_mut().find(|reel| reel.id == status.id) {
+                Some(existing) => *existing = status,
+                None => {
+                    state.reels.push(status);
+                    state.reels.sort_by_key(|reel| reel.id);
+                }
+            }
+        }
+        DurableChange::ReelRemoved { reel } => {
+            state.reels.retain(|candidate| candidate.id != reel);
+        }
         DurableChange::PagedChanged { status } => {
             state.paged.insert(status.input.to_domain(), *status);
         }

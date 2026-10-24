@@ -130,6 +130,8 @@ mod native_live_lan;
 #[cfg(feature = "native-media")]
 mod native_portal_capture;
 #[cfg(feature = "native-media")]
+mod native_reel;
+#[cfg(feature = "native-media")]
 mod native_replay;
 #[cfg(feature = "native-media")]
 mod native_screen_capture;
@@ -841,6 +843,8 @@ struct NativeDaemon {
     live_lan: Option<native_live_lan::NativeLiveLan>,
     /// The instant replay recording and Replay inputs (OR-012).
     replay: Option<native_replay::NativeReplay>,
+    /// The highlight reel exports (OR-013).
+    reel: Option<native_reel::NativeReel>,
 }
 
 #[cfg(feature = "native-media")]
@@ -5207,6 +5211,7 @@ impl NativeDaemon {
             preview_failed: false,
             live_lan: None,
             replay: None,
+            reel: None,
         })
     }
 
@@ -5229,6 +5234,17 @@ impl NativeDaemon {
                 clock_domain: native_clock_domain(),
             },
         ));
+    }
+
+    /// Exports highlight reels to their destinations (OR-013).
+    fn attach_reel(&mut self, settings: &fm_model::ProjectSettings) {
+        let video = settings.video.dimensions;
+        self.reel = Some(native_reel::NativeReel::new(native_replay::ReplayFormat {
+            width: video.width(),
+            height: video.height(),
+            rate: settings.frame_rate,
+            clock_domain: native_clock_domain(),
+        }));
     }
 
     /// Streams `LiveLAN` to the running `--live-lan-listen` listener (OR-017).
@@ -7395,6 +7411,11 @@ impl NativeDaemon {
             let latest = self.playback.latest_frames();
             replay.record(control, frame, &|input| latest.get(input));
         }
+        // Highlight reel exports (OR-013) take their frames from the engine
+        // on the frame loop; the encoder runs off it.
+        if let Some(reel) = &mut self.reel {
+            reel.sync(control);
+        }
         // Monitor taps finish earlier readbacks without waiting, then start
         // this frame's; neither waits for the GPU.
         self.monitor
@@ -8690,6 +8711,9 @@ impl NativeDaemon {
         _settings: &fm_model::ProjectSettings,
     ) {
     }
+
+    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
+    fn attach_reel(&mut self, _settings: &fm_model::ProjectSettings) {}
 
     fn start(
         _store: &ProjectStore,
@@ -11341,6 +11365,7 @@ fn serve_inner(
             store.root().join("replay"),
             project.project().settings(),
         );
+        native.attach_reel(project.project().settings());
         // Document inputs show their pages from the start (IN-014).
         #[cfg(feature = "native-media")]
         if let Some(pages) = journal.documents() {
@@ -15387,6 +15412,7 @@ fn command_base_ticks(
         | CommandPayload::ClearDisplayOutput { .. }
         | CommandPayload::SetLiveLan { .. }
         | CommandPayload::Replay(_)
+        | CommandPayload::Reel(_)
         | CommandPayload::SetNetworkStream { .. }
         | CommandPayload::SetCaptureSettings { .. }
         | CommandPayload::UpdateOverlay { .. }

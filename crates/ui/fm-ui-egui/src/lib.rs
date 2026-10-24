@@ -273,6 +273,8 @@ pub enum StudioIntent {
     PagedPage(fm_protocol::PagedPageRequest),
     /// One instant replay command (OR-012).
     Replay(fm_protocol::ReplayOperation),
+    /// One highlight reel command (OR-013).
+    Reel(fm_protocol::ReelOperation),
     /// Selects an input on the Preview bus.
     SelectPreview(InputId),
     /// Performs an immediate Cut transition.
@@ -639,6 +641,11 @@ pub struct StudioUiState {
     /// recording, marks, events, and Replay inputs. `None` until the daemon
     /// sends one.
     pub replay: Option<Box<fm_protocol::ReplayStatusMessage>>,
+    /// Every highlight reel (`reel_status`, OR-013), ascending by id.
+    pub reels: Vec<fm_protocol::ReelStatus>,
+    /// Every highlight reel export job (`reel_status`, OR-013), in server
+    /// order.
+    pub reel_exports: Vec<fm_protocol::ReelExportStatus>,
     /// Stream targets whose start/stop command is still unresolved.
     pub stream_pending: Vec<WireStreamTargetId>,
     /// Whether a Start all or Stop all command is still unresolved.
@@ -727,6 +734,8 @@ impl StudioUiState {
             health: None,
             title_phases: None,
             replay: None,
+            reels: Vec::new(),
+            reel_exports: Vec::new(),
             stream_pending: Vec::new(),
             stream_group_pending: false,
             reconnect: None,
@@ -780,6 +789,14 @@ impl StudioUiState {
     pub const fn with_edit_project_permission(mut self, can_edit_project: bool) -> Self {
         self.can_edit_project = can_edit_project;
         self
+    }
+
+    /// Replaces the highlight reel and export status (`reel_status`,
+    /// OR-013), keeping the reels in id order for the panel's list.
+    pub fn set_reel_status(&mut self, status: fm_protocol::ReelStatusMessage) {
+        self.reels = status.reels;
+        self.reels.sort_by_key(|reel| reel.id);
+        self.reel_exports = status.exports;
     }
 }
 

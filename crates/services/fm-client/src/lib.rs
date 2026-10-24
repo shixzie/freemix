@@ -722,6 +722,7 @@ impl Client {
             | WireMessage::ScreenCaptureTargetsRequest(_)
             | WireMessage::ScreenCapturePickRequest(_)
             | WireMessage::ReplayStatusRequest(_)
+            | WireMessage::ReelStatusRequest(_)
             | WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
             | WireMessage::DurableEventBatch(_)
@@ -731,6 +732,7 @@ impl Client {
             | WireMessage::TitlePhases(_)
             | WireMessage::RecorderStatus(_)
             | WireMessage::ReplayStatus(_)
+            | WireMessage::ReelStatus(_)
             | WireMessage::SourceSyncStatus(_)
             | WireMessage::HealthStatus(_)
             | WireMessage::MonitorFrame(_)
@@ -2018,6 +2020,7 @@ impl Client {
             | CommandPayload::ClearDisplayOutput { .. }
             | CommandPayload::SetLiveLan { .. }
             | CommandPayload::Replay(_)
+            | CommandPayload::Reel(_)
             | CommandPayload::SetNetworkStream { .. }
             | CommandPayload::SetCaptureSettings { .. }
             | CommandPayload::Stinger { .. }

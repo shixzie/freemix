@@ -86,7 +86,7 @@ const ENQUEUE_RETRY: Duration = Duration::from_millis(2);
 /// `<pid>-<16 hex digits>`.
 pub(crate) const SESSION_PREFIX: &str = "freemixd-replay-";
 const SEGMENT_PREFIX: &str = "segment";
-const AUDIO_RATE: u32 = 48_000;
+pub(crate) const AUDIO_RATE: u32 = 48_000;
 
 /// What the recording needs from the engine.
 pub(crate) trait ReplayHost {
@@ -705,7 +705,7 @@ fn record_run(
 }
 
 /// Hands `pair` to the recorder, retrying a full queue for a bound.
-fn enqueue(recorder: &mut Recorder, pair: PairedFrame) -> Result<(), String> {
+pub(crate) fn enqueue(recorder: &mut Recorder, pair: PairedFrame) -> Result<(), String> {
     let deadline = Instant::now() + ENQUEUE_TIMEOUT;
     let mut pair = pair;
     loop {
@@ -751,7 +751,11 @@ fn pair(
 
 /// Silent stereo audio of stream frame `sequence` at [`AUDIO_RATE`], on the
 /// recorder's absolute sample grid.
-fn silence(rate: FrameRate, clock_domain: ClockDomainId, sequence: u64) -> Option<AudioBlock> {
+pub(crate) fn silence(
+    rate: FrameRate,
+    clock_domain: ClockDomainId,
+    sequence: u64,
+) -> Option<AudioBlock> {
     let hertz = u128::from(AUDIO_RATE);
     let boundary = |frame: u64| {
         u128::from(frame) * hertz * u128::from(rate.denominator()) / u128::from(rate.numerator())
@@ -923,7 +927,11 @@ impl SegmentDecoder {
 }
 
 /// `picture` on the program frame grid at engine frame `frame`.
-fn retimed(picture: &CpuVideoFrame, frame: u64, format: ReplayFormat) -> Option<CpuVideoFrame> {
+pub(crate) fn retimed(
+    picture: &CpuVideoFrame,
+    frame: u64,
+    format: ReplayFormat,
+) -> Option<CpuVideoFrame> {
     let timing = crate::native_files::output_timing(frame, format.rate, format.clock_domain)?;
     let retimed = CpuVideoFrame::new(timing, picture.payload().clone());
     // The recording declares no colour: its pictures were straight sRGB.

@@ -30,6 +30,7 @@ mod media_list;
 mod network_stream;
 mod paged;
 mod playlist;
+mod reel;
 mod replay;
 mod scene_animation;
 mod scene_layer;
@@ -1519,6 +1520,79 @@ impl<A: AuthorizationHook> ControlService<A> {
         request_id: Option<String>,
     ) -> fm_protocol::ReplayStatusMessage {
         replay::status_message(self.engine.replay_status(), server, sequence, request_id)
+    }
+
+    /// A counter that moves whenever the reel status may have changed
+    /// (OR-013).
+    #[must_use]
+    pub const fn reel_generation(&self) -> u64 {
+        self.engine.reel_generation()
+    }
+
+    /// The highlight reel export jobs as the media plane sees them (OR-013).
+    #[must_use]
+    pub fn reel_exports(&self) -> Vec<fm_engine::EngineReelExportStatus> {
+        self.engine.reel_status().exports
+    }
+
+    /// Resolves up to `max_frames` further output frames of export `job`
+    /// (see [`Engine::reel_export_chunk`], OR-013).
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal of a chunk.
+    pub fn reel_export_chunk(
+        &mut self,
+        job: u64,
+        max_frames: u64,
+    ) -> Result<fm_engine::EngineReelChunk, fm_engine::EngineReelError> {
+        self.engine.reel_export_chunk(job, max_frames)
+    }
+
+    /// Reports that the media plane wrote export `job`'s file, `bytes` long
+    /// (see [`Engine::reel_export_finished`], OR-013).
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal of the report.
+    pub fn reel_export_finished(
+        &mut self,
+        job: u64,
+        bytes: u64,
+    ) -> Result<(), fm_engine::EngineReelError> {
+        self.engine.reel_export_finished(job, bytes)
+    }
+
+    /// Reports that the media plane could not write export `job`'s file
+    /// (see [`Engine::reel_export_failed`], OR-013).
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal of the report.
+    pub fn reel_export_failed(
+        &mut self,
+        job: u64,
+        reason: impl Into<String>,
+    ) -> Result<(), fm_engine::EngineReelError> {
+        self.engine.reel_export_failed(job, reason)
+    }
+
+    /// The highlight reels and their export jobs as clients see them
+    /// (OR-013).
+    #[must_use]
+    pub fn reel_status(
+        &self,
+        server: &ServerIdentity,
+        sequence: u64,
+        request_id: Option<String>,
+    ) -> fm_protocol::ReelStatusMessage {
+        reel::status_message(
+            self.engine.reel_status(),
+            self.engine.show().reels(),
+            server,
+            sequence,
+            request_id,
+        )
     }
 
     /// The `LiveLAN` status as clients see it (OR-017).
@@ -3343,6 +3417,7 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetStreamTarget { .. } => "project",
         EngineCommand::Replay(operation) if !operation.is_live() => "project",
         EngineCommand::Replay(_) => "replay",
+        EngineCommand::Reel(operation) => reel::journal_channel(operation),
         EngineCommand::AudioMixer(edit) if !edit.is_live() => "project",
         EngineCommand::SetInputAudioStrip { .. } | EngineCommand::AudioMixer(_) => "audio",
         EngineCommand::MediaList(edit) if !edit.operation.is_live() => "project",
@@ -3408,6 +3483,9 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
                 CommandClass::EditProject
             }
         }
+        // A reel edit changes the project; export control is an operator
+        // control, like a media transport (OR-013).
+        CommandPayload::Reel(operation) => reel::command_class(operation),
         CommandPayload::MediaList { operation, .. } => media_list_command_class(operation),
         CommandPayload::SetTitleAnimation { .. }
         | CommandPayload::ApplyTitleAnimationPreset { .. }
@@ -3561,6 +3639,7 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
         CommandPayload::Replay(operation) => {
             EngineCommand::Replay(replay::engine_operation(operation))
         }
+        CommandPayload::Reel(operation) => EngineCommand::Reel(reel::engine_operation(operation)),
         payload @ (CommandPayload::ReorderInputs { .. }
         | CommandPayload::RenameInput { .. }
         | CommandPayload::AddInput { .. }
@@ -4140,6 +4219,9 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         command @ EngineCommand::Replay(_) => {
             return replay::wire_payload(command);
         }
+        command @ EngineCommand::Reel(_) => {
+            return reel::wire_payload(command);
+        }
         command @ EngineCommand::SetNetworkStream { .. } => {
             return network_stream::wire_edit_payload(command);
         }
@@ -4639,6 +4721,13 @@ fn accepted_event_payload(
         .events
         .iter()
         .find_map(|event| replay::changed(&event.payload))
+    {
+        return payload;
+    }
+    if let Some(payload) = outcome
+        .events
+        .iter()
+        .find_map(|event| reel::changed(&event.payload))
     {
         return payload;
     }

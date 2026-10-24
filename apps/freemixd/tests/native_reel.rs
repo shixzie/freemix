@@ -1,0 +1,682 @@
+#![cfg(all(feature = "native-media", unix))]
+
+//! Process-level highlight reel export (OR-013): a native daemon whose show
+//! records a source for replay captures two events, a reel cuts one clip
+//! from each, and `reel_export` writes a file whose exact frame count and
+//! H.264 video `ffprobe` confirms. A second test cancels a long export and
+//! proves the destination never appears.
+//!
+//! The tests need `FFmpeg` and a native GPU adapter (a software Vulkan
+//! driver such as lavapipe suffices). Without them they are skipped, unless
+//! `FM_REQUIRE_FFMPEG=1` or `FM_REQUIRE_NATIVE_MEDIA=1` makes that a failure.
+
+use std::{
+    collections::BTreeMap,
+    io::{BufRead, BufReader, Read, Write},
+    net::{SocketAddr, TcpStream},
+    num::NonZeroU128,
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    sync::mpsc,
+    thread,
+    time::{Duration, Instant},
+};
+
+use fm_model::{
+    AudioBus, Input, InputKind, Layer, LayerGeometry, MainMix, Output, Project, ProjectSettings,
+    Rgba8, Rotation, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor, SourceRef,
+    StartupPolicy,
+};
+use fm_persistence::{
+    ProjectPosition, ProjectStore, RuntimeFadeToBlack, RuntimeManualTransitions, RuntimeOverlays,
+    RuntimeRouting, StoredProject,
+};
+use fm_protocol::{
+    CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
+    HandshakeRequest, HeartbeatMessage, ReelExportState, ReelOperation, ReelSpec,
+    ReelStatusMessage, ReelStatusRequest, ReplayOperation, ReplaySettings, ReplayStatusMessage,
+    Role, ServerIdentity, WireMessage, decode_line, encode_line,
+};
+use fm_types::{
+    AudioFormat, BusId, ChannelLayout, ColorMetadata, FrameRate, InputId, OutputId, PixelFormat,
+    ProjectId, SampleFormat, SampleRate, ScanMode, SceneId, VideoDimensions, VideoFormat,
+};
+use freemixd::ReadinessRecord;
+
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+const WAIT: Duration = Duration::from_secs(40);
+const CAMERA: u128 = 1;
+const PREVIEW: u128 = 2;
+const REEL: u64 = 1;
+const JOB: u64 = 1;
+/// Commands sent by every session of the tests.
+static COMMANDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn id(value: u128) -> NonZeroU128 {
+    NonZeroU128::new(value).unwrap()
+}
+
+fn input(value: u128) -> InputId {
+    InputId::new(id(value))
+}
+
+fn tools_available() -> bool {
+    let available = ["ffmpeg", "ffprobe"].iter().all(|tool| {
+        Command::new(tool)
+            .arg("-version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    });
+    assert!(
+        available || std::env::var("FM_REQUIRE_FFMPEG").as_deref() != Ok("1"),
+        "FM_REQUIRE_FFMPEG=1 but ffmpeg/ffprobe are unavailable"
+    );
+    available
+}
+
+/// A 128x72 show with red input 1 on Program, blue input 2 on Preview, and
+/// input 1 recorded for replay with a ten-second window in the daemon's
+/// default root.
+fn save_project(path: &Path) {
+    let rate = FrameRate::new(25, 1).unwrap();
+    let mut project = Project::new(
+        ProjectId::new(id(9_500)),
+        "Native reel",
+        ProjectSettings {
+            frame_rate: rate,
+            video: VideoFormat {
+                dimensions: VideoDimensions::new(128, 72).unwrap(),
+                frame_rate: rate,
+                pixel_format: PixelFormat::Rgba8,
+                scan: ScanMode::Progressive,
+                color: ColorMetadata::default(),
+            },
+            audio: AudioFormat {
+                sample_rate: SampleRate::new(48_000).unwrap(),
+                sample_format: SampleFormat::F32,
+                channels: ChannelLayout::stereo(),
+            },
+        },
+    );
+    let bus = BusId::new(id(9_550));
+    project.add_audio_bus(AudioBus {
+        id: bus,
+        name: "Program bus".into(),
+        sends: Vec::new(),
+    });
+    for (index, color) in [(1, [210, 20, 20]), (2, [20, 30, 210])] {
+        project.add_input(Input {
+            id: input(index),
+            name: format!("Camera {index}"),
+            kind: InputKind::Simulated(SimulatedInput::new(
+                SimulatedVideo::Solid(SolidColor::new(color[0], color[1], color[2], 255)),
+                SimulatedAudio::Silence,
+            )),
+            required_capabilities: Vec::new(),
+        });
+    }
+    let scene = SceneId::new(id(9_510));
+    project.add_scene(Scene {
+        id: scene,
+        name: "Program".into(),
+        background: Rgba8::OPAQUE_BLACK,
+        layers: vec![Layer {
+            id: fm_model::LayerId::new(1).unwrap(),
+            name: "Source".into(),
+            source: SourceRef::Input(input(CAMERA)),
+            enabled: true,
+            geometry: LayerGeometry::new(0, 0, 128, 72, Rotation::Deg0),
+            crop: None,
+            mask: None,
+            key: None,
+            effects: Vec::new(),
+            opacity: u8::MAX,
+            z_order: 0,
+        }],
+        animation: fm_model::SceneAnimation::default(),
+    });
+    project.add_output(Output {
+        id: OutputId::new(id(9_501)),
+        name: "Program".into(),
+        video_source: scene,
+        audio_source: bus,
+        startup: StartupPolicy::ReconcileDesiredState,
+        required_capabilities: Vec::new(),
+    });
+    project.set_main_mix(MainMix::new(input(CAMERA), input(PREVIEW)));
+    project
+        .set_replay(ReplaySettings {
+            sources: vec![input(CAMERA)],
+            retention_seconds: 10,
+            storage_root: None,
+        })
+        .unwrap();
+    let stored = StoredProject::from_project_with_complete_runtime_state(
+        project,
+        RuntimeRouting {
+            desired_program_id: Some(input(CAMERA)),
+            realized_program_id: Some(input(CAMERA)),
+            desired_preview_id: Some(input(PREVIEW)),
+            realized_preview_id: Some(input(PREVIEW)),
+        },
+        RuntimeManualTransitions::default(),
+        RuntimeFadeToBlack::default(),
+        RuntimeOverlays::default(),
+        ProjectPosition::default(),
+        Vec::new(),
+    )
+    .unwrap();
+    ProjectStore::new(path).unwrap().save(&stored).unwrap();
+}
+
+struct NativeDaemon {
+    child: Child,
+    address: SocketAddr,
+    log: mpsc::Receiver<String>,
+}
+
+impl Drop for NativeDaemon {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            thread::sleep(Duration::from_secs(5));
+            eprintln!("daemon exit: {:?}", self.child.try_wait());
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        if thread::panicking() {
+            while let Ok(line) = self.log.recv_timeout(Duration::from_secs(2)) {
+                eprintln!("daemon: {line}");
+            }
+        }
+    }
+}
+
+fn start_native(project: &Path) -> Result<NativeDaemon, String> {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_freemixd"))
+        .arg("serve")
+        .arg(project)
+        .arg("--native-media")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("cannot spawn native daemon: {error}"))?;
+    let stdout = child.stdout.take().unwrap();
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let line = receiver.recv_timeout(STARTUP_TIMEOUT).unwrap_or_default();
+    if let Ok(readiness) = line.parse::<ReadinessRecord>() {
+        let (log_sender, log) = mpsc::channel();
+        if let Some(stderr) = child.stderr.take() {
+            thread::spawn(move || {
+                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    let _ = log_sender.send(line);
+                }
+            });
+        }
+        return Ok(NativeDaemon {
+            child,
+            address: readiness.address,
+            log,
+        });
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    Err(format!("native daemon did not become ready: {stderr}"))
+}
+
+struct Client {
+    reader: BufReader<TcpStream>,
+    pending: Vec<u8>,
+    writer: TcpStream,
+    server: Option<ServerIdentity>,
+    heartbeats: u64,
+    last_heartbeat: Instant,
+}
+
+impl Client {
+    fn connect(address: SocketAddr) -> Self {
+        let stream = TcpStream::connect(address).unwrap();
+        stream.set_nodelay(true).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let mut client = Self {
+            writer: stream.try_clone().unwrap(),
+            reader: BufReader::new(stream),
+            pending: Vec::new(),
+            server: None,
+            heartbeats: 0,
+            last_heartbeat: Instant::now(),
+        };
+        client.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            build: "native-reel-test".into(),
+            client_type: ClientType::Studio,
+            desired_role: Role::Admin,
+            resume_cursor: None,
+        }));
+        let WireMessage::HandshakeResponse(response) = client.wait_message() else {
+            panic!("expected the handshake response");
+        };
+        client.server = Some(response.server);
+        let WireMessage::Snapshot(_) = client.wait_message() else {
+            panic!("expected the snapshot");
+        };
+        client
+    }
+
+    fn send(&mut self, message: &WireMessage) {
+        self.writer
+            .write_all(encode_line(message).unwrap().as_bytes())
+            .unwrap();
+        self.writer.flush().unwrap();
+    }
+
+    fn heartbeat(&mut self) {
+        if let Some(server) = self.server.clone()
+            && self.last_heartbeat.elapsed() >= Duration::from_secs(1)
+        {
+            self.heartbeats += 1;
+            self.send(&WireMessage::Heartbeat(HeartbeatMessage {
+                server,
+                sequence: self.heartbeats,
+                sent_at_ms: self.heartbeats,
+                last_applied: None,
+            }));
+            self.last_heartbeat = Instant::now();
+        }
+    }
+
+    fn poll(&mut self) -> Option<WireMessage> {
+        self.heartbeat();
+        match self.reader.read_until(b'\n', &mut self.pending) {
+            Ok(0) => panic!("daemon closed"),
+            Ok(_) if !self.pending.ends_with(b"\n") => None,
+            Ok(_) => {
+                let line = String::from_utf8(std::mem::take(&mut self.pending)).unwrap();
+                Some(decode_line(&line).unwrap())
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                None
+            }
+            Err(error) => panic!("read failed: {error}"),
+        }
+    }
+
+    fn wait_message(&mut self) -> WireMessage {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            assert!(Instant::now() < deadline, "timed out waiting for a message");
+            if let Some(message) = self.poll() {
+                return message;
+            }
+        }
+    }
+
+    fn wait_for<T>(
+        &mut self,
+        what: &str,
+        mut found: impl FnMut(Option<WireMessage>) -> Option<T>,
+    ) -> T {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            let message = self.poll();
+            if let Some(value) = found(message) {
+                return value;
+            }
+        }
+    }
+
+    fn command(&mut self, payload: CommandPayload) {
+        let id = format!(
+            "reel-{}",
+            COMMANDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+        );
+        self.send(&WireMessage::Command(CommandMessage {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            id: id.clone(),
+            idempotency_key: id,
+            expected_revision: None,
+            deadline_ms: None,
+            payload,
+        }));
+        let result = self.wait_for("the command result", |message| match message {
+            Some(WireMessage::CommandResult(result)) => Some(result),
+            _ => None,
+        });
+        assert!(
+            matches!(result, CommandResult::Accepted { .. }),
+            "{result:?}"
+        );
+    }
+
+    fn replay(&mut self, operation: ReplayOperation) {
+        self.command(CommandPayload::Replay(operation));
+    }
+
+    fn reel(&mut self, operation: ReelOperation) {
+        self.command(CommandPayload::Reel(operation));
+    }
+
+    /// Waits for a pushed `replay_status` that satisfies `wanted`.
+    fn status(
+        &mut self,
+        what: &str,
+        wanted: impl Fn(&ReplayStatusMessage) -> bool,
+    ) -> ReplayStatusMessage {
+        self.wait_for(what, |message| match message {
+            Some(WireMessage::ReplayStatus(status)) if wanted(&status) => Some(*status),
+            _ => None,
+        })
+    }
+
+    /// Asks for the reel status and waits for the answer.
+    fn request_reel_status(&mut self) -> ReelStatusMessage {
+        let request_id = format!(
+            "reel-status-{}",
+            COMMANDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+        );
+        self.send(&WireMessage::ReelStatusRequest(ReelStatusRequest {
+            request_id: request_id.clone(),
+        }));
+        self.wait_for("the reel status answer", |message| match message {
+            Some(WireMessage::ReelStatus(status))
+                if status.request_id.as_deref() == Some(request_id.as_str()) =>
+            {
+                Some(*status)
+            }
+            _ => None,
+        })
+    }
+
+    /// Polls `reel_status` until it satisfies `wanted`.
+    fn poll_reel_status(
+        &mut self,
+        what: &str,
+        wanted: impl Fn(&ReelStatusMessage) -> bool,
+    ) -> ReelStatusMessage {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            assert!(Instant::now() < deadline, "timed out waiting for {what}");
+            let status = self.request_reel_status();
+            if wanted(&status) {
+                return status;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
+/// One clip of `event` on the recorded camera, at real time.
+fn clip(event: u32) -> fm_protocol::ReelClip {
+    fm_protocol::ReelClip {
+        event,
+        angle: input(CAMERA),
+        trim_in_frames: 0,
+        trim_out_frames: 0,
+        speed_percent: 100,
+    }
+}
+
+fn set_reel(spec: ReelSpec) -> ReelOperation {
+    ReelOperation::Set(Box::new(spec))
+}
+
+/// Records until three segments exist, captures a five-second event, lets
+/// the live edge move past it, then captures a second five-second event.
+fn two_complete_events(client: &mut Client) -> (ReplayStatusMessage, ReplayStatusMessage) {
+    client.status("three recorded segments", |status| {
+        status
+            .recorded
+            .first()
+            .is_some_and(|source| source.segments >= 3)
+    });
+    client.replay(ReplayOperation::CaptureLast { seconds: 5 });
+    let first = client.status("a complete first event", |status| {
+        status.events.first().is_some_and(|event| event.complete)
+    });
+    let first_out = first.events[0].out_frame;
+    client.status("the live edge past the first event", |status| {
+        status.live_frame.is_some_and(|live| live >= first_out + 25)
+    });
+    client.replay(ReplayOperation::CaptureLast { seconds: 5 });
+    let second = client.status("a complete second event", |status| {
+        status.events.len() >= 2 && status.events[1].complete
+    });
+    (first, second)
+}
+
+/// `ffprobe`'s `stream` fields for the selected stream, as `key=value` pairs.
+fn probe(path: &Path, selector: &str) -> BTreeMap<String, String> {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            selector,
+            "-count_frames",
+            "-show_entries",
+            "stream=codec_name,pix_fmt,width,height,nb_read_frames,sample_rate,channels",
+            "-of",
+            "default=noprint_wrappers=1",
+        ])
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "ffprobe failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect()
+}
+
+fn part_of(destination: &Path) -> PathBuf {
+    let mut part = destination.as_os_str().to_os_string();
+    part.push(".part");
+    PathBuf::from(part)
+}
+
+fn assert_no_reel_failures(daemon: &NativeDaemon) {
+    let failures: Vec<String> = std::iter::from_fn(|| daemon.log.try_recv().ok())
+        .filter(|line| line.contains("FREEMIXD_REEL_FAILURE"))
+        .collect();
+    assert!(failures.is_empty(), "{failures:?}");
+}
+
+#[test]
+fn native_daemon_exports_a_reel_with_the_exact_frame_count() {
+    if !tools_available() {
+        eprintln!("native reel integration skipped: FFmpeg tools unavailable");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("reel.freemix");
+    save_project(&project_path);
+    let daemon = match start_native(&project_path) {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            assert!(
+                std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+            );
+            eprintln!("native reel integration skipped: {error}");
+            return;
+        }
+    };
+    let mut client = Client::connect(daemon.address);
+    let (first, second) = two_complete_events(&mut client);
+    let first_event = &first.events[0];
+    let second_event = second
+        .events
+        .iter()
+        .find(|event| event.id != first_event.id)
+        .expect("the second event");
+    assert_eq!(first_event.out_frame - first_event.in_frame, 125);
+    assert_eq!(second_event.out_frame - second_event.in_frame, 125);
+    let expected = (first_event.out_frame - first_event.in_frame)
+        + (second_event.out_frame - second_event.in_frame);
+
+    client.reel(set_reel(ReelSpec {
+        id: REEL,
+        name: "Highlights".into(),
+        clips: vec![clip(first_event.id), clip(second_event.id)],
+    }));
+    let planned = client.poll_reel_status("the reel plan", |status| {
+        status
+            .reels
+            .first()
+            .is_some_and(|reel| reel.total_frames == Some(expected))
+    });
+    assert_eq!(planned.reels[0].error, None);
+
+    let destination = directory.path().join("highlights.mp4");
+    client.reel(ReelOperation::Export {
+        job: JOB,
+        reel: REEL,
+        destination: destination.to_string_lossy().into_owned(),
+    });
+    let completed = client.poll_reel_status("the export completed", |status| {
+        status
+            .exports
+            .iter()
+            .any(|export| export.job == JOB && export.state == ReelExportState::Completed)
+    });
+    let export = completed
+        .exports
+        .iter()
+        .find(|export| export.job == JOB)
+        .unwrap();
+    assert_eq!(export.reel, REEL);
+    assert_eq!(export.completed_frames, expected);
+    assert_eq!(export.total_frames, Some(expected));
+    assert_eq!(export.failure, None);
+    let bytes = std::fs::metadata(&destination).unwrap().len();
+    assert_eq!(export.bytes, Some(bytes));
+    assert!(bytes > 0);
+
+    let video = probe(&destination, "v:0");
+    assert_eq!(video.get("codec_name").map(String::as_str), Some("h264"));
+    assert_eq!(video.get("pix_fmt").map(String::as_str), Some("yuv420p"));
+    assert_eq!(video.get("width").map(String::as_str), Some("128"));
+    assert_eq!(video.get("height").map(String::as_str), Some("72"));
+    let expected_text = expected.to_string();
+    assert_eq!(
+        video.get("nb_read_frames").map(String::as_str),
+        Some(expected_text.as_str())
+    );
+    let audio = probe(&destination, "a:0");
+    assert_eq!(audio.get("codec_name").map(String::as_str), Some("aac"));
+    assert_eq!(audio.get("sample_rate").map(String::as_str), Some("48000"));
+    assert_eq!(audio.get("channels").map(String::as_str), Some("2"));
+    assert!(!part_of(&destination).exists());
+    assert_no_reel_failures(&daemon);
+}
+
+#[test]
+fn native_daemon_cancels_a_reel_export_without_a_destination() {
+    if !tools_available() {
+        eprintln!("native reel integration skipped: FFmpeg tools unavailable");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("reel.freemix");
+    save_project(&project_path);
+    let daemon = match start_native(&project_path) {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            assert!(
+                std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+            );
+            eprintln!("native reel integration skipped: {error}");
+            return;
+        }
+    };
+    let mut client = Client::connect(daemon.address);
+    client.status("three recorded segments", |status| {
+        status
+            .recorded
+            .first()
+            .is_some_and(|source| source.segments >= 3)
+    });
+    client.replay(ReplayOperation::CaptureLast { seconds: 5 });
+    let captured = client.status("a complete event", |status| {
+        status.events.first().is_some_and(|event| event.complete)
+    });
+    let event = captured.events[0].clone();
+    let event_frames = event.out_frame - event.in_frame;
+    // Sixty-four clips at quarter speed: long enough that the cancel lands
+    // while the encoder is still running.
+    let clips: Vec<fm_protocol::ReelClip> = (0..64)
+        .map(|_| fm_protocol::ReelClip {
+            speed_percent: 25,
+            ..clip(event.id)
+        })
+        .collect();
+    let expected = event_frames * 64 * 4;
+    client.reel(set_reel(ReelSpec {
+        id: REEL,
+        name: "Long reel".into(),
+        clips,
+    }));
+    client.poll_reel_status("the long reel plan", |status| {
+        status
+            .reels
+            .first()
+            .is_some_and(|reel| reel.total_frames == Some(expected))
+    });
+
+    let destination = directory.path().join("cancelled.mp4");
+    let part = part_of(&destination);
+    client.reel(ReelOperation::Export {
+        job: JOB,
+        reel: REEL,
+        destination: destination.to_string_lossy().into_owned(),
+    });
+    client.poll_reel_status("the export running", |status| {
+        status
+            .exports
+            .iter()
+            .any(|export| export.job == JOB && export.state == ReelExportState::Running)
+    });
+    client.reel(ReelOperation::CancelExport { job: JOB });
+    client.poll_reel_status("the export cancelled", |status| {
+        status
+            .exports
+            .iter()
+            .any(|export| export.job == JOB && export.state == ReelExportState::Cancelled)
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while (destination.exists() || part.exists()) && Instant::now() < deadline {
+        client.poll();
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!destination.exists(), "{destination:?} was written");
+    assert!(!part.exists(), "{part:?} was left behind");
+    assert_no_reel_failures(&daemon);
+}

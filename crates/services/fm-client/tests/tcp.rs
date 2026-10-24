@@ -2336,6 +2336,92 @@ fn health_status_is_retained_latest_wins_and_strictly_ordered() {
     server_thread.join().unwrap();
 }
 
+/// OR-013: `reel_status` is lossy, retained latest-wins, and a request is
+/// answered with the request id echoed.
+#[test]
+fn reel_status_is_retained_and_a_request_is_answered() {
+    let (release_tx, release_rx) = mpsc::channel();
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        release_rx.recv().unwrap();
+        peer.send(&WireMessage::ReelStatus(Box::new(reel_status(1, None))));
+        peer.send(&WireMessage::ReelStatus(Box::new(reel_status(2, None))));
+        let WireMessage::ReelStatusRequest(request) = peer.receive() else {
+            panic!("expected a reel status request");
+        };
+        assert_eq!(request.request_id, "r-1");
+        peer.send(&WireMessage::ReelStatus(Box::new(reel_status(
+            3,
+            Some("r-1"),
+        ))));
+    });
+
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    assert!(session.latest_reel_status().is_none());
+    release_tx.send(()).unwrap();
+    assert!(matches!(
+        session.receive().unwrap(),
+        SessionEvent::ReelStatus(status) if status.sequence == 1
+    ));
+    session.receive().unwrap();
+    let latest = session.latest_reel_status().expect("retained status");
+    assert_eq!(latest.sequence, 2);
+    assert_eq!(latest.reels.len(), 1);
+    assert_eq!(
+        latest.exports[0].state,
+        fm_protocol::ReelExportState::Running
+    );
+    // Lossy telemetry never advances the durable cursor.
+    assert_eq!(session.client().last_applied_cursor().unwrap().revision, 4);
+    session
+        .send_reel_status_request(fm_protocol::ReelStatusRequest {
+            request_id: "r-1".to_owned(),
+        })
+        .unwrap();
+    let SessionEvent::ReelStatus(status) = session.receive().unwrap() else {
+        panic!("expected a reel status answer");
+    };
+    assert_eq!(status.request_id.as_deref(), Some("r-1"));
+    assert_eq!(session.latest_reel_status().unwrap().sequence, 3);
+    server_thread.join().unwrap();
+}
+
+fn reel_status(sequence: u64, request_id: Option<&str>) -> fm_protocol::ReelStatusMessage {
+    fm_protocol::ReelStatusMessage {
+        server: server(),
+        sequence,
+        request_id: request_id.map(str::to_owned),
+        reels: vec![fm_protocol::ReelStatus {
+            id: 1,
+            spec: fm_protocol::ReelSpec {
+                id: 1,
+                name: "Goals".to_owned(),
+                clips: vec![fm_protocol::ReelClip {
+                    event: 1,
+                    angle: input(1).to_domain(),
+                    trim_in_frames: 0,
+                    trim_out_frames: 0,
+                    speed_percent: 100,
+                }],
+            },
+            total_frames: Some(300),
+            error: None,
+        }],
+        exports: vec![fm_protocol::ReelExportStatus {
+            job: 1,
+            reel: 1,
+            destination: "/srv/reels/goals.mp4".to_owned(),
+            state: fm_protocol::ReelExportState::Running,
+            completed_frames: 120,
+            total_frames: Some(300),
+            bytes: None,
+            failure: None,
+        }],
+    }
+}
+
 /// Protocol 2.80: a media list item's picture (IN-006) is kept apart from
 /// the input's own, per list input and item, with its own sequence order;
 /// a picture of an item the replicated list does not have is dropped (no
