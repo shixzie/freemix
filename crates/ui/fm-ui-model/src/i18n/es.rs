@@ -425,7 +425,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::HealthAlertsNoneHover,
         t(
-            "No hay ninguna alerta del daemon activa. Vigila CPU, GPU, fotogramas tardíos, imágenes descartadas, espacio en disco de las salidas y salidas fallidas.",
+            "No hay ninguna alerta del daemon activa. Vigila CPU, GPU, fotogramas tardíos, imágenes descartadas, espacio en disco de las salidas, salidas fallidas, colas del codificador, reconexiones de emisiones y sincronización de reloj.",
         ),
     ),
     (Msg::AlertLine, t("{rule} ({severity}) desde hace {age}")),
@@ -439,6 +439,18 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::AlertRuleFramesDropped, t("imágenes descartadas")),
     (Msg::AlertRuleGpuSaturated, t("GPU saturada")),
     (Msg::AlertRuleOutputFailed, t("salida fallida")),
+    (
+        Msg::AlertRuleEncoderSaturated,
+        t("cola del codificador saturada"),
+    ),
+    (
+        Msg::AlertRuleStreamReconnecting,
+        t("emisiones reconectándose"),
+    ),
+    (
+        Msg::AlertRuleSyncDegraded,
+        t("sincronización de reloj degradada"),
+    ),
     (Msg::AlertSeverityInfo, t("información")),
     (Msg::AlertSeverityWarning, t("aviso")),
     (Msg::AlertSeverityCritical, t("crítica")),

@@ -124,6 +124,9 @@ const fn rule_word(rule: HealthAlertRule) -> Msg {
         HealthAlertRule::FramesDropped => Msg::AlertRuleFramesDropped,
         HealthAlertRule::GpuSaturated => Msg::AlertRuleGpuSaturated,
         HealthAlertRule::OutputFailed => Msg::AlertRuleOutputFailed,
+        HealthAlertRule::EncoderSaturated => Msg::AlertRuleEncoderSaturated,
+        HealthAlertRule::StreamReconnecting => Msg::AlertRuleStreamReconnecting,
+        HealthAlertRule::SyncDegraded => Msg::AlertRuleSyncDegraded,
     }
 }
 
@@ -378,5 +381,138 @@ mod tests {
         );
         assert!(items[2].hover.contains("output failed fired 1.0 s ago"));
         assert!(items[2].hover.lines().count() <= 3);
+    }
+
+    /// Every rule the daemon can report has its own non-empty word in both
+    /// languages, so no two alerts read alike.
+    #[test]
+    fn every_alert_rule_has_its_own_word_in_both_languages() {
+        let en = Locale::new(Language::English);
+        let es = Locale::new(Language::Spanish);
+        let mut english = std::collections::BTreeSet::new();
+        let mut spanish = std::collections::BTreeSet::new();
+        for rule in HealthAlertRule::ALL {
+            let msg = rule_word(rule);
+            let english_word = en.text(msg);
+            let spanish_word = es.text(msg);
+            assert!(
+                !english_word.is_empty(),
+                "{} has no English word",
+                rule.token()
+            );
+            assert!(
+                !spanish_word.is_empty(),
+                "{} has no Spanish word",
+                rule.token()
+            );
+            assert_ne!(
+                english_word,
+                spanish_word,
+                "{} is untranslated",
+                rule.token()
+            );
+            assert!(
+                english.insert(english_word),
+                "{} shares the English word {english_word:?}",
+                rule.token()
+            );
+            assert!(
+                spanish.insert(spanish_word),
+                "{} shares the Spanish word {spanish_word:?}",
+                rule.token()
+            );
+        }
+        assert_eq!(english.len(), HealthAlertRule::ALL.len());
+        assert_eq!(spanish.len(), HealthAlertRule::ALL.len());
+    }
+
+    /// The encoder, stream, and sync rules added in Protocol 2.108 name
+    /// themselves in the alert lamp's help, in English and Spanish.
+    #[test]
+    fn encoder_stream_and_sync_alerts_render_in_both_languages() {
+        let health = DaemonHealth {
+            uptime_ms: 12_000,
+            alerts: vec![
+                HealthAlert {
+                    rule: HealthAlertRule::EncoderSaturated,
+                    severity: HealthSeverity::Warning,
+                    since_ms: 2_000,
+                    value_milli: Some(4_000),
+                },
+                HealthAlert {
+                    rule: HealthAlertRule::StreamReconnecting,
+                    severity: HealthSeverity::Warning,
+                    since_ms: 5_000,
+                    value_milli: Some(2_000),
+                },
+                HealthAlert {
+                    rule: HealthAlertRule::SyncDegraded,
+                    severity: HealthSeverity::Info,
+                    since_ms: 9_000,
+                    value_milli: Some(250),
+                },
+            ],
+            notifications: vec![HealthNotification {
+                sequence: 1,
+                rule: HealthAlertRule::EncoderSaturated,
+                severity: HealthSeverity::Warning,
+                kind: HealthNotificationKind::Firing,
+                at_ms: 2_000,
+                value_milli: Some(4_000),
+            }],
+            ..DaemonHealth::default()
+        };
+        let en = health_items(Locale::new(Language::English), &state(health.clone()), None);
+        assert_eq!(en[2].label, "3 ALERTS");
+        assert_eq!(en[2].tone, Tone::Pending);
+        for line in [
+            "encoder queue saturated (warning) for 10.0 s",
+            "streams reconnecting (warning) for 7.0 s",
+            "clock sync degraded (info) for 3.0 s",
+            "Last: encoder queue saturated fired 10.0 s ago",
+        ] {
+            assert!(en[2].hover.contains(line), "{line}: {}", en[2].hover);
+        }
+        assert!(en[2].hover.lines().count() <= 3);
+
+        let es = health_items(Locale::new(Language::Spanish), &state(health), None);
+        assert_eq!(es[2].label, "3 ALERTAS");
+        for word in [
+            "cola del codificador saturada",
+            "emisiones reconectándose",
+            "sincronización de reloj degradada",
+        ] {
+            assert!(es[2].hover.contains(word), "{word}: {}", es[2].hover);
+        }
+
+        // The quiet lamp's help names the new rule families too.
+        let quiet_en = health_items(
+            Locale::new(Language::English),
+            &state(DaemonHealth::default()),
+            None,
+        );
+        for family in ["encoder queues", "stream reconnects", "clock sync"] {
+            assert!(
+                quiet_en[2].hover.contains(family),
+                "{family}: {}",
+                quiet_en[2].hover
+            );
+        }
+        let quiet_es = health_items(
+            Locale::new(Language::Spanish),
+            &state(DaemonHealth::default()),
+            None,
+        );
+        for family in [
+            "colas del codificador",
+            "reconexiones de emisiones",
+            "sincronización de reloj",
+        ] {
+            assert!(
+                quiet_es[2].hover.contains(family),
+                "{family}: {}",
+                quiet_es[2].hover
+            );
+        }
     }
 }
