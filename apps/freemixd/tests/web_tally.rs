@@ -4148,7 +4148,10 @@ fn a_resumed_web_session_converges_after_an_exposure_change() {
             && status.value == fm_protocol::TitleFieldValue::Text("secret-note".into())),
         "{state:?}"
     );
-    assert_eq!(list.unwrap().spec.cues[0].actions, [note.clone()]);
+    assert_eq!(
+        list.unwrap().spec.cues[0].actions,
+        std::slice::from_ref(&note)
+    );
     assert_eq!(
         shortcut.unwrap().spec.action,
         WireShortcutAction::Actions(vec![note])

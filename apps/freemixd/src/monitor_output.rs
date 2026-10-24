@@ -166,11 +166,11 @@ pub fn polled_presence(
         .name("monitor-presence".into())
         .spawn(move || {
             let (state, wake) = &*poller;
-            let mut polled: Option<String> = None;
+            let mut last_device: Option<String> = None;
             loop {
                 let device = {
                     let mut guard = state.lock().unwrap_or_else(PoisonError::into_inner);
-                    if polled.is_some() && guard.wanted == polled && !guard.closed {
+                    if last_device.is_some() && guard.wanted == last_device && !guard.closed {
                         guard = wake
                             .wait_timeout(guard, interval)
                             .unwrap_or_else(PoisonError::into_inner)
@@ -188,7 +188,7 @@ pub fn polled_presence(
                 let present = probe(&device);
                 state.lock().unwrap_or_else(PoisonError::into_inner).answer =
                     Some((device.clone(), present));
-                polled = Some(device);
+                last_device = Some(device);
             }
         });
     if spawned.is_err() {
@@ -1157,8 +1157,8 @@ mod tests {
             started.elapsed() < Duration::from_millis(100),
             "asking waited on the probe"
         );
-        let prober = probed.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_ne!(prober, asker, "the probe ran on the asking thread");
+        let probe_thread = probed.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_ne!(probe_thread, asker, "the probe ran on the asking thread");
         let started = Instant::now();
         while presence("phones") != Some(true) {
             assert!(started.elapsed() < Duration::from_secs(5), "never answered");

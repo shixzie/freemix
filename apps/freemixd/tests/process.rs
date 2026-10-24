@@ -4085,12 +4085,13 @@ fn a_studio_subscribing_mid_fade_holds_until_the_fade_completes() {
     let mut realized = Vec::new();
     while !realized.contains(&3) {
         let message = studio.receive();
-        // Monitor frames, title phases, and the once-a-second health status
-        // are the TCP session's, not the protocol client's.
+        // Monitor frames, title phases, replay status, and the once-a-second
+        // health status are the TCP session's, not the protocol client's.
         if matches!(
             message,
             WireMessage::MonitorFrame(_)
                 | WireMessage::TitlePhases(_)
+                | WireMessage::ReplayStatus(_)
                 | WireMessage::HealthStatus(_)
         ) {
             continue;

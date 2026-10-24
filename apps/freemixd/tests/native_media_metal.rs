@@ -577,6 +577,7 @@ async fn assert_deadline_frame(
         titles_shown: Vec::new(),
         slideshows: Vec::new(),
         media: Vec::new(),
+        replay: Vec::new(),
         frame: FrameNumber::new(10),
         deadline,
         program: ProgramFrame {
@@ -804,6 +805,7 @@ fn native_metal_renders_scenes_before_exact_fade_and_wipe() {
                 titles_shown: Vec::new(),
                 slideshows: Vec::new(),
                 media: Vec::new(),
+                replay: Vec::new(),
                 frame: FrameNumber::new(u64::try_from(sequence).unwrap()),
                 deadline: ClockTime::from_nanos(deadline),
                 program: ProgramFrame {
@@ -861,6 +863,7 @@ fn native_metal_renders_scenes_before_exact_fade_and_wipe() {
         titles_shown: Vec::new(),
         slideshows: Vec::new(),
         media: Vec::new(),
+        replay: Vec::new(),
         frame: FrameNumber::new(3),
         deadline: ClockTime::ZERO,
         program: ProgramFrame {
@@ -966,6 +969,7 @@ fn native_metal_project_frames_use_one_completed_in_flight_slot_without_readback
             titles_shown: Vec::new(),
             slideshows: Vec::new(),
             media: Vec::new(),
+            replay: Vec::new(),
             frame: FrameNumber::new(frame_number),
             deadline: ClockTime::from_nanos(frame_number * 33_333_333),
             program: ProgramFrame {
@@ -1024,6 +1028,7 @@ fn native_leaf_rgba16f(
         titles_shown: Vec::new(),
         slideshows: Vec::new(),
         media: Vec::new(),
+        replay: Vec::new(),
         frame: FrameNumber::new(0),
         deadline: ClockTime::from_nanos(0),
         program: ProgramFrame {
