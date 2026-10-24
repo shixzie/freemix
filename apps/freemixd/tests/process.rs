@@ -4092,6 +4092,7 @@ fn a_studio_subscribing_mid_fade_holds_until_the_fade_completes() {
             WireMessage::MonitorFrame(_)
                 | WireMessage::TitlePhases(_)
                 | WireMessage::ReplayStatus(_)
+                | WireMessage::ReelStatus(_)
                 | WireMessage::HealthStatus(_)
         ) {
             continue;
