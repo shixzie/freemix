@@ -64,23 +64,22 @@ use fm_persistence::{
     RuntimeOverlayBorder, RuntimeOverlayChannel, RuntimeOverlayPosition, RuntimeOverlayTransition,
     RuntimeOverlays, RuntimeRouting, StoredProject,
 };
-#[cfg(feature = "native-media")]
 use fm_protocol::{
-    AUDIO_METER_LEVEL_SCALE, AudioMeterChannel, InputAudioMeters, MAX_STREAM_LOCAL_SEGMENTS,
-    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, OutputFailure, OutputFailureCode,
-    StreamLocalStatus, StreamRealizedState, StreamStatusSample, WireInputId,
-};
-use fm_protocol::{
-    AudioMetersMessage, CURRENT_PROTOCOL_VERSION, CapabilityReportSummary, CommandMessage,
-    CommandPayload, CommandResult, DiagnosticsRequest, DiagnosticsResponse, ErrorMessage,
-    EventCursor, HandshakeOutcome as ProtocolHandshakeOutcome, HandshakeRequest, HandshakeResponse,
-    HeartbeatMessage, MonitorTap, ProtocolVersion, RecorderStatusMessage, RecordingStatus,
-    ResumeCursor, RuntimeEventMessage, ServerHello, ServerIdentity, StreamStatus,
-    StreamStatusMessage, StructuredError, WireMessage, WireStreamTargetId,
-    choose_handshake_outcome, encode_line,
+    AUDIO_METER_LEVEL_SCALE, AudioMeterChannel, AudioMetersMessage, CURRENT_PROTOCOL_VERSION,
+    CapabilityReportSummary, CommandMessage, CommandPayload, CommandResult, DiagnosticsRequest,
+    DiagnosticsResponse, ErrorMessage, EventCursor, HandshakeOutcome as ProtocolHandshakeOutcome,
+    HandshakeRequest, HandshakeResponse, HeartbeatMessage, InputAudioMeters, MonitorTap,
+    ProtocolVersion, RecorderStatusMessage, RecordingStatus, ResumeCursor, RuntimeEventMessage,
+    ServerHello, ServerIdentity, StreamStatus, StreamStatusMessage, StructuredError, WireInputId,
+    WireMessage, WireStreamTargetId, choose_handshake_outcome, encode_line,
 };
 #[cfg(test)]
 use fm_protocol::{CodecError, EventMessage, HeartbeatAcknowledgementMessage, LineDecoder};
+#[cfg(feature = "native-media")]
+use fm_protocol::{
+    MAX_STREAM_LOCAL_SEGMENTS, MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES,
+    OutputFailure, OutputFailureCode, StreamLocalStatus, StreamRealizedState, StreamStatusSample,
+};
 use fm_server::{
     AuthenticationMode, ControlPlane, DisconnectReason, HandshakeError, Heartbeat, InitialSync,
     Server, ServerConfig, ServerMode, ServiceStatus, Session, SessionError, SyncPayload,
@@ -155,6 +154,7 @@ mod pacing_trace;
 mod display_outputs;
 mod playlist_clock;
 mod sessions;
+mod sim_audio;
 mod web_feed;
 mod web_titles;
 // The network preflight is wired only into the native daemon; every helper
@@ -7414,8 +7414,12 @@ impl NativeDaemon {
             self.monitor_output
                 .push(meters.monitor_planes, samples, meters.sample_rate);
             let output = self.monitor_output.state();
-            self.pending_audio_meters =
-                Some(audio_meters_message(server, sequence, &meters, output));
+            self.pending_audio_meters = Some(audio_meters_message(
+                server,
+                sequence,
+                &AudioMeterView::from(&meters),
+                output,
+            ));
             self.audio_meter_sequence = sequence;
         }
         self.install_stinger_mutation()?;
@@ -8615,11 +8619,63 @@ fn preview_monitor_input(frame: &FrameResult, realized_preview: InputId) -> Inpu
     frame.program.secondary.unwrap_or(realized_preview)
 }
 
+/// The meter values one taken interval exposes, from either daemon's audio
+/// plane, so the native and simulated paths share one wire conversion.
+pub(crate) struct AudioMeterView<'a> {
+    frame: u64,
+    start_sample: u64,
+    end_sample: u64,
+    channels: usize,
+    master: &'a [fm_audio::ChannelMeter],
+    inputs: &'a [InputId],
+    input_meters: &'a [fm_audio::ChannelMeter],
+    monitor: &'a [fm_audio::ChannelMeter],
+    monitor_solo: bool,
+    dynamics: &'a [(Option<InputId>, fm_audio::DspDynamicsReading)],
+    loudness: &'a [(Option<InputId>, fm_audio::LoudnessReading)],
+}
+
 #[cfg(feature = "native-media")]
-fn audio_meters_message(
+impl<'a, 'b: 'a> From<&'a NativeAudioMeters<'b>> for AudioMeterView<'a> {
+    fn from(meters: &'a NativeAudioMeters<'b>) -> Self {
+        Self {
+            frame: meters.frame,
+            start_sample: meters.start_sample,
+            end_sample: meters.end_sample,
+            channels: meters.channels,
+            master: meters.master,
+            inputs: meters.inputs,
+            input_meters: meters.input_meters,
+            monitor: meters.monitor,
+            monitor_solo: meters.monitor_solo,
+            dynamics: meters.dynamics,
+            loudness: meters.loudness,
+        }
+    }
+}
+
+impl<'a, 'b: 'a> From<&'a fm_sim::SimulatedAudioMeters<'b>> for AudioMeterView<'a> {
+    fn from(meters: &'a fm_sim::SimulatedAudioMeters<'b>) -> Self {
+        Self {
+            frame: meters.frame,
+            start_sample: meters.start_sample,
+            end_sample: meters.end_sample,
+            channels: meters.channels,
+            master: meters.master,
+            inputs: meters.inputs,
+            input_meters: meters.input_meters,
+            monitor: meters.monitor,
+            monitor_solo: meters.monitor_solo,
+            dynamics: meters.dynamics,
+            loudness: meters.loudness,
+        }
+    }
+}
+
+pub(crate) fn audio_meters_message(
     server: &ServerIdentity,
     sequence: u64,
-    meters: &NativeAudioMeters<'_>,
+    meters: &AudioMeterView<'_>,
     output: fm_protocol::AudioMonitorOutputState,
 ) -> AudioMetersMessage {
     AudioMetersMessage {
@@ -8689,7 +8745,6 @@ fn audio_meters_message(
 
 /// A loudness (LUFS) or true-peak (dBTP) value in thousandths for the
 /// wire: `None` below the wire floor, clamped at its ceiling (AU-005).
-#[cfg(feature = "native-media")]
 // Values are clamped to the wire bounds before the cast; truncation is not
 // reachable.
 #[allow(clippy::cast_possible_truncation)]
@@ -8701,7 +8756,6 @@ fn loudness_milli(value: f64) -> Option<i32> {
 
 /// A loudness range in milli-LU for the wire, clamped to its bounds
 /// (AU-005).
-#[cfg(feature = "native-media")]
 // Values are clamped to the wire bounds before the cast; truncation is not
 // reachable.
 #[allow(clippy::cast_possible_truncation)]
@@ -8716,7 +8770,6 @@ fn loudness_range_millilu(lu: f64) -> i32 {
 
 /// A DSP stage's gain reduction in positive millidecibels, bounded for the
 /// wire (AU-005).
-#[cfg(feature = "native-media")]
 // Reductions are clamped to [0, MAX_DYNAMICS_REDUCTION_MILLIDB] before the
 // cast; truncation is not reachable.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -8726,7 +8779,6 @@ fn reduction_millidb(db: f32) -> u32 {
         .min(f64::from(fm_protocol::MAX_DYNAMICS_REDUCTION_MILLIDB)) as u32
 }
 
-#[cfg(feature = "native-media")]
 fn protocol_audio_meter(meter: fm_audio::ChannelMeter) -> AudioMeterChannel {
     let peak_millionths = meter_level_millionths(meter.peak);
     AudioMeterChannel {
@@ -8735,7 +8787,6 @@ fn protocol_audio_meter(meter: fm_audio::ChannelMeter) -> AudioMeterChannel {
     }
 }
 
-#[cfg(feature = "native-media")]
 // Levels are clamped to [0, u32::MAX] before the cast; truncation is not reachable.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn meter_level_millionths(level: f32) -> u32 {

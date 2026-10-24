@@ -581,6 +581,12 @@ impl Peer {
         self.phase == Phase::Active && (self.web_feed.is_some() || self.recorder_status)
     }
 
+    /// Whether this session takes audio meters: a raw Studio session, or a
+    /// Web page granted the lossy status feed.
+    fn wants_audio_meters(&self) -> bool {
+        self.phase == Phase::Active && (self.audio_meters || self.web_feed.is_some())
+    }
+
     /// Offers a Web peer's feed the Master meters of `web_bytes`.
     fn replace_web_meter(&mut self, web_bytes: &[u8]) {
         if self.phase == Phase::Active
@@ -855,6 +861,19 @@ pub(super) fn run(
     } else {
         None
     };
+    // The simulated daemon's audio plane renders the persisted strip and
+    // Master chains on its own wall clock while a Studio peer demands
+    // meters (AU-005). It never advances the engine or the journal.
+    let mut simulated_audio = if native.is_none() {
+        crate::sim_audio::SimulatedAudioRuntime::new(
+            durable.project(),
+            durable.position().frames_rendered,
+        )
+        .ok()
+    } else {
+        None
+    };
+    let mut simulated_audio_sequence = 0_u64;
 
     loop {
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
@@ -1419,6 +1438,39 @@ pub(super) fn run(
             }
             if let Some(status) = native.take_source_sync_status(authority) {
                 publish_source_sync_status(&mut peers, &status);
+            }
+        }
+        // A simulated daemon renders its audio plane only while a Studio
+        // peer demands meters; the engine is never ticked for it (AU-005).
+        if native.is_none()
+            && let Some(audio) = simulated_audio.as_mut()
+            && peers.iter().any(Peer::wants_audio_meters)
+        {
+            let mut control = control.borrow_mut();
+            let program = control.realized_program_frame();
+            let revision = control.revision();
+            let resets = control.take_loudness_resets();
+            drop(control);
+            if let Some(meters) = audio.poll(
+                durable.project(),
+                revision,
+                program,
+                resets,
+                true,
+                Instant::now(),
+            ) {
+                simulated_audio_sequence =
+                    simulated_audio_sequence.checked_add(1).ok_or_else(|| {
+                        crate::AppFailure("simulated audio meter sequence exhausted".into())
+                    })?;
+                let view = crate::AudioMeterView::from(&meters);
+                let message = crate::audio_meters_message(
+                    authority,
+                    simulated_audio_sequence,
+                    &view,
+                    fm_protocol::AudioMonitorOutputState::Off,
+                );
+                publish_audio_meters(&mut peers, message);
             }
         }
         // Both daemons announce their replay recording (OR-012).

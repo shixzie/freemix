@@ -12,7 +12,6 @@ default = []
 display-surface = ["native-media", "dep:winit"]
 macos-program-surface = ["display-surface"]
 native-media = [
-    "dep:fm-audio",
     "dep:fm-codec-ffmpeg",
     "dep:fm-color",
     "dep:fm-gpu",
@@ -29,7 +28,7 @@ native-media = [
 ]
 
 [dependencies]
-fm-audio = { path = "../../crates/media/fm-audio", optional = true }
+fm-audio = { path = "../../crates/media/fm-audio" }
 fm-auth = { path = "../../crates/services/fm-auth" }
 fm-clock = { path = "../../crates/media/fm-clock" }
 fm-codec-ffmpeg = { path = "../../crates/io/fm-codec-ffmpeg", optional = true }

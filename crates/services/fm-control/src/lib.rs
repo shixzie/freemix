@@ -84,11 +84,11 @@ use fm_auth::{AuthorizationDenial, CommandClass, Policy, Principal};
 use fm_command::{CommandReceipt, DurableEvent, IdempotencyKey, RejectionCode, Revision};
 use fm_engine::{
     EditLockScope as EngineEditLockScope, Engine, EngineAcceptance, EngineActionMotion,
-    EngineCommand, EngineCommandOutcome, EngineError, EngineEvent, EngineFadeToBlackState,
-    EngineInputAudioStripState, EngineInputSource, EngineManualTransitionKind,
-    EngineManualTransitionPosition, EngineManualTransitionState, EnginePrepareOutcome,
-    EngineSnapshot, EngineTitle, FrameResult, PreparedEngineExecution, SnapshotError,
-    TitleAirRequirement as EngineTitleAirRequirement,
+    EngineAudioMixerUpdate, EngineCommand, EngineCommandOutcome, EngineError, EngineEvent,
+    EngineFadeToBlackState, EngineInputAudioStripState, EngineInputSource,
+    EngineManualTransitionKind, EngineManualTransitionPosition, EngineManualTransitionState,
+    EnginePrepareOutcome, EngineSnapshot, EngineTitle, FrameResult, PreparedEngineExecution,
+    SnapshotError, TitleAirRequirement as EngineTitleAirRequirement,
 };
 use fm_protocol::{
     CommandMessage, CommandPayload, CommandResult, EditHistoryStatus, EditLockScope,
@@ -114,6 +114,7 @@ use fm_switcher::{
 use fm_titles::fm_animation::Phase;
 use fm_titles::{Color as TitleColor, FieldId, FieldValue, ImageSource, TitleAir, TitleAirPhase};
 use fm_types::InputId;
+use fm_types::strip_dsp::StripDspTarget;
 
 // The wire carries exactly the title values the engine holds, so the
 // protocol's bounds must be the title domain's bounds.
@@ -972,6 +973,9 @@ pub struct ControlService<A = Policy> {
     /// Media list items that ended under Auto Next since the authority
     /// last took them, oldest first (bounded like the end triggers).
     media_list_ends: Vec<MediaListEnd>,
+    /// Loudness resets realized by the engine since the audio plane last
+    /// took them, oldest first (AU-005).
+    loudness_resets: VecDeque<StripDspTarget>,
     /// Each media list's active item, the output frames it had left on
     /// the last frame it played, and whether that was its first observed
     /// frame, so a blending transition's early Auto Next fires once, as the
@@ -1022,6 +1026,10 @@ pub struct ControlService<A = Policy> {
 /// How many fired media end triggers wait for the authority at most; older
 /// ones are dropped first.
 pub const MAX_PENDING_MEDIA_END_TRIGGERS: usize = 64;
+
+/// How many realized loudness resets wait for the audio plane at most;
+/// older ones are dropped first.
+pub const MAX_PENDING_LOUDNESS_RESETS: usize = 64;
 
 /// The most frames [`PreparedSubmission::settle_ticks`] projects past a
 /// command's own ticks waiting for the engine to settle: one hour at 60
@@ -1097,6 +1105,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             media_published: HashMap::new(),
             media_end_triggers: Vec::new(),
             media_list_ends: Vec::new(),
+            loudness_resets: VecDeque::new(),
             media_list_leads: BTreeMap::new(),
             input_offline: BTreeMap::new(),
             display_states: BTreeMap::new(),
@@ -1162,6 +1171,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             media_published: self.media_published.clone(),
             media_end_triggers: self.media_end_triggers.clone(),
             media_list_ends: self.media_list_ends.clone(),
+            loudness_resets: self.loudness_resets.clone(),
             media_list_leads: self.media_list_leads.clone(),
             input_offline: self.input_offline.clone(),
             display_states: self.display_states.clone(),
@@ -2434,6 +2444,23 @@ impl<A: AuthorizationHook> ControlService<A> {
         audio_mixer::strip_dsp_states(&self.engine)
     }
 
+    /// The loudness resets the engine realized since the audio plane last
+    /// took them, oldest first (AU-005). The simulated plane restarts those
+    /// meters before its next rendered frame.
+    #[must_use]
+    pub fn take_loudness_resets(&mut self) -> Vec<StripDspTarget> {
+        Vec::from(core::mem::take(&mut self.loudness_resets))
+    }
+
+    /// The Program frame the engine's realized switcher shows at the frame
+    /// cursor: its primary and secondary inputs and the transition mix
+    /// across this frame's interval (SW-004). The simulated audio plane
+    /// renders the interval from it.
+    #[must_use]
+    pub fn realized_program_frame(&self) -> fm_switcher::ProgramFrame {
+        self.engine.realized_switcher().program_frame()
+    }
+
     /// Returns the only `(list, frame)` a `cue_advance` is accepted for, or
     /// `None` while no cue waits (see [`Engine::cue_advance_frame`]).
     #[must_use]
@@ -3024,6 +3051,16 @@ impl<A: AuthorizationHook> ControlService<A> {
             .map_err(ControlError::from)
             .map_err(TickWithRealizerError::Tick)?;
         realizer(&frame).map_err(TickWithRealizerError::Realization)?;
+        // A loudness reset the engine realized restarts a meter on the next
+        // frame the audio plane renders (AU-005).
+        for update in &frame.audio_mixer_updates {
+            if let EngineAudioMixerUpdate::LoudnessReset { target } = update {
+                if self.loudness_resets.len() == MAX_PENDING_LOUDNESS_RESETS {
+                    self.loudness_resets.pop_front();
+                }
+                self.loudness_resets.push_back(*target);
+            }
+        }
         let current_generation = frame.runtime_generation.get();
         let applied_actions = current_generation
             .checked_sub(previous_generation)
