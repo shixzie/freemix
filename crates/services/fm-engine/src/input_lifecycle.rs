@@ -435,7 +435,8 @@ fn catalogue(error: crate::InputCatalogueError) -> Rejection {
         | crate::InputCatalogueError::InPlaylist { .. }
         | crate::InputCatalogueError::InCueList { .. }
         | crate::InputCatalogueError::BoundByCueRun { .. }
-        | crate::InputCatalogueError::ReplaySource(_) => (RejectionCode::Conflict, "input_in_use"),
+        | crate::InputCatalogueError::ReplaySource(_)
+        | crate::InputCatalogueError::ReelClip { .. } => (RejectionCode::Conflict, "input_in_use"),
         crate::InputCatalogueError::DuplicateInput(_) => {
             (RejectionCode::Conflict, "duplicate_input")
         }

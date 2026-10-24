@@ -501,6 +501,9 @@ pub enum EngineCommand {
     /// everything else a live operation realized on its target frame
     /// (see [`crate::EngineReplayOperation`]).
     Replay(crate::EngineReplayOperation),
+    /// One highlight reel command (OR-013): a reel edit is a project edit,
+    /// export control a live operation (see [`crate::EngineReelOperation`]).
+    Reel(crate::EngineReelOperation),
     /// Reconfigures network stream input `input` (IN-015). A project edit
     /// that honours the input's padlock, undone by restoring the previous
     /// configuration; the daemon reconnects the stream live.
@@ -845,6 +848,13 @@ pub enum EngineEvent {
     ReplayChanged {
         frame: u64,
         operation: crate::EngineReplayOperation,
+    },
+    /// A highlight reel was created, replaced, or removed (or the edit was
+    /// undone or redone) (OR-013); the reels afterwards are read from
+    /// [`ShowState::reels`]. Export progress is reported by
+    /// [`Engine::reel_status`], not an event.
+    ReelChanged {
+        operation: crate::EngineReelOperation,
     },
     /// A network stream input was reconfigured (or the edit was undone or
     /// redone) (IN-015).
@@ -2339,6 +2349,7 @@ impl Engine {
                     media_list: None,
                     paged_count,
                     cue: None,
+                    reel: None,
                 };
                 mutation.apply(show, &mut Vec::new()).map_err(refuse)?;
                 **transition = transition.or(kind);
@@ -2366,6 +2377,38 @@ impl Engine {
             }
         }
         playlist_step(self.show(), command, target_frame.get())
+    }
+
+    /// Validates one resolved reel command against the show and the
+    /// recorded media before the command is accepted (OR-013).
+    fn reel_mutation(
+        &self,
+        operation: &crate::EngineReelOperation,
+    ) -> Result<crate::reel::ReelMutation, Rejection> {
+        use crate::EngineReelOperation;
+        match operation {
+            EngineReelOperation::Set(_) | EngineReelOperation::Delete { .. } => {
+                Ok(crate::reel::ReelMutation::Edit)
+            }
+            EngineReelOperation::Export {
+                job,
+                reel,
+                destination,
+            } => self
+                .replay
+                .plan_export(self.commands.state(), *job, *reel, destination)
+                .map(crate::reel::ReelMutation::Export),
+            EngineReelOperation::CancelExport { job } => self
+                .replay
+                .check_cancel_export(*job)
+                .map(|()| crate::reel::ReelMutation::Cancel { job: *job })
+                .map_err(crate::reel::control_rejection),
+            EngineReelOperation::ForgetExport { job } => self
+                .replay
+                .check_forget_export(*job)
+                .map(|()| crate::reel::ReelMutation::Forget { job: *job })
+                .map_err(crate::reel::control_rejection),
+        }
     }
 
     /// Returns how many idempotency receipts are retained, at most
@@ -2545,6 +2588,13 @@ impl Engine {
             Some(Ok(plan)) => crate::media_list::transport_operations(plan),
             _ => Vec::new(),
         };
+        // A reel command is validated against the recorded media once, here:
+        // the mutation installs a reel edit, and an accepted export is
+        // submitted after the receipt is committed (OR-013).
+        let reel = match resolution.as_ref().map(|resolved| &resolved.command) {
+            Ok(EngineCommand::Reel(operation)) => Some(self.reel_mutation(operation)),
+            _ => None,
+        };
         let scheduled = match (&resolution, already_seen) {
             (Ok(resolved), false) => Some(
                 self.scheduler
@@ -2646,6 +2696,7 @@ impl Engine {
         };
         let staged_resolution = resolution.clone();
         let staged_media_list = media_list.clone();
+        let staged_reel = reel.clone();
         let title_clip_bound = self.title_clip_bound;
         let scene_clip_bound = self.scene_clip_bound;
         let outcome = self.commands.apply(envelope, now_millis, move |_, _| {
@@ -2710,6 +2761,7 @@ impl Engine {
                 media_list: staged_media_list,
                 paged_count,
                 cue,
+                reel: staged_reel,
             })
         });
 
@@ -2787,6 +2839,26 @@ impl Engine {
                         fm_model::MediaListTransition::CUT
                     });
                 }
+            }
+            match reel {
+                Some(Ok(crate::reel::ReelMutation::Export(plan))) => {
+                    assert!(
+                        self.replay.submit_export(plan),
+                        "a planned reel export submits"
+                    );
+                }
+                Some(Ok(crate::reel::ReelMutation::Cancel { job })) => {
+                    self.replay
+                        .cancel_export(job)
+                        .expect("a planned reel export cancels");
+                }
+                Some(Ok(crate::reel::ReelMutation::Forget { job })) => {
+                    self.replay
+                        .forget_export(job)
+                        .expect("a planned reel export is forgotten");
+                }
+                Some(Ok(crate::reel::ReelMutation::Edit)) => self.replay.touch(),
+                Some(Err(_)) | None => {}
             }
             if !matches!(step, HistoryStep::None) {
                 self.history.commit(step, command, command_id, revision);
@@ -3208,6 +3280,81 @@ impl Engine {
         self.replay.generation()
     }
 
+    /// The highlight reels and their export jobs as clients see them
+    /// (OR-013).
+    #[must_use]
+    pub fn reel_status(&self) -> crate::EngineReelStatus {
+        self.replay.reel_status(self.commands.state())
+    }
+
+    /// A counter that moves whenever [`Self::reel_status`] may have changed
+    /// (OR-013).
+    #[must_use]
+    pub const fn reel_generation(&self) -> u64 {
+        self.replay.generation()
+    }
+
+    /// The compiled output length of reel `reel` in frames (OR-013).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::EngineReelError::UnknownReel`] when the show holds
+    /// no such reel, or the compile error when its clips do not resolve
+    /// against the recorded events.
+    pub fn reel_plan(&self, reel: u64) -> Result<u64, crate::EngineReelError> {
+        self.replay.reel_plan(self.commands.state(), reel)
+    }
+
+    /// Resolves up to `max_frames` further output frames of export `job`,
+    /// each layer naming its segment file and exact frame inside it
+    /// (OR-013). The media plane needs no catalog access of its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::EngineReelError::UnknownExport`] for a job that does
+    /// not exist, [`crate::EngineReelError::ExportNotActive`] for a terminal
+    /// one, and [`crate::EngineReelError::Export`] when the planner refuses
+    /// the chunk or the recorded media changed under it.
+    pub fn reel_export_chunk(
+        &mut self,
+        job: u64,
+        max_frames: u64,
+    ) -> Result<crate::EngineReelChunk, crate::EngineReelError> {
+        self.replay.advance_export(job, max_frames)
+    }
+
+    /// Reports that the media plane wrote export `job`'s file, `bytes`
+    /// long (OR-013). The export must have resolved every output frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::EngineReelError::UnknownExport`] or
+    /// [`crate::EngineReelError::ExportNotActive`] for a job that is not
+    /// finalizing, and [`crate::EngineReelError::ExportNotFinalizing`] while
+    /// frames remain.
+    pub fn reel_export_finished(
+        &mut self,
+        job: u64,
+        bytes: u64,
+    ) -> Result<(), crate::EngineReelError> {
+        self.replay.export_finished(job, bytes)
+    }
+
+    /// Reports that the media plane could not write export `job`'s file,
+    /// releasing its retention protection (OR-013).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::EngineReelError::UnknownExport`] or
+    /// [`crate::EngineReelError::ExportNotActive`] for a terminal job.
+    pub fn reel_export_failed(
+        &mut self,
+        job: u64,
+        reason: impl Into<String>,
+    ) -> Result<(), crate::EngineReelError> {
+        self.replay.export_failed(job, reason.into())
+    }
+
     /// Captures durable and realized state at an idle frame boundary.
     ///
     /// # Errors
@@ -3521,6 +3668,8 @@ struct EngineMutation {
     paged_count: Option<u32>,
     /// The planned cue GO, operation, or advance of a cue runtime command.
     cue: Option<Result<CuePlan, Rejection>>,
+    /// The validated runtime work of a reel command (OR-013).
+    reel: Option<Result<crate::reel::ReelMutation, Rejection>>,
 }
 
 /// Where one tick collects what its runtime actions realized.
@@ -4008,6 +4157,26 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::Reel(operation) = &self.command {
+            let plan = self.reel.as_ref().ok_or_else(|| {
+                Rejection::new(
+                    RejectionCode::Internal,
+                    "a reel command was not planned before mutation",
+                )
+            })?;
+            plan.as_ref().map_err(Clone::clone)?;
+            crate::reel::accept(state, operation)?;
+            // Export control is runtime state, reported by `reel_status`;
+            // a reel edit is a durable project edit with an event.
+            if !operation.is_live() {
+                events.push(EngineEvent::ReelChanged {
+                    operation: operation.clone(),
+                });
+            }
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::Media(command) = &self.command {
             let settings = crate::media::accept(state, command, self.media_tracks.as_deref())?;
             state.set_media_settings(command.input, settings);
@@ -4377,6 +4546,7 @@ impl EngineMutation {
             | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::SetLiveLan(_)
             | EngineCommand::Replay(_)
+            | EngineCommand::Reel(_)
             | EngineCommand::SetNetworkStream { .. }
             | EngineCommand::SetCaptureSettings { .. }
             | EngineCommand::AnimationPreset(_)
@@ -4699,7 +4869,8 @@ fn input_catalogue_rejection(error: InputCatalogueError) -> Rejection {
         | InputCatalogueError::InPlaylist { .. }
         | InputCatalogueError::InCueList { .. }
         | InputCatalogueError::BoundByCueRun { .. }
-        | InputCatalogueError::ReplaySource(_) => {
+        | InputCatalogueError::ReplaySource(_)
+        | InputCatalogueError::ReelClip { .. } => {
             (RejectionCode::Conflict, "input", "input_in_use")
         }
     };
@@ -5002,6 +5173,7 @@ fn apply_runtime(
             | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::SetLiveLan(_)
             | EngineCommand::Replay(_)
+            | EngineCommand::Reel(_)
             | EngineCommand::SetNetworkStream { .. }
             | EngineCommand::SetCaptureSettings { .. }
             | EngineCommand::AnimationPreset(_)
@@ -5198,6 +5370,7 @@ fn apply_runtime(
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::Replay(_)
+        | EngineCommand::Reel(_)
         | EngineCommand::SetNetworkStream { .. }
         | EngineCommand::SetCaptureSettings { .. }
         | EngineCommand::AnimationPreset(_)
@@ -5397,6 +5570,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLiveLan(_)
         | EngineCommand::Replay(_)
+        | EngineCommand::Reel(_)
         | EngineCommand::SetNetworkStream { .. }
         | EngineCommand::SetCaptureSettings { .. }
         | EngineCommand::AnimationPreset(_)
@@ -5437,6 +5611,7 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::SetDisplayOutput { .. })
         && !matches!(command, EngineCommand::SetLiveLan(_))
         && !matches!(command, EngineCommand::Replay(_))
+        && !matches!(command, EngineCommand::Reel(_))
         && !matches!(command, EngineCommand::SetNetworkStream { .. })
         && !matches!(command, EngineCommand::SetCaptureSettings { .. })
         && !matches!(command, EngineCommand::AnimationPreset(_))
