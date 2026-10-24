@@ -276,14 +276,10 @@ impl InputCatalogueError {
                     usage: InputUse::CueAction { list, cue },
                 }
             }
-            Self::ReplaySource(input) => RefusalReason::InputInUse {
-                input: input.get().get(),
-                usage: InputUse::ReplaySource,
-            },
             // The wire has no reel-clip use yet; a reel angle is recorded for
             // replay, so report the closest existing use (as the daemon's
             // persisted reference mapping does).
-            Self::ReelClip { input, .. } => RefusalReason::InputInUse {
+            Self::ReplaySource(input) | Self::ReelClip { input, .. } => RefusalReason::InputInUse {
                 input: input.get().get(),
                 usage: InputUse::ReplaySource,
             },

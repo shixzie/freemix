@@ -136,6 +136,7 @@ pub enum EngineCommandKind {
 impl EngineCommand {
     /// Returns this command's undo and padlock class.
     #[must_use]
+    #[allow(clippy::too_many_lines)] // one arm per command; splitting hides the mapping
     pub const fn kind(&self) -> EngineCommandKind {
         match self {
             Self::RenameInput { .. }

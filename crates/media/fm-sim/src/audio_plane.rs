@@ -960,7 +960,8 @@ fn output_audio_timing(
     let end_ns = normalized_sample_endpoint(end_sample, sample_rate_hz)?;
     let duration_ns =
         u64::try_from(end_ns - start_ns).map_err(|_| SimulatedAudioError::TimelineOverflow)?;
-    let time_base = TimeBase::new(1, sample_rate_hz).map_err(|_| SimulatedAudioError::FormatMismatch)?;
+    let time_base =
+        TimeBase::new(1, sample_rate_hz).map_err(|_| SimulatedAudioError::FormatMismatch)?;
     let start_tick =
         i64::try_from(start_sample).map_err(|_| SimulatedAudioError::TimelineOverflow)?;
     MediaTiming::new(

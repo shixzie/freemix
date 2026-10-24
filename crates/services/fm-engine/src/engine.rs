@@ -1815,11 +1815,13 @@ impl Engine {
     /// Returns undoable project edits, oldest first; the last is undone next.
     ///
     /// At most [`crate::MAX_EDIT_HISTORY`] entries are retained.
+    #[must_use]
     pub fn undo_entries(&self) -> impl ExactSizeIterator<Item = &EditHistoryEntry> {
         self.history.undo_entries()
     }
 
     /// Returns undone project edits, oldest first; the last is redone next.
+    #[must_use]
     pub fn redo_entries(&self) -> impl ExactSizeIterator<Item = &EditHistoryEntry> {
         self.history.redo_entries()
     }

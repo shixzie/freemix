@@ -309,7 +309,7 @@ pub(crate) fn compile(
         .map_err(EngineReelError::Plan)?;
     }
     runtime
-        .with_media(|media| reel.compile(&media.events))
+        .with_media(|media| reel.compile(media.events))
         .map_err(EngineReelError::Plan)
 }
 
