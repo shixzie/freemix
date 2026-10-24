@@ -86,6 +86,168 @@ pub fn display_outputs(address: SocketAddr) -> RemoteResult<()> {
     Ok(())
 }
 
+/// Asks the daemon for its replay status (OR-012).
+fn request_replay_status(remote: &mut Remote) -> RemoteResult<fm_protocol::ReplayStatusMessage> {
+    let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
+    let request_id = format!("cli-replay-{}", unique_client_id()?);
+    remote.write(&WireMessage::ReplayStatusRequest(
+        fm_protocol::ReplayStatusRequest {
+            request_id: request_id.clone(),
+        },
+    ))?;
+    loop {
+        match remote.read_until(deadline)? {
+            WireMessage::ReplayStatus(status)
+                if status.request_id.as_deref() == Some(request_id.as_str()) =>
+            {
+                return Ok(*status);
+            }
+            message @ (WireMessage::Event(_) | WireMessage::RuntimeEvent(_)) => {
+                remote.client.intake(message)?;
+            }
+            WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
+            // Pushed status records and meters are not the answer.
+            _ => {}
+        }
+    }
+}
+
+/// Prints the daemon's replay recording, events, and Replay inputs (OR-012).
+pub fn replay(address: SocketAddr) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Viewer)?;
+    print_replay(&request_replay_status(&mut remote)?);
+    Ok(())
+}
+
+/// `settings` with `edit` applied (OR-012).
+pub(crate) fn edited_replay(
+    settings: &fm_protocol::ReplaySettings,
+    edit: &crate::args::ReplayEdit,
+) -> RemoteResult<fm_protocol::ReplaySettings> {
+    let sources = match &edit.sources {
+        Some(sources) => sources
+            .iter()
+            .map(|input| {
+                core::num::NonZeroU128::new(*input)
+                    .map(fm_types::InputId::new)
+                    .ok_or_else(|| RemoteFailure("input ids are nonzero".into()))
+            })
+            .collect::<Result<_, _>>()?,
+        None => settings.sources.clone(),
+    };
+    Ok(fm_protocol::ReplaySettings {
+        sources,
+        retention_seconds: edit.retention_seconds.unwrap_or(settings.retention_seconds),
+        storage_root: edit
+            .storage_root
+            .clone()
+            .unwrap_or_else(|| settings.storage_root.clone()),
+    })
+}
+
+/// Edits what the daemon records for replay (OR-012), then prints the
+/// status.
+pub fn set_replay(
+    address: SocketAddr,
+    edit: &crate::args::ReplayEdit,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> RemoteResult<()> {
+    let current = {
+        let mut remote = Remote::connect(address, Role::Viewer)?;
+        request_replay_status(&mut remote)?.settings
+    };
+    let payload = CommandPayload::Replay(fm_protocol::ReplayOperation::Configure(Box::new(
+        edited_replay(&current, edit)?,
+    )));
+    execute(address, payload, key, expected_revision)?;
+    replay(address)
+}
+
+/// Sends one live replay command (OR-012), then prints the status.
+pub fn replay_do(
+    address: SocketAddr,
+    operation: fm_protocol::ReplayOperation,
+    key: Option<String>,
+) -> RemoteResult<()> {
+    execute(address, CommandPayload::Replay(operation), key, None)?;
+    replay(address)
+}
+
+/// Prints one `ReplaySettings(...)` line.
+pub(crate) fn print_replay_settings(settings: &fm_protocol::ReplaySettings) {
+    println!(
+        "ReplaySettings(sources=[{}], retention_seconds={}, storage_root={})",
+        settings
+            .sources
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        settings.retention_seconds,
+        settings
+            .storage_root
+            .as_deref()
+            .map_or_else(|| "default".to_owned(), |root| format!("{root:?}")),
+    );
+}
+
+/// Prints the replay status: the settings, one line per recorded source,
+/// event, and Replay input.
+pub(crate) fn print_replay(status: &fm_protocol::ReplayStatusMessage) {
+    let frame = |frame: Option<u64>| frame.map_or_else(|| "none".to_owned(), |f| f.to_string());
+    print_replay_settings(&status.settings);
+    println!(
+        "Replay(feed={}, root={:?}, live_frame={}, mark_in={}, mark_out={})",
+        status.feed.token(),
+        status.root,
+        frame(status.live_frame),
+        frame(status.mark_in),
+        frame(status.mark_out),
+    );
+    for source in &status.recorded {
+        println!(
+            "ReplaySource(input={}, segments={}, bytes={}, first_frame={}, last_frame={})",
+            source.input,
+            source.segments,
+            source.bytes,
+            frame(source.first_frame),
+            frame(source.last_frame),
+        );
+    }
+    for event in &status.events {
+        println!(
+            "ReplayEvent(id={}, name={:?}, in_frame={}, out_frame={}, angles=[{}], complete={})",
+            event.id,
+            event.name,
+            event.in_frame,
+            event.out_frame,
+            event
+                .angles
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            event.complete,
+        );
+    }
+    for player in &status.players {
+        println!(
+            "ReplayPlayer(input={}, event={}, angle={}, speed={}, playing={}, frame={})",
+            player.input,
+            player
+                .event
+                .map_or_else(|| "none".to_owned(), |event| event.to_string()),
+            player
+                .angle
+                .map_or_else(|| "none".to_owned(), |angle| angle.to_string()),
+            player.speed.percent(),
+            player.playing,
+            frame(player.frame),
+        );
+    }
+}
+
 /// Prints the daemon's `LiveLAN` settings and status (Protocol 2.57).
 pub fn live_lan(address: SocketAddr) -> RemoteResult<()> {
     let remote = Remote::connect(address, Role::Viewer)?;

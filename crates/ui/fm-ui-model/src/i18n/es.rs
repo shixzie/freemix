@@ -10094,4 +10094,159 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Tiempo de retardo en milisegundos (hasta 1 s), exacto a la muestra: retrasa el sonido, por ejemplo para alinear un micrófono con la imagen retrasada de una cámara",
         ),
     ),
+    (Msg::TabReplay, t("Repetición")),
+    (
+        Msg::TabReplayHover,
+        t(
+            "Repetición instantánea: graba las entradas elegidas, captura momentos como eventos y reprodúcelos en entradas de repetición del 25 al 100 % de velocidad",
+        ),
+    ),
+    (
+        Msg::ReplayIntro,
+        plural(
+            "Las entradas grabadas guardan en disco su último {count} segundo. Captura un momento, cárgalo en una entrada de repetición, reprodúcelo y pásalo a Programa.",
+            "Las entradas grabadas guardan en disco sus últimos {count} segundos. Captura un momento, cárgalo en una entrada de repetición, reprodúcelo y pásalo a Programa.",
+        ),
+    ),
+    (
+        Msg::ReplayNotReported,
+        t("El servidor aún no ha informado de su grabación de repetición"),
+    ),
+    (Msg::ReplayNotRecording, t("SIN GRABAR")),
+    (
+        Msg::ReplayNotRecordingHover,
+        t("No se graba ninguna entrada para repetición: marca abajo las entradas que grabar"),
+    ),
+    (
+        Msg::ReplayRecHover,
+        t(
+            "Grabado para repetición: el servidor guarda archivos de segmentos rotativos de cada entrada marcada y descarta lo que supere la retención salvo que un evento lo retenga",
+        ),
+    ),
+    (Msg::ReplaySimulated, t("SIM")),
+    (
+        Msg::ReplaySimulatedHover,
+        t(
+            "Este servidor graba de forma sintética, sin archivos (un servidor simulado): los eventos y reproductores funcionan, pero no hay imagen",
+        ),
+    ),
+    (
+        Msg::ReplaySourceHover,
+        t(
+            "Grabar esta entrada para repetición (hasta cuatro; la primera marcada es el ángulo preferido). Cambiar lo que se graba reinicia la grabación y descarta todos los eventos",
+        ),
+    ),
+    (Msg::ReplayRetention, t("Guardar")),
+    (
+        Msg::ReplayRetentionHover,
+        t(
+            "Cuántos segundos de cada entrada grabada se guardan en disco, de 10 a 3600; un evento conserva su material por antiguo que sea",
+        ),
+    ),
+    (
+        Msg::ReplaySourceLine,
+        plural(
+            "{name}: {count} segmento, {megabytes} MB",
+            "{name}: {count} segmentos, {megabytes} MB",
+        ),
+    ),
+    (
+        Msg::ReplayReasonNotRecording,
+        t("no se graba ninguna entrada para repetición"),
+    ),
+    (Msg::ReplayReasonFull, t("ya se graban cuatro entradas")),
+    (
+        Msg::ReplayReasonNothingCued,
+        t("no hay ningún evento cargado en esta entrada de repetición"),
+    ),
+    (Msg::ReplayMarkIn, t("MARCAR ENTRADA")),
+    (
+        Msg::ReplayMarkInHover,
+        t("Marcar el primer fotograma del próximo evento en el directo"),
+    ),
+    (Msg::ReplayMarkOut, t("MARCAR SALIDA")),
+    (
+        Msg::ReplayMarkOutHover,
+        t("Marcar el último fotograma del próximo evento en el directo"),
+    ),
+    (Msg::ReplayCapture, t("CAPTURAR")),
+    (
+        Msg::ReplayCaptureHover,
+        t("Capturar como evento el tramo entre MARCAR ENTRADA y MARCAR SALIDA"),
+    ),
+    (Msg::ReplayLast, t("ÚLTIMOS {count} s")),
+    (
+        Msg::ReplayLastHover,
+        t("Capturar como evento los últimos {count} segundos"),
+    ),
+    (
+        Msg::ReplayMarks,
+        t("Entrada {in} · Salida {out} · Directo {live}"),
+    ),
+    (
+        Msg::ReplayMarksHover,
+        t("El tramo marcado y el borde en directo (el fotograma grabado más reciente)"),
+    ),
+    (Msg::ReplayEvents, t("Eventos")),
+    (
+        Msg::ReplayNoEvents,
+        t("Aún no hay eventos: captura uno con ÚLTIMOS o con MARCAR ENTRADA y MARCAR SALIDA"),
+    ),
+    (
+        Msg::ReplayEventNameHover,
+        t("El nombre del evento: escribe otro y haz clic fuera para renombrarlo"),
+    ),
+    (
+        Msg::ReplayEventLengthHover,
+        t("La duración del evento; empieza en {start}"),
+    ),
+    (Msg::ReplayPartial, t("PARCIAL")),
+    (
+        Msg::ReplayPartialHover,
+        t(
+            "Los archivos de segmentos terminados aún no cubren todo este evento: acaba en el directo o empezó antes que la grabación",
+        ),
+    ),
+    (
+        Msg::ReplayDeleteHover,
+        t("Eliminar este evento; la retención descarta luego su material"),
+    ),
+    (Msg::ReplayCueOn, t("CARGAR {name}")),
+    (
+        Msg::ReplayCueOnHover,
+        t("Cargar este evento en {name}, en pausa en su primer fotograma"),
+    ),
+    (Msg::ReplayPlayers, t("Entradas de repetición")),
+    (
+        Msg::ReplayNoPlayers,
+        t("No hay entradas de repetición: añade una con Añadir entrada › Repetición"),
+    ),
+    (Msg::ReplayNothingCued, t("Nada cargado")),
+    (
+        Msg::ReplayCuedHover,
+        t("El evento cargado en esta entrada de repetición"),
+    ),
+    (
+        Msg::ReplayFrameHover,
+        t("Cuánto del evento lleva el fotograma mostrado"),
+    ),
+    (
+        Msg::ReplayAngleHover,
+        t("La entrada grabada (ángulo) que muestra esta entrada de repetición"),
+    ),
+    (
+        Msg::ReplayPlayHover,
+        t("Reproducir el evento cargado al {percent} % de velocidad"),
+    ),
+    (Msg::ReplayPause, t("PAUSA")),
+    (Msg::ReplayPauseHover, t("Pausar en el fotograma mostrado")),
+    (Msg::ReplayCueIn, t("AL INICIO")),
+    (
+        Msg::ReplayCueInHover,
+        t("Volver al primer fotograma del evento, en pausa"),
+    ),
+    (
+        Msg::ReplayTakeHover,
+        t("Cortar esta entrada de repetición a Programa"),
+    ),
 ];

@@ -1363,6 +1363,43 @@ pub fn run(command: Command) -> AppResult<()> {
             expected_revision,
         )?,
         Command::RemoteDisplayOutputList { address } => remote::display_outputs(address)?,
+        Command::Replay { path } => {
+            let project = inspect_engine(&path)?;
+            remote::print_replay_settings(project.engine.show().replay());
+            // Events and players are server runtime: a local project only
+            // holds what is recorded.
+            println!("Replay(feed=none, events=0, players=0)");
+        }
+        Command::ReplaySet {
+            path,
+            edit,
+            key,
+            expected_revision,
+        } => {
+            let current = inspect_engine(&path)?.engine.show().replay().clone();
+            let settings = remote::edited_replay(&current, &edit)?;
+            mutate(
+                &path,
+                EngineCommand::Replay(fm_engine::EngineReplayOperation::Configure(Box::new(
+                    settings,
+                ))),
+                1,
+                key,
+                expected_revision,
+            )?;
+        }
+        Command::RemoteReplay { address } => remote::replay(address)?,
+        Command::RemoteReplaySet {
+            address,
+            edit,
+            key,
+            expected_revision,
+        } => remote::set_replay(address, &edit, key, expected_revision)?,
+        Command::RemoteReplayDo {
+            address,
+            operation,
+            key,
+        } => remote::replay_do(address, operation, key)?,
         Command::LiveLan { path } => {
             let project = inspect_engine(&path)?;
             let config = project.engine.show().live_lan();

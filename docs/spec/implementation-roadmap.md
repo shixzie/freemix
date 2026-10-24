@@ -5389,12 +5389,11 @@ the protection and detaches the event from every list. Last-N presets (5, 10,
 and 20 seconds) anchor at the live edge, and events, lists, folders, tags,
 names, and notes have explicit limits with typed errors. Replay channels switch
 event angles at the same timeline instant and resolve the exact source frame
-and segment, or the live edge. Remaining gaps: nothing is persisted or
-connected to `fm-record`, space reclamation and file deletion are
-caller-driven, frame resolution does not decode or present media, A/B
-playback has no real clock, per-event list overrides and controller mapping
-are absent, and no eight-camera storage profile is certified. `OR-012` and
-`OR-013` remain planned.
+and segment, or the live edge. Remaining gaps in the library itself: space
+reclamation and file deletion are caller-driven, A/B playback has no real
+clock, per-event list overrides and controller mapping are absent, and no
+eight-camera storage profile is certified; the end-to-end slice below wires
+part of this to a server. `OR-012` and `OR-013` remain planned.
 
 Current implementation boundary for items 6, 8, and 9: `fm-replay` plans a
 synchronized Quad View or a multiview of up to eight distinct angles plus A/B
@@ -5427,6 +5426,31 @@ Remaining gaps: nothing is decoded, mixed, encoded, or written; dissolve is the
 only transition and clips play forward only; the queue is not wired to
 `fm-record`, persistence, protocol, or UI; and exports needing an open segment
 are refused rather than deferred. `OR-013` remains planned.
+
+Current end-to-end slice for items 1, 3, and 4: the show persists replay
+settings (up to four recorded inputs in angle order, a retention of 10 seconds
+to one hour, and an optional storage root; Protocol 2.106, schema 82). The
+engine owns a deterministic replay runtime: marks, Capture and Last 5/10/20
+build events (at most 64) over every recorded angle, events can be renamed and
+deleted, and up to two Replay inputs cue an event angle, switch angles, play
+at 100, 75, 50, or 25 percent, pause, and jump back to the event's in point.
+Live commands are ordinary acknowledged commands, but events, marks, and
+player positions are server runtime, so a restart starts with none. The
+simulated daemon feeds a synthetic segment timeline; the native daemon records
+each recorded input's newest decoded picture into rolling two-second H.264 MP4
+segment files under `<bundle>/replay` (or the configured root), deletes
+segments past retention unless an event protects them, and decodes the cued
+angle with ffmpeg so a Replay input presents frame-exact source frames at the
+chosen speed (each source frame shown twice at 50 percent). Studio has a
+dockable Replay panel (recording, marks, events, and players, with English and
+Spanish hover help on every control) and `freemix-cli` has `replay`,
+`replay-set`, and `remote-replay-do`. Remaining gaps: recorded segments carry
+silent audio and no input audio is recorded or played; the recorder captures
+what the source last decoded rather than a genlocked frame, so a stalled
+source repeats its picture; segment files from a previous run are removed
+rather than reloaded; there is no A/B linking, jog or shuttle, transition,
+auto-return, playlist, multiview, controller, or disk-health wiring; and
+nothing is certified. `OR-012`, `OR-013`, and `OR-014` remain planned.
 
 
 Exit: Sports Show scenario passes on certified storage/hardware.

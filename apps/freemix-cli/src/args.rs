@@ -1122,6 +1122,34 @@ pub enum Command {
     RemoteDisplayInventory {
         address: SocketAddr,
     },
+    /// Prints what a project records for instant replay (OR-012).
+    Replay {
+        path: PathBuf,
+    },
+    /// Prints a daemon's replay recording, events, and Replay inputs.
+    RemoteReplay {
+        address: SocketAddr,
+    },
+    /// Edits what is recorded for replay; absent options keep their value.
+    ReplaySet {
+        path: PathBuf,
+        edit: ReplayEdit,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    RemoteReplaySet {
+        address: SocketAddr,
+        edit: ReplayEdit,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Sends one live replay command: a mark, a capture, an event edit, or
+    /// a Replay input's transport.
+    RemoteReplayDo {
+        address: SocketAddr,
+        operation: fm_protocol::ReplayOperation,
+        key: Option<String>,
+    },
     /// Prints the `LiveLAN` viewer stream's settings (OR-017).
     LiveLan {
         path: PathBuf,
@@ -2221,6 +2249,10 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         live @ ("live-lan" | "remote-live-lan" | "live-lan-set" | "remote-live-lan-set") => {
             parse_live_lan(live, arguments)
         }
+        replay @ ("replay" | "remote-replay" | "replay-set" | "remote-replay-set") => {
+            parse_replay(replay, arguments)
+        }
+        "remote-replay-do" => parse_remote_replay_do(arguments),
         "remote-audio-strip" => parse_remote_audio_strip(arguments),
         "remote-rename" => parse_remote_rename(arguments),
         "remote-input-reorder" => parse_reorder(arguments, true),
@@ -5532,6 +5564,219 @@ fn parse_display_output(
             }
         }
         _ => return Err(ArgsError::UnknownCommand(command.to_owned())),
+    })
+}
+
+/// A `replay-set` edit (OR-012): each `None` keeps the current value.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ReplayEdit {
+    /// The recorded inputs, in angle order (`--sources 3,1`, or `--sources
+    /// none`).
+    pub sources: Option<Vec<u128>>,
+    pub retention_seconds: Option<u32>,
+    /// `Some(None)` lets the server choose (`--default-root`).
+    #[allow(clippy::option_option)] // keep, the server's default, or a root
+    pub storage_root: Option<Option<String>>,
+}
+
+/// `replay`, `replay-set`, and their `remote-` forms (OR-012).
+fn parse_replay(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let target = required(
+        &mut arguments,
+        if remote { "address" } else { "project path" },
+    )?;
+    if !command.ends_with("-set") {
+        reject_extra(&mut arguments)?;
+        return Ok(if remote {
+            Command::RemoteReplay {
+                address: socket_address(&target)?,
+            }
+        } else {
+            Command::Replay {
+                path: PathBuf::from(target),
+            }
+        });
+    }
+    let mut edit = ReplayEdit::default();
+    let mut key = None;
+    let mut expected_revision = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--sources" => {
+                let value = required(&mut arguments, "replay sources")?;
+                edit.sources = Some(if value == "none" {
+                    Vec::new()
+                } else {
+                    value
+                        .split(',')
+                        .map(|input| number(input, "replay source"))
+                        .collect::<Result<_, _>>()?
+                });
+            }
+            "--retention" => {
+                edit.retention_seconds = Some(number(
+                    &required(&mut arguments, "retention seconds")?,
+                    "retention seconds",
+                )?);
+            }
+            "--root" => {
+                if edit.storage_root == Some(None) {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--root",
+                        conflicts: "--default-root",
+                    });
+                }
+                edit.storage_root = Some(Some(required(&mut arguments, "storage root")?));
+            }
+            "--default-root" => {
+                if matches!(edit.storage_root, Some(Some(_))) {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--default-root",
+                        conflicts: "--root",
+                    });
+                }
+                edit.storage_root = Some(None);
+            }
+            "--key" => {
+                let value = required(&mut arguments, "idempotency key")?;
+                if value.trim().is_empty() {
+                    return Err(ArgsError::BlankValue("idempotency key"));
+                }
+                key = Some(value);
+            }
+            "--expect" => {
+                expected_revision = Some(number(
+                    &required(&mut arguments, "expected revision")?,
+                    "expected revision",
+                )?);
+            }
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(if remote {
+        Command::RemoteReplaySet {
+            address: socket_address(&target)?,
+            edit,
+            key,
+            expected_revision,
+        }
+    } else {
+        Command::ReplaySet {
+            path: PathBuf::from(target),
+            edit,
+            key,
+            expected_revision,
+        }
+    })
+}
+
+fn replay_input(value: &str) -> Result<fm_protocol::WireInputId, ArgsError> {
+    let value: u128 = number(value, "input")?;
+    core::num::NonZeroU128::new(value)
+        .map(fm_protocol::WireInputId::new)
+        .ok_or_else(|| ArgsError::InvalidChoice {
+            field: "input",
+            value: value.to_string(),
+        })
+}
+
+/// `remote-replay-do <address> <operation> ...` (OR-012):
+/// `mark-in`, `mark-out`, `capture [--name NAME]`, `last 5|10|20`,
+/// `rename EVENT NAME`, `delete EVENT`, `cue INPUT EVENT [--angle INPUT]`,
+/// `angle INPUT ANGLE`, `play INPUT [25|50|75|100]`, `pause INPUT`, and
+/// `cue-in INPUT`, each with an optional `--key`.
+fn parse_remote_replay_do(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    use fm_protocol::{ReplayOperation, ReplaySpeed};
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let verb = required(&mut arguments, "replay operation")?;
+    let mut positional = Vec::new();
+    let mut name = None;
+    let mut angle = None;
+    let mut key = None;
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--name" => name = Some(required(&mut arguments, "event name")?),
+            "--angle" => angle = Some(replay_input(&required(&mut arguments, "angle")?)?),
+            "--key" => {
+                let value = required(&mut arguments, "idempotency key")?;
+                if value.trim().is_empty() {
+                    return Err(ArgsError::BlankValue("idempotency key"));
+                }
+                key = Some(value);
+            }
+            option if option.starts_with("--") => {
+                return Err(ArgsError::UnknownOption(argument));
+            }
+            _ => positional.push(argument),
+        }
+    }
+    let wrong = || ArgsError::InvalidChoice {
+        field: "replay operation",
+        value: verb.clone(),
+    };
+    let event = |value: &String| number::<u32>(value, "event");
+    let operation = match (verb.as_str(), positional.as_slice()) {
+        ("mark-in", []) => ReplayOperation::MarkIn,
+        ("mark-out", []) => ReplayOperation::MarkOut,
+        ("capture", []) => ReplayOperation::CaptureMarks { name: name.take() },
+        ("last", [seconds]) => {
+            let seconds: u8 = number(seconds, "seconds")?;
+            if !fm_protocol::REPLAY_LAST_SECONDS.contains(&seconds) {
+                return Err(ArgsError::InvalidChoice {
+                    field: "seconds",
+                    value: seconds.to_string(),
+                });
+            }
+            ReplayOperation::CaptureLast { seconds }
+        }
+        ("rename", [id, new_name]) => ReplayOperation::RenameEvent {
+            event: event(id)?,
+            name: new_name.clone(),
+        },
+        ("delete", [id]) => ReplayOperation::DeleteEvent { event: event(id)? },
+        ("cue", [input, id]) => ReplayOperation::Cue {
+            input: replay_input(input)?,
+            event: event(id)?,
+            angle: angle.take(),
+        },
+        ("angle", [input, shown]) => ReplayOperation::Angle {
+            input: replay_input(input)?,
+            angle: replay_input(shown)?,
+        },
+        ("play", [input]) => ReplayOperation::Play {
+            input: replay_input(input)?,
+            speed: ReplaySpeed::Full,
+        },
+        ("play", [input, percent]) => ReplayOperation::Play {
+            input: replay_input(input)?,
+            speed: ReplaySpeed::from_percent(number(percent, "speed")?).ok_or_else(|| {
+                ArgsError::InvalidChoice {
+                    field: "speed",
+                    value: percent.clone(),
+                }
+            })?,
+        },
+        ("pause", [input]) => ReplayOperation::Pause {
+            input: replay_input(input)?,
+        },
+        ("cue-in", [input]) => ReplayOperation::CueIn {
+            input: replay_input(input)?,
+        },
+        _ => return Err(wrong()),
+    };
+    if name.is_some() || angle.is_some() {
+        return Err(wrong());
+    }
+    Ok(Command::RemoteReplayDo {
+        address,
+        operation,
+        key,
     })
 }
 
@@ -10270,5 +10515,78 @@ mod tests {
             .is_err()
         );
         assert!(parse(strings(&["remote-input-remove", "127.0.0.1:9123"])).is_err());
+    }
+
+    /// OR-012: replay settings edits and live replay operations parse
+    /// into their typed commands; bad speeds, last-N lengths, and
+    /// conflicting roots are refused.
+    #[test]
+    fn replay_commands_parse_into_typed_operations() {
+        use fm_protocol::{ReplayOperation, ReplaySpeed};
+        let input = |value: u128| {
+            fm_protocol::WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
+        };
+        assert_eq!(
+            parse(strings(&[
+                "replay-set",
+                "show.freemix",
+                "--sources",
+                "3,1",
+                "--retention",
+                "30",
+                "--default-root",
+            ]))
+            .unwrap(),
+            Command::ReplaySet {
+                path: PathBuf::from("show.freemix"),
+                edit: ReplayEdit {
+                    sources: Some(vec![3, 1]),
+                    retention_seconds: Some(30),
+                    storage_root: Some(None),
+                },
+                key: None,
+                expected_revision: None,
+            }
+        );
+        assert!(
+            parse(strings(&[
+                "replay-set",
+                "show.freemix",
+                "--root",
+                "/r",
+                "--default-root"
+            ]))
+            .is_err()
+        );
+        let remote = |words: &[&str]| {
+            let mut all = vec!["remote-replay-do", "127.0.0.1:9123"];
+            all.extend_from_slice(words);
+            parse(strings(&all)).map(|command| match command {
+                Command::RemoteReplayDo { operation, .. } => operation,
+                other => panic!("{other:?}"),
+            })
+        };
+        assert_eq!(
+            remote(&["last", "10"]),
+            Ok(ReplayOperation::CaptureLast { seconds: 10 })
+        );
+        assert_eq!(
+            remote(&["play", "7", "50"]),
+            Ok(ReplayOperation::Play {
+                input: input(7),
+                speed: ReplaySpeed::Half,
+            })
+        );
+        assert_eq!(
+            remote(&["cue", "7", "2", "--angle", "3"]),
+            Ok(ReplayOperation::Cue {
+                input: input(7),
+                event: 2,
+                angle: Some(input(3)),
+            })
+        );
+        assert!(remote(&["last", "7"]).is_err());
+        assert!(remote(&["play", "7", "60"]).is_err());
+        assert!(remote(&["mark-in", "--name", "x"]).is_err());
     }
 }

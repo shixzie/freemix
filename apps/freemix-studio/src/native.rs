@@ -2987,6 +2987,7 @@ fn intent_payload(
         }
         StudioIntent::ClearDisplayOutput { slot } => CommandPayload::ClearDisplayOutput { slot },
         StudioIntent::SetLiveLan { config, pin } => CommandPayload::SetLiveLan { config, pin },
+        StudioIntent::Replay(operation) => CommandPayload::Replay(operation),
         StudioIntent::RemoveInput { input } => {
             let view = view.ok_or_else(|| "Project state is not synchronized".to_owned())?;
             if !view.inputs.contains(&input) {
@@ -3262,6 +3263,7 @@ const fn lifecycle_reconnect(lifecycle: LifecycleState) -> Option<ReconnectStatu
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUiState {
     let (connection_status, reconnect, lifecycle_error) = match runtime.lifecycle() {
         Ok(lifecycle) => (
@@ -3310,6 +3312,11 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
                 }
             }
             state.source_sync = runtime.session().latest_source_sync_status().cloned();
+            state.replay = runtime
+                .session()
+                .latest_replay_status()
+                .cloned()
+                .map(Box::new);
             state.health = runtime
                 .session()
                 .latest_health_status()
@@ -6575,6 +6582,7 @@ mod tests {
     /// Protocol 2.42 slot commands; an inventory request is no command and
     /// one queued request answers every later one.
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn display_output_intents_map_to_slot_commands() {
         let slot = fm_protocol::DisplayOutputSlot::new(2).unwrap();
         let config: fm_protocol::DisplayOutputConfig =
@@ -6616,6 +6624,20 @@ mod tests {
                 pin: fm_protocol::SecretEdit::Set("482916".into()),
             })
         );
+        // OR-012: every Replay panel key is its replay command as is.
+        for operation in [
+            fm_protocol::ReplayOperation::CaptureLast { seconds: 10 },
+            fm_protocol::ReplayOperation::Play {
+                input: fm_protocol::WireInputId::new(core::num::NonZeroU128::new(9).unwrap()),
+                speed: fm_protocol::ReplaySpeed::Half,
+            },
+            fm_protocol::ReplayOperation::Configure(Box::default()),
+        ] {
+            assert_eq!(
+                intent_payload(StudioIntent::Replay(operation.clone()), None),
+                Ok(CommandPayload::Replay(operation))
+            );
+        }
         assert!(intent_payload(StudioIntent::RequestDisplayInventory, None).is_err());
         assert!(intent_payload(StudioIntent::RequestCaptureDevices, None).is_err());
         assert!(intent_payload(StudioIntent::RequestSystemAudioDevices, None).is_err());

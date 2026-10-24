@@ -71,7 +71,7 @@ fn operations() -> Vec<(ReplayOperation, &'static str)> {
             "replay_configure\tsources=3%2C1\tretention_seconds=600\tstorage_root=%2Fsrv%2Freplay%20a",
         ),
         (
-            ReplayOperation::Configure(Box::new(ReplaySettings::default())),
+            ReplayOperation::Configure(Box::default()),
             "replay_configure\tsources=\tretention_seconds=600",
         ),
         (ReplayOperation::MarkIn, "replay_mark_in"),

@@ -1552,6 +1552,7 @@ impl StudioShell {
             }
             PanelId::Playlist => self.playlist.draw(ui, state, intents),
             PanelId::Cues => self.cues.draw(ui, state, intents),
+            PanelId::Replay => crate::replay_ui::draw_replay(ui, state, intents),
             PanelId::Media => crate::media_transport::draw_media(ui, state, intents),
         }
     }

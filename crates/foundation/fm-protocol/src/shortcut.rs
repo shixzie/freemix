@@ -58,7 +58,8 @@ pub const SHORTCUT_OSC_PREFIX: &str = "/freemix/user/";
 
 /// The console panels a shortcut key may be scoped to (Protocol 2.83):
 /// a scoped key answers only while that panel has the console's focus.
-pub const SHORTCUT_SCOPES: [&str; 12] = [
+/// `replay` (the instant replay panel) since Protocol 2.106.
+pub const SHORTCUT_SCOPES: [&str; 13] = [
     "preview",
     "transitions",
     "program",
@@ -71,6 +72,7 @@ pub const SHORTCUT_SCOPES: [&str; 12] = [
     "playlist",
     "media",
     "cues",
+    "replay",
 ];
 
 /// The mouse buttons a shortcut key may name in place of a key (Protocol

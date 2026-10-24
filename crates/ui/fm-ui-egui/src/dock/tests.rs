@@ -6,7 +6,7 @@ use PanelId::{
 };
 
 const DEFAULT_TREE: &str = "h765(v500(h375([preview],h394([transitions],[program])),\
-h600([inputs],[mixer])),v500([outputs],[overlays|stingers|titles|playlist|media|cues]))";
+h600([inputs],[mixer])),v500([outputs|replay],[overlays|stingers|titles|playlist|media|cues]))";
 
 fn group_of(layout: &DockLayout, panel: PanelId) -> Vec<PanelId> {
     let mut layout = layout.clone();
@@ -81,7 +81,9 @@ fn split_tab_and_move_rearrange_the_tree() {
     assert!(
         layout
             .encode_tree()
-            .ends_with(",[overlays|stingers|playlist|media|cues])")
+            .ends_with("v500([replay],[overlays|stingers|playlist|media|cues]))"),
+        "{}",
+        layout.encode_tree()
     );
     all_shown_once(&layout);
 
@@ -178,8 +180,8 @@ fn a_whole_tab_group_moves_with_its_tabs_and_shown_tab() {
         "{}",
         layout.encode_tree()
     );
-    // Its old split collapsed into Recording & streams alone.
-    assert!(layout.encode_tree().ends_with(",[outputs])"));
+    // Its old split collapsed into Recording & streams and Replay alone.
+    assert!(layout.encode_tree().ends_with(",[outputs|replay])"));
     assert!(layout.is_showing(Titles));
 
     // Join it into the mixer's group: appended, its shown tab in front.
@@ -295,7 +297,7 @@ fn trees_and_popouts_round_trip_through_text() {
     let popouts = layout.encode_popouts();
     assert_eq!(
         tree,
-        "v560(h394([transitions],[program]),h333([inputs|mixer*],[outputs|overlays|titles|playlist|media|cues]))"
+        "v560(h394([transitions],[program]),h333([inputs|mixer*],[outputs|overlays|titles|playlist|media|cues|replay]))"
     );
     assert_eq!(popouts, "stingers:500x300@10,-20; preview");
     assert_eq!(DockLayout::decode(&tree, &popouts), Ok(layout.clone()));

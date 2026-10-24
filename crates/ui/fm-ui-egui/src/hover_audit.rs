@@ -2472,6 +2472,7 @@ fn ready_over(model: &ClientModel, operator: bool) -> StudioUiState {
     state.audio_meters = Some(meters());
     state.source_sync = Some(source_sync());
     state.health = Some(Box::new(daemon_health()));
+    state.replay = Some(Box::new(replay_status()));
     // GX-006: the lower third plays its In phase on air.
     state.title_phases = Some(fm_protocol::TitlePhasesMessage {
         frame: 900,
@@ -2547,6 +2548,87 @@ fn daemon_health() -> fm_protocol::HealthStatusMessage {
 /// Live source drift telemetry (AU-004): input 2's loop runs clean, input
 /// 3's recovers after underruns, so both `SYNC` keys and the amber health
 /// lamp are audited.
+/// OR-012: two recorded sources, a mark, a complete and a partial event,
+/// and two Replay inputs, one playing and one with nothing cued.
+pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
+    use fm_protocol::{
+        ReplayEventStatus, ReplayFeed, ReplayPlayerStatus, ReplaySettings, ReplaySourceStatus,
+        ReplaySpeed,
+    };
+    fm_protocol::ReplayStatusMessage {
+        server: fm_protocol::ServerIdentity {
+            engine_id: "audit".into(),
+            project_id: "audit".into(),
+            state_epoch: 1,
+            log_id: "audit".into(),
+        },
+        sequence: 4,
+        request_id: None,
+        feed: ReplayFeed::Recorded,
+        settings: ReplaySettings {
+            sources: vec![wire(1).to_domain(), wire(2).to_domain()],
+            retention_seconds: 600,
+            storage_root: None,
+        },
+        root: "/var/lib/freemix/replay".into(),
+        live_frame: Some(3_000),
+        mark_in: Some(2_900),
+        mark_out: None,
+        recorded: vec![
+            ReplaySourceStatus {
+                input: wire(1),
+                segments: 60,
+                bytes: 90_000_000,
+                first_frame: Some(0),
+                last_frame: Some(3_000),
+            },
+            ReplaySourceStatus {
+                input: wire(2),
+                segments: 1,
+                bytes: 1_500_000,
+                first_frame: Some(2_950),
+                last_frame: Some(3_000),
+            },
+        ],
+        events: vec![
+            ReplayEventStatus {
+                id: 1,
+                name: "Goal".into(),
+                in_frame: 2_500,
+                out_frame: 2_750,
+                angles: vec![wire(1), wire(2)],
+                complete: true,
+            },
+            ReplayEventStatus {
+                id: 2,
+                name: "Last 5 s".into(),
+                in_frame: 2_875,
+                out_frame: 3_000,
+                angles: vec![wire(1), wire(2)],
+                complete: false,
+            },
+        ],
+        players: vec![
+            ReplayPlayerStatus {
+                input: wire(4),
+                event: Some(1),
+                angle: Some(wire(2)),
+                speed: ReplaySpeed::Half,
+                playing: true,
+                frame: Some(2_600),
+            },
+            ReplayPlayerStatus {
+                input: wire(5),
+                event: None,
+                angle: None,
+                speed: ReplaySpeed::Full,
+                playing: false,
+                frame: None,
+            },
+        ],
+    }
+}
+
 fn source_sync() -> fm_protocol::SourceSyncStatusMessage {
     let sample = |id, state, underruns| fm_protocol::SourceSyncSample {
         input: wire(id),
@@ -2618,6 +2700,7 @@ fn scenes(language: Language) -> Vec<Scene> {
         ("playlist", PanelId::Playlist),
         ("media", PanelId::Media),
         ("cues", PanelId::Cues),
+        ("replay", PanelId::Replay),
     ];
     for (operator, role) in [(true, "operator"), (false, "viewer")] {
         for (tab_name, tab) in tabs {

@@ -73,6 +73,7 @@ mod panels;
 mod playlist;
 mod preferences;
 mod preset_files;
+mod replay_ui;
 mod scene_designer;
 mod screen_capture_ui;
 mod scripts;
@@ -270,6 +271,8 @@ pub enum StudioIntent {
     /// Asks for one document page's presenter notes or thumbnail (IN-014);
     /// the answer arrives in [`StudioUiState::paged_pages`].
     PagedPage(fm_protocol::PagedPageRequest),
+    /// One instant replay command (OR-012).
+    Replay(fm_protocol::ReplayOperation),
     /// Selects an input on the Preview bus.
     SelectPreview(InputId),
     /// Performs an immediate Cut transition.
@@ -632,6 +635,10 @@ pub struct StudioUiState {
     /// what the TITLES timeline strip's playhead follows. `None` until the
     /// daemon sends one.
     pub title_phases: Option<fm_protocol::TitlePhasesMessage>,
+    /// The latest instant replay status (`replay_status`, OR-012): the
+    /// recording, marks, events, and Replay inputs. `None` until the daemon
+    /// sends one.
+    pub replay: Option<Box<fm_protocol::ReplayStatusMessage>>,
     /// Stream targets whose start/stop command is still unresolved.
     pub stream_pending: Vec<WireStreamTargetId>,
     /// Whether a Start all or Stop all command is still unresolved.
@@ -719,6 +726,7 @@ impl StudioUiState {
             source_sync: None,
             health: None,
             title_phases: None,
+            replay: None,
             stream_pending: Vec::new(),
             stream_group_pending: false,
             reconnect: None,
