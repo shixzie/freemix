@@ -1185,6 +1185,13 @@ fn key_scopes_name_the_console_panels() {
         crate::dock::PanelId::ALL.map(crate::dock::PanelId::key),
         fm_protocol::SHORTCUT_SCOPES
     );
+    // Studio offers, the model validates, and the wire accepts one list in
+    // one order; a scope added to only one of them must fail here.
+    assert_eq!(fm_model::SHORTCUT_SCOPES, fm_protocol::SHORTCUT_SCOPES);
+    assert_eq!(
+        fm_model::SHORTCUT_TOOL_WINDOWS,
+        fm_protocol::SHORTCUT_TOOL_WINDOWS
+    );
     let key = scoped(
         chord_key(key("K", true, false, false), key("1", false, false, false)),
         "cues",

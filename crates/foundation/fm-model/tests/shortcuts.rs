@@ -378,6 +378,49 @@ fn chords_and_scopes_are_bounded_and_clash_only_where_they_overlap() {
     );
 }
 
+/// Schema 82: the Replay panel is a scope like any other panel, and its
+/// pop-out window overlaps it but no other panel.
+#[test]
+fn replay_is_a_panel_scope() {
+    assert!(fm_model::SHORTCUT_SCOPES.contains(&"replay"));
+    let at = |scope: Option<&str>| ShortcutKey {
+        scope: scope.map(str::to_owned),
+        ..ShortcutKey::plain("F9")
+    };
+    assert!(at(Some("replay")).is_valid());
+    assert!(at(Some("replay-window")).is_valid());
+    assert!(fm_model::shortcut_scopes_overlap(
+        Some("replay"),
+        Some("replay-window")
+    ));
+    assert!(!fm_model::shortcut_scopes_overlap(
+        Some("replay"),
+        Some("cues")
+    ));
+
+    let with_key = |id: u64, key: ShortcutKey| Shortcut {
+        key: Some(key),
+        ..shortcut(id)
+    };
+    assert_eq!(
+        validate_shortcuts(&[
+            with_key(1, at(Some("replay"))),
+            with_key(2, at(Some("replay-window"))),
+        ]),
+        Err(ShortcutError::DuplicateKey {
+            first: 1,
+            second: 2
+        })
+    );
+    assert_eq!(
+        validate_shortcuts(&[
+            with_key(1, at(Some("replay"))),
+            with_key(2, at(Some("cues"))),
+        ]),
+        Ok(())
+    );
+}
+
 /// Schema 75: a key may name a mouse button, and may be scoped to a panel's
 /// pop-out window, which overlaps that panel and the whole console but no
 /// other panel or window.
@@ -458,7 +501,7 @@ fn mouse_buttons_and_window_scopes_are_bounded_and_clash_with_keys() {
     );
 }
 
-/// Schema 82 (RC-004): a key may be scoped to one of Studio's tool windows
+/// Schema 81 (RC-004): a key may be scoped to one of Studio's tool windows
 /// (the Colour window, the Animation editor, the scene Designer), which
 /// overlaps only itself and the whole console; a tool has no panel scope.
 #[test]

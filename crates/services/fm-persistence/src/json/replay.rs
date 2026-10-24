@@ -1,4 +1,4 @@
-//! Replay recording settings in `project.json` (OR-012, schema 81).
+//! Replay recording settings in `project.json` (OR-012, schema 82).
 //!
 //! ```text
 //! "replay": {"sources": [3, 5], "retention_seconds": 600,

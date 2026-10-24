@@ -930,7 +930,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(81);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(82);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -990,7 +990,7 @@ pub struct Project {
     /// The desktop restore token each screen capture input's last screen
     /// sharing grant returned (IN-011, schema 72), by input.
     screen_capture_restore_tokens: BTreeMap<InputId, String>,
-    /// What the server records for replay (OR-012, schema 81).
+    /// What the server records for replay (OR-012, schema 82).
     replay: fm_types::replay::ReplaySettings,
 }
 
@@ -1406,7 +1406,7 @@ impl Project {
     }
 
     /// What the server records for replay and how long it keeps it
-    /// (OR-012, schema 81).
+    /// (OR-012, schema 82).
     #[must_use]
     pub const fn replay(&self) -> &fm_types::replay::ReplaySettings {
         &self.replay
@@ -4578,7 +4578,7 @@ pub enum InputKind {
     /// A title scene instantiated from a stored template. It is a leaf: it
     /// renders its own picture, is silent, and references no other input.
     Title(TitleInput),
-    /// A replay player (OR-012, schema 81): a leaf whose picture and sound
+    /// A replay player (OR-012, schema 82): a leaf whose picture and sound
     /// are the recorded replay event it plays, at the angle and speed the
     /// operator chose. What it plays is runtime state, never persisted.
     Replay,

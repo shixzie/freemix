@@ -344,7 +344,7 @@ fn mouse_buttons_and_window_scopes_round_trip_exactly_and_strictly() {
     }
 }
 
-/// Schema 82: a key may be scoped to one of Studio's tool windows (the
+/// Schema 81: a key may be scoped to one of Studio's tool windows (the
 /// Colour window, the Animation editor, the scene Designer); each
 /// round-trips exactly, and a tool window clashes only with itself and the
 /// whole console.

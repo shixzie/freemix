@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.105 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.106 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4151,6 +4151,32 @@ schema 81).
   window's presses then fire its panel's and its window's keys, as its
   native window would.
 - 2.104 is refused.
+
+Protocol 2.106 adds instant replay (OR-012, schema 82): the
+`CommandPayload::Replay` commands, the lossy `ReplayStatus` record,
+`ReplayStatusRequest`, and the `replay` shortcut scope.
+
+- A command carries one `replay_*` payload: `replay_configure` (`sources`,
+  `retention_seconds`, optional `storage_root`; a padlocked, undoable project
+  edit), or the transitions `replay_mark_in`, `replay_mark_out`,
+  `replay_capture_marks`, `replay_capture_last`, `replay_event_rename`,
+  `replay_event_delete`, `replay_cue`, `replay_angle`, `replay_play`,
+  `replay_pause`, and `replay_cue_in`. Each accepted operation is announced by
+  the durable `replay_changed` event carrying its `frame`, operation token,
+  and fields.
+- `replay_status` is a lossy, latest-wins record pushed to raw control
+  sessions after the snapshot and whenever it changes: server identity,
+  `sequence`, optional `request_id`, `feed`, the settings, `root`, optional
+  `live_frame`, `mark_in`, and `mark_out`, and the `recorded`, `events`, and
+  `players` lists. `replay_status_request` (`request_id`) asks for one and
+  echoes the `request_id`.
+- A shortcut key's `scope` may also name the `replay` panel, as in
+  `F9@replay`; it answers only while the Replay panel has the console's focus.
+- Durability (schema 82): `project.json` gains `replay` (`sources`,
+  `retention_seconds`, `storage_root`), and an input may be
+  `{"type": "replay"}`. Recorded segment files, marks, events, and players are
+  runtime state, never persisted.
+- 2.105 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

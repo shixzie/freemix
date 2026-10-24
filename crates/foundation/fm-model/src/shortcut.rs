@@ -61,7 +61,8 @@ pub const MAX_SHORTCUT_OSC_BYTES: usize = 32;
 pub const SHORTCUT_OSC_PREFIX: &str = "/freemix/user/";
 
 /// The console panels a shortcut key may be scoped to.
-pub const SHORTCUT_SCOPES: [&str; 12] = [
+/// `replay` (the instant replay panel) since schema 82.
+pub const SHORTCUT_SCOPES: [&str; 13] = [
     "preview",
     "transitions",
     "program",
@@ -74,6 +75,7 @@ pub const SHORTCUT_SCOPES: [&str; 12] = [
     "playlist",
     "media",
     "cues",
+    "replay",
 ];
 
 /// The mouse buttons a shortcut key may name in place of a key (the middle
