@@ -15678,6 +15678,10 @@ fn input_reference_use(reference: fm_model::InputReference) -> fm_protocol::Inpu
         InputReference::PlaylistEntry(entry) => InputUse::PlaylistEntry { entry },
         InputReference::CueAction { list, cue } => InputUse::CueAction { list, cue },
         InputReference::ReplaySource => InputUse::ReplaySource,
+        // The wire has no reel-clip use yet; a reel angle is recorded for
+        // replay, so report the closest existing use rather than widening
+        // the protocol in the model-only slice.
+        InputReference::ReelClip { .. } => InputUse::ReplaySource,
     }
 }
 

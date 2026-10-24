@@ -132,6 +132,7 @@ fn write_project_runtime(output: &mut String, project: &fm_model::Project) {
     super::title_timeline::write_title_timelines(output, project);
     super::screen_capture_tokens::write_screen_capture_restore_tokens(output, project);
     super::replay::write_replay(output, project);
+    super::reel::write_reels(output, project);
     output.push_str("\n  },");
 }
 

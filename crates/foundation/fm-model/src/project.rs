@@ -64,6 +64,8 @@ pub enum InputReference {
     CueAction { list: u64, cue: u64 },
     /// One of the inputs recorded for replay (OR-012).
     ReplaySource,
+    /// The recorded angle of a highlight reel clip (OR-013).
+    ReelClip { reel: u64 },
 }
 
 impl std::fmt::Display for InputReference {
@@ -80,6 +82,7 @@ impl std::fmt::Display for InputReference {
             Self::PlaylistEntry(entry) => write!(formatter, "playlist entry {entry}"),
             Self::CueAction { list, cue } => write!(formatter, "cue {cue} of cue list {list}"),
             Self::ReplaySource => formatter.write_str("a replay source"),
+            Self::ReelClip { reel } => write!(formatter, "a clip of reel {reel}"),
         }
     }
 }
@@ -930,7 +933,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(82);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(83);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -992,6 +995,8 @@ pub struct Project {
     screen_capture_restore_tokens: BTreeMap<InputId, String>,
     /// What the server records for replay (OR-012, schema 82).
     replay: fm_types::replay::ReplaySettings,
+    /// The project's highlight reels (OR-013, schema 83).
+    reels: Vec<fm_types::reel::ReelSpec>,
 }
 
 impl Project {
@@ -1037,6 +1042,7 @@ impl Project {
             live_lan: fm_types::live_lan::LiveLanConfig::default(),
             screen_capture_restore_tokens: BTreeMap::new(),
             replay: fm_types::replay::ReplaySettings::default(),
+            reels: Vec::new(),
         }
     }
 
@@ -1445,6 +1451,51 @@ impl Project {
     /// are reported by [`Self::validate`].
     pub fn restore_replay(&mut self, settings: fm_types::replay::ReplaySettings) {
         self.replay = settings;
+    }
+
+    /// The project's highlight reels, in display order (OR-013, schema 83).
+    #[must_use]
+    pub fn reels(&self) -> &[fm_types::reel::ReelSpec] {
+        &self.reels
+    }
+
+    /// Replaces the reel with `spec.id` or appends `spec`, and returns the
+    /// previous reel when one was replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`fm_types::reel::ReelSpecError`] of a reel with no clips,
+    /// too many clips, a bad name, an angle that cannot be recorded, an
+    /// unsupported speed, or a trim out of range, and
+    /// [`fm_types::reel::ReelSpecError::TooManyReels`] when appending a reel
+    /// beyond [`fm_types::reel::MAX_REELS`]. Nothing changes on error.
+    pub fn set_reel(
+        &mut self,
+        spec: fm_types::reel::ReelSpec,
+    ) -> Result<Option<fm_types::reel::ReelSpec>, fm_types::reel::ReelSpecError> {
+        spec.check(|input| {
+            self.replay_source_check(input) == fm_types::replay::ReplaySourceCheck::Recordable
+        })?;
+        if let Some(index) = self.reels.iter().position(|reel| reel.id == spec.id) {
+            return Ok(Some(std::mem::replace(&mut self.reels[index], spec)));
+        }
+        if self.reels.len() >= fm_types::reel::MAX_REELS {
+            return Err(fm_types::reel::ReelSpecError::TooManyReels);
+        }
+        self.reels.push(spec);
+        Ok(None)
+    }
+
+    /// Removes reel `id` and returns it.
+    pub fn remove_reel(&mut self, id: u64) -> Option<fm_types::reel::ReelSpec> {
+        let index = self.reels.iter().position(|reel| reel.id == id)?;
+        Some(self.reels.remove(index))
+    }
+
+    /// Restores persisted reels without checking them; problems are reported
+    /// by [`Self::validate`].
+    pub fn restore_reels(&mut self, reels: Vec<fm_types::reel::ReelSpec>) {
+        self.reels = reels;
     }
 
     /// The `LiveLAN` viewer stream's configuration (OR-017, schema 53).
@@ -1945,8 +1996,9 @@ impl Project {
     }
 
     /// Returns the first persisted reference to `input` that keeps it from
-    /// being removed: the main mix, a Stinger slot, a Scene layer, a Scene
-    /// input's audio source, or an alias input's target.
+    /// being removed: the main mix, a Stinger slot, a replay source, a reel
+    /// clip angle, a Scene layer, a Scene input's audio source, or an alias
+    /// input's target.
     #[must_use]
     pub fn input_reference(&self, input: InputId) -> Option<InputReference> {
         if let Some(mix) = self.main_mix {
@@ -1966,6 +2018,13 @@ impl Project {
         }
         if self.replay.sources.contains(&input) {
             return Some(InputReference::ReplaySource);
+        }
+        if let Some(reel) = self
+            .reels
+            .iter()
+            .find(|reel| reel.clips.iter().any(|clip| clip.angle == input))
+        {
+            return Some(InputReference::ReelClip { reel: reel.id });
         }
         if let Some(scene) = self.scenes.iter().find(|scene| {
             scene.layers.iter().any(|layer| {
@@ -2034,8 +2093,8 @@ impl Project {
     ///
     /// Returns [`RemoveInputError::UnknownInput`] when the input does not
     /// exist and [`RemoveInputError::DomainReference`] when it is referenced
-    /// by the main mix, a stinger, a scene layer, another input's audio
-    /// source, or an alias input's target.
+    /// by the main mix, a stinger, a replay source, a reel clip, a scene
+    /// layer, another input's audio source, or an alias input's target.
     pub fn remove_input(&mut self, input: InputId) -> Result<(), RemoveInputError> {
         if !self.inputs.iter().any(|candidate| candidate.id == input) {
             return Err(RemoveInputError::UnknownInput(input));
