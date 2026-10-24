@@ -391,8 +391,8 @@ commands = ["cargo test -p fm-io-api --test display_outputs", "cargo test -p fm-
 [[tests]]
 id = "accept-or-012"
 state = "present"
-paths = ["crates/media/fm-replay/tests/event_capture.rs"]
-commands = ["cargo test -p fm-replay --test event_capture"]
+paths = ["crates/media/fm-replay/tests/event_capture.rs", "crates/services/fm-engine/tests/replay.rs", "crates/services/fm-persistence/tests/replay.rs", "crates/foundation/fm-protocol/tests/replay.rs", "apps/freemixd/tests/native_replay.rs", "apps/freemix-cli/tests/e2e.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+commands = ["cargo test -p fm-replay --test event_capture", "cargo test -p fm-engine --test replay", "cargo test -p fm-persistence --test replay", "cargo test -p fm-protocol --test replay", "cargo test -p freemixd --test native_replay", "cargo test -p freemix-cli --test e2e", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-or-013"
 state = "present"

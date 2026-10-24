@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.105 / schema 81 (2026-10-24).
+(2026-10-19); items refreshed through protocol 2.106 / schema 82 (2026-10-24).
 Every parity row is still `planned` (or `blocked`); these are the
 highest-value remaining items, ranked:
 
@@ -129,13 +129,20 @@ highest-value remaining items, ranked:
    rendered preview draws hidden fields as on air, and `GX-006` awaits its
    capability-profile certification.
 
-In progress, not yet on this branch: an end-to-end replay slice (`OR-012`)
-that persists replay settings, records up to four inputs into rolling
-segment files on the native daemon, and plays events back through Replay
-inputs, with a Studio Replay panel and CLI commands. Its engine, protocol,
-persistence, and native recording commits exist; the Studio panel and CLI
-commands were saved unfinished and unverified. It will take Protocol 2.106
-and schema 82 when it lands.
+10. **Instant replay, end to end (`OR-012`).** The show persists replay
+    settings (Protocol 2.106, schema 82), the engine owns marks, Capture and
+    Last 5/10/20 events, and up to two Replay players, the native daemon
+    records up to four inputs into rolling segment files and plays an event's
+    angle back through a Replay input, Studio creates Replay inputs and
+    edits recording in a dockable Replay panel, and the CLI has local and
+    remote `replay` and `replay-set` plus `remote-replay-do`, with argument
+    validation for sources, retention, and the storage root. Remaining:
+    recorded segments are silent, the recorder takes a source's last decoded
+    picture rather than a genlocked one, segment files from a previous run
+    are removed rather than reloaded, and A/B linking, jog or shuttle,
+    transitions, auto-return, playlists, multiview, controller and
+    disk-health wiring, and certification are absent (see the Phase 7
+    boundary).
 
 Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
 since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
@@ -5443,8 +5450,11 @@ segments past retention unless an event protects them, and decodes the cued
 angle with ffmpeg so a Replay input presents frame-exact source frames at the
 chosen speed (each source frame shown twice at 50 percent). Studio has a
 dockable Replay panel (recording, marks, events, and players, with English and
-Spanish hover help on every control) and `freemix-cli` has `replay`,
-`replay-set`, and `remote-replay-do`. Remaining gaps: recorded segments carry
+Spanish hover help on every control), creates Replay inputs from Add input,
+and disables its recording settings while the project is locked; `freemix-cli`
+has local and remote `replay` and `replay-set` plus `remote-replay-do`, with
+typed argument validation for sources, retention, and the storage root.
+Remaining gaps: recorded segments carry
 silent audio and no input audio is recorded or played; the recorder captures
 what the source last decoded rather than a genlocked frame, so a stalled
 source repeats its picture; segment files from a previous run are removed
