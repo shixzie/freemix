@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.107 / schema 83 (2026-10-24).
+(2026-10-19); items refreshed through protocol 2.108 / schema 83 (2026-10-24).
 Every parity row is still `planned` (or `blocked`); these are the
 highest-value remaining items, ranked:
 
@@ -46,8 +46,9 @@ highest-value remaining items, ranked:
    page now shows and resets (Protocol 2.94; see the item 3 boundary
    below), and whose chains a browser with `control_audio` edits from the
    Web operator page's Strip FX disclosures (no protocol change), with each
-   strip's gain reduction shown there too (Protocol 2.103); an audio render
-   path in the simulated daemon (where the chains are show state only) and
+   strip's gain reduction shown there too (Protocol 2.103); the simulated
+   daemon now renders a synthetic tone through the persisted strips and
+   chains and meters it, so an allocation-counting real-time test and
    hardware acceptance remain.
 4. **Finish user shortcuts (`RC-004`).** Project shortcuts now persist, travel
    on the wire, fire on the authority under per-action permissions, and are
@@ -1459,11 +1460,12 @@ as a small `GR` bar (full at 24 dB) with the value in dB and English and
 Spanish hover help, dimmed when the meters are stale (`web_feed` unit
 tests; the page's parser and bar model run under Node.js against
 records the Rust codec renders in `tests/web_tally.rs`). The simulated
-daemon has no audio render path: its chains, the delay included, are
-accepted, announced, snapshotted, undone, and persisted
-(`tests/process.rs`), and it sends no meters. Remaining for `AU-005`: an
-audio render path in the simulated daemon, an allocation-counting real-time
-test (the workspace forbids the `unsafe` a
+daemon now renders a deterministic synthetic tone per input through the
+persisted strip states, groups, solo, and the strip and Master chains, feeds
+the same Master, strip, dynamics, and loudness meters as the native daemon,
+and applies a loudness reset; meter demand never advances the engine
+(`tests/sim_strip_dsp.rs`). Remaining for `AU-005`: an allocation-counting
+real-time test (the workspace forbids the `unsafe` a
 counting allocator needs; the no-allocation property rests on preallocated
 buffers and review), and hardware acceptance.
 
@@ -3360,7 +3362,11 @@ from the session loop (`apps/freemixd/src/statistics.rs`): the control plane's
 subscriber count and revision, and on a native daemon host frame lateness and
 GPU pass time histograms, realized, late, and dropped frame counts with the
 late share, audio sink, recorder, stream, monitor tap, camera, disk, and
-failed-output counters and gauges under stable names. Each sample also
+failed-output counters and gauges under stable names. Each sample also counts
+the started stream targets (active, connected, reconnecting) with their
+bitrate and reported packet loss, aggregates the bounded source-sync records
+(sources, degraded sources, maximum drift and backlog), and reports the
+fullest recorder or stream queue's utilization. Each sample also
 records `cpu.process_utilization`, the daemon process's user plus system time
 from `/proc/self/stat` over wall time as a share of every logical CPU
 (unavailable off Linux; FFmpeg children are not counted), and
@@ -3369,9 +3375,10 @@ time of the native compositor's timestamped fullscreen render passes over
 wall time, so it omits uploads, readbacks, encoders, and other processes, is
 a lower bound when timestamp samples drop, and is unavailable on the
 simulated daemon and on adapters without timestamp queries. An `AlertEngine`
-evaluates six fixed default rules after every sample (`cpu_saturated`,
-`disk_low`, `frame_late`, `frames_dropped`, `gpu_saturated`,
-`output_failed`) with hysteresis and hold times; each notification prints a
+evaluates nine fixed default rules after every sample (`cpu_saturated`,
+`disk_low`, `encoder_saturated`, `frame_late`, `frames_dropped`,
+`gpu_saturated`, `output_failed`, `stream_reconnecting`, `sync_degraded`)
+with hysteresis and hold times; each notification prints a
 `FREEMIXD_ALERT` line, the support bundle carries the registry and rule
 states under `## Statistics`, and `FREEMIXD_TELEMETRY` is unchanged. Protocol
 2.100 sends raw Studio sessions a lossy `health_status` once a second and
@@ -3379,13 +3386,13 @@ adds the same sample to `diagnostics_response`: utilization permille, firing
 alerts, and the 16 most recent fired, resolved, and reminder notifications.
 Studio's health strip shows `CPU`, `GPU`, and alert lamps with hover help in
 English and Spanish, and `freemix-cli remote-diagnostics` prints `Health`,
-`Alert`, and `AlertNotification` lines. Remaining gaps: no network, sync
-(beyond the AU-004 drift records), queue-depth, input health, or
-hardware-encoder session sampling; rules are fixed in code, so there is no
-operator acknowledgement, silencing, threshold editing, or persistence of
-any of them; the CPU reading excludes child encoders and the GPU reading is a
-compositor-pass proxy; and Web pages receive no health view.
-`RC-015` remains planned.
+`Alert`, and `AlertNotification` lines. Remaining gaps: no input-health or
+hardware-encoder session sampling, and the simulated daemon has no network,
+sync, or encoder readings (an unsupported reading stays unknown rather than
+zero); rules are fixed in code, so there is no operator acknowledgement,
+silencing, threshold editing, or persistence of any of them; the CPU reading
+excludes child encoders and the GPU reading is a compositor-pass proxy; and
+Web pages receive no health view. `RC-015` remains planned.
 
 
 Current implementation boundary for fault-tolerant recording (`OR-003`):
