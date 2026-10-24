@@ -320,7 +320,7 @@ impl ReelMedia<'_> {
             let lead_segment = self
                 .catalog
                 .segment_at(clip.angle, lead.synchronized_at)
-                .ok_or_else(|| RecordExportError::Unresolved {
+                .ok_or(RecordExportError::Unresolved {
                     clip: clip.id,
                     error: ReplayError::SegmentUnavailable {
                         camera: clip.angle,
@@ -329,12 +329,13 @@ impl ReelMedia<'_> {
                 })?
                 .id;
             for segment_id in coverage.segments.into_iter().chain([lead_segment]) {
-                let segment = self.catalog.segment(segment_id).ok_or_else(|| {
-                    RecordExportError::Unresolved {
-                        clip: clip.id,
-                        error: ReplayError::UnknownSegment(segment_id),
-                    }
-                })?;
+                let segment =
+                    self.catalog
+                        .segment(segment_id)
+                        .ok_or(RecordExportError::Unresolved {
+                            clip: clip.id,
+                            error: ReplayError::UnknownSegment(segment_id),
+                        })?;
                 if segment.state != SegmentState::Closed {
                     return Err(RecordExportError::SegmentNotFinalized {
                         clip: clip.id,
@@ -1129,7 +1130,8 @@ impl ReplayRuntime {
         crate::reel::check_export_reel(show, reel)?;
         crate::reel::check_destination(destination)?;
         let spec = show.reel(reel).expect("the reel was checked");
-        let compiled = crate::reel::compile(self, spec).map_err(crate::reel::plan_rejection)?;
+        let compiled = crate::reel::compile(self, spec)
+            .map_err(|error| crate::reel::plan_rejection(&error))?;
         for clip in &spec.clips {
             let complete = crate::reel::event_id(clip.event).is_some_and(|id| {
                 self.with_media(|media| {
@@ -1156,7 +1158,7 @@ impl ReplayRuntime {
             )));
         }
         self.with_media(|media| media.export_ready(&compiled))
-            .map_err(crate::reel::export_rejection)?;
+            .map_err(|error| crate::reel::export_rejection(&error))?;
         Ok(ReelExportPlan {
             job,
             reel,
@@ -1307,10 +1309,9 @@ impl ReplayRuntime {
             .get(&job)
             .ok_or(EngineReelError::UnknownExport(job))?;
         let terminal = match self.export_state(job) {
-            Some(RecordExportState::Queued | RecordExportState::Running) => false,
+            Some(RecordExportState::Queued | RecordExportState::Running) | None => false,
             Some(RecordExportState::Completed) => meta.outcome.is_some(),
             Some(RecordExportState::Failed(_) | RecordExportState::Cancelled) => true,
-            None => false,
         };
         if terminal {
             Ok(())
@@ -1357,10 +1358,9 @@ impl ReplayRuntime {
             return Err(EngineReelError::UnknownExport(job));
         };
         let terminal = match self.export_state(job) {
-            Some(RecordExportState::Queued | RecordExportState::Running) => false,
+            Some(RecordExportState::Queued | RecordExportState::Running) | None => false,
             Some(RecordExportState::Completed) => meta.outcome.is_some(),
             Some(RecordExportState::Failed(_) | RecordExportState::Cancelled) => true,
-            None => false,
         };
         if !terminal {
             return Err(EngineReelError::ExportStillActive(job));

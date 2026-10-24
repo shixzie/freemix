@@ -2404,12 +2404,12 @@ impl Engine {
                 .replay
                 .check_cancel_export(*job)
                 .map(|()| crate::reel::ReelMutation::Cancel { job: *job })
-                .map_err(crate::reel::control_rejection),
+                .map_err(|error| crate::reel::control_rejection(&error)),
             EngineReelOperation::ForgetExport { job } => self
                 .replay
                 .check_forget_export(*job)
                 .map(|()| crate::reel::ReelMutation::Forget { job: *job })
-                .map_err(crate::reel::control_rejection),
+                .map_err(|error| crate::reel::control_rejection(&error)),
         }
     }
 

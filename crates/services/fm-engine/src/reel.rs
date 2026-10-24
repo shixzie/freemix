@@ -404,9 +404,9 @@ pub(crate) fn spec_rejection(state: &ShowState, error: ReelSpecError) -> Rejecti
 }
 
 /// The refusal of a reel that does not compile against the captured events.
-pub(crate) fn plan_rejection(error: EngineReelError) -> Rejection {
+pub(crate) fn plan_rejection(error: &EngineReelError) -> Rejection {
     let message = error.to_string();
-    match &error {
+    match error {
         EngineReelError::UnknownEvent(event) => not_found(
             "event",
             "unknown_event",
@@ -435,9 +435,9 @@ pub(crate) fn plan_rejection(error: EngineReelError) -> Rejection {
 
 /// The refusal of an export that cannot start because the recorded media
 /// is incomplete or unresolvable.
-pub(crate) fn export_rejection(error: fm_replay::RecordExportError) -> Rejection {
+pub(crate) fn export_rejection(error: &fm_replay::RecordExportError) -> Rejection {
     let message = error.to_string();
-    match &error {
+    match error {
         fm_replay::RecordExportError::CoverageGap { .. } => {
             conflict("clips", "coverage_gap", message)
         }
@@ -454,9 +454,9 @@ pub(crate) fn export_rejection(error: fm_replay::RecordExportError) -> Rejection
 
 /// The refusal of a live export control that names an unknown or terminal
 /// job.
-pub(crate) fn control_rejection(error: EngineReelError) -> Rejection {
+pub(crate) fn control_rejection(error: &EngineReelError) -> Rejection {
     let message = error.to_string();
-    match &error {
+    match error {
         EngineReelError::UnknownExport(_) => not_found("job", "unknown_export", message),
         EngineReelError::ExportNotActive(_) => conflict("job", "export_not_active", message),
         EngineReelError::ExportStillActive(_) => conflict("job", "export_still_active", message),
