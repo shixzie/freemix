@@ -2473,6 +2473,7 @@ fn ready_over(model: &ClientModel, operator: bool) -> StudioUiState {
     state.source_sync = Some(source_sync());
     state.health = Some(Box::new(daemon_health()));
     state.replay = Some(Box::new(replay_status()));
+    state.set_reel_status(reel_status());
     // GX-006: the lower third plays its In phase on air.
     state.title_phases = Some(fm_protocol::TitlePhasesMessage {
         frame: 900,
@@ -2626,6 +2627,144 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
     }
 }
 
+/// One OR-013 export fixture row.
+#[allow(clippy::too_many_arguments)] // one field per wire field
+fn export_status(
+    job: u64,
+    reel: u64,
+    destination: &str,
+    state: fm_protocol::ReelExportState,
+    completed_frames: u64,
+    total_frames: Option<u64>,
+    bytes: Option<u64>,
+    failure: Option<&str>,
+) -> fm_protocol::ReelExportStatus {
+    fm_protocol::ReelExportStatus {
+        job,
+        reel,
+        destination: destination.into(),
+        state,
+        completed_frames,
+        total_frames,
+        bytes,
+        failure: failure.map(ToOwned::to_owned),
+    }
+}
+
+/// OR-013: three reels (a complete one, one that does not compile, and one
+/// whose length is still unknown) and one export job in every state, so the
+/// REELS list, clip editors, and export rows are all audited.
+#[allow(clippy::too_many_lines)] // one fixture row per reel and export state
+pub(crate) fn reel_status() -> fm_protocol::ReelStatusMessage {
+    use fm_protocol::{ReelClip, ReelExportState, ReelSpec, ReelStatus};
+    let clip = |event, angle: u128, trim_in, trim_out, speed| ReelClip {
+        event,
+        angle: wire(angle).to_domain(),
+        trim_in_frames: trim_in,
+        trim_out_frames: trim_out,
+        speed_percent: speed,
+    };
+    let reel = |id, name: &str, clips, total_frames, error: Option<&str>| ReelStatus {
+        id,
+        spec: ReelSpec {
+            id,
+            name: name.into(),
+            clips,
+        },
+        total_frames,
+        error: error.map(ToOwned::to_owned),
+    };
+    fm_protocol::ReelStatusMessage {
+        server: fm_protocol::ServerIdentity {
+            engine_id: "audit".into(),
+            project_id: "audit".into(),
+            state_epoch: 1,
+            log_id: "audit".into(),
+        },
+        sequence: 5,
+        request_id: None,
+        reels: vec![
+            reel(
+                1,
+                "Goal reel",
+                vec![clip(1, 1, 0, 0, 100), clip(1, 2, 12, 0, 50)],
+                Some(250),
+                None,
+            ),
+            reel(
+                2,
+                "Last plays",
+                vec![clip(2, 1, 0, 25, 75)],
+                None,
+                Some("event 2 is only partly recorded"),
+            ),
+            reel(3, "Warm-up", vec![clip(1, 2, 0, 0, 25)], Some(0), None),
+        ],
+        exports: vec![
+            export_status(
+                1,
+                1,
+                "/srv/exports/goal-queued.mp4",
+                ReelExportState::Queued,
+                0,
+                None,
+                None,
+                None,
+            ),
+            export_status(
+                2,
+                1,
+                "/srv/exports/goal-running.mp4",
+                ReelExportState::Running,
+                120,
+                Some(250),
+                Some(1_048_576),
+                None,
+            ),
+            export_status(
+                3,
+                2,
+                "/srv/exports/last-finalizing.mp4",
+                ReelExportState::Finalizing,
+                250,
+                Some(250),
+                Some(2_097_152),
+                None,
+            ),
+            export_status(
+                4,
+                2,
+                "/srv/exports/last-completed.mp4",
+                ReelExportState::Completed,
+                250,
+                Some(250),
+                Some(2_097_152),
+                None,
+            ),
+            export_status(
+                5,
+                3,
+                "/srv/exports/warm-up-failed.mp4",
+                ReelExportState::Failed,
+                100,
+                Some(250),
+                Some(524_288),
+                Some("destination is full"),
+            ),
+            export_status(
+                6,
+                3,
+                "/srv/exports/warm-up-cancelled.mp4",
+                ReelExportState::Cancelled,
+                50,
+                Some(250),
+                Some(262_144),
+                None,
+            ),
+        ],
+    }
+}
+
 /// Live source drift telemetry (AU-004): input 2's loop runs clean, input
 /// 3's recovers after underruns, so both `SYNC` keys and the amber health
 /// lamp are audited.
@@ -2720,6 +2859,66 @@ fn scenes(language: Language) -> Vec<Scene> {
             }),
             ready(operator, Variant::default()),
         ));
+    }
+    // OR-013: the Replay panel under the project padlock (its reel edits
+    // are disabled with the padlock reason while its exports stay live),
+    // and the Delete confirmation open on the first reel.
+    scenes.push(Scene::console(
+        "operator/replay-locked",
+        shell(&|shell| shell.layout.dock.show(PanelId::Replay)),
+        ready(
+            true,
+            Variant {
+                locked: true,
+                ..Variant::default()
+            },
+        ),
+    ));
+    {
+        let mut confirm = StudioShell::default();
+        confirm.set_locale(locale);
+        confirm.layout.dock.show(PanelId::Replay);
+        let confirm_state = ready(true, Variant::default());
+        scenes.push(Scene {
+            name: "operator/replay-delete-confirm".into(),
+            draw: Box::new(move |ui| {
+                crate::l10n::set_locale(ui.ctx(), locale);
+                ui.data_mut(|data| {
+                    data.insert_temp(crate::replay_ui::reel_delete_id(), 1_u64);
+                });
+                let _intents = confirm.draw(ui, &confirm_state);
+            }),
+        });
+    }
+    // OR-013: only terminal exports remain and an absolute destination is
+    // typed, so Export is enabled (its live help, not just its refusal, is
+    // audited) and every export row offers Forget.
+    {
+        let mut export = StudioShell::default();
+        export.set_locale(locale);
+        export.layout.dock.show(PanelId::Replay);
+        let mut export_state = ready(true, Variant::default());
+        export_state.reel_exports.retain(|row| {
+            !matches!(
+                row.state,
+                fm_protocol::ReelExportState::Queued
+                    | fm_protocol::ReelExportState::Running
+                    | fm_protocol::ReelExportState::Finalizing
+            )
+        });
+        scenes.push(Scene {
+            name: "operator/replay-export-ready".into(),
+            draw: Box::new(move |ui| {
+                crate::l10n::set_locale(ui.ctx(), locale);
+                ui.data_mut(|data| {
+                    data.insert_temp(
+                        crate::replay_ui::reel_destination_id(1),
+                        "/srv/exports/reel-1.mp4".to_owned(),
+                    );
+                });
+                let _intents = export.draw(ui, &export_state);
+            }),
+        });
     }
     // IN-006: the media list card with item pictures: a decoded one, a
     // simulated card, and one still to arrive.

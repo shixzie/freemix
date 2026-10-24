@@ -1,7 +1,9 @@
 //! The Replay panel: instant replay (`OR-012`).
 //!
 //! The panel follows the server's `replay_status` record
-//! ([`StudioUiState::replay`]). From top to bottom:
+//! ([`StudioUiState::replay`]) and, for the REELS section, its
+//! `reel_status` record ([`StudioUiState::reels`] and
+//! [`StudioUiState::reel_exports`]). From top to bottom:
 //!
 //! - **Recording**: which inputs are recorded for replay (up to four, in
 //!   angle order) and how many seconds each keeps, with every source's
@@ -15,15 +17,20 @@
 //! - **Replay inputs**: each player's cued event and shown frame, its angle,
 //!   the 25 / 50 / 75 / 100 % play keys, PAUSE, CUE IN (back to the first
 //!   frame), and TAKE (cut the Replay input to Program).
+//! - **Highlight reels** (OR-013): the reels, the selected reel's clips
+//!   (angle, trims, speed, order), and the export jobs with their progress,
+//!   Cancel, and Forget keys.
 //!
 //! Live keys need the transition permission and the recording settings the
 //! project-edit permission; every control explains itself on hover.
 
 use egui::{Checkbox, ComboBox, DragValue, Id, RichText, TextEdit, Ui};
 use fm_protocol::{
-    MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS, MIN_REPLAY_RETENTION_SECONDS,
-    REPLAY_LAST_SECONDS, ReplayEventStatus, ReplayOperation, ReplayPlayerStatus, ReplaySettings,
-    ReplaySpeed, ReplayStatusMessage, replay_event_name_is_valid,
+    MAX_REEL_CLIPS, MAX_REEL_EXPORTS, MAX_REEL_TRIM_FRAMES, MAX_REELS, MAX_REPLAY_RECORD_SOURCES,
+    MAX_REPLAY_RETENTION_SECONDS, MIN_REPLAY_RETENTION_SECONDS, REPLAY_LAST_SECONDS, ReelClip,
+    ReelExportState, ReelExportStatus, ReelOperation, ReelSpec, ReelStatus, ReplayEventStatus,
+    ReplayOperation, ReplayPlayerStatus, ReplaySettings, ReplaySpeed, ReplayStatusMessage,
+    reel_export_path_is_valid, reel_name_is_valid, replay_event_name_is_valid,
 };
 use fm_types::{FrameRate, InputId};
 
@@ -41,6 +48,214 @@ const SPEEDS: [ReplaySpeed; 4] = [
     ReplaySpeed::ThreeQuarters,
     ReplaySpeed::Full,
 ];
+
+/// The reel clip speeds the server accepts, in percent.
+const REEL_SPEEDS: [u8; 4] = [25, 50, 75, 100];
+
+/// Whether export `state` is still running (and can be cancelled).
+const fn export_is_active(state: ReelExportState) -> bool {
+    matches!(
+        state,
+        ReelExportState::Queued | ReelExportState::Running | ReelExportState::Finalizing
+    )
+}
+
+/// The catalog label of one export state.
+const fn export_state_msg(state: ReelExportState) -> Msg {
+    match state {
+        ReelExportState::Queued => Msg::ReelStateQueued,
+        ReelExportState::Running => Msg::ReelStateRunning,
+        ReelExportState::Finalizing => Msg::ReelStateFinalizing,
+        ReelExportState::Completed => Msg::ReelStateCompleted,
+        ReelExportState::Failed => Msg::ReelStateFailed,
+        ReelExportState::Cancelled => Msg::ReelStateCancelled,
+    }
+}
+
+/// The lamp of one export state.
+const fn export_tone(state: ReelExportState) -> Tone {
+    match state {
+        ReelExportState::Queued | ReelExportState::Running | ReelExportState::Finalizing => {
+            Tone::Pending
+        }
+        ReelExportState::Completed => Tone::Ready,
+        ReelExportState::Failed => Tone::Fault,
+        ReelExportState::Cancelled => Tone::Idle,
+    }
+}
+
+/// The reel a click on a row selected, or the first reel when none is.
+fn selected_reel<'a>(state: &'a StudioUiState, selected: Option<u64>) -> Option<&'a ReelStatus> {
+    selected
+        .and_then(|id| state.reels.iter().find(|reel| reel.id == id))
+        .or_else(|| state.reels.first())
+}
+
+/// The event the EVENTS list selected, or the newest event when none is.
+fn selected_event<'a>(
+    status: &'a ReplayStatusMessage,
+    selected: Option<u32>,
+) -> Option<&'a ReplayEventStatus> {
+    selected
+        .and_then(|id| status.events.iter().find(|event| event.id == id))
+        .or_else(|| status.events.last())
+}
+
+/// The id of the reel list's selection.
+fn selected_reel_id(ui: &Ui) -> Option<u64> {
+    ui.data(|data| data.get_temp::<u64>(Id::new("studio-reel-selected")))
+}
+
+/// Selects reel `reel` in the list.
+fn select_reel(ui: &mut Ui, reel: u64) {
+    ui.data_mut(|data| data.insert_temp(Id::new("studio-reel-selected"), reel));
+    set_pending_delete(ui, None);
+}
+
+/// The id of the EVENTS list's selection.
+fn selected_event_id(ui: &Ui) -> Option<u32> {
+    ui.data(|data| data.get_temp::<u32>(Id::new("studio-reel-event")))
+}
+
+/// Selects event `event` as the one Add event uses.
+fn select_event(ui: &mut Ui, event: u32) {
+    ui.data_mut(|data| data.insert_temp(Id::new("studio-reel-event"), event));
+}
+
+/// The temp-data id of the reel awaiting delete confirmation.
+pub(crate) fn reel_delete_id() -> Id {
+    Id::new("studio-reel-delete")
+}
+
+/// The temp-data id of one reel's export destination draft.
+pub(crate) fn reel_destination_id(reel: u64) -> Id {
+    Id::new(("studio-reel-destination", reel))
+}
+
+fn pending_delete(ui: &Ui) -> Option<u64> {
+    ui.data(|data| data.get_temp::<u64>(reel_delete_id()))
+}
+
+fn set_pending_delete(ui: &mut Ui, reel: Option<u64>) {
+    match reel {
+        Some(reel) => {
+            ui.data_mut(|data| data.insert_temp(reel_delete_id(), reel));
+        }
+        None => {
+            ui.data_mut(|data| data.remove::<u64>(reel_delete_id()));
+        }
+    }
+}
+
+/// A reel with the lowest free id (1 through [`MAX_REELS`]) and `event` as
+/// its first clip, or `None` when every id is taken or the event has no
+/// recorded angle. The server refuses an empty reel, so New reel starts
+/// from the selected event.
+fn new_reel(reels: &[ReelStatus], event: &ReplayEventStatus) -> Option<ReelSpec> {
+    if reels.len() >= MAX_REELS {
+        return None;
+    }
+    let max = u64::try_from(MAX_REELS).unwrap_or(u64::MAX);
+    let id = (1..=max).find(|id| reels.iter().all(|reel| reel.id != *id))?;
+    let angle = event.angles.first()?.to_domain();
+    Some(ReelSpec {
+        id,
+        name: format!("Reel {id}"),
+        clips: vec![clip_from(event, angle)],
+    })
+}
+
+/// The default clip of `event` at `angle`: untrimmed at 100% speed.
+const fn clip_from(event: &ReplayEventStatus, angle: InputId) -> ReelClip {
+    ReelClip {
+        event: event.id,
+        angle,
+        trim_in_frames: 0,
+        trim_out_frames: 0,
+        speed_percent: 100,
+    }
+}
+
+/// Appends `event` to `reel` at its first angle, or `None` at the clip
+/// limit or when the event has no recorded angle.
+fn add_event_clip(reel: &ReelStatus, event: &ReplayEventStatus) -> Option<ReelOperation> {
+    if reel.spec.clips.len() >= MAX_REEL_CLIPS {
+        return None;
+    }
+    let angle = event.angles.first()?.to_domain();
+    let mut spec = reel.spec.clone();
+    spec.clips.push(clip_from(event, angle));
+    Some(ReelOperation::Set(Box::new(spec)))
+}
+
+/// Renames `reel`, or `None` for an unchanged or unusable name.
+fn rename_reel(reel: &ReelStatus, name: &str) -> Option<ReelOperation> {
+    if name == reel.spec.name || !reel_name_is_valid(name) {
+        return None;
+    }
+    let mut spec = reel.spec.clone();
+    spec.name = name.to_owned();
+    Some(ReelOperation::Set(Box::new(spec)))
+}
+
+/// Replaces clip `index` of `reel`, or `None` when unchanged or absent.
+fn set_clip(reel: &ReelStatus, index: usize, clip: ReelClip) -> Option<ReelOperation> {
+    let mut spec = reel.spec.clone();
+    let current = spec.clips.get_mut(index)?;
+    if *current == clip {
+        return None;
+    }
+    *current = clip;
+    Some(ReelOperation::Set(Box::new(spec)))
+}
+
+/// Removes clip `index` from `reel`; the last clip stays because a reel
+/// must hold at least one.
+fn remove_clip(reel: &ReelStatus, index: usize) -> Option<ReelOperation> {
+    if reel.spec.clips.len() <= 1 || index >= reel.spec.clips.len() {
+        return None;
+    }
+    let mut spec = reel.spec.clone();
+    spec.clips.remove(index);
+    Some(ReelOperation::Set(Box::new(spec)))
+}
+
+/// Moves clip `index` one place earlier (`up`) or later in `reel`.
+fn move_clip(reel: &ReelStatus, index: usize, up: bool) -> Option<ReelOperation> {
+    let target = if up {
+        index.checked_sub(1)?
+    } else {
+        index.checked_add(1)?
+    };
+    if target >= reel.spec.clips.len() {
+        return None;
+    }
+    let mut spec = reel.spec.clone();
+    spec.clips.swap(index, target);
+    Some(ReelOperation::Set(Box::new(spec)))
+}
+
+/// The export command of `reel` to `destination` as job `job`.
+fn export_reel(reel: &ReelStatus, job: u64, destination: &str) -> Option<ReelOperation> {
+    if job == 0
+        || reel.error.is_some()
+        || reel.spec.clips.is_empty()
+        || !reel_export_path_is_valid(destination)
+    {
+        return None;
+    }
+    Some(ReelOperation::Export {
+        job,
+        reel: reel.id,
+        destination: destination.to_owned(),
+    })
+}
+
+/// The lowest unused export job id (1 through [`MAX_REEL_EXPORTS`]).
+fn next_export_job(exports: &[ReelExportStatus]) -> Option<u64> {
+    (1..=u64::try_from(MAX_REEL_EXPORTS).unwrap_or(u64::MAX))
+        .find(|job| exports.iter().all(|export| export.job != *job))
+}
 
 /// Why live replay keys (marks, captures, players) cannot be pressed.
 #[must_use]
@@ -193,6 +408,8 @@ pub(crate) fn draw_replay(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<
         });
         ui.add_space(4.0);
     }
+    ui.add_space(6.0);
+    draw_reels(ui, l, state, status, intents);
 }
 
 fn draw_recording(
@@ -375,8 +592,23 @@ fn draw_event(
 ) {
     let block = live_block(state);
     let reason = block.unwrap_or(Msg::ReplayReasonNotRecording.en());
-    ui.horizontal(|ui| {
+    let selected = selected_event_id(ui)
+        .and_then(|id| status.events.iter().find(|candidate| candidate.id == id))
+        .or_else(|| status.events.last())
+        .is_some_and(|candidate| candidate.id == event.id);
+    ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
+        if ui
+            .add(key_button(
+                l.text(Msg::ReelEventSelect),
+                selected.then_some(PREVIEW),
+                64.0,
+            ))
+            .on_hover_text(l.text(Msg::ReelEventSelectHover))
+            .clicked()
+        {
+            select_event(ui, event.id);
+        }
         let id = Id::new(("studio-replay-event-name", event.id));
         let mut name = ui
             .data(|data| data.get_temp::<String>(id))
@@ -579,9 +811,565 @@ fn draw_player(
     });
 }
 
+/// The REELS section: the reel list, the selected reel's clips, and the
+/// export jobs (OR-013).
+fn draw_reels(
+    ui: &mut Ui,
+    l: Locale,
+    state: &StudioUiState,
+    status: &ReplayStatusMessage,
+    intents: &mut Vec<StudioIntent>,
+) {
+    ui.label(crate::theme::section_label(l.text(Msg::ReelSection)));
+    if state.reels.is_empty() {
+        ui.label(caption(l.text(Msg::ReelNoReels)));
+    }
+    let selected = selected_reel(state, selected_reel_id(ui));
+    let event = selected_event(status, selected_event_id(ui));
+    let edit = settings_block(state);
+    let new_reason = edit
+        .or_else(|| (state.reels.len() >= MAX_REELS).then_some(Msg::ReelReasonAllReels.en()))
+        .or_else(|| event.is_none().then_some(Msg::ReelReasonNoEvent.en()))
+        .or_else(|| {
+            event
+                .is_some_and(|event| event.angles.is_empty())
+                .then_some(Msg::ReelReasonNoAngles.en())
+        });
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .add_enabled(
+                new_reason.is_none(),
+                key_button(l.text(Msg::ReelNew), None, 82.0),
+            )
+            .hint(
+                l.text(Msg::ReelNewHover),
+                new_reason.unwrap_or(Msg::ReasonStateDisallows.en()),
+            )
+            .clicked()
+            && let Some(event) = event
+            && let Some(spec) = new_reel(&state.reels, event)
+        {
+            let id = spec.id;
+            intents.push(StudioIntent::Reel(ReelOperation::Set(Box::new(spec))));
+            select_reel(ui, id);
+        }
+    });
+    for reel in &state.reels {
+        card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            draw_reel_row(
+                ui,
+                l,
+                reel,
+                selected.is_some_and(|selected| selected.id == reel.id),
+            );
+        });
+        ui.add_space(4.0);
+    }
+    if let Some(reel) = selected {
+        card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            draw_reel_detail(ui, l, state, status, reel, event, intents);
+        });
+    }
+    ui.add_space(6.0);
+    ui.label(crate::theme::section_label(l.text(Msg::ReelExports)));
+    if state.reel_exports.is_empty() {
+        ui.label(caption(l.text(Msg::ReelNoExports)));
+    }
+    for export in &state.reel_exports {
+        card().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            draw_export(ui, l, state, export, intents);
+        });
+        ui.add_space(4.0);
+    }
+}
+
+fn draw_reel_row(ui: &mut Ui, l: Locale, reel: &ReelStatus, selected: bool) {
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .add(key_button(
+                &reel.spec.name,
+                selected.then_some(PREVIEW),
+                132.0,
+            ))
+            .on_hover_text(l.text(Msg::ReelSelectHover))
+            .clicked()
+        {
+            select_reel(ui, reel.id);
+        }
+        ui.label(caption(l.format(
+            Msg::ReelClipCount,
+            &[(
+                "count",
+                Arg::Count(u64::try_from(reel.spec.clips.len()).unwrap_or(u64::MAX)),
+            )],
+        )));
+        if let Some(error) = &reel.error {
+            status_chip(ui, l.text(Msg::ReelError), Tone::Fault, 100.0)
+                .on_hover_text(l.format(Msg::ReelErrorHover, &[("error", Arg::Str(error))]));
+        } else if let Some(frames) = reel.total_frames {
+            ui.label(mono(
+                l.format(Msg::ReelFrames, &[("count", Arg::Count(frames))]),
+            ));
+        } else {
+            ui.label(caption(l.text(Msg::ReelFramesUnknown)));
+        }
+    });
+}
+
+#[allow(clippy::too_many_lines)] // one reel's name, clips, and export
+fn draw_reel_detail(
+    ui: &mut Ui,
+    l: Locale,
+    state: &StudioUiState,
+    status: &ReplayStatusMessage,
+    reel: &ReelStatus,
+    event: Option<&ReplayEventStatus>,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let edit = settings_block(state);
+    let reason = edit.unwrap_or(Msg::ReasonStateDisallows.en());
+    ui.horizontal_wrapped(|ui| {
+        ui.label(l.text(Msg::ReelName));
+        let id = Id::new(("studio-reel-name", reel.id));
+        let mut name = ui
+            .data(|data| data.get_temp::<String>(id))
+            .unwrap_or_else(|| reel.spec.name.clone());
+        let response = ui
+            .add_enabled(
+                edit.is_none(),
+                TextEdit::singleline(&mut name).desired_width(150.0),
+            )
+            .hint(l.text(Msg::ReelNameHover), reason);
+        if response.has_focus() {
+            ui.data_mut(|data| data.insert_temp(id, name.clone()));
+        } else {
+            ui.data_mut(|data| data.remove::<String>(id));
+        }
+        if response.lost_focus()
+            && let Some(operation) = rename_reel(reel, &name)
+        {
+            intents.push(StudioIntent::Reel(operation));
+        }
+        if pending_delete(ui) != Some(reel.id)
+            && ui
+                .add_enabled(
+                    edit.is_none(),
+                    key_button(l.text(Msg::ReelDelete), None, 68.0),
+                )
+                .hint(l.text(Msg::ReelDeleteHover), reason)
+                .clicked()
+        {
+            set_pending_delete(ui, Some(reel.id));
+        }
+    });
+    if pending_delete(ui) == Some(reel.id) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(l.format(
+                Msg::ReelDeleteQuestion,
+                &[("name", Arg::Str(&reel.spec.name))],
+            ));
+            if ui
+                .add_enabled(
+                    edit.is_none(),
+                    key_button(l.text(Msg::ReelDelete), Some(PROGRAM), 68.0),
+                )
+                .hint(l.text(Msg::ReelDeleteConfirmHover), reason)
+                .clicked()
+            {
+                intents.push(StudioIntent::Reel(ReelOperation::Delete { reel: reel.id }));
+                set_pending_delete(ui, None);
+            }
+            if ui
+                .add(key_button(l.text(Msg::CancelKey), None, 68.0))
+                .on_hover_text(l.text(Msg::ReelDeleteCancelHover))
+                .clicked()
+            {
+                set_pending_delete(ui, None);
+            }
+        });
+    }
+    ui.add_space(4.0);
+    ui.label(caption(l.text(Msg::ReelClips)));
+    if reel.spec.clips.is_empty() {
+        ui.label(caption(l.text(Msg::ReelNoClips)));
+    }
+    for (index, clip) in reel.spec.clips.iter().enumerate() {
+        draw_clip(ui, l, state, status, reel, index, *clip, edit, intents);
+        ui.add_space(2.0);
+    }
+    let add_reason = edit
+        .or_else(|| {
+            (reel.spec.clips.len() >= MAX_REEL_CLIPS).then_some(Msg::ReelReasonFullClips.en())
+        })
+        .or_else(|| event.is_none().then_some(Msg::ReelReasonNoEvent.en()))
+        .or_else(|| {
+            event
+                .is_some_and(|event| event.angles.is_empty())
+                .then_some(Msg::ReelReasonNoAngles.en())
+        });
+    if ui
+        .add_enabled(
+            add_reason.is_none(),
+            key_button(l.text(Msg::ReelAddEvent), None, 86.0),
+        )
+        .hint(
+            l.text(Msg::ReelAddEventHover),
+            add_reason.unwrap_or(Msg::ReasonStateDisallows.en()),
+        )
+        .clicked()
+        && let Some(event) = event
+        && let Some(operation) = add_event_clip(reel, event)
+    {
+        intents.push(StudioIntent::Reel(operation));
+    }
+    draw_export_controls(ui, l, state, reel, intents);
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)] // one clip's angle, trims, speed, and keys
+fn draw_clip(
+    ui: &mut Ui,
+    l: Locale,
+    state: &StudioUiState,
+    status: &ReplayStatusMessage,
+    reel: &ReelStatus,
+    index: usize,
+    clip: ReelClip,
+    edit: Option<&'static str>,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let event = status.events.iter().find(|event| event.id == clip.event);
+    let name = event.map_or_else(|| format!("#{}", clip.event), |event| event.name.clone());
+    let reason = edit.unwrap_or(Msg::ReasonStateDisallows.en());
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(mono(l.format(
+            Msg::ReelClipLabel,
+            &[(
+                "position",
+                Arg::Count(u64::try_from(index + 1).unwrap_or(u64::MAX)),
+            )],
+        )))
+        .on_hover_text(l.text(Msg::ReelClipEventHover));
+        ui.label(caption(name))
+            .on_hover_text(l.text(Msg::ReelClipEventHover));
+        let mut angles = event.map(|event| event.angles.clone()).unwrap_or_default();
+        if !angles.iter().any(|angle| angle.to_domain() == clip.angle) {
+            angles.insert(0, fm_protocol::WireInputId::from_domain(clip.angle));
+        }
+        ComboBox::from_id_salt(("studio-reel-angle", reel.id, index))
+            .selected_text(name_of(state, l, clip.angle))
+            .width(110.0)
+            .show_ui(ui, |ui| {
+                for angle in &angles {
+                    if ui
+                        .add_enabled(
+                            edit.is_none(),
+                            egui::Button::selectable(
+                                angle.to_domain() == clip.angle,
+                                name_of(state, l, angle.to_domain()),
+                            ),
+                        )
+                        .hint(l.text(Msg::ReelClipAngleHover), reason)
+                        .clicked()
+                        && angle.to_domain() != clip.angle
+                    {
+                        let mut updated = clip;
+                        updated.angle = angle.to_domain();
+                        if let Some(operation) = set_clip(reel, index, updated) {
+                            intents.push(StudioIntent::Reel(operation));
+                        }
+                    }
+                }
+            })
+            .response
+            .on_hover_text(l.text(Msg::ReelClipAngleHover));
+        ui.label(caption(l.text(Msg::MediaTrimIn)))
+            .on_hover_text(l.text(Msg::ReelClipTrimInHover));
+        draw_trim(ui, l, reel, index, clip, edit, true, intents);
+        ui.label(caption(l.text(Msg::MediaTrimOut)))
+            .on_hover_text(l.text(Msg::ReelClipTrimOutHover));
+        draw_trim(ui, l, reel, index, clip, edit, false, intents);
+        ComboBox::from_id_salt(("studio-reel-speed", reel.id, index))
+            .selected_text(l.percent(i64::from(clip.speed_percent)))
+            .width(66.0)
+            .show_ui(ui, |ui| {
+                for speed in REEL_SPEEDS {
+                    if ui
+                        .add_enabled(
+                            edit.is_none(),
+                            egui::Button::selectable(
+                                speed == clip.speed_percent,
+                                l.percent(i64::from(speed)),
+                            ),
+                        )
+                        .hint(l.text(Msg::ReelClipSpeedHover), reason)
+                        .clicked()
+                        && speed != clip.speed_percent
+                    {
+                        let mut updated = clip;
+                        updated.speed_percent = speed;
+                        if let Some(operation) = set_clip(reel, index, updated) {
+                            intents.push(StudioIntent::Reel(operation));
+                        }
+                    }
+                }
+            })
+            .response
+            .on_hover_text(l.text(Msg::ReelClipSpeedHover));
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let up_reason = edit.or((index == 0).then_some(Msg::ReelReasonFirstClip.en()));
+        if ui
+            .add_enabled(
+                up_reason.is_none(),
+                key_button(l.text(Msg::KeyMoveUp), None, 62.0),
+            )
+            .hint(
+                l.text(Msg::ReelClipMoveUpHover),
+                up_reason.unwrap_or(Msg::ReasonStateDisallows.en()),
+            )
+            .clicked()
+            && let Some(operation) = move_clip(reel, index, true)
+        {
+            intents.push(StudioIntent::Reel(operation));
+        }
+        let down_reason =
+            edit.or((index + 1 == reel.spec.clips.len()).then_some(Msg::ReelReasonLastClip.en()));
+        if ui
+            .add_enabled(
+                down_reason.is_none(),
+                key_button(l.text(Msg::KeyMoveDown), None, 62.0),
+            )
+            .hint(
+                l.text(Msg::ReelClipMoveDownHover),
+                down_reason.unwrap_or(Msg::ReasonStateDisallows.en()),
+            )
+            .clicked()
+            && let Some(operation) = move_clip(reel, index, false)
+        {
+            intents.push(StudioIntent::Reel(operation));
+        }
+        let remove_reason =
+            edit.or((reel.spec.clips.len() <= 1).then_some(Msg::ReelReasonOnlyClip.en()));
+        if ui
+            .add_enabled(
+                remove_reason.is_none(),
+                key_button(l.text(Msg::ReelClipRemove), None, 86.0),
+            )
+            .hint(
+                l.text(Msg::ReelClipRemoveHover),
+                remove_reason.unwrap_or(Msg::ReasonStateDisallows.en()),
+            )
+            .clicked()
+            && let Some(operation) = remove_clip(reel, index)
+        {
+            intents.push(StudioIntent::Reel(operation));
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)] // one trim field's draft and its reel clip
+fn draw_trim(
+    ui: &mut Ui,
+    l: Locale,
+    reel: &ReelStatus,
+    index: usize,
+    clip: ReelClip,
+    edit: Option<&'static str>,
+    before: bool,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let value = if before {
+        clip.trim_in_frames
+    } else {
+        clip.trim_out_frames
+    };
+    let id = Id::new(("studio-reel-trim", reel.id, index, before));
+    let mut frames = ui.data(|data| data.get_temp::<u32>(id)).unwrap_or(value);
+    let hover = if before {
+        Msg::ReelClipTrimInHover
+    } else {
+        Msg::ReelClipTrimOutHover
+    };
+    let response = ui
+        .add_enabled(
+            edit.is_none(),
+            DragValue::new(&mut frames)
+                .range(0..=MAX_REEL_TRIM_FRAMES)
+                .suffix(" fr"),
+        )
+        .hint(
+            l.text(hover),
+            edit.unwrap_or(Msg::ReasonStateDisallows.en()),
+        );
+    if response.dragged() || response.has_focus() {
+        ui.data_mut(|data| data.insert_temp(id, frames));
+    } else {
+        ui.data_mut(|data| data.remove::<u32>(id));
+    }
+    if (response.drag_stopped() || response.lost_focus()) && frames != value {
+        let mut updated = clip;
+        if before {
+            updated.trim_in_frames = frames;
+        } else {
+            updated.trim_out_frames = frames;
+        }
+        if let Some(operation) = set_clip(reel, index, updated) {
+            intents.push(StudioIntent::Reel(operation));
+        }
+    }
+}
+
+fn draw_export_controls(
+    ui: &mut Ui,
+    l: Locale,
+    state: &StudioUiState,
+    reel: &ReelStatus,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let live = live_block(state);
+    let reason = live.unwrap_or(Msg::ReasonStateDisallows.en());
+    ui.add_space(4.0);
+    ui.label(caption(l.text(Msg::ReelExportSection)));
+    ui.horizontal_wrapped(|ui| {
+        ui.label(l.text(Msg::ReelDestination));
+        let id = reel_destination_id(reel.id);
+        let mut destination = ui
+            .data(|data| data.get_temp::<String>(id))
+            .unwrap_or_default();
+        let response = ui
+            .add_enabled(
+                live.is_none(),
+                TextEdit::singleline(&mut destination).desired_width(180.0),
+            )
+            .hint(l.text(Msg::ReelDestinationHover), reason);
+        if response.changed() {
+            ui.data_mut(|data| data.insert_temp(id, destination.clone()));
+        }
+        let active = state
+            .reel_exports
+            .iter()
+            .any(|export| export_is_active(export.state));
+        let job = next_export_job(&state.reel_exports);
+        let export_reason = live
+            .or_else(|| active.then_some(Msg::ReelReasonExportActive.en()))
+            .or_else(|| {
+                reel.spec
+                    .clips
+                    .is_empty()
+                    .then_some(Msg::ReelReasonNoClips.en())
+            })
+            .or_else(|| {
+                reel.error
+                    .is_some()
+                    .then_some(Msg::ReelReasonReelError.en())
+            })
+            .or_else(|| {
+                (!reel_export_path_is_valid(&destination))
+                    .then_some(Msg::ReelReasonInvalidPath.en())
+            })
+            .or_else(|| job.is_none().then_some(Msg::ReelReasonExportJobsFull.en()));
+        if ui
+            .add_enabled(
+                export_reason.is_none(),
+                key_button(l.text(Msg::ReelExport), None, 72.0),
+            )
+            .hint(
+                l.text(Msg::ReelExportHover),
+                export_reason.unwrap_or(Msg::ReasonStateDisallows.en()),
+            )
+            .clicked()
+            && let Some(job) = job
+            && let Some(operation) = export_reel(reel, job, &destination)
+        {
+            intents.push(StudioIntent::Reel(operation));
+        }
+    });
+}
+
+fn draw_export(
+    ui: &mut Ui,
+    l: Locale,
+    state: &StudioUiState,
+    export: &ReelExportStatus,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let live = live_block(state);
+    let reason = live.unwrap_or(Msg::ReasonStateDisallows.en());
+    let reel = state
+        .reels
+        .iter()
+        .find(|reel| reel.id == export.reel)
+        .map_or_else(
+            || format!("#{}", export.reel),
+            |reel| reel.spec.name.clone(),
+        );
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(mono(
+            l.format(Msg::ReelExportJob, &[("job", Arg::Count(export.job))]),
+        ));
+        ui.label(caption(reel))
+            .on_hover_text(l.text(Msg::ReelExportReelHover));
+        status_chip(
+            ui,
+            l.text(export_state_msg(export.state)),
+            export_tone(export.state),
+            120.0,
+        );
+        let total = export
+            .total_frames
+            .map_or_else(|| "--".to_owned(), |total| total.to_string());
+        let completed = export.completed_frames;
+        ui.label(mono(format!("{completed}/{total}")))
+            .on_hover_text(l.text(Msg::ReelExportProgressHover));
+        if let Some(bytes) = export.bytes {
+            ui.label(mono(l.bytes(bytes)))
+                .on_hover_text(l.text(Msg::ReelExportBytesHover));
+        }
+        if let Some(failure) = &export.failure {
+            ui.label(caption(failure.as_str()))
+                .on_hover_text(l.text(Msg::ReelExportFailureHover));
+        }
+        if export_is_active(export.state) {
+            if ui
+                .add_enabled(
+                    live.is_none(),
+                    key_button(l.text(Msg::ReelExportCancel), None, 96.0),
+                )
+                .hint(l.text(Msg::ReelExportCancelHover), reason)
+                .clicked()
+            {
+                intents.push(StudioIntent::Reel(ReelOperation::CancelExport {
+                    job: export.job,
+                }));
+            }
+        } else if ui
+            .add_enabled(
+                live.is_none(),
+                key_button(l.text(Msg::ReelExportForget), None, 76.0),
+            )
+            .hint(l.text(Msg::ReelExportForgetHover), reason)
+            .clicked()
+        {
+            intents.push(StudioIntent::Reel(ReelOperation::ForgetExport {
+                job: export.job,
+            }));
+        }
+    });
+    ui.label(caption(export.destination.as_str()))
+        .on_hover_text(l.text(Msg::ReelExportDestinationHover));
+}
+
 #[cfg(test)]
 mod tests {
     use core::num::NonZeroU128;
+
+    use fm_ui_model::i18n::Language;
 
     use super::*;
 
@@ -699,5 +1487,200 @@ mod tests {
         assert_eq!(render(&state), Vec::new());
         state.replay = None;
         assert_eq!(render(&state), Vec::new());
+    }
+
+    #[test]
+    fn set_reel_status_sorts_reels_and_replaces_exports() {
+        let mut state = StudioUiState::new(StudioConnectionStatus::Ready);
+        let mut status = crate::hover_audit::reel_status();
+        status.reels.reverse();
+        state.set_reel_status(status);
+        assert_eq!(
+            state.reels.iter().map(|reel| reel.id).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert_eq!(state.reel_exports.len(), 6);
+        let mut next = crate::hover_audit::reel_status();
+        next.reels.clear();
+        next.exports.clear();
+        state.set_reel_status(next);
+        assert!(state.reels.is_empty());
+        assert!(state.reel_exports.is_empty());
+    }
+
+    /// OR-013: each reel key builds exactly its Set/Export command.
+    #[test]
+    fn reel_keys_build_the_expected_reel_operations() {
+        let status = crate::hover_audit::reel_status();
+        let replay = crate::hover_audit::replay_status();
+        let event = &replay.events[0];
+        let reels = &status.reels[..1];
+        let spec = new_reel(reels, event).expect("the second id is free");
+        assert_eq!(spec.id, 2);
+        assert_eq!(spec.name, "Reel 2");
+        assert_eq!(
+            spec.clips,
+            vec![ReelClip {
+                event: 1,
+                angle: input(1),
+                trim_in_frames: 0,
+                trim_out_frames: 0,
+                speed_percent: 100,
+            }]
+        );
+
+        let reel = &status.reels[0];
+        let Some(ReelOperation::Set(spec)) = add_event_clip(reel, event) else {
+            panic!("Add event must set the reel");
+        };
+        assert_eq!(spec.clips.len(), reel.spec.clips.len() + 1);
+        assert_eq!(spec.clips.last().map(|clip| clip.event), Some(event.id));
+        assert_eq!(spec.clips.last().map(|clip| clip.speed_percent), Some(100));
+
+        let Some(ReelOperation::Set(spec)) = move_clip(reel, 0, false) else {
+            panic!("Move down must set the reel");
+        };
+        assert_eq!(spec.clips[0], reel.spec.clips[1]);
+        assert_eq!(spec.clips[1], reel.spec.clips[0]);
+
+        let Some(ReelOperation::Set(spec)) = remove_clip(reel, 0) else {
+            panic!("Remove clip must set the reel");
+        };
+        assert_eq!(spec.clips, vec![reel.spec.clips[1]]);
+
+        assert_eq!(
+            rename_reel(reel, "Goals"),
+            Some(ReelOperation::Set(Box::new(ReelSpec {
+                name: "Goals".into(),
+                ..reel.spec.clone()
+            })))
+        );
+        assert_eq!(rename_reel(reel, &reel.spec.name), None);
+
+        assert_eq!(
+            export_reel(reel, 1, "/srv/exports/reel-1.mp4"),
+            Some(ReelOperation::Export {
+                job: 1,
+                reel: 1,
+                destination: "/srv/exports/reel-1.mp4".into(),
+            })
+        );
+        assert_eq!(export_reel(reel, 1, "relative.mp4"), None);
+        assert_eq!(next_export_job(&status.exports), Some(7));
+    }
+
+    /// A viewer sends no reel edit, a locked project keeps its live export
+    /// keys, and drawing the panel itself sends nothing.
+    #[test]
+    fn reel_edits_follow_the_padlock_while_exports_stay_live() {
+        let view = crate::hover_audit::bank_fixture().view.unwrap();
+        let ready = |transition: bool, edit: bool| {
+            StudioUiState::new(StudioConnectionStatus::Ready)
+                .with_view(view.clone())
+                .with_switcher_permissions(transition, transition)
+                .with_edit_project_permission(edit)
+        };
+        let viewer = ready(false, false);
+        assert!(settings_block(&viewer).is_some());
+        assert!(live_block(&viewer).is_some());
+        let mut locked = ready(true, true);
+        if let Some(view) = locked.view.as_mut() {
+            view.edit_locks.project = true;
+        }
+        assert_eq!(
+            settings_block(&locked),
+            Some(crate::edit_history::PROJECT_LOCKED_REASON)
+        );
+        // Export control is a live operation: the padlock does not block it.
+        assert_eq!(live_block(&locked), None);
+
+        let render = |state: &StudioUiState| {
+            let context = egui::Context::default();
+            let mut intents = Vec::new();
+            let _ = context.run_ui(egui::RawInput::default(), |ui| {
+                draw_replay(ui, state, &mut intents);
+            });
+            intents
+        };
+        let mut state = locked;
+        state.replay = Some(Box::new(crate::hover_audit::replay_status()));
+        state.set_reel_status(crate::hover_audit::reel_status());
+        assert_eq!(render(&state), Vec::new());
+        let mut viewer = viewer;
+        viewer.replay = Some(Box::new(crate::hover_audit::replay_status()));
+        viewer.set_reel_status(crate::hover_audit::reel_status());
+        assert_eq!(render(&viewer), Vec::new());
+        assert_eq!(
+            render(&StudioUiState::new(StudioConnectionStatus::Ready)),
+            Vec::new()
+        );
+    }
+
+    /// OR-013: a row in every export state draws without panicking.
+    #[test]
+    fn every_export_state_draws_without_panicking() {
+        let mut state = crate::hover_audit::bank_fixture();
+        state.replay = Some(Box::new(crate::hover_audit::replay_status()));
+        state.set_reel_status(crate::hover_audit::reel_status());
+        assert_eq!(state.reel_exports.len(), 6);
+        let context = egui::Context::default();
+        let mut intents = Vec::new();
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            draw_replay(ui, &state, &mut intents);
+        });
+        assert_eq!(intents, Vec::new());
+    }
+
+    /// OR-013: the REELS and export sections render in every language.
+    #[test]
+    fn the_reels_section_draws_in_english_and_spanish() {
+        fn painted_text(output: &egui::FullOutput) -> Vec<String> {
+            fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut out = Vec::new();
+            for clipped in &output.shapes {
+                collect(&clipped.shape, &mut out);
+            }
+            out
+        }
+        for language in Language::ALL {
+            let locale = Locale::new(language);
+            let mut state = crate::hover_audit::bank_fixture();
+            state.replay = Some(Box::new(crate::hover_audit::replay_status()));
+            state.set_reel_status(crate::hover_audit::reel_status());
+            let context = egui::Context::default();
+            crate::l10n::set_locale(&context, locale);
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::Vec2::new(1_600.0, 2_400.0),
+                    )),
+                    ..egui::RawInput::default()
+                },
+                |ui| {
+                    let mut intents = Vec::new();
+                    draw_replay(ui, &state, &mut intents);
+                    assert!(intents.is_empty());
+                },
+            );
+            let text = painted_text(&output);
+            for message in [Msg::ReelSection, Msg::ReelExports] {
+                let expected = locale.text(message).to_uppercase();
+                assert!(
+                    text.iter().any(|line| line == &expected),
+                    "{language:?}: {expected:?} missing from {text:?}"
+                );
+            }
+        }
     }
 }

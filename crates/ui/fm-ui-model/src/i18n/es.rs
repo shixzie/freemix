@@ -10257,4 +10257,170 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReplayTakeHover,
         t("Cortar esta entrada de repetición a Programa"),
     ),
+    (Msg::ReelSection, t("Reels destacados")),
+    (
+        Msg::ReelNoReels,
+        t("Aún no hay reels destacados: selecciona un evento y crea uno"),
+    ),
+    (Msg::ReelNew, t("NUEVO REEL")),
+    (
+        Msg::ReelNewHover,
+        t("Crea el siguiente reel libre (del 1 al 8) con el evento seleccionado como primer clip"),
+    ),
+    (Msg::ReelReasonAllReels, t("ya existen los ocho reels")),
+    (
+        Msg::ReelReasonNoEvent,
+        t("no hay ningún evento seleccionado"),
+    ),
+    (
+        Msg::ReelReasonNoAngles,
+        t("el evento seleccionado no tiene ningún ángulo grabado"),
+    ),
+    (
+        Msg::ReelSelectHover,
+        t("Mostrar los clips y los controles de exportación de este reel"),
+    ),
+    (Msg::ReelName, t("Nombre del reel")),
+    (
+        Msg::ReelNameHover,
+        t("El nombre del reel: escribe otro y haz clic fuera para renombrarlo"),
+    ),
+    (Msg::ReelClipCount, plural("{count} clip", "{count} clips")),
+    (
+        Msg::ReelFrames,
+        plural("{count} fotograma", "{count} fotogramas"),
+    ),
+    (Msg::ReelFramesUnknown, t("duración desconocida")),
+    (Msg::ReelError, t("ERROR DE REEL")),
+    (
+        Msg::ReelErrorHover,
+        t("Este reel no se puede exportar: {error}"),
+    ),
+    (Msg::ReelDelete, t("ELIMINAR")),
+    (
+        Msg::ReelDeleteHover,
+        t("Eliminar este reel (pide confirmación)"),
+    ),
+    (Msg::ReelDeleteQuestion, t("¿Eliminar el reel «{name}»?")),
+    (
+        Msg::ReelDeleteConfirmHover,
+        t("Eliminar este reel; Deshacer lo recupera"),
+    ),
+    (Msg::ReelDeleteCancelHover, t("Conservar este reel")),
+    (Msg::ReelClips, t("Clips")),
+    (
+        Msg::ReelNoClips,
+        t("Aún no hay clips: añade el evento seleccionado"),
+    ),
+    (Msg::ReelAddEvent, t("AÑADIR EVENTO")),
+    (
+        Msg::ReelAddEventHover,
+        t(
+            "Añadir el evento seleccionado a este reel en su primer ángulo, sin recortes y al 100 % de velocidad",
+        ),
+    ),
+    (Msg::ReelReasonFullClips, t("este reel ya tiene 64 clips")),
+    (
+        Msg::ReelReasonOnlyClip,
+        t("un reel necesita al menos un clip"),
+    ),
+    (Msg::ReelClipLabel, t("Clip {position}")),
+    (
+        Msg::ReelClipEventHover,
+        t("El evento de repetición del que se corta este clip"),
+    ),
+    (
+        Msg::ReelClipAngleHover,
+        t("El ángulo grabado que reproduce este clip"),
+    ),
+    (
+        Msg::ReelClipTrimInHover,
+        t("Fotogramas conservados antes de la marca de entrada del evento"),
+    ),
+    (
+        Msg::ReelClipTrimOutHover,
+        t("Fotogramas conservados después de la marca de salida del evento"),
+    ),
+    (
+        Msg::ReelClipSpeedHover,
+        t("Velocidad de reproducción de este clip"),
+    ),
+    (Msg::ReelClipRemove, t("QUITAR CLIP")),
+    (Msg::ReelClipRemoveHover, t("Quitar este clip del reel")),
+    (Msg::ReelClipMoveUpHover, t("Reproducir este clip antes")),
+    (
+        Msg::ReelClipMoveDownHover,
+        t("Reproducir este clip después"),
+    ),
+    (Msg::ReelReasonFirstClip, t("este clip ya es el primero")),
+    (Msg::ReelReasonLastClip, t("este clip ya es el último")),
+    (Msg::ReelEventSelect, t("ELEGIR")),
+    (
+        Msg::ReelEventSelectHover,
+        t("Usar este evento al añadir un clip a un reel"),
+    ),
+    (Msg::ReelExportSection, t("Exportar")),
+    (Msg::ReelDestination, t("Ruta del archivo")),
+    (
+        Msg::ReelDestinationHover,
+        t("Ruta absoluta del archivo que se escribirá, por ejemplo /srv/exports/reel-1.mp4"),
+    ),
+    (Msg::ReelExport, t("EXPORTAR")),
+    (
+        Msg::ReelExportHover,
+        t("Escribir este reel en la ruta de destino como archivo"),
+    ),
+    (Msg::ReelReasonNoClips, t("este reel no tiene clips")),
+    (
+        Msg::ReelReasonReelError,
+        t("este reel no se puede exportar"),
+    ),
+    (
+        Msg::ReelReasonExportActive,
+        t("ya hay otra exportación en curso"),
+    ),
+    (
+        Msg::ReelReasonInvalidPath,
+        t("la ruta de destino no es absoluta"),
+    ),
+    (
+        Msg::ReelReasonExportJobsFull,
+        t("olvida antes una exportación terminada"),
+    ),
+    (Msg::ReelExports, t("Trabajos de exportación")),
+    (Msg::ReelNoExports, t("No hay trabajos de exportación")),
+    (Msg::ReelExportJob, t("Trabajo {job}")),
+    (Msg::ReelStateQueued, t("EN COLA")),
+    (Msg::ReelStateRunning, t("EN CURSO")),
+    (Msg::ReelStateFinalizing, t("FINALIZANDO")),
+    (Msg::ReelStateCompleted, t("COMPLETADO")),
+    (Msg::ReelStateFailed, t("EXPORTACIÓN FALLIDA")),
+    (Msg::ReelStateCancelled, t("CANCELADO")),
+    (
+        Msg::ReelExportProgressHover,
+        t("Fotogramas escritos del total de la exportación"),
+    ),
+    (Msg::ReelExportBytesHover, t("Bytes escritos hasta ahora")),
+    (
+        Msg::ReelExportFailureHover,
+        t("Por qué falló la exportación"),
+    ),
+    (Msg::ReelExportCancel, t("CANCELAR EXPORTACIÓN")),
+    (
+        Msg::ReelExportCancelHover,
+        t("Detener esta exportación y liberar el material grabado que retiene"),
+    ),
+    (Msg::ReelExportForget, t("OLVIDAR")),
+    (
+        Msg::ReelExportForgetHover,
+        t("Quitar esta exportación terminada de la lista"),
+    ),
+    (
+        Msg::ReelExportReelHover,
+        t("El reel que exporta este trabajo"),
+    ),
+    (
+        Msg::ReelExportDestinationHover,
+        t("El archivo que escribe esta exportación"),
+    ),
 ];
