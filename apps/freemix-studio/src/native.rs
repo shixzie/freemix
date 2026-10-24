@@ -1312,6 +1312,7 @@ fn run_worker(
                     | SessionEvent::InputThumbnail { .. }
                     | SessionEvent::StreamStatus { .. }
                     | SessionEvent::RecorderStatus { .. }
+                    | SessionEvent::ReplayStatus { .. }
                     | SessionEvent::TitlePhases { .. }
                     | SessionEvent::SourceSyncStatus { .. }
                     | SessionEvent::HealthStatus { .. }
@@ -1870,6 +1871,7 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::Event { .. }
                         | SessionEvent::StreamStatus { .. }
                         | SessionEvent::RecorderStatus { .. }
+                        | SessionEvent::ReplayStatus { .. }
                         | SessionEvent::TitlePhases { .. }
                         | SessionEvent::SourceSyncStatus { .. }
                         | SessionEvent::HealthStatus { .. }
@@ -2425,6 +2427,7 @@ fn receive_command_event(
                 | SessionEvent::InputThumbnail { .. }
                 | SessionEvent::StreamStatus { .. }
                 | SessionEvent::RecorderStatus { .. }
+                | SessionEvent::ReplayStatus { .. }
                 | SessionEvent::TitlePhases { .. }
                 | SessionEvent::SourceSyncStatus { .. }
                 | SessionEvent::HealthStatus { .. }
@@ -3875,6 +3878,30 @@ mod tests {
         }
     }
 
+    /// The lossy replay status (OR-012) a daemon pushes to every native
+    /// Studio peer; `sequence` identifies which push the UI hydrated.
+    fn replay_status_message(sequence: u64) -> fm_protocol::ReplayStatusMessage {
+        fm_protocol::ReplayStatusMessage {
+            server: ServerIdentity {
+                engine_id: "e".into(),
+                project_id: "1".into(),
+                state_epoch: 1,
+                log_id: "l".into(),
+            },
+            sequence,
+            request_id: None,
+            feed: fm_protocol::ReplayFeed::Synthetic,
+            settings: fm_protocol::ReplaySettings::default(),
+            root: "/tmp/freemix-replay".into(),
+            live_frame: Some(0),
+            mark_in: None,
+            mark_out: None,
+            recorded: Vec::new(),
+            events: Vec::new(),
+            players: Vec::new(),
+        }
+    }
+
     fn command_event(revision: u64) -> EventMessage {
         let snapshot = heartbeat_snapshot();
         let input = snapshot.inputs[0].input;
@@ -4698,6 +4725,155 @@ mod tests {
             {
                 assert_eq!(state.streams.len(), 1);
                 assert_eq!(status.samples[0].muxed_bytes, 2048);
+                break;
+            }
+        }
+
+        request_sender.send(WorkerRequest::Shutdown).unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // one scripted peer conversation
+    fn replay_status_records_never_surface_as_unexpected_responses() {
+        // Marks the one status the peer sends mid-command-wait, so the test
+        // knows the command's own status was applied and not a heartbeat's.
+        const COMMAND_SEQUENCE: u64 = 10_000;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut peer = HeartbeatPeer::accept(&listener);
+            peer.handshake_request();
+            peer.send(&WireMessage::HandshakeResponse(heartbeat_handshake(
+                HandshakeOutcome::Snapshot {
+                    reason: SnapshotReason::NoCursor,
+                },
+            )));
+            peer.send(&WireMessage::Snapshot(heartbeat_snapshot()));
+            // Unsolicited lossy replay status while idle; it must never surface
+            // as an "Unexpected idle response" failure.
+            peer.send(&WireMessage::ReplayStatus(Box::new(replay_status_message(
+                1,
+            ))));
+            let mut sequence = 1;
+            let mut command_seen = false;
+            loop {
+                let Some(line) = peer.next_line() else {
+                    return;
+                };
+                match decode_line(&line).unwrap() {
+                    WireMessage::Heartbeat(heartbeat) => {
+                        sequence += 1;
+                        // The status sits between each heartbeat and its
+                        // acknowledgement, so a failed swallow would abort the
+                        // wait with an unexpected-event error.
+                        if !peer.send_unless_closed(&WireMessage::ReplayStatus(Box::new(
+                            replay_status_message(sequence),
+                        ))) {
+                            return;
+                        }
+                        if !peer.send_unless_closed(&WireMessage::HeartbeatAcknowledgement(
+                            HeartbeatAcknowledgementMessage {
+                                server: heartbeat.server,
+                                heartbeat_sequence: heartbeat.sequence,
+                                received_at_ms: heartbeat.sent_at_ms,
+                            },
+                        )) {
+                            return;
+                        }
+                    }
+                    WireMessage::Command(command) => {
+                        assert!(!command_seen, "worker retried the command unexpectedly");
+                        command_seen = true;
+                        sequence = COMMAND_SEQUENCE;
+                        let accepted_revision = heartbeat_snapshot().revision + 1;
+                        // The status arrives mid-command-wait and must be
+                        // consumed as status, not mistaken for the result.
+                        peer.send(&WireMessage::ReplayStatus(Box::new(replay_status_message(
+                            sequence,
+                        ))));
+                        peer.send(&WireMessage::CommandResult(CommandResult::Accepted {
+                            id: command.id,
+                            revision: accepted_revision,
+                            scheduled_frame: None,
+                        }));
+                        peer.send(&WireMessage::Event(command_event(accepted_revision)));
+                        peer.send(&WireMessage::RuntimeEvent(command_runtime_event(
+                            accepted_revision,
+                        )));
+                    }
+                    other => panic!("unexpected peer message: {other:?}"),
+                }
+            }
+        });
+        let (request_sender, updates, worker) =
+            spawn_existing_worker(address, "replay-status-waits-test");
+
+        receive_connection_state(&updates, StudioConnectionStatus::Ready);
+        // Idle: every publication before the status hydrates must be clean, so
+        // an idle "Unexpected idle response" cannot hide behind a later one.
+        let deadline = Instant::now() + HEARTBEAT_TEST_TIMEOUT;
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "idle replay status was not published"
+            );
+            let state = receive_next_state(&updates);
+            assert_eq!(state.connection_status, StudioConnectionStatus::Ready);
+            assert!(
+                state.error.is_none(),
+                "idle publication carried an error: {:?}",
+                state.error
+            );
+            if state.replay.is_some() {
+                break;
+            }
+        }
+        // Heartbeat: at least two statuses arrive ahead of their
+        // acknowledgements; a failed swallow would publish a fatal error.
+        let deadline = Instant::now() + HEARTBEAT_TEST_TIMEOUT;
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "heartbeat replay statuses were not published"
+            );
+            let state = receive_next_state(&updates);
+            assert_eq!(state.connection_status, StudioConnectionStatus::Ready);
+            assert!(
+                state.error.is_none(),
+                "heartbeat publication carried an error: {:?}",
+                state.error
+            );
+            if let Some(status) = &state.replay
+                && status.sequence >= 3
+            {
+                break;
+            }
+        }
+        // Command: the mid-wait status is consumed, not returned as the result.
+        request_sender
+            .send(WorkerRequest::Intent(StudioIntent::Cut))
+            .unwrap();
+        let deadline = Instant::now() + HEARTBEAT_TEST_TIMEOUT;
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "command sequence did not complete"
+            );
+            let state = receive_next_state(&updates);
+            assert_eq!(state.connection_status, StudioConnectionStatus::Ready);
+            assert!(
+                state.error.is_none(),
+                "command publication carried an error: {:?}",
+                state.error
+            );
+            if state.pending_commands == 0
+                && state
+                    .replay
+                    .as_ref()
+                    .is_some_and(|status| status.sequence >= COMMAND_SEQUENCE)
+            {
                 break;
             }
         }
