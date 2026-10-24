@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.107 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.108 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4208,6 +4208,20 @@ events, and the lossy `ReelStatus` record with its `ReelStatusRequest`.
   `InputReference::ReelClip`. Export jobs and their progress are runtime
   state, never persisted.
 - 2.106 is refused.
+
+Protocol 2.108 adds three default health alert rule tokens for network
+reconnects, degraded source sync, and saturated encoder queues (`RC-015`). No
+other wire shape changes and no schema change.
+
+- The alert rule tokens are now `cpu_saturated`, `disk_low`, `frame_late`,
+  `frames_dropped`, `gpu_saturated`, `output_failed`, `encoder_saturated`,
+  `stream_reconnecting`, and `sync_degraded`, in that wire order. The
+  `alerts` list carries at most one entry per rule, now up to nine.
+  `encoder_saturated` reports an encoder queue that stayed saturated,
+  `stream_reconnecting` outputs that kept reconnecting, and `sync_degraded` a
+  live source whose clock sync stayed degraded. Severities, readings, and the
+  record shapes are unchanged.
+- 2.107 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

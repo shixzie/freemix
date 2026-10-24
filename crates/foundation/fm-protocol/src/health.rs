@@ -44,17 +44,29 @@ pub enum HealthAlertRule {
     /// A stream target or recorder slot latched a failure; the reading is
     /// the number of failed outputs.
     OutputFailed,
+    /// An encoder's queue stayed saturated; the reading is the deepest queue
+    /// depth.
+    EncoderSaturated,
+    /// Stream outputs kept reconnecting; the reading is the number of
+    /// reconnecting outputs.
+    StreamReconnecting,
+    /// A live source's clock sync stayed degraded; the reading is the worst
+    /// drift.
+    SyncDegraded,
 }
 
 impl HealthAlertRule {
     /// Every rule in wire order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 9] = [
         Self::CpuSaturated,
         Self::DiskLow,
         Self::FrameLate,
         Self::FramesDropped,
         Self::GpuSaturated,
         Self::OutputFailed,
+        Self::EncoderSaturated,
+        Self::StreamReconnecting,
+        Self::SyncDegraded,
     ];
 
     /// The wire token, which is also the daemon's rule ID.
@@ -67,6 +79,9 @@ impl HealthAlertRule {
             Self::FramesDropped => "frames_dropped",
             Self::GpuSaturated => "gpu_saturated",
             Self::OutputFailed => "output_failed",
+            Self::EncoderSaturated => "encoder_saturated",
+            Self::StreamReconnecting => "stream_reconnecting",
+            Self::SyncDegraded => "sync_degraded",
         }
     }
 
@@ -191,19 +206,21 @@ pub struct DaemonHealth {
 
 impl DaemonHealth {
     /// Whether the sample keeps the wire invariants: utilization within
-    /// [`MAX_UTILIZATION_PERMILLE`], alerts in strictly increasing rule
-    /// order, at most [`MAX_HEALTH_NOTIFICATIONS`] notifications in strictly
-    /// increasing sequence order, and no time past `uptime_ms`.
+    /// [`MAX_UTILIZATION_PERMILLE`], at most one alert per rule in strictly
+    /// increasing rule order, at most [`MAX_HEALTH_NOTIFICATIONS`]
+    /// notifications in strictly increasing sequence order, and no time past
+    /// `uptime_ms`.
     #[must_use]
     pub fn is_valid(&self) -> bool {
         let utilization = [self.cpu_permille, self.gpu_permille]
             .into_iter()
             .flatten()
             .all(|permille| permille <= MAX_UTILIZATION_PERMILLE);
-        let alerts = self
-            .alerts
-            .windows(2)
-            .all(|pair| pair[0].rule < pair[1].rule)
+        let alerts = self.alerts.len() <= HealthAlertRule::ALL.len()
+            && self
+                .alerts
+                .windows(2)
+                .all(|pair| pair[0].rule < pair[1].rule)
             && self
                 .alerts
                 .iter()
