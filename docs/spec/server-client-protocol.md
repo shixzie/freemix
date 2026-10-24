@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.106 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.107 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4177,6 +4177,37 @@ Protocol 2.106 adds instant replay (OR-012, schema 82): the
   `{"type": "replay"}`. Recorded segment files, marks, events, and players are
   runtime state, never persisted.
 - 2.105 is refused.
+
+Protocol 2.107 adds highlight reels (OR-013, schema 83): the
+`CommandPayload::Reel` commands, the durable `reel_changed` and `reel_removed`
+events, and the lossy `ReelStatus` record with its `ReelStatusRequest`.
+
+- A command carries one `reel_*` payload: `reel_set` (`reel`, `name`, and
+  `clips` — 1 to 64 `<event>:<angle>:<trim in>:<trim out>:<speed>` records,
+  comma separated, each speed 25, 50, 75, or 100 percent and each trim at
+  most 216000 frames), `reel_delete` (`reel`), or one of the export jobs
+  `reel_export` (`job`, `reel`, `destination` — an absolute path),
+  `reel_export_cancel` (`job`), and `reel_export_forget` (`job`). `reel_set`
+  and `reel_delete` are padlocked, undoable project edits.
+- An accepted `reel_set` is announced by the durable `reel_changed` event
+  carrying the reel afterwards (`reel`, `name`, `clips`, optional
+  `total_frames` and `error`); `reel_delete` by `reel_removed` (`reel`).
+- `reel_status` is a lossy, latest-wins record pushed to raw control sessions
+  after the snapshot and whenever it changes: server identity, `sequence`,
+  optional `request_id`, and the `reels` and `exports` lists. Each reel is
+  `<reel>:<name>:<total frames>:<error>:<clips>` with the name and error
+  percent-escaped; each export job is
+  `<job>:<reel>:<destination>:<state>:<completed frames>:<total frames>:<bytes>:<failure>`
+  with the destination and failure percent-escaped and `state` one of
+  `queued`, `running`, `finalizing`, `completed`, `failed`, or `cancelled`.
+  `reel_status_request` (`request_id`) asks for one and echoes the
+  `request_id`.
+- Durability (schema 83): `project.json` gains `reels`, each with `id`, `name`,
+  and `clips` of `event`, `angle`, `trim_in_frames`, `trim_out_frames`, and
+  `speed_percent`; an input a clip plays is held by
+  `InputReference::ReelClip`. Export jobs and their progress are runtime
+  state, never persisted.
+- 2.106 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

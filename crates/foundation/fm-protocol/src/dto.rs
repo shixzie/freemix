@@ -2139,6 +2139,9 @@ pub enum CommandPayload {
     },
     /// One instant replay command (OR-012); see [`crate::ReplayOperation`].
     Replay(crate::ReplayOperation),
+    /// One highlight reel command (Protocol 2.107, OR-013); see
+    /// [`crate::ReelOperation`].
+    Reel(crate::ReelOperation),
 }
 
 /// Most presets one animation preset library holds (Protocol 2.34).
@@ -2852,6 +2855,13 @@ pub enum EventPayload {
         frame: u64,
         operation: crate::ReplayOperation,
     },
+    /// A highlight reel was created or replaced (Protocol 2.107, OR-013):
+    /// the reel afterwards.
+    ReelChanged(Box<crate::ReelStatus>),
+    /// Highlight reel `reel` was removed (Protocol 2.107, OR-013).
+    ReelRemoved {
+        reel: u64,
+    },
     /// A network stream input was reconfigured, or that edit was undone or
     /// redone (Protocol 2.46). The URL is redacted.
     NetworkStreamChanged {
@@ -3467,4 +3477,8 @@ pub enum WireMessage {
     ReplayStatus(Box<crate::ReplayStatusMessage>),
     /// Asks for a [`crate::ReplayStatusMessage`] (OR-012).
     ReplayStatusRequest(crate::ReplayStatusRequest),
+    /// Lossy highlight reel status (Protocol 2.107, OR-013).
+    ReelStatus(Box<crate::ReelStatusMessage>),
+    /// Asks for a [`crate::ReelStatusMessage`] (Protocol 2.107, OR-013).
+    ReelStatusRequest(crate::ReelStatusRequest),
 }

@@ -15,7 +15,7 @@ use fm_protocol::{
     StreamTargetProtocol, WireMessage, WireOutputId, WireStreamTargetId, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.106\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.107\tid=a\tidempotency_key=k";
 const KEY: &str = "live-secret-key-0001";
 
 fn target(value: u128) -> WireStreamTargetId {
@@ -78,7 +78,7 @@ fn config() -> StreamTargetConfig {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 106));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 107));
     assert_eq!(MAX_STREAM_TARGETS, 5);
     assert_eq!(
         StreamReconnect::DEFAULT,

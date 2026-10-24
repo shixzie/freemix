@@ -223,6 +223,20 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
             validate_request_id(&request_id)?;
             WireMessage::ReplayStatusRequest(crate::ReplayStatusRequest { request_id })
         }
+        "reel_status" => {
+            let server = decode_server_identity(&mut fields)?;
+            let sequence = fields.canonical_required("sequence")?;
+            let message = super::reel::decode_status(server, sequence, &mut fields)?;
+            if let Some(request_id) = &message.request_id {
+                validate_request_id(request_id)?;
+            }
+            WireMessage::ReelStatus(Box::new(message))
+        }
+        "reel_status_request" => {
+            let request = super::reel::decode_request(&mut fields)?;
+            validate_request_id(&request.request_id)?;
+            WireMessage::ReelStatusRequest(request)
+        }
         "screen_capture_targets_request" => {
             let request_id = fields.required("request_id")?;
             validate_request_id(&request_id)?;
@@ -727,6 +741,14 @@ fn decode_command_payload(
                     value: replay.to_owned(),
                 },
             )?)
+        }
+        reel if reel.starts_with("reel_") => {
+            CommandPayload::Reel(super::reel::decode_operation(reel, fields)?.ok_or_else(|| {
+                CodecError::InvalidField {
+                    field: "payload",
+                    value: reel.to_owned(),
+                }
+            })?)
         }
         "live_lan_set" => {
             let (config, pin) = super::live_lan::decode_set(fields)?;
@@ -2789,6 +2811,10 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
             )?;
             EventPayload::ReplayChanged { frame, operation }
         }
+        "reel_changed" => EventPayload::ReelChanged(Box::new(super::reel::decode_reel(fields)?)),
+        "reel_removed" => EventPayload::ReelRemoved {
+            reel: fields.canonical_required("reel")?,
+        },
         "display_output_changed" => {
             let (slot, config) = super::display_output::decode_changed(fields)?;
             EventPayload::DisplayOutputChanged {

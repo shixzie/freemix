@@ -727,7 +727,7 @@ fn check_items(
     }
 }
 
-fn bounded_join<T>(
+pub(super) fn bounded_join<T>(
     values: &[T],
     maximum: usize,
     field: &'static str,

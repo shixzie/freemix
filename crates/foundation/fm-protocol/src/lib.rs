@@ -18,6 +18,7 @@ mod network_stream;
 mod output_failure;
 mod paged;
 mod recorder_status;
+mod reel;
 mod replay;
 mod scene_layer;
 pub mod screen_capture;
@@ -202,6 +203,12 @@ pub use paged::{
 };
 pub use recorder_status::{
     MAX_RECORDER_STATUS_SAMPLES, RecorderRealizedState, RecorderStatusMessage, RecorderStatusSample,
+};
+pub use reel::{
+    MAX_REEL_CLIPS, MAX_REEL_ERROR_BYTES, MAX_REEL_EXPORTS, MAX_REEL_NAME_BYTES,
+    MAX_REEL_PATH_BYTES, MAX_REEL_TRIM_FRAMES, MAX_REELS, ReelClip, ReelExportState,
+    ReelExportStatus, ReelOperation, ReelSpec, ReelSpecError, ReelStatus, ReelStatusMessage,
+    ReelStatusRequest, reel_error_is_valid, reel_export_path_is_valid, reel_name_is_valid,
 };
 pub use replay::{
     DEFAULT_REPLAY_RETENTION_SECONDS, MAX_REPLAY_EVENT_NAME_BYTES, MAX_REPLAY_EVENTS,

@@ -150,7 +150,7 @@ fn every_reason() -> Vec<(RefusalReason, &'static str)> {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 106));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 107));
 }
 
 #[test]

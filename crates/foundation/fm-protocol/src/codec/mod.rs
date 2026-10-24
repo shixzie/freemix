@@ -17,6 +17,7 @@ mod network_stream;
 mod paged;
 mod playlist;
 mod recorder_status;
+mod reel;
 mod refusal;
 mod replay;
 mod scene_layer;
