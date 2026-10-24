@@ -1365,10 +1365,29 @@ pub fn run(command: Command) -> AppResult<()> {
         Command::RemoteDisplayOutputList { address } => remote::display_outputs(address)?,
         Command::Replay { path } => {
             let project = inspect_engine(&path)?;
-            remote::print_replay_settings(project.engine.show().replay());
-            // Events and players are server runtime: a local project only
-            // holds what is recorded.
-            println!("Replay(feed=none, events=0, players=0)");
+            let settings = project.engine.show().replay();
+            remote::print_replay_settings(settings);
+            // A local project holds the persisted settings; the recording,
+            // marks, events, and players are engine runtime, so a fresh
+            // inspection starts with none.
+            let status = project.engine.replay_status();
+            let feed = match project.engine.replay_feed() {
+                fm_engine::EngineReplayFeed::Synthetic => fm_protocol::ReplayFeed::Synthetic,
+                fm_engine::EngineReplayFeed::External => fm_protocol::ReplayFeed::Recorded,
+            };
+            let frame =
+                |frame: Option<u64>| frame.map_or_else(|| "none".to_owned(), |f| f.to_string());
+            println!(
+                "Replay(feed={}, root={:?}, live_frame={}, mark_in={}, mark_out={})",
+                feed.token(),
+                settings.storage_root.as_deref().map_or_else(
+                    || project.engine.replay_root().to_string_lossy().into_owned(),
+                    str::to_owned,
+                ),
+                frame(status.live_frame),
+                frame(status.mark_in),
+                frame(status.mark_out),
+            );
         }
         Command::ReplaySet {
             path,
@@ -1376,8 +1395,14 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         } => {
-            let current = inspect_engine(&path)?.engine.show().replay().clone();
-            let settings = remote::edited_replay(&current, &edit)?;
+            let project = inspect_engine(&path)?;
+            let settings = remote::edited_replay(project.project.replay(), &edit)?;
+            // Check the sources against the project before mutating: an
+            // unknown or Replay input is a local argument error, and the
+            // bundle stays untouched.
+            settings
+                .check(|input| project.project.replay_source_check(input))
+                .map_err(crate::args::ArgsError::InvalidReplay)?;
             mutate(
                 &path,
                 EngineCommand::Replay(fm_engine::EngineReplayOperation::Configure(Box::new(
@@ -6353,6 +6378,13 @@ Usage:
   freemix-cli display-output-set <show.freemix> <slot:1|2> <display=index:N|name:NAME|id:ID[,source=program|preview|output:ID][,mode=current|WxH[@HZ]][,scaling=fit|fill|stretch|1:1][,hdr=off|auto]> [--key <key>] [--expect <revision>]
   freemix-cli display-output-clear <show.freemix> <slot:1|2> [--key <key>] [--expect <revision>]
   freemix-cli display-output-list <show.freemix>
+  freemix-cli replay <show.freemix>
+  freemix-cli replay-set <show.freemix> [--sources <input,input|none>] [--retention <10..=3600>] [--root <absolute-dir>|--default-root] [--key <key>] [--expect <revision>]
+      Prints what the project records for instant replay (its settings, feed,
+      and effective root), or edits it: the recorded inputs in angle order
+      (at most four; none turns recording off), the retention window in
+      seconds, and an absolute storage root or the default root. Absent
+      options keep their value.
   freemix-cli live-lan <show.freemix>
   freemix-cli live-lan-set <show.freemix> [--enable|--disable] [--source program|output:<id>] [--max-viewers <1..=32>] [--pin <4-12 digits>|--clear-pin] [--key <key>] [--expect <revision>]
   freemix-cli input-add-stream <show.freemix> <nonzero-input-id> <name> <rtsp|rtp|udp|tcp|http|https|rtmp|rtmps|srt URL or .m3u8> [stream options]
@@ -6480,6 +6512,14 @@ Usage:
   freemix-cli remote-display-output-clear <127.0.0.1:port> <slot:1|2> [--key <key>] [--expect <revision>]
   freemix-cli remote-display-output-list <127.0.0.1:port>
   freemix-cli remote-display-inventory <127.0.0.1:port>
+  freemix-cli remote-replay <127.0.0.1:port>
+  freemix-cli remote-replay-set <127.0.0.1:port> [replay-set options]
+  freemix-cli remote-replay-do <127.0.0.1:port> <mark-in|mark-out|capture [--name <name>]|last <5|10|20>|rename <event> <name>|delete <event>|cue <input> <event> [--angle <input>]|angle <input> <angle>|play <input> [25|50|75|100]|pause <input>|cue-in <input>> [--key <key>]
+      Prints the daemon's replay recording, events, and Replay inputs, edits
+      what it records, or sends one live replay command: mark in or out,
+      capture the marks or the last 5, 10, or 20 seconds, rename or delete an
+      event, cue an event angle on a Replay input, switch angle, play at 25,
+      50, 75, or 100 percent, pause, or jump back to the cue-in point.
   freemix-cli remote-live-lan <127.0.0.1:port>
   freemix-cli remote-live-lan-set <127.0.0.1:port> [live-lan-set options]
   freemix-cli remote-stream-start <127.0.0.1:port> <existing-stream-id> [--key <key>] [--expect <revision>]

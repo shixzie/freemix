@@ -7728,6 +7728,121 @@ fn remote_live_lan_set_merges_the_daemon_settings() {
     server.finish();
 }
 
+/// OR-012 / Protocol 2.106: the local replay settings persist in angle
+/// order, and `replay` prints the engine's synthetic feed and effective
+/// root.
+#[test]
+fn local_replay_settings_persist_and_print_the_synthetic_feed() {
+    let context = ContractContext::new();
+    assert_success(&invoke_bounded(&["new", context.project_path()]));
+    // `new` seeds simulated inputs 1 and 2, both recordable.
+    let root_path = context.root.join("replay-root");
+    fs::create_dir_all(&root_path).unwrap();
+    let root = root_path.to_str().unwrap();
+    assert_success(&invoke_bounded(&[
+        "replay-set",
+        context.project_path(),
+        "--sources",
+        "2,1",
+        "--retention",
+        "30",
+        "--root",
+        root,
+    ]));
+    let shown = invoke_bounded(&["replay", context.project_path()]);
+    assert_success(&shown);
+    assert_eq!(
+        stdout(&shown),
+        format!(
+            "ReplaySettings(sources=[2,1], retention_seconds=30, storage_root={root:?})\n\
+             Replay(feed=synthetic, root={root:?}, live_frame=none, mark_in=none, \
+             mark_out=none)"
+        )
+    );
+    let stored = ProjectStore::new(&context.project).unwrap().load().unwrap();
+    let replay = stored.project().replay();
+    assert_eq!(
+        replay.sources,
+        vec![
+            InputId::new(NonZeroU128::new(2).unwrap()),
+            InputId::new(NonZeroU128::new(1).unwrap()),
+        ]
+    );
+    assert_eq!(replay.retention_seconds, 30);
+    assert_eq!(replay.storage_root.as_deref(), Some(root));
+
+    // `--sources none` turns recording off and `--default-root` drops the
+    // root; the absent retention keeps its value.
+    assert_success(&invoke_bounded(&[
+        "replay-set",
+        context.project_path(),
+        "--sources",
+        "none",
+        "--default-root",
+    ]));
+    let shown = invoke_bounded(&["replay", context.project_path()]);
+    assert_success(&shown);
+    assert_eq!(
+        stdout(&shown),
+        "ReplaySettings(sources=[], retention_seconds=30, storage_root=default)\n\
+         Replay(feed=synthetic, root=\"replay\", live_frame=none, mark_in=none, \
+         mark_out=none)"
+    );
+    let stored = ProjectStore::new(&context.project).unwrap().load().unwrap();
+    let replay = stored.project().replay();
+    assert!(replay.sources.is_empty());
+    assert_eq!(replay.retention_seconds, 30);
+    assert_eq!(replay.storage_root, None);
+    fs::remove_dir_all(context.root).unwrap();
+}
+
+/// OR-012 / Protocol 2.106: `replay-set` refuses zero, repeated, and
+/// unknown sources, an out-of-range retention, a relative root, and
+/// conflicting roots before touching the project.
+#[test]
+fn local_replay_set_refuses_bad_sources_retention_and_root_without_touching_the_project() {
+    let context = ContractContext::new();
+    assert_success(&invoke_bounded(&["new", context.project_path()]));
+    // `new` seeds simulated inputs 1 and 2, both recordable.
+    let store = ProjectStore::new(&context.project).unwrap();
+    let before = store.load().unwrap();
+    let manifest = context.project.join("project.json");
+    let before_manifest = fs::read(&manifest).unwrap();
+    let cases: [(&[&str], &str); 6] = [
+        (&["--sources", "0"], "invalid replay source value `0`"),
+        (&["--sources", "2,2"], "input 2 is a replay source twice"),
+        (&["--sources", "9"], "input 9 does not exist"),
+        (
+            &["--retention", "5"],
+            "replay retention seconds must be in 10..=3600, got 5",
+        ),
+        (
+            &["--root", "relative/dir"],
+            "the replay storage root must be an absolute path",
+        ),
+        (
+            &["--root", "/tmp/replay-root", "--default-root"],
+            "--default-root cannot be combined with --root",
+        ),
+    ];
+    for (options, expected) in cases {
+        let mut arguments = vec!["replay-set", context.project_path()];
+        arguments.extend_from_slice(options);
+        let output = invoke_bounded(&arguments);
+        assert_failure_contains(&output, expected);
+        assert_eq!(
+            fs::read(&manifest).unwrap(),
+            before_manifest,
+            "project.json changed for {options:?}"
+        );
+        assert_eq!(
+            store.load().unwrap().project().replay(),
+            before.project().replay()
+        );
+    }
+    fs::remove_dir_all(context.root).unwrap();
+}
+
 #[test]
 fn local_audio_bus_rename_persists_exact_name_and_preserves_runtime_state() {
     let context = ContractContext::new();

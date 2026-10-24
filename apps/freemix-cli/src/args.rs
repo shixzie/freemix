@@ -1122,21 +1122,24 @@ pub enum Command {
     RemoteDisplayInventory {
         address: SocketAddr,
     },
-    /// Prints what a project records for instant replay (OR-012).
+    /// Prints what a project records for instant replay (OR-012, Protocol 2.106).
     Replay {
         path: PathBuf,
     },
-    /// Prints a daemon's replay recording, events, and Replay inputs.
+    /// Prints a daemon's replay recording, events, and Replay inputs
+    /// (Protocol 2.106).
     RemoteReplay {
         address: SocketAddr,
     },
-    /// Edits what is recorded for replay; absent options keep their value.
+    /// Edits what is recorded for replay; absent options keep their value
+    /// (Protocol 2.106).
     ReplaySet {
         path: PathBuf,
         edit: ReplayEdit,
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Edits what a daemon records for replay (Protocol 2.106).
     RemoteReplaySet {
         address: SocketAddr,
         edit: ReplayEdit,
@@ -1144,7 +1147,7 @@ pub enum Command {
         expected_revision: Option<u64>,
     },
     /// Sends one live replay command: a mark, a capture, an event edit, or
-    /// a Replay input's transport.
+    /// a Replay input's transport (Protocol 2.106).
     RemoteReplayDo {
         address: SocketAddr,
         operation: fm_protocol::ReplayOperation,
@@ -1857,6 +1860,8 @@ pub enum ArgsError {
     InvalidDisplayOutput(String),
     /// A `LiveLAN` PIN is not 4 to 12 digits; the value is never echoed.
     InvalidLiveLanPin,
+    /// Replay settings are unusable (OR-012).
+    InvalidReplay(fm_protocol::ReplaySettingsError),
     /// A network stream URL or setting is unusable (IN-015). Never names
     /// the URL, which may carry credentials.
     InvalidNetworkStream(NetworkStreamError),
@@ -1901,6 +1906,7 @@ impl core::fmt::Display for ArgsError {
                 fm_types::live_lan::MIN_LIVE_LAN_PIN_DIGITS,
                 fm_types::live_lan::MAX_LIVE_LAN_PIN_DIGITS
             ),
+            Self::InvalidReplay(error) => write!(formatter, "invalid replay settings: {error}"),
             Self::InvalidDisplayOutput(error) => {
                 write!(formatter, "invalid display-output spec: {error}")
             }
@@ -5579,6 +5585,70 @@ pub struct ReplayEdit {
     pub storage_root: Option<Option<String>>,
 }
 
+/// The inputs `--sources` names, in angle order (OR-012): distinct, nonzero,
+/// and at most [`fm_protocol::MAX_REPLAY_RECORD_SOURCES`].
+fn replay_sources(value: &str) -> Result<Vec<u128>, ArgsError> {
+    if value == "none" {
+        return Ok(Vec::new());
+    }
+    let mut sources: Vec<u128> = Vec::new();
+    for input in value.split(',') {
+        let source: u128 = number(input, "replay source")?;
+        if source == 0 {
+            return Err(ArgsError::InvalidChoice {
+                field: "replay source",
+                value: source.to_string(),
+            });
+        }
+        if sources.contains(&source) {
+            let input = fm_types::InputId::new(
+                core::num::NonZeroU128::new(source).expect("a replay source is nonzero"),
+            );
+            return Err(ArgsError::InvalidReplay(
+                fm_protocol::ReplaySettingsError::DuplicateSource(input),
+            ));
+        }
+        sources.push(source);
+    }
+    if sources.len() > fm_protocol::MAX_REPLAY_RECORD_SOURCES {
+        return Err(ArgsError::InvalidReplay(
+            fm_protocol::ReplaySettingsError::TooManySources,
+        ));
+    }
+    Ok(sources)
+}
+
+/// The `--retention` window in seconds (OR-012), within the documented
+/// [`fm_protocol::MIN_REPLAY_RETENTION_SECONDS`] through
+/// [`fm_protocol::MAX_REPLAY_RETENTION_SECONDS`].
+fn replay_retention(value: &str) -> Result<u32, ArgsError> {
+    let seconds = number::<u16>(value, "retention seconds")?;
+    let minimum = u16::try_from(fm_protocol::MIN_REPLAY_RETENTION_SECONDS)
+        .expect("the replay retention minimum fits u16");
+    let maximum = u16::try_from(fm_protocol::MAX_REPLAY_RETENTION_SECONDS)
+        .expect("the replay retention maximum fits u16");
+    if !(minimum..=maximum).contains(&seconds) {
+        return Err(ArgsError::OutOfRange {
+            field: "replay retention seconds",
+            minimum,
+            maximum,
+            value: seconds,
+        });
+    }
+    Ok(u32::from(seconds))
+}
+
+/// The `--root` storage directory (OR-012): absolute and within the
+/// documented length.
+fn replay_root(value: String) -> Result<String, ArgsError> {
+    if !fm_protocol::replay_storage_root_is_valid(&value) {
+        return Err(ArgsError::InvalidReplay(
+            fm_protocol::ReplaySettingsError::StorageRoot,
+        ));
+    }
+    Ok(value)
+}
+
 /// `replay`, `replay-set`, and their `remote-` forms (OR-012).
 fn parse_replay(
     command: &str,
@@ -5608,20 +5678,13 @@ fn parse_replay(
         match option.as_str() {
             "--sources" => {
                 let value = required(&mut arguments, "replay sources")?;
-                edit.sources = Some(if value == "none" {
-                    Vec::new()
-                } else {
-                    value
-                        .split(',')
-                        .map(|input| number(input, "replay source"))
-                        .collect::<Result<_, _>>()?
-                });
+                edit.sources = Some(replay_sources(&value)?);
             }
             "--retention" => {
-                edit.retention_seconds = Some(number(
-                    &required(&mut arguments, "retention seconds")?,
+                edit.retention_seconds = Some(replay_retention(&required(
+                    &mut arguments,
                     "retention seconds",
-                )?);
+                )?)?);
             }
             "--root" => {
                 if edit.storage_root == Some(None) {
@@ -5630,7 +5693,10 @@ fn parse_replay(
                         conflicts: "--default-root",
                     });
                 }
-                edit.storage_root = Some(Some(required(&mut arguments, "storage root")?));
+                edit.storage_root = Some(Some(replay_root(required(
+                    &mut arguments,
+                    "storage root",
+                )?)?));
             }
             "--default-root" => {
                 if matches!(edit.storage_root, Some(Some(_))) {
@@ -10518,8 +10584,9 @@ mod tests {
     }
 
     /// OR-012: replay settings edits and live replay operations parse
-    /// into their typed commands; bad speeds, last-N lengths, and
-    /// conflicting roots are refused.
+    /// into their typed commands; zero, repeated, and excess sources, an
+    /// out-of-range retention, a relative root, bad speeds, last-N lengths,
+    /// and conflicting roots are refused.
     #[test]
     fn replay_commands_parse_into_typed_operations() {
         use fm_protocol::{ReplayOperation, ReplaySpeed};
@@ -10558,6 +10625,59 @@ mod tests {
             ]))
             .is_err()
         );
+        let set = |words: &[&str]| {
+            let mut all = vec!["replay-set", "show.freemix"];
+            all.extend_from_slice(words);
+            parse(strings(&all))
+        };
+        assert_eq!(
+            set(&["--sources", "0"]),
+            Err(ArgsError::InvalidChoice {
+                field: "replay source",
+                value: "0".to_owned(),
+            })
+        );
+        let two = fm_types::InputId::new(core::num::NonZeroU128::new(2).unwrap());
+        assert_eq!(
+            set(&["--sources", "2,2"]),
+            Err(ArgsError::InvalidReplay(
+                fm_protocol::ReplaySettingsError::DuplicateSource(two)
+            ))
+        );
+        assert_eq!(
+            set(&["--sources", "1,2,3,4,5"]),
+            Err(ArgsError::InvalidReplay(
+                fm_protocol::ReplaySettingsError::TooManySources
+            ))
+        );
+        assert_eq!(
+            set(&["--retention", "5"]),
+            Err(ArgsError::OutOfRange {
+                field: "replay retention seconds",
+                minimum: 10,
+                maximum: 3_600,
+                value: 5,
+            })
+        );
+        assert_eq!(
+            set(&["--retention", "3601"]),
+            Err(ArgsError::OutOfRange {
+                field: "replay retention seconds",
+                minimum: 10,
+                maximum: 3_600,
+                value: 3_601,
+            })
+        );
+        assert!(set(&["--retention", "10"]).is_ok());
+        assert!(set(&["--retention", "3600"]).is_ok());
+        assert_eq!(
+            set(&["--root", "relative/dir"]),
+            Err(ArgsError::InvalidReplay(
+                fm_protocol::ReplaySettingsError::StorageRoot
+            ))
+        );
+        assert!(set(&["--root", "/absolute/dir"]).is_ok());
+        assert!(set(&["--sources", "none"]).is_ok());
         let remote = |words: &[&str]| {
             let mut all = vec!["remote-replay-do", "127.0.0.1:9123"];
             all.extend_from_slice(words);

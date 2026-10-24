@@ -86,7 +86,7 @@ pub fn display_outputs(address: SocketAddr) -> RemoteResult<()> {
     Ok(())
 }
 
-/// Asks the daemon for its replay status (OR-012).
+/// Asks the daemon for its replay status (OR-012, Protocol 2.106).
 fn request_replay_status(remote: &mut Remote) -> RemoteResult<fm_protocol::ReplayStatusMessage> {
     let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
     let request_id = format!("cli-replay-{}", unique_client_id()?);
@@ -97,8 +97,12 @@ fn request_replay_status(remote: &mut Remote) -> RemoteResult<fm_protocol::Repla
     ))?;
     loop {
         match remote.read_until(deadline)? {
+            // The answer echoes this request's id; a pushed record has none
+            // and carries the same latest-wins replay state, so taking it
+            // avoids waiting out the timeout when a change races the request.
             WireMessage::ReplayStatus(status)
-                if status.request_id.as_deref() == Some(request_id.as_str()) =>
+                if status.request_id.as_deref() == Some(request_id.as_str())
+                    || status.request_id.is_none() =>
             {
                 return Ok(*status);
             }
@@ -106,20 +110,23 @@ fn request_replay_status(remote: &mut Remote) -> RemoteResult<fm_protocol::Repla
                 remote.client.intake(message)?;
             }
             WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
-            // Pushed status records and meters are not the answer.
+            // Another client's answer is not ours; meters, stream status,
+            // and snapshots are not the answer either. Keep waiting.
             _ => {}
         }
     }
 }
 
-/// Prints the daemon's replay recording, events, and Replay inputs (OR-012).
+/// Prints the daemon's replay recording, events, and Replay inputs (OR-012,
+/// Protocol 2.106).
 pub fn replay(address: SocketAddr) -> RemoteResult<()> {
     let mut remote = Remote::connect(address, Role::Viewer)?;
     print_replay(&request_replay_status(&mut remote)?);
     Ok(())
 }
 
-/// `settings` with `edit` applied (OR-012).
+/// `settings` with `edit` applied (OR-012); a zero source is the CLI's own
+/// argument error, so the local path never reports a remote failure.
 pub(crate) fn edited_replay(
     settings: &fm_protocol::ReplaySettings,
     edit: &crate::args::ReplayEdit,
@@ -130,7 +137,10 @@ pub(crate) fn edited_replay(
             .map(|input| {
                 core::num::NonZeroU128::new(*input)
                     .map(fm_types::InputId::new)
-                    .ok_or_else(|| RemoteFailure("input ids are nonzero".into()))
+                    .ok_or_else(|| crate::args::ArgsError::InvalidChoice {
+                        field: "replay source",
+                        value: input.to_string(),
+                    })
             })
             .collect::<Result<_, _>>()?,
         None => settings.sources.clone(),
@@ -145,8 +155,8 @@ pub(crate) fn edited_replay(
     })
 }
 
-/// Edits what the daemon records for replay (OR-012), then prints the
-/// status.
+/// Edits what the daemon records for replay (OR-012, Protocol 2.106), then
+/// prints the status.
 pub fn set_replay(
     address: SocketAddr,
     edit: &crate::args::ReplayEdit,
@@ -164,7 +174,8 @@ pub fn set_replay(
     replay(address)
 }
 
-/// Sends one live replay command (OR-012), then prints the status.
+/// Sends one live replay command (OR-012, Protocol 2.106), then prints the
+/// status.
 pub fn replay_do(
     address: SocketAddr,
     operation: fm_protocol::ReplayOperation,
