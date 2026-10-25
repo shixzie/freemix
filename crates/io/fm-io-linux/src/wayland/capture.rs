@@ -42,7 +42,7 @@ pub const GONE_WAIT: Duration = Duration::from_secs(1);
 /// asked for again when asking opens the sharing dialog (no restore
 /// token): the operator is not prompted every few seconds.
 pub const DIALOG_RETRY_MIN: Duration = Duration::from_secs(30);
-pub const DIALOG_RETRY_MAX: Duration = Duration::from_secs(300);
+pub const DIALOG_RETRY_MAX: Duration = Duration::from_mins(5);
 
 /// What a capture makes of each shared picture.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

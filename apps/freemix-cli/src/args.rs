@@ -6266,7 +6266,7 @@ fn parse_reel(
                 }
             })
         }
-        _ => return Err(ArgsError::UnknownCommand(command.to_owned())),
+        _ => Err(ArgsError::UnknownCommand(command.to_owned())),
     }
 }
 
@@ -11012,6 +11012,7 @@ mod tests {
     /// out-of-range retention, a relative root, bad speeds, last-N lengths,
     /// and conflicting roots are refused.
     #[test]
+    #[allow(clippy::too_many_lines)] // one case per command shape
     fn replay_commands_parse_into_typed_operations() {
         use fm_protocol::{ReplayOperation, ReplaySpeed};
         let input = |value: u128| {

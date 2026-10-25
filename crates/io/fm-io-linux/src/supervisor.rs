@@ -52,7 +52,7 @@ pub struct SupervisorTiming {
 impl Default for SupervisorTiming {
     fn default() -> Self {
         Self {
-            stall_after: Duration::from_millis(1_000),
+            stall_after: Duration::from_secs(1),
             start_grace: Duration::from_secs(6),
             retry_after: Duration::from_secs(1),
         }
