@@ -22,7 +22,8 @@
 //! that fetched media within the last [`VIEWER_WINDOW`]; a new session is
 //! refused while the configured maximum is watching; a page joining again
 //! with its live session keeps it. Wrong PINs are rate-limited per IPv4
-//! address or IPv6 `/64`: each run of [`MAX_PIN_FAILURES`] locks the
+//! address or remote IPv6 `/64` (an on-link IPv6 peer, link-local or in
+//! the server's own `/64`, counts as its own address): each run of [`MAX_PIN_FAILURES`] locks the
 //! address out, for [`BASE_LOCKOUT`] at first and twice as long after each
 //! further run, up to [`MAX_LOCKOUT`]. Disabling `LiveLAN` or changing its
 //! PIN or source ends every session at once, and an encoder that starts
@@ -66,14 +67,14 @@ pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 /// A session that fetched media this recently is a viewer.
 pub const VIEWER_WINDOW: Duration = Duration::from_secs(10);
 /// A session idle this long is forgotten.
-pub const SESSION_IDLE: Duration = Duration::from_secs(60);
+pub const SESSION_IDLE: Duration = Duration::from_mins(1);
 /// Wrong PINs one address may send per [`FAILURE_WINDOW`] before it is
 /// locked out.
 pub const MAX_PIN_FAILURES: u8 = 5;
 /// How long a run of wrong PINs is remembered.
-pub const FAILURE_WINDOW: Duration = Duration::from_secs(60);
+pub const FAILURE_WINDOW: Duration = Duration::from_mins(1);
 /// The first lockout; each further one doubles, up to [`MAX_LOCKOUT`].
-pub const BASE_LOCKOUT: Duration = Duration::from_secs(60);
+pub const BASE_LOCKOUT: Duration = Duration::from_mins(1);
 /// The longest lockout.
 pub const MAX_LOCKOUT: Duration = Duration::from_hours(1);
 /// How long after its last lockout (or wrong PIN) an address's lockouts are
@@ -173,17 +174,16 @@ struct AccessState {
     failures: HashMap<IpAddr, Failures>,
 }
 
-/// The bucket wrong PINs from `address` count against: an IPv4 address
-/// (an IPv4-mapped IPv6 peer of a dual-stack listener included), or the
-/// `/64` network of an IPv6 address, since one host may hold any number of
-/// addresses in its `/64` and would otherwise get a fresh allowance each.
-fn throttle_key(address: IpAddr) -> IpAddr {
-    match address.to_canonical() {
-        IpAddr::V4(v4) => IpAddr::V4(v4),
-        IpAddr::V6(v6) => IpAddr::V6(std::net::Ipv6Addr::from_bits(
-            v6.to_bits() & !u128::from(u64::MAX),
-        )),
-    }
+/// The bucket wrong PINs from `address`, which reached the server at
+/// `local`, count against: an IPv4 address (an IPv4-mapped IPv6 peer of a
+/// dual-stack listener included), an on-link IPv6 address (link-local, or
+/// in `local`'s own `/64`) as itself, since every host of the venue LAN
+/// shares that `/64`, or the `/64` network of any other IPv6 address,
+/// since one remote host may hold any number of addresses in its `/64` and
+/// would otherwise get a fresh allowance each (grouped as the Web
+/// gateway's connection bound and pairing are, [`crate::web::peer_group_at`]).
+fn throttle_key(address: IpAddr, local: Option<IpAddr>) -> IpAddr {
+    crate::web::peer_group_at(address, local)
 }
 
 #[derive(Clone, Copy)]
@@ -252,18 +252,18 @@ impl AccessState {
             .count()
     }
 
-    /// Seconds left of `address`'s lockout, if it is locked out.
-    fn locked_for(&self, address: IpAddr, now: Instant) -> Option<u64> {
+    /// Seconds left of the lockout of `key` (a [`throttle_key`]), if it is
+    /// locked out.
+    fn locked_for(&self, key: IpAddr, now: Instant) -> Option<u64> {
         self.failures
-            .get(&throttle_key(address))
+            .get(&key)
             .and_then(|failures| failures.locked_for(now))
     }
 
-    /// Counts a wrong PIN from `address`; the last of a run of
-    /// [`MAX_PIN_FAILURES`] locks it out, each lockout twice as long as the
-    /// one before (up to [`MAX_LOCKOUT`]).
+    /// Counts a wrong PIN against `address` (a [`throttle_key`]); the last
+    /// of a run of [`MAX_PIN_FAILURES`] locks it out, each lockout twice as
+    /// long as the one before (up to [`MAX_LOCKOUT`]).
     fn record_failure(&mut self, address: IpAddr, now: Instant) {
-        let address = throttle_key(address);
         if !self.failures.contains_key(&address) && self.failures.len() >= MAX_FAILURE_ADDRESSES {
             return;
         }
@@ -291,6 +291,7 @@ impl AccessState {
     /// already carries a live session (`current`, a page joining again after
     /// a playback error or a reload) keeps it, and so keeps its seat rather
     /// than being refused by the viewer limit it counts toward itself.
+    #[cfg(test)]
     fn open(
         &mut self,
         address: IpAddr,
@@ -298,6 +299,20 @@ impl AccessState {
         current: Option<&str>,
         now: Instant,
     ) -> Result<String, Refusal> {
+        self.open_at(address, None, pin, current, now)
+    }
+
+    /// [`Self::open`] for a request that reached the server at `local`,
+    /// which tells an on-link IPv6 peer ([`throttle_key`]).
+    fn open_at(
+        &mut self,
+        address: IpAddr,
+        local: Option<IpAddr>,
+        pin: &str,
+        current: Option<&str>,
+        now: Instant,
+    ) -> Result<String, Refusal> {
+        let address = throttle_key(address, local);
         self.prune(now);
         let Some(access) = &self.access else {
             return Err(Refusal::Off);
@@ -308,7 +323,7 @@ impl AccessState {
         // A full failure table fails closed for addresses it cannot track.
         if access.pin.is_some()
             && self.failures.len() >= MAX_FAILURE_ADDRESSES
-            && !self.failures.contains_key(&throttle_key(address))
+            && !self.failures.contains_key(&address)
         {
             return Err(Refusal::RateLimited(FAILURE_WINDOW.as_secs()));
         }
@@ -596,7 +611,10 @@ fn serve_connection(mut stream: TcpStream, peer: IpAddr, shared: &Shared) {
     let received = read_request(&mut stream, Instant::now() + REQUEST_DEADLINE);
     let deadline = Instant::now() + RESPONSE_DEADLINE;
     match received {
-        Ok(request) => route(&mut stream, peer, shared, &request, deadline),
+        Ok(request) => {
+            let local = stream.local_addr().ok().map(|local| local.ip());
+            route(&mut stream, (peer, local), shared, &request, deadline);
+        }
         Err(status) => {
             let _ = write_simple(&mut stream, status, "", deadline);
         }
@@ -767,9 +785,11 @@ fn session_cookie(header: &str) -> Option<&str> {
     })
 }
 
+/// Serves `request` from `peer`, which reached the server at the local
+/// address beside it.
 fn route(
     stream: &mut TcpStream,
-    peer: IpAddr,
+    (peer, local): (IpAddr, Option<IpAddr>),
     shared: &Shared,
     request: &Request,
     deadline: Instant,
@@ -793,9 +813,10 @@ fn route(
                 let _ = write_simple(stream, (400, "Bad Request"), "", deadline);
                 return;
             };
-            let opened = shared
-                .lock()
-                .open(peer, pin, request.cookie.as_deref(), Instant::now());
+            let opened =
+                shared
+                    .lock()
+                    .open_at(peer, local, pin, request.cookie.as_deref(), Instant::now());
             match opened {
                 Ok(token) => {
                     let cookie = format!(
@@ -1348,6 +1369,52 @@ mod tests {
             "held for {elapsed:?}"
         );
         server.shutdown().unwrap();
+    }
+
+    /// Every venue host shares the server's own `/64` (SLAAC) and
+    /// `fe80::/64`: an on-link IPv6 peer's wrong PINs lock out only that
+    /// peer, while a remote `/64` stays one allowance.
+    #[test]
+    fn on_link_ipv6_peers_are_throttled_on_their_own() {
+        let now = Instant::now();
+        let mut state = AccessState {
+            access: Some(LiveLanAccess::new(Some("4321"), 8)),
+            ..AccessState::default()
+        };
+        let lan = |host: u16| IpAddr::from([0x2001, 0xdb8, 0, 7, 0, 0, 0, host]);
+        let local = Some(lan(1));
+        for _ in 0..MAX_PIN_FAILURES {
+            let _ = state.open_at(lan(66), local, "0000", None, now);
+        }
+        assert_eq!(
+            state.open_at(lan(66), local, "4321", None, now),
+            Err(Refusal::RateLimited(BASE_LOCKOUT.as_secs()))
+        );
+        assert!(state.open_at(lan(67), local, "4321", None, now).is_ok());
+
+        let link_local = |host: u16| IpAddr::from([0xfe80, 0, 0, 0, 0, 0, 0, host]);
+        for _ in 0..MAX_PIN_FAILURES {
+            let _ = state.open_at(link_local(5), local, "0000", None, now);
+        }
+        assert!(matches!(
+            state.open_at(link_local(5), local, "4321", None, now),
+            Err(Refusal::RateLimited(_))
+        ));
+        assert!(
+            state
+                .open_at(link_local(6), local, "4321", None, now)
+                .is_ok()
+        );
+
+        // A remote network's hosts still share one allowance.
+        let remote = |host: u16| IpAddr::from([0x2001, 0xdb8, 0, 9, 0, 0, 0, host]);
+        for host in 1..=u16::from(MAX_PIN_FAILURES) {
+            let _ = state.open_at(remote(host), local, "0000", None, now);
+        }
+        assert!(matches!(
+            state.open_at(remote(999), local, "4321", None, now),
+            Err(Refusal::RateLimited(_))
+        ));
     }
 
     /// Wrong PINs from one IPv6 `/64` share one allowance, however many

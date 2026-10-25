@@ -1122,6 +1122,96 @@ pub enum Command {
     RemoteDisplayInventory {
         address: SocketAddr,
     },
+    /// Prints what a project records for instant replay (OR-012, Protocol 2.106).
+    Replay {
+        path: PathBuf,
+    },
+    /// Prints a daemon's replay recording, events, and Replay inputs
+    /// (Protocol 2.106).
+    RemoteReplay {
+        address: SocketAddr,
+    },
+    /// Edits what is recorded for replay; absent options keep their value
+    /// (Protocol 2.106).
+    ReplaySet {
+        path: PathBuf,
+        edit: ReplayEdit,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Edits what a daemon records for replay (Protocol 2.106).
+    RemoteReplaySet {
+        address: SocketAddr,
+        edit: ReplayEdit,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Sends one live replay command: a mark, a capture, an event edit, or
+    /// a Replay input's transport (Protocol 2.106).
+    RemoteReplayDo {
+        address: SocketAddr,
+        operation: fm_protocol::ReplayOperation,
+        key: Option<String>,
+    },
+    /// Prints a project's stored highlight reels (OR-013, Protocol 2.107).
+    Reel {
+        path: PathBuf,
+    },
+    /// Prints a daemon's highlight reels and export jobs (Protocol 2.107).
+    RemoteReel {
+        address: SocketAddr,
+    },
+    /// Replaces or creates a highlight reel (Protocol 2.107).
+    ReelSet {
+        path: PathBuf,
+        spec: Box<fm_protocol::ReelSpec>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Replaces or creates a daemon's highlight reel (Protocol 2.107).
+    RemoteReelSet {
+        address: SocketAddr,
+        spec: Box<fm_protocol::ReelSpec>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Deletes a highlight reel (Protocol 2.107).
+    ReelDelete {
+        path: PathBuf,
+        id: u64,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Deletes a daemon's highlight reel (Protocol 2.107).
+    RemoteReelDelete {
+        address: SocketAddr,
+        id: u64,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Starts a daemon's reel export (Protocol 2.107).
+    RemoteReelExport {
+        address: SocketAddr,
+        job: u64,
+        reel: u64,
+        destination: String,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Cancels a daemon's reel export (Protocol 2.107).
+    RemoteReelCancel {
+        address: SocketAddr,
+        job: u64,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Forgets a daemon's terminal reel export (Protocol 2.107).
+    RemoteReelForget {
+        address: SocketAddr,
+        job: u64,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     /// Prints the `LiveLAN` viewer stream's settings (OR-017).
     LiveLan {
         path: PathBuf,
@@ -1829,6 +1919,16 @@ pub enum ArgsError {
     InvalidDisplayOutput(String),
     /// A `LiveLAN` PIN is not 4 to 12 digits; the value is never echoed.
     InvalidLiveLanPin,
+    /// Replay settings are unusable (OR-012).
+    InvalidReplay(fm_protocol::ReplaySettingsError),
+    /// A highlight reel is unusable (OR-013).
+    InvalidReel(fm_protocol::ReelSpecError),
+    /// A `--clips` record is not `<event>/<angle>/<in>/<out>/<speed>`.
+    InvalidReelClip(String),
+    /// A reel export destination is not an absolute, bounded path.
+    InvalidReelDestination,
+    /// One option is given more than once.
+    DuplicateOption(&'static str),
     /// A network stream URL or setting is unusable (IN-015). Never names
     /// the URL, which may carry credentials.
     InvalidNetworkStream(NetworkStreamError),
@@ -1843,6 +1943,7 @@ pub enum ArgsError {
 }
 
 impl core::fmt::Display for ArgsError {
+    #[allow(clippy::too_many_lines)] // one arm per argument error
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::MissingCommand => formatter.write_str("a command is required"),
@@ -1873,6 +1974,21 @@ impl core::fmt::Display for ArgsError {
                 fm_types::live_lan::MIN_LIVE_LAN_PIN_DIGITS,
                 fm_types::live_lan::MAX_LIVE_LAN_PIN_DIGITS
             ),
+            Self::InvalidReplay(error) => write!(formatter, "invalid replay settings: {error}"),
+            Self::InvalidReel(error) => write!(formatter, "invalid reel: {error}"),
+            Self::InvalidReelClip(value) => write!(
+                formatter,
+                "invalid reel clip `{value}`; expected \
+                 <event>/<angle>/<trim-in>/<trim-out>/<speed>"
+            ),
+            Self::InvalidReelDestination => write!(
+                formatter,
+                "a reel export destination must be an absolute path of at most {} bytes",
+                fm_protocol::MAX_REEL_PATH_BYTES
+            ),
+            Self::DuplicateOption(option) => {
+                write!(formatter, "{option} is given more than once")
+            }
             Self::InvalidDisplayOutput(error) => {
                 write!(formatter, "invalid display-output spec: {error}")
             }
@@ -2221,6 +2337,13 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         live @ ("live-lan" | "remote-live-lan" | "live-lan-set" | "remote-live-lan-set") => {
             parse_live_lan(live, arguments)
         }
+        replay @ ("replay" | "remote-replay" | "replay-set" | "remote-replay-set") => {
+            parse_replay(replay, arguments)
+        }
+        "remote-replay-do" => parse_remote_replay_do(arguments),
+        reel @ ("reel" | "reel-set" | "reel-delete" | "remote-reel" | "remote-reel-set"
+        | "remote-reel-delete" | "remote-reel-export" | "remote-reel-cancel"
+        | "remote-reel-forget") => parse_reel(reel, arguments),
         "remote-audio-strip" => parse_remote_audio_strip(arguments),
         "remote-rename" => parse_remote_rename(arguments),
         "remote-input-reorder" => parse_reorder(arguments, true),
@@ -5533,6 +5656,618 @@ fn parse_display_output(
         }
         _ => return Err(ArgsError::UnknownCommand(command.to_owned())),
     })
+}
+
+/// A `replay-set` edit (OR-012): each `None` keeps the current value.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ReplayEdit {
+    /// The recorded inputs, in angle order (`--sources 3,1`, or `--sources
+    /// none`).
+    pub sources: Option<Vec<u128>>,
+    pub retention_seconds: Option<u32>,
+    /// `Some(None)` lets the server choose (`--default-root`).
+    #[allow(clippy::option_option)] // keep, the server's default, or a root
+    pub storage_root: Option<Option<String>>,
+}
+
+/// The inputs `--sources` names, in angle order (OR-012): distinct, nonzero,
+/// and at most [`fm_protocol::MAX_REPLAY_RECORD_SOURCES`].
+fn replay_sources(value: &str) -> Result<Vec<u128>, ArgsError> {
+    if value == "none" {
+        return Ok(Vec::new());
+    }
+    let mut sources: Vec<u128> = Vec::new();
+    for input in value.split(',') {
+        let source: u128 = number(input, "replay source")?;
+        if source == 0 {
+            return Err(ArgsError::InvalidChoice {
+                field: "replay source",
+                value: source.to_string(),
+            });
+        }
+        if sources.contains(&source) {
+            let input = fm_types::InputId::new(
+                core::num::NonZeroU128::new(source).expect("a replay source is nonzero"),
+            );
+            return Err(ArgsError::InvalidReplay(
+                fm_protocol::ReplaySettingsError::DuplicateSource(input),
+            ));
+        }
+        sources.push(source);
+    }
+    if sources.len() > fm_protocol::MAX_REPLAY_RECORD_SOURCES {
+        return Err(ArgsError::InvalidReplay(
+            fm_protocol::ReplaySettingsError::TooManySources,
+        ));
+    }
+    Ok(sources)
+}
+
+/// The `--retention` window in seconds (OR-012), within the documented
+/// [`fm_protocol::MIN_REPLAY_RETENTION_SECONDS`] through
+/// [`fm_protocol::MAX_REPLAY_RETENTION_SECONDS`].
+fn replay_retention(value: &str) -> Result<u32, ArgsError> {
+    let seconds = number::<u16>(value, "retention seconds")?;
+    let minimum = u16::try_from(fm_protocol::MIN_REPLAY_RETENTION_SECONDS)
+        .expect("the replay retention minimum fits u16");
+    let maximum = u16::try_from(fm_protocol::MAX_REPLAY_RETENTION_SECONDS)
+        .expect("the replay retention maximum fits u16");
+    if !(minimum..=maximum).contains(&seconds) {
+        return Err(ArgsError::OutOfRange {
+            field: "replay retention seconds",
+            minimum,
+            maximum,
+            value: seconds,
+        });
+    }
+    Ok(u32::from(seconds))
+}
+
+/// The `--root` storage directory (OR-012): absolute and within the
+/// documented length.
+fn replay_root(value: String) -> Result<String, ArgsError> {
+    if !fm_protocol::replay_storage_root_is_valid(&value) {
+        return Err(ArgsError::InvalidReplay(
+            fm_protocol::ReplaySettingsError::StorageRoot,
+        ));
+    }
+    Ok(value)
+}
+
+/// `replay`, `replay-set`, and their `remote-` forms (OR-012).
+fn parse_replay(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let target = required(
+        &mut arguments,
+        if remote { "address" } else { "project path" },
+    )?;
+    if !command.ends_with("-set") {
+        reject_extra(&mut arguments)?;
+        return Ok(if remote {
+            Command::RemoteReplay {
+                address: socket_address(&target)?,
+            }
+        } else {
+            Command::Replay {
+                path: PathBuf::from(target),
+            }
+        });
+    }
+    let mut edit = ReplayEdit::default();
+    let mut key = None;
+    let mut expected_revision = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--sources" => {
+                let value = required(&mut arguments, "replay sources")?;
+                edit.sources = Some(replay_sources(&value)?);
+            }
+            "--retention" => {
+                edit.retention_seconds = Some(replay_retention(&required(
+                    &mut arguments,
+                    "retention seconds",
+                )?)?);
+            }
+            "--root" => {
+                if edit.storage_root == Some(None) {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--root",
+                        conflicts: "--default-root",
+                    });
+                }
+                edit.storage_root = Some(Some(replay_root(required(
+                    &mut arguments,
+                    "storage root",
+                )?)?));
+            }
+            "--default-root" => {
+                if matches!(edit.storage_root, Some(Some(_))) {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--default-root",
+                        conflicts: "--root",
+                    });
+                }
+                edit.storage_root = Some(None);
+            }
+            "--key" => {
+                let value = required(&mut arguments, "idempotency key")?;
+                if value.trim().is_empty() {
+                    return Err(ArgsError::BlankValue("idempotency key"));
+                }
+                key = Some(value);
+            }
+            "--expect" => {
+                expected_revision = Some(number(
+                    &required(&mut arguments, "expected revision")?,
+                    "expected revision",
+                )?);
+            }
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    Ok(if remote {
+        Command::RemoteReplaySet {
+            address: socket_address(&target)?,
+            edit,
+            key,
+            expected_revision,
+        }
+    } else {
+        Command::ReplaySet {
+            path: PathBuf::from(target),
+            edit,
+            key,
+            expected_revision,
+        }
+    })
+}
+
+fn replay_input(value: &str) -> Result<fm_protocol::WireInputId, ArgsError> {
+    let value: u128 = number(value, "input")?;
+    core::num::NonZeroU128::new(value)
+        .map(fm_protocol::WireInputId::new)
+        .ok_or_else(|| ArgsError::InvalidChoice {
+            field: "input",
+            value: value.to_string(),
+        })
+}
+
+/// `remote-replay-do <address> <operation> ...` (OR-012):
+/// `mark-in`, `mark-out`, `capture [--name NAME]`, `last 5|10|20`,
+/// `rename EVENT NAME`, `delete EVENT`, `cue INPUT EVENT [--angle INPUT]`,
+/// `angle INPUT ANGLE`, `play INPUT [25|50|75|100]`, `pause INPUT`, and
+/// `cue-in INPUT`, each with an optional `--key`.
+fn parse_remote_replay_do(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    use fm_protocol::{ReplayOperation, ReplaySpeed};
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let verb = required(&mut arguments, "replay operation")?;
+    let mut positional = Vec::new();
+    let mut name = None;
+    let mut angle = None;
+    let mut key = None;
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--name" => name = Some(required(&mut arguments, "event name")?),
+            "--angle" => angle = Some(replay_input(&required(&mut arguments, "angle")?)?),
+            "--key" => {
+                let value = required(&mut arguments, "idempotency key")?;
+                if value.trim().is_empty() {
+                    return Err(ArgsError::BlankValue("idempotency key"));
+                }
+                key = Some(value);
+            }
+            option if option.starts_with("--") => {
+                return Err(ArgsError::UnknownOption(argument));
+            }
+            _ => positional.push(argument),
+        }
+    }
+    let wrong = || ArgsError::InvalidChoice {
+        field: "replay operation",
+        value: verb.clone(),
+    };
+    let event = |value: &String| number::<u32>(value, "event");
+    let operation = match (verb.as_str(), positional.as_slice()) {
+        ("mark-in", []) => ReplayOperation::MarkIn,
+        ("mark-out", []) => ReplayOperation::MarkOut,
+        ("capture", []) => ReplayOperation::CaptureMarks { name: name.take() },
+        ("last", [seconds]) => {
+            let seconds: u8 = number(seconds, "seconds")?;
+            if !fm_protocol::REPLAY_LAST_SECONDS.contains(&seconds) {
+                return Err(ArgsError::InvalidChoice {
+                    field: "seconds",
+                    value: seconds.to_string(),
+                });
+            }
+            ReplayOperation::CaptureLast { seconds }
+        }
+        ("rename", [id, new_name]) => ReplayOperation::RenameEvent {
+            event: event(id)?,
+            name: new_name.clone(),
+        },
+        ("delete", [id]) => ReplayOperation::DeleteEvent { event: event(id)? },
+        ("cue", [input, id]) => ReplayOperation::Cue {
+            input: replay_input(input)?,
+            event: event(id)?,
+            angle: angle.take(),
+        },
+        ("angle", [input, shown]) => ReplayOperation::Angle {
+            input: replay_input(input)?,
+            angle: replay_input(shown)?,
+        },
+        ("play", [input]) => ReplayOperation::Play {
+            input: replay_input(input)?,
+            speed: ReplaySpeed::Full,
+        },
+        ("play", [input, percent]) => ReplayOperation::Play {
+            input: replay_input(input)?,
+            speed: ReplaySpeed::from_percent(number(percent, "speed")?).ok_or_else(|| {
+                ArgsError::InvalidChoice {
+                    field: "speed",
+                    value: percent.clone(),
+                }
+            })?,
+        },
+        ("pause", [input]) => ReplayOperation::Pause {
+            input: replay_input(input)?,
+        },
+        ("cue-in", [input]) => ReplayOperation::CueIn {
+            input: replay_input(input)?,
+        },
+        _ => return Err(wrong()),
+    };
+    if name.is_some() || angle.is_some() {
+        return Err(wrong());
+    }
+    Ok(Command::RemoteReplayDo {
+        address,
+        operation,
+        key,
+    })
+}
+
+/// A nonzero reel or export-job id (OR-013).
+fn reel_id(value: &str) -> Result<u64, ArgsError> {
+    let id: u64 = number(value, "reel id")?;
+    if id == 0 {
+        Err(ArgsError::InvalidChoice {
+            field: "reel id",
+            value: value.to_owned(),
+        })
+    } else {
+        Ok(id)
+    }
+}
+
+/// A nonzero reel export job id (OR-013).
+fn reel_job(value: &str) -> Result<u64, ArgsError> {
+    let job: u64 = number(value, "reel export job")?;
+    if job == 0 {
+        Err(ArgsError::InvalidChoice {
+            field: "reel export job",
+            value: value.to_owned(),
+        })
+    } else {
+        Ok(job)
+    }
+}
+
+/// A reel name (OR-013): non-blank, at most
+/// [`fm_protocol::MAX_REEL_NAME_BYTES`] bytes, and free of control
+/// characters.
+fn reel_name(value: String) -> Result<String, ArgsError> {
+    if fm_protocol::reel_name_is_valid(&value) {
+        Ok(value)
+    } else {
+        Err(ArgsError::InvalidReel(fm_protocol::ReelSpecError::Name))
+    }
+}
+
+/// A reel export destination (OR-013): an absolute path of at most
+/// [`fm_protocol::MAX_REEL_PATH_BYTES`] bytes.
+fn reel_destination(value: String) -> Result<String, ArgsError> {
+    if fm_protocol::reel_export_path_is_valid(&value) {
+        Ok(value)
+    } else {
+        Err(ArgsError::InvalidReelDestination)
+    }
+}
+
+/// The `--clips` list (OR-013): 1 to [`fm_protocol::MAX_REEL_CLIPS`]
+/// `<event>/<angle>/<trim-in>/<trim-out>/<speed>` records, comma separated.
+/// Each event and angle is nonzero, each trim is at most
+/// [`fm_protocol::MAX_REEL_TRIM_FRAMES`], and each speed is 25, 50, 75, or
+/// 100 percent.
+fn reel_clips(value: &str) -> Result<Vec<fm_protocol::ReelClip>, ArgsError> {
+    let mut clips = Vec::new();
+    for record in value.split(',') {
+        let fields: Vec<&str> = record.split('/').collect();
+        let [event, angle, trim_in, trim_out, speed] = fields.as_slice() else {
+            return Err(ArgsError::InvalidReelClip(record.to_owned()));
+        };
+        let event: u32 = number(event, "reel clip event")?;
+        if event == 0 {
+            return Err(ArgsError::InvalidChoice {
+                field: "reel clip event",
+                value: event.to_string(),
+            });
+        }
+        let angle_value: u128 = number(angle, "reel clip angle")?;
+        let angle = core::num::NonZeroU128::new(angle_value)
+            .map(fm_types::InputId::new)
+            .ok_or_else(|| ArgsError::InvalidChoice {
+                field: "reel clip angle",
+                value: angle_value.to_string(),
+            })?;
+        let trim_in: u32 = number(trim_in, "reel clip trim in")?;
+        let trim_out: u32 = number(trim_out, "reel clip trim out")?;
+        if trim_in > fm_protocol::MAX_REEL_TRIM_FRAMES
+            || trim_out > fm_protocol::MAX_REEL_TRIM_FRAMES
+        {
+            return Err(ArgsError::InvalidReel(fm_protocol::ReelSpecError::Trim));
+        }
+        let speed: u8 = number(speed, "reel clip speed")?;
+        if fm_protocol::ReplaySpeed::from_percent(speed).is_none() {
+            return Err(ArgsError::InvalidReel(fm_protocol::ReelSpecError::Speed(
+                speed,
+            )));
+        }
+        clips.push(fm_protocol::ReelClip {
+            event,
+            angle,
+            trim_in_frames: trim_in,
+            trim_out_frames: trim_out,
+            speed_percent: speed,
+        });
+    }
+    if clips.len() > fm_protocol::MAX_REEL_CLIPS {
+        return Err(ArgsError::InvalidReel(
+            fm_protocol::ReelSpecError::TooManyClips,
+        ));
+    }
+    Ok(clips)
+}
+
+/// `reel`, `reel-set`, `reel-delete`, and their `remote-` forms, plus the
+/// live export controls (OR-013, Protocol 2.107).
+#[allow(clippy::too_many_lines)] // one arm per command shape
+fn parse_reel(
+    command: &str,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let remote = command.starts_with("remote-");
+    let target = required(
+        &mut arguments,
+        if remote { "address" } else { "project path" },
+    )?;
+    let address = || socket_address(&target);
+    let path = || PathBuf::from(&target);
+    match command {
+        "reel" => {
+            reject_extra(&mut arguments)?;
+            Ok(Command::Reel { path: path() })
+        }
+        "remote-reel" => {
+            reject_extra(&mut arguments)?;
+            Ok(Command::RemoteReel {
+                address: address()?,
+            })
+        }
+        "reel-set" | "remote-reel-set" => {
+            let mut id = None;
+            let mut name = None;
+            let mut clips = None;
+            let mut key = None;
+            let mut expected_revision = None;
+            while let Some(option) = arguments.next() {
+                match option.as_str() {
+                    "--id" => {
+                        if id.is_some() {
+                            return Err(ArgsError::DuplicateOption("--id"));
+                        }
+                        id = Some(reel_id(&required(&mut arguments, "reel id")?)?);
+                    }
+                    "--name" => {
+                        if name.is_some() {
+                            return Err(ArgsError::DuplicateOption("--name"));
+                        }
+                        name = Some(reel_name(required(&mut arguments, "reel name")?)?);
+                    }
+                    "--clips" => {
+                        if clips.is_some() {
+                            return Err(ArgsError::DuplicateOption("--clips"));
+                        }
+                        clips = Some(reel_clips(&required(&mut arguments, "reel clips")?)?);
+                    }
+                    "--key" => {
+                        let value = required(&mut arguments, "idempotency key")?;
+                        if value.trim().is_empty() {
+                            return Err(ArgsError::BlankValue("idempotency key"));
+                        }
+                        key = Some(value);
+                    }
+                    "--expect" => {
+                        expected_revision = Some(number(
+                            &required(&mut arguments, "expected revision")?,
+                            "expected revision",
+                        )?);
+                    }
+                    _ => return Err(ArgsError::UnknownOption(option)),
+                }
+            }
+            let spec = Box::new(fm_protocol::ReelSpec {
+                id: id.ok_or(ArgsError::MissingValue("reel id"))?,
+                name: name.ok_or(ArgsError::MissingValue("reel name"))?,
+                clips: clips.ok_or(ArgsError::MissingValue("reel clips"))?,
+            });
+            Ok(if remote {
+                Command::RemoteReelSet {
+                    address: address()?,
+                    spec,
+                    key,
+                    expected_revision,
+                }
+            } else {
+                Command::ReelSet {
+                    path: path(),
+                    spec,
+                    key,
+                    expected_revision,
+                }
+            })
+        }
+        "reel-delete" | "remote-reel-delete" => {
+            let mut id = None;
+            let mut key = None;
+            let mut expected_revision = None;
+            while let Some(option) = arguments.next() {
+                match option.as_str() {
+                    "--id" => {
+                        if id.is_some() {
+                            return Err(ArgsError::DuplicateOption("--id"));
+                        }
+                        id = Some(reel_id(&required(&mut arguments, "reel id")?)?);
+                    }
+                    "--key" => {
+                        let value = required(&mut arguments, "idempotency key")?;
+                        if value.trim().is_empty() {
+                            return Err(ArgsError::BlankValue("idempotency key"));
+                        }
+                        key = Some(value);
+                    }
+                    "--expect" => {
+                        expected_revision = Some(number(
+                            &required(&mut arguments, "expected revision")?,
+                            "expected revision",
+                        )?);
+                    }
+                    _ => return Err(ArgsError::UnknownOption(option)),
+                }
+            }
+            let id = id.ok_or(ArgsError::MissingValue("reel id"))?;
+            Ok(if remote {
+                Command::RemoteReelDelete {
+                    address: address()?,
+                    id,
+                    key,
+                    expected_revision,
+                }
+            } else {
+                Command::ReelDelete {
+                    path: path(),
+                    id,
+                    key,
+                    expected_revision,
+                }
+            })
+        }
+        "remote-reel-export" => {
+            let mut job = None;
+            let mut reel = None;
+            let mut destination = None;
+            let mut key = None;
+            let mut expected_revision = None;
+            while let Some(option) = arguments.next() {
+                match option.as_str() {
+                    "--job" => {
+                        if job.is_some() {
+                            return Err(ArgsError::DuplicateOption("--job"));
+                        }
+                        job = Some(reel_job(&required(&mut arguments, "reel export job")?)?);
+                    }
+                    "--reel" => {
+                        if reel.is_some() {
+                            return Err(ArgsError::DuplicateOption("--reel"));
+                        }
+                        reel = Some(reel_id(&required(&mut arguments, "reel id")?)?);
+                    }
+                    "--destination" => {
+                        if destination.is_some() {
+                            return Err(ArgsError::DuplicateOption("--destination"));
+                        }
+                        destination = Some(reel_destination(required(
+                            &mut arguments,
+                            "reel export destination",
+                        )?)?);
+                    }
+                    "--key" => {
+                        let value = required(&mut arguments, "idempotency key")?;
+                        if value.trim().is_empty() {
+                            return Err(ArgsError::BlankValue("idempotency key"));
+                        }
+                        key = Some(value);
+                    }
+                    "--expect" => {
+                        expected_revision = Some(number(
+                            &required(&mut arguments, "expected revision")?,
+                            "expected revision",
+                        )?);
+                    }
+                    _ => return Err(ArgsError::UnknownOption(option)),
+                }
+            }
+            Ok(Command::RemoteReelExport {
+                address: address()?,
+                job: job.ok_or(ArgsError::MissingValue("reel export job"))?,
+                reel: reel.ok_or(ArgsError::MissingValue("reel id"))?,
+                destination: destination
+                    .ok_or(ArgsError::MissingValue("reel export destination"))?,
+                key,
+                expected_revision,
+            })
+        }
+        "remote-reel-cancel" | "remote-reel-forget" => {
+            let mut job = None;
+            let mut key = None;
+            let mut expected_revision = None;
+            while let Some(option) = arguments.next() {
+                match option.as_str() {
+                    "--job" => {
+                        if job.is_some() {
+                            return Err(ArgsError::DuplicateOption("--job"));
+                        }
+                        job = Some(reel_job(&required(&mut arguments, "reel export job")?)?);
+                    }
+                    "--key" => {
+                        let value = required(&mut arguments, "idempotency key")?;
+                        if value.trim().is_empty() {
+                            return Err(ArgsError::BlankValue("idempotency key"));
+                        }
+                        key = Some(value);
+                    }
+                    "--expect" => {
+                        expected_revision = Some(number(
+                            &required(&mut arguments, "expected revision")?,
+                            "expected revision",
+                        )?);
+                    }
+                    _ => return Err(ArgsError::UnknownOption(option)),
+                }
+            }
+            let job = job.ok_or(ArgsError::MissingValue("reel export job"))?;
+            Ok(if command.ends_with("-cancel") {
+                Command::RemoteReelCancel {
+                    address: address()?,
+                    job,
+                    key,
+                    expected_revision,
+                }
+            } else {
+                Command::RemoteReelForget {
+                    address: address()?,
+                    job,
+                    key,
+                    expected_revision,
+                }
+            })
+        }
+        _ => Err(ArgsError::UnknownCommand(command.to_owned())),
+    }
 }
 
 /// A `LiveLAN` edit from the command line (OR-017): every absent field keeps
@@ -10270,5 +11005,414 @@ mod tests {
             .is_err()
         );
         assert!(parse(strings(&["remote-input-remove", "127.0.0.1:9123"])).is_err());
+    }
+
+    /// OR-012: replay settings edits and live replay operations parse
+    /// into their typed commands; zero, repeated, and excess sources, an
+    /// out-of-range retention, a relative root, bad speeds, last-N lengths,
+    /// and conflicting roots are refused.
+    #[test]
+    #[allow(clippy::too_many_lines)] // one case per command shape
+    fn replay_commands_parse_into_typed_operations() {
+        use fm_protocol::{ReplayOperation, ReplaySpeed};
+        let input = |value: u128| {
+            fm_protocol::WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
+        };
+        assert_eq!(
+            parse(strings(&[
+                "replay-set",
+                "show.freemix",
+                "--sources",
+                "3,1",
+                "--retention",
+                "30",
+                "--default-root",
+            ]))
+            .unwrap(),
+            Command::ReplaySet {
+                path: PathBuf::from("show.freemix"),
+                edit: ReplayEdit {
+                    sources: Some(vec![3, 1]),
+                    retention_seconds: Some(30),
+                    storage_root: Some(None),
+                },
+                key: None,
+                expected_revision: None,
+            }
+        );
+        assert!(
+            parse(strings(&[
+                "replay-set",
+                "show.freemix",
+                "--root",
+                "/r",
+                "--default-root"
+            ]))
+            .is_err()
+        );
+        let set = |words: &[&str]| {
+            let mut all = vec!["replay-set", "show.freemix"];
+            all.extend_from_slice(words);
+            parse(strings(&all))
+        };
+        assert_eq!(
+            set(&["--sources", "0"]),
+            Err(ArgsError::InvalidChoice {
+                field: "replay source",
+                value: "0".to_owned(),
+            })
+        );
+        let two = fm_types::InputId::new(core::num::NonZeroU128::new(2).unwrap());
+        assert_eq!(
+            set(&["--sources", "2,2"]),
+            Err(ArgsError::InvalidReplay(
+                fm_protocol::ReplaySettingsError::DuplicateSource(two)
+            ))
+        );
+        assert_eq!(
+            set(&["--sources", "1,2,3,4,5"]),
+            Err(ArgsError::InvalidReplay(
+                fm_protocol::ReplaySettingsError::TooManySources
+            ))
+        );
+        assert_eq!(
+            set(&["--retention", "5"]),
+            Err(ArgsError::OutOfRange {
+                field: "replay retention seconds",
+                minimum: 10,
+                maximum: 3_600,
+                value: 5,
+            })
+        );
+        assert_eq!(
+            set(&["--retention", "3601"]),
+            Err(ArgsError::OutOfRange {
+                field: "replay retention seconds",
+                minimum: 10,
+                maximum: 3_600,
+                value: 3_601,
+            })
+        );
+        assert!(set(&["--retention", "10"]).is_ok());
+        assert!(set(&["--retention", "3600"]).is_ok());
+        assert_eq!(
+            set(&["--root", "relative/dir"]),
+            Err(ArgsError::InvalidReplay(
+                fm_protocol::ReplaySettingsError::StorageRoot
+            ))
+        );
+        assert!(set(&["--root", "/absolute/dir"]).is_ok());
+        assert!(set(&["--sources", "none"]).is_ok());
+        let remote = |words: &[&str]| {
+            let mut all = vec!["remote-replay-do", "127.0.0.1:9123"];
+            all.extend_from_slice(words);
+            parse(strings(&all)).map(|command| match command {
+                Command::RemoteReplayDo { operation, .. } => operation,
+                other => panic!("{other:?}"),
+            })
+        };
+        assert_eq!(
+            remote(&["last", "10"]),
+            Ok(ReplayOperation::CaptureLast { seconds: 10 })
+        );
+        assert_eq!(
+            remote(&["play", "7", "50"]),
+            Ok(ReplayOperation::Play {
+                input: input(7),
+                speed: ReplaySpeed::Half,
+            })
+        );
+        assert_eq!(
+            remote(&["cue", "7", "2", "--angle", "3"]),
+            Ok(ReplayOperation::Cue {
+                input: input(7),
+                event: 2,
+                angle: Some(input(3)),
+            })
+        );
+        assert!(remote(&["last", "7"]).is_err());
+        assert!(remote(&["play", "7", "60"]).is_err());
+        assert!(remote(&["mark-in", "--name", "x"]).is_err());
+    }
+
+    /// OR-013 / Protocol 2.107: reel commands parse into typed specs and
+    /// export controls; bad ids, names, clips, speeds, trims, and clip
+    /// counts are refused before a project or daemon is touched.
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn reel_commands_parse_into_typed_specs_and_refuse_bad_input() {
+        use core::num::NonZeroU128;
+
+        let address: SocketAddr = "127.0.0.1:9123".parse().unwrap();
+        let angle = |value: u128| fm_types::InputId::new(NonZeroU128::new(value).unwrap());
+        let clip = |event, angle, trim_in, trim_out, speed| fm_protocol::ReelClip {
+            event,
+            angle,
+            trim_in_frames: trim_in,
+            trim_out_frames: trim_out,
+            speed_percent: speed,
+        };
+        let spec = Box::new(fm_protocol::ReelSpec {
+            id: 3,
+            name: "Highlights".into(),
+            clips: vec![clip(7, angle(1), 0, 0, 100), clip(8, angle(2), 5, 6, 50)],
+        });
+        assert_eq!(
+            parse(strings(&["reel", "show.freemix"])),
+            Ok(Command::Reel {
+                path: PathBuf::from("show.freemix"),
+            })
+        );
+        assert_eq!(
+            parse(strings(&["remote-reel", "127.0.0.1:9123"])),
+            Ok(Command::RemoteReel { address })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "reel-set",
+                "show.freemix",
+                "--id",
+                "3",
+                "--name",
+                "Highlights",
+                "--clips",
+                "7/1/0/0/100,8/2/5/6/50",
+                "--key",
+                "reel-key",
+                "--expect",
+                "4",
+            ])),
+            Ok(Command::ReelSet {
+                path: PathBuf::from("show.freemix"),
+                spec: spec.clone(),
+                key: Some("reel-key".into()),
+                expected_revision: Some(4),
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-reel-set",
+                "127.0.0.1:9123",
+                "--id",
+                "3",
+                "--name",
+                "Highlights",
+                "--clips",
+                "7/1/0/0/100,8/2/5/6/50",
+            ])),
+            Ok(Command::RemoteReelSet {
+                address,
+                spec: spec.clone(),
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "reel-delete",
+                "show.freemix",
+                "--id",
+                "3",
+                "--key",
+                "reel-delete",
+            ])),
+            Ok(Command::ReelDelete {
+                path: PathBuf::from("show.freemix"),
+                id: 3,
+                key: Some("reel-delete".into()),
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-reel-delete",
+                "127.0.0.1:9123",
+                "--id",
+                "3",
+                "--expect",
+                "7",
+            ])),
+            Ok(Command::RemoteReelDelete {
+                address,
+                id: 3,
+                key: None,
+                expected_revision: Some(7),
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-reel-export",
+                "127.0.0.1:9123",
+                "--job",
+                "4",
+                "--reel",
+                "3",
+                "--destination",
+                "/srv/reels/highlights.mp4",
+                "--key",
+                "reel-export",
+            ])),
+            Ok(Command::RemoteReelExport {
+                address,
+                job: 4,
+                reel: 3,
+                destination: "/srv/reels/highlights.mp4".into(),
+                key: Some("reel-export".into()),
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-reel-cancel",
+                "127.0.0.1:9123",
+                "--job",
+                "4",
+            ])),
+            Ok(Command::RemoteReelCancel {
+                address,
+                job: 4,
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-reel-forget",
+                "127.0.0.1:9123",
+                "--job",
+                "4",
+            ])),
+            Ok(Command::RemoteReelForget {
+                address,
+                job: 4,
+                key: None,
+                expected_revision: None,
+            })
+        );
+
+        let set = |words: &[&str]| {
+            let mut all = vec!["reel-set", "show.freemix", "--id", "1", "--name", "Reel"];
+            all.extend_from_slice(words);
+            parse(strings(&all))
+        };
+        let bare = |words: &[&str]| {
+            let mut all = vec!["reel-set", "show.freemix"];
+            all.extend_from_slice(words);
+            parse(strings(&all))
+        };
+        assert_eq!(
+            set(&["--clips", "1/1/0/0/60"]),
+            Err(ArgsError::InvalidReel(fm_protocol::ReelSpecError::Speed(
+                60
+            )))
+        );
+        assert_eq!(
+            set(&["--clips", "1/0/0/0/100"]),
+            Err(ArgsError::InvalidChoice {
+                field: "reel clip angle",
+                value: "0".into(),
+            })
+        );
+        assert_eq!(
+            set(&["--clips", "1/1/216001/0/100"]),
+            Err(ArgsError::InvalidReel(fm_protocol::ReelSpecError::Trim))
+        );
+        assert_eq!(
+            set(&["--clips", "1/1/0/0"]),
+            Err(ArgsError::InvalidReelClip("1/1/0/0".into()))
+        );
+        assert_eq!(
+            set(&["--clips", "0/1/0/0/100"]),
+            Err(ArgsError::InvalidChoice {
+                field: "reel clip event",
+                value: "0".into(),
+            })
+        );
+        let many = (1..=65)
+            .map(|_| "1/1/0/0/100")
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            set(&["--clips", many.as_str()]),
+            Err(ArgsError::InvalidReel(
+                fm_protocol::ReelSpecError::TooManyClips
+            ))
+        );
+        assert_eq!(
+            bare(&["--id", "1", "--name", " ", "--clips", "1/1/0/0/100"]),
+            Err(ArgsError::InvalidReel(fm_protocol::ReelSpecError::Name))
+        );
+        assert_eq!(
+            bare(&["--id", "0", "--name", "Reel", "--clips", "1/1/0/0/100"]),
+            Err(ArgsError::InvalidChoice {
+                field: "reel id",
+                value: "0".into(),
+            })
+        );
+        assert_eq!(
+            bare(&[
+                "--id",
+                "1",
+                "--id",
+                "2",
+                "--name",
+                "Reel",
+                "--clips",
+                "1/1/0/0/100",
+            ]),
+            Err(ArgsError::DuplicateOption("--id"))
+        );
+        assert_eq!(
+            bare(&["--name", "Reel", "--clips", "1/1/0/0/100"]),
+            Err(ArgsError::MissingValue("reel id"))
+        );
+        assert_eq!(
+            bare(&["--id", "1", "--clips", "1/1/0/0/100"]),
+            Err(ArgsError::MissingValue("reel name"))
+        );
+        assert_eq!(
+            bare(&["--id", "1", "--name", "Reel"]),
+            Err(ArgsError::MissingValue("reel clips"))
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-reel-export",
+                "127.0.0.1:9123",
+                "--job",
+                "4",
+                "--reel",
+                "3",
+                "--destination",
+                "relative/reel.mp4",
+            ])),
+            Err(ArgsError::InvalidReelDestination)
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-reel-export",
+                "127.0.0.1:9123",
+                "--job",
+                "4",
+                "--reel",
+                "3",
+            ])),
+            Err(ArgsError::MissingValue("reel export destination"))
+        );
+        assert_eq!(
+            parse(strings(&["reel-delete", "show.freemix"])),
+            Err(ArgsError::MissingValue("reel id"))
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-reel-cancel",
+                "127.0.0.1:9123",
+                "--job",
+                "0",
+            ])),
+            Err(ArgsError::InvalidChoice {
+                field: "reel export job",
+                value: "0".into(),
+            })
+        );
     }
 }

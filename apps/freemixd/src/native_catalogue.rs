@@ -72,6 +72,8 @@ pub(crate) enum NativeSourceKey {
     Generator(SimulatedInput),
     Media(String),
     Network,
+    /// A Replay input (OR-012): its player ingests recorded frames.
+    Replay,
     /// A system audio input (AU-011): a changed device restarts its
     /// receiver without a new source.
     SystemAudio,
@@ -102,6 +104,7 @@ impl NativeSourceKey {
             InputKind::Simulated(simulated) => Self::Generator(*simulated),
             InputKind::Media { asset_uri, .. } => Self::Media(asset_uri.clone()),
             InputKind::NetworkStream(_) => Self::Network,
+            InputKind::Replay => Self::Replay,
             InputKind::SystemAudio(_) => Self::SystemAudio,
             InputKind::ScreenCapture(_) => Self::ScreenCapture,
             InputKind::Scene {
@@ -141,6 +144,7 @@ impl NativeSourceKey {
             Self::Generator(_)
             | Self::Media(_)
             | Self::Network
+            | Self::Replay
             | Self::Document(_)
             | Self::Scene { .. }
             | Self::Image(..)
@@ -504,6 +508,7 @@ impl NativeDaemon {
                 // A document's page worker ingests its page once rendered
                 // (IN-014); a screen capture its captures (IN-011).
                 NativeSourceKey::Network
+                | NativeSourceKey::Replay
                 | NativeSourceKey::SystemAudio
                 | NativeSourceKey::Document(_)
                 | NativeSourceKey::ScreenCapture => {

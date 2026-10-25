@@ -155,12 +155,25 @@ pub(super) fn address_limit(peer: IpAddr) -> usize {
 /// otherwise get a fresh allowance from each (as the RTMP key throttle and
 /// the Live LAN PIN throttle group them).
 pub(super) fn peer_group(peer: IpAddr) -> IpAddr {
+    peer_group_at(peer, None)
+}
+
+/// [`peer_group`] for a connection that reached the gateway at `local`: an
+/// on-link IPv6 peer (link-local, or in `local`'s own `/64`) counts as its
+/// own address, since every host of the gateway's LAN shares that `/64`.
+pub(crate) fn peer_group_at(peer: IpAddr, local: Option<IpAddr>) -> IpAddr {
+    const PREFIX: u128 = u128::MAX << 64;
+    let on_link = |v6: std::net::Ipv6Addr| {
+        v6.is_unicast_link_local()
+            || local.is_some_and(|local| match local.to_canonical() {
+                IpAddr::V6(local) => local.to_bits() & PREFIX == v6.to_bits() & PREFIX,
+                IpAddr::V4(_) => false,
+            })
+    };
     match peer.to_canonical() {
         IpAddr::V4(v4) => IpAddr::V4(v4),
-        IpAddr::V6(v6) if v6.is_loopback() => IpAddr::V6(v6),
-        IpAddr::V6(v6) => IpAddr::V6(std::net::Ipv6Addr::from_bits(
-            v6.to_bits() & !u128::from(u64::MAX),
-        )),
+        IpAddr::V6(v6) if v6.is_loopback() || on_link(v6) => IpAddr::V6(v6),
+        IpAddr::V6(v6) => IpAddr::V6(std::net::Ipv6Addr::from_bits(v6.to_bits() & PREFIX)),
     }
 }
 
@@ -175,7 +188,7 @@ struct Connection {
 /// At most [`MAX_WEB_CLIENTS`] connected clients plus
 /// [`MAX_PENDING_CONNECTIONS`] connections still serving a page or
 /// completing an upgrade hold a thread, and at most `limit(peer)` of them
-/// come from one peer address or IPv6 `/64` ([`peer_group`],
+/// come from one peer address or remote IPv6 `/64` ([`peer_group_at`],
 /// [`address_limit`]); a connection beyond
 /// either bound is closed unanswered, before any handshake. The first
 /// refusal of an address at its bound is logged (`FREEMIXD_WEB_LIMIT`),
@@ -201,7 +214,8 @@ pub(super) fn listener_loop(
         }
         match listener.accept() {
             Ok((stream, address)) => {
-                let peer = peer_group(address.ip());
+                let local = stream.local_addr().ok().map(|local| local.ip());
+                let peer = peer_group_at(address.ip(), local);
                 let held = connections
                     .iter()
                     .filter(|connection| connection.peer == peer)
@@ -394,6 +408,7 @@ fn respond_within(stream: &mut Stream, response: &[u8], timeout: Duration) {
 #[allow(clippy::too_many_lines)] // one router over every gateway request
 pub(super) fn serve_connection(socket: TcpStream, gateway: &Gateway) {
     let peer = socket.peer_addr().ok().map(|address| address.ip());
+    let local = socket.local_addr().ok().map(|address| address.ip());
     // Reads and handshakes run on a non-blocking socket against deadlines,
     // so a peer that trickles bytes never holds a thread past them.
     if socket.set_nonblocking(true).is_err() {
@@ -496,7 +511,7 @@ pub(super) fn serve_connection(socket: TcpStream, gateway: &Gateway) {
                     &gateway.cancel,
                 )
                 .map_or_else(bad_request, |body| {
-                    pair(&request, &body, peer, tls, &gateway.access)
+                    pair(&request, &body, (peer, local), tls, &gateway.access)
                 }),
                 Some(_) => json_response("413 Content Too Large", r#"{"error":"bad_request"}"#, ""),
                 None => bad_request(),
@@ -589,7 +604,7 @@ fn bad_request() -> Vec<u8> {
 fn pair(
     request: &http::Request,
     body: &[u8],
-    peer: Option<IpAddr>,
+    (peer, local): (Option<IpAddr>, Option<IpAddr>),
     tls: bool,
     access: &WebAccess,
 ) -> Vec<u8> {
@@ -608,7 +623,7 @@ fn pair(
         return bad_request();
     };
     let name = http::form_field(body, "name").unwrap_or_default();
-    match access.redeem(&code, &name, peer) {
+    match access.redeem(&code, &name, peer, local) {
         Ok(device) => json_response(
             "200 OK",
             &format!(
@@ -1031,7 +1046,10 @@ mod tests {
         Gateway, MAX_CONNECTIONS_PER_ADDRESS, MAX_WEB_CLIENTS, WebAccess, WebConnection, WebEvent,
         base64url,
     };
-    use super::{address_limit, authorize_upgrade, listener_loop, peer_group, serve_connection};
+    use super::{
+        address_limit, authorize_upgrade, listener_loop, peer_group, peer_group_at,
+        serve_connection,
+    };
 
     const TOKEN: &[u8] = b"worker-test-token-0123456789abcdef";
 
@@ -1366,6 +1384,33 @@ mod tests {
             IpAddr::V6(Ipv6Addr::LOCALHOST)
         );
         assert_eq!(address_limit(host(1, 7)), MAX_CONNECTIONS_PER_ADDRESS);
+    }
+
+    /// Every LAN host shares the gateway's own `/64` (SLAAC), and every
+    /// host shares `fe80::/64`: grouped by the `/64` the whole venue
+    /// network's phones would share one host's connection bound. On-link
+    /// peers count by their own address; a remote `/64` stays grouped.
+    #[test]
+    fn on_link_ipv6_peers_count_as_themselves() {
+        use std::net::{IpAddr, Ipv6Addr};
+        let host = |last: u16, subnet: u16| {
+            IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, subnet, 0, 0, 0, last))
+        };
+        let local = Some(host(0x20, 7));
+        assert_eq!(peer_group_at(host(1, 7), local), host(1, 7));
+        assert_ne!(
+            peer_group_at(host(1, 7), local),
+            peer_group_at(host(2, 7), local)
+        );
+        let link_local = |last: u16| IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, last));
+        assert_eq!(peer_group_at(link_local(5), local), link_local(5));
+        assert_eq!(peer_group_at(link_local(5), None), link_local(5));
+        // Another network's hosts still share their /64.
+        assert_eq!(
+            peer_group_at(host(1, 8), local),
+            IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 8, 0, 0, 0, 0))
+        );
+        assert_eq!(peer_group_at(host(1, 8), local), peer_group(host(9, 8)));
     }
 
     /// A client that stops reading is dropped by its own relay without

@@ -683,6 +683,7 @@ fn append_inputs(
             InputKind::Color
             | InputKind::Device { .. }
             | InputKind::NetworkStream(_)
+            | InputKind::Replay
             | InputKind::SystemAudio(_)
             | InputKind::ScreenCapture(_)
             | InputKind::Simulated(_)

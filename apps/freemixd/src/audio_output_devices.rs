@@ -191,7 +191,7 @@ mod tests {
             Box::new(Fake {
                 calls: Arc::clone(&calls),
             }),
-            Duration::from_secs(60),
+            Duration::from_mins(1),
         )
         .unwrap();
         devices.submit(1, "a".into());

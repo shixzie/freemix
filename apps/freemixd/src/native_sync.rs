@@ -32,7 +32,7 @@ use fm_protocol::{
 use fm_types::InputId;
 
 /// How often a steadily running source is reported.
-pub(crate) const SYNC_INTERVAL: Duration = Duration::from_secs(60);
+pub(crate) const SYNC_INTERVAL: Duration = Duration::from_mins(1);
 
 /// The shortest spacing of two `source_sync_status` records.
 pub(crate) const SOURCE_SYNC_STATUS_INTERVAL: Duration = Duration::from_secs(1);

@@ -15,6 +15,7 @@ mod music;
 mod record_export;
 mod reel;
 mod resolve;
+mod segment_writer;
 mod source;
 mod storage;
 mod types;
@@ -62,6 +63,10 @@ pub use reel::{
 };
 pub use resolve::{
     AngleSpan, CapturedEvent, ChannelFrame, FrameSpan, LastNPreset, SegmentCoverage,
+};
+pub use segment_writer::{
+    DEFAULT_SEGMENT_UNIT_BYTES, ReplaySegmentWriter, SegmentFileEvent, SegmentWriterConfig,
+    SegmentWriterError, segment_path,
 };
 pub use source::{
     CameraSource, MAX_AUDIO_CHANNELS, MAX_REPLAY_SOURCES, QuadCell, QuadViewDescription,

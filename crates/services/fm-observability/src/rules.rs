@@ -13,7 +13,9 @@
 //! * `Pending` + hold or clear: back to `Inactive` (the trigger condition must
 //!   hold continuously).
 //! * `Firing` + clear: `Resolved`; hold or trigger keeps it `Firing`.
-//! * unknown: no change.
+//! * unknown: no change of state; a threshold rule's last value is
+//!   cleared, so a held state is not reported with a reading it no longer
+//!   has.
 //!
 //! Notifications are deduplicated per firing episode: one `Firing`
 //! notification is delivered per episode (late, after a silence expires, if it
@@ -323,6 +325,7 @@ impl NotificationQueue {
     }
 
     /// Iterates undrained notifications oldest first.
+    #[must_use]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = &AlertNotification> {
         self.entries.iter()
     }
@@ -685,11 +688,13 @@ impl AlertEngine {
     }
 
     /// Iterates rule statuses in ID order.
+    #[must_use]
     pub fn statuses(&self) -> impl ExactSizeIterator<Item = &RuleStatus> {
         self.rules.values().map(|runtime| &runtime.status)
     }
 
     /// Iterates silences retained since the last expiry sweep, in ID order.
+    #[must_use]
     pub fn silences(&self) -> impl ExactSizeIterator<Item = (SilenceId, &Silence)> {
         self.silences.iter().map(|(id, silence)| (*id, silence))
     }
@@ -736,6 +741,8 @@ impl RuleRuntime {
             }
             RuleCondition::Threshold(policy) => {
                 let Some(reading) = entry.and_then(|entry| read(&entry.value, rule.reading)) else {
+                    // No reading: the state holds, but not an old value.
+                    self.status.last_value = None;
                     return Condition::Unknown;
                 };
                 self.status.last_value = Some(reading);

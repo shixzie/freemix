@@ -413,10 +413,19 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::HealthAlertsHover,
         t("Alertas del daemon activas ahora:"),
     ),
+    (Msg::HealthCpuStale, t("CPU OBSOLETA")),
+    (Msg::HealthGpuStale, t("GPU OBSOLETA")),
+    (Msg::HealthAlertsStale, t("ALERTAS OBSOLETAS")),
+    (
+        Msg::HealthDaemonStaleHover,
+        t(
+            "Sin informe de salud del daemon desde hace {age}: su CPU, su GPU y sus alertas están desactualizadas",
+        ),
+    ),
     (
         Msg::HealthAlertsNoneHover,
         t(
-            "No hay ninguna alerta del daemon activa. Vigila CPU, GPU, fotogramas tardíos, imágenes descartadas, espacio en disco de las salidas y salidas fallidas.",
+            "No hay ninguna alerta del daemon activa. Vigila CPU, GPU, fotogramas tardíos, imágenes descartadas, espacio en disco de las salidas, salidas fallidas, colas del codificador, reconexiones de emisiones y sincronización de reloj.",
         ),
     ),
     (Msg::AlertLine, t("{rule} ({severity}) desde hace {age}")),
@@ -430,6 +439,18 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::AlertRuleFramesDropped, t("imágenes descartadas")),
     (Msg::AlertRuleGpuSaturated, t("GPU saturada")),
     (Msg::AlertRuleOutputFailed, t("salida fallida")),
+    (
+        Msg::AlertRuleEncoderSaturated,
+        t("cola del codificador saturada"),
+    ),
+    (
+        Msg::AlertRuleStreamReconnecting,
+        t("emisiones reconectándose"),
+    ),
+    (
+        Msg::AlertRuleSyncDegraded,
+        t("sincronización de reloj degradada"),
+    ),
     (Msg::AlertSeverityInfo, t("información")),
     (Msg::AlertSeverityWarning, t("aviso")),
     (Msg::AlertSeverityCritical, t("crítica")),
@@ -3095,6 +3116,14 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::AdviceSceneOffAir,
         t("Saque esa escena del aire primero."),
+    ),
+    (
+        Msg::InUseReplaySource,
+        t("«{name}» se graba para la repetición."),
+    ),
+    (
+        Msg::AdviceReplaySource,
+        t("Deje de grabarla para la repetición primero."),
     ),
     // Typed command refusals (Protocol 2.45).
     (Msg::CommandRefused, t("Comando rechazado: {reason}")),
@@ -7771,7 +7800,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::UserShortcutLocalScopeHover,
         t(
-            "Dónde dispara el atajo la tecla de esta consola: en cualquier parte de esta consola, solo mientras un panel tiene el foco, o solo mientras la ventana propia de un panel desacoplado tiene el foco. Las demás consolas conservan la tecla y el ámbito del proyecto",
+            "Dónde dispara el atajo la tecla de esta consola: en cualquier parte de esta consola, solo mientras un panel tiene el foco, solo mientras la ventana propia de un panel desacoplado tiene el foco, o solo mientras la ventana de Corrección de color, Animación o Diseñador de capas tiene el foco. Las demás consolas conservan la tecla y el ámbito del proyecto",
         ),
     ),
     (
@@ -9303,7 +9332,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::UserShortcutScopeHover,
         t(
-            "Dónde dispara la tecla el atajo: en toda la consola, solo mientras un panel tiene el foco (el último panel en que hizo clic) o solo mientras la ventana propia de un panel desacoplado tiene el foco. Paneles o ventanas distintos pueden usar la misma tecla",
+            "Dónde dispara la tecla el atajo: en toda la consola, solo mientras un panel tiene el foco (el último panel en que hizo clic), solo mientras la ventana propia de un panel desacoplado tiene el foco, o solo mientras la ventana de Corrección de color, Animación o Diseñador de capas tiene el foco. Paneles o ventanas distintos pueden usar la misma tecla",
         ),
     ),
     (Msg::UserShortcutScopeAnywhere, t("En toda la consola")),
@@ -9327,12 +9356,19 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::UserShortcutScopeWindowHover,
         t(
-            "Disparar solo mientras este panel está desacoplado en su propia ventana y esa ventana tiene el foco; la ventana principal de la consola nunca responde a la tecla",
+            "Disparar solo mientras este panel está desacoplado en su propia ventana y esa ventana tiene el foco (donde el sistema mantiene las ventanas desacopladas dentro de la principal, mientras fue la última en que hizo clic); el resto de la consola nunca responde a la tecla",
         ),
     ),
     (
         Msg::UserShortcutInWindow,
         t("{keys} en la ventana de {panel}"),
+    ),
+    (Msg::UserShortcutScopeTool, t("Ventana de {tool}")),
+    (
+        Msg::UserShortcutScopeToolHover,
+        t(
+            "Disparar solo mientras esta ventana de herramienta tiene el foco (la última ventana en que hizo clic), sobre la consola, acoplada o desacoplada; ningún panel ni otra ventana responde a la tecla, así que puede reutilizar una tecla de la consola o de otra ventana",
+        ),
     ),
     (Msg::CueActSlideNext, t("Diapositiva siguiente")),
     (Msg::CueActSlidePrevious, t("Diapositiva anterior")),
@@ -10069,5 +10105,334 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t(
             "Tiempo de retardo en milisegundos (hasta 1 s), exacto a la muestra: retrasa el sonido, por ejemplo para alinear un micrófono con la imagen retrasada de una cámara",
         ),
+    ),
+    (Msg::NameReplay, t("Entrada de repetición")),
+    (Msg::KindReplayKey, t("REPETICIÓN")),
+    (
+        Msg::KindReplayHover,
+        t(
+            "Un reproductor de repetición instantánea: carga un evento capturado y reprodúcelo al 25–100 % de velocidad; graba y captura eventos en el panel Repetición",
+        ),
+    ),
+    (Msg::TabReplay, t("Repetición")),
+    (
+        Msg::TabReplayHover,
+        t(
+            "Repetición instantánea: graba las entradas elegidas, captura momentos como eventos y reprodúcelos en entradas de repetición del 25 al 100 % de velocidad",
+        ),
+    ),
+    (
+        Msg::ReplayIntro,
+        plural(
+            "Las entradas grabadas guardan en disco su último {count} segundo. Captura un momento, cárgalo en una entrada de repetición, reprodúcelo y pásalo a Programa.",
+            "Las entradas grabadas guardan en disco sus últimos {count} segundos. Captura un momento, cárgalo en una entrada de repetición, reprodúcelo y pásalo a Programa.",
+        ),
+    ),
+    (
+        Msg::ReplayNotReported,
+        t("El servidor aún no ha informado de su grabación de repetición"),
+    ),
+    (Msg::ReplayNotRecording, t("SIN GRABAR")),
+    (
+        Msg::ReplayNotRecordingHover,
+        t("No se graba ninguna entrada para repetición: marca abajo las entradas que grabar"),
+    ),
+    (
+        Msg::ReplayRecHover,
+        t(
+            "Grabado para repetición: el servidor guarda archivos de segmentos rotativos de cada entrada marcada y descarta lo que supere la retención salvo que un evento lo retenga",
+        ),
+    ),
+    (Msg::ReplaySimulated, t("SIM")),
+    (
+        Msg::ReplaySimulatedHover,
+        t(
+            "Este servidor graba de forma sintética, sin archivos (un servidor simulado): los eventos y reproductores funcionan, pero no hay imagen",
+        ),
+    ),
+    (
+        Msg::ReplaySourceHover,
+        t(
+            "Grabar esta entrada para repetición (hasta cuatro; la primera marcada es el ángulo preferido). Cambiar lo que se graba reinicia la grabación y descarta todos los eventos",
+        ),
+    ),
+    (Msg::ReplayRetention, t("Guardar")),
+    (
+        Msg::ReplayRetentionHover,
+        t(
+            "Cuántos segundos de cada entrada grabada se guardan en disco, de 10 a 3600; un evento conserva su material por antiguo que sea",
+        ),
+    ),
+    (
+        Msg::ReplaySourceLine,
+        plural(
+            "{name}: {count} segmento, {megabytes} MB",
+            "{name}: {count} segmentos, {megabytes} MB",
+        ),
+    ),
+    (
+        Msg::ReplayReasonNotRecording,
+        t("no se graba ninguna entrada para repetición"),
+    ),
+    (Msg::ReplayReasonFull, t("ya se graban cuatro entradas")),
+    (
+        Msg::ReplayReasonNothingCued,
+        t("no hay ningún evento cargado en esta entrada de repetición"),
+    ),
+    (Msg::ReplayMarkIn, t("MARCAR ENTRADA")),
+    (
+        Msg::ReplayMarkInHover,
+        t("Marcar el primer fotograma del próximo evento en el directo"),
+    ),
+    (Msg::ReplayMarkOut, t("MARCAR SALIDA")),
+    (
+        Msg::ReplayMarkOutHover,
+        t("Marcar el último fotograma del próximo evento en el directo"),
+    ),
+    (Msg::ReplayCapture, t("CAPTURAR")),
+    (
+        Msg::ReplayCaptureHover,
+        t("Capturar como evento el tramo entre MARCAR ENTRADA y MARCAR SALIDA"),
+    ),
+    (Msg::ReplayLast, t("ÚLTIMOS {count} s")),
+    (
+        Msg::ReplayLastHover,
+        t("Capturar como evento los últimos {count} segundos"),
+    ),
+    (
+        Msg::ReplayMarks,
+        t("Entrada {in} · Salida {out} · Directo {live}"),
+    ),
+    (
+        Msg::ReplayMarksHover,
+        t("El tramo marcado y el borde en directo (el fotograma grabado más reciente)"),
+    ),
+    (Msg::ReplayEvents, t("Eventos")),
+    (
+        Msg::ReplayNoEvents,
+        t("Aún no hay eventos: captura uno con ÚLTIMOS o con MARCAR ENTRADA y MARCAR SALIDA"),
+    ),
+    (
+        Msg::ReplayEventNameHover,
+        t("El nombre del evento: escribe otro y haz clic fuera para renombrarlo"),
+    ),
+    (
+        Msg::ReplayEventLengthHover,
+        t("La duración del evento; empieza en {start}"),
+    ),
+    (Msg::ReplayPartial, t("PARCIAL")),
+    (
+        Msg::ReplayPartialHover,
+        t(
+            "Los archivos de segmentos terminados aún no cubren todo este evento: acaba en el directo o empezó antes que la grabación",
+        ),
+    ),
+    (
+        Msg::ReplayDeleteHover,
+        t("Eliminar este evento; la retención descarta luego su material"),
+    ),
+    (Msg::ReplayCueOn, t("CARGAR {name}")),
+    (
+        Msg::ReplayCueOnHover,
+        t("Cargar este evento en {name}, en pausa en su primer fotograma"),
+    ),
+    (Msg::ReplayPlayers, t("Entradas de repetición")),
+    (
+        Msg::ReplayNoPlayers,
+        t("No hay entradas de repetición: añade una con Añadir entrada › Repetición"),
+    ),
+    (Msg::ReplayNothingCued, t("Nada cargado")),
+    (
+        Msg::ReplayCuedHover,
+        t("El evento cargado en esta entrada de repetición"),
+    ),
+    (
+        Msg::ReplayFrameHover,
+        t("Cuánto del evento lleva el fotograma mostrado"),
+    ),
+    (
+        Msg::ReplayAngleHover,
+        t("La entrada grabada (ángulo) que muestra esta entrada de repetición"),
+    ),
+    (
+        Msg::ReplayPlayHover,
+        t("Reproducir el evento cargado al {percent} % de velocidad"),
+    ),
+    (Msg::ReplayPause, t("PAUSA")),
+    (Msg::ReplayPauseHover, t("Pausar en el fotograma mostrado")),
+    (Msg::ReplayCueIn, t("AL INICIO")),
+    (
+        Msg::ReplayCueInHover,
+        t("Volver al primer fotograma del evento, en pausa"),
+    ),
+    (
+        Msg::ReplayTakeHover,
+        t("Cortar esta entrada de repetición a Programa"),
+    ),
+    (Msg::ReelSection, t("Reels destacados")),
+    (
+        Msg::ReelNoReels,
+        t("Aún no hay reels destacados: selecciona un evento y crea uno"),
+    ),
+    (Msg::ReelNew, t("NUEVO REEL")),
+    (
+        Msg::ReelNewHover,
+        t("Crea el siguiente reel libre (del 1 al 8) con el evento seleccionado como primer clip"),
+    ),
+    (Msg::ReelReasonAllReels, t("ya existen los ocho reels")),
+    (
+        Msg::ReelReasonNoEvent,
+        t("no hay ningún evento seleccionado"),
+    ),
+    (
+        Msg::ReelReasonNoAngles,
+        t("el evento seleccionado no tiene ningún ángulo grabado"),
+    ),
+    (
+        Msg::ReelSelectHover,
+        t("Mostrar los clips y los controles de exportación de este reel"),
+    ),
+    (Msg::ReelName, t("Nombre del reel")),
+    (
+        Msg::ReelNameHover,
+        t("El nombre del reel: escribe otro y haz clic fuera para renombrarlo"),
+    ),
+    (Msg::ReelClipCount, plural("{count} clip", "{count} clips")),
+    (
+        Msg::ReelFrames,
+        plural("{count} fotograma", "{count} fotogramas"),
+    ),
+    (Msg::ReelFramesUnknown, t("duración desconocida")),
+    (Msg::ReelError, t("ERROR DE REEL")),
+    (
+        Msg::ReelErrorHover,
+        t("Este reel no se puede exportar: {error}"),
+    ),
+    (Msg::ReelDelete, t("ELIMINAR")),
+    (
+        Msg::ReelDeleteHover,
+        t("Eliminar este reel (pide confirmación)"),
+    ),
+    (Msg::ReelDeleteQuestion, t("¿Eliminar el reel «{name}»?")),
+    (
+        Msg::ReelDeleteConfirmHover,
+        t("Eliminar este reel; Deshacer lo recupera"),
+    ),
+    (Msg::ReelDeleteCancelHover, t("Conservar este reel")),
+    (Msg::ReelClips, t("Clips")),
+    (
+        Msg::ReelNoClips,
+        t("Aún no hay clips: añade el evento seleccionado"),
+    ),
+    (Msg::ReelAddEvent, t("AÑADIR EVENTO")),
+    (
+        Msg::ReelAddEventHover,
+        t(
+            "Añadir el evento seleccionado a este reel en su primer ángulo, sin recortes y al 100 % de velocidad",
+        ),
+    ),
+    (Msg::ReelReasonFullClips, t("este reel ya tiene 64 clips")),
+    (
+        Msg::ReelReasonOnlyClip,
+        t("un reel necesita al menos un clip"),
+    ),
+    (Msg::ReelClipLabel, t("Clip {position}")),
+    (
+        Msg::ReelClipEventHover,
+        t("El evento de repetición del que se corta este clip"),
+    ),
+    (
+        Msg::ReelClipAngleHover,
+        t("El ángulo grabado que reproduce este clip"),
+    ),
+    (
+        Msg::ReelClipTrimInHover,
+        t("Fotogramas conservados antes de la marca de entrada del evento"),
+    ),
+    (
+        Msg::ReelClipTrimOutHover,
+        t("Fotogramas conservados después de la marca de salida del evento"),
+    ),
+    (
+        Msg::ReelClipSpeedHover,
+        t("Velocidad de reproducción de este clip"),
+    ),
+    (Msg::ReelClipRemove, t("QUITAR CLIP")),
+    (Msg::ReelClipRemoveHover, t("Quitar este clip del reel")),
+    (Msg::ReelClipMoveUpHover, t("Reproducir este clip antes")),
+    (
+        Msg::ReelClipMoveDownHover,
+        t("Reproducir este clip después"),
+    ),
+    (Msg::ReelReasonFirstClip, t("este clip ya es el primero")),
+    (Msg::ReelReasonLastClip, t("este clip ya es el último")),
+    (Msg::ReelEventSelect, t("ELEGIR")),
+    (
+        Msg::ReelEventSelectHover,
+        t("Usar este evento al añadir un clip a un reel"),
+    ),
+    (Msg::ReelExportSection, t("Exportar")),
+    (Msg::ReelDestination, t("Ruta del archivo")),
+    (
+        Msg::ReelDestinationHover,
+        t("Ruta absoluta del archivo que se escribirá, por ejemplo /srv/exports/reel-1.mp4"),
+    ),
+    (Msg::ReelExport, t("EXPORTAR")),
+    (
+        Msg::ReelExportHover,
+        t("Escribir este reel en la ruta de destino como archivo"),
+    ),
+    (Msg::ReelReasonNoClips, t("este reel no tiene clips")),
+    (
+        Msg::ReelReasonReelError,
+        t("este reel no se puede exportar"),
+    ),
+    (
+        Msg::ReelReasonExportActive,
+        t("ya hay otra exportación en curso"),
+    ),
+    (
+        Msg::ReelReasonInvalidPath,
+        t("la ruta de destino no es absoluta"),
+    ),
+    (
+        Msg::ReelReasonExportJobsFull,
+        t("olvida antes una exportación terminada"),
+    ),
+    (Msg::ReelExports, t("Trabajos de exportación")),
+    (Msg::ReelNoExports, t("No hay trabajos de exportación")),
+    (Msg::ReelExportJob, t("Trabajo {job}")),
+    (Msg::ReelStateQueued, t("EN COLA")),
+    (Msg::ReelStateRunning, t("EN CURSO")),
+    (Msg::ReelStateFinalizing, t("FINALIZANDO")),
+    (Msg::ReelStateCompleted, t("COMPLETADO")),
+    (Msg::ReelStateFailed, t("EXPORTACIÓN FALLIDA")),
+    (Msg::ReelStateCancelled, t("CANCELADO")),
+    (
+        Msg::ReelExportProgressHover,
+        t("Fotogramas escritos del total de la exportación"),
+    ),
+    (Msg::ReelExportBytesHover, t("Bytes escritos hasta ahora")),
+    (
+        Msg::ReelExportFailureHover,
+        t("Por qué falló la exportación"),
+    ),
+    (Msg::ReelExportCancel, t("CANCELAR EXPORTACIÓN")),
+    (
+        Msg::ReelExportCancelHover,
+        t("Detener esta exportación y liberar el material grabado que retiene"),
+    ),
+    (Msg::ReelExportForget, t("OLVIDAR")),
+    (
+        Msg::ReelExportForgetHover,
+        t("Quitar esta exportación terminada de la lista"),
+    ),
+    (
+        Msg::ReelExportReelHover,
+        t("El reel que exporta este trabajo"),
+    ),
+    (
+        Msg::ReelExportDestinationHover,
+        t("El archivo que escribe esta exportación"),
     ),
 ];

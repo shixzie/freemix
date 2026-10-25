@@ -623,3 +623,56 @@ fn an_item_shorter_than_its_transition_steps_on_its_second_frame() {
     // The second item (looping on to the first) does the same.
     assert_eq!(ticks_to_end(&mut control), (2, 2));
 }
+
+/// A list of one looping item shorter than its transition steps on its
+/// second played frame every time round, not only the first: the item
+/// restarting is a new pass of the same item, so the lead is measured
+/// afresh rather than reading as already crossed.
+#[test]
+fn a_single_looping_item_shorter_than_its_transition_steps_every_pass() {
+    let options = MediaListOptionsSpec {
+        auto_next: true,
+        loop_list: true,
+        transition: fm_protocol::MediaListTransitionSpec {
+            kind: fm_protocol::MediaListTransitionKind::Fade,
+            duration_frames: 12,
+        },
+        ..MediaListOptionsSpec::default()
+    };
+    let mut one = items();
+    one.truncate(1);
+    one[0].mark_out = Some(20);
+    let mut control = service(64, 256);
+    let created = submit(
+        &mut control,
+        Role::Graphics,
+        "create",
+        payload(MediaListOperation::Create {
+            name: "Loop".to_owned(),
+            items: one,
+            options,
+        }),
+    );
+    assert!(created.is_accepted(), "{:?}", created.output.result);
+    let play = submit(
+        &mut control,
+        Role::Operator,
+        "play",
+        CommandPayload::Media {
+            input: list(),
+            operation: MediaOperation::Play,
+        },
+    );
+    assert!(play.is_accepted(), "{:?}", play.output.result);
+    assert_eq!(ticks_to_end(&mut control), (2, 1));
+    for pass in 0..3 {
+        let advanced = submit(
+            &mut control,
+            Role::Operator,
+            &format!("advance-{pass}"),
+            payload(MediaListOperation::Advance { from: 1 }),
+        );
+        assert!(advanced.is_accepted(), "{:?}", advanced.output.result);
+        assert_eq!(ticks_to_end(&mut control), (2, 1), "pass {pass}");
+    }
+}

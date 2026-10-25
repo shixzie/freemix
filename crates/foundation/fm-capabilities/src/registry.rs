@@ -38,6 +38,7 @@ impl CapabilityRegistry {
         self.capabilities.get(key)
     }
 
+    #[must_use]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (&CapabilityKey, &Capability)> {
         self.capabilities.iter()
     }

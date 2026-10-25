@@ -168,6 +168,53 @@ fn a_shortcut_set_is_imported_listed_exported_and_carried_to_another_project() {
     );
 }
 
+/// Keys scoped to Studio's tool windows (the Colour window, the Animation
+/// editor, the scene Designer; schema 81) import, list with their scope,
+/// and export unchanged; one tool window's key does not clash with
+/// another's.
+#[test]
+fn tool_window_scoped_keys_import_list_and_export() {
+    let root = Root::new("tool-windows");
+    let project = root.project("tools.freemix");
+    let tool = |name: &str, scope: &str| {
+        format!(
+            "{{\"name\": \"{name}\", \"enabled\": true, \"key\": {{\"key\": \"F9\", \
+             \"command\": false, \"shift\": false, \"alt\": false, \"then\": null, \
+             \"scope\": \"{scope}\"}}, \"osc\": null, \"action\": \"cue:1:go:-\"}}"
+        )
+    };
+    let tools = root.file(
+        "tools.fmshortcuts",
+        &set(&format!(
+            "{}, {}, {}",
+            tool("Grade", "color-window"),
+            tool("Keys", "animation-window"),
+            tool("Layers", "designer-window")
+        )),
+    );
+    let output = succeed(&["shortcut-import", &project, &tools]);
+    assert!(
+        output.starts_with("shortcut-import: added=3 replaced=0 unchanged=0\n"),
+        "{output}"
+    );
+    let listing = succeed(&["shortcuts", &project]);
+    let lines = listed(&listing);
+    for (line, scope) in lines
+        .iter()
+        .zip(["color-window", "animation-window", "designer-window"])
+    {
+        assert!(line.contains(&format!(" key=F9@{scope}, ")), "{line}");
+    }
+    let exported = root.path("exported.fmshortcuts");
+    succeed(&["shortcut-export", &project, &exported]);
+    let text = fs::read_to_string(&exported).unwrap();
+    assert!(text.contains("\"scope\": \"designer-window\""), "{text}");
+    // A tool's name alone is no scope.
+    let bare = root.file("bare.fmshortcuts", &set(&tool("Grade", "color")));
+    let output = invoke(&["shortcut-import", &project, &bare]);
+    assert!(!output.status.success());
+}
+
 #[test]
 fn a_clashing_set_or_a_locked_project_imports_nothing() {
     let root = Root::new("refused");

@@ -5,7 +5,8 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); item 1 updated 2026-10-20. Every parity row is still `planned` (or `blocked`); these are the
+(2026-10-19); items refreshed through protocol 2.108 / schema 83 (2026-10-24).
+Every parity row is still `planned` (or `blocked`); these are the
 highest-value remaining items, ranked:
 
 1. **Web gateway on the LAN: trust and reach (`RC-007`, `RC-014`, `RC-008`).**
@@ -44,9 +45,11 @@ highest-value remaining items, ranked:
    and an operator reset per bus (Protocol 2.92), which the Web operator
    page now shows and resets (Protocol 2.94; see the item 3 boundary
    below), and whose chains a browser with `control_audio` edits from the
-   Web operator page's Strip FX disclosures (no protocol change); an audio
-   render path in the simulated daemon (where the chains are show state
-   only), Web gain-reduction readouts, and hardware acceptance remain.
+   Web operator page's Strip FX disclosures (no protocol change), with each
+   strip's gain reduction shown there too (Protocol 2.103); the simulated
+   daemon now renders a synthetic tone through the persisted strips and
+   chains and meters it, so an allocation-counting real-time test and
+   hardware acceptance remain.
 4. **Finish user shortcuts (`RC-004`).** Project shortcuts now persist, travel
    on the wire, fire on the authority under per-action permissions, and are
    edited and dispatched in Studio (keys and OSC), with `.fmshortcuts`
@@ -61,9 +64,12 @@ highest-value remaining items, ranked:
    the firing control's OSC value; Protocol 2.99, schema 80), and chorded
    and panel- or window-scoped console key overrides in Studio's local
    preferences, and mouse buttons as either stroke of a chord (Protocol
-   2.99, schema 80); still missing are window scopes for Studio's tool
-   windows and an embedded pop-out (see the RC-004 boundary below). This
-   is a P0 row.
+   2.99, schema 80), and keys scoped to the Colour, Animation, and
+   Designer tool windows, with a pop-out the platform embeds in the main
+   window answering its panel's and window's keys (Protocol 2.105, schema
+   81). This closes the gaps this item named; the row stays planned until
+   its acceptance evidence covers its Windows and macOS profiles (see the
+   RC-004 boundary below). This is a P0 row.
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
    a real input end to end (engine, protocol, persistence, both daemons,
    Studio), and the native daemon prefetches each list's next item so Auto
@@ -123,6 +129,31 @@ highest-value remaining items, ranked:
    sent, and its edits keep the stored values. Still missing: the
    rendered preview draws hidden fields as on air, and `GX-006` awaits its
    capability-profile certification.
+
+10. **Instant replay, end to end (`OR-012`).** The show persists replay
+    settings (Protocol 2.106, schema 82), the engine owns marks, Capture and
+    Last 5/10/20 events, and up to two Replay players, the native daemon
+    records up to four inputs into rolling segment files and plays an event's
+    angle back through a Replay input, Studio creates Replay inputs and
+    edits recording in a dockable Replay panel, and the CLI has local and
+    remote `replay` and `replay-set` plus `remote-replay-do`, with argument
+    validation for sources, retention, and the storage root. Remaining:
+    recorded segments are silent, the recorder takes a source's last decoded
+    picture rather than a genlocked one, segment files from a previous run
+    are removed rather than reloaded, and A/B linking, jog or shuttle,
+    transitions, auto-return, playlists, multiview, controller and
+    disk-health wiring, and certification are absent (see the Phase 7
+    boundary).
+11. **Highlight reels, end to end (`OR-013`).** The show persists up to eight
+    reels of up to 64 clips (Protocol 2.107, schema 83), the engine compiles
+    them against captured events, protects the segments they read, and
+    resolves exact segment frames, the native daemon encodes a reel to an
+    H.264/AAC MP4 with progress and cancellation, Studio edits and exports
+    them in the Replay panel, and the CLI has local and remote reel commands.
+    Remaining: exports are silent, cuts only, and fragmented rather than
+    faststart; a music bed, ducking, dissolve, and open-segment deferral are
+    absent; there is no free-space check; and nothing is certified (see the
+    Phase 7 boundary).
 
 Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
 since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
@@ -1121,9 +1152,23 @@ A mouse button may now be either stroke of a chord (Protocol 2.99, schema
 80; `.fmshortcuts` and console keys too), clashing as any chord does;
 Studio captures a button as either stroke, and a named button press starts
 or ends a waiting chord as a key press does.
-Still missing, so RC-004 remains planned: window scopes for the Colour,
-Animation, and Designer tool windows (which read no console keys) and for
-a pop-out the platform embeds in the main window.
+Protocol 2.105 / schema 81 add tool window scopes: a key may be scoped to
+the Colour window (`color-window`), the keyframe Animation editor
+(`animation-window`), or the scene Designer (`designer-window`), each
+overlapping only itself and the whole console; model validation, the
+wire, project durability, `.fmshortcuts` files, console key preference
+lines, and the CLI listing carry them. Studio's "Answers in" and "Answers
+here in" pickers list them with English and Spanish hover help. A tool
+window over the console (floating, docked, or embedded) takes the focus on
+a press inside it, and the main window then fires its window's keys and
+unscoped ones but no panel's; while the tool's own keys hold the keyboard
+it reads the project's keys itself after its own, and in its own native
+window it reads them there. A popped-out panel the platform embeds in the
+main window takes the focus the same way and answers its panel's and its
+window's keys. With this, every scope, chord, target, template, conflict,
+and import/export behavior the RC-004 row names is implemented and tested
+on Linux; RC-004 stays planned until its acceptance evidence covers the
+Windows and macOS profiles it lists.
 
 Current implementation boundary for item 8: `fm-scopes` now provides a bounded
 reference color-monitoring session on top of its scope math: an exact
@@ -1415,11 +1460,12 @@ as a small `GR` bar (full at 24 dB) with the value in dB and English and
 Spanish hover help, dimmed when the meters are stale (`web_feed` unit
 tests; the page's parser and bar model run under Node.js against
 records the Rust codec renders in `tests/web_tally.rs`). The simulated
-daemon has no audio render path: its chains, the delay included, are
-accepted, announced, snapshotted, undone, and persisted
-(`tests/process.rs`), and it sends no meters. Remaining for `AU-005`: an
-audio render path in the simulated daemon, an allocation-counting real-time
-test (the workspace forbids the `unsafe` a
+daemon now renders a deterministic synthetic tone per input through the
+persisted strip states, groups, solo, and the strip and Master chains, feeds
+the same Master, strip, dynamics, and loudness meters as the native daemon,
+and applies a loudness reset; meter demand never advances the engine
+(`tests/sim_strip_dsp.rs`). Remaining for `AU-005`: an allocation-counting
+real-time test (the workspace forbids the `unsafe` a
 counting allocator needs; the no-allocation property rests on preallocated
 buffers and review), and hardware acceptance.
 
@@ -3316,7 +3362,11 @@ from the session loop (`apps/freemixd/src/statistics.rs`): the control plane's
 subscriber count and revision, and on a native daemon host frame lateness and
 GPU pass time histograms, realized, late, and dropped frame counts with the
 late share, audio sink, recorder, stream, monitor tap, camera, disk, and
-failed-output counters and gauges under stable names. Each sample also
+failed-output counters and gauges under stable names. Each sample also counts
+the started stream targets (active, connected, reconnecting) with their
+bitrate and reported packet loss, aggregates the bounded source-sync records
+(sources, degraded sources, maximum drift and backlog), and reports the
+fullest recorder or stream queue's utilization. Each sample also
 records `cpu.process_utilization`, the daemon process's user plus system time
 from `/proc/self/stat` over wall time as a share of every logical CPU
 (unavailable off Linux; FFmpeg children are not counted), and
@@ -3325,9 +3375,10 @@ time of the native compositor's timestamped fullscreen render passes over
 wall time, so it omits uploads, readbacks, encoders, and other processes, is
 a lower bound when timestamp samples drop, and is unavailable on the
 simulated daemon and on adapters without timestamp queries. An `AlertEngine`
-evaluates six fixed default rules after every sample (`cpu_saturated`,
-`disk_low`, `frame_late`, `frames_dropped`, `gpu_saturated`,
-`output_failed`) with hysteresis and hold times; each notification prints a
+evaluates nine fixed default rules after every sample (`cpu_saturated`,
+`disk_low`, `encoder_saturated`, `frame_late`, `frames_dropped`,
+`gpu_saturated`, `output_failed`, `stream_reconnecting`, `sync_degraded`)
+with hysteresis and hold times; each notification prints a
 `FREEMIXD_ALERT` line, the support bundle carries the registry and rule
 states under `## Statistics`, and `FREEMIXD_TELEMETRY` is unchanged. Protocol
 2.100 sends raw Studio sessions a lossy `health_status` once a second and
@@ -3335,13 +3386,13 @@ adds the same sample to `diagnostics_response`: utilization permille, firing
 alerts, and the 16 most recent fired, resolved, and reminder notifications.
 Studio's health strip shows `CPU`, `GPU`, and alert lamps with hover help in
 English and Spanish, and `freemix-cli remote-diagnostics` prints `Health`,
-`Alert`, and `AlertNotification` lines. Remaining gaps: no network, sync
-(beyond the AU-004 drift records), queue-depth, input health, or
-hardware-encoder session sampling; rules are fixed in code, so there is no
-operator acknowledgement, silencing, threshold editing, or persistence of
-any of them; the CPU reading excludes child encoders and the GPU reading is a
-compositor-pass proxy; and Web pages receive no health view.
-`RC-015` remains planned.
+`Alert`, and `AlertNotification` lines. Remaining gaps: no input-health or
+hardware-encoder session sampling, and the simulated daemon has no network,
+sync, or encoder readings (an unsupported reading stays unknown rather than
+zero); rules are fixed in code, so there is no operator acknowledgement,
+silencing, threshold editing, or persistence of any of them; the CPU reading
+excludes child encoders and the GPU reading is a compositor-pass proxy; and
+Web pages receive no health view. `RC-015` remains planned.
 
 
 Current implementation boundary for fault-tolerant recording (`OR-003`):
@@ -5362,12 +5413,11 @@ the protection and detaches the event from every list. Last-N presets (5, 10,
 and 20 seconds) anchor at the live edge, and events, lists, folders, tags,
 names, and notes have explicit limits with typed errors. Replay channels switch
 event angles at the same timeline instant and resolve the exact source frame
-and segment, or the live edge. Remaining gaps: nothing is persisted or
-connected to `fm-record`, space reclamation and file deletion are
-caller-driven, frame resolution does not decode or present media, A/B
-playback has no real clock, per-event list overrides and controller mapping
-are absent, and no eight-camera storage profile is certified. `OR-012` and
-`OR-013` remain planned.
+and segment, or the live edge. Remaining gaps in the library itself: space
+reclamation and file deletion are caller-driven, A/B playback has no real
+clock, per-event list overrides and controller mapping are absent, and no
+eight-camera storage profile is certified; the end-to-end slice below wires
+part of this to a server. `OR-012` and `OR-013` remain planned.
 
 Current implementation boundary for items 6, 8, and 9: `fm-replay` plans a
 synchronized Quad View or a multiview of up to eight distinct angles plus A/B
@@ -5386,20 +5436,56 @@ device input, persistence, or jog acceleration; disk samples are caller
 supplied without OS or SMART queries or `fm-record` low-space wiring; and no
 storage profile is certified. `OR-014` remains planned.
 
-Current implementation boundary for item 7: `fm-replay` compiles highlight
-reels of ordered event clips (one angle each, trims, exact rational speeds,
-cuts or dissolves) into an exact output timeline whose frames resolve to one
-or two recorded source layers with exact mix weights and sample-exact audio
-positions. A music bed plans once-through or looping playlists with linear
-crossfades, sample-exact ducking under program-audio clips, merged nearby
-ducks, and an end fade using integer gains. An export-during-record queue
-accepts only gap-free, closed segments, protects them from retention, advances
-in bounded frame chunks with progress and cancellation, and revalidates
-segments and source frames so an export never resolves pruned media.
-Remaining gaps: nothing is decoded, mixed, encoded, or written; dissolve is the
-only transition and clips play forward only; the queue is not wired to
-`fm-record`, persistence, protocol, or UI; and exports needing an open segment
-are refused rather than deferred. `OR-013` remains planned.
+Current end-to-end slice for item 7: the show persists up to eight highlight
+reels of up to 64 clips (Protocol 2.107, schema 83); each clip names a captured
+replay event, its angle, trims before and after the event marks, and a
+25/50/75/100 percent speed, and reel edits are padlocked, undoable project
+edits. `fm-replay` compiles a reel of cuts into an exact output timeline whose
+frames resolve to one or two recorded source layers with exact mix weights; a
+music bed still plans once-through or looping playlists with linear
+crossfades, sample-exact ducking, merged nearby ducks, and an end fade. An
+export-during-record queue accepts only gap-free, closed segments, protects
+them from retention, advances in bounded frame chunks with progress and
+cancellation, and revalidates segments and source frames so an export never
+resolves pruned media. The native daemon decodes each resolved segment frame
+with ffmpeg, retimes it to the output grid, and encodes a fragmented H.264/AAC
+MP4 to `<destination>.part`, renaming it only when the recorder has stopped
+cleanly; a cancel removes the part file and releases the protection. Studio
+edits and exports reels in its Replay panel, and `freemix-cli` has local and
+remote reel commands with `remote-reel-export` polling to a terminal state.
+Remaining gaps: exports carry silent audio (no music bed, ducking, or decoded
+input audio); only cuts are compiled, clips play forward only, and dissolve is
+not wired; exports needing an open segment are refused rather than deferred;
+the output is fragmented rather than faststart; there is no free-space check;
+and nothing is certified. `OR-013` remains planned.
+
+Current end-to-end slice for items 1, 3, and 4: the show persists replay
+settings (up to four recorded inputs in angle order, a retention of 10 seconds
+to one hour, and an optional storage root; Protocol 2.106, schema 82). The
+engine owns a deterministic replay runtime: marks, Capture and Last 5/10/20
+build events (at most 64) over every recorded angle, events can be renamed and
+deleted, and up to two Replay inputs cue an event angle, switch angles, play
+at 100, 75, 50, or 25 percent, pause, and jump back to the event's in point.
+Live commands are ordinary acknowledged commands, but events, marks, and
+player positions are server runtime, so a restart starts with none. The
+simulated daemon feeds a synthetic segment timeline; the native daemon records
+each recorded input's newest decoded picture into rolling two-second H.264 MP4
+segment files under `<bundle>/replay` (or the configured root), deletes
+segments past retention unless an event protects them, and decodes the cued
+angle with ffmpeg so a Replay input presents frame-exact source frames at the
+chosen speed (each source frame shown twice at 50 percent). Studio has a
+dockable Replay panel (recording, marks, events, and players, with English and
+Spanish hover help on every control), creates Replay inputs from Add input,
+and disables its recording settings while the project is locked; `freemix-cli`
+has local and remote `replay` and `replay-set` plus `remote-replay-do`, with
+typed argument validation for sources, retention, and the storage root.
+Remaining gaps: recorded segments carry
+silent audio and no input audio is recorded or played; the recorder captures
+what the source last decoded rather than a genlocked frame, so a stalled
+source repeats its picture; segment files from a previous run are removed
+rather than reloaded; there is no A/B linking, jog or shuttle, transition,
+auto-return, playlist, multiview, controller, or disk-health wiring; and
+nothing is certified. `OR-012`, `OR-013`, and `OR-014` remain planned.
 
 
 Exit: Sports Show scenario passes on certified storage/hardware.

@@ -218,19 +218,21 @@ impl WebAccess {
         }
     }
 
-    /// Redeems a pairing code from `peer` for a new device token.
+    /// Redeems a pairing code from `peer`, which reached the gateway at
+    /// `local`, for a new device token.
     pub(super) fn redeem(
         &self,
         code: &str,
         name: &str,
         peer: IpAddr,
+        local: Option<IpAddr>,
     ) -> Result<NewDevice, PairRefusal> {
         let now = now_ms();
         let mut state = self.lock();
         state
             .limiter
-            // An IPv6 host's /64 shares one allowance.
-            .attempt(&super::worker::peer_group(peer), now)
+            // A remote IPv6 host's /64 shares one allowance.
+            .attempt(&super::worker::peer_group_at(peer, local), now)
             .map_err(|retry_ms| PairRefusal::RateLimited {
                 retry_after_s: retry_ms.div_ceil(1_000).max(1),
             })?;
@@ -562,7 +564,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let access = access(directory.path());
         let (code, _) = pair(&access, WebDeviceRole::Operator);
-        let device = access.redeem(&code, " Floor\nphone ", PHONE).unwrap();
+        let device = access.redeem(&code, " Floor\nphone ", PHONE, None).unwrap();
         assert!(device.token.starts_with("fmd1_"));
         assert_eq!(device.name, "Floor phone");
         assert_eq!(
@@ -602,7 +604,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let access = access(directory.path());
         let (code, _) = pair(&access, WebDeviceRole::Viewer);
-        let device = access.redeem(&code, "Tally", PHONE).unwrap();
+        let device = access.redeem(&code, "Tally", PHONE, None).unwrap();
         let file = directory.path().join(DEVICES_FILE);
         // The first authentication records the device as seen.
         assert!(access.authenticate(device.token.as_bytes()).is_some());
@@ -624,7 +626,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let access = access(directory.path());
         let (_, link) = pair(&access, WebDeviceRole::Viewer);
-        let device = access.redeem(&link, "Tally", PHONE).unwrap();
+        let device = access.redeem(&link, "Tally", PHONE, None).unwrap();
         let identity = access.authenticate(device.token.as_bytes()).unwrap();
         assert!(access.is_current(&identity));
         let (refusal, status) = access.handle(&WebAccessAction::Revoke {
@@ -649,23 +651,23 @@ mod tests {
         let wrong = if code == "000000" { "000001" } else { "000000" };
         for _ in 0..4 {
             assert_eq!(
-                access.redeem(wrong, "x", PHONE).err(),
+                access.redeem(wrong, "x", PHONE, None).err(),
                 Some(PairRefusal::Invalid)
             );
         }
         // The fifth wrong code kills the pairing: the right code is late.
         assert_eq!(
-            access.redeem(wrong, "x", PHONE).err(),
+            access.redeem(wrong, "x", PHONE, None).err(),
             Some(PairRefusal::Expired)
         );
         // And the address has spent its attempts for this minute.
         assert!(matches!(
-            access.redeem(&code, "x", PHONE).err(),
+            access.redeem(&code, "x", PHONE, None).err(),
             Some(PairRefusal::RateLimited { retry_after_s }) if retry_after_s <= 60
         ));
         let other = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 51));
         assert_eq!(
-            access.redeem(&code, "x", other).err(),
+            access.redeem(&code, "x", other, None).err(),
             Some(PairRefusal::Expired)
         );
     }
@@ -682,14 +684,32 @@ mod tests {
         let host = |last: u16| IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 7, 0, 0, 0, last));
         for last in 1..=5 {
             assert!(!matches!(
-                access.redeem(wrong, "x", host(last)).err(),
+                access.redeem(wrong, "x", host(last), None).err(),
                 Some(PairRefusal::RateLimited { .. })
             ));
         }
         assert!(matches!(
-            access.redeem(wrong, "x", host(6)).err(),
+            access.redeem(wrong, "x", host(6), None).err(),
             Some(PairRefusal::RateLimited { .. })
         ));
+    }
+
+    /// Phones on the gateway's own LAN share its `/64`: each pairs on its
+    /// own allowance, as on IPv4.
+    #[test]
+    fn on_link_ipv6_phones_pair_on_their_own_allowance() {
+        use std::net::Ipv6Addr;
+        let directory = tempfile::tempdir().unwrap();
+        let access = access(directory.path());
+        let host = |last: u16| IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 7, 0, 0, 0, last));
+        let local = Some(host(0x20));
+        for last in 1..=8 {
+            let (code, _) = pair(&access, WebDeviceRole::Viewer);
+            assert!(
+                access.redeem(&code, "Phone", host(last), local).is_ok(),
+                "phone {last}"
+            );
+        }
     }
 
     #[test]
@@ -700,7 +720,7 @@ mod tests {
         let (_, status) = access.handle(&WebAccessAction::CancelPairing);
         assert!(status.pairing.is_none());
         assert_eq!(
-            access.redeem(&code, "x", PHONE).err(),
+            access.redeem(&code, "x", PHONE, None).err(),
             Some(PairRefusal::Expired)
         );
         assert_eq!(status.url, "https://192.168.1.20:8443");

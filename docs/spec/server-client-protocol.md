@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.104 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.108 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4087,7 +4087,12 @@ schema change.
 - After a `title_exposure_changed` (and the `title_state` records that
   follow it, Protocol 2.96), a Web session receives one `cue_list_state`
   per cue list and one `shortcut_state` per shortcut that sets a title
-  field, in project order, as it may now see them.
+  field, in project order, as it may now see them. A Web session that
+  resumes gets the same records after its replayed events: one current
+  `title_state` per title the replayed `title_exposure_changed`,
+  `cue_run_changed`, `script_ran`, and `shortcut_fired` events name and,
+  when one of them is a `title_exposure_changed`, the cue lists and
+  shortcuts, so a resumed client converges as a live one does.
 - A Web session's `cue_list_set` or `shortcut_set` may send a marker back
   where the stored definition has the action it stands for: the same cue
   id (for a shortcut, the same shortcut) and action position, the same
@@ -4097,11 +4102,126 @@ schema change.
   field with a value of its own is refused `permission_denied` whatever the
   value (so an edit cannot test a guess); and its `script_set` is refused
   `permission_denied`. Removing an action, cue, or list is allowed.
+- A Web session's `cue_go`, `cue_arm`, or `shortcut_fire` is checked before
+  it executes: each title text or number action of the run (the whole chain
+  a GO or arm reaches, or the shortcut's actions, or the chain its cue GO
+  reaches) is resolved to the title its target reaches under the bindings
+  the authority gives the fire. A run with an action whose value the
+  session sees only as the marker, aimed now at a title that shows the
+  session that field (a `preview` action whose field id another title
+  hides, while Preview shows a title exposing it), is refused
+  `permission_denied` as a whole, so the value never lands where the
+  session can read it. Studio and raw sessions, and the daemon's own cue
+  clock, are not checked.
 - The authority never stores or runs a marker: a `cue_list_set` or
   `shortcut_set` that still carries one (from any raw session, Studio
   included) is refused `invalid_command` before it reaches the engine.
 - Studio and other raw sessions see every value and source, unchanged.
 - 2.103 is refused.
+
+Protocol 2.105 adds tool window scopes to user shortcut keys (RC-004,
+schema 81).
+
+- A `scope` may also name one of Studio's tool windows, the tool's name
+  followed by `-window`: `color-window` (the Colour window),
+  `animation-window` (the keyframe Animation editor), or `designer-window`
+  (the scene Designer), as in `K.1.0.0@color-window`. The key answers only
+  while that window has the focus. A tool has no panel scope: `@color`
+  and any other name are refused.
+- A tool window scope overlaps only itself and an unscoped key: `F9` and
+  `F9@color-window` clash; `F9@color-window`, `F9@animation-window`,
+  `F9@mixer`, and `F9@mixer-window` do not.
+- Durability (schema 81): the shortcut `"key"` object is unchanged; its
+  `"scope"` may name a tool window. `.fmshortcuts` files (schema 81) and
+  Studio's console key preference lines (`Shift+G @color-window`) carry
+  the same, and the CLI's `shortcuts` listing prints it (`F9@color-window`).
+- Studio's "Answers in" and "Answers here in" pickers list the three tool
+  windows after the panels' windows, with English and Spanish hover help.
+  A tool window over the console (floating, the Animation editor docked
+  along its bottom, or popped out where the platform keeps pop-outs inside
+  the main window) takes the focus on a press inside it, until a press in
+  a docked panel or another such window; while it has the focus the main
+  window's presses fire its window's keys and unscoped ones, never a
+  panel's. While the tool's own keys hold the keyboard (the Colour wheels,
+  the Animation timeline, the Designer canvas) it reads the project's keys
+  itself after its own keys take theirs. A tool in its own native window
+  fires its window's keys and unscoped ones from that window.
+- A popped-out panel the platform embeds in the main window (no native
+  windows) likewise takes the focus on a press inside it, and the main
+  window's presses then fire its panel's and its window's keys, as its
+  native window would.
+- 2.104 is refused.
+
+Protocol 2.106 adds instant replay (OR-012, schema 82): the
+`CommandPayload::Replay` commands, the lossy `ReplayStatus` record,
+`ReplayStatusRequest`, and the `replay` shortcut scope.
+
+- A command carries one `replay_*` payload: `replay_configure` (`sources`,
+  `retention_seconds`, optional `storage_root`; a padlocked, undoable project
+  edit), or the transitions `replay_mark_in`, `replay_mark_out`,
+  `replay_capture_marks`, `replay_capture_last`, `replay_event_rename`,
+  `replay_event_delete`, `replay_cue`, `replay_angle`, `replay_play`,
+  `replay_pause`, and `replay_cue_in`. Each accepted operation is announced by
+  the durable `replay_changed` event carrying its `frame`, operation token,
+  and fields.
+- `replay_status` is a lossy, latest-wins record pushed to raw control
+  sessions after the snapshot and whenever it changes: server identity,
+  `sequence`, optional `request_id`, `feed`, the settings, `root`, optional
+  `live_frame`, `mark_in`, and `mark_out`, and the `recorded`, `events`, and
+  `players` lists. `replay_status_request` (`request_id`) asks for one and
+  echoes the `request_id`.
+- A shortcut key's `scope` may also name the `replay` panel, as in
+  `F9@replay`; it answers only while the Replay panel has the console's focus.
+- Durability (schema 82): `project.json` gains `replay` (`sources`,
+  `retention_seconds`, `storage_root`), and an input may be
+  `{"type": "replay"}`. Recorded segment files, marks, events, and players are
+  runtime state, never persisted.
+- 2.105 is refused.
+
+Protocol 2.107 adds highlight reels (OR-013, schema 83): the
+`CommandPayload::Reel` commands, the durable `reel_changed` and `reel_removed`
+events, and the lossy `ReelStatus` record with its `ReelStatusRequest`.
+
+- A command carries one `reel_*` payload: `reel_set` (`reel`, `name`, and
+  `clips` — 1 to 64 `<event>:<angle>:<trim in>:<trim out>:<speed>` records,
+  comma separated, each speed 25, 50, 75, or 100 percent and each trim at
+  most 216000 frames), `reel_delete` (`reel`), or one of the export jobs
+  `reel_export` (`job`, `reel`, `destination` — an absolute path),
+  `reel_export_cancel` (`job`), and `reel_export_forget` (`job`). `reel_set`
+  and `reel_delete` are padlocked, undoable project edits.
+- An accepted `reel_set` is announced by the durable `reel_changed` event
+  carrying the reel afterwards (`reel`, `name`, `clips`, optional
+  `total_frames` and `error`); `reel_delete` by `reel_removed` (`reel`).
+- `reel_status` is a lossy, latest-wins record pushed to raw control sessions
+  after the snapshot and whenever it changes: server identity, `sequence`,
+  optional `request_id`, and the `reels` and `exports` lists. Each reel is
+  `<reel>:<name>:<total frames>:<error>:<clips>` with the name and error
+  percent-escaped; each export job is
+  `<job>:<reel>:<destination>:<state>:<completed frames>:<total frames>:<bytes>:<failure>`
+  with the destination and failure percent-escaped and `state` one of
+  `queued`, `running`, `finalizing`, `completed`, `failed`, or `cancelled`.
+  `reel_status_request` (`request_id`) asks for one and echoes the
+  `request_id`.
+- Durability (schema 83): `project.json` gains `reels`, each with `id`, `name`,
+  and `clips` of `event`, `angle`, `trim_in_frames`, `trim_out_frames`, and
+  `speed_percent`; an input a clip plays is held by
+  `InputReference::ReelClip`. Export jobs and their progress are runtime
+  state, never persisted.
+- 2.106 is refused.
+
+Protocol 2.108 adds three default health alert rule tokens for network
+reconnects, degraded source sync, and saturated encoder queues (`RC-015`). No
+other wire shape changes and no schema change.
+
+- The alert rule tokens are now `cpu_saturated`, `disk_low`, `frame_late`,
+  `frames_dropped`, `gpu_saturated`, `output_failed`, `encoder_saturated`,
+  `stream_reconnecting`, and `sync_degraded`, in that wire order. The
+  `alerts` list carries at most one entry per rule, now up to nine.
+  `encoder_saturated` reports an encoder queue that stayed saturated,
+  `stream_reconnecting` outputs that kept reconnecting, and `sync_degraded` a
+  live source whose clock sync stayed degraded. Severities, readings, and the
+  record shapes are unchanged.
+- 2.107 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

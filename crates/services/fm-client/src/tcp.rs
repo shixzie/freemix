@@ -378,6 +378,14 @@ pub enum SessionEvent {
     RecorderStatus {
         status: RecorderStatusMessage,
     },
+    /// The replay recording, events, and players (OR-012); the latest is
+    /// retained in [`TcpSession::latest_replay_status`].
+    ReplayStatus {
+        status: Box<fm_protocol::ReplayStatusMessage>,
+    },
+    /// The highlight reels and their export jobs (OR-013); the latest is
+    /// retained in [`TcpSession::latest_reel_status`].
+    ReelStatus(Box<fm_protocol::ReelStatusMessage>),
     /// Every running live source's drift loop (Protocol 2.76); the latest
     /// is retained in [`TcpSession::latest_source_sync_status`].
     SourceSyncStatus {
@@ -550,6 +558,10 @@ pub struct TcpSession {
     latest_stream_status: Option<StreamStatusMessage>,
     last_recorder_status_sequence: Option<u64>,
     latest_recorder_status: Option<RecorderStatusMessage>,
+    /// The latest `replay_status` (OR-012).
+    latest_replay_status: Option<Box<fm_protocol::ReplayStatusMessage>>,
+    /// The latest `reel_status` (OR-013).
+    latest_reel_status: Option<Box<fm_protocol::ReelStatusMessage>>,
     /// The latest `title_phases` (Protocol 2.90).
     latest_title_phases: Option<fm_protocol::TitlePhasesMessage>,
     last_source_sync_sequence: Option<u64>,
@@ -700,6 +712,8 @@ impl TcpSession {
             latest_stream_status: None,
             last_recorder_status_sequence: None,
             latest_recorder_status: None,
+            latest_replay_status: None,
+            latest_reel_status: None,
             latest_title_phases: None,
             last_source_sync_sequence: None,
             latest_source_sync_status: None,
@@ -762,6 +776,54 @@ impl TcpSession {
     #[must_use]
     pub const fn latest_recorder_status(&self) -> Option<&RecorderStatusMessage> {
         self.latest_recorder_status.as_ref()
+    }
+
+    /// The latest replay status (OR-012).
+    #[must_use]
+    pub fn latest_replay_status(&self) -> Option<&fm_protocol::ReplayStatusMessage> {
+        self.latest_replay_status.as_deref()
+    }
+
+    /// The latest highlight reel status (OR-013).
+    #[must_use]
+    pub fn latest_reel_status(&self) -> Option<&fm_protocol::ReelStatusMessage> {
+        self.latest_reel_status.as_deref()
+    }
+
+    /// Asks for the replay status (OR-012); the answer arrives as
+    /// [`SessionEvent::ReplayStatus`] echoing `request_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected or when encoding or writing the
+    /// request fails.
+    pub fn send_replay_status_request(
+        &mut self,
+        request: fm_protocol::ReplayStatusRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        self.send_wire_wait(&WireMessage::ReplayStatusRequest(request), None)?;
+        self.flush_wire_wait(None)
+    }
+
+    /// Asks for the highlight reel status (OR-013); the answer arrives as
+    /// [`SessionEvent::ReelStatus`] echoing `request_id`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected or when encoding or writing the
+    /// request fails.
+    pub fn send_reel_status_request(
+        &mut self,
+        request: fm_protocol::ReelStatusRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        self.send_wire_wait(&WireMessage::ReelStatusRequest(request), None)?;
+        self.flush_wire_wait(None)
     }
 
     /// The latest title animation phases (Protocol 2.90): what a title
@@ -1572,6 +1634,12 @@ impl TcpSession {
                     WireMessage::RecorderStatus(status) => {
                         self.validate_recorder_status(&status)?;
                     }
+                    WireMessage::ReplayStatus(status) => {
+                        self.latest_replay_status = Some(status);
+                    }
+                    WireMessage::ReelStatus(status) => {
+                        self.latest_reel_status = Some(status);
+                    }
                     WireMessage::TitlePhases(phases) => {
                         self.latest_title_phases = Some(phases);
                     }
@@ -1678,6 +1746,14 @@ impl TcpSession {
             WireMessage::RecorderStatus(status) => {
                 self.validate_recorder_status(&status)?;
                 Ok(SessionEvent::RecorderStatus { status })
+            }
+            WireMessage::ReplayStatus(status) => {
+                self.latest_replay_status = Some(status.clone());
+                Ok(SessionEvent::ReplayStatus { status })
+            }
+            WireMessage::ReelStatus(status) => {
+                self.latest_reel_status = Some(status.clone());
+                Ok(SessionEvent::ReelStatus(status))
             }
             WireMessage::SourceSyncStatus(status) => {
                 self.validate_source_sync_status(&status)?;
@@ -1790,7 +1866,9 @@ impl TcpSession {
             | WireMessage::SlideshowSlidesRequest(_)
             | WireMessage::PagedPageRequest(_)
             | WireMessage::ScreenCaptureTargetsRequest(_)
-            | WireMessage::ScreenCapturePickRequest(_) => {
+            | WireMessage::ScreenCapturePickRequest(_)
+            | WireMessage::ReplayStatusRequest(_)
+            | WireMessage::ReelStatusRequest(_) => {
                 self.transition_disconnect();
                 Err(TcpSessionError::UnexpectedMessage)
             }

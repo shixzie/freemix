@@ -348,6 +348,7 @@ impl ModerationDesk {
     }
 
     /// Retained audit entries, oldest first.
+    #[must_use]
     pub fn audit(&self) -> impl ExactSizeIterator<Item = &AuditEntry> {
         self.audit.iter()
     }

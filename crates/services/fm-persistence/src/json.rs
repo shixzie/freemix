@@ -12,6 +12,8 @@ mod live_lan;
 mod media_list;
 mod media_playback;
 mod network_stream;
+mod reel;
+mod replay;
 mod scene_animation;
 mod screen_capture;
 mod screen_capture_tokens;

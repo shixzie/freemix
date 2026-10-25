@@ -272,10 +272,14 @@ enum LossySlot {
     TitlePhases,
     /// The latest `health_status` (Protocol 2.100).
     HealthStatus,
+    /// The latest `replay_status` (OR-012).
+    ReplayStatus,
+    /// The latest `reel_status` (OR-013).
+    ReelStatus,
 }
 
 impl LossySlot {
-    const COUNT: usize = 10;
+    const COUNT: usize = 12;
 
     const fn index(self) -> usize {
         match self {
@@ -289,6 +293,8 @@ impl LossySlot {
             Self::SourceSyncStatus => 7,
             Self::TitlePhases => 8,
             Self::HealthStatus => 9,
+            Self::ReplayStatus => 10,
+            Self::ReelStatus => 11,
         }
     }
 
@@ -533,6 +539,22 @@ impl Peer {
         }
     }
 
+    /// Coalesces the latest replay status in its own slot (OR-012); Web
+    /// pages do not take it.
+    fn replace_replay_status(&mut self, bytes: Vec<u8>) {
+        if self.phase == Phase::Active && self.web_feed.is_none() && self.recorder_status {
+            self.lossy.replace(LossySlot::ReplayStatus, bytes);
+        }
+    }
+
+    /// Coalesces the latest highlight reel status in its own slot (OR-013);
+    /// Web pages do not take it.
+    fn replace_reel_status(&mut self, bytes: Vec<u8>) {
+        if self.phase == Phase::Active && self.web_feed.is_none() && self.recorder_status {
+            self.lossy.replace(LossySlot::ReelStatus, bytes);
+        }
+    }
+
     /// Coalesces the latest daemon health in its own slot (Protocol 2.100);
     /// Web pages do not take it.
     fn replace_health_status(&mut self, bytes: Vec<u8>) {
@@ -557,6 +579,12 @@ impl Peer {
     /// Whether this session takes `title_phases` records.
     fn wants_title_phases(&self) -> bool {
         self.phase == Phase::Active && (self.web_feed.is_some() || self.recorder_status)
+    }
+
+    /// Whether this session takes audio meters: a raw Studio session, or a
+    /// Web page granted the lossy status feed.
+    fn wants_audio_meters(&self) -> bool {
+        self.phase == Phase::Active && (self.audio_meters || self.web_feed.is_some())
     }
 
     /// Offers a Web peer's feed the Master meters of `web_bytes`.
@@ -773,6 +801,8 @@ pub(super) fn run(
         statistics: std::cell::RefCell::new(crate::statistics::DaemonStatistics::new(
             Instant::now(),
         )),
+        replay_pacer: std::cell::RefCell::new(ReplayStatusPacer::default()),
+        reel_pacer: std::cell::RefCell::new(ReelStatusPacer::default()),
     };
     let mut native = native;
     // Only the native pacer realizes idle frames between commands, so only
@@ -831,6 +861,19 @@ pub(super) fn run(
     } else {
         None
     };
+    // The simulated daemon's audio plane renders the persisted strip and
+    // Master chains on its own wall clock while a Studio peer demands
+    // meters (AU-005). It never advances the engine or the journal.
+    let mut simulated_audio = if native.is_none() {
+        crate::sim_audio::SimulatedAudioRuntime::new(
+            durable.project(),
+            durable.position().frames_rendered,
+        )
+        .ok()
+    } else {
+        None
+    };
+    let mut simulated_audio_sequence = 0_u64;
 
     loop {
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
@@ -1397,6 +1440,61 @@ pub(super) fn run(
                 publish_source_sync_status(&mut peers, &status);
             }
         }
+        // A simulated daemon renders its audio plane only while a Studio
+        // peer demands meters; the engine is never ticked for it (AU-005).
+        if native.is_none()
+            && let Some(audio) = simulated_audio.as_mut()
+            && peers.iter().any(Peer::wants_audio_meters)
+        {
+            let mut control = control.borrow_mut();
+            let program = control.realized_program_frame();
+            let revision = control.revision();
+            let resets = control.take_loudness_resets();
+            drop(control);
+            if let Some(meters) = audio.poll(
+                durable.project(),
+                revision,
+                program,
+                resets,
+                true,
+                Instant::now(),
+            ) {
+                simulated_audio_sequence =
+                    simulated_audio_sequence.checked_add(1).ok_or_else(|| {
+                        crate::AppFailure("simulated audio meter sequence exhausted".into())
+                    })?;
+                let view = crate::AudioMeterView::from(&meters);
+                let message = crate::audio_meters_message(
+                    authority,
+                    simulated_audio_sequence,
+                    &view,
+                    fm_protocol::AudioMonitorOutputState::Off,
+                );
+                publish_audio_meters(&mut peers, message);
+            }
+        }
+        // Both daemons announce their replay recording (OR-012).
+        if peers.iter().any(|peer| peer.recorder_status) {
+            let status = runtime.replay_pacer.borrow_mut().poll(
+                &control.borrow(),
+                authority,
+                Instant::now(),
+            );
+            if let Some(status) = status {
+                publish_replay_status(&mut peers, status);
+            }
+        }
+        // Both daemons announce their highlight reels (OR-013).
+        if peers.iter().any(|peer| peer.recorder_status) {
+            let status =
+                runtime
+                    .reel_pacer
+                    .borrow_mut()
+                    .poll(&control.borrow(), authority, Instant::now());
+            if let Some(status) = status {
+                publish_reel_status(&mut peers, status);
+            }
+        }
         // Both daemons sample their named statistics once a second (RC-015).
         let now = Instant::now();
         if runtime.statistics.borrow().due(now) {
@@ -1940,6 +2038,10 @@ struct Runtime<'a> {
     thumbnail_refresh: std::cell::RefCell<bool>,
     /// The daemon's named statistics (RC-015), sampled once a second.
     statistics: std::cell::RefCell<crate::statistics::DaemonStatistics>,
+    /// Paces `replay_status` (OR-012).
+    replay_pacer: std::cell::RefCell<ReplayStatusPacer>,
+    /// Paces `reel_status` (OR-013).
+    reel_pacer: std::cell::RefCell<ReelStatusPacer>,
 }
 
 impl Runtime<'_> {
@@ -2141,11 +2243,13 @@ impl Runtime<'_> {
         let mut native = native;
         match message {
             WireMessage::Command(mut command) => {
+                // Caught up first, so a Web fire is checked against the
+                // show it runs on.
+                self.catch_up_playlist(&command, durable, native.is_none())?;
                 if let Some(refused) = self.web_command_refusal(peer, &mut command) {
                     peer.reply(WireMessage::CommandResult(refused))?;
                     return Ok(());
                 }
-                self.catch_up_playlist(&command, durable, native.is_none())?;
                 let delivery = execute_session_command(
                     peer.session.as_mut().expect("active peers have sessions"),
                     self.control,
@@ -2413,6 +2517,36 @@ impl Runtime<'_> {
                 }
                 Ok(())
             }
+            // The replay status (OR-012), to any session that may view
+            // status.
+            WireMessage::ReplayStatusRequest(request) => {
+                if self.refuse_request(peer, &request.request_id, Session::admit_view_status)? {
+                    return Ok(());
+                }
+                let sequence = self.replay_pacer.borrow_mut().next_sequence();
+                let status = self.control.borrow().replay_status(
+                    self.authority,
+                    sequence,
+                    Some(request.request_id),
+                );
+                peer.reply(WireMessage::ReplayStatus(Box::new(status)))?;
+                Ok(())
+            }
+            // The highlight reel status (OR-013), to any session that may
+            // view status.
+            WireMessage::ReelStatusRequest(request) => {
+                if self.refuse_request(peer, &request.request_id, Session::admit_view_status)? {
+                    return Ok(());
+                }
+                let sequence = self.reel_pacer.borrow_mut().next_sequence();
+                let status = self.control.borrow().reel_status(
+                    self.authority,
+                    sequence,
+                    Some(request.request_id),
+                );
+                peer.reply(WireMessage::ReelStatus(Box::new(status)))?;
+                Ok(())
+            }
             WireMessage::SystemAudioDevicesRequest(request) => {
                 if self.refuse_request(
                     peer,
@@ -2496,7 +2630,8 @@ impl Runtime<'_> {
     /// The refusal a Web peer's command meets before it executes (see
     /// [`crate::web_titles`]); `None` for raw peers and allowed commands. A
     /// Web peer's cue list or shortcut edit gets back the stored values
-    /// its hidden markers stand for (Protocol 2.104).
+    /// its hidden markers stand for, and its fire may not write a value
+    /// hidden from it where it can read it (Protocol 2.104).
     fn web_command_refusal(
         &self,
         peer: &Peer,
@@ -2525,6 +2660,15 @@ impl Runtime<'_> {
                 command,
                 &hidden,
                 &stored,
+                current_revision,
+            );
+        }
+        if crate::web_titles::is_fire(command) {
+            return crate::web_titles::web_fire_refusal(
+                command,
+                &control.fire_title_writes(&command.payload),
+                &hidden,
+                &crate::web_titles::visible_fields(&control.title_states()),
                 current_revision,
             );
         }
@@ -2865,16 +3009,39 @@ impl Runtime<'_> {
             SyncPayload::Snapshot(snapshot) => peer
                 .initial_sync
                 .push_back(WireMessage::Snapshot(*snapshot)),
-            // Resumed events reach a Web page filtered as live ones do.
+            // Resumed events reach a Web page filtered as live ones do,
+            // and followed by what the live path would have sent after
+            // them: the current state of each title they name and, after
+            // an exposure change, the cue lists and shortcuts that set
+            // title fields (see `web_resync`).
             SyncPayload::Resume(events) => {
                 let hidden = self.web_hidden(peer.transport.is_web());
-                peer.initial_sync
-                    .extend(events.into_iter().map(|event| match &hidden {
-                        Some(hidden) => {
-                            crate::web_titles::web_message(WireMessage::Event(event), hidden)
+                let mut inputs = Vec::new();
+                let mut exposure = false;
+                for event in events {
+                    let message = WireMessage::Event(event);
+                    let Some(hidden) = &hidden else {
+                        peer.initial_sync.push_back(message);
+                        continue;
+                    };
+                    for input in crate::web_titles::resync_inputs(&message) {
+                        if !inputs.contains(&input) {
+                            inputs.push(input);
                         }
-                        None => WireMessage::Event(event),
-                    }));
+                    }
+                    exposure |= crate::web_titles::exposure_changed(&message);
+                    peer.initial_sync
+                        .push_back(crate::web_titles::web_message(message, hidden));
+                }
+                if let Some(hidden) = &hidden {
+                    let records =
+                        web_resync_records(self, &self.control.borrow(), &inputs, exposure);
+                    peer.initial_sync.extend(
+                        records
+                            .into_iter()
+                            .map(|record| crate::web_titles::web_message(record, hidden)),
+                    );
+                }
             }
         }
         let sync_limit = self
@@ -2943,9 +3110,10 @@ fn make_retryable(response: &mut HandshakeResponse) {
     }
 }
 
-/// Whether `command` is a Web peer's title command, or cue list, shortcut,
-/// or script edit (Protocol 2.104), that must first be checked against the
-/// fields titles hide (see [`crate::web_titles`]).
+/// Whether `command` is a Web peer's title command, cue list, shortcut,
+/// or script edit, or cue or shortcut fire (Protocol 2.104), that must
+/// first be checked against the fields titles hide (see
+/// [`crate::web_titles`]).
 fn web_title_command(peer: &Peer, command: &fm_protocol::CommandMessage) -> bool {
     peer.transport.is_web()
         && (matches!(
@@ -2953,7 +3121,8 @@ fn web_title_command(peer: &Peer, command: &fm_protocol::CommandMessage) -> bool
             CommandPayload::SetTitleFieldExposure { .. }
                 | CommandPayload::SetTitleFields { .. }
                 | CommandPayload::TakeTitle { .. }
-        ) || crate::web_titles::is_definition_edit(command))
+        ) || crate::web_titles::is_definition_edit(command)
+            || crate::web_titles::is_fire(command))
 }
 
 /// The records that resynchronize a Web session after `message`, unfiltered
@@ -2967,16 +3136,32 @@ fn web_resync(
     control: &fm_control::ControlService<fm_auth::Policy>,
     message: &WireMessage,
 ) -> Vec<WireMessage> {
-    let inputs = crate::web_titles::resync_inputs(message);
+    web_resync_records(
+        runtime,
+        control,
+        &crate::web_titles::resync_inputs(message),
+        crate::web_titles::exposure_changed(message),
+    )
+}
+
+/// The resynchronizing records of [`web_resync`] for the titles `inputs`
+/// and, with `exposure`, the cue lists and shortcuts too: what follows a
+/// live event, or the events a resumed Web session is replayed.
+fn web_resync_records(
+    runtime: &Runtime<'_>,
+    control: &fm_control::ControlService<fm_auth::Policy>,
+    inputs: &[fm_protocol::WireInputId],
+    exposure: bool,
+) -> Vec<WireMessage> {
     let mut records: Vec<WireMessage> = if inputs.is_empty() {
         Vec::new()
     } else {
-        crate::web_titles::web_title_states(control.title_states(), &inputs)
+        crate::web_titles::web_title_states(control.title_states(), inputs)
             .into_iter()
             .map(WireMessage::TitleState)
             .collect()
     };
-    if crate::web_titles::exposure_changed(message) {
+    if exposure {
         records.extend(
             runtime
                 .cue_list_states(control)
@@ -3330,6 +3515,117 @@ fn publish_title_phases(peers: &mut [Peer], phases: fm_protocol::TitlePhasesMess
     };
     for peer in peers {
         peer.replace_title_phases(&bytes);
+    }
+}
+
+/// The replay status (OR-012) goes to raw Studio peers in its own
+/// latest-wins slot.
+fn publish_replay_status(peers: &mut [Peer], status: fm_protocol::ReplayStatusMessage) {
+    let Ok(bytes) =
+        encode_line(&WireMessage::ReplayStatus(Box::new(status))).map(String::into_bytes)
+    else {
+        return;
+    };
+    for peer in peers {
+        peer.replace_replay_status(bytes.clone());
+    }
+}
+
+/// The highlight reel status (OR-013) goes to raw Studio peers in its own
+/// latest-wins slot.
+fn publish_reel_status(peers: &mut [Peer], status: fm_protocol::ReelStatusMessage) {
+    let Ok(bytes) = encode_line(&WireMessage::ReelStatus(Box::new(status))).map(String::into_bytes)
+    else {
+        return;
+    };
+    for peer in peers {
+        peer.replace_reel_status(bytes.clone());
+    }
+}
+
+/// Paces `replay_status` (OR-012): at most four a second while it changes,
+/// one a second otherwise (the live edge moves every frame).
+#[derive(Debug, Default)]
+pub(crate) struct ReplayStatusPacer {
+    sequence: u64,
+    generation: Option<u64>,
+    sent_at: Option<Instant>,
+}
+
+impl ReplayStatusPacer {
+    const CHANGED: std::time::Duration = std::time::Duration::from_millis(250);
+    const IDLE: std::time::Duration = std::time::Duration::from_secs(1);
+
+    /// The next status to publish, if one is due.
+    fn poll(
+        &mut self,
+        control: &fm_control::ControlService,
+        authority: &ServerIdentity,
+        now: Instant,
+    ) -> Option<fm_protocol::ReplayStatusMessage> {
+        let generation = control.replay_generation();
+        let elapsed = self.sent_at.map(|sent| now.saturating_duration_since(sent));
+        let due = match elapsed {
+            None => true,
+            Some(elapsed) if self.generation != Some(generation) => elapsed >= Self::CHANGED,
+            Some(elapsed) => elapsed >= Self::IDLE,
+        };
+        if !due {
+            return None;
+        }
+        self.generation = Some(generation);
+        self.sent_at = Some(now);
+        self.sequence = self.sequence.wrapping_add(1);
+        Some(control.replay_status(authority, self.sequence, None))
+    }
+
+    /// The sequence of a status answering a request.
+    fn next_sequence(&mut self) -> u64 {
+        self.sequence = self.sequence.wrapping_add(1);
+        self.sequence
+    }
+}
+
+/// Paces `reel_status` (OR-013): at most four a second while it changes,
+/// one a second otherwise (export progress moves while a job runs).
+#[derive(Debug, Default)]
+pub(crate) struct ReelStatusPacer {
+    sequence: u64,
+    generation: Option<u64>,
+    sent_at: Option<Instant>,
+}
+
+impl ReelStatusPacer {
+    const CHANGED: std::time::Duration = std::time::Duration::from_millis(250);
+    const IDLE: std::time::Duration = std::time::Duration::from_secs(1);
+
+    /// The next status to publish, if one is due.
+    fn poll(
+        &mut self,
+        control: &fm_control::ControlService,
+        authority: &ServerIdentity,
+        now: Instant,
+    ) -> Option<fm_protocol::ReelStatusMessage> {
+        let generation = control.reel_generation();
+        let elapsed = self.sent_at.map(|sent| now.saturating_duration_since(sent));
+        let due = match elapsed {
+            None => true,
+            Some(elapsed) if self.generation != Some(generation) => elapsed >= Self::CHANGED,
+            Some(elapsed) => elapsed >= Self::IDLE,
+        };
+        if !due {
+            return None;
+        }
+        self.generation = Some(generation);
+        self.sent_at = Some(now);
+        self.sequence = self.sequence.wrapping_add(1);
+        Some(control.reel_status(authority, self.sequence, None))
+    }
+
+    /// The sequence of a status answering a request.
+    fn next_sequence(&mut self) -> u64 {
+        self.sequence = self.sequence.wrapping_add(1);
+        self.sequence
     }
 }
 
@@ -4445,6 +4741,41 @@ mod tests {
         }
     }
 
+    fn reel_status_message(sequence: u64) -> fm_protocol::ReelStatusMessage {
+        fm_protocol::ReelStatusMessage {
+            server: identity(),
+            sequence,
+            request_id: None,
+            reels: vec![fm_protocol::ReelStatus {
+                id: 1,
+                spec: fm_protocol::ReelSpec {
+                    id: 1,
+                    name: "Goals".to_owned(),
+                    clips: vec![fm_protocol::ReelClip {
+                        event: 1,
+                        angle: fm_protocol::WireInputId::new(NonZeroU128::new(1).unwrap())
+                            .to_domain(),
+                        trim_in_frames: 0,
+                        trim_out_frames: 0,
+                        speed_percent: 100,
+                    }],
+                },
+                total_frames: Some(300),
+                error: None,
+            }],
+            exports: vec![fm_protocol::ReelExportStatus {
+                job: 1,
+                reel: 1,
+                destination: "/srv/reels/goals.mp4".to_owned(),
+                state: fm_protocol::ReelExportState::Running,
+                completed_frames: 120,
+                total_frames: Some(300),
+                bytes: None,
+                failure: None,
+            }],
+        }
+    }
+
     /// Protocol 2.66: a Web peer that may view status gets a lossy feed of
     /// Master meters, recorder status, and stream status. One feed record is
     /// handed over at a time, only behind a nearly idle queue and never
@@ -4599,6 +4930,25 @@ mod tests {
         publish_recorder_status(std::slice::from_mut(&mut peer), recorder_status_message(2));
         assert!(!peer.lossy.slot(LossySlot::RecorderStatus).is_empty());
         let expected = encode_line(&WireMessage::RecorderStatus(recorder_status_message(2)))
+            .unwrap()
+            .into_bytes();
+        while !peer.lossy.is_empty() {
+            assert!(!matches!(write_peer(&mut peer), WriteOutcome::Failed));
+        }
+        assert_eq!(read_exact(&mut client, expected.len()), expected);
+    }
+
+    /// Raw Studio peers keep the highlight reel status in its own lossy
+    /// slot (OR-013).
+    #[test]
+    fn raw_peers_take_reel_status_in_its_own_slot() {
+        let (mut peer, mut client) = active_eligible_peer();
+        publish_reel_status(std::slice::from_mut(&mut peer), reel_status_message(1));
+        assert!(peer.lossy.slot(LossySlot::ReelStatus).is_empty());
+        peer.recorder_status = true;
+        publish_reel_status(std::slice::from_mut(&mut peer), reel_status_message(2));
+        assert!(!peer.lossy.slot(LossySlot::ReelStatus).is_empty());
+        let expected = encode_line(&WireMessage::ReelStatus(Box::new(reel_status_message(2))))
             .unwrap()
             .into_bytes();
         while !peer.lossy.is_empty() {

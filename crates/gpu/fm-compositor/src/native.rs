@@ -1740,6 +1740,9 @@ fn encode_uniform(plan: TransitionPlan, width: u32, height: u32) -> [u8; TRANSIT
 
 #[cfg(test)]
 mod tests {
+    // These assertions compare against exact reference values.
+    #![allow(clippy::float_cmp)]
+
     use super::*;
     use crate::{
         Effect, FadeToBlackPosition, Key, LumaKey, OutputTarget, RectMask, Rgba8, SafeAreaGuide,

@@ -434,9 +434,9 @@ fn catalogue(error: crate::InputCatalogueError) -> Rejection {
         crate::InputCatalogueError::InUse { .. }
         | crate::InputCatalogueError::InPlaylist { .. }
         | crate::InputCatalogueError::InCueList { .. }
-        | crate::InputCatalogueError::BoundByCueRun { .. } => {
-            (RejectionCode::Conflict, "input_in_use")
-        }
+        | crate::InputCatalogueError::BoundByCueRun { .. }
+        | crate::InputCatalogueError::ReplaySource(_)
+        | crate::InputCatalogueError::ReelClip { .. } => (RejectionCode::Conflict, "input_in_use"),
         crate::InputCatalogueError::DuplicateInput(_) => {
             (RejectionCode::Conflict, "duplicate_input")
         }
@@ -481,6 +481,9 @@ pub(crate) fn apply(
                 }
                 Some(InputSourceSpec::ScreenCapture(_)) => {
                     crate::engine::check_screen_capture_room(state)?;
+                }
+                Some(InputSourceSpec::Replay) => {
+                    crate::engine::check_replay_room(state)?;
                 }
                 Some(InputSourceSpec::Network(config)) => {
                     crate::engine::check_network_stream_room(state)?;
@@ -637,6 +640,16 @@ pub(crate) fn apply(
                 && !matches!(current, InputSourceSpec::ScreenCapture(_))
             {
                 crate::engine::check_screen_capture_room(state)?;
+            }
+            if matches!(source, InputSourceSpec::Replay)
+                && !matches!(current, InputSourceSpec::Replay)
+            {
+                // A recorded input cannot become a player of its own
+                // recording (OR-012).
+                if state.replay().sources.contains(input) {
+                    return Err(catalogue(crate::InputCatalogueError::ReplaySource(*input)));
+                }
+                crate::engine::check_replay_room(state)?;
             }
             match (current.is_media(), source.is_media()) {
                 (false, true) => {

@@ -193,6 +193,13 @@ pub enum InputCatalogueError {
         list: u64,
         cue: u64,
     },
+    /// The input is recorded for replay (OR-012).
+    ReplaySource(InputId),
+    /// The input is the recorded angle of a highlight reel clip (OR-013).
+    ReelClip {
+        input: InputId,
+        reel: u64,
+    },
 }
 
 impl fmt::Display for InputCatalogueError {
@@ -228,6 +235,14 @@ impl fmt::Display for InputCatalogueError {
                 "input {input} cannot be removed: the run of cue list {list} bound it for cue \
                  {cue}; stop or disarm the list first"
             ),
+            Self::ReplaySource(input) => write!(
+                formatter,
+                "input {input} cannot be removed: it is recorded for replay"
+            ),
+            Self::ReelClip { input, reel } => write!(
+                formatter,
+                "input {input} cannot be removed: it is a clip angle of reel {reel}"
+            ),
         }
     }
 }
@@ -261,6 +276,13 @@ impl InputCatalogueError {
                     usage: InputUse::CueAction { list, cue },
                 }
             }
+            // The wire has no reel-clip use yet; a reel angle is recorded for
+            // replay, so report the closest existing use (as the daemon's
+            // persisted reference mapping does).
+            Self::ReplaySource(input) | Self::ReelClip { input, .. } => RefusalReason::InputInUse {
+                input: input.get().get(),
+                usage: InputUse::ReplaySource,
+            },
         }
     }
 }

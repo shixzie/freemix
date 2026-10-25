@@ -95,15 +95,108 @@ pub const MONITOR_RETRY_PROBATION: Duration = Duration::from_secs(1);
 pub type MonitorPresence = Box<dyn FnMut(&str) -> Option<bool> + Send>;
 
 /// The presence probe of this platform: ALSA's procfs on Linux, and none
-/// elsewhere (every retry then tries the device).
+/// elsewhere (every retry then tries the device). The procfs read runs on
+/// a poller thread ([`polled_presence`]), never on the render loop.
+#[must_use]
 pub fn system_presence() -> MonitorPresence {
     #[cfg(target_os = "linux")]
     {
         let lister = fm_io_linux::audio_output::AudioOutputLister::default();
-        Box::new(move |device| lister.present(device))
+        polled_presence(
+            move |device: &str| lister.present(device),
+            MONITOR_PRESENCE_POLL / 4,
+        )
     }
     #[cfg(not(target_os = "linux"))]
     Box::new(|_| None)
+}
+
+/// What the presence poller is asked and has answered.
+#[derive(Default)]
+struct PresencePoll {
+    /// The device last asked about.
+    wanted: Option<String>,
+    /// The last answer, and the device it is for.
+    answer: Option<(String, Option<bool>)>,
+    /// The slot dropped its probe; the poller exits.
+    closed: bool,
+}
+
+/// The slot's end of a presence poller: dropping it stops the poller.
+struct PresenceHandle {
+    shared: Arc<(Mutex<PresencePoll>, Condvar)>,
+}
+
+impl PresenceHandle {
+    fn ask(&self, device: &str) -> Option<bool> {
+        let (state, wake) = &*self.shared;
+        // Never wait on the poller: a busy lock reads as "cannot tell".
+        let mut state = state.try_lock().ok()?;
+        if state.wanted.as_deref() != Some(device) {
+            state.wanted = Some(device.to_owned());
+            wake.notify_one();
+        }
+        state
+            .answer
+            .as_ref()
+            .filter(|(answered, _)| answered == device)
+            .and_then(|(_, present)| *present)
+    }
+}
+
+impl Drop for PresenceHandle {
+    fn drop(&mut self) {
+        let (state, wake) = &*self.shared;
+        state.lock().unwrap_or_else(PoisonError::into_inner).closed = true;
+        wake.notify_one();
+    }
+}
+
+/// A presence probe that never runs `probe` on the caller's thread: a
+/// poller thread asks `probe` about the device last asked about every
+/// `interval` (and at once when another device is asked about), and the
+/// returned probe answers from its last result without waiting, `None`
+/// until the poller has answered for that device.
+pub fn polled_presence(
+    mut probe: impl FnMut(&str) -> Option<bool> + Send + 'static,
+    interval: Duration,
+) -> MonitorPresence {
+    let shared = Arc::new((Mutex::new(PresencePoll::default()), Condvar::new()));
+    let poller = Arc::clone(&shared);
+    let spawned = thread::Builder::new()
+        .name("monitor-presence".into())
+        .spawn(move || {
+            let (state, wake) = &*poller;
+            let mut last_device: Option<String> = None;
+            loop {
+                let device = {
+                    let mut guard = state.lock().unwrap_or_else(PoisonError::into_inner);
+                    if last_device.is_some() && guard.wanted == last_device && !guard.closed {
+                        guard = wake
+                            .wait_timeout(guard, interval)
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .0;
+                    }
+                    while guard.wanted.is_none() && !guard.closed {
+                        guard = wake.wait(guard).unwrap_or_else(PoisonError::into_inner);
+                    }
+                    if guard.closed {
+                        return;
+                    }
+                    guard.wanted.clone()
+                };
+                let Some(device) = device else { continue };
+                let present = probe(&device);
+                state.lock().unwrap_or_else(PoisonError::into_inner).answer =
+                    Some((device.clone(), present));
+                last_device = Some(device);
+            }
+        });
+    if spawned.is_err() {
+        return Box::new(|_| None);
+    }
+    let handle = PresenceHandle { shared };
+    Box::new(move |device| handle.ask(device))
 }
 
 /// The wait before retry `attempt` (counting from zero) of a failed
@@ -1043,6 +1136,43 @@ mod tests {
             slot.state_at(at),
             fm_protocol::AudioMonitorOutputState::Failed
         );
+    }
+
+    /// The presence probe never runs on the render loop: asking answers at
+    /// once from the poller's last result, even while the probe blocks.
+    #[test]
+    fn presence_is_probed_off_the_asking_thread() {
+        let asker = thread::current().id();
+        let (probed_on, probed) = std::sync::mpsc::channel();
+        let mut presence = polled_presence(
+            move |device: &str| {
+                let _ = probed_on.send(thread::current().id());
+                thread::sleep(Duration::from_millis(200));
+                Some(device == "phones")
+            },
+            Duration::from_millis(20),
+        );
+        let started = Instant::now();
+        assert_eq!(presence("phones"), None, "no answer before the first poll");
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "asking waited on the probe"
+        );
+        let probe_thread = probed.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_ne!(probe_thread, asker, "the probe ran on the asking thread");
+        let started = Instant::now();
+        while presence("phones") != Some(true) {
+            assert!(started.elapsed() < Duration::from_secs(5), "never answered");
+            thread::sleep(Duration::from_millis(5));
+        }
+        // Another device is not answered from the old device's result.
+        assert_eq!(presence("speakers"), None);
+        let started = Instant::now();
+        while presence("speakers") != Some(false) {
+            assert!(started.elapsed() < Duration::from_secs(5), "never answered");
+            thread::sleep(Duration::from_millis(5));
+        }
+        drop(presence);
     }
 
     #[test]

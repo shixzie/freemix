@@ -171,6 +171,8 @@ fn validate_input_audio_strips(project: &Project, errors: &mut Vec<ValidationErr
     }
     validate_display_outputs(project, errors);
     validate_live_lan(project, errors);
+    validate_replay(project, errors);
+    validate_reels(project, errors);
     for &output in project.fade_to_black_excluded_outputs() {
         if !project
             .outputs()
@@ -925,8 +927,10 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
         }
         match &input.kind {
             // A mix feed reads only the previous tick's committed bus frame,
-            // so it has no reference to validate and adds no graph edge.
-            InputKind::Color | InputKind::MixFeed(_) => {}
+            // so it has no reference to validate and adds no graph edge; a
+            // replay player plays runtime events, and its sources are the
+            // project's replay settings, validated on their own.
+            InputKind::Color | InputKind::MixFeed(_) | InputKind::Replay => {}
             // A title is a leaf: its template is a bundle asset checked by
             // persistence, so only its own field list is validated here.
             InputKind::Title(title) => validate_title(entity, title, errors),
@@ -1801,6 +1805,147 @@ fn validate_live_lan(project: &Project, errors: &mut Vec<ValidationError>) {
                 kind: ValidationErrorKind::MissingReference(EntityRef::Output(output)),
             });
         }
+    }
+}
+
+fn validate_replay(project: &Project, errors: &mut Vec<ValidationError>) {
+    use fm_types::replay::ReplaySettingsError;
+    let replay_inputs = project
+        .inputs()
+        .iter()
+        .filter(|input| matches!(input.kind, InputKind::Replay))
+        .count();
+    if replay_inputs > fm_types::replay::MAX_REPLAY_INPUTS {
+        errors.push(ValidationError {
+            entity: None,
+            field: "inputs.replay",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+    let error = match project
+        .replay()
+        .check(|input| project.replay_source_check(input))
+    {
+        Ok(()) => return,
+        Err(error) => error,
+    };
+    errors.push(match error {
+        ReplaySettingsError::TooManySources => ValidationError {
+            entity: None,
+            field: "replay.sources",
+            kind: ValidationErrorKind::OutOfRange,
+        },
+        ReplaySettingsError::DuplicateSource(input) => ValidationError {
+            entity: Some(EntityRef::Input(input)),
+            field: "replay.sources",
+            kind: ValidationErrorKind::DuplicateReference,
+        },
+        ReplaySettingsError::UnknownSource(input) => ValidationError {
+            entity: None,
+            field: "replay.sources",
+            kind: ValidationErrorKind::MissingReference(EntityRef::Input(input)),
+        },
+        ReplaySettingsError::UnrecordableSource(input) => ValidationError {
+            entity: Some(EntityRef::Input(input)),
+            field: "replay.sources",
+            kind: ValidationErrorKind::SelfReference,
+        },
+        ReplaySettingsError::Retention => ValidationError {
+            entity: None,
+            field: "replay.retention_seconds",
+            kind: ValidationErrorKind::OutOfRange,
+        },
+        ReplaySettingsError::StorageRoot => ValidationError {
+            entity: None,
+            field: "replay.storage_root",
+            kind: ValidationErrorKind::OutOfRange,
+        },
+    });
+}
+
+/// Highlight reels (OR-013): the project and per-reel limits, unique ids,
+/// usable names and speeds, non-empty clips, and angles that can be recorded.
+fn validate_reels(project: &Project, errors: &mut Vec<ValidationError>) {
+    use fm_types::reel::ReelSpecError;
+    if project.reels().len() > fm_types::reel::MAX_REELS {
+        errors.push(ValidationError {
+            entity: None,
+            field: "reels",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+    for (index, reel) in project.reels().iter().enumerate() {
+        if project.reels()[..index]
+            .iter()
+            .any(|previous| previous.id == reel.id)
+        {
+            errors.push(ValidationError {
+                entity: None,
+                field: "reels.id",
+                kind: ValidationErrorKind::DuplicateId,
+            });
+        }
+        let Err(error) = reel.check(|input| {
+            project.replay_source_check(input) == fm_types::replay::ReplaySourceCheck::Recordable
+        }) else {
+            continue;
+        };
+        errors.push(match error {
+            ReelSpecError::TooManyReels => ValidationError {
+                entity: None,
+                field: "reels",
+                kind: ValidationErrorKind::OutOfRange,
+            },
+            ReelSpecError::TooManyClips => ValidationError {
+                entity: None,
+                field: "reels.clips",
+                kind: ValidationErrorKind::OutOfRange,
+            },
+            ReelSpecError::EmptyReel => ValidationError {
+                entity: None,
+                field: "reels.clips",
+                kind: ValidationErrorKind::Empty,
+            },
+            ReelSpecError::DuplicateReel(_) => ValidationError {
+                entity: None,
+                field: "reels.id",
+                kind: ValidationErrorKind::DuplicateId,
+            },
+            ReelSpecError::Name => ValidationError {
+                entity: None,
+                field: "reels.name",
+                kind: if reel.name.trim().is_empty() {
+                    ValidationErrorKind::Empty
+                } else {
+                    ValidationErrorKind::OutOfRange
+                },
+            },
+            ReelSpecError::UnrecordedAngle(input) => {
+                let exists = project
+                    .inputs()
+                    .iter()
+                    .any(|candidate| candidate.id == input);
+                ValidationError {
+                    entity: exists.then_some(EntityRef::Input(input)),
+                    field: "reels.clips.angle",
+                    kind: if exists {
+                        ValidationErrorKind::SelfReference
+                    } else {
+                        ValidationErrorKind::MissingReference(EntityRef::Input(input))
+                    },
+                }
+            }
+            ReelSpecError::Speed(_) => ValidationError {
+                entity: None,
+                field: "reels.clips.speed",
+                kind: ValidationErrorKind::OutOfRange,
+            },
+            ReelSpecError::Trim => ValidationError {
+                entity: None,
+                field: "reels.clips.trim",
+                kind: ValidationErrorKind::OutOfRange,
+            },
+        });
     }
 }
 

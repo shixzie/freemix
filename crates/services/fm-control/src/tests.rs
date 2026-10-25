@@ -2,7 +2,9 @@ use std::{error::Error, fmt, num::NonZeroU128, sync::mpsc::TryRecvError};
 
 use fm_auth::{Policy, Principal, Role, SessionId, UserId};
 use fm_clock::ClockDomainId;
-use fm_engine::{Engine, EngineInputAudioStripState, EngineManualTransitionKind, ShowState};
+use fm_engine::{
+    Engine, EngineInputAudioStripState, EngineManualTransitionKind, EngineReelOperation, ShowState,
+};
 use fm_protocol::{
     CommandMessage, CommandPayload, CommandResult, EngineIdentity, EventCursor, LiveInputSource,
     ManualTransitionKind, ManualTransitionPosition, ManualTransitionStatus, RuntimeLifecycleEvent,
@@ -2849,6 +2851,19 @@ fn wire_edit_payload_round_trips_every_undoable_engine_edit() {
         // Removal is a project edit; it is never recorded, but undo of an
         // add resolves to it and the journal must carry it.
         EngineCommand::RemoveInput { input: input(7) },
+        // A reel edit is a project edit too (OR-013): undo journals the
+        // exact reel it resolves to.
+        EngineCommand::Reel(EngineReelOperation::Set(Box::new(fm_protocol::ReelSpec {
+            id: 1,
+            name: "Goals".to_owned(),
+            clips: vec![fm_protocol::ReelClip {
+                event: 1,
+                angle: input(1),
+                trim_in_frames: 0,
+                trim_out_frames: 0,
+                speed_percent: 100,
+            }],
+        }))),
     ];
     for edit in edits {
         assert_eq!(edit.kind(), fm_engine::EngineCommandKind::ProjectEdit);
@@ -8675,6 +8690,154 @@ mod scripts {
             "{line}"
         );
     }
+}
+
+/// OR-013: a reel edit is a project edit, export control is live, and the
+/// journal records the exact wire operation.
+#[test]
+fn reel_edits_are_project_commands_and_exports_are_live() {
+    let spec = fm_protocol::ReelSpec {
+        id: 1,
+        name: "Goals".to_owned(),
+        clips: vec![fm_protocol::ReelClip {
+            event: 1,
+            angle: input(1),
+            trim_in_frames: 0,
+            trim_out_frames: 0,
+            speed_percent: 100,
+        }],
+    };
+    let set = fm_protocol::ReelOperation::Set(Box::new(spec.clone()));
+    let delete = fm_protocol::ReelOperation::Delete { reel: 1 };
+    assert_eq!(
+        command_class(&CommandPayload::Reel(set.clone())),
+        CommandClass::EditProject
+    );
+    assert!(matches!(
+        engine_command(&CommandPayload::Reel(set.clone())),
+        EngineCommand::Reel(EngineReelOperation::Set(_))
+    ));
+    assert_eq!(
+        command_class(&CommandPayload::Reel(delete)),
+        CommandClass::EditProject
+    );
+    assert_eq!(
+        runtime_domain(&EngineCommand::Reel(EngineReelOperation::Set(Box::new(
+            spec.clone()
+        )))),
+        "project"
+    );
+    assert_eq!(
+        runtime_domain(&EngineCommand::Reel(EngineReelOperation::Delete {
+            reel: 1
+        })),
+        "project"
+    );
+    for operation in [
+        fm_protocol::ReelOperation::Export {
+            job: 1,
+            reel: 1,
+            destination: "/srv/reels/goals.mp4".to_owned(),
+        },
+        fm_protocol::ReelOperation::CancelExport { job: 1 },
+        fm_protocol::ReelOperation::ForgetExport { job: 1 },
+    ] {
+        assert!(operation.is_live());
+        assert_eq!(
+            command_class(&CommandPayload::Reel(operation.clone())),
+            CommandClass::Transition
+        );
+        assert_eq!(
+            runtime_domain(&EngineCommand::Reel(reel::engine_operation(&operation))),
+            "reel"
+        );
+        assert!(matches!(
+            engine_command(&CommandPayload::Reel(operation)),
+            EngineCommand::Reel(
+                EngineReelOperation::Export { .. }
+                    | EngineReelOperation::CancelExport { .. }
+                    | EngineReelOperation::ForgetExport { .. }
+            )
+        ));
+    }
+    assert!(matches!(
+        reel::changed(&fm_engine::EngineEvent::ReelChanged {
+            operation: EngineReelOperation::Set(Box::new(spec.clone())),
+        }),
+        Some(EventPayload::ReelChanged(status)) if status.id == 1 && status.spec == spec
+    ));
+    assert!(matches!(
+        reel::changed(&fm_engine::EngineEvent::ReelChanged {
+            operation: EngineReelOperation::Delete { reel: 1 },
+        }),
+        Some(EventPayload::ReelRemoved { reel: 1 })
+    ));
+    assert_eq!(
+        reel::wire_payload(&EngineCommand::Reel(EngineReelOperation::Set(Box::new(
+            spec
+        )))),
+        Some(CommandPayload::Reel(set))
+    );
+}
+
+/// OR-013: the wire status carries each stored reel with the engine's
+/// compiled length and error, and each export's progress.
+#[test]
+fn reel_status_carries_the_stored_spec_and_export_progress() {
+    let spec = fm_protocol::ReelSpec {
+        id: 1,
+        name: "Goals".to_owned(),
+        clips: vec![fm_protocol::ReelClip {
+            event: 1,
+            angle: input(1),
+            trim_in_frames: 0,
+            trim_out_frames: 0,
+            speed_percent: 100,
+        }],
+    };
+    let status = fm_engine::EngineReelStatus {
+        reels: vec![fm_engine::EngineReelSummary {
+            id: 1,
+            name: "Goals".to_owned(),
+            clips: 1,
+            total_frames: Some(300),
+            error: Some("event 1 is incomplete".to_owned()),
+        }],
+        exports: vec![fm_engine::EngineReelExportStatus {
+            job: 1,
+            reel: 1,
+            destination: "/srv/reels/goals.mp4".to_owned(),
+            state: fm_engine::EngineReelExportState::Running,
+            completed_frames: 120,
+            total_frames: 300,
+            bytes: None,
+            failure: None,
+        }],
+    };
+    let message = reel::status_message(
+        status,
+        std::slice::from_ref(&spec),
+        &server_identity(),
+        7,
+        Some("r-1".to_owned()),
+    );
+    assert_eq!(message.sequence, 7);
+    assert_eq!(message.request_id.as_deref(), Some("r-1"));
+    assert_eq!(message.reels.len(), 1);
+    assert_eq!(message.reels[0].spec, spec);
+    assert_eq!(message.reels[0].total_frames, Some(300));
+    assert_eq!(
+        message.reels[0].error.as_deref(),
+        Some("event 1 is incomplete")
+    );
+    assert_eq!(message.exports.len(), 1);
+    assert_eq!(message.exports[0].job, 1);
+    assert_eq!(
+        message.exports[0].state,
+        fm_protocol::ReelExportState::Running
+    );
+    assert_eq!(message.exports[0].completed_frames, 120);
+    assert_eq!(message.exports[0].total_frames, Some(300));
 }
 
 mod automation_authority;

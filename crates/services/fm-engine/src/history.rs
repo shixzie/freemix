@@ -136,6 +136,7 @@ pub enum EngineCommandKind {
 impl EngineCommand {
     /// Returns this command's undo and padlock class.
     #[must_use]
+    #[allow(clippy::too_many_lines)] // one arm per command; splitting hides the mapping
     pub const fn kind(&self) -> EngineCommandKind {
         match self {
             Self::RenameInput { .. }
@@ -169,6 +170,20 @@ impl EngineCommand {
             | Self::InputLifecycle(_) => EngineCommandKind::ProjectEdit,
             Self::AudioMixer(edit) => {
                 if edit.is_live() {
+                    EngineCommandKind::LiveOperation
+                } else {
+                    EngineCommandKind::ProjectEdit
+                }
+            }
+            Self::Replay(operation) => {
+                if operation.is_live() {
+                    EngineCommandKind::LiveOperation
+                } else {
+                    EngineCommandKind::ProjectEdit
+                }
+            }
+            Self::Reel(operation) => {
+                if operation.is_live() {
                     EngineCommandKind::LiveOperation
                 } else {
                     EngineCommandKind::ProjectEdit
@@ -994,6 +1009,9 @@ fn names_input(command: &EngineCommand, input: InputId) -> bool {
         EngineCommand::InputLifecycle(edit) => edit.names_input(input),
         EngineCommand::SceneLayer(edit) => edit.names_input(input),
         EngineCommand::AudioMixer(edit) => edit.names_input(input),
+        EngineCommand::Reel(crate::EngineReelOperation::Set(spec)) => {
+            spec.clips.iter().any(|clip| clip.angle == input)
+        }
         EngineCommand::MediaList(command) => command.input == input,
         _ => false,
     }
@@ -1102,6 +1120,28 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
         EngineCommand::SetLiveLan(_) => Some(EngineCommand::SetLiveLan(Box::new(
             state.live_lan().clone(),
         ))),
+        EngineCommand::Replay(crate::EngineReplayOperation::Configure(_)) => {
+            Some(EngineCommand::Replay(
+                crate::EngineReplayOperation::Configure(Box::new(state.replay().clone())),
+            ))
+        }
+        // A reel edit is undone by restoring the previous reel; a new reel
+        // is undone by removing it again.
+        EngineCommand::Reel(operation) => match operation {
+            crate::EngineReelOperation::Set(spec) => {
+                Some(EngineCommand::Reel(match state.reel(spec.id) {
+                    Some(previous) => crate::EngineReelOperation::Set(Box::new(previous.clone())),
+                    None => crate::EngineReelOperation::Delete { reel: spec.id },
+                }))
+            }
+            crate::EngineReelOperation::Delete { reel } => state
+                .reel(*reel)
+                .cloned()
+                .map(|spec| EngineCommand::Reel(crate::EngineReelOperation::Set(Box::new(spec)))),
+            crate::EngineReelOperation::Export { .. }
+            | crate::EngineReelOperation::CancelExport { .. }
+            | crate::EngineReelOperation::ForgetExport { .. } => None,
+        },
         EngineCommand::SetDisplayOutput { slot, .. } => Some(EngineCommand::SetDisplayOutput {
             slot: *slot,
             config: state.display_output(*slot).cloned().map(Box::new),

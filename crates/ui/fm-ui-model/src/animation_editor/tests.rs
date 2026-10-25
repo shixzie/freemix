@@ -1,3 +1,6 @@
+// The assertions compare exact reference values.
+#![allow(clippy::float_cmp)]
+
 use core::time::Duration;
 
 use fm_animation::{

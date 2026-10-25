@@ -107,6 +107,8 @@ pub enum NewInputKind {
     MediaList,
     /// A screen or application window of the server's desktop (IN-011).
     ScreenCapture,
+    /// A Replay input: cues and plays captured replay events (OR-012).
+    Replay,
 }
 
 impl NewInputKind {
@@ -127,6 +129,7 @@ impl NewInputKind {
             Self::Slideshow => Msg::NameSlideshow,
             Self::MediaList => Msg::NameMediaList,
             Self::ScreenCapture => Msg::NameScreenCapture,
+            Self::Replay => Msg::NameReplay,
         }
     }
 
@@ -141,6 +144,7 @@ impl NewInputKind {
             Self::Slideshow => Msg::KindSlideshowKey,
             Self::MediaList => Msg::KindMediaListKey,
             Self::ScreenCapture => Msg::KindScreenCaptureKey,
+            Self::Replay => Msg::KindReplayKey,
         }
     }
 
@@ -155,6 +159,7 @@ impl NewInputKind {
             Self::Slideshow => Msg::KindSlideshowHover,
             Self::MediaList => Msg::KindMediaListHover,
             Self::ScreenCapture => Msg::KindScreenCaptureHover,
+            Self::Replay => Msg::KindReplayHover,
         }
     }
 }
@@ -571,6 +576,7 @@ impl AddInputDraft {
             NewInputKind::ScreenCapture => {
                 LiveInputSource::ScreenCapture(Box::new(self.screen_capture.config()?))
             }
+            NewInputKind::Replay => LiveInputSource::Replay,
         })
     }
 
@@ -578,7 +584,7 @@ impl AddInputDraft {
     /// the reason, and whether it is only still to be filled in.
     pub(crate) fn source_problem(&self) -> Option<FieldProblem<Msg>> {
         let problem = match self.kind {
-            NewInputKind::Solid | NewInputKind::Bars => return None,
+            NewInputKind::Solid | NewInputKind::Bars | NewInputKind::Replay => return None,
             NewInputKind::Network => {
                 let problem = self.stream.checked().err()?;
                 (problem.field.label(), problem.reason, problem.prompt)
@@ -1167,26 +1173,28 @@ impl StudioShell {
                         // with a gap at the right.
                         let gap = 8.0;
                         let column = ((ui.available_width() - 2.0 * gap) / 3.0).floor();
-                        for row in [
-                            [
+                        let rows: [&[NewInputKind]; 4] = [
+                            &[
                                 NewInputKind::Solid,
                                 NewInputKind::Bars,
                                 NewInputKind::Network,
                             ],
-                            [
+                            &[
                                 NewInputKind::Capture,
                                 NewInputKind::SystemAudio,
                                 NewInputKind::ScreenCapture,
                             ],
-                            [
+                            &[
                                 NewInputKind::Image,
                                 NewInputKind::Slideshow,
                                 NewInputKind::MediaList,
                             ],
-                        ] {
+                            &[NewInputKind::Replay],
+                        ];
+                        for row in rows {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing = Vec2::new(gap, 6.0);
-                                for kind in row {
+                                for &kind in row {
                                     let selected = draft.kind == kind;
                                     let response = ui
                                         .add(
@@ -1708,7 +1716,8 @@ fn preview_audio_badge(l: Locale, draft: &AddInputDraft) -> Option<String> {
         NewInputKind::Network
         | NewInputKind::Capture
         | NewInputKind::SystemAudio
-        | NewInputKind::MediaList => None,
+        | NewInputKind::MediaList
+        | NewInputKind::Replay => None,
     }
 }
 
@@ -1759,7 +1768,8 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
         NewInputKind::SystemAudio
         | NewInputKind::Image
         | NewInputKind::Slideshow
-        | NewInputKind::MediaList => {
+        | NewInputKind::MediaList
+        | NewInputKind::Replay => {
             let first_file = media_list_first_file(draft);
             painter.text(
                 rect.center(),
@@ -1768,6 +1778,7 @@ fn paint_source_preview(ui: &mut Ui, draft: &AddInputDraft, next_id: Option<Inpu
                     l.text(match draft.kind {
                         NewInputKind::SystemAudio => Msg::ThumbAudioOnly,
                         NewInputKind::MediaList => Msg::ThumbMediaListEmpty,
+                        NewInputKind::Replay => Msg::ReplayNothingCued,
                         _ => Msg::ThumbSlideshowEmpty,
                     })
                 }),
@@ -2003,6 +2014,10 @@ mod tests {
             suggested_input_name(NewInputKind::Bars, &["Solid Colour 1"]),
             "Colour Bars 1"
         );
+        assert_eq!(
+            suggested_input_name(NewInputKind::Replay, &[]),
+            "Replay Input 1"
+        );
         let spanish = Locale::new(fm_ui_model::i18n::Language::Spanish);
         assert_eq!(
             localized_input_name(spanish, NewInputKind::Solid, &["Color sólido 1"]),
@@ -2205,6 +2220,26 @@ mod tests {
         assert_eq!(
             add_input_intent(&draft, &viewer, &tracker),
             Err("this session lacks the edit_project permission")
+        );
+    }
+
+    /// OR-012: Add input → Replay creates a Replay input, ready for the
+    /// Replay panel to cue events on.
+    #[test]
+    fn a_replay_add_creates_a_replay_input() {
+        let state = state();
+        let tracker = CatalogueTracker::default();
+        let mut draft = AddInputDraft::new(&state, &tracker);
+        draft.set_kind(NewInputKind::Replay, &tracker.taken_names(&state));
+        assert_eq!(draft.name, "Replay Input 1");
+        assert_eq!(draft.source(), Ok(LiveInputSource::Replay));
+        assert_eq!(
+            add_input_intent(&draft, &state, &tracker),
+            Ok(StudioIntent::AddInput {
+                input: input(5),
+                name: "Replay Input 1".to_owned(),
+                source: LiveInputSource::Replay,
+            })
         );
     }
 
@@ -2706,6 +2741,7 @@ mod tests {
                     draft.system_audio.device_edited = true;
                 }),
             ),
+            ("replay", with(NewInputKind::Replay, &|_| {})),
         ]
     }
 

@@ -106,7 +106,7 @@ const ITEM_RENDERS_PER_STEP: usize = 1;
 /// The wait before a media list item picture that did not decode is tried
 /// again, doubling with each further failure up to [`MAX_ITEM_RETRY`].
 const MIN_ITEM_RETRY: Duration = Duration::from_secs(2);
-const MAX_ITEM_RETRY: Duration = Duration::from_secs(300);
+const MAX_ITEM_RETRY: Duration = Duration::from_mins(5);
 
 /// The wait before an item picture that failed `failures` times is tried
 /// again.
@@ -1530,8 +1530,8 @@ mod tests {
         assert!(!bucket.try_take(1_000, start + Duration::from_millis(400)));
         assert!(bucket.try_take(1_000, start + Duration::from_millis(500)));
         // Refill never exceeds the burst capacity.
-        assert!(!bucket.try_take(1_600, start + Duration::from_secs(60)));
-        assert!(bucket.try_take(1_500, start + Duration::from_secs(60)));
+        assert!(!bucket.try_take(1_600, start + Duration::from_mins(1)));
+        assert!(bucket.try_take(1_500, start + Duration::from_mins(1)));
     }
 
     #[test]
@@ -1851,7 +1851,7 @@ mod tests {
         let moved = step(
             &mut renderer,
             &halfway,
-            start + Duration::from_millis(1_000),
+            start + Duration::from_secs(1),
             false,
         );
         assert_eq!(moved.len(), 1);

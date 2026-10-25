@@ -61,7 +61,7 @@ const RENDER_BUDGET: Duration = Duration::from_secs(5);
 /// The wait before a page that failed to render is tried again, doubling
 /// with each further failure up to [`MAX_RENDER_RETRY`].
 const MIN_RENDER_RETRY: Duration = Duration::from_secs(1);
-const MAX_RENDER_RETRY: Duration = Duration::from_secs(300);
+const MAX_RENDER_RETRY: Duration = Duration::from_mins(5);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -769,7 +769,7 @@ mod tests {
             .get_mut(&("asset://big.pdf".to_owned(), 0))
             .unwrap()
             .retry_at = Instant::now();
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_mins(1);
         let rendered = loop {
             if let Some(rendered) = pages.render("asset://big.pdf", 0, 16, 16) {
                 break rendered;

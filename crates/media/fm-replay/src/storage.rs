@@ -109,6 +109,116 @@ impl RollingSegmentCatalog {
         Ok(())
     }
 
+    /// Moves the end of open segment `id` forward to `end` as its recorder
+    /// writes more media into it (the live edge of a rolling recording).
+    ///
+    /// # Errors
+    ///
+    /// The segment must exist and still be open, and `end` must not move
+    /// its end backwards or before its start.
+    pub fn extend_open_segment(
+        &mut self,
+        id: SegmentId,
+        end: NormalizedTimestamp,
+    ) -> Result<(), ReplayError> {
+        let segment = self
+            .segments
+            .get_mut(&id)
+            .ok_or(ReplayError::UnknownSegment(id))?;
+        if segment.state != SegmentState::Open {
+            return Err(ReplayError::SegmentClosed(id));
+        }
+        if end < segment.timeline.end {
+            return Err(ReplayError::InvalidRange);
+        }
+        segment.timeline.end = end;
+        Ok(())
+    }
+
+    /// Closes open segment `id` once its recorder finished the file: its
+    /// exact end on the timeline and its final size. A closed segment is
+    /// eligible for retention unless something protects it.
+    ///
+    /// # Errors
+    ///
+    /// The segment must exist and still be open, and `end` must lie after
+    /// its start.
+    pub fn close_segment(
+        &mut self,
+        id: SegmentId,
+        end: NormalizedTimestamp,
+        bytes: u64,
+    ) -> Result<(), ReplayError> {
+        let segment = self
+            .segments
+            .get_mut(&id)
+            .ok_or(ReplayError::UnknownSegment(id))?;
+        if segment.state != SegmentState::Open {
+            return Err(ReplayError::SegmentClosed(id));
+        }
+        if end <= segment.timeline.start {
+            return Err(ReplayError::InvalidRange);
+        }
+        segment.timeline.end = end;
+        segment.bytes = bytes;
+        segment.state = SegmentState::Closed;
+        Ok(())
+    }
+
+    /// Removes every closed, unprotected segment of `root_id` that ends at
+    /// or before `cutoff` (a time-based retention window), oldest first, and
+    /// returns their metadata so the caller can delete the files. Open and
+    /// referenced segments are kept whatever their age.
+    ///
+    /// # Errors
+    ///
+    /// The root must be registered.
+    pub fn reclaim_ended_before(
+        &mut self,
+        root_id: StorageRootId,
+        cutoff: NormalizedTimestamp,
+    ) -> Result<Vec<SegmentMetadata>, ReplayError> {
+        if !self.roots.contains_key(&root_id) {
+            return Err(ReplayError::UnknownStorageRoot(root_id));
+        }
+        let mut expired: Vec<_> = self
+            .segments
+            .values()
+            .filter(|segment| {
+                segment.storage_root_id == root_id
+                    && segment.state == SegmentState::Closed
+                    && segment.protections.is_empty()
+                    && segment.timeline.end <= cutoff
+            })
+            .map(|segment| {
+                (
+                    segment.timeline.start,
+                    segment.recorder_segment_index,
+                    segment.id,
+                )
+            })
+            .collect();
+        expired.sort_unstable();
+        Ok(expired
+            .into_iter()
+            .filter_map(|(_, _, id)| self.segments.remove(&id))
+            .collect())
+    }
+
+    /// Forgets every segment of `camera_id` (its recording stopped and its
+    /// files are gone) and returns them. Protections are dropped with them.
+    pub fn remove_camera_segments(&mut self, camera_id: CameraId) -> Vec<SegmentMetadata> {
+        let ids: Vec<_> = self
+            .segments
+            .values()
+            .filter(|segment| segment.camera_id == camera_id)
+            .map(|segment| segment.id)
+            .collect();
+        ids.into_iter()
+            .filter_map(|id| self.segments.remove(&id))
+            .collect()
+    }
+
     #[must_use]
     pub fn root(&self, id: StorageRootId) -> Option<&StorageRoot> {
         self.roots.get(&id)

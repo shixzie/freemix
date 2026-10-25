@@ -25,6 +25,12 @@ const REALIZATION_HEARTBEAT_EVERY: Duration = Duration::from_secs(1);
 /// The longest a command waits for its realization while the daemon keeps
 /// answering: an hour, past any transition, title phase, or cue wait.
 const REALIZATION_WAIT_LIMIT: Duration = Duration::from_hours(1);
+/// The longest `remote-reel-export` waits for its job to finish: an hour,
+/// like a command waiting for its realization.
+const REEL_EXPORT_WAIT_LIMIT: Duration = Duration::from_hours(1);
+/// How often `remote-reel-export` asks for the reel status: the daemon
+/// paces its own pushes at 250 ms while a job changes.
+const REEL_EXPORT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 pub fn status(address: SocketAddr) -> RemoteResult<()> {
     let remote = Remote::connect(address, Role::Viewer)?;
@@ -84,6 +90,394 @@ pub fn display_outputs(address: SocketAddr) -> RemoteResult<()> {
             .map(|(slot, config)| (*slot, config, state.display_output_state(*slot))),
     );
     Ok(())
+}
+
+/// Asks the daemon for its replay status (OR-012, Protocol 2.106).
+fn request_replay_status(remote: &mut Remote) -> RemoteResult<fm_protocol::ReplayStatusMessage> {
+    let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
+    let request_id = format!("cli-replay-{}", unique_client_id()?);
+    remote.write(&WireMessage::ReplayStatusRequest(
+        fm_protocol::ReplayStatusRequest {
+            request_id: request_id.clone(),
+        },
+    ))?;
+    loop {
+        match remote.read_until(deadline)? {
+            // The answer echoes this request's id; a pushed record has none
+            // and carries the same latest-wins replay state, so taking it
+            // avoids waiting out the timeout when a change races the request.
+            WireMessage::ReplayStatus(status)
+                if status.request_id.as_deref() == Some(request_id.as_str())
+                    || status.request_id.is_none() =>
+            {
+                return Ok(*status);
+            }
+            message @ (WireMessage::Event(_) | WireMessage::RuntimeEvent(_)) => {
+                remote.client.intake(message)?;
+            }
+            WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
+            // Another client's answer is not ours; meters, stream status,
+            // and snapshots are not the answer either. Keep waiting.
+            _ => {}
+        }
+    }
+}
+
+/// Prints the daemon's replay recording, events, and Replay inputs (OR-012,
+/// Protocol 2.106).
+pub fn replay(address: SocketAddr) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Viewer)?;
+    print_replay(&request_replay_status(&mut remote)?);
+    Ok(())
+}
+
+/// `settings` with `edit` applied (OR-012); a zero source is the CLI's own
+/// argument error, so the local path never reports a remote failure.
+pub(crate) fn edited_replay(
+    settings: &fm_protocol::ReplaySettings,
+    edit: &crate::args::ReplayEdit,
+) -> RemoteResult<fm_protocol::ReplaySettings> {
+    let sources = match &edit.sources {
+        Some(sources) => sources
+            .iter()
+            .map(|input| {
+                core::num::NonZeroU128::new(*input)
+                    .map(fm_types::InputId::new)
+                    .ok_or_else(|| crate::args::ArgsError::InvalidChoice {
+                        field: "replay source",
+                        value: input.to_string(),
+                    })
+            })
+            .collect::<Result<_, _>>()?,
+        None => settings.sources.clone(),
+    };
+    Ok(fm_protocol::ReplaySettings {
+        sources,
+        retention_seconds: edit.retention_seconds.unwrap_or(settings.retention_seconds),
+        storage_root: edit
+            .storage_root
+            .clone()
+            .unwrap_or_else(|| settings.storage_root.clone()),
+    })
+}
+
+/// Edits what the daemon records for replay (OR-012, Protocol 2.106), then
+/// prints the status.
+pub fn set_replay(
+    address: SocketAddr,
+    edit: &crate::args::ReplayEdit,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> RemoteResult<()> {
+    let current = {
+        let mut remote = Remote::connect(address, Role::Viewer)?;
+        request_replay_status(&mut remote)?.settings
+    };
+    let payload = CommandPayload::Replay(fm_protocol::ReplayOperation::Configure(Box::new(
+        edited_replay(&current, edit)?,
+    )));
+    execute(address, payload, key, expected_revision)?;
+    replay(address)
+}
+
+/// Sends one live replay command (OR-012, Protocol 2.106), then prints the
+/// status.
+pub fn replay_do(
+    address: SocketAddr,
+    operation: fm_protocol::ReplayOperation,
+    key: Option<String>,
+) -> RemoteResult<()> {
+    execute(address, CommandPayload::Replay(operation), key, None)?;
+    replay(address)
+}
+
+/// Asks the daemon for its highlight reel status (OR-013, Protocol 2.107).
+fn request_reel_status(remote: &mut Remote) -> RemoteResult<fm_protocol::ReelStatusMessage> {
+    let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
+    let request_id = format!("cli-reel-{}", unique_client_id()?);
+    remote.write(&WireMessage::ReelStatusRequest(
+        fm_protocol::ReelStatusRequest {
+            request_id: request_id.clone(),
+        },
+    ))?;
+    loop {
+        match remote.read_until(deadline)? {
+            // The answer echoes this request's id; a pushed record has none
+            // and carries the same latest-wins reel state, so taking it
+            // avoids waiting out the timeout when a change races the request.
+            WireMessage::ReelStatus(status)
+                if status.request_id.as_deref() == Some(request_id.as_str())
+                    || status.request_id.is_none() =>
+            {
+                return Ok(*status);
+            }
+            message @ (WireMessage::Event(_) | WireMessage::RuntimeEvent(_)) => {
+                remote.client.intake(message)?;
+            }
+            WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
+            // Another client's answer is not ours; meters, stream status,
+            // and snapshots are not the answer either. Keep waiting.
+            _ => {}
+        }
+    }
+}
+
+/// Prints the daemon's highlight reels and export jobs (OR-013, Protocol
+/// 2.107).
+pub fn reel(address: SocketAddr) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Viewer)?;
+    print_reel_status(&request_reel_status(&mut remote)?);
+    Ok(())
+}
+
+/// Replaces or creates a daemon's highlight reel (OR-013, Protocol 2.107),
+/// then prints the status.
+pub fn set_reel(
+    address: SocketAddr,
+    spec: Box<fm_protocol::ReelSpec>,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> RemoteResult<()> {
+    execute(
+        address,
+        CommandPayload::Reel(fm_protocol::ReelOperation::Set(spec)),
+        key,
+        expected_revision,
+    )?;
+    reel(address)
+}
+
+/// Deletes a daemon's highlight reel (OR-013, Protocol 2.107), then prints
+/// the status.
+pub fn delete_reel(
+    address: SocketAddr,
+    id: u64,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> RemoteResult<()> {
+    execute(
+        address,
+        CommandPayload::Reel(fm_protocol::ReelOperation::Delete { reel: id }),
+        key,
+        expected_revision,
+    )?;
+    reel(address)
+}
+
+/// Sends one live reel export control (OR-013, Protocol 2.107), then prints
+/// the status.
+pub fn reel_control(
+    address: SocketAddr,
+    operation: fm_protocol::ReelOperation,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> RemoteResult<()> {
+    let payload = CommandPayload::Reel(operation);
+    let mut remote = Remote::connect(address, Role::Operator)?;
+    let key = match key {
+        Some(key) => key,
+        None => implicit_key(&payload)?,
+    };
+    remote.send_command(payload, key, expected_revision)?;
+    // The export controls publish no durable event, so the status is read
+    // on a fresh Viewer session whose snapshot already carries the accepted
+    // revision.
+    drop(remote);
+    reel(address)
+}
+
+/// Starts a daemon's reel export (OR-013, Protocol 2.107), then polls the
+/// reel status until the job is terminal and prints one `ReelExport` line.
+pub fn export_reel(
+    address: SocketAddr,
+    job: u64,
+    reel: u64,
+    destination: String,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> RemoteResult<()> {
+    let payload = CommandPayload::Reel(fm_protocol::ReelOperation::Export {
+        job,
+        reel,
+        destination,
+    });
+    let mut remote = Remote::connect(address, Role::Operator)?;
+    let key = match key {
+        Some(key) => key,
+        None => implicit_key(&payload)?,
+    };
+    remote.send_command(payload, key, expected_revision)?;
+    // The export publishes no durable event; a fresh Viewer session sees
+    // the job in the status and any runtime realization without a revision
+    // ahead of its snapshot.
+    drop(remote);
+    let mut remote = Remote::connect(address, Role::Viewer)?;
+    let deadline = Instant::now() + REEL_EXPORT_WAIT_LIMIT;
+    loop {
+        let status = request_reel_status(&mut remote)?;
+        if let Some(export) = status.exports.iter().find(|export| export.job == job)
+            && matches!(
+                export.state,
+                fm_protocol::ReelExportState::Completed
+                    | fm_protocol::ReelExportState::Failed
+                    | fm_protocol::ReelExportState::Cancelled
+            )
+        {
+            print_reel_export(export);
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(RemoteFailure(format!(
+                "reel export job {job} did not finish before the deadline"
+            ))
+            .into());
+        }
+        std::thread::sleep(REEL_EXPORT_POLL_INTERVAL);
+    }
+}
+
+/// Prints the reels and export jobs of one status.
+pub(crate) fn print_reel_status(status: &fm_protocol::ReelStatusMessage) {
+    print_reels(&status.reels, &status.exports);
+}
+
+/// Prints the reels and export jobs a status carries.
+pub(crate) fn print_reels(
+    reels: &[fm_protocol::ReelStatus],
+    exports: &[fm_protocol::ReelExportStatus],
+) {
+    let number =
+        |value: Option<u64>| value.map_or_else(|| "none".to_owned(), |value| value.to_string());
+    let text =
+        |value: Option<&str>| value.map_or_else(|| "none".to_owned(), |value| format!("{value:?}"));
+    for reel in reels {
+        println!(
+            "Reel(id={}, name={:?}, clips={}, total_frames={}, error={})",
+            reel.id,
+            reel.spec.name,
+            reel.spec.clips.len(),
+            number(reel.total_frames),
+            text(reel.error.as_deref()),
+        );
+        for clip in &reel.spec.clips {
+            println!(
+                "ReelClip(reel={}, event={}, angle={}, in={}, out={}, speed={})",
+                reel.id,
+                clip.event,
+                clip.angle,
+                clip.trim_in_frames,
+                clip.trim_out_frames,
+                clip.speed_percent,
+            );
+        }
+    }
+    for export in exports {
+        println!(
+            "ReelExport(job={}, reel={}, destination={:?}, state={}, frames={}/{}, \
+             bytes={}, failure={})",
+            export.job,
+            export.reel,
+            export.destination,
+            export.state.token(),
+            export.completed_frames,
+            number(export.total_frames),
+            number(export.bytes),
+            text(export.failure.as_deref()),
+        );
+    }
+}
+
+/// Prints one terminal export as the single `ReelExport` line
+/// `remote-reel-export` reports.
+pub(crate) fn print_reel_export(export: &fm_protocol::ReelExportStatus) {
+    let bytes = export
+        .bytes
+        .map_or_else(|| "none".to_owned(), |bytes| bytes.to_string());
+    let failure = export
+        .failure
+        .as_deref()
+        .map_or_else(String::new, |failure| format!(", failure={failure:?}"));
+    println!(
+        "ReelExport(job={}, state={}, path={:?}, bytes={}{failure})",
+        export.job,
+        export.state.token(),
+        export.destination,
+        bytes,
+    );
+}
+
+/// Prints one `ReplaySettings(...)` line.
+pub(crate) fn print_replay_settings(settings: &fm_protocol::ReplaySettings) {
+    println!(
+        "ReplaySettings(sources=[{}], retention_seconds={}, storage_root={})",
+        settings
+            .sources
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        settings.retention_seconds,
+        settings
+            .storage_root
+            .as_deref()
+            .map_or_else(|| "default".to_owned(), |root| format!("{root:?}")),
+    );
+}
+
+/// Prints the replay status: the settings, one line per recorded source,
+/// event, and Replay input.
+pub(crate) fn print_replay(status: &fm_protocol::ReplayStatusMessage) {
+    let frame = |frame: Option<u64>| frame.map_or_else(|| "none".to_owned(), |f| f.to_string());
+    print_replay_settings(&status.settings);
+    println!(
+        "Replay(feed={}, root={:?}, live_frame={}, mark_in={}, mark_out={})",
+        status.feed.token(),
+        status.root,
+        frame(status.live_frame),
+        frame(status.mark_in),
+        frame(status.mark_out),
+    );
+    for source in &status.recorded {
+        println!(
+            "ReplaySource(input={}, segments={}, bytes={}, first_frame={}, last_frame={})",
+            source.input,
+            source.segments,
+            source.bytes,
+            frame(source.first_frame),
+            frame(source.last_frame),
+        );
+    }
+    for event in &status.events {
+        println!(
+            "ReplayEvent(id={}, name={:?}, in_frame={}, out_frame={}, angles=[{}], complete={})",
+            event.id,
+            event.name,
+            event.in_frame,
+            event.out_frame,
+            event
+                .angles
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            event.complete,
+        );
+    }
+    for player in &status.players {
+        println!(
+            "ReplayPlayer(input={}, event={}, angle={}, speed={}, playing={}, frame={})",
+            player.input,
+            player
+                .event
+                .map_or_else(|| "none".to_owned(), |event| event.to_string()),
+            player
+                .angle
+                .map_or_else(|| "none".to_owned(), |angle| angle.to_string()),
+            player.speed.percent(),
+            player.playing,
+            frame(player.frame),
+        );
+    }
 }
 
 /// Prints the daemon's `LiveLAN` settings and status (Protocol 2.57).
@@ -1786,7 +2180,9 @@ pub fn execute(
         | CommandCompletion::Playlist { edit: true }
         | CommandCompletion::Cue { edit: true }
         | CommandCompletion::Script { run: false }
-        | CommandCompletion::Media { transport: false } => Role::Graphics,
+        | CommandCompletion::Media { transport: false }
+        | CommandCompletion::Replay { live: false }
+        | CommandCompletion::Reel { live: false } => Role::Graphics,
         CommandCompletion::Audio | CommandCompletion::Mixer { .. } => Role::Audio,
         CommandCompletion::FadeToBlackOutput
         | CommandCompletion::Switcher
@@ -1795,6 +2191,8 @@ pub fn execute(
         | CommandCompletion::Cue { edit: false }
         | CommandCompletion::Script { run: true }
         | CommandCompletion::Media { transport: true }
+        | CommandCompletion::Replay { live: true }
+        | CommandCompletion::Reel { live: true }
         | CommandCompletion::TitleTake {
             edits_fields: false,
         } => Role::Operator,
@@ -1867,6 +2265,16 @@ enum CommandCompletion {
     /// A Fade-to-Black output choice (Protocol 2.40): completes on
     /// `fade_to_black_output_changed` and project realization.
     FadeToBlackOutput,
+    /// A replay command (OR-012): completes on `replay_changed` and
+    /// project (settings) or replay (live operations) realization.
+    Replay {
+        live: bool,
+    },
+    /// A reel edit (`project`) or export (`reel`) (OR-013): completes on
+    /// `reel_changed`/`reel_removed` and that domain's realization.
+    Reel {
+        live: bool,
+    },
 }
 
 impl CommandCompletion {
@@ -1899,6 +2307,12 @@ impl CommandCompletion {
                 edits_fields: !fields.is_empty(),
             },
             CommandPayload::SetPlaylist { .. } => Self::Playlist { edit: true },
+            CommandPayload::Replay(operation) => Self::Replay {
+                live: operation.is_live(),
+            },
+            CommandPayload::Reel(operation) => Self::Reel {
+                live: operation.is_live(),
+            },
             CommandPayload::SetTransitionFavorite { .. } => Self::Favorite,
             CommandPayload::Media { operation, .. } => Self::Media {
                 transport: operation.is_transport(),
@@ -1934,7 +2348,11 @@ impl CommandCompletion {
             | Self::Cue { edit: true }
             | Self::Script { run: false }
             | Self::Mixer { live: false }
+            | Self::Replay { live: false }
+            | Self::Reel { live: false }
             | Self::FadeToBlackOutput => domain == "project",
+            Self::Replay { live: true } => domain == "replay",
+            Self::Reel { live: true } => domain == "reel",
             Self::Audio | Self::Mixer { live: true } => domain == "audio",
             Self::Media { .. } => domain == "media",
             Self::Switcher
@@ -2052,6 +2470,9 @@ impl Remote {
                 | WireMessage::PagedState(_)) => {
                     client.intake(message)?;
                 }
+                // Lossy status records may interleave with the snapshot's
+                // state; they are read on demand, not part of the model.
+                WireMessage::ReelStatus(_) | WireMessage::ReplayStatus(_) => {}
                 WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
                 _ => {
                     return Err(RemoteFailure(
@@ -2100,6 +2521,28 @@ impl Remote {
         expected_revision: Option<u64>,
         completion: CommandCompletion,
     ) -> RemoteResult<()> {
+        let revision = self.send_command(payload, key, expected_revision)?;
+        let already_applied = self
+            .client
+            .model()
+            .reconnect_cursor()
+            .is_some_and(|cursor| cursor.revision.get() >= revision);
+        if !already_applied {
+            self.read_command_events(revision, completion)?;
+        }
+        self.print_status()
+    }
+
+    /// Sends one command and waits for its result, without waiting for the
+    /// durable event and realization that follow it. Live reel export
+    /// control (OR-013) has no durable event: its state is the lossy
+    /// `reel_status` record.
+    fn send_command(
+        &mut self,
+        payload: CommandPayload,
+        key: String,
+        expected_revision: Option<u64>,
+    ) -> RemoteResult<u64> {
         let queued = self
             .client
             .queue_command(payload, key, expected_revision, None)?;
@@ -2117,6 +2560,9 @@ impl Remote {
                 message @ (WireMessage::Event(_) | WireMessage::RuntimeEvent(_)) => {
                     self.client.intake(message)?;
                 }
+                // The daemon's own status records are lossy and latest-wins;
+                // a command result may follow one on a subscribed session.
+                WireMessage::ReelStatus(_) | WireMessage::ReplayStatus(_) => {}
                 WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
                 _ => return Err(RemoteFailure("expected command_result from daemon".into()).into()),
             }
@@ -2140,17 +2586,7 @@ impl Remote {
                 reason,
                 ..
             } => Err(RemoteFailure(refusal_text(&code, &message, reason.as_ref())).into()),
-            CommandResult::Accepted { revision, .. } => {
-                let already_applied = self
-                    .client
-                    .model()
-                    .reconnect_cursor()
-                    .is_some_and(|cursor| cursor.revision.get() >= revision);
-                if !already_applied {
-                    self.read_command_events(revision, completion)?;
-                }
-                self.print_status()
-            }
+            CommandResult::Accepted { revision, .. } => Ok(revision),
         }
     }
 
@@ -2246,6 +2682,16 @@ impl Remote {
                         EventPayload::MediaChanged { .. } => {
                             matches!(completion, CommandCompletion::Media { .. })
                         }
+                        EventPayload::ReplayChanged { .. } => matches!(
+                            completion,
+                            CommandCompletion::Replay { .. } | CommandCompletion::History
+                        ),
+                        EventPayload::ReelChanged { .. } | EventPayload::ReelRemoved { .. } => {
+                            matches!(
+                                completion,
+                                CommandCompletion::Reel { .. } | CommandCompletion::History
+                            )
+                        }
                         // A slideshow step answers `page_navigated`, a
                         // document step `paged_changed` (IN-014).
                         EventPayload::PageNavigated { .. } | EventPayload::PagedChanged { .. } => {
@@ -2308,6 +2754,9 @@ impl Remote {
                     self.client.intake(WireMessage::RuntimeEvent(runtime))?;
                     realized |= matches_realization;
                 }
+                // Lossy status records can interleave with the command's
+                // events; they are not part of its durable/realized outcome.
+                WireMessage::ReelStatus(_) | WireMessage::ReplayStatus(_) => {}
                 WireMessage::Error(error) => return Err(protocol_error(&error.error).into()),
                 _ => {
                     return Err(RemoteFailure(

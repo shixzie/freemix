@@ -100,6 +100,7 @@ pub const fn input_use_advice(usage: InputUse) -> Msg {
         InputUse::PlaylistEntry { .. } => Msg::AdvicePlaylist,
         InputUse::CueAction { .. } => Msg::AdviceCue,
         InputUse::SceneOnAir => Msg::AdviceSceneOffAir,
+        InputUse::ReplaySource => Msg::AdviceReplaySource,
         InputUse::SceneAudioSource { .. } | InputUse::AliasTarget { .. } => Msg::AdviceOffline,
     }
 }
@@ -122,6 +123,7 @@ pub fn input_use_sentence(
         InputUse::Transition => named(Msg::InUseTransition),
         InputUse::ManualTransition => named(Msg::InUseManualTransition),
         InputUse::SceneOnAir => named(Msg::InUseSceneOnAir),
+        InputUse::ReplaySource => named(Msg::InUseReplaySource),
         InputUse::Overlay { channel } => {
             numbered(Msg::InUseOverlaySource, "channel", &channel.to_string())
         }
@@ -331,6 +333,7 @@ mod tests {
             InputUse::AliasTarget { alias: 8 },
             InputUse::PlaylistEntry { entry: 5 },
             InputUse::SceneOnAir,
+            InputUse::ReplaySource,
         ] {
             reasons.push(RefusalReason::InputInUse { input: 1, usage });
         }

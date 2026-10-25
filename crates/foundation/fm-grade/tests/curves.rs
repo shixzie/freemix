@@ -1,3 +1,6 @@
+// The assertions compare exact reference values.
+#![allow(clippy::float_cmp)]
+
 use fm_grade::{MonotoneCubic, PeriodicCatmullRom};
 
 #[allow(clippy::cast_precision_loss)]

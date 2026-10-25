@@ -52,6 +52,8 @@ pub enum EngineInputSource {
     Slideshow(Box<fm_types::still::SlideshowConfig>),
     /// A screen or window capture (IN-011).
     ScreenCapture(Box<fm_types::screen_capture::ScreenCaptureConfig>),
+    /// A replay player (OR-012).
+    Replay,
 }
 
 impl EngineInputSource {
@@ -86,6 +88,7 @@ impl EngineInputSource {
             Self::ScreenCapture(config) => {
                 return fm_model::InputSourceSpec::ScreenCapture((**config).clone());
             }
+            Self::Replay => return fm_model::InputSourceSpec::Replay,
         };
         fm_model::InputSourceSpec::Generator {
             video,
@@ -246,6 +249,10 @@ pub struct ShowState {
         BTreeMap<fm_types::display::DisplayOutputSlot, fm_types::display::DisplayOutputConfig>,
     /// The `LiveLAN` viewer stream's configuration (OR-017).
     live_lan: fm_types::live_lan::LiveLanConfig,
+    /// What is recorded for replay (OR-012).
+    replay: fm_types::replay::ReplaySettings,
+    /// The project's highlight reels, in display order (OR-013).
+    reels: Vec<fm_types::reel::ReelSpec>,
     /// Every configured stream destination's authored configuration in
     /// authored order (OR-006), parallel to the switcher's stream inventory.
     /// The switcher owns the desired running flags; each entry's own
@@ -340,6 +347,8 @@ impl ShowState {
             audio_monitor: crate::EngineAudioMonitor::default(),
             display_outputs: BTreeMap::new(),
             live_lan: fm_types::live_lan::LiveLanConfig::default(),
+            replay: fm_types::replay::ReplaySettings::default(),
+            reels: Vec::new(),
             stream_targets: Vec::new(),
         })
     }
@@ -621,7 +630,9 @@ impl ShowState {
     /// # Errors
     ///
     /// Returns [`InputCatalogueError::UnknownInput`] for an input outside the
-    /// show and [`InputCatalogueError::InUse`] while the desired switcher
+    /// show, [`InputCatalogueError::ReplaySource`] while it is recorded for
+    /// replay, [`InputCatalogueError::ReelClip`] while a highlight reel clip
+    /// plays it, [`InputCatalogueError::InUse`] while the desired switcher
     /// references it, [`InputCatalogueError::InPlaylist`] and
     /// [`InputCatalogueError::InCueList`] while a playlist entry or a cue
     /// names it, and [`InputCatalogueError::BoundByCueRun`] while a cue run
@@ -633,6 +644,19 @@ impl ShowState {
             .iter()
             .position(|candidate| *candidate == input)
             .ok_or(InputCatalogueError::UnknownInput(input))?;
+        if self.replay.sources.contains(&input) {
+            return Err(InputCatalogueError::ReplaySource(input));
+        }
+        if let Some(reel) = self
+            .reels
+            .iter()
+            .find(|reel| reel.clips.iter().any(|clip| clip.angle == input))
+        {
+            return Err(InputCatalogueError::ReelClip {
+                input,
+                reel: reel.id,
+            });
+        }
         if let Some(entry) = self
             .playlist
             .entries()
@@ -930,6 +954,95 @@ impl ShowState {
             .map_err(|_| ShowError::InvalidAudioMonitorGain(monitor.state.gain_millidb))?;
         self.audio_monitor = monitor;
         Ok(())
+    }
+
+    /// What is recorded for replay (OR-012).
+    #[must_use]
+    pub const fn replay(&self) -> &fm_types::replay::ReplaySettings {
+        &self.replay
+    }
+
+    /// Replaces the replay settings, checked against the show's inputs
+    /// exactly as [`fm_model::Project::set_replay`] checks them: a source
+    /// must be an input of the show and not a Replay input.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`fm_types::replay::ReplaySettingsError`]. Nothing
+    /// changes on error.
+    pub fn set_replay(
+        &mut self,
+        settings: fm_types::replay::ReplaySettings,
+    ) -> Result<(), fm_types::replay::ReplaySettingsError> {
+        settings.check(|input| {
+            if !self.inputs.contains(&input) {
+                fm_types::replay::ReplaySourceCheck::Unknown
+            } else if matches!(
+                self.input_sources.get(&input),
+                Some(fm_model::InputSourceSpec::Replay)
+            ) {
+                fm_types::replay::ReplaySourceCheck::Unrecordable
+            } else {
+                fm_types::replay::ReplaySourceCheck::Recordable
+            }
+        })?;
+        self.replay = settings;
+        Ok(())
+    }
+
+    /// The project's highlight reels, in display order (OR-013).
+    #[must_use]
+    pub fn reels(&self) -> &[fm_types::reel::ReelSpec] {
+        &self.reels
+    }
+
+    /// The reel with `id`.
+    #[must_use]
+    pub fn reel(&self, id: u64) -> Option<&fm_types::reel::ReelSpec> {
+        self.reels.iter().find(|reel| reel.id == id)
+    }
+
+    /// Replaces the reel with `spec.id` or appends `spec`, and returns the
+    /// previous reel when one was replaced.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`fm_types::reel::ReelSpecError`] of a reel with no
+    /// clips, too many clips, a bad name, an angle that is not a recordable
+    /// input of the show, an unsupported speed, or a trim out of range, and
+    /// [`fm_types::reel::ReelSpecError::TooManyReels`] when appending a reel
+    /// beyond [`fm_types::reel::MAX_REELS`]. Nothing changes on error.
+    pub fn set_reel(
+        &mut self,
+        spec: fm_types::reel::ReelSpec,
+    ) -> Result<Option<fm_types::reel::ReelSpec>, fm_types::reel::ReelSpecError> {
+        spec.check(|input| {
+            self.inputs.contains(&input)
+                && !matches!(
+                    self.input_sources.get(&input),
+                    Some(fm_model::InputSourceSpec::Replay)
+                )
+        })?;
+        if let Some(index) = self.reels.iter().position(|reel| reel.id == spec.id) {
+            return Ok(Some(std::mem::replace(&mut self.reels[index], spec)));
+        }
+        if self.reels.len() >= fm_types::reel::MAX_REELS {
+            return Err(fm_types::reel::ReelSpecError::TooManyReels);
+        }
+        self.reels.push(spec);
+        Ok(None)
+    }
+
+    /// Removes reel `id` and returns it.
+    pub fn remove_reel(&mut self, id: u64) -> Option<fm_types::reel::ReelSpec> {
+        let index = self.reels.iter().position(|reel| reel.id == id)?;
+        Some(self.reels.remove(index))
+    }
+
+    /// Restores persisted reels without checking them; problems are
+    /// reported by the project's validation.
+    pub fn restore_reels(&mut self, reels: Vec<fm_types::reel::ReelSpec>) {
+        self.reels = reels;
     }
 
     /// The `LiveLAN` viewer stream's configuration (OR-017).
@@ -1701,6 +1814,14 @@ impl ShowState {
                 fm_model::InputSourceSpec::ScreenCapture(config) => Some((*input, config)),
                 _ => None,
             })
+    }
+
+    /// Every Replay input, ascending (OR-012).
+    pub fn replay_inputs(&self) -> impl Iterator<Item = InputId> + '_ {
+        self.input_sources
+            .iter()
+            .filter(|(_, source)| matches!(source, fm_model::InputSourceSpec::Replay))
+            .map(|(input, _)| *input)
     }
 
     /// Every system audio input and its device, ascending by input

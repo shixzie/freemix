@@ -796,6 +796,7 @@ impl DspHost {
     }
 
     /// Returns plugin instance IDs in processing order.
+    #[must_use]
     pub fn plugin_ids(&self) -> impl ExactSizeIterator<Item = PluginId> + '_ {
         self.plugins.iter().map(|node| node.status.id)
     }
@@ -1467,6 +1468,9 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, PluginError> {
 
 #[cfg(test)]
 mod tests {
+    // These assertions compare against exact reference values.
+    #![allow(clippy::float_cmp)]
+
     use super::*;
 
     fn id(value: u64) -> PluginId {

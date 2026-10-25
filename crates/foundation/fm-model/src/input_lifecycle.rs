@@ -329,6 +329,9 @@ pub enum InputSourceSpec {
     Document { asset_uri: String },
     /// A screen or window capture (IN-011): its target and settings.
     ScreenCapture(fm_types::screen_capture::ScreenCaptureConfig),
+    /// A replay player (OR-012): it plays the replay events the server
+    /// records of the project's replay sources.
+    Replay,
 }
 
 /// Why a source specification is unusable.
@@ -563,6 +566,7 @@ impl InputSourceSpec {
             Self::ScreenCapture(config) => config
                 .validate()
                 .map_err(|_| InputSourceError::InvalidScreenCapture),
+            Self::Replay => Ok(()),
         }
     }
 
@@ -597,6 +601,7 @@ impl InputSourceSpec {
                 asset_uri: document.asset_uri.clone(),
             }),
             InputKind::ScreenCapture(config) => Some(Self::ScreenCapture(config.clone())),
+            InputKind::Replay => Some(Self::Replay),
             InputKind::Color
             | InputKind::Scene { .. }
             | InputKind::Alias { .. }
@@ -638,6 +643,7 @@ impl InputSourceSpec {
                 InputKind::Document(crate::DocumentInput::new(asset_uri.clone(), 0))
             }
             Self::ScreenCapture(config) => InputKind::ScreenCapture(config.clone()),
+            Self::Replay => InputKind::Replay,
         }
     }
 

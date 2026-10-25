@@ -1,6 +1,9 @@
 //! AU-001 solo modes (solo-in-place, PFL, AFL) on the monitor bus, per-group
 //! solo, and nested VCA groups.
 
+// The assertions compare exact reference values.
+#![allow(clippy::float_cmp)]
+
 use std::num::NonZeroU128;
 
 use fm_audio::{

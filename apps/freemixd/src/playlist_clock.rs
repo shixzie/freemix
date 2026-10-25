@@ -377,7 +377,7 @@ mod tests {
         let start = Instant::now();
         assert_eq!(wall_frame(7, start, start, rate), 7);
         assert_eq!(
-            wall_frame(7, start, start + Duration::from_millis(1_000), rate),
+            wall_frame(7, start, start + Duration::from_secs(1), rate),
             7 + 29
         );
         assert_eq!(

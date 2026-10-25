@@ -13,6 +13,8 @@ mod media;
 pub(crate) mod media_list;
 mod paged;
 mod playlist;
+mod reel;
+mod replay;
 mod scene_animation;
 mod scene_layer;
 mod script;
@@ -65,6 +67,16 @@ pub use paged::EnginePagedStatus;
 pub use playlist::{
     EnginePlaylistOperation, EnginePlaylistStart, MAX_PLAYLIST_TRANSITION_FRAMES, PlaylistCue,
     PlaylistRestoreError, playlist_due_frame, playlist_from_model, playlist_to_model,
+};
+pub use reel::{
+    EngineReelChunk, EngineReelError, EngineReelExportState, EngineReelExportStatus,
+    EngineReelFrame, EngineReelLayer, EngineReelOperation, EngineReelStatus, EngineReelSummary,
+};
+pub use replay::{
+    DEFAULT_REPLAY_ROOT, EngineReplayEventStatus, EngineReplayFeed, EngineReplayFrame,
+    EngineReplayLocation, EngineReplayOperation, EngineReplayPlayerStatus,
+    EngineReplaySourceStatus, EngineReplayStatus, SYNTHETIC_REPLAY_FRAME_BYTES,
+    SYNTHETIC_REPLAY_SEGMENT_SECONDS,
 };
 pub use scene_animation::{
     EngineScene, EngineSceneAir, EngineSceneAnimationEdit, SceneAnimationChange, SceneClipBound,

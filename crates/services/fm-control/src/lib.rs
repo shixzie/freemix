@@ -30,6 +30,8 @@ mod media_list;
 mod network_stream;
 mod paged;
 mod playlist;
+mod reel;
+mod replay;
 mod scene_animation;
 mod scene_layer;
 mod screen_capture;
@@ -82,11 +84,11 @@ use fm_auth::{AuthorizationDenial, CommandClass, Policy, Principal};
 use fm_command::{CommandReceipt, DurableEvent, IdempotencyKey, RejectionCode, Revision};
 use fm_engine::{
     EditLockScope as EngineEditLockScope, Engine, EngineAcceptance, EngineActionMotion,
-    EngineCommand, EngineCommandOutcome, EngineError, EngineEvent, EngineFadeToBlackState,
-    EngineInputAudioStripState, EngineInputSource, EngineManualTransitionKind,
-    EngineManualTransitionPosition, EngineManualTransitionState, EnginePrepareOutcome,
-    EngineSnapshot, EngineTitle, FrameResult, PreparedEngineExecution, SnapshotError,
-    TitleAirRequirement as EngineTitleAirRequirement,
+    EngineAudioMixerUpdate, EngineCommand, EngineCommandOutcome, EngineError, EngineEvent,
+    EngineFadeToBlackState, EngineInputAudioStripState, EngineInputSource,
+    EngineManualTransitionKind, EngineManualTransitionPosition, EngineManualTransitionState,
+    EnginePrepareOutcome, EngineSnapshot, EngineTitle, FrameResult, PreparedEngineExecution,
+    SnapshotError, TitleAirRequirement as EngineTitleAirRequirement,
 };
 use fm_protocol::{
     CommandMessage, CommandPayload, CommandResult, EditHistoryStatus, EditLockScope,
@@ -112,6 +114,7 @@ use fm_switcher::{
 use fm_titles::fm_animation::Phase;
 use fm_titles::{Color as TitleColor, FieldId, FieldValue, ImageSource, TitleAir, TitleAirPhase};
 use fm_types::InputId;
+use fm_types::strip_dsp::StripDspTarget;
 
 // The wire carries exactly the title values the engine holds, so the
 // protocol's bounds must be the title domain's bounds.
@@ -970,6 +973,9 @@ pub struct ControlService<A = Policy> {
     /// Media list items that ended under Auto Next since the authority
     /// last took them, oldest first (bounded like the end triggers).
     media_list_ends: Vec<MediaListEnd>,
+    /// Loudness resets realized by the engine since the audio plane last
+    /// took them, oldest first (AU-005).
+    loudness_resets: VecDeque<StripDspTarget>,
     /// Each media list's active item, the output frames it had left on
     /// the last frame it played, and whether that was its first observed
     /// frame, so a blending transition's early Auto Next fires once, as the
@@ -1020,6 +1026,10 @@ pub struct ControlService<A = Policy> {
 /// How many fired media end triggers wait for the authority at most; older
 /// ones are dropped first.
 pub const MAX_PENDING_MEDIA_END_TRIGGERS: usize = 64;
+
+/// How many realized loudness resets wait for the audio plane at most;
+/// older ones are dropped first.
+pub const MAX_PENDING_LOUDNESS_RESETS: usize = 64;
 
 /// The most frames [`PreparedSubmission::settle_ticks`] projects past a
 /// command's own ticks waiting for the engine to settle: one hour at 60
@@ -1095,6 +1105,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             media_published: HashMap::new(),
             media_end_triggers: Vec::new(),
             media_list_ends: Vec::new(),
+            loudness_resets: VecDeque::new(),
             media_list_leads: BTreeMap::new(),
             input_offline: BTreeMap::new(),
             display_states: BTreeMap::new(),
@@ -1160,6 +1171,7 @@ impl<A: AuthorizationHook> ControlService<A> {
             media_published: self.media_published.clone(),
             media_end_triggers: self.media_end_triggers.clone(),
             media_list_ends: self.media_list_ends.clone(),
+            loudness_resets: self.loudness_resets.clone(),
             media_list_leads: self.media_list_leads.clone(),
             input_offline: self.input_offline.clone(),
             display_states: self.display_states.clone(),
@@ -1436,6 +1448,161 @@ impl<A: AuthorizationHook> ControlService<A> {
     #[must_use]
     pub fn live_lan(&self) -> &fm_protocol::LiveLanConfig {
         self.engine.show().live_lan()
+    }
+
+    /// What the show records for replay (OR-012).
+    #[must_use]
+    pub fn replay_settings(&self) -> &fm_protocol::ReplaySettings {
+        self.engine.show().replay()
+    }
+
+    /// Feeds replay synthetically or from the media plane (see
+    /// [`Engine::set_replay_feed`]).
+    pub fn set_replay_feed(&mut self, feed: fm_engine::EngineReplayFeed) {
+        self.engine.set_replay_feed(feed);
+    }
+
+    /// How replay is fed (OR-012).
+    #[must_use]
+    pub const fn replay_feed(&self) -> fm_engine::EngineReplayFeed {
+        self.engine.replay_feed()
+    }
+
+    /// Sets the storage root replay uses when the show names none (see
+    /// [`Engine::set_replay_default_root`]).
+    pub fn set_replay_default_root(&mut self, root: std::path::PathBuf) {
+        self.engine.set_replay_default_root(root);
+    }
+
+    /// The storage root replay records into (OR-012).
+    #[must_use]
+    pub fn replay_root(&self) -> &std::path::Path {
+        self.engine.replay_root()
+    }
+
+    /// Reports one recorded replay frame (see [`Engine::replay_observe`]).
+    pub fn replay_observe(&mut self, input: InputId, frame: u64, stream_frame: u64) -> bool {
+        self.engine.replay_observe(input, frame, stream_frame)
+    }
+
+    /// Catalogs a finished replay segment file (see
+    /// [`Engine::replay_segment_closed`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn replay_segment_closed(
+        &mut self,
+        input: InputId,
+        recorder_index: u64,
+        path: std::path::PathBuf,
+        first_frame: u64,
+        first_stream_frame: u64,
+        frames: u64,
+        bytes: u64,
+    ) -> bool {
+        self.engine.replay_segment_closed(
+            input,
+            recorder_index,
+            path,
+            first_frame,
+            first_stream_frame,
+            frames,
+            bytes,
+        )
+    }
+
+    /// Takes the replay segment files to delete (see
+    /// [`Engine::take_replay_pruned`]).
+    pub fn take_replay_pruned(&mut self) -> Vec<std::path::PathBuf> {
+        self.engine.take_replay_pruned()
+    }
+
+    /// A counter that moves whenever the replay status may have changed.
+    #[must_use]
+    pub const fn replay_generation(&self) -> u64 {
+        self.engine.replay_generation()
+    }
+
+    /// The replay status as clients see it (OR-012).
+    #[must_use]
+    pub fn replay_status(
+        &self,
+        server: &ServerIdentity,
+        sequence: u64,
+        request_id: Option<String>,
+    ) -> fm_protocol::ReplayStatusMessage {
+        replay::status_message(self.engine.replay_status(), server, sequence, request_id)
+    }
+
+    /// A counter that moves whenever the reel status may have changed
+    /// (OR-013).
+    #[must_use]
+    pub const fn reel_generation(&self) -> u64 {
+        self.engine.reel_generation()
+    }
+
+    /// The highlight reel export jobs as the media plane sees them (OR-013).
+    #[must_use]
+    pub fn reel_exports(&self) -> Vec<fm_engine::EngineReelExportStatus> {
+        self.engine.reel_status().exports
+    }
+
+    /// Resolves up to `max_frames` further output frames of export `job`
+    /// (see [`Engine::reel_export_chunk`], OR-013).
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal of a chunk.
+    pub fn reel_export_chunk(
+        &mut self,
+        job: u64,
+        max_frames: u64,
+    ) -> Result<fm_engine::EngineReelChunk, fm_engine::EngineReelError> {
+        self.engine.reel_export_chunk(job, max_frames)
+    }
+
+    /// Reports that the media plane wrote export `job`'s file, `bytes` long
+    /// (see [`Engine::reel_export_finished`], OR-013).
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal of the report.
+    pub fn reel_export_finished(
+        &mut self,
+        job: u64,
+        bytes: u64,
+    ) -> Result<(), fm_engine::EngineReelError> {
+        self.engine.reel_export_finished(job, bytes)
+    }
+
+    /// Reports that the media plane could not write export `job`'s file
+    /// (see [`Engine::reel_export_failed`], OR-013).
+    ///
+    /// # Errors
+    ///
+    /// The engine's refusal of the report.
+    pub fn reel_export_failed(
+        &mut self,
+        job: u64,
+        reason: impl Into<String>,
+    ) -> Result<(), fm_engine::EngineReelError> {
+        self.engine.reel_export_failed(job, reason)
+    }
+
+    /// The highlight reels and their export jobs as clients see them
+    /// (OR-013).
+    #[must_use]
+    pub fn reel_status(
+        &self,
+        server: &ServerIdentity,
+        sequence: u64,
+        request_id: Option<String>,
+    ) -> fm_protocol::ReelStatusMessage {
+        reel::status_message(
+            self.engine.reel_status(),
+            self.engine.show().reels(),
+            server,
+            sequence,
+            request_id,
+        )
     }
 
     /// The `LiveLAN` status as clients see it (OR-017).
@@ -1980,6 +2147,18 @@ impl<A: AuthorizationHook> ControlService<A> {
             .collect()
     }
 
+    /// The title text and number actions a client's live fire would run
+    /// now, with the input each one's target resolves to (GX-006, Protocol
+    /// 2.104; see [`cue::fire_title_writes`]): what a Web session's fire is
+    /// checked against before it executes.
+    #[must_use]
+    pub fn fire_title_writes(
+        &self,
+        payload: &CommandPayload,
+    ) -> Vec<(fm_protocol::WireCueAction, Option<WireInputId>)> {
+        cue::fire_title_writes(&self.engine, payload)
+    }
+
     /// Every title input's animation phase and timeline at the engine's
     /// frame cursor (Protocol 2.90 `title_phases`), ascending by input.
     #[must_use]
@@ -2263,6 +2442,23 @@ impl<A: AuthorizationHook> ControlService<A> {
     #[must_use]
     pub fn strip_dsp_states(&self) -> Vec<fm_protocol::AudioStripDspStateMessage> {
         audio_mixer::strip_dsp_states(&self.engine)
+    }
+
+    /// The loudness resets the engine realized since the audio plane last
+    /// took them, oldest first (AU-005). The simulated plane restarts those
+    /// meters before its next rendered frame.
+    #[must_use]
+    pub fn take_loudness_resets(&mut self) -> Vec<StripDspTarget> {
+        Vec::from(core::mem::take(&mut self.loudness_resets))
+    }
+
+    /// The Program frame the engine's realized switcher shows at the frame
+    /// cursor: its primary and secondary inputs and the transition mix
+    /// across this frame's interval (SW-004). The simulated audio plane
+    /// renders the interval from it.
+    #[must_use]
+    pub fn realized_program_frame(&self) -> fm_switcher::ProgramFrame {
+        self.engine.realized_switcher().program_frame()
     }
 
     /// Returns the only `(list, frame)` a `cue_advance` is accepted for, or
@@ -2855,6 +3051,16 @@ impl<A: AuthorizationHook> ControlService<A> {
             .map_err(ControlError::from)
             .map_err(TickWithRealizerError::Tick)?;
         realizer(&frame).map_err(TickWithRealizerError::Realization)?;
+        // A loudness reset the engine realized restarts a meter on the next
+        // frame the audio plane renders (AU-005).
+        for update in &frame.audio_mixer_updates {
+            if let EngineAudioMixerUpdate::LoudnessReset { target } = update {
+                if self.loudness_resets.len() == MAX_PENDING_LOUDNESS_RESETS {
+                    self.loudness_resets.pop_front();
+                }
+                self.loudness_resets.push_back(*target);
+            }
+        }
         let current_generation = frame.runtime_generation.get();
         let applied_actions = current_generation
             .checked_sub(previous_generation)
@@ -3246,6 +3452,9 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetNetworkStream { .. }
         | EngineCommand::SetCaptureSettings { .. }
         | EngineCommand::SetStreamTarget { .. } => "project",
+        EngineCommand::Replay(operation) if !operation.is_live() => "project",
+        EngineCommand::Replay(_) => "replay",
+        EngineCommand::Reel(operation) => reel::journal_channel(operation),
         EngineCommand::AudioMixer(edit) if !edit.is_live() => "project",
         EngineCommand::SetInputAudioStrip { .. } | EngineCommand::AudioMixer(_) => "audio",
         EngineCommand::MediaList(edit) if !edit.operation.is_live() => "project",
@@ -3299,8 +3508,21 @@ const fn media_list_command_class(operation: &fm_protocol::MediaListOperation) -
     }
 }
 
+#[allow(clippy::too_many_lines)]
 const fn command_class(payload: &CommandPayload) -> CommandClass {
     match payload {
+        // Replay settings edit the project; marking, capturing, and playing
+        // replays is an operator control, like a media transport (OR-012).
+        CommandPayload::Replay(operation) => {
+            if operation.is_live() {
+                CommandClass::Transition
+            } else {
+                CommandClass::EditProject
+            }
+        }
+        // A reel edit changes the project; export control is an operator
+        // control, like a media transport (OR-013).
+        CommandPayload::Reel(operation) => reel::command_class(operation),
         CommandPayload::MediaList { operation, .. } => media_list_command_class(operation),
         CommandPayload::SetTitleAnimation { .. }
         | CommandPayload::ApplyTitleAnimationPreset { .. }
@@ -3451,6 +3673,10 @@ fn input_audio_strip_engine_command(payload: &CommandPayload) -> EngineCommand {
 #[allow(clippy::too_many_lines)] // one arm per payload family
 fn engine_command(payload: &CommandPayload) -> EngineCommand {
     match payload {
+        CommandPayload::Replay(operation) => {
+            EngineCommand::Replay(replay::engine_operation(operation))
+        }
+        CommandPayload::Reel(operation) => EngineCommand::Reel(reel::engine_operation(operation)),
         payload @ (CommandPayload::ReorderInputs { .. }
         | CommandPayload::RenameInput { .. }
         | CommandPayload::AddInput { .. }
@@ -3847,6 +4073,7 @@ fn engine_input_source(source: &LiveInputSource) -> EngineInputSource {
         LiveInputSource::Image(config) => EngineInputSource::Image(config.clone()),
         LiveInputSource::Slideshow(config) => EngineInputSource::Slideshow(config.clone()),
         LiveInputSource::ScreenCapture(config) => EngineInputSource::ScreenCapture(config.clone()),
+        LiveInputSource::Replay => EngineInputSource::Replay,
     }
 }
 
@@ -3870,6 +4097,7 @@ fn wire_input_source(source: &EngineInputSource) -> LiveInputSource {
         EngineInputSource::Image(config) => LiveInputSource::Image(config.clone()),
         EngineInputSource::Slideshow(config) => LiveInputSource::Slideshow(config.clone()),
         EngineInputSource::ScreenCapture(config) => LiveInputSource::ScreenCapture(config.clone()),
+        EngineInputSource::Replay => LiveInputSource::Replay,
     }
 }
 
@@ -4024,6 +4252,12 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
         }
         command @ EngineCommand::SetLiveLan(_) => {
             return live_lan::wire_edit_payload(command);
+        }
+        command @ EngineCommand::Replay(_) => {
+            return replay::wire_payload(command);
+        }
+        command @ EngineCommand::Reel(_) => {
+            return reel::wire_payload(command);
         }
         command @ EngineCommand::SetNetworkStream { .. } => {
             return network_stream::wire_edit_payload(command);
@@ -4517,6 +4751,20 @@ fn accepted_event_payload(
         .events
         .iter()
         .find_map(|event| live_lan::changed(&event.payload))
+    {
+        return payload;
+    }
+    if let Some(payload) = outcome
+        .events
+        .iter()
+        .find_map(|event| replay::changed(&event.payload))
+    {
+        return payload;
+    }
+    if let Some(payload) = outcome
+        .events
+        .iter()
+        .find_map(|event| reel::changed(&event.payload))
     {
         return payload;
     }

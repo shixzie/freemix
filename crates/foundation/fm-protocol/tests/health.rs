@@ -4,8 +4,8 @@
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CodecError, DaemonHealth, DiagnosticsResponse, EngineIdentity,
     HealthAlert, HealthAlertRule, HealthNotification, HealthNotificationKind, HealthSeverity,
-    HealthStatusMessage, MAX_HEALTH_NOTIFICATIONS, ServerIdentity, WireMessage, decode_line,
-    encode_line,
+    HealthStatusMessage, MAX_HEALTH_NOTIFICATIONS, ProtocolVersion, ServerIdentity, WireMessage,
+    decode_line, encode_line,
 };
 
 const HEAD: &str = "health_status\tengine_id=engine-a\tproject_id=project-a\tstate_epoch=7\tlog_id=log-a\tsequence=12";
@@ -67,6 +67,27 @@ fn message(health: DaemonHealth) -> WireMessage {
     WireMessage::HealthStatus(HealthStatusMessage {
         server: server(),
         sequence: 12,
+        health,
+    })
+}
+
+fn diagnostics(health: DaemonHealth) -> WireMessage {
+    WireMessage::DiagnosticsResponse(DiagnosticsResponse {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: "diag-1".into(),
+        engine: EngineIdentity {
+            engine_id: "engine-a".into(),
+            state_epoch: 7,
+            log_id: "log-a".into(),
+        },
+        current_revision: 3,
+        oldest_retained_revision: Some(1),
+        newest_retained_revision: Some(3),
+        subscriber_count: 1,
+        retained_events_limit: 128,
+        subscriber_limit: 16,
+        subscriber_queue_limit: 64,
+        source_sync: Vec::new(),
         health,
     })
 }
@@ -177,27 +198,7 @@ fn health_status_refuses_anything_but_the_contract() {
 
 #[test]
 fn diagnostics_response_carries_the_health_fields() {
-    let response = |health| {
-        WireMessage::DiagnosticsResponse(DiagnosticsResponse {
-            protocol: CURRENT_PROTOCOL_VERSION,
-            request_id: "diag-1".into(),
-            engine: EngineIdentity {
-                engine_id: "engine-a".into(),
-                state_epoch: 7,
-                log_id: "log-a".into(),
-            },
-            current_revision: 3,
-            oldest_retained_revision: Some(1),
-            newest_retained_revision: Some(3),
-            subscriber_count: 1,
-            retained_events_limit: 128,
-            subscriber_limit: 16,
-            subscriber_queue_limit: 64,
-            source_sync: Vec::new(),
-            health,
-        })
-    };
-    let full = response(health());
+    let full = diagnostics(health());
     let line = encode_line(&full).unwrap();
     assert!(
         line.ends_with(&format!(
@@ -206,7 +207,7 @@ fn diagnostics_response_carries_the_health_fields() {
         "{line}"
     );
     assert_eq!(decode_line(&line).unwrap(), full);
-    let quiet = response(DaemonHealth::default());
+    let quiet = diagnostics(DaemonHealth::default());
     let line = encode_line(&quiet).unwrap();
     assert!(
         line.ends_with("\tsource_sync=\tuptime_ms=0\talerts=\tnotifications=\n"),
@@ -218,4 +219,157 @@ fn diagnostics_response_carries_the_health_fields() {
         decode_line(&missing),
         Err(CodecError::MissingField("alerts"))
     );
+}
+
+#[test]
+fn new_alert_rule_tokens_round_trip() {
+    for (rule, token) in [
+        (HealthAlertRule::EncoderSaturated, "encoder_saturated"),
+        (HealthAlertRule::StreamReconnecting, "stream_reconnecting"),
+        (HealthAlertRule::SyncDegraded, "sync_degraded"),
+    ] {
+        assert_eq!(rule.token(), token);
+        assert_eq!(HealthAlertRule::from_token(token), Some(rule));
+    }
+    for unknown in [
+        "encoder_overheated",
+        "stream_reconnect",
+        "sync_degraded ",
+        "",
+    ] {
+        assert_eq!(HealthAlertRule::from_token(unknown), None);
+    }
+}
+
+#[test]
+fn all_alert_rules_stay_sorted_and_unique() {
+    assert_eq!(HealthAlertRule::ALL.len(), 9);
+    assert!(
+        HealthAlertRule::ALL
+            .windows(2)
+            .all(|pair| pair[0] < pair[1])
+    );
+    let mut sorted = HealthAlertRule::ALL;
+    sorted.sort_unstable();
+    assert_eq!(sorted, HealthAlertRule::ALL);
+    for (index, rule) in HealthAlertRule::ALL.iter().enumerate() {
+        assert!(
+            HealthAlertRule::ALL[index + 1..]
+                .iter()
+                .all(|other| other.token() != rule.token()),
+            "{}",
+            rule.token()
+        );
+    }
+}
+
+const NEW_ALERTS: &str = "encoder_saturated%3Awarning%3A61000%3A3500%3Bstream_reconnecting%3Awarning%3A62000%3A1000%3Bsync_degraded%3Awarning%3A63000%3Anone";
+const NEW_NOTIFICATIONS: &str = "1%3Async_degraded%3Awarning%3Afiring%3A63000%3Anone";
+
+fn new_rule_health() -> DaemonHealth {
+    DaemonHealth {
+        uptime_ms: 64_000,
+        cpu_permille: Some(500),
+        gpu_permille: None,
+        alerts: vec![
+            HealthAlert {
+                rule: HealthAlertRule::EncoderSaturated,
+                severity: HealthSeverity::Warning,
+                since_ms: 61_000,
+                value_milli: Some(3_500),
+            },
+            HealthAlert {
+                rule: HealthAlertRule::StreamReconnecting,
+                severity: HealthSeverity::Warning,
+                since_ms: 62_000,
+                value_milli: Some(1_000),
+            },
+            HealthAlert {
+                rule: HealthAlertRule::SyncDegraded,
+                severity: HealthSeverity::Warning,
+                since_ms: 63_000,
+                value_milli: None,
+            },
+        ],
+        notifications: vec![HealthNotification {
+            sequence: 1,
+            rule: HealthAlertRule::SyncDegraded,
+            severity: HealthSeverity::Warning,
+            kind: HealthNotificationKind::Firing,
+            at_ms: 63_000,
+            value_milli: None,
+        }],
+    }
+}
+
+#[test]
+fn health_status_and_diagnostics_carry_the_new_alert_rules() {
+    let health = new_rule_health();
+    for rule in [
+        HealthAlertRule::EncoderSaturated,
+        HealthAlertRule::StreamReconnecting,
+        HealthAlertRule::SyncDegraded,
+    ] {
+        assert!(health.alert(rule).is_some(), "{}", rule.token());
+    }
+    let full = message(health.clone());
+    let line = encode_line(&full).unwrap();
+    assert_eq!(
+        line,
+        format!(
+            "{HEAD}\tuptime_ms=64000\tcpu_permille=500\talerts={NEW_ALERTS}\tnotifications={NEW_NOTIFICATIONS}\n"
+        )
+    );
+    assert_eq!(decode_line(&line).unwrap(), full);
+    let misspelled = line.replacen("sync_degraded%3A", "sync_impaired%3A", 1);
+    assert!(
+        matches!(
+            decode_line(&misspelled),
+            Err(CodecError::InvalidField {
+                field: "alerts",
+                ..
+            })
+        ),
+        "{misspelled}"
+    );
+
+    let full = diagnostics(health);
+    let line = encode_line(&full).unwrap();
+    assert!(
+        line.ends_with(&format!(
+            "\tsource_sync=\tuptime_ms=64000\tcpu_permille=500\talerts={NEW_ALERTS}\tnotifications={NEW_NOTIFICATIONS}\n"
+        )),
+        "{line}"
+    );
+    assert_eq!(decode_line(&line).unwrap(), full);
+}
+
+#[test]
+fn alerts_carry_one_entry_per_rule_up_to_nine() {
+    let mut full = health();
+    full.uptime_ms = 60_000;
+    full.alerts = HealthAlertRule::ALL
+        .iter()
+        .copied()
+        .map(|rule| HealthAlert {
+            rule,
+            severity: HealthSeverity::Warning,
+            since_ms: 50_000,
+            value_milli: None,
+        })
+        .collect();
+    assert!(full.is_valid());
+    let full = message(full);
+    let line = encode_line(&full).unwrap();
+    assert_eq!(decode_line(&line).unwrap(), full);
+    let extra = line.replace(
+        "\tnotifications=",
+        "%3Bcpu_saturated%3Awarning%3A50000%3Anone\tnotifications=",
+    );
+    assert_eq!(decode_line(&extra), Err(CodecError::TooManyItems("alerts")));
+}
+
+#[test]
+fn protocol_2_108_is_current() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 108));
 }

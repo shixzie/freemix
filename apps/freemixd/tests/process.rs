@@ -3783,7 +3783,7 @@ fn simulated_daemon_realizes_a_timed_transition_on_its_frame_loop() {
         }
     };
     assert!(
-        answered < Duration::from_millis(1_000),
+        answered < Duration::from_secs(1),
         "the fade was answered after {answered:?}, not on its first frame"
     );
 
@@ -3914,7 +3914,7 @@ fn simulated_daemon_realizes_a_title_off_air_when_its_out_phase_ends() {
         }
     };
     assert!(
-        answered < Duration::from_millis(1_000),
+        answered < Duration::from_secs(1),
         "the off-air was answered after {answered:?}, not on its first frame"
     );
 
@@ -4085,12 +4085,14 @@ fn a_studio_subscribing_mid_fade_holds_until_the_fade_completes() {
     let mut realized = Vec::new();
     while !realized.contains(&3) {
         let message = studio.receive();
-        // Monitor frames, title phases, and the once-a-second health status
-        // are the TCP session's, not the protocol client's.
+        // Monitor frames, title phases, replay status, and the once-a-second
+        // health status are the TCP session's, not the protocol client's.
         if matches!(
             message,
             WireMessage::MonitorFrame(_)
                 | WireMessage::TitlePhases(_)
+                | WireMessage::ReplayStatus(_)
+                | WireMessage::ReelStatus(_)
                 | WireMessage::HealthStatus(_)
         ) {
             continue;
@@ -4197,7 +4199,7 @@ fn simulated_daemon_realizes_a_title_take_when_its_in_phase_ends() {
         }
     };
     assert!(
-        answered < Duration::from_millis(1_000),
+        answered < Duration::from_secs(1),
         "the take was answered after {answered:?}, not on its first frame"
     );
     other.send(&command(
@@ -4337,7 +4339,7 @@ fn simulated_daemon_realizes_an_overlay_take_when_its_transition_ends() {
         }
     };
     assert!(
-        answered < Duration::from_millis(1_000),
+        answered < Duration::from_secs(1),
         "the take was answered after {answered:?}, not on its first frame"
     );
     // An overlay in transition never holds Program: a Cut is accepted.
@@ -6620,7 +6622,7 @@ fn studio_stinger_assignment_is_acknowledged_while_a_scene_monitor_composes() {
 
     // A composed Program picture proves monitor demand is active, so the
     // accepted command below changes the revision a composition depends on.
-    let first_frame = Instant::now() + Duration::from_secs(60);
+    let first_frame = Instant::now() + Duration::from_mins(1);
     loop {
         assert!(Instant::now() < first_frame, "no Program monitor frame");
         if let Some(SessionEvent::MonitorFrame {
@@ -7623,11 +7625,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.104.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 104));
+    // The previous protocol is refused; the current one is 2.108.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 108));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 103),
+        protocol: ProtocolVersion::new(2, 107),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -7643,7 +7645,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 104)
+        ProtocolVersion::new(2, 108)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

@@ -298,39 +298,49 @@ fn stroke_text(key: &WireShortcutKey) -> String {
     text
 }
 
-/// Where a scoped key answers: one console panel, or that panel's pop-out
-/// window.
+/// Where a scoped key answers: one console panel, that panel's pop-out
+/// window, or one of the tool windows (Colour, Animation, Designer).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AnswerScope {
     Panel(crate::dock::PanelId),
     Window(crate::dock::PanelId),
+    Tool(crate::dock::ToolWindow),
 }
 
 impl AnswerScope {
-    /// Every scope the editor offers: each panel, then each panel's window.
+    /// Every scope the editor offers: each panel, then each panel's
+    /// window, then each tool window.
     pub(crate) fn all() -> impl Iterator<Item = Self> {
         crate::dock::PanelId::ALL
             .into_iter()
             .map(Self::Panel)
             .chain(crate::dock::PanelId::ALL.into_iter().map(Self::Window))
+            .chain(crate::dock::ToolWindow::ALL.into_iter().map(Self::Tool))
     }
 
     /// The scope a key's `scope` names.
     pub(crate) fn of(scope: &str) -> Option<Self> {
         match scope.strip_suffix(fm_protocol::SHORTCUT_WINDOW_SUFFIX) {
-            Some(panel) => crate::dock::PanelId::from_key(panel).map(Self::Window),
+            Some(window) => crate::dock::PanelId::from_key(window)
+                .map(Self::Window)
+                .or_else(|| {
+                    crate::dock::ToolWindow::ALL
+                        .into_iter()
+                        .find(|tool| tool.key() == window)
+                        .map(Self::Tool)
+                }),
             None => crate::dock::PanelId::from_key(scope).map(Self::Panel),
         }
     }
 
     /// The key's `scope` text.
     pub(crate) fn key(self) -> String {
-        match self {
-            Self::Panel(panel) => panel.key().to_owned(),
-            Self::Window(panel) => {
-                format!("{}{}", panel.key(), fm_protocol::SHORTCUT_WINDOW_SUFFIX)
-            }
-        }
+        let window = match self {
+            Self::Panel(panel) => return panel.key().to_owned(),
+            Self::Window(panel) => panel.key(),
+            Self::Tool(tool) => tool.key(),
+        };
+        format!("{window}{}", fm_protocol::SHORTCUT_WINDOW_SUFFIX)
     }
 
     /// The scope as the editor's picker names it.
@@ -341,6 +351,29 @@ impl AnswerScope {
                 Msg::UserShortcutScopeWindow,
                 &[("panel", Arg::Str(l.text(panel.title())))],
             ),
+            Self::Tool(tool) => l.format(
+                Msg::UserShortcutScopeTool,
+                &[("tool", Arg::Str(l.text(tool.title())))],
+            ),
+        }
+    }
+
+    /// The picker's hover help for `scope` (`None` answers anywhere):
+    /// `general` for anywhere and a panel, else the window's own.
+    const fn hover(scope: Option<Self>, general: Msg) -> Msg {
+        match scope {
+            Some(Self::Window(_)) => Msg::UserShortcutScopeWindowHover,
+            Some(Self::Tool(_)) => Msg::UserShortcutScopeToolHover,
+            Some(Self::Panel(_)) | None => general,
+        }
+    }
+
+    /// The name the key's words give the scope's panel or window.
+    fn words(self, l: Locale) -> (Msg, &'static str) {
+        match self {
+            Self::Panel(panel) => (Msg::UserShortcutInPanel, l.text(panel.title())),
+            Self::Window(panel) => (Msg::UserShortcutInWindow, l.text(panel.title())),
+            Self::Tool(tool) => (Msg::UserShortcutInWindow, l.text(tool.title())),
         }
     }
 }
@@ -534,16 +567,27 @@ impl<'a> ConsoleKeys<'a> {
 }
 
 /// Where a press lands: the panel with the console's focus, and the panel
-/// whose pop-out window read the press (`None` in the main window).
+/// or tool ([`fm_protocol::SHORTCUT_TOOL_WINDOWS`]) whose window has it
+/// (`None` in the main window itself).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct KeyFocus<'a> {
     pub(crate) panel: Option<&'a str>,
     pub(crate) window: Option<&'a str>,
 }
 
+/// A window inside the console's main window that holds the focus scoped
+/// keys answer in (RC-004): a pop-out the platform embeds in the main
+/// window (it has a single viewport), or a tool window (Colour, Animation,
+/// Designer) floating over the console, docked, or embedded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum KeyWindow {
+    Panel(crate::dock::PanelId),
+    Tool(crate::dock::ToolWindow),
+}
+
 impl KeyFocus<'_> {
     /// Whether a key scoped to `scope` answers here: unscoped, scoped to
-    /// the focused panel, or scoped to the pop-out window that read it.
+    /// the focused panel, or scoped to the window that has the press.
     fn answers(self, scope: Option<&str>) -> bool {
         let Some(scope) = scope else {
             return true;
@@ -1246,6 +1290,14 @@ impl StudioShell {
         intents: &mut Vec<StudioIntent>,
         chord_end_only: bool,
     ) {
+        if popout.is_none()
+            && let Some(KeyWindow::Tool(tool)) = self.main_window(ui.ctx())
+            && self.tool_owns_keyboard(tool)
+        {
+            // The focused tool reads them after its own keys took theirs
+            // (and keeps a chord it started).
+            return;
+        }
         if self.console_keys_blocked(ui.ctx()) || ui.ctx().egui_wants_keyboard_input() {
             // A text field or dialog took the keyboard: the wait ends, so
             // the first key after it closes is not swallowed as a chord's
@@ -1253,15 +1305,145 @@ impl StudioShell {
             self.chord = None;
             return;
         }
+        let focus = match popout {
+            Some(panel) => KeyFocus {
+                panel: Some(panel.key()),
+                window: Some(panel.key()),
+            },
+            None => self.main_key_focus(ui.ctx()),
+        };
+        self.fire_keys_at(ui, state, focus, intents, chord_end_only);
+    }
+
+    /// The window inside the main window with the focus, if it is still
+    /// there: an embedded pop-out, or an open tool not in a native window.
+    fn main_window(&self, context: &egui::Context) -> Option<KeyWindow> {
+        self.focused_window.filter(|window| match *window {
+            KeyWindow::Panel(panel) => {
+                context.embed_viewports()
+                    && self
+                        .layout
+                        .dock
+                        .popped()
+                        .iter()
+                        .any(|popout| popout.key == panel)
+            }
+            KeyWindow::Tool(tool) => {
+                self.tool_open(tool)
+                    && (self.layout.tool_popped(tool).is_none() || context.embed_viewports())
+            }
+        })
+    }
+
+    /// Where the main window's presses land: an embedded pop-out or a tool
+    /// window there with the focus (the window last clicked), else the
+    /// focused panel.
+    fn main_key_focus(&self, context: &egui::Context) -> KeyFocus<'static> {
+        match self.main_window(context) {
+            Some(KeyWindow::Panel(panel)) => KeyFocus {
+                panel: Some(panel.key()),
+                window: Some(panel.key()),
+            },
+            Some(KeyWindow::Tool(tool)) => KeyFocus {
+                panel: None,
+                window: Some(tool.key()),
+            },
+            None => KeyFocus {
+                panel: self.focused_panel.map(crate::dock::PanelId::key),
+                window: None,
+            },
+        }
+    }
+
+    /// Whether tool window `tool` is open.
+    const fn tool_open(&self, tool: crate::dock::ToolWindow) -> bool {
+        match tool {
+            crate::dock::ToolWindow::Color => self.color.open,
+            crate::dock::ToolWindow::Animation => self.animation.open,
+            crate::dock::ToolWindow::Designer => self.designer.open,
+        }
+    }
+
+    /// Whether tool window `tool` owns the keyboard for its own keys.
+    fn tool_owns_keyboard(&self, tool: crate::dock::ToolWindow) -> bool {
+        match tool {
+            crate::dock::ToolWindow::Color => self.color_owns_keyboard(),
+            crate::dock::ToolWindow::Animation => self.animation_owns_keyboard(),
+            crate::dock::ToolWindow::Designer => self.designer_owns_keyboard(),
+        }
+    }
+
+    /// Gives `window` the focus scoped keys answer in when this frame's
+    /// press landed in `ui` (on its layer, and inside `area` when given:
+    /// a docked tool shares the console's layer). Call after drawing a
+    /// window that shares the main window's input.
+    pub(crate) fn focus_window_on_press(
+        &mut self,
+        ui: &Ui,
+        area: Option<egui::Rect>,
+        window: KeyWindow,
+    ) {
+        let pressed = ui.input(|input| {
+            input.pointer.interact_pos().filter(|pos| {
+                input.pointer.any_pressed() && area.is_none_or(|area| area.contains(*pos))
+            })
+        });
+        // Outside the input lock: the layer lookup takes the memory's.
+        if pressed.is_some_and(|pos| ui.ctx().layer_id_at(pos) == Some(ui.layer_id())) {
+            self.focused_window = Some(window);
+        }
+    }
+
+    /// Reads the project's shortcut keys and mouse buttons in tool window
+    /// `tool` after its own keys took theirs (RC-004): its window-scoped
+    /// keys and the console's unscoped ones. `native` is a native window
+    /// with its own input, which always reads them; a tool sharing the main
+    /// window's input (floating, docked in `docked` on the console's layer,
+    /// or embedded) gives the focus to itself on a press, and reads here
+    /// only while it has the focus and owns the keyboard (the main window
+    /// read the keys otherwise).
+    pub(crate) fn tool_window_keys(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        tool: crate::dock::ToolWindow,
+        (native, docked): (bool, Option<egui::Rect>),
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        if !native {
+            self.focus_window_on_press(ui, docked, KeyWindow::Tool(tool));
+            if self.focused_window != Some(KeyWindow::Tool(tool)) || !self.tool_owns_keyboard(tool)
+            {
+                return;
+            }
+        }
+        // The designer's canvas holds egui's focus while it owns the keys.
+        let field = ui.ctx().egui_wants_keyboard_input()
+            && !(tool == crate::dock::ToolWindow::Designer && self.designer_owns_keyboard());
+        if field || self.window_keys_blocked() || egui::Popup::is_any_open(ui.ctx()) {
+            return;
+        }
+        let focus = KeyFocus {
+            panel: None,
+            window: Some(tool.key()),
+        };
+        self.fire_keys_at(ui, state, focus, intents, false);
+    }
+
+    /// Fires the shortcuts this frame's presses name where `focus` is.
+    fn fire_keys_at(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        focus: KeyFocus<'_>,
+        intents: &mut Vec<StudioIntent>,
+        chord_end_only: bool,
+    ) {
         let keys = ConsoleKeys::of(state, &self.shortcut_keys);
         if keys.shortcuts.is_empty() {
             self.chord = None;
             return;
         }
-        let focus = KeyFocus {
-            panel: popout.or(self.focused_panel).map(crate::dock::PanelId::key),
-            window: popout.map(crate::dock::PanelId::key),
-        };
         let chord = &mut self.chord;
         let fired = ui.input_mut(|input| {
             let now = input.time;
@@ -1607,16 +1789,10 @@ pub(crate) enum LocalRefusal {
 fn key_words(l: Locale, key: &WireShortcutKey, local: bool) -> String {
     let mut keys = l.keys(&key_text(key));
     if let Some(scope) = key.scope.as_deref().and_then(AnswerScope::of) {
-        let (message, panel) = match scope {
-            AnswerScope::Panel(panel) => (Msg::UserShortcutInPanel, panel),
-            AnswerScope::Window(panel) => (Msg::UserShortcutInWindow, panel),
-        };
+        let (message, panel) = scope.words(l);
         keys = l.format(
             message,
-            &[
-                ("keys", Arg::Str(&keys)),
-                ("panel", Arg::Str(l.text(panel.title()))),
-            ],
+            &[("keys", Arg::Str(&keys)), ("panel", Arg::Str(panel))],
         );
     }
     if local {
@@ -1872,11 +2048,7 @@ fn draw_console_key(
                 .width(200.0)
                 .show_ui(ui, |ui| {
                     for scope in core::iter::once(None).chain(AnswerScope::all().map(Some)) {
-                        let hover = if matches!(scope, Some(AnswerScope::Window(_))) {
-                            Msg::UserShortcutScopeWindowHover
-                        } else {
-                            Msg::UserShortcutLocalScopeHover
-                        };
+                        let hover = AnswerScope::hover(scope, Msg::UserShortcutLocalScopeHover);
                         ui.selectable_value(&mut chosen, scope, name(scope))
                             .on_hover_text(l.text(hover));
                     }
@@ -2135,8 +2307,8 @@ fn draw_editor(
             }
         }
     });
-    // Where the key answers: anywhere, in one panel, or in one panel's
-    // pop-out window.
+    // Where the key answers: anywhere, in one panel, in one panel's
+    // pop-out window, or in one tool window.
     ui.horizontal_wrapped(|ui| {
         form_label(ui, l.text(Msg::UserShortcutScopeLabel));
         let scope_block = edit.or_else(|| {
@@ -2163,11 +2335,7 @@ fn draw_editor(
                 .width(220.0)
                 .show_ui(ui, |ui| {
                     for scope in core::iter::once(None).chain(AnswerScope::all().map(Some)) {
-                        let hover = if matches!(scope, Some(AnswerScope::Window(_))) {
-                            Msg::UserShortcutScopeWindowHover
-                        } else {
-                            Msg::UserShortcutScopeHover
-                        };
+                        let hover = AnswerScope::hover(scope, Msg::UserShortcutScopeHover);
                         ui.selectable_value(&mut chosen, scope, name(scope))
                             .on_hover_text(l.text(hover));
                     }

@@ -18,7 +18,7 @@
 //!   `transition`, `manual_transition`, `scene_on_air`, `overlay:<channel>`,
 //!   `overlay_queue:<channel>`, `stinger:<slot>`, `scene_layer:<scene>`,
 //!   `scene_audio_source:<scene input>`, `alias_target:<alias input>`,
-//!   `playlist_entry:<entry>`, `cue_action:<list>:<cue>`;
+//!   `playlist_entry:<entry>`, `cue_action:<list>:<cue>`, `replay_source`;
 //! * `display_in_use:<slot>`;
 //! * `bounds_exceeded:<field>:<max>`, `<field>` a `[a-z0-9_]` token of at
 //!   most [`fm_command::MAX_REFUSAL_FIELD_BYTES`] bytes;

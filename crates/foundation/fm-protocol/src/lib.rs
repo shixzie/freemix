@@ -18,6 +18,8 @@ mod network_stream;
 mod output_failure;
 mod paged;
 mod recorder_status;
+mod reel;
+mod replay;
 mod scene_layer;
 pub mod screen_capture;
 mod script;
@@ -202,6 +204,20 @@ pub use paged::{
 pub use recorder_status::{
     MAX_RECORDER_STATUS_SAMPLES, RecorderRealizedState, RecorderStatusMessage, RecorderStatusSample,
 };
+pub use reel::{
+    MAX_REEL_CLIPS, MAX_REEL_ERROR_BYTES, MAX_REEL_EXPORTS, MAX_REEL_NAME_BYTES,
+    MAX_REEL_PATH_BYTES, MAX_REEL_TRIM_FRAMES, MAX_REELS, ReelClip, ReelExportState,
+    ReelExportStatus, ReelOperation, ReelSpec, ReelSpecError, ReelStatus, ReelStatusMessage,
+    ReelStatusRequest, reel_error_is_valid, reel_export_path_is_valid, reel_name_is_valid,
+};
+pub use replay::{
+    DEFAULT_REPLAY_RETENTION_SECONDS, MAX_REPLAY_EVENT_NAME_BYTES, MAX_REPLAY_EVENTS,
+    MAX_REPLAY_INPUTS, MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS,
+    MAX_REPLAY_STORAGE_ROOT_BYTES, MIN_REPLAY_RETENTION_SECONDS, REPLAY_LAST_SECONDS,
+    ReplayEventStatus, ReplayFeed, ReplayOperation, ReplayPlayerStatus, ReplaySettings,
+    ReplaySettingsError, ReplaySourceStatus, ReplaySpeed, ReplayStatusMessage, ReplayStatusRequest,
+    replay_event_name_is_valid, replay_storage_root_is_valid,
+};
 pub use scene_layer::{MAX_KEY_CHOKE, MAX_KEY_EDGE_SOFTNESS, MAX_KEY_LIGHT_WRAP_WIDTH};
 pub use scene_layer::{
     MAX_SCENE_LAYER_EFFECTS, MAX_SCENE_LAYER_TILT_MILLIDEGREES, MIN_SCENE_LAYER_TILT_MILLIDEGREES,
@@ -228,10 +244,10 @@ pub use script::{
 pub use shortcut::{
     MAX_SHORTCUT_ACTIONS, MAX_SHORTCUT_KEY_BYTES, MAX_SHORTCUT_NAME_BYTES, MAX_SHORTCUT_OSC_BYTES,
     MAX_SHORTCUT_TEXT_BYTES, MAX_SHORTCUTS, SHORTCUT_MOUSE_BUTTONS, SHORTCUT_OSC_PREFIX,
-    SHORTCUT_SCOPES, SHORTCUT_WINDOW_SUFFIX, ShortcutFireChange, ShortcutSpec,
-    ShortcutStateMessage, ShortcutStatus, WireShortcutAction, WireShortcutCueOperation,
-    WireShortcutKey, shortcut_key_is_valid, shortcut_name_is_valid, shortcut_osc_is_valid,
-    shortcut_scope_is_valid, shortcut_scope_panel, shortcut_scopes_overlap,
+    SHORTCUT_SCOPES, SHORTCUT_TOOL_WINDOWS, SHORTCUT_WINDOW_SUFFIX, ShortcutFireChange,
+    ShortcutSpec, ShortcutStateMessage, ShortcutStatus, WireShortcutAction,
+    WireShortcutCueOperation, WireShortcutKey, shortcut_key_is_valid, shortcut_name_is_valid,
+    shortcut_osc_is_valid, shortcut_scope_is_valid, shortcut_scope_panel, shortcut_scopes_overlap,
 };
 pub use source_sync::{
     MAX_SOURCE_SYNC_MPPM, MAX_SOURCE_SYNC_RATE_HZ, MAX_SOURCE_SYNC_SAMPLES, SourceClockState,

@@ -151,11 +151,8 @@ pub fn parse_cards(cards: &str) -> BTreeMap<u32, AlsaCard> {
         let Some((id, rest)) = rest.split_once(']') else {
             continue;
         };
-        let name = rest
-            .trim_start_matches(':')
-            .split_once(" - ")
-            .map_or(rest, |(_, name)| name)
-            .trim();
+        let rest = rest.trim_start_matches(':');
+        let name = rest.split_once(" - ").map_or(rest, |(_, name)| name).trim();
         parsed.insert(
             number,
             AlsaCard {
@@ -321,6 +318,15 @@ mod tests {
             std::fs::write(dir.join("card1/stream0"), STREAM).unwrap();
         }
         dir
+    }
+
+    #[test]
+    fn a_card_line_without_a_driver_dash_keeps_a_clean_name() {
+        let cards = parse_cards(" 2 [Loopback       ]: Loopback\n");
+        assert_eq!(cards[&2].id, "Loopback");
+        assert_eq!(cards[&2].name, "Loopback");
+        let cards = parse_cards(" 0 [PCH            ]: HDA-Intel - HDA Intel PCH\n");
+        assert_eq!(cards[&0].name, "HDA Intel PCH");
     }
 
     #[test]

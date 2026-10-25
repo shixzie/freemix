@@ -2302,6 +2302,7 @@ mod tests {
         shell.layout.dock.show(crate::dock::PanelId::Titles);
         // The whole right column, so the editor's keys are in view.
         shell.layout.dock.close(crate::dock::PanelId::Outputs);
+        shell.layout.dock.close(crate::dock::PanelId::Replay);
         let english = draw(&context, &mut shell, &state);
         for expected in [
             "TITLES",

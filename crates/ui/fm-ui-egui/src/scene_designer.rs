@@ -636,10 +636,8 @@ impl StudioShell {
         let mut history = Vec::new();
         if let Some(geometry) = self.layout.tool_popped(ToolWindow::Designer) {
             let (id, builder) = self.tool_viewport(ToolWindow::Designer, geometry);
-            let designer = &mut self.designer;
-            let thumbnails = &self.thumbnail_textures;
             let (outcome, close) = context.show_viewport_immediate(id, builder, |ui, class| {
-                workspace::tool_popout_frame(
+                let shown = workspace::tool_popout_frame(
                     ui,
                     l,
                     ToolWindow::Designer,
@@ -647,9 +645,19 @@ impl StudioShell {
                     &close_hover,
                     |ui| {
                         ui.set_min_size(ui.available_size());
-                        copied = draw_contents(ui, l, designer, state, thumbnails, &mut history);
+                        copied = draw_contents(
+                            ui,
+                            l,
+                            &mut self.designer,
+                            state,
+                            &self.thumbnail_textures,
+                            &mut history,
+                        );
                     },
-                )
+                );
+                let native = class != egui::ViewportClass::EmbeddedWindow;
+                self.tool_window_keys(ui, state, ToolWindow::Designer, (native, None), intents);
+                shown
             });
             open &= !close;
             self.finish_tool_popout(ToolWindow::Designer, outcome);
@@ -668,7 +676,7 @@ impl StudioShell {
                 .frame(workspace::tool_window_frame())
                 .show(context, |ui| {
                     ui.set_min_size(ui.available_size());
-                    workspace::floating_tool_frame(
+                    let header = workspace::floating_tool_frame(
                         ui,
                         l,
                         ToolWindow::Designer,
@@ -684,7 +692,9 @@ impl StudioShell {
                             );
                         },
                     )
-                    .0
+                    .0;
+                    self.tool_window_keys(ui, state, ToolWindow::Designer, (false, None), intents);
+                    header
                 });
             if let Some(header) = shown.and_then(|shown| shown.inner) {
                 open &= !header.close;

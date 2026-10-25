@@ -73,6 +73,7 @@ mod panels;
 mod playlist;
 mod preferences;
 mod preset_files;
+mod replay_ui;
 mod scene_designer;
 mod screen_capture_ui;
 mod scripts;
@@ -270,6 +271,10 @@ pub enum StudioIntent {
     /// Asks for one document page's presenter notes or thumbnail (IN-014);
     /// the answer arrives in [`StudioUiState::paged_pages`].
     PagedPage(fm_protocol::PagedPageRequest),
+    /// One instant replay command (OR-012).
+    Replay(fm_protocol::ReplayOperation),
+    /// One highlight reel command (OR-013).
+    Reel(fm_protocol::ReelOperation),
     /// Selects an input on the Preview bus.
     SelectPreview(InputId),
     /// Performs an immediate Cut transition.
@@ -632,6 +637,15 @@ pub struct StudioUiState {
     /// what the TITLES timeline strip's playhead follows. `None` until the
     /// daemon sends one.
     pub title_phases: Option<fm_protocol::TitlePhasesMessage>,
+    /// The latest instant replay status (`replay_status`, OR-012): the
+    /// recording, marks, events, and Replay inputs. `None` until the daemon
+    /// sends one.
+    pub replay: Option<Box<fm_protocol::ReplayStatusMessage>>,
+    /// Every highlight reel (`reel_status`, OR-013), ascending by id.
+    pub reels: Vec<fm_protocol::ReelStatus>,
+    /// Every highlight reel export job (`reel_status`, OR-013), in server
+    /// order.
+    pub reel_exports: Vec<fm_protocol::ReelExportStatus>,
     /// Stream targets whose start/stop command is still unresolved.
     pub stream_pending: Vec<WireStreamTargetId>,
     /// Whether a Start all or Stop all command is still unresolved.
@@ -719,6 +733,9 @@ impl StudioUiState {
             source_sync: None,
             health: None,
             title_phases: None,
+            replay: None,
+            reels: Vec::new(),
+            reel_exports: Vec::new(),
             stream_pending: Vec::new(),
             stream_group_pending: false,
             reconnect: None,
@@ -772,6 +789,14 @@ impl StudioUiState {
     pub const fn with_edit_project_permission(mut self, can_edit_project: bool) -> Self {
         self.can_edit_project = can_edit_project;
         self
+    }
+
+    /// Replaces the highlight reel and export status (`reel_status`,
+    /// OR-013), keeping the reels in id order for the panel's list.
+    pub fn set_reel_status(&mut self, status: fm_protocol::ReelStatusMessage) {
+        self.reels = status.reels;
+        self.reels.sort_by_key(|reel| reel.id);
+        self.reel_exports = status.exports;
     }
 }
 
@@ -1715,6 +1740,10 @@ pub struct StudioShell {
     /// The panel the operator last clicked, which scoped project shortcut
     /// keys answer in (RC-004).
     focused_panel: Option<dock::PanelId>,
+    /// The window inside the main window the operator last clicked (an
+    /// embedded pop-out or a tool window), whose scoped project shortcut
+    /// keys answer there (RC-004); `None` after a click in a docked panel.
+    focused_window: Option<user_shortcuts::KeyWindow>,
     /// A project shortcut chord's first key, waiting for its second.
     chord: Option<user_shortcuts::PendingChord>,
     /// The Add / Edit destination dialog and Remove confirmation (OR-006).
@@ -2111,7 +2140,7 @@ impl StudioShell {
         }
         // Docked, the Animation window spans the whole console width below
         // the monitors; it also follows the authority here every frame.
-        self.draw_animation_dock(ui, state);
+        self.draw_animation_dock(ui, state, &mut intents);
         self.announce_rejected_layout();
         let frame = workspace::panel_frame(self, state, manual_transition_controls, dt_ms);
         let central = CentralPanel::default()
@@ -2304,6 +2333,7 @@ impl Default for StudioShell {
             user_shortcuts: user_shortcuts::ShortcutsWindow::default(),
             shortcut_keys: ShortcutKeyOverrides::default(),
             focused_panel: None,
+            focused_window: None,
             chord: None,
             stream_targets: stream_targets::StreamTargetsUi::default(),
             dock_ui: workspace::DockUi::default(),
@@ -3364,7 +3394,7 @@ mod tests {
             recording_action(&available, RecordingAction::Start(REC_1)),
             Some(RecordingAction::Start(REC_1))
         );
-        let denied = [
+        let denied = vec![
             // The transition permission is missing.
             StudioUiState::new(StudioConnectionStatus::Ready)
                 .with_view(recording_view([false, false]))
@@ -3375,7 +3405,8 @@ mod tests {
             StudioUiState::new(StudioConnectionStatus::Connecting)
                 .with_view(recording_view([false, false]))
                 .with_switcher_permissions(true, true),
-        ];
+        ]
+        .into_boxed_slice();
         for state in denied {
             assert_eq!(
                 recording_action(&state, RecordingAction::Start(REC_1)),
@@ -3477,7 +3508,7 @@ mod tests {
         no_view.view = None;
         let mut connecting = stream_state(roster.clone());
         connecting.connection_status = StudioConnectionStatus::Backoff;
-        for state in [no_permission, no_view, connecting] {
+        for state in vec![no_permission, no_view, connecting].into_boxed_slice() {
             assert_eq!(stream_action(&state, start), None);
         }
         // A target missing from the replicated roster is never offered.
@@ -3606,7 +3637,7 @@ mod tests {
                     position: ManualTransitionPosition::START,
                 });
         }
-        for blocked in [no_permission, not_ready, manual] {
+        for blocked in vec![no_permission, not_ready, manual].into_boxed_slice() {
             assert!(!stinger_configuration_available(&blocked));
             assert_eq!(stinger_assign_intent(&blocked, S3, input(2), 30), None);
         }
@@ -4231,6 +4262,8 @@ mod tests {
         assert!((monitor_video_height(640.0, (0, 0), 900.0) - 360.0).abs() < f32::EPSILON);
     }
 
+    // The layout values are exact: integer pixels scaled by rational factors.
+    #[allow(clippy::float_cmp)]
     #[test]
     fn letterbox_fits_and_centers_every_aspect() {
         use crate::monitors::letterbox;

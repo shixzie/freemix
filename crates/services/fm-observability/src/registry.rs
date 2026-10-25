@@ -155,6 +155,7 @@ impl LabelSet {
     }
 
     /// Iterates labels in ascending key order.
+    #[must_use]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (&str, &str)> {
         self.0
             .iter()
@@ -676,6 +677,7 @@ impl MetricRegistry {
     }
 
     /// Iterates series sorted by metric ID, then label set.
+    #[must_use]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (&SeriesKey, &SeriesEntry)> {
         self.series.iter()
     }

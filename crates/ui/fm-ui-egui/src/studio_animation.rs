@@ -914,8 +914,15 @@ impl StudioShell {
 
     /// Follows the authority for every draft and, when the window is open
     /// and docked, draws it as a panel along the bottom of the console at
-    /// the layout's height (call before the central panel).
-    pub(crate) fn draw_animation_dock(&mut self, ui: &mut Ui, state: &StudioUiState) {
+    /// the layout's height (call before the central panel). Docked, it
+    /// takes the focus scoped project shortcut keys answer in on a press
+    /// inside it (RC-004).
+    pub(crate) fn draw_animation_dock(
+        &mut self,
+        ui: &mut Ui,
+        state: &StudioUiState,
+        intents: &mut Vec<StudioIntent>,
+    ) {
         let context = ui.ctx().clone();
         self.animation.sync(&context, state);
         if !(self.animation.open && self.animation_docked_here()) {
@@ -959,6 +966,14 @@ impl StudioShell {
                 // The panel keeps the height it was given, not its content's.
                 ui.set_min_size(ui.available_size());
                 self.draw_animation_contents(ui, state, Some(&mut open));
+                let area = ui.max_rect();
+                self.tool_window_keys(
+                    ui,
+                    state,
+                    ToolWindow::Animation,
+                    (false, Some(area)),
+                    intents,
+                );
             });
         let dragging = context
             .read_response(id.with("__resize"))
@@ -1007,7 +1022,7 @@ impl StudioShell {
             let close_hover = l10n::with_key(l, l.text(Msg::AnimClose), ANIMATION_SHORTCUT);
             let (id, builder) = self.tool_viewport(ToolWindow::Animation, geometry);
             let (outcome, close) = context.show_viewport_immediate(id, builder, |ui, class| {
-                workspace::tool_popout_frame(
+                let shown = workspace::tool_popout_frame(
                     ui,
                     l,
                     ToolWindow::Animation,
@@ -1017,7 +1032,10 @@ impl StudioShell {
                         ui.set_min_size(ui.available_size());
                         self.draw_animation_contents(ui, state, None);
                     },
-                )
+                );
+                let native = class != egui::ViewportClass::EmbeddedWindow;
+                self.tool_window_keys(ui, state, ToolWindow::Animation, (native, None), intents);
+                shown
             });
             self.finish_tool_popout(ToolWindow::Animation, outcome);
             self.animation.last_size = None;
@@ -1061,6 +1079,7 @@ impl StudioShell {
                         &close_hover,
                         |ui| self.draw_animation_contents(ui, state, None),
                     );
+                    self.tool_window_keys(ui, state, ToolWindow::Animation, (false, None), intents);
                     (inner, header)
                 });
             if let Some((inner, header)) = shown.and_then(|shown| shown.inner) {

@@ -428,6 +428,9 @@ fn bake_atlas(grade: &CompiledGrade, edge: usize) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    // These assertions compare against exact reference values.
+    #![allow(clippy::float_cmp)]
+
     use fm_grade::Grade;
 
     use super::*;

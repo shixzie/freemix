@@ -263,6 +263,7 @@ impl<'p> SourceResolver<'p> {
                 | InputKind::Media { .. }
                 | InputKind::Device { .. }
                 | InputKind::NetworkStream(_)
+                | InputKind::Replay
                 | InputKind::SystemAudio(_)
                 | InputKind::Image(_)
                 | InputKind::Slideshow(_)
@@ -309,6 +310,7 @@ impl<'p> SourceResolver<'p> {
             | InputKind::Media { .. }
             | InputKind::Device { .. }
             | InputKind::NetworkStream(_)
+            | InputKind::Replay
             | InputKind::SystemAudio(_)
             | InputKind::Image(_)
             | InputKind::Slideshow(_)
@@ -398,6 +400,7 @@ impl<'f, F> FrameContext<'_, '_, 'f, F> {
             | InputKind::Media { .. }
             | InputKind::Device { .. }
             | InputKind::NetworkStream(_)
+            | InputKind::Replay
             | InputKind::SystemAudio(_)
             | InputKind::Image(_)
             | InputKind::Slideshow(_)
@@ -422,6 +425,7 @@ impl<'f, F> FrameContext<'_, '_, 'f, F> {
             | InputKind::Media { .. }
             | InputKind::Device { .. }
             | InputKind::NetworkStream(_)
+            | InputKind::Replay
             | InputKind::SystemAudio(_)
             | InputKind::Image(_)
             | InputKind::Slideshow(_)

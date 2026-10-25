@@ -142,6 +142,8 @@ pub enum ReplayError {
     UnknownCamera(CameraId),
     UnknownStorageRoot(StorageRootId),
     UnknownSegment(SegmentId),
+    /// The segment was already closed and cannot change any more.
+    SegmentClosed(SegmentId),
     UnknownEvent(EventId),
     UnknownList(ListId),
     UnknownFolder(FolderId),
@@ -205,6 +207,7 @@ impl fmt::Display for ReplayError {
             Self::UnknownCamera(id) => write!(formatter, "unknown replay camera {id}"),
             Self::UnknownStorageRoot(id) => write!(formatter, "unknown storage root {id}"),
             Self::UnknownSegment(id) => write!(formatter, "unknown replay segment {id}"),
+            Self::SegmentClosed(id) => write!(formatter, "replay segment {id} is already closed"),
             Self::UnknownEvent(id) => write!(formatter, "unknown replay event {id}"),
             Self::UnknownList(id) => write!(formatter, "unknown replay list {id}"),
             Self::UnknownFolder(id) => write!(formatter, "unknown event folder {id}"),

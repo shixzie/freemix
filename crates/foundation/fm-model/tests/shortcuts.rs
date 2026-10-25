@@ -378,6 +378,49 @@ fn chords_and_scopes_are_bounded_and_clash_only_where_they_overlap() {
     );
 }
 
+/// Schema 82: the Replay panel is a scope like any other panel, and its
+/// pop-out window overlaps it but no other panel.
+#[test]
+fn replay_is_a_panel_scope() {
+    assert!(fm_model::SHORTCUT_SCOPES.contains(&"replay"));
+    let at = |scope: Option<&str>| ShortcutKey {
+        scope: scope.map(str::to_owned),
+        ..ShortcutKey::plain("F9")
+    };
+    assert!(at(Some("replay")).is_valid());
+    assert!(at(Some("replay-window")).is_valid());
+    assert!(fm_model::shortcut_scopes_overlap(
+        Some("replay"),
+        Some("replay-window")
+    ));
+    assert!(!fm_model::shortcut_scopes_overlap(
+        Some("replay"),
+        Some("cues")
+    ));
+
+    let with_key = |id: u64, key: ShortcutKey| Shortcut {
+        key: Some(key),
+        ..shortcut(id)
+    };
+    assert_eq!(
+        validate_shortcuts(&[
+            with_key(1, at(Some("replay"))),
+            with_key(2, at(Some("replay-window"))),
+        ]),
+        Err(ShortcutError::DuplicateKey {
+            first: 1,
+            second: 2
+        })
+    );
+    assert_eq!(
+        validate_shortcuts(&[
+            with_key(1, at(Some("replay"))),
+            with_key(2, at(Some("cues"))),
+        ]),
+        Ok(())
+    );
+}
+
 /// Schema 75: a key may name a mouse button, and may be scoped to a panel's
 /// pop-out window, which overlaps that panel and the whole console but no
 /// other panel or window.
@@ -455,6 +498,74 @@ fn mouse_buttons_and_window_scopes_are_bounded_and_clash_with_keys() {
             with_key(5, ShortcutKey::plain("F9")),
         ]),
         Ok(())
+    );
+}
+
+/// Schema 81 (RC-004): a key may be scoped to one of Studio's tool windows
+/// (the Colour window, the Animation editor, the scene Designer), which
+/// overlaps only itself and the whole console; a tool has no panel scope.
+#[test]
+fn tool_window_scopes_are_bounded_and_clash_only_with_themselves() {
+    let at = |scope: Option<&str>| ShortcutKey {
+        scope: scope.map(str::to_owned),
+        ..ShortcutKey::plain("F9")
+    };
+    assert_eq!(
+        fm_model::SHORTCUT_TOOL_WINDOWS,
+        ["color", "animation", "designer"]
+    );
+    for tool in fm_model::SHORTCUT_TOOL_WINDOWS {
+        let scope = format!("{tool}{}", fm_model::SHORTCUT_WINDOW_SUFFIX);
+        assert!(at(Some(&scope)).is_valid(), "{scope}");
+        assert!(fm_model::shortcut_scope_is_valid(&scope), "{scope}");
+        // A tool window is not a panel.
+        assert!(!at(Some(tool)).is_valid(), "{tool}");
+        assert!(!fm_model::SHORTCUT_SCOPES.contains(&tool), "{tool}");
+    }
+    assert!(!at(Some("colour-window")).is_valid());
+    assert!(!at(Some("color-window-window")).is_valid());
+    assert_eq!(
+        at(Some("designer-window")).to_string(),
+        "F9 in designer-window"
+    );
+
+    assert!(fm_model::shortcut_scopes_overlap(
+        None,
+        Some("color-window")
+    ));
+    assert!(fm_model::shortcut_scopes_overlap(
+        Some("animation-window"),
+        Some("animation-window")
+    ));
+    assert!(!fm_model::shortcut_scopes_overlap(
+        Some("color-window"),
+        Some("animation-window")
+    ));
+    assert!(!fm_model::shortcut_scopes_overlap(
+        Some("designer-window"),
+        Some("mixer")
+    ));
+
+    let with_key = |id: u64, key: ShortcutKey| Shortcut {
+        key: Some(key),
+        ..shortcut(id)
+    };
+    assert_eq!(
+        validate_shortcuts(&[
+            with_key(1, at(Some("color-window"))),
+            with_key(2, at(Some("animation-window"))),
+            with_key(3, at(Some("designer-window"))),
+            with_key(4, at(Some("mixer-window"))),
+            with_key(5, at(Some("cues"))),
+        ]),
+        Ok(())
+    );
+    assert_eq!(
+        validate_shortcuts(&[with_key(1, at(Some("color-window"))), with_key(2, at(None)),]),
+        Err(ShortcutError::DuplicateKey {
+            first: 1,
+            second: 2
+        })
     );
 }
 

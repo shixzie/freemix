@@ -12,7 +12,6 @@ default = []
 display-surface = ["native-media", "dep:winit"]
 macos-program-surface = ["display-surface"]
 native-media = [
-    "dep:fm-audio",
     "dep:fm-codec-ffmpeg",
     "dep:fm-color",
     "dep:fm-gpu",
@@ -20,6 +19,7 @@ native-media = [
     "dep:fm-io-macos",
     "dep:fm-io-network",
     "dep:fm-record",
+    "dep:fm-replay",
     "dep:fm-scheduler",
     "fm-color/native-wgpu",
     "fm-compositor/native-wgpu",
@@ -28,7 +28,7 @@ native-media = [
 ]
 
 [dependencies]
-fm-audio = { path = "../../crates/media/fm-audio", optional = true }
+fm-audio = { path = "../../crates/media/fm-audio" }
 fm-auth = { path = "../../crates/services/fm-auth" }
 fm-clock = { path = "../../crates/media/fm-clock" }
 fm-codec-ffmpeg = { path = "../../crates/io/fm-codec-ffmpeg", optional = true }
@@ -50,6 +50,7 @@ fm-model = { path = "../../crates/foundation/fm-model" }
 fm-persistence = { path = "../../crates/services/fm-persistence" }
 fm-presentations = { path = "../../crates/features/fm-presentations" }
 fm-record = { path = "../../crates/media/fm-record", optional = true }
+fm-replay = { path = "../../crates/media/fm-replay", optional = true }
 fm-protocol = { path = "../../crates/foundation/fm-protocol" }
 fm-server = { path = "../../crates/services/fm-server" }
 fm-switcher = { path = "../../crates/features/fm-switcher" }

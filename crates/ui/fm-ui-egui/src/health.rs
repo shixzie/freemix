@@ -43,6 +43,8 @@ struct TargetRate {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct HealthTracker {
     meters: Option<(u64, Instant)>,
+    /// The latest `health_status` sequence and when it arrived (RC-015).
+    daemon_health: Option<(u64, Instant)>,
     stream_sequence: Option<u64>,
     stream_at: Option<Instant>,
     rates: Vec<TargetRate>,
@@ -57,6 +59,15 @@ impl HealthTracker {
             }
             Some(_) => {}
             None => self.meters = None,
+        }
+        match &state.health {
+            Some(health)
+                if self.daemon_health.map(|(sequence, _)| sequence) != Some(health.sequence) =>
+            {
+                self.daemon_health = Some((health.sequence, now));
+            }
+            Some(_) => {}
+            None => self.daemon_health = None,
         }
         let Some(status) = &state.stream_status else {
             self.stream_sequence = None;
@@ -178,7 +189,10 @@ pub(crate) fn health_items(
         items.push(item);
     }
     // The daemon's CPU, GPU, and alert lamps (RC-015).
-    items.extend(crate::daemon_health_ui::health_items(l, state));
+    let health_age = tracker
+        .daemon_health
+        .map(|(_, at)| now.saturating_duration_since(at));
+    items.extend(crate::daemon_health_ui::health_items(l, state, health_age));
     items
 }
 

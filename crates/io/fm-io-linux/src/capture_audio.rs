@@ -952,7 +952,7 @@ fn follow_command(shared: &Arc<Shared>, producer: &ProducerCommand) {
         if matches!(inner.state, TapState::Unsupported(_)) {
             // Nothing will change: serve silence until shutdown.
             drop(inner);
-            while !shared.wait(Duration::from_secs(3_600)) {}
+            while !shared.wait(Duration::from_hours(1)) {}
             return;
         }
         drop(inner);

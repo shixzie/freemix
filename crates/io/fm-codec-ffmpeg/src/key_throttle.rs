@@ -27,10 +27,10 @@ pub const FREE_KEY_FAILURES: u32 = 3;
 /// The first lockout; each further failure doubles it.
 pub const KEY_LOCKOUT_BASE: Duration = Duration::from_secs(1);
 /// The longest lockout.
-pub const KEY_LOCKOUT_MAX: Duration = Duration::from_secs(300);
+pub const KEY_LOCKOUT_MAX: Duration = Duration::from_mins(5);
 /// How long an address's failures are remembered after its last failure
 /// (or after its lockout ends, whichever is later).
-pub const KEY_FAILURE_MEMORY: Duration = Duration::from_secs(600);
+pub const KEY_FAILURE_MEMORY: Duration = Duration::from_mins(10);
 /// Most peer addresses one receiver remembers.
 pub const KEY_THROTTLE_PEERS: usize = 1024;
 

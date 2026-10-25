@@ -293,6 +293,20 @@ impl Session {
         Ok(())
     }
 
+    /// Authorizes one read of runtime status, such as the replay status
+    /// (OR-012): it requires [`CommandClass::ViewStatus`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a session or authorization error when the request cannot be
+    /// admitted.
+    pub fn admit_view_status(&self) -> Result<(), SessionError> {
+        self.ensure_connected()?;
+        self.policy
+            .authorize(&self.principal, CommandClass::ViewStatus)?;
+        Ok(())
+    }
+
     /// Authorizes one request for a server device inventory: the capture
     /// devices (IN-001), the presenter's displays (OR-011), or the system
     /// audio devices (AU-011).

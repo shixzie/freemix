@@ -4,7 +4,8 @@
 //! optional key (a key name and its modifiers; since 2.83 optionally a
 //! chord's second stroke and the console panel the key is scoped to; since
 //! 2.93 a mouse button in place of a key and a panel's pop-out window as
-//! its scope), an optional OSC name (the
+//! its scope; since 2.105 one of Studio's tool windows as its scope), an
+//! optional OSC name (the
 //! shortcut answers `/freemix/user/<name>`), whether it is enabled, and
 //! what it does ([`WireShortcutAction`]): cue actions run together on one
 //! frame, a cue list operation, or a project script run. `shortcut_set`
@@ -57,7 +58,8 @@ pub const SHORTCUT_OSC_PREFIX: &str = "/freemix/user/";
 
 /// The console panels a shortcut key may be scoped to (Protocol 2.83):
 /// a scoped key answers only while that panel has the console's focus.
-pub const SHORTCUT_SCOPES: [&str; 12] = [
+/// `replay` (the instant replay panel) since Protocol 2.106.
+pub const SHORTCUT_SCOPES: [&str; 13] = [
     "preview",
     "transitions",
     "program",
@@ -70,6 +72,7 @@ pub const SHORTCUT_SCOPES: [&str; 12] = [
     "playlist",
     "media",
     "cues",
+    "replay",
 ];
 
 /// The mouse buttons a shortcut key may name in place of a key (Protocol
@@ -82,23 +85,37 @@ pub const SHORTCUT_MOUSE_BUTTONS: [&str; 3] = ["MouseMiddle", "MouseBack", "Mous
 /// it answers only while that window has the system's focus.
 pub const SHORTCUT_WINDOW_SUFFIX: &str = "-window";
 
-/// The panel a scope names: the panel itself, or the panel whose pop-out
-/// window it is.
+/// The tool windows a shortcut key may be scoped to (Protocol 2.105), each
+/// followed by [`SHORTCUT_WINDOW_SUFFIX`]: `color-window` (the Colour
+/// window), `animation-window` (the keyframe Animation editor), and
+/// `designer-window` (the scene Designer). A key scoped to one answers only
+/// while that window has the focus, over the console or popped out. A tool
+/// window has no panel scope of its own.
+pub const SHORTCUT_TOOL_WINDOWS: [&str; 3] = ["color", "animation", "designer"];
+
+/// The panel or tool window a scope names: the panel itself, or the panel
+/// or tool ([`SHORTCUT_TOOL_WINDOWS`]) whose window it is.
 #[must_use]
 pub fn shortcut_scope_panel(scope: &str) -> &str {
     scope.strip_suffix(SHORTCUT_WINDOW_SUFFIX).unwrap_or(scope)
 }
 
-/// Whether `scope` names a console panel ([`SHORTCUT_SCOPES`]) or a panel's
-/// pop-out window.
+/// Whether `scope` names a console panel ([`SHORTCUT_SCOPES`]), a panel's
+/// pop-out window, or a tool window ([`SHORTCUT_TOOL_WINDOWS`]).
 #[must_use]
 pub fn shortcut_scope_is_valid(scope: &str) -> bool {
-    SHORTCUT_SCOPES.contains(&shortcut_scope_panel(scope))
+    match scope.strip_suffix(SHORTCUT_WINDOW_SUFFIX) {
+        Some(window) => {
+            SHORTCUT_SCOPES.contains(&window) || SHORTCUT_TOOL_WINDOWS.contains(&window)
+        }
+        None => SHORTCUT_SCOPES.contains(&scope),
+    }
 }
 
 /// Whether keys in scopes `first` and `second` can answer one press:
 /// either is unscoped, or both name the same panel (the panel itself or
-/// its pop-out window, where that panel has the focus).
+/// its pop-out window, where that panel has the focus) or the same tool
+/// window.
 #[must_use]
 pub fn shortcut_scopes_overlap(first: Option<&str>, second: Option<&str>) -> bool {
     match (first, second) {
@@ -115,7 +132,8 @@ pub fn shortcut_scopes_overlap(first: Option<&str>, second: Option<&str>) -> boo
 /// `scope` of its own. Since 2.93 `key` may name a mouse button
 /// ([`SHORTCUT_MOUSE_BUTTONS`]) and the scope may be a panel's pop-out
 /// window ([`shortcut_scope_is_valid`]); since 2.99 a mouse button may be
-/// a chord's first or second stroke.
+/// a chord's first or second stroke; since 2.105 the scope may be a tool
+/// window ([`SHORTCUT_TOOL_WINDOWS`]).
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct WireShortcutKey {
     /// 1 to [`MAX_SHORTCUT_KEY_BYTES`] ASCII letters and digits: a key's
@@ -126,8 +144,8 @@ pub struct WireShortcutKey {
     pub alt: bool,
     /// A chord's second stroke.
     pub then: Option<Box<WireShortcutKey>>,
-    /// The panel (one of [`SHORTCUT_SCOPES`]) or pop-out window the key
-    /// answers in; `None` answers anywhere on the console.
+    /// The panel (one of [`SHORTCUT_SCOPES`]), pop-out window, or tool
+    /// window ([`SHORTCUT_TOOL_WINDOWS`]) the key answers in; `None` answers anywhere on the console.
     pub scope: Option<String>,
 }
 
@@ -278,7 +296,8 @@ pub fn shortcut_name_is_valid(name: &str) -> bool {
 }
 
 /// Whether `key` names a valid key: names within their bounds, a plain
-/// second stroke, and a known panel or pop-out window as its scope.
+/// second stroke, and a known panel, pop-out window, or tool window as its
+/// scope.
 #[must_use]
 pub fn shortcut_key_is_valid(key: &WireShortcutKey) -> bool {
     let stroke = |key: &WireShortcutKey| {

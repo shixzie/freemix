@@ -1312,6 +1312,8 @@ fn run_worker(
                     | SessionEvent::InputThumbnail { .. }
                     | SessionEvent::StreamStatus { .. }
                     | SessionEvent::RecorderStatus { .. }
+                    | SessionEvent::ReplayStatus { .. }
+                    | SessionEvent::ReelStatus { .. }
                     | SessionEvent::TitlePhases { .. }
                     | SessionEvent::SourceSyncStatus { .. }
                     | SessionEvent::HealthStatus { .. }
@@ -1870,6 +1872,8 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::Event { .. }
                         | SessionEvent::StreamStatus { .. }
                         | SessionEvent::RecorderStatus { .. }
+                        | SessionEvent::ReplayStatus { .. }
+                        | SessionEvent::ReelStatus { .. }
                         | SessionEvent::TitlePhases { .. }
                         | SessionEvent::SourceSyncStatus { .. }
                         | SessionEvent::HealthStatus { .. }
@@ -2425,6 +2429,8 @@ fn receive_command_event(
                 | SessionEvent::InputThumbnail { .. }
                 | SessionEvent::StreamStatus { .. }
                 | SessionEvent::RecorderStatus { .. }
+                | SessionEvent::ReplayStatus { .. }
+                | SessionEvent::ReelStatus { .. }
                 | SessionEvent::TitlePhases { .. }
                 | SessionEvent::SourceSyncStatus { .. }
                 | SessionEvent::HealthStatus { .. }
@@ -2987,6 +2993,8 @@ fn intent_payload(
         }
         StudioIntent::ClearDisplayOutput { slot } => CommandPayload::ClearDisplayOutput { slot },
         StudioIntent::SetLiveLan { config, pin } => CommandPayload::SetLiveLan { config, pin },
+        StudioIntent::Replay(operation) => CommandPayload::Replay(operation),
+        StudioIntent::Reel(operation) => CommandPayload::Reel(operation),
         StudioIntent::RemoveInput { input } => {
             let view = view.ok_or_else(|| "Project state is not synchronized".to_owned())?;
             if !view.inputs.contains(&input) {
@@ -3262,6 +3270,7 @@ const fn lifecycle_reconnect(lifecycle: LifecycleState) -> Option<ReconnectStatu
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUiState {
     let (connection_status, reconnect, lifecycle_error) = match runtime.lifecycle() {
         Ok(lifecycle) => (
@@ -3310,6 +3319,14 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
                 }
             }
             state.source_sync = runtime.session().latest_source_sync_status().cloned();
+            state.replay = runtime
+                .session()
+                .latest_replay_status()
+                .cloned()
+                .map(Box::new);
+            if let Some(status) = runtime.session().latest_reel_status() {
+                state.set_reel_status(status.clone());
+            }
             state.health = runtime
                 .session()
                 .latest_health_status()
@@ -3865,6 +3882,30 @@ mod tests {
                 reconnects: 0,
                 uptime_ms: 0,
             }],
+        }
+    }
+
+    /// The lossy replay status (OR-012) a daemon pushes to every native
+    /// Studio peer; `sequence` identifies which push the UI hydrated.
+    fn replay_status_message(sequence: u64) -> fm_protocol::ReplayStatusMessage {
+        fm_protocol::ReplayStatusMessage {
+            server: ServerIdentity {
+                engine_id: "e".into(),
+                project_id: "1".into(),
+                state_epoch: 1,
+                log_id: "l".into(),
+            },
+            sequence,
+            request_id: None,
+            feed: fm_protocol::ReplayFeed::Synthetic,
+            settings: fm_protocol::ReplaySettings::default(),
+            root: "/tmp/freemix-replay".into(),
+            live_frame: Some(0),
+            mark_in: None,
+            mark_out: None,
+            recorded: Vec::new(),
+            events: Vec::new(),
+            players: Vec::new(),
         }
     }
 
@@ -4691,6 +4732,155 @@ mod tests {
             {
                 assert_eq!(state.streams.len(), 1);
                 assert_eq!(status.samples[0].muxed_bytes, 2048);
+                break;
+            }
+        }
+
+        request_sender.send(WorkerRequest::Shutdown).unwrap();
+        worker.join().unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // one scripted peer conversation
+    fn replay_status_records_never_surface_as_unexpected_responses() {
+        // Marks the one status the peer sends mid-command-wait, so the test
+        // knows the command's own status was applied and not a heartbeat's.
+        const COMMAND_SEQUENCE: u64 = 10_000;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut peer = HeartbeatPeer::accept(&listener);
+            peer.handshake_request();
+            peer.send(&WireMessage::HandshakeResponse(heartbeat_handshake(
+                HandshakeOutcome::Snapshot {
+                    reason: SnapshotReason::NoCursor,
+                },
+            )));
+            peer.send(&WireMessage::Snapshot(heartbeat_snapshot()));
+            // Unsolicited lossy replay status while idle; it must never surface
+            // as an "Unexpected idle response" failure.
+            peer.send(&WireMessage::ReplayStatus(Box::new(replay_status_message(
+                1,
+            ))));
+            let mut sequence = 1;
+            let mut command_seen = false;
+            loop {
+                let Some(line) = peer.next_line() else {
+                    return;
+                };
+                match decode_line(&line).unwrap() {
+                    WireMessage::Heartbeat(heartbeat) => {
+                        sequence += 1;
+                        // The status sits between each heartbeat and its
+                        // acknowledgement, so a failed swallow would abort the
+                        // wait with an unexpected-event error.
+                        if !peer.send_unless_closed(&WireMessage::ReplayStatus(Box::new(
+                            replay_status_message(sequence),
+                        ))) {
+                            return;
+                        }
+                        if !peer.send_unless_closed(&WireMessage::HeartbeatAcknowledgement(
+                            HeartbeatAcknowledgementMessage {
+                                server: heartbeat.server,
+                                heartbeat_sequence: heartbeat.sequence,
+                                received_at_ms: heartbeat.sent_at_ms,
+                            },
+                        )) {
+                            return;
+                        }
+                    }
+                    WireMessage::Command(command) => {
+                        assert!(!command_seen, "worker retried the command unexpectedly");
+                        command_seen = true;
+                        sequence = COMMAND_SEQUENCE;
+                        let accepted_revision = heartbeat_snapshot().revision + 1;
+                        // The status arrives mid-command-wait and must be
+                        // consumed as status, not mistaken for the result.
+                        peer.send(&WireMessage::ReplayStatus(Box::new(replay_status_message(
+                            sequence,
+                        ))));
+                        peer.send(&WireMessage::CommandResult(CommandResult::Accepted {
+                            id: command.id,
+                            revision: accepted_revision,
+                            scheduled_frame: None,
+                        }));
+                        peer.send(&WireMessage::Event(command_event(accepted_revision)));
+                        peer.send(&WireMessage::RuntimeEvent(command_runtime_event(
+                            accepted_revision,
+                        )));
+                    }
+                    other => panic!("unexpected peer message: {other:?}"),
+                }
+            }
+        });
+        let (request_sender, updates, worker) =
+            spawn_existing_worker(address, "replay-status-waits-test");
+
+        receive_connection_state(&updates, StudioConnectionStatus::Ready);
+        // Idle: every publication before the status hydrates must be clean, so
+        // an idle "Unexpected idle response" cannot hide behind a later one.
+        let deadline = Instant::now() + HEARTBEAT_TEST_TIMEOUT;
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "idle replay status was not published"
+            );
+            let state = receive_next_state(&updates);
+            assert_eq!(state.connection_status, StudioConnectionStatus::Ready);
+            assert!(
+                state.error.is_none(),
+                "idle publication carried an error: {:?}",
+                state.error
+            );
+            if state.replay.is_some() {
+                break;
+            }
+        }
+        // Heartbeat: at least two statuses arrive ahead of their
+        // acknowledgements; a failed swallow would publish a fatal error.
+        let deadline = Instant::now() + HEARTBEAT_TEST_TIMEOUT;
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "heartbeat replay statuses were not published"
+            );
+            let state = receive_next_state(&updates);
+            assert_eq!(state.connection_status, StudioConnectionStatus::Ready);
+            assert!(
+                state.error.is_none(),
+                "heartbeat publication carried an error: {:?}",
+                state.error
+            );
+            if let Some(status) = &state.replay
+                && status.sequence >= 3
+            {
+                break;
+            }
+        }
+        // Command: the mid-wait status is consumed, not returned as the result.
+        request_sender
+            .send(WorkerRequest::Intent(StudioIntent::Cut))
+            .unwrap();
+        let deadline = Instant::now() + HEARTBEAT_TEST_TIMEOUT;
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "command sequence did not complete"
+            );
+            let state = receive_next_state(&updates);
+            assert_eq!(state.connection_status, StudioConnectionStatus::Ready);
+            assert!(
+                state.error.is_none(),
+                "command publication carried an error: {:?}",
+                state.error
+            );
+            if state.pending_commands == 0
+                && state
+                    .replay
+                    .as_ref()
+                    .is_some_and(|status| status.sequence >= COMMAND_SEQUENCE)
+            {
                 break;
             }
         }
@@ -6575,6 +6765,7 @@ mod tests {
     /// Protocol 2.42 slot commands; an inventory request is no command and
     /// one queued request answers every later one.
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn display_output_intents_map_to_slot_commands() {
         let slot = fm_protocol::DisplayOutputSlot::new(2).unwrap();
         let config: fm_protocol::DisplayOutputConfig =
@@ -6616,6 +6807,48 @@ mod tests {
                 pin: fm_protocol::SecretEdit::Set("482916".into()),
             })
         );
+        // OR-012: every Replay panel key is its replay command as is.
+        for operation in [
+            fm_protocol::ReplayOperation::CaptureLast { seconds: 10 },
+            fm_protocol::ReplayOperation::Play {
+                input: fm_protocol::WireInputId::new(core::num::NonZeroU128::new(9).unwrap()),
+                speed: fm_protocol::ReplaySpeed::Half,
+            },
+            fm_protocol::ReplayOperation::Configure(Box::default()),
+        ] {
+            assert_eq!(
+                intent_payload(StudioIntent::Replay(operation.clone()), None),
+                Ok(CommandPayload::Replay(operation))
+            );
+        }
+        // OR-013: every Reel panel key is its reel command as is.
+        let reel = fm_protocol::ReelSpec {
+            id: 2,
+            name: "Reel 2".into(),
+            clips: vec![fm_protocol::ReelClip {
+                event: 1,
+                angle: fm_types::InputId::new(core::num::NonZeroU128::new(3).unwrap()),
+                trim_in_frames: 0,
+                trim_out_frames: 0,
+                speed_percent: 100,
+            }],
+        };
+        for operation in [
+            fm_protocol::ReelOperation::Set(Box::new(reel)),
+            fm_protocol::ReelOperation::Delete { reel: 2 },
+            fm_protocol::ReelOperation::Export {
+                job: 1,
+                reel: 2,
+                destination: "/srv/exports/reel-2.mp4".into(),
+            },
+            fm_protocol::ReelOperation::CancelExport { job: 1 },
+            fm_protocol::ReelOperation::ForgetExport { job: 1 },
+        ] {
+            assert_eq!(
+                intent_payload(StudioIntent::Reel(operation.clone()), None),
+                Ok(CommandPayload::Reel(operation))
+            );
+        }
         assert!(intent_payload(StudioIntent::RequestDisplayInventory, None).is_err());
         assert!(intent_payload(StudioIntent::RequestCaptureDevices, None).is_err());
         assert!(intent_payload(StudioIntent::RequestSystemAudioDevices, None).is_err());

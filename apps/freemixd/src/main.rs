@@ -64,23 +64,22 @@ use fm_persistence::{
     RuntimeOverlayBorder, RuntimeOverlayChannel, RuntimeOverlayPosition, RuntimeOverlayTransition,
     RuntimeOverlays, RuntimeRouting, StoredProject,
 };
-#[cfg(feature = "native-media")]
 use fm_protocol::{
-    AUDIO_METER_LEVEL_SCALE, AudioMeterChannel, InputAudioMeters, MAX_STREAM_LOCAL_SEGMENTS,
-    MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES, OutputFailure, OutputFailureCode,
-    StreamLocalStatus, StreamRealizedState, StreamStatusSample, WireInputId,
-};
-use fm_protocol::{
-    AudioMetersMessage, CURRENT_PROTOCOL_VERSION, CapabilityReportSummary, CommandMessage,
-    CommandPayload, CommandResult, DiagnosticsRequest, DiagnosticsResponse, ErrorMessage,
-    EventCursor, HandshakeOutcome as ProtocolHandshakeOutcome, HandshakeRequest, HandshakeResponse,
-    HeartbeatMessage, MonitorTap, ProtocolVersion, RecorderStatusMessage, RecordingStatus,
-    ResumeCursor, RuntimeEventMessage, ServerHello, ServerIdentity, StreamStatus,
-    StreamStatusMessage, StructuredError, WireMessage, WireStreamTargetId,
-    choose_handshake_outcome, encode_line,
+    AUDIO_METER_LEVEL_SCALE, AudioMeterChannel, AudioMetersMessage, CURRENT_PROTOCOL_VERSION,
+    CapabilityReportSummary, CommandMessage, CommandPayload, CommandResult, DiagnosticsRequest,
+    DiagnosticsResponse, ErrorMessage, EventCursor, HandshakeOutcome as ProtocolHandshakeOutcome,
+    HandshakeRequest, HandshakeResponse, HeartbeatMessage, InputAudioMeters, MonitorTap,
+    ProtocolVersion, RecorderStatusMessage, RecordingStatus, ResumeCursor, RuntimeEventMessage,
+    ServerHello, ServerIdentity, StreamStatus, StreamStatusMessage, StructuredError, WireInputId,
+    WireMessage, WireStreamTargetId, choose_handshake_outcome, encode_line,
 };
 #[cfg(test)]
 use fm_protocol::{CodecError, EventMessage, HeartbeatAcknowledgementMessage, LineDecoder};
+#[cfg(feature = "native-media")]
+use fm_protocol::{
+    MAX_STREAM_LOCAL_SEGMENTS, MAX_STREAM_LOCAL_TARGET_DURATION_MS, MAX_STREAM_SAMPLES,
+    OutputFailure, OutputFailureCode, StreamLocalStatus, StreamRealizedState, StreamStatusSample,
+};
 use fm_server::{
     AuthenticationMode, ControlPlane, DisconnectReason, HandshakeError, Heartbeat, InitialSync,
     Server, ServerConfig, ServerMode, ServiceStatus, Session, SessionError, SyncPayload,
@@ -130,6 +129,10 @@ mod native_live_lan;
 #[cfg(feature = "native-media")]
 mod native_portal_capture;
 #[cfg(feature = "native-media")]
+mod native_reel;
+#[cfg(feature = "native-media")]
+mod native_replay;
+#[cfg(feature = "native-media")]
 mod native_screen_capture;
 #[cfg(feature = "native-media")]
 mod native_slides;
@@ -151,6 +154,7 @@ mod pacing_trace;
 mod display_outputs;
 mod playlist_clock;
 mod sessions;
+mod sim_audio;
 mod web_feed;
 mod web_titles;
 // The network preflight is wired only into the native daemon; every helper
@@ -837,6 +841,10 @@ struct NativeDaemon {
     preview_failed: bool,
     /// The `LiveLAN` viewer stream (OR-017), while `--live-lan-listen` runs.
     live_lan: Option<native_live_lan::NativeLiveLan>,
+    /// The instant replay recording and Replay inputs (OR-012).
+    replay: Option<native_replay::NativeReplay>,
+    /// The highlight reel exports (OR-013).
+    reel: Option<native_reel::NativeReel>,
 }
 
 #[cfg(feature = "native-media")]
@@ -2094,6 +2102,9 @@ struct NativeProgramRecorder {
     audio_bitrate_kbps: Option<u32>,
     /// Estimated recording bitrate, for the free-space preflight.
     bitrate_bits_per_second: u64,
+    /// Configured capacity of the open recorder's own pair queue, for the
+    /// encoder statistics sample.
+    queue_capacity: usize,
     /// WAV sidecar bitrate with `--record-wav`, which also gives the segment
     /// its WAV session.
     wav_bits_per_second: Option<u64>,
@@ -2458,6 +2469,7 @@ impl NativeProgramRecorder {
                 video_bitrate_kbps,
                 audio_bitrate_kbps,
                 bitrate_bits_per_second,
+                queue_capacity: config.limits.max_outstanding_pairs,
                 wav_bits_per_second,
                 session: None,
             },
@@ -2623,6 +2635,17 @@ impl NativeProgramRecorder {
             saturating_u64(pairs).saturating_add(saturating_u64(self.backlog.len())),
             saturating_u64(bytes).saturating_add(saturating_u64(self.backlog_bytes)),
         )
+    }
+
+    /// The open recorder's own pair queue against its configured capacity,
+    /// for the encoder statistics sample. The pre-recorder backlog is not
+    /// part of it; `None` while the segment has not opened.
+    fn queue_load(&self) -> Option<(u64, u64)> {
+        let telemetry = self.recorder()?.telemetry();
+        Some((
+            saturating_u64(telemetry.outstanding_pairs),
+            saturating_u64(self.queue_capacity),
+        ))
     }
 
     fn should_rotate(&self, segment_seconds: Option<NonZeroU32>) -> bool {
@@ -3388,6 +3411,9 @@ struct NativeProgramStream {
     started: bool,
     /// Uptime and encoded bitrate for the status record.
     meter: StreamLinkMeter,
+    /// Configured capacity of the sink's pair queue, for the encoder
+    /// statistics sample.
+    queue_capacity: usize,
     /// The authored configuration this runtime realizes, with its running
     /// flag cleared: a destination edit that changes it rebuilds the runtime
     /// (OR-006).
@@ -4136,6 +4162,7 @@ impl NativeProgramStream {
         sink_config.stream_key = split.stream_key;
         sink_config.ladder = stream_ladder(split.target);
         sink_config.srt = stream_srt_options(split.target);
+        let queue_capacity = sink_config.limits.max_outstanding_pairs;
         output_set
             .add_destination(
                 DestinationConfig::new(
@@ -4176,6 +4203,7 @@ impl NativeProgramStream {
             enqueue_backpressure: false,
             started: false,
             meter: StreamLinkMeter::default(),
+            queue_capacity,
             authored: split.target.clone().set_running(false),
         }
     }
@@ -4185,6 +4213,20 @@ impl NativeProgramStream {
     /// boundary starts it again with a fresh reconnect budget.
     fn retry(&mut self, output_set: &mut OutputSet) {
         self.stop_requested(output_set);
+    }
+
+    /// This target's own pair queue against its configured capacity, for the
+    /// encoder statistics sample; `None` before the target started, while a
+    /// transport job holds the sink, or before its streamer opened.
+    fn queue_load(&self) -> Option<(u64, u64)> {
+        if !self.started {
+            return None;
+        }
+        let telemetry = self.sink.idle_sink()?.stream_telemetry()?;
+        Some((
+            saturating_u64(telemetry.outstanding_pairs),
+            saturating_u64(self.queue_capacity),
+        ))
     }
 
     /// Marks this target running in the shared output set. Connection trouble
@@ -4374,6 +4416,72 @@ fn route_active(stream: &NativeProgramStream, output_set: &OutputSet) -> bool {
             output_set.state(stream.destination_id),
             Some(DestinationState::Stopped)
         )
+}
+
+/// The active stream targets' aggregate network state, bounded to the
+/// configured target count (RC-015).
+#[cfg(feature = "native-media")]
+fn network_sample(
+    output_set: &OutputSet,
+    streams: &[NativeProgramStream],
+) -> statistics::NetworkSample {
+    let mut network = statistics::NetworkSample::default();
+    for stream in streams.iter().take(fm_switcher::MAX_STREAM_COUNT) {
+        if !route_active(stream, output_set) {
+            continue;
+        }
+        network.active_targets = network.active_targets.saturating_add(1);
+        match output_set.state(stream.destination_id) {
+            Some(
+                DestinationState::Live
+                | DestinationState::Congested
+                | DestinationState::AwaitingRandomAccess,
+            ) => network.connected_targets = network.connected_targets.saturating_add(1),
+            Some(DestinationState::WaitingToReconnect { .. }) => {
+                network.reconnecting_targets = network.reconnecting_targets.saturating_add(1);
+            }
+            _ => {}
+        }
+        network.bitrate_kbps = network
+            .bitrate_kbps
+            .saturating_add(u64::from(stream.meter.bitrate_kbps));
+        if let Some(loss) = output_set
+            .telemetry(stream.destination_id)
+            .and_then(NetworkTelemetry::packet_loss_ppm)
+        {
+            network.packet_loss_ppm = Some(
+                network
+                    .packet_loss_ppm
+                    .map_or(loss, |worst| worst.max(loss)),
+            );
+        }
+    }
+    network
+}
+
+/// The running recorder slots' and started stream targets' encoder queues,
+/// bounded to the two slots and the configured target count (RC-015). An
+/// output whose queue cannot be read this sample is skipped, never folded as
+/// an empty queue.
+#[cfg(feature = "native-media")]
+fn encoder_sample(
+    recorders: &[ProgramRecording; RECORDER_SLOTS],
+    streams: &[NativeProgramStream],
+) -> statistics::EncoderSample {
+    let mut encoder = statistics::EncoderSample::default();
+    for slot in recorders {
+        if let ProgramRecording::Running(recorder) = slot
+            && let Some((outstanding, capacity)) = recorder.queue_load()
+        {
+            encoder.observe(outstanding, capacity);
+        }
+    }
+    for stream in streams.iter().take(fm_switcher::MAX_STREAM_COUNT) {
+        if let Some((outstanding, capacity)) = stream.queue_load() {
+            encoder.observe(outstanding, capacity);
+        }
+    }
+    encoder
 }
 
 /// One rendition group's share of the frame pipeline.
@@ -5202,7 +5310,41 @@ impl NativeDaemon {
             latest_preview: None,
             preview_failed: false,
             live_lan: None,
+            replay: None,
+            reel: None,
         })
+    }
+
+    /// Records replay sources into `root` (unless the show names a root)
+    /// and plays Replay inputs from the files (OR-012).
+    fn attach_replay(
+        &mut self,
+        control: &mut ControlService<Policy>,
+        root: PathBuf,
+        settings: &fm_model::ProjectSettings,
+    ) {
+        control.set_replay_default_root(root);
+        control.set_replay_feed(fm_engine::EngineReplayFeed::External);
+        let video = settings.video.dimensions;
+        self.replay = Some(native_replay::NativeReplay::new(
+            native_replay::ReplayFormat {
+                width: video.width(),
+                height: video.height(),
+                rate: settings.frame_rate,
+                clock_domain: native_clock_domain(),
+            },
+        ));
+    }
+
+    /// Exports highlight reels to their destinations (OR-013).
+    fn attach_reel(&mut self, settings: &fm_model::ProjectSettings) {
+        let video = settings.video.dimensions;
+        self.reel = Some(native_reel::NativeReel::new(native_replay::ReplayFormat {
+            width: video.width(),
+            height: video.height(),
+            rate: settings.frame_rate,
+            clock_domain: native_clock_domain(),
+        }));
     }
 
     /// Streams `LiveLAN` to the running `--live-lan-listen` listener (OR-017).
@@ -6982,6 +7124,7 @@ impl NativeDaemon {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn service_playback(&mut self, control: &ControlService<Policy>) -> AppResult<bool> {
         #[cfg(target_os = "macos")]
         self.cameras.poll_into(&self.runtime, &mut self.playback)?;
@@ -7024,10 +7167,21 @@ impl NativeDaemon {
         if self.projected_frame.is_none() {
             self.projected_frame = Some(control.project_next_frame()?);
         }
+        let replay_deadline = self.next_deadline()?;
         let projected = self
             .projected_frame
             .as_ref()
             .expect("next frame projection was initialized");
+        // Replay inputs show their recorded frames (OR-012).
+        let replay_covered = match &mut self.replay {
+            Some(replay) => replay.present(
+                projected,
+                replay_deadline,
+                &self.runtime,
+                &mut self.playback,
+            ),
+            None => true,
+        };
         // Network streams hand over the projected frame's picture and audio
         // from their jitter buffers, once per frame; they never wait.
         let captured = self
@@ -7078,7 +7232,12 @@ impl NativeDaemon {
                 .map_err(Box::<dyn Error>::from)?,
             None => true,
         };
-        Ok(audio_covered && video_covered && stinger_covered && titles_covered && files_covered)
+        Ok(audio_covered
+            && video_covered
+            && stinger_covered
+            && titles_covered
+            && files_covered
+            && replay_covered)
     }
 
     /// Attaches the grades of `control`'s current revision to the project
@@ -7255,8 +7414,12 @@ impl NativeDaemon {
             self.monitor_output
                 .push(meters.monitor_planes, samples, meters.sample_rate);
             let output = self.monitor_output.state();
-            self.pending_audio_meters =
-                Some(audio_meters_message(server, sequence, &meters, output));
+            self.pending_audio_meters = Some(audio_meters_message(
+                server,
+                sequence,
+                &AudioMeterView::from(&meters),
+                output,
+            ));
             self.audio_meter_sequence = sequence;
         }
         self.install_stinger_mutation()?;
@@ -7346,6 +7509,16 @@ impl NativeDaemon {
         }
         if let (Some(live_lan), Some(sequence)) = (&mut self.live_lan, next_sequence) {
             live_lan.sync(control.live_lan(), &self.runtime, sequence);
+        }
+        // The replay recording (OR-012) takes every source's newest picture.
+        if let (Some(replay), Some((frame, _))) = (&mut self.replay, monitor_frame) {
+            let latest = self.playback.latest_frames();
+            replay.record(control, frame, &|input| latest.get(input));
+        }
+        // Highlight reel exports (OR-013) take their frames from the engine
+        // on the frame loop; the encoder runs off it.
+        if let Some(reel) = &mut self.reel {
+            reel.sync(control);
         }
         // Monitor taps finish earlier readbacks without waiting, then start
         // this frame's; neither waits for the GPU.
@@ -7537,7 +7710,9 @@ impl NativeDaemon {
     }
 
     /// Drains the frame loop's observations since the previous call and
-    /// reports its whole-run totals for the statistics registry (RC-015).
+    /// reports its whole-run totals, the active stream targets' network
+    /// state, the live sources' clock sync, and the running encoders' queues
+    /// for the statistics registry (RC-015).
     fn take_statistics_sample(&mut self) -> statistics::NativeStatisticsSample {
         let rate = self.pacer.frame_rate();
         let frame_interval_ms =
@@ -7564,6 +7739,10 @@ impl NativeDaemon {
                 ProgramRecording::Off => false,
             })
             .count();
+        let network = network_sample(&self.output_set, &self.streams);
+        let sync_samples = self.source_sync_samples();
+        let sync = statistics::SyncSample::from_samples(&sync_samples);
+        let encoder = encoder_sample(&self.recorders, &self.streams);
         let telemetry = &mut self.telemetry;
         let tap = |tap: MonitorTap| {
             let counters = telemetry.monitor_taps[tap.index()];
@@ -7602,6 +7781,9 @@ impl NativeDaemon {
             disk_free_bytes: telemetry.disk_free_bytes,
             outputs_failed: u64::try_from(streams_failed.saturating_add(recorders_failed))
                 .unwrap_or(u64::MAX),
+            network,
+            sync,
+            encoder,
         }
     }
 
@@ -8437,11 +8619,63 @@ fn preview_monitor_input(frame: &FrameResult, realized_preview: InputId) -> Inpu
     frame.program.secondary.unwrap_or(realized_preview)
 }
 
+/// The meter values one taken interval exposes, from either daemon's audio
+/// plane, so the native and simulated paths share one wire conversion.
+pub(crate) struct AudioMeterView<'a> {
+    frame: u64,
+    start_sample: u64,
+    end_sample: u64,
+    channels: usize,
+    master: &'a [fm_audio::ChannelMeter],
+    inputs: &'a [InputId],
+    input_meters: &'a [fm_audio::ChannelMeter],
+    monitor: &'a [fm_audio::ChannelMeter],
+    monitor_solo: bool,
+    dynamics: &'a [(Option<InputId>, fm_audio::DspDynamicsReading)],
+    loudness: &'a [(Option<InputId>, fm_audio::LoudnessReading)],
+}
+
 #[cfg(feature = "native-media")]
-fn audio_meters_message(
+impl<'a, 'b: 'a> From<&'a NativeAudioMeters<'b>> for AudioMeterView<'a> {
+    fn from(meters: &'a NativeAudioMeters<'b>) -> Self {
+        Self {
+            frame: meters.frame,
+            start_sample: meters.start_sample,
+            end_sample: meters.end_sample,
+            channels: meters.channels,
+            master: meters.master,
+            inputs: meters.inputs,
+            input_meters: meters.input_meters,
+            monitor: meters.monitor,
+            monitor_solo: meters.monitor_solo,
+            dynamics: meters.dynamics,
+            loudness: meters.loudness,
+        }
+    }
+}
+
+impl<'a, 'b: 'a> From<&'a fm_sim::SimulatedAudioMeters<'b>> for AudioMeterView<'a> {
+    fn from(meters: &'a fm_sim::SimulatedAudioMeters<'b>) -> Self {
+        Self {
+            frame: meters.frame,
+            start_sample: meters.start_sample,
+            end_sample: meters.end_sample,
+            channels: meters.channels,
+            master: meters.master,
+            inputs: meters.inputs,
+            input_meters: meters.input_meters,
+            monitor: meters.monitor,
+            monitor_solo: meters.monitor_solo,
+            dynamics: meters.dynamics,
+            loudness: meters.loudness,
+        }
+    }
+}
+
+pub(crate) fn audio_meters_message(
     server: &ServerIdentity,
     sequence: u64,
-    meters: &NativeAudioMeters<'_>,
+    meters: &AudioMeterView<'_>,
     output: fm_protocol::AudioMonitorOutputState,
 ) -> AudioMetersMessage {
     AudioMetersMessage {
@@ -8511,7 +8745,6 @@ fn audio_meters_message(
 
 /// A loudness (LUFS) or true-peak (dBTP) value in thousandths for the
 /// wire: `None` below the wire floor, clamped at its ceiling (AU-005).
-#[cfg(feature = "native-media")]
 // Values are clamped to the wire bounds before the cast; truncation is not
 // reachable.
 #[allow(clippy::cast_possible_truncation)]
@@ -8523,7 +8756,6 @@ fn loudness_milli(value: f64) -> Option<i32> {
 
 /// A loudness range in milli-LU for the wire, clamped to its bounds
 /// (AU-005).
-#[cfg(feature = "native-media")]
 // Values are clamped to the wire bounds before the cast; truncation is not
 // reachable.
 #[allow(clippy::cast_possible_truncation)]
@@ -8538,7 +8770,6 @@ fn loudness_range_millilu(lu: f64) -> i32 {
 
 /// A DSP stage's gain reduction in positive millidecibels, bounded for the
 /// wire (AU-005).
-#[cfg(feature = "native-media")]
 // Reductions are clamped to [0, MAX_DYNAMICS_REDUCTION_MILLIDB] before the
 // cast; truncation is not reachable.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -8548,7 +8779,6 @@ fn reduction_millidb(db: f32) -> u32 {
         .min(f64::from(fm_protocol::MAX_DYNAMICS_REDUCTION_MILLIDB)) as u32
 }
 
-#[cfg(feature = "native-media")]
 fn protocol_audio_meter(meter: fm_audio::ChannelMeter) -> AudioMeterChannel {
     let peak_millionths = meter_level_millionths(meter.peak);
     AudioMeterChannel {
@@ -8557,7 +8787,6 @@ fn protocol_audio_meter(meter: fm_audio::ChannelMeter) -> AudioMeterChannel {
     }
 }
 
-#[cfg(feature = "native-media")]
 // Levels are clamped to [0, u32::MAX] before the cast; truncation is not reachable.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn meter_level_millionths(level: f32) -> u32 {
@@ -8633,6 +8862,18 @@ impl NativeDaemon {
     fn attach_media_sources(&mut self, _control: &mut ControlService<Policy>) -> AppResult<()> {
         Ok(())
     }
+
+    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
+    fn attach_replay(
+        &mut self,
+        _control: &mut ControlService<Policy>,
+        _root: PathBuf,
+        _settings: &fm_model::ProjectSettings,
+    ) {
+    }
+
+    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
+    fn attach_reel(&mut self, _settings: &fm_model::ProjectSettings) {}
 
     fn start(
         _store: &ProjectStore,
@@ -8921,6 +9162,7 @@ fn resolve_native_sources(
             // worker ingests its page (IN-014), and a screen capture
             // ingests its captures after it (IN-011).
             InputKind::NetworkStream(_)
+            | InputKind::Replay
             | InputKind::SystemAudio(_)
             | InputKind::Document(_)
             | InputKind::ScreenCapture(_) => {
@@ -11277,6 +11519,13 @@ fn serve_inner(
     };
     if let Some(native) = native.as_mut() {
         native.attach_media_sources(&mut control.borrow_mut())?;
+        // Replay records beside the journal unless the show names a root.
+        native.attach_replay(
+            &mut control.borrow_mut(),
+            store.root().join("replay"),
+            project.project().settings(),
+        );
+        native.attach_reel(project.project().settings());
         // Document inputs show their pages from the start (IN-014).
         #[cfg(feature = "native-media")]
         if let Some(pages) = journal.documents() {
@@ -12356,6 +12605,10 @@ fn restore_presets_favorites_and_media(
         canonical.input_categories().to_vec(),
         canonical.input_lifecycles(),
     )?;
+    // What is recorded for replay (OR-012), once every input's source is
+    // known.
+    show.set_replay(canonical.replay().clone())
+        .map_err(|error| AppFailure(format!("project replay cannot be restored: {error}")))?;
     Ok(())
 }
 
@@ -12712,6 +12965,11 @@ fn sync_project_display_outputs(
         project
             .set_live_lan(show.live_lan().clone())
             .map_err(|error| AppFailure(format!("project cannot take LiveLAN: {error}")))?;
+    }
+    if project.replay() != show.replay() {
+        project
+            .set_replay(show.replay().clone())
+            .map_err(|error| AppFailure(format!("project cannot take replay: {error}")))?;
     }
     if project.display_outputs() == show.display_outputs() {
         return Ok(());
@@ -15313,6 +15571,8 @@ fn command_base_ticks(
         | CommandPayload::SetDisplayOutput { .. }
         | CommandPayload::ClearDisplayOutput { .. }
         | CommandPayload::SetLiveLan { .. }
+        | CommandPayload::Replay(_)
+        | CommandPayload::Reel(_)
         | CommandPayload::SetNetworkStream { .. }
         | CommandPayload::SetCaptureSettings { .. }
         | CommandPayload::UpdateOverlay { .. }
@@ -15603,6 +15863,10 @@ fn input_reference_use(reference: fm_model::InputReference) -> fm_protocol::Inpu
         },
         InputReference::PlaylistEntry(entry) => InputUse::PlaylistEntry { entry },
         InputReference::CueAction { list, cue } => InputUse::CueAction { list, cue },
+        // The wire has no reel-clip use yet; a reel angle is recorded for
+        // replay, so report the closest existing use rather than widening
+        // the protocol in the model-only slice.
+        InputReference::ReplaySource | InputReference::ReelClip { .. } => InputUse::ReplaySource,
     }
 }
 
@@ -15799,6 +16063,19 @@ fn sync_project_inputs(
                         id: input,
                         name,
                         kind: fm_model::InputKind::ScreenCapture(*config),
+                        required_capabilities: Vec::new(),
+                    })
+                    .map_err(|error| {
+                        AppFailure(format!("input {input} could not be added: {error}"))
+                    })?;
+                continue;
+            }
+            fm_protocol::LiveInputSource::Replay => {
+                project
+                    .add_input_checked(fm_model::Input {
+                        id: input,
+                        name,
+                        kind: fm_model::InputKind::Replay,
                         required_capabilities: Vec::new(),
                     })
                     .map_err(|error| {
@@ -25910,7 +26187,6 @@ mod tests {
         assert_eq!(store.attempts.get(), 4, "no retry without its window");
         assert_eq!(control.borrow().cue_advance_frame(), Some((7, due)));
         poll(&mut clock, reached + frame * 2, true);
-        drop(poll);
         assert_eq!(
             control.borrow().diagnostics().current_revision,
             revision + 1
@@ -26330,7 +26606,6 @@ mod tests {
         assert_eq!(store.attempts.get(), 4, "no retry without its window");
         assert_eq!(control.borrow().playlist_advance_frame(), Some(due));
         poll(&mut clock, reached + frame * 2, true);
-        drop(poll);
         assert_eq!(
             control.borrow().diagnostics().current_revision,
             revision + 1
@@ -26684,7 +26959,6 @@ mod tests {
         assert_eq!(store.attempts.get(), attempts + 2);
         poll(&mut feed, start + frame * 40, true);
         assert_eq!(store.attempts.get(), attempts + 2, "fed once");
-        drop(poll);
         assert!(
             matches!(airing(&control), PlaylistRunState::Playing { entry: 2, .. }),
             "{:?}",
@@ -27972,12 +28246,14 @@ mod tests {
         let mut set = OutputSet::new();
         set.add_destination(mock_destination(1)).unwrap();
         let destination_id = DestinationId::new(1).unwrap();
+        let sink_config = RtmpSinkConfig::new(test_rendition(1), test_stream_format());
+        let queue_capacity = sink_config.limits.max_outstanding_pairs;
         let mut stream = NativeProgramStream {
             target: SwitcherStreamTargetId::from_non_zero(NonZeroU128::new(7).unwrap()),
             destination_id,
             redacted_destination: "rtmp://primary.example.test:1935/live".to_owned(),
             sink: stream_transport::BackgroundTransport::new(
-                FfmpegRtmpSink::new(RtmpSinkConfig::new(test_rendition(1), test_stream_format())),
+                FfmpegRtmpSink::new(sink_config),
                 "freemix-native-stream-test".to_owned(),
             ),
             ledger: StreamPairLedger::default(),
@@ -27986,6 +28262,7 @@ mod tests {
             enqueue_backpressure: false,
             started: false,
             meter: StreamLinkMeter::default(),
+            queue_capacity,
             authored: test_authored_target(7),
         };
         stream.start(&mut set);

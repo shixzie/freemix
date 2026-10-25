@@ -192,6 +192,9 @@ impl LoadedTitleTemplate {
             for uri in &needed {
                 images.load(store, uri, &needed);
             }
+            // Only the images the catalog holds need a last use.
+            let TitleImages { catalog, used, .. } = &mut *images;
+            used.retain(|name, _| catalog.has_image(name));
         }
         images.catalog.clone()
     }
@@ -1080,6 +1083,33 @@ mod tests {
         let loaded = assets.template(URI).unwrap();
         let held = loaded.images.lock().unwrap().catalog.image_count();
         assert!(held <= fm_titles::MAX_IMAGE_ASSETS, "{held}");
+    }
+
+    /// A long show may name any number of image URIs that never load (a
+    /// data feed's missing pictures): the cache keeps bookkeeping only for
+    /// the images it holds and the bounded failure list.
+    #[test]
+    fn missing_images_leave_no_bookkeeping_behind() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(directory.path().join("show.freemix")).unwrap();
+        let mut assets = TitleAssets::default().with_store(store);
+        assets.insert(
+            URI,
+            LoadedTitleTemplate::new(template(), AssetCatalog::new()),
+        );
+        let input = InputId::new(NonZeroU128::MIN);
+        for index in 0..500 {
+            let uri = format!("asset://images/missing-{index}.png");
+            render_title_at(&assets, input, &title(&uri), frame_zero(), 64, 36).unwrap();
+        }
+        let loaded = assets.template(URI).unwrap();
+        let images = loaded.images.lock().unwrap();
+        assert!(images.failed.len() <= MAX_TITLE_IMAGE_ATTEMPTS);
+        assert!(
+            images.used.len() <= fm_titles::MAX_IMAGE_ASSETS,
+            "{}",
+            images.used.len()
+        );
     }
 }
 
