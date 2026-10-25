@@ -3783,7 +3783,7 @@ fn simulated_daemon_realizes_a_timed_transition_on_its_frame_loop() {
         }
     };
     assert!(
-        answered < Duration::from_millis(1_000),
+        answered < Duration::from_secs(1),
         "the fade was answered after {answered:?}, not on its first frame"
     );
 
@@ -3914,7 +3914,7 @@ fn simulated_daemon_realizes_a_title_off_air_when_its_out_phase_ends() {
         }
     };
     assert!(
-        answered < Duration::from_millis(1_000),
+        answered < Duration::from_secs(1),
         "the off-air was answered after {answered:?}, not on its first frame"
     );
 
@@ -4199,7 +4199,7 @@ fn simulated_daemon_realizes_a_title_take_when_its_in_phase_ends() {
         }
     };
     assert!(
-        answered < Duration::from_millis(1_000),
+        answered < Duration::from_secs(1),
         "the take was answered after {answered:?}, not on its first frame"
     );
     other.send(&command(
@@ -4339,7 +4339,7 @@ fn simulated_daemon_realizes_an_overlay_take_when_its_transition_ends() {
         }
     };
     assert!(
-        answered < Duration::from_millis(1_000),
+        answered < Duration::from_secs(1),
         "the take was answered after {answered:?}, not on its first frame"
     );
     // An overlay in transition never holds Program: a Cut is accepted.
@@ -6622,7 +6622,7 @@ fn studio_stinger_assignment_is_acknowledged_while_a_scene_monitor_composes() {
 
     // A composed Program picture proves monitor demand is active, so the
     // accepted command below changes the revision a composition depends on.
-    let first_frame = Instant::now() + Duration::from_secs(60);
+    let first_frame = Instant::now() + Duration::from_mins(1);
     loop {
         assert!(Instant::now() < first_frame, "no Program monitor frame");
         if let Some(SessionEvent::MonitorFrame {

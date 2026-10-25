@@ -461,6 +461,7 @@ fn serve_baseline(mut cli: Session, stop: &mpsc::Receiver<()>) -> usize {
 /// baseline's.
 #[test]
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::float_cmp)] // telemetry fields are compared against exact reference values
 fn native_preview_tap_shows_and_follows_preview_only_when_subscribed_without_late_program_frames() {
     if !tools_available() {
         return;

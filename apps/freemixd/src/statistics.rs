@@ -846,6 +846,7 @@ impl DaemonStatistics {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // one pass over every native sample family
     fn record_native(&mut self, at: u64, native: &NativeStatisticsSample) {
         self.record_frames(at, native);
         let unlabelled = LabelSet::new();
@@ -1346,6 +1347,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one degraded run, then its recovery
     fn degraded_stream_sync_and_encoder_samples_raise_and_clear_their_alerts() {
         let origin = Instant::now();
         let mut statistics = DaemonStatistics::new(origin);

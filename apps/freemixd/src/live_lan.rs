@@ -67,14 +67,14 @@ pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 /// A session that fetched media this recently is a viewer.
 pub const VIEWER_WINDOW: Duration = Duration::from_secs(10);
 /// A session idle this long is forgotten.
-pub const SESSION_IDLE: Duration = Duration::from_secs(60);
+pub const SESSION_IDLE: Duration = Duration::from_mins(1);
 /// Wrong PINs one address may send per [`FAILURE_WINDOW`] before it is
 /// locked out.
 pub const MAX_PIN_FAILURES: u8 = 5;
 /// How long a run of wrong PINs is remembered.
-pub const FAILURE_WINDOW: Duration = Duration::from_secs(60);
+pub const FAILURE_WINDOW: Duration = Duration::from_mins(1);
 /// The first lockout; each further one doubles, up to [`MAX_LOCKOUT`].
-pub const BASE_LOCKOUT: Duration = Duration::from_secs(60);
+pub const BASE_LOCKOUT: Duration = Duration::from_mins(1);
 /// The longest lockout.
 pub const MAX_LOCKOUT: Duration = Duration::from_hours(1);
 /// How long after its last lockout (or wrong PIN) an address's lockouts are

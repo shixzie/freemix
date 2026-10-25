@@ -33,7 +33,7 @@ use fm_types::{
 use freemixd::ReadinessRecord;
 
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
-const WAIT_TIMEOUT: Duration = Duration::from_secs(60);
+const WAIT_TIMEOUT: Duration = Duration::from_mins(1);
 
 fn tools_available() -> bool {
     let available = ["ffmpeg", "ffprobe"].iter().all(|tool| {

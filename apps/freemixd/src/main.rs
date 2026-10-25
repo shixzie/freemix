@@ -15863,11 +15863,10 @@ fn input_reference_use(reference: fm_model::InputReference) -> fm_protocol::Inpu
         },
         InputReference::PlaylistEntry(entry) => InputUse::PlaylistEntry { entry },
         InputReference::CueAction { list, cue } => InputUse::CueAction { list, cue },
-        InputReference::ReplaySource => InputUse::ReplaySource,
         // The wire has no reel-clip use yet; a reel angle is recorded for
         // replay, so report the closest existing use rather than widening
         // the protocol in the model-only slice.
-        InputReference::ReelClip { .. } => InputUse::ReplaySource,
+        InputReference::ReplaySource | InputReference::ReelClip { .. } => InputUse::ReplaySource,
     }
 }
 
@@ -26188,7 +26187,6 @@ mod tests {
         assert_eq!(store.attempts.get(), 4, "no retry without its window");
         assert_eq!(control.borrow().cue_advance_frame(), Some((7, due)));
         poll(&mut clock, reached + frame * 2, true);
-        drop(poll);
         assert_eq!(
             control.borrow().diagnostics().current_revision,
             revision + 1
@@ -26608,7 +26606,6 @@ mod tests {
         assert_eq!(store.attempts.get(), 4, "no retry without its window");
         assert_eq!(control.borrow().playlist_advance_frame(), Some(due));
         poll(&mut clock, reached + frame * 2, true);
-        drop(poll);
         assert_eq!(
             control.borrow().diagnostics().current_revision,
             revision + 1
@@ -26962,7 +26959,6 @@ mod tests {
         assert_eq!(store.attempts.get(), attempts + 2);
         poll(&mut feed, start + frame * 40, true);
         assert_eq!(store.attempts.get(), attempts + 2, "fed once");
-        drop(poll);
         assert!(
             matches!(airing(&control), PlaylistRunState::Playing { entry: 2, .. }),
             "{:?}",

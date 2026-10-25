@@ -483,12 +483,9 @@ fn export_run(worker: Worker) {
             cancel(&mut recorder);
             return;
         }
-        let chunk = match queue.recv() {
-            Ok(chunk) => chunk,
-            Err(_) => {
-                cancel(&mut recorder);
-                return;
-            }
+        let Ok(chunk) = queue.recv() else {
+            cancel(&mut recorder);
+            return;
         };
         for frame in &chunk.frames_out {
             if cancelled.load(Ordering::Acquire) {
