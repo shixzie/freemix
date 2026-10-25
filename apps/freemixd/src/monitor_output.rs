@@ -97,6 +97,7 @@ pub type MonitorPresence = Box<dyn FnMut(&str) -> Option<bool> + Send>;
 /// The presence probe of this platform: ALSA's procfs on Linux, and none
 /// elsewhere (every retry then tries the device). The procfs read runs on
 /// a poller thread ([`polled_presence`]), never on the render loop.
+#[must_use]
 pub fn system_presence() -> MonitorPresence {
     #[cfg(target_os = "linux")]
     {

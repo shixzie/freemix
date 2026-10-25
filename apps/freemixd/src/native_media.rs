@@ -1215,6 +1215,7 @@ impl NativeProjectPlan {
         }))
     }
 
+    #[must_use]
     pub fn scene_order(&self) -> impl ExactSizeIterator<Item = SceneId> + '_ {
         self.scenes.iter().map(|scene| scene.id)
     }
@@ -2335,6 +2336,7 @@ impl NativeSourceRegistry {
     }
 
     /// Iterates full-width source IDs in deterministic map order.
+    #[must_use]
     pub fn inputs(&self) -> impl ExactSizeIterator<Item = InputId> + '_ {
         self.sources.keys().copied()
     }
@@ -4527,6 +4529,7 @@ impl NativeMasterRuntime {
         telemetry
     }
 
+    #[must_use]
     pub fn collected_audio(&self) -> impl ExactSizeIterator<Item = &AudioBlock> {
         self.sink.iter()
     }
