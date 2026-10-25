@@ -5780,12 +5780,11 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
         }
         DurableChange::PageNavigated { .. } | DurableChange::ReplayChanged { .. } => {}
         DurableChange::ReelChanged { status } => {
-            match state.reels.iter_mut().find(|reel| reel.id == status.id) {
-                Some(existing) => *existing = status,
-                None => {
-                    state.reels.push(status);
-                    state.reels.sort_by_key(|reel| reel.id);
-                }
+            if let Some(existing) = state.reels.iter_mut().find(|reel| reel.id == status.id) {
+                *existing = status;
+            } else {
+                state.reels.push(status);
+                state.reels.sort_by_key(|reel| reel.id);
             }
         }
         DurableChange::ReelRemoved { reel } => {
