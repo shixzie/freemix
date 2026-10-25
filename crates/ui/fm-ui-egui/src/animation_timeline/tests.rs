@@ -1,6 +1,9 @@
 //! Headless `egui` tests: synthetic pointer and key events drive the widget
 //! through real passes.
 
+// The assertions compare exact reference values.
+#![allow(clippy::float_cmp)]
+
 use egui::{Event, Key, PointerButton, Pos2, RawInput, Rect, Ui, UiBuilder, Vec2, vec2};
 use fm_animation::{Clip, Easing, Keyframe, Phase, Property, Timebase, Track, TrackKey, Value};
 use fm_types::FrameRate;

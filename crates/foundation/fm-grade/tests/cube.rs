@@ -1,3 +1,6 @@
+// The assertions compare exact reference values.
+#![allow(clippy::float_cmp)]
+
 use std::fmt::Write as _;
 
 use fm_grade::{CubeError, CubeKind, CubeLut, CubeWarning, MAX_CUBE_INPUT_BYTES, parse_cube};

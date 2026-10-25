@@ -85,17 +85,17 @@ const fn export_tone(state: ReelExportState) -> Tone {
 }
 
 /// The reel a click on a row selected, or the first reel when none is.
-fn selected_reel<'a>(state: &'a StudioUiState, selected: Option<u64>) -> Option<&'a ReelStatus> {
+fn selected_reel(state: &StudioUiState, selected: Option<u64>) -> Option<&ReelStatus> {
     selected
         .and_then(|id| state.reels.iter().find(|reel| reel.id == id))
         .or_else(|| state.reels.first())
 }
 
 /// The event the EVENTS list selected, or the newest event when none is.
-fn selected_event<'a>(
-    status: &'a ReplayStatusMessage,
+fn selected_event(
+    status: &ReplayStatusMessage,
     selected: Option<u32>,
-) -> Option<&'a ReplayEventStatus> {
+) -> Option<&ReplayEventStatus> {
     selected
         .and_then(|id| status.events.iter().find(|event| event.id == id))
         .or_else(|| status.events.last())
@@ -194,7 +194,7 @@ fn rename_reel(reel: &ReelStatus, name: &str) -> Option<ReelOperation> {
         return None;
     }
     let mut spec = reel.spec.clone();
-    spec.name = name.to_owned();
+    name.clone_into(&mut spec.name);
     Some(ReelOperation::Set(Box::new(spec)))
 }
 

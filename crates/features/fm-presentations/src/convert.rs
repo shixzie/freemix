@@ -36,7 +36,7 @@ use crate::document::{DocumentError, MAX_DOCUMENT_BYTES};
 /// The environment variable naming the converter program explicitly.
 pub const CONVERTER_ENV: &str = "FREEMIX_SOFFICE";
 /// How long one conversion may run by default.
-pub const DEFAULT_CONVERSION_TIMEOUT: Duration = Duration::from_secs(120);
+pub const DEFAULT_CONVERSION_TIMEOUT: Duration = Duration::from_mins(2);
 /// Most converter diagnostic bytes kept for an error message.
 const MAX_DIAGNOSTIC_BYTES: u64 = 4 * 1024;
 

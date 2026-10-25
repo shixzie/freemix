@@ -493,7 +493,7 @@ mod tests {
             &mut probe,
             &["small", "gone", "large"],
             8_000_000,
-            Duration::from_secs(600),
+            Duration::from_mins(10),
             &thresholds,
         );
         assert!(!report.primary_sufficient());

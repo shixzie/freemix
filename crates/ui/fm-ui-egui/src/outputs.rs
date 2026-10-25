@@ -960,6 +960,8 @@ mod tests {
         );
     }
 
+    // The layout values are exact: integer pixels scaled by rational factors.
+    #[allow(clippy::float_cmp)]
     #[test]
     fn row_keys_sit_inside_the_row_and_fold_in_a_narrow_dock() {
         let key = |right: f32| Rect::from_min_max(pos2(right - 58.0, 7.0), pos2(right, 31.0));

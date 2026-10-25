@@ -1,6 +1,9 @@
 //! AU-009: zipper-free fader gain. Control-rate targets become per-sample
 //! linear ramps with a bounded step, bounded duration, and exact arrival.
 
+// The assertions compare exact reference values.
+#![allow(clippy::float_cmp)]
+
 use fm_audio::{
     Gain, GainSmoother, GainSmootherConfig, GainSmootherError, MAX_CHANNELS,
     MAX_GAIN_SMOOTHER_RAMP_SAMPLES, MAX_SAMPLES_PER_BLOCK,

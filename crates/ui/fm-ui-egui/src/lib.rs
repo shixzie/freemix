@@ -3394,7 +3394,7 @@ mod tests {
             recording_action(&available, RecordingAction::Start(REC_1)),
             Some(RecordingAction::Start(REC_1))
         );
-        let denied = [
+        let denied = vec![
             // The transition permission is missing.
             StudioUiState::new(StudioConnectionStatus::Ready)
                 .with_view(recording_view([false, false]))
@@ -3405,7 +3405,8 @@ mod tests {
             StudioUiState::new(StudioConnectionStatus::Connecting)
                 .with_view(recording_view([false, false]))
                 .with_switcher_permissions(true, true),
-        ];
+        ]
+        .into_boxed_slice();
         for state in denied {
             assert_eq!(
                 recording_action(&state, RecordingAction::Start(REC_1)),
@@ -3507,7 +3508,7 @@ mod tests {
         no_view.view = None;
         let mut connecting = stream_state(roster.clone());
         connecting.connection_status = StudioConnectionStatus::Backoff;
-        for state in [no_permission, no_view, connecting] {
+        for state in vec![no_permission, no_view, connecting].into_boxed_slice() {
             assert_eq!(stream_action(&state, start), None);
         }
         // A target missing from the replicated roster is never offered.
@@ -3636,7 +3637,7 @@ mod tests {
                     position: ManualTransitionPosition::START,
                 });
         }
-        for blocked in [no_permission, not_ready, manual] {
+        for blocked in vec![no_permission, not_ready, manual].into_boxed_slice() {
             assert!(!stinger_configuration_available(&blocked));
             assert_eq!(stinger_assign_intent(&blocked, S3, input(2), 30), None);
         }
@@ -4261,6 +4262,8 @@ mod tests {
         assert!((monitor_video_height(640.0, (0, 0), 900.0) - 360.0).abs() < f32::EPSILON);
     }
 
+    // The layout values are exact: integer pixels scaled by rational factors.
+    #[allow(clippy::float_cmp)]
     #[test]
     fn letterbox_fits_and_centers_every_aspect() {
         use crate::monitors::letterbox;

@@ -515,6 +515,7 @@ impl ReconnectTracker {
         self.pending.then(|| self.history.back()).flatten()
     }
 
+    #[must_use]
     pub fn history(&self) -> impl ExactSizeIterator<Item = &ReconnectRecord> {
         self.history.iter()
     }

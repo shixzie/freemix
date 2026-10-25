@@ -1,3 +1,6 @@
+// The assertions compare exact reference values.
+#![allow(clippy::float_cmp)]
+
 use std::sync::Arc;
 
 use fm_grade::reference::{self, evaluate_pixel, normalize};

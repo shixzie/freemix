@@ -325,6 +325,7 @@ impl NotificationQueue {
     }
 
     /// Iterates undrained notifications oldest first.
+    #[must_use]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = &AlertNotification> {
         self.entries.iter()
     }
@@ -687,11 +688,13 @@ impl AlertEngine {
     }
 
     /// Iterates rule statuses in ID order.
+    #[must_use]
     pub fn statuses(&self) -> impl ExactSizeIterator<Item = &RuleStatus> {
         self.rules.values().map(|runtime| &runtime.status)
     }
 
     /// Iterates silences retained since the last expiry sweep, in ID order.
+    #[must_use]
     pub fn silences(&self) -> impl ExactSizeIterator<Item = (SilenceId, &Silence)> {
         self.silences.iter().map(|(id, silence)| (*id, silence))
     }

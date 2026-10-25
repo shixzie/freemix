@@ -1875,7 +1875,7 @@ mod tests {
             None
         );
 
-        let start = Duration::from_millis(1_000);
+        let start = Duration::from_secs(1);
         assert_eq!(estimated_frame(100, start, rate()), 125);
         assert_eq!(
             estimated_frame(0, start, FrameRate::new(30_000, 1_001).unwrap()),

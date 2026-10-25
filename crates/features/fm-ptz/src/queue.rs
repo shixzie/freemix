@@ -141,6 +141,7 @@ impl CoalescingQueue {
         self.items.pop_front()
     }
 
+    #[must_use]
     pub fn iter(&self) -> impl ExactSizeIterator<Item = &QueuedIntent> {
         self.items.iter()
     }

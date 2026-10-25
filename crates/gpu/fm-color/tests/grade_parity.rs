@@ -1,6 +1,9 @@
 //! Pins `fm-grade`'s transfer functions and LUT sampling to the canonical
 //! `fm-color` implementations bit for bit.
 
+// The assertions compare exact reference values.
+#![allow(clippy::float_cmp)]
+
 use fm_color::{Lut1D, Lut3D, Rgb, srgb_from_linear, srgb_to_linear};
 use fm_grade::{CubeLut, srgb_eotf, srgb_oetf};
 

@@ -498,7 +498,7 @@ mod tests {
                 quiet_en[2].hover
             );
         }
-        let quiet_es = health_items(
+        let quiet_spanish = health_items(
             Locale::new(Language::Spanish),
             &state(DaemonHealth::default()),
             None,
@@ -509,9 +509,9 @@ mod tests {
             "sincronización de reloj",
         ] {
             assert!(
-                quiet_es[2].hover.contains(family),
+                quiet_spanish[2].hover.contains(family),
                 "{family}: {}",
-                quiet_es[2].hover
+                quiet_spanish[2].hover
             );
         }
     }
