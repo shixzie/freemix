@@ -826,6 +826,26 @@ impl TcpSession {
         self.flush_wire_wait(None)
     }
 
+    /// Acknowledges, silences, or unsilences one health alert rule
+    /// (Protocol 2.109, `RC-015`); the answer arrives as a
+    /// [`SessionEvent::HealthStatus`] echoing `request_id`, or a
+    /// [`SessionEvent::ServerError`] naming it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected or when encoding or writing the
+    /// request fails.
+    pub fn send_health_alert_request(
+        &mut self,
+        request: fm_protocol::HealthAlertRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        self.send_wire_wait(&WireMessage::HealthAlertRequest(request), None)?;
+        self.flush_wire_wait(None)
+    }
+
     /// The latest title animation phases (Protocol 2.90): what a title
     /// timeline's playhead follows between snapshots.
     #[must_use]
@@ -1868,7 +1888,8 @@ impl TcpSession {
             | WireMessage::ScreenCaptureTargetsRequest(_)
             | WireMessage::ScreenCapturePickRequest(_)
             | WireMessage::ReplayStatusRequest(_)
-            | WireMessage::ReelStatusRequest(_) => {
+            | WireMessage::ReelStatusRequest(_)
+            | WireMessage::HealthAlertRequest(_) => {
                 self.transition_disconnect();
                 Err(TcpSessionError::UnexpectedMessage)
             }

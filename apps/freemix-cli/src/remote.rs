@@ -123,6 +123,48 @@ fn request_replay_status(remote: &mut Remote) -> RemoteResult<fm_protocol::Repla
     }
 }
 
+/// Acknowledges, silences, or unsilences one daemon alert rule (RC-015,
+/// Protocol 2.109), then prints the daemon's health as it answered. Only an
+/// Operator or Admin may.
+pub fn alert(
+    address: SocketAddr,
+    rule: fm_protocol::HealthAlertRule,
+    action: fm_protocol::HealthAlertAction,
+) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Operator)?;
+    let request_id = format!("cli-alert-{}", unique_client_id()?);
+    remote.write(&WireMessage::HealthAlertRequest(
+        fm_protocol::HealthAlertRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id: request_id.clone(),
+            rule,
+            action,
+        },
+    ))?;
+    let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
+    loop {
+        match remote.read_until(deadline)? {
+            WireMessage::HealthStatus(status)
+                if status.request_id.as_deref() == Some(request_id.as_str()) =>
+            {
+                for line in format_health(&status.health) {
+                    println!("{line}");
+                }
+                return Ok(());
+            }
+            WireMessage::Error(error)
+                if error.request_id.as_deref() == Some(request_id.as_str()) =>
+            {
+                return Err(protocol_error(&error.error).into());
+            }
+            message @ (WireMessage::Event(_) | WireMessage::RuntimeEvent(_)) => {
+                remote.client.intake(message)?;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Largest picture `remote-scene-layer-auto-key` asks the daemon for: the
 /// size Studio's auto key samples (SW-008).
 const AUTO_KEY_PICTURE: (u16, u16) = (
@@ -2033,12 +2075,23 @@ pub(crate) fn format_health(health: &fm_protocol::DaemonHealth) -> Vec<String> {
         health.notifications.len(),
     )];
     lines.extend(health.alerts.iter().map(|alert| {
+        let acknowledged = alert
+            .acknowledged_until_ms
+            .map(|until| format!(", acknowledged_until_ms={until}"))
+            .unwrap_or_default();
         format!(
-            "Alert(rule={}, severity={}, since_ms={}, value={})",
+            "Alert(rule={}, severity={}, since_ms={}, value={}{acknowledged})",
             alert.rule.token(),
             alert.severity.token(),
             alert.since_ms,
             milli_value(alert.value_milli),
+        )
+    }));
+    lines.extend(health.silences.iter().map(|silence| {
+        format!(
+            "AlertSilence(rule={}, until_ms={})",
+            silence.rule.token(),
+            silence.until_ms
         )
     }));
     lines.extend(health.notifications.iter().map(|notification| {

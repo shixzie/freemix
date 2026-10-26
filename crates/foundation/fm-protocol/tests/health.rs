@@ -41,12 +41,14 @@ fn health() -> DaemonHealth {
                 severity: HealthSeverity::Warning,
                 since_ms: 50_000,
                 value_milli: Some(925),
+                acknowledged_until_ms: None,
             },
             HealthAlert {
                 rule: HealthAlertRule::FramesDropped,
                 severity: HealthSeverity::Warning,
                 since_ms: 59_000,
                 value_milli: None,
+                acknowledged_until_ms: None,
             },
         ],
         notifications: vec![
@@ -60,6 +62,7 @@ fn health() -> DaemonHealth {
             },
             notification(9, HealthNotificationKind::Resolved),
         ],
+        silences: Vec::new(),
     }
 }
 
@@ -67,6 +70,7 @@ fn message(health: DaemonHealth) -> WireMessage {
     WireMessage::HealthStatus(HealthStatusMessage {
         server: server(),
         sequence: 12,
+        request_id: None,
         health,
     })
 }
@@ -93,7 +97,7 @@ fn diagnostics(health: DaemonHealth) -> WireMessage {
 }
 
 const ALERTS: &str =
-    "cpu_saturated%3Awarning%3A50000%3A925%3Bframes_dropped%3Awarning%3A59000%3Anone";
+    "cpu_saturated%3Awarning%3A50000%3A925%3Anone%3Bframes_dropped%3Awarning%3A59000%3Anone%3Anone";
 const NOTIFICATIONS: &str = "3%3Aoutput_failed%3Acritical%3Afiring%3A4003%3A1000%3B4%3Adisk_low%3Ainfo%3Areminder%3A4004%3A-5%3B9%3Aoutput_failed%3Acritical%3Aresolved%3A4009%3A1000";
 
 #[test]
@@ -103,7 +107,7 @@ fn health_status_is_exact() {
     assert_eq!(
         line,
         format!(
-            "{HEAD}\tuptime_ms=60000\tcpu_permille=925\tgpu_permille=0\talerts={ALERTS}\tnotifications={NOTIFICATIONS}\n"
+            "{HEAD}\tuptime_ms=60000\tcpu_permille=925\tgpu_permille=0\talerts={ALERTS}\tnotifications={NOTIFICATIONS}\tsilences=\n"
         )
     );
     assert_eq!(decode_line(&line).unwrap(), full);
@@ -117,7 +121,7 @@ fn health_status_is_exact() {
     let line = encode_line(&quiet).unwrap();
     assert_eq!(
         line,
-        format!("{HEAD}\tuptime_ms=0\talerts=\tnotifications=\n")
+        format!("{HEAD}\tuptime_ms=0\talerts=\tnotifications=\tsilences=\n")
     );
     assert_eq!(decode_line(&line).unwrap(), quiet);
 
@@ -157,7 +161,7 @@ fn health_status_refuses_anything_but_the_contract() {
     invalid("notifications")(refused("resolved%3A4009", "resolved%3A60001"));
     invalid("alerts")(refused("cpu_saturated%3A", "cpu_overheated%3A"));
     invalid("alerts")(refused("warning%3A50000", "loud%3A50000"));
-    invalid("alerts")(refused("%3A925%3B", "%3A+925%3B"));
+    invalid("alerts")(refused("%3A925%3Anone", "%3A+925%3Anone"));
     invalid("alerts")(refused("%3Anone", "%3Anone%3A1"));
     invalid("notifications")(refused("%3Areminder%3A", "%3Asnoozed%3A"));
     invalid("notifications")(refused("%3A-5%3B", "%3A-0%3B"));
@@ -166,7 +170,7 @@ fn health_status_refuses_anything_but_the_contract() {
     invalid("alerts")(refused(ALERTS, &format!("{}%3B{}", swapped[1], swapped[0])));
     invalid("notifications")(refused("4%3Adisk_low", "3%3Adisk_low"));
     // Every field but the optional utilization is required.
-    for field in ["uptime_ms", "alerts", "notifications"] {
+    for field in ["uptime_ms", "alerts", "notifications", "silences"] {
         let start = line.find(&format!("\t{field}=")).unwrap();
         let end = line[start + 1..].find(['\t', '\n']).unwrap() + start + 1;
         let missing = format!("{}{}", &line[..start], &line[end..]);
@@ -184,8 +188,10 @@ fn health_status_refuses_anything_but_the_contract() {
     );
     crowded.notifications.pop();
     let line = encode_line(&message(crowded)).unwrap();
-    let extra =
-        line.replace('\n', "") + "%3B99%3Aoutput_failed%3Acritical%3Afiring%3A4099%3Anone\n";
+    let extra = line.replace(
+        "\tsilences=",
+        "%3B99%3Aoutput_failed%3Acritical%3Afiring%3A4099%3Anone\tsilences=",
+    );
     assert_eq!(
         decode_line(&extra),
         Err(CodecError::TooManyItems("notifications"))
@@ -202,7 +208,7 @@ fn diagnostics_response_carries_the_health_fields() {
     let line = encode_line(&full).unwrap();
     assert!(
         line.ends_with(&format!(
-            "\tsource_sync=\tuptime_ms=60000\tcpu_permille=925\tgpu_permille=0\talerts={ALERTS}\tnotifications={NOTIFICATIONS}\n"
+            "\tsource_sync=\tuptime_ms=60000\tcpu_permille=925\tgpu_permille=0\talerts={ALERTS}\tnotifications={NOTIFICATIONS}\tsilences=\n"
         )),
         "{line}"
     );
@@ -210,7 +216,7 @@ fn diagnostics_response_carries_the_health_fields() {
     let quiet = diagnostics(DaemonHealth::default());
     let line = encode_line(&quiet).unwrap();
     assert!(
-        line.ends_with("\tsource_sync=\tuptime_ms=0\talerts=\tnotifications=\n"),
+        line.ends_with("\tsource_sync=\tuptime_ms=0\talerts=\tnotifications=\tsilences=\n"),
         "{line}"
     );
     assert_eq!(decode_line(&line).unwrap(), quiet);
@@ -263,7 +269,7 @@ fn all_alert_rules_stay_sorted_and_unique() {
     }
 }
 
-const NEW_ALERTS: &str = "encoder_saturated%3Awarning%3A61000%3A3500%3Bstream_reconnecting%3Awarning%3A62000%3A1000%3Bsync_degraded%3Awarning%3A63000%3Anone";
+const NEW_ALERTS: &str = "encoder_saturated%3Awarning%3A61000%3A3500%3Anone%3Bstream_reconnecting%3Awarning%3A62000%3A1000%3Anone%3Bsync_degraded%3Awarning%3A63000%3Anone%3Anone";
 const NEW_NOTIFICATIONS: &str = "1%3Async_degraded%3Awarning%3Afiring%3A63000%3Anone";
 
 fn new_rule_health() -> DaemonHealth {
@@ -277,18 +283,21 @@ fn new_rule_health() -> DaemonHealth {
                 severity: HealthSeverity::Warning,
                 since_ms: 61_000,
                 value_milli: Some(3_500),
+                acknowledged_until_ms: None,
             },
             HealthAlert {
                 rule: HealthAlertRule::StreamReconnecting,
                 severity: HealthSeverity::Warning,
                 since_ms: 62_000,
                 value_milli: Some(1_000),
+                acknowledged_until_ms: None,
             },
             HealthAlert {
                 rule: HealthAlertRule::SyncDegraded,
                 severity: HealthSeverity::Warning,
                 since_ms: 63_000,
                 value_milli: None,
+                acknowledged_until_ms: None,
             },
         ],
         notifications: vec![HealthNotification {
@@ -299,6 +308,7 @@ fn new_rule_health() -> DaemonHealth {
             at_ms: 63_000,
             value_milli: None,
         }],
+        silences: Vec::new(),
     }
 }
 
@@ -317,7 +327,7 @@ fn health_status_and_diagnostics_carry_the_new_alert_rules() {
     assert_eq!(
         line,
         format!(
-            "{HEAD}\tuptime_ms=64000\tcpu_permille=500\talerts={NEW_ALERTS}\tnotifications={NEW_NOTIFICATIONS}\n"
+            "{HEAD}\tuptime_ms=64000\tcpu_permille=500\talerts={NEW_ALERTS}\tnotifications={NEW_NOTIFICATIONS}\tsilences=\n"
         )
     );
     assert_eq!(decode_line(&line).unwrap(), full);
@@ -337,7 +347,7 @@ fn health_status_and_diagnostics_carry_the_new_alert_rules() {
     let line = encode_line(&full).unwrap();
     assert!(
         line.ends_with(&format!(
-            "\tsource_sync=\tuptime_ms=64000\tcpu_permille=500\talerts={NEW_ALERTS}\tnotifications={NEW_NOTIFICATIONS}\n"
+            "\tsource_sync=\tuptime_ms=64000\tcpu_permille=500\talerts={NEW_ALERTS}\tnotifications={NEW_NOTIFICATIONS}\tsilences=\n"
         )),
         "{line}"
     );
@@ -356,6 +366,7 @@ fn alerts_carry_one_entry_per_rule_up_to_nine() {
             severity: HealthSeverity::Warning,
             since_ms: 50_000,
             value_milli: None,
+            acknowledged_until_ms: None,
         })
         .collect();
     assert!(full.is_valid());
@@ -364,12 +375,186 @@ fn alerts_carry_one_entry_per_rule_up_to_nine() {
     assert_eq!(decode_line(&line).unwrap(), full);
     let extra = line.replace(
         "\tnotifications=",
-        "%3Bcpu_saturated%3Awarning%3A50000%3Anone\tnotifications=",
+        "%3Bcpu_saturated%3Awarning%3A50000%3Anone%3Anone\tnotifications=",
     );
     assert_eq!(decode_line(&extra), Err(CodecError::TooManyItems("alerts")));
 }
 
 #[test]
-fn protocol_2_108_is_current() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 108));
+fn protocol_2_109_is_current() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 109));
+}
+
+/// Protocol 2.109: an acknowledged alert carries its end, silences are
+/// listed per rule, and both must end after `uptime_ms`.
+#[test]
+fn acknowledgements_and_silences_are_exact() {
+    let mut acknowledged = health();
+    acknowledged.alerts[0].acknowledged_until_ms = Some(660_000);
+    acknowledged.silences = vec![
+        fm_protocol::HealthSilence {
+            rule: HealthAlertRule::DiskLow,
+            until_ms: 120_000,
+        },
+        fm_protocol::HealthSilence {
+            rule: HealthAlertRule::OutputFailed,
+            until_ms: 60_001,
+        },
+    ];
+    assert!(acknowledged.is_valid());
+    assert_eq!(
+        acknowledged
+            .silence(HealthAlertRule::DiskLow)
+            .map(|s| s.until_ms),
+        Some(120_000)
+    );
+    let full = message(acknowledged.clone());
+    let line = encode_line(&full).unwrap();
+    assert!(
+        line.contains("\talerts=cpu_saturated%3Awarning%3A50000%3A925%3A660000%3B"),
+        "{line}"
+    );
+    assert!(
+        line.ends_with("\tsilences=disk_low%3A120000%3Boutput_failed%3A60001\n"),
+        "{line}"
+    );
+    assert_eq!(decode_line(&line).unwrap(), full);
+
+    let refused = |from: &str, to: &str| {
+        let changed = line.replacen(from, to, 1);
+        assert_ne!(changed, line, "{from} not found");
+        decode_line(&changed).unwrap_err()
+    };
+    let field_of = |error: CodecError| match error {
+        CodecError::InvalidField { field, .. } => field,
+        error => panic!("{error:?}"),
+    };
+    // An end at or before the uptime clock, or not canonical.
+    assert_eq!(field_of(refused("%3A660000%3B", "%3A60000%3B")), "alerts");
+    assert_eq!(field_of(refused("%3A660000%3B", "%3A0660000%3B")), "alerts");
+    assert_eq!(field_of(refused("%3A60001\n", "%3A60000\n")), "silences");
+    // Unknown, repeated, or unordered rules, and malformed entries.
+    assert_eq!(
+        field_of(refused("silences=disk_low%3A", "silences=disk_full%3A")),
+        "silences"
+    );
+    assert_eq!(
+        field_of(refused("output_failed%3A60001", "disk_low%3A60001")),
+        "silences"
+    );
+    assert_eq!(
+        field_of(refused(
+            "disk_low%3A120000%3Boutput_failed%3A60001",
+            "output_failed%3A60001%3Bdisk_low%3A120000"
+        )),
+        "silences"
+    );
+    assert_eq!(
+        field_of(refused("disk_low%3A120000", "disk_low")),
+        "silences"
+    );
+    // A sample breaking the invariants is never encoded.
+    let mut expired = acknowledged;
+    expired.silences[1].until_ms = expired.uptime_ms;
+    assert!(!expired.is_valid());
+    assert!(encode_line(&message(expired)).is_err());
+
+    // The answer to a request echoes its id.
+    let answer = WireMessage::HealthStatus(HealthStatusMessage {
+        request_id: Some("ack-7".into()),
+        ..HealthStatusMessage {
+            server: server(),
+            sequence: 12,
+            request_id: None,
+            health: health(),
+        }
+    });
+    let line = encode_line(&answer).unwrap();
+    assert!(
+        line.starts_with(&format!("{HEAD}\trequest_id=ack-7\t")),
+        "{line}"
+    );
+    assert_eq!(decode_line(&line).unwrap(), answer);
+}
+
+/// Protocol 2.109: `health_alert_request` carries a hold exactly for the
+/// actions that hold, and only within a day.
+#[test]
+fn health_alert_request_is_exact() {
+    use fm_protocol::{HealthAlertAction, HealthAlertRequest, MAX_HEALTH_ALERT_HOLD_MS};
+    let request = |action| {
+        WireMessage::HealthAlertRequest(HealthAlertRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id: "ack-1".into(),
+            rule: HealthAlertRule::DiskLow,
+            action,
+        })
+    };
+    for (action, tail) in [
+        (
+            HealthAlertAction::Acknowledge {
+                duration_ms: 600_000,
+            },
+            "action=acknowledge\tduration_ms=600000",
+        ),
+        (
+            HealthAlertAction::Silence {
+                duration_ms: MAX_HEALTH_ALERT_HOLD_MS,
+            },
+            "action=silence\tduration_ms=86400000",
+        ),
+        (HealthAlertAction::Unsilence, "action=unsilence"),
+    ] {
+        let full = request(action);
+        let line = encode_line(&full).unwrap();
+        assert_eq!(
+            line,
+            format!(
+                "health_alert_request\tprotocol={CURRENT_PROTOCOL_VERSION}\trequest_id=ack-1\t\
+                 rule=disk_low\t{tail}\n"
+            )
+        );
+        assert_eq!(decode_line(&line).unwrap(), full);
+    }
+    let line = encode_line(&request(HealthAlertAction::Acknowledge { duration_ms: 1 })).unwrap();
+    let refused = |from: &str, to: &str| {
+        let changed = line.replacen(from, to, 1);
+        assert_ne!(changed, line, "{from} not found");
+        decode_line(&changed).unwrap_err()
+    };
+    let field_of = |error: CodecError| match error {
+        CodecError::InvalidField { field, .. } => field,
+        error => panic!("{error:?}"),
+    };
+    assert_eq!(
+        field_of(refused("duration_ms=1", "duration_ms=0")),
+        "action"
+    );
+    assert_eq!(
+        field_of(refused("duration_ms=1", "duration_ms=86400001")),
+        "action"
+    );
+    assert_eq!(
+        field_of(refused("duration_ms=1", "duration_ms=01")),
+        "duration_ms"
+    );
+    assert_eq!(field_of(refused("\tduration_ms=1", "")), "action");
+    assert_eq!(
+        field_of(refused(
+            "action=acknowledge\tduration_ms=1",
+            "action=unsilence\tduration_ms=1"
+        )),
+        "action"
+    );
+    assert_eq!(
+        field_of(refused("action=acknowledge", "action=snooze")),
+        "action"
+    );
+    assert_eq!(field_of(refused("rule=disk_low", "rule=disk_full")), "rule");
+    assert_eq!(
+        decode_line(&line.replacen("\trule=disk_low", "", 1)),
+        Err(CodecError::MissingField("rule"))
+    );
+    // An action outside the contract is never encoded.
+    assert!(encode_line(&request(HealthAlertAction::Silence { duration_ms: 0 })).is_err());
 }

@@ -126,8 +126,15 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         "health_status" => WireMessage::HealthStatus(crate::HealthStatusMessage {
             server: decode_server_identity(&mut fields)?,
             sequence: fields.canonical_required("sequence")?,
+            request_id: fields
+                .optional("request_id")
+                .map(|request_id| validate_request_id(&request_id).map(|()| request_id))
+                .transpose()?,
             health: decode_health(&mut fields)?,
         }),
+        "health_alert_request" => {
+            WireMessage::HealthAlertRequest(decode_health_alert_request(&mut fields)?)
+        }
         "monitor_frame" => WireMessage::MonitorFrame(decode_monitor_frame(&mut fields)?),
         "input_thumbnail_subscription" => {
             WireMessage::InputThumbnailSubscription(crate::InputThumbnailSubscription {
@@ -3945,6 +3952,34 @@ fn decode_capability_summary(fields: &mut Fields) -> Result<CapabilityReportSumm
     Ok(summary)
 }
 
+fn decode_health_alert_request(
+    fields: &mut Fields,
+) -> Result<crate::HealthAlertRequest, CodecError> {
+    let protocol = fields.required("protocol")?;
+    let request_id = fields.required("request_id")?;
+    validate_request_id(&request_id)?;
+    let rule = fields.required("rule")?;
+    let action = fields.required("action")?;
+    let duration_ms = fields.canonical_optional("duration_ms")?;
+    Ok(crate::HealthAlertRequest {
+        protocol: parse_version(&protocol).ok_or(CodecError::InvalidField {
+            field: "protocol",
+            value: protocol,
+        })?,
+        request_id,
+        rule: crate::HealthAlertRule::from_token(&rule).ok_or(CodecError::InvalidField {
+            field: "rule",
+            value: rule,
+        })?,
+        action: crate::HealthAlertAction::from_parts(&action, duration_ms).ok_or(
+            CodecError::InvalidField {
+                field: "action",
+                value: action,
+            },
+        )?,
+    })
+}
+
 fn decode_diagnostics_request(fields: &mut Fields) -> Result<DiagnosticsRequest, CodecError> {
     let protocol = fields.required("protocol")?;
     let request_id = fields.required("request_id")?;
@@ -3991,6 +4026,7 @@ fn decode_health(fields: &mut Fields) -> Result<crate::DaemonHealth, CodecError>
         gpu_permille: fields.optional("gpu_permille"),
         alerts: fields.required("alerts")?,
         notifications: fields.required("notifications")?,
+        silences: fields.required("silences")?,
     })
 }
 

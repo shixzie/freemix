@@ -30,6 +30,12 @@
 //! `FREEMIXD_ALERT` line on stderr and joins a bounded list of the
 //! [`MAX_RECENT_NOTIFICATIONS`] most recent ones.
 //!
+//! An operator's `health_alert_request` (Protocol 2.109) acknowledges a
+//! firing rule or silences one until a bounded time
+//! ([`DaemonStatistics::alert_action`]); a rule holds at most one silence,
+//! a new one replacing it. Both are reported in every health sample while
+//! they last, and neither outlives the daemon.
+//!
 //! The registry is an additional view: the `FREEMIXD_TELEMETRY` record the
 //! native daemon prints at shutdown keeps its own whole-run aggregation and
 //! fields unchanged.
@@ -47,9 +53,9 @@ use fm_observability::{
     SeriesKey, SeriesValue, StatisticsError, StatisticsSnapshot,
 };
 use fm_protocol::{
-    DaemonHealth, HealthAlert, HealthAlertRule, HealthNotification, HealthNotificationKind,
-    HealthSeverity, HealthStatusMessage, MAX_UTILIZATION_PERMILLE, ServerIdentity,
-    SourceClockState, SourceSyncSample,
+    DaemonHealth, HealthAlert, HealthAlertAction, HealthAlertRule, HealthNotification,
+    HealthNotificationKind, HealthSeverity, HealthSilence, HealthStatusMessage,
+    MAX_UTILIZATION_PERMILLE, ServerIdentity, SourceClockState, SourceSyncSample,
 };
 
 /// The shortest spacing of two statistics samples.
@@ -280,6 +286,36 @@ pub(crate) struct ActiveAlert {
     pub(crate) since_ms: u64,
     /// The latest reading (a rate for rate rules).
     pub(crate) value: Option<f64>,
+    /// When its acknowledgement ends (exclusive), in statistics
+    /// milliseconds, once acknowledged.
+    pub(crate) acknowledged_until_ms: Option<u64>,
+}
+
+/// Why an operator's alert action was refused (Protocol 2.109).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AlertActionError {
+    /// Only a firing rule may be acknowledged.
+    NotFiring,
+    /// The daemon does not evaluate the rule.
+    UnknownRule,
+}
+
+impl AlertActionError {
+    /// The structured error code.
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::NotFiring => "conflict",
+            Self::UnknownRule => "not_found",
+        }
+    }
+
+    /// The English message.
+    pub(crate) const fn message(self) -> &'static str {
+        match self {
+            Self::NotFiring => "only a firing alert can be acknowledged",
+            Self::UnknownRule => "the daemon does not evaluate that alert rule",
+        }
+    }
 }
 
 fn default_engine(registry: &MetricRegistry) -> AlertEngine {
@@ -659,6 +695,7 @@ impl DaemonStatistics {
                     severity: status.rule.severity,
                     since_ms: since_millis,
                     value: status.last_value,
+                    acknowledged_until_ms: status.acknowledged_until_millis,
                 }),
                 _ => None,
             })
@@ -682,6 +719,9 @@ impl DaemonStatistics {
                     severity: wire_severity(alert.severity),
                     since_ms: alert.since_ms.min(uptime_ms),
                     value_milli: alert.value.map(milli),
+                    acknowledged_until_ms: alert
+                        .acknowledged_until_ms
+                        .filter(|&until| until > uptime_ms),
                 })
             })
             .collect();
@@ -706,13 +746,90 @@ impl DaemonStatistics {
                 })
             })
             .collect();
+        let mut silences: Vec<HealthSilence> = self
+            .alerts
+            .silences()
+            .filter(|(_, silence)| silence.until_millis > uptime_ms)
+            .filter_map(|(_, silence)| {
+                Some(HealthSilence {
+                    rule: HealthAlertRule::from_token(silence.rule.as_str())?,
+                    until_ms: silence.until_millis,
+                })
+            })
+            .collect();
+        silences.sort_unstable_by_key(|silence| silence.rule);
         DaemonHealth {
             uptime_ms,
             cpu_permille: self.cpu_utilization().map(permille),
             gpu_permille: self.gpu_utilization().map(permille),
             alerts,
             notifications,
+            silences,
         }
+    }
+
+    /// Applies an operator's alert `action` to `rule` at `now` (Protocol
+    /// 2.109): acknowledges the firing rule, silences it (replacing any
+    /// silence it has), or ends its silence (none is no error).
+    pub(crate) fn alert_action(
+        &mut self,
+        rule: HealthAlertRule,
+        action: HealthAlertAction,
+        now: Instant,
+    ) -> Result<(), AlertActionError> {
+        let id = RuleId::new(rule.token()).map_err(|_| AlertActionError::UnknownRule)?;
+        let at = self.millis(now);
+        let until = |duration_ms: u64| at.saturating_add(duration_ms);
+        let held: Vec<_> = self
+            .alerts
+            .silences()
+            .filter(|(_, silence)| silence.rule == id)
+            .map(|(silence, _)| silence)
+            .collect();
+        let refusal = |error| match error {
+            fm_observability::AlertRuleError::NotFiring => AlertActionError::NotFiring,
+            _ => AlertActionError::UnknownRule,
+        };
+        match action {
+            HealthAlertAction::Acknowledge { duration_ms } => self
+                .alerts
+                .acknowledge(&id, at, until(duration_ms))
+                .map_err(refusal),
+            HealthAlertAction::Silence { duration_ms } => {
+                if self.alerts.status(&id).is_none() {
+                    return Err(AlertActionError::UnknownRule);
+                }
+                for silence in held {
+                    let _ = self.alerts.unsilence(silence);
+                }
+                self.alerts
+                    .silence(&id, at, until(duration_ms))
+                    .map(|_| ())
+                    .map_err(refusal)
+            }
+            HealthAlertAction::Unsilence => {
+                if self.alerts.status(&id).is_none() {
+                    return Err(AlertActionError::UnknownRule);
+                }
+                for silence in held {
+                    let _ = self.alerts.unsilence(silence);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// A `health_status` answering `request_id` (Protocol 2.109): the
+    /// sample as of `now`, under the next sequence.
+    pub(crate) fn health_answer(
+        &mut self,
+        server: &ServerIdentity,
+        now: Instant,
+        request_id: String,
+    ) -> Option<HealthStatusMessage> {
+        let mut status = self.health_status(server, now)?;
+        status.request_id = Some(request_id);
+        Some(status)
     }
 
     /// The next `health_status` record (Protocol 2.100) for the sample just
@@ -726,6 +843,7 @@ impl DaemonStatistics {
         Some(HealthStatusMessage {
             server: server.clone(),
             sequence: self.health_sequence,
+            request_id: None,
             health: self.health(now),
         })
     }
@@ -1118,6 +1236,108 @@ mod tests {
         alerts.iter().map(|alert| alert.rule.as_str()).collect()
     }
 
+    /// Protocol 2.109: an operator acknowledges a firing alert and silences
+    /// a rule until a bounded time; a rule holds one silence, a new one
+    /// replacing it, and both leave the health sample once they end.
+    #[test]
+    fn alert_actions_acknowledge_and_silence_until_they_end() {
+        let origin = Instant::now();
+        let mut statistics = DaemonStatistics::new(origin);
+        let server = ServerIdentity {
+            engine_id: "engine".into(),
+            project_id: "project".into(),
+            state_epoch: 1,
+            log_id: "log".into(),
+        };
+        statistics.record_sample(origin, ControlSample::default(), None, None);
+        let mut sample = native(vec![1.0]);
+        sample.outputs_failed = 1;
+        statistics.record_sample(
+            origin + STATISTICS_INTERVAL,
+            ControlSample::default(),
+            Some(sample),
+            None,
+        );
+        let now = origin + Duration::from_millis(1_500);
+        let hold = |duration_ms| HealthAlertAction::Acknowledge { duration_ms };
+        // Only a firing rule is acknowledged.
+        assert_eq!(
+            statistics.alert_action(HealthAlertRule::CpuSaturated, hold(60_000), now),
+            Err(AlertActionError::NotFiring)
+        );
+        statistics
+            .alert_action(HealthAlertRule::OutputFailed, hold(60_000), now)
+            .unwrap();
+        let silence = |duration_ms| HealthAlertAction::Silence { duration_ms };
+        statistics
+            .alert_action(HealthAlertRule::DiskLow, silence(10_000), now)
+            .unwrap();
+        statistics
+            .alert_action(HealthAlertRule::CpuSaturated, silence(5_000), now)
+            .unwrap();
+        // Silencing again replaces the rule's silence.
+        statistics
+            .alert_action(HealthAlertRule::DiskLow, silence(20_000), now)
+            .unwrap();
+        let answer = statistics
+            .health_answer(&server, now, "ack-1".into())
+            .unwrap();
+        assert_eq!(answer.request_id.as_deref(), Some("ack-1"));
+        assert_eq!(answer.sequence, 1);
+        let health = answer.health;
+        assert!(health.is_valid());
+        assert_eq!(
+            health
+                .alert(HealthAlertRule::OutputFailed)
+                .and_then(|alert| alert.acknowledged_until_ms),
+            Some(61_500)
+        );
+        assert_eq!(
+            health.silences,
+            [
+                HealthSilence {
+                    rule: HealthAlertRule::CpuSaturated,
+                    until_ms: 6_500,
+                },
+                HealthSilence {
+                    rule: HealthAlertRule::DiskLow,
+                    until_ms: 21_500,
+                },
+            ]
+        );
+        // The next record keeps counting.
+        let next = statistics.health_status(&server, now).unwrap();
+        assert_eq!((next.sequence, next.request_id), (2, None));
+
+        // Ended silences and acknowledgements leave the sample.
+        let later = statistics.health(origin + Duration::from_secs(10));
+        assert_eq!(
+            later.silences.iter().map(|s| s.rule).collect::<Vec<_>>(),
+            [HealthAlertRule::DiskLow]
+        );
+        let much_later = statistics.health(origin + Duration::from_millis(61_500));
+        assert!(much_later.silences.is_empty());
+        assert_eq!(
+            much_later
+                .alert(HealthAlertRule::OutputFailed)
+                .map(|alert| alert.acknowledged_until_ms),
+            Some(None)
+        );
+        // Unsilencing ends a silence at once, and is no error without one.
+        statistics
+            .alert_action(HealthAlertRule::DiskLow, HealthAlertAction::Unsilence, now)
+            .unwrap();
+        assert!(
+            statistics
+                .health(now)
+                .silence(HealthAlertRule::DiskLow)
+                .is_none()
+        );
+        statistics
+            .alert_action(HealthAlertRule::DiskLow, HealthAlertAction::Unsilence, now)
+            .unwrap();
+    }
+
     #[test]
     fn health_reports_utilization_alerts_and_notifications_on_the_wire() {
         let origin = Instant::now();
@@ -1158,12 +1378,14 @@ mod tests {
                     severity: HealthSeverity::Critical,
                     since_ms: 1_000,
                     value_milli: Some(4_096_000),
+                    acknowledged_until_ms: None,
                 },
                 HealthAlert {
                     rule: HealthAlertRule::OutputFailed,
                     severity: HealthSeverity::Critical,
                     since_ms: 1_000,
                     value_milli: Some(2_000),
+                    acknowledged_until_ms: None,
                 },
             ]
         );
@@ -1399,18 +1621,21 @@ mod tests {
                     severity: HealthSeverity::Warning,
                     since_ms: 5_000,
                     value_milli: Some(900),
+                    acknowledged_until_ms: None,
                 },
                 HealthAlert {
                     rule: HealthAlertRule::StreamReconnecting,
                     severity: HealthSeverity::Warning,
                     since_ms: 10_000,
                     value_milli: Some(1_000),
+                    acknowledged_until_ms: None,
                 },
                 HealthAlert {
                     rule: HealthAlertRule::SyncDegraded,
                     severity: HealthSeverity::Warning,
                     since_ms: 10_000,
                     value_milli: Some(1_000),
+                    acknowledged_until_ms: None,
                 },
             ]
         );

@@ -145,8 +145,9 @@ pub use fm_command::{
     ScriptFailureKind,
 };
 pub use health::{
-    DaemonHealth, HealthAlert, HealthAlertRule, HealthNotification, HealthNotificationKind,
-    HealthSeverity, HealthStatusMessage, MAX_HEALTH_NOTIFICATIONS, MAX_UTILIZATION_PERMILLE,
+    DaemonHealth, HealthAlert, HealthAlertAction, HealthAlertRequest, HealthAlertRule,
+    HealthNotification, HealthNotificationKind, HealthSeverity, HealthSilence, HealthStatusMessage,
+    MAX_HEALTH_ALERT_HOLD_MS, MAX_HEALTH_NOTIFICATIONS, MAX_UTILIZATION_PERMILLE,
 };
 pub use input_lifecycle::{
     AddedInput, ImportItemSpec, ImportRefusal, InputCategoryStatus, InputColorLabel,

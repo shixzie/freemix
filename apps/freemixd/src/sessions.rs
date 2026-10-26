@@ -2551,6 +2551,51 @@ impl Runtime<'_> {
                 peer.reply(WireMessage::ReelStatus(Box::new(status)))?;
                 Ok(())
             }
+            // An operator acknowledges or silences a health alert (Protocol
+            // 2.109, RC-015). The answer takes the next health sequence, and
+            // an older sample still waiting in the peer's lossy slot is
+            // dropped so the sequence it sees never goes back.
+            WireMessage::HealthAlertRequest(request) => {
+                if self.refuse_request(peer, &request.request_id, |session| {
+                    session.admit_alert_action(request.protocol)
+                })? {
+                    return Ok(());
+                }
+                let now = Instant::now();
+                let mut statistics = self.statistics.borrow_mut();
+                if let Err(error) = statistics.alert_action(request.rule, request.action, now) {
+                    drop(statistics);
+                    let current_revision =
+                        Some(self.control.borrow().diagnostics().current_revision);
+                    peer.reply(WireMessage::Error(ErrorMessage {
+                        request_id: Some(request.request_id),
+                        current_revision,
+                        error: StructuredError {
+                            code: error.code().into(),
+                            message: error.message().into(),
+                            fields: Vec::new(),
+                            retryable: false,
+                        },
+                    }))?;
+                    return Ok(());
+                }
+                eprintln!(
+                    "FREEMIXD_ALERT_ACTION\tv=1\trule={}\taction={}\tduration_ms={}",
+                    request.rule.token(),
+                    request.action.token(),
+                    request
+                        .action
+                        .duration_ms()
+                        .map_or_else(|| "none".to_owned(), |ms| ms.to_string()),
+                );
+                let answer = statistics.health_answer(self.authority, now, request.request_id);
+                drop(statistics);
+                if let Some(answer) = answer {
+                    peer.lossy.discard_slot(LossySlot::HealthStatus);
+                    peer.reply(WireMessage::HealthStatus(answer))?;
+                }
+                Ok(())
+            }
             WireMessage::SystemAudioDevicesRequest(request) => {
                 if self.refuse_request(
                     peer,

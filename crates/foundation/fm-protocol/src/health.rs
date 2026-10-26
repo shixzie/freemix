@@ -23,6 +23,26 @@
 //! `<value>` is the rule's latest reading times 1000 as a canonical signed
 //! decimal, or `none`. Times are milliseconds on the `uptime_ms` clock and
 //! never exceed it.
+//!
+//! # Acknowledgements and silences (Protocol 2.109)
+//!
+//! An operator acknowledges a firing alert, or silences a rule's
+//! notifications, for a bounded time with a `health_alert_request`
+//! ([`HealthAlertRequest`]): `request_id`, `rule`, `action`
+//! (`acknowledge`, `silence`, or `unsilence`), and `duration_ms` (1 to
+//! [`MAX_HEALTH_ALERT_HOLD_MS`], present exactly for `acknowledge` and
+//! `silence`). It needs `transition`; the daemon answers with a
+//! `health_status` carrying the same `request_id`, or an `error` naming it.
+//! An acknowledgement ends when its rule resolves, and one that expires
+//! while the rule still fires raises a `reminder`. A silence keeps the
+//! rule's state tracked but raises no notification until it ends; silencing
+//! a silenced rule replaces its end, and `unsilence` ends it at once. Both
+//! are runtime state, gone when the daemon restarts.
+//!
+//! Each `alerts` entry ends with `:<acknowledged_until_ms>` (or `:none`),
+//! and `silences` lists `<rule>:<until_ms>` per silenced rule in strictly
+//! increasing rule order, `;`-separated (empty when none). Both ends lie
+//! after `uptime_ms`: an expired acknowledgement or silence is not sent.
 
 use crate::ServerIdentity;
 
@@ -160,6 +180,9 @@ pub const MAX_UTILIZATION_PERMILLE: u16 = 1_000;
 /// The most notifications one record carries: the most recent ones.
 pub const MAX_HEALTH_NOTIFICATIONS: usize = 16;
 
+/// The longest one acknowledgement or silence may last: a day.
+pub const MAX_HEALTH_ALERT_HOLD_MS: u64 = 86_400_000;
+
 /// One firing alert.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct HealthAlert {
@@ -169,6 +192,77 @@ pub struct HealthAlert {
     pub since_ms: u64,
     /// The rule's latest reading times 1000, when it has one.
     pub value_milli: Option<i64>,
+    /// When its acknowledgement ends (exclusive), on the `uptime_ms` clock,
+    /// while one holds (Protocol 2.109).
+    pub acknowledged_until_ms: Option<u64>,
+}
+
+/// One silenced rule (Protocol 2.109).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct HealthSilence {
+    pub rule: HealthAlertRule,
+    /// When the silence ends (exclusive), on the `uptime_ms` clock.
+    pub until_ms: u64,
+}
+
+/// What an operator does to one alert rule (Protocol 2.109).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum HealthAlertAction {
+    /// Acknowledges the rule's firing alert for `duration_ms`.
+    Acknowledge { duration_ms: u64 },
+    /// Silences the rule's notifications for `duration_ms`.
+    Silence { duration_ms: u64 },
+    /// Ends the rule's silence.
+    Unsilence,
+}
+
+impl HealthAlertAction {
+    /// The wire token.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Acknowledge { .. } => "acknowledge",
+            Self::Silence { .. } => "silence",
+            Self::Unsilence => "unsilence",
+        }
+    }
+
+    /// How long the action holds, for those that hold.
+    #[must_use]
+    pub const fn duration_ms(self) -> Option<u64> {
+        match self {
+            Self::Acknowledge { duration_ms } | Self::Silence { duration_ms } => Some(duration_ms),
+            Self::Unsilence => None,
+        }
+    }
+
+    /// The action `token` names, holding for `duration_ms` exactly when it
+    /// holds at all, and for 1 to [`MAX_HEALTH_ALERT_HOLD_MS`].
+    #[must_use]
+    pub fn from_parts(token: &str, duration_ms: Option<u64>) -> Option<Self> {
+        let hold = duration_ms.filter(|ms| (1..=MAX_HEALTH_ALERT_HOLD_MS).contains(ms));
+        match (token, duration_ms) {
+            ("acknowledge", Some(_)) => hold.map(|duration_ms| Self::Acknowledge { duration_ms }),
+            ("silence", Some(_)) => hold.map(|duration_ms| Self::Silence { duration_ms }),
+            ("unsilence", None) => Some(Self::Unsilence),
+            _ => None,
+        }
+    }
+
+    /// Whether [`Self::from_parts`] would accept this action.
+    #[must_use]
+    pub fn is_valid(self) -> bool {
+        Self::from_parts(self.token(), self.duration_ms()) == Some(self)
+    }
+}
+
+/// Acknowledges, silences, or unsilences one alert rule (Protocol 2.109).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HealthAlertRequest {
+    pub protocol: crate::ProtocolVersion,
+    pub request_id: String,
+    pub rule: HealthAlertRule,
+    pub action: HealthAlertAction,
 }
 
 /// One fired, resolved, or reminder notification.
@@ -202,13 +296,18 @@ pub struct DaemonHealth {
     pub alerts: Vec<HealthAlert>,
     /// The most recent notifications, in strictly increasing sequence order.
     pub notifications: Vec<HealthNotification>,
+    /// Every silenced rule, in strictly increasing rule order (Protocol
+    /// 2.109).
+    pub silences: Vec<HealthSilence>,
 }
 
 impl DaemonHealth {
     /// Whether the sample keeps the wire invariants: utilization within
     /// [`MAX_UTILIZATION_PERMILLE`], at most one alert per rule in strictly
     /// increasing rule order, at most [`MAX_HEALTH_NOTIFICATIONS`]
-    /// notifications in strictly increasing sequence order, and no time past
+    /// notifications in strictly increasing sequence order, no time past
+    /// `uptime_ms`, and at most one silence per rule in strictly increasing
+    /// rule order, every acknowledgement and silence ending after
     /// `uptime_ms`.
     #[must_use]
     pub fn is_valid(&self) -> bool {
@@ -221,10 +320,21 @@ impl DaemonHealth {
                 .alerts
                 .windows(2)
                 .all(|pair| pair[0].rule < pair[1].rule)
+            && self.alerts.iter().all(|alert| {
+                alert.since_ms <= self.uptime_ms
+                    && alert
+                        .acknowledged_until_ms
+                        .is_none_or(|until| until > self.uptime_ms)
+            });
+        let silences = self.silences.len() <= HealthAlertRule::ALL.len()
             && self
-                .alerts
+                .silences
+                .windows(2)
+                .all(|pair| pair[0].rule < pair[1].rule)
+            && self
+                .silences
                 .iter()
-                .all(|alert| alert.since_ms <= self.uptime_ms);
+                .all(|silence| silence.until_ms > self.uptime_ms);
         let notifications = self.notifications.len() <= MAX_HEALTH_NOTIFICATIONS
             && self
                 .notifications
@@ -234,7 +344,13 @@ impl DaemonHealth {
                 .notifications
                 .iter()
                 .all(|notification| notification.at_ms <= self.uptime_ms);
-        utilization && alerts && notifications
+        utilization && alerts && notifications && silences
+    }
+
+    /// The silence of `rule`, if one holds.
+    #[must_use]
+    pub fn silence(&self, rule: HealthAlertRule) -> Option<&HealthSilence> {
+        self.silences.iter().find(|silence| silence.rule == rule)
     }
 
     /// The firing alert of `rule`, if any.
@@ -256,5 +372,8 @@ pub struct HealthStatusMessage {
     pub server: ServerIdentity,
     /// Strictly increasing per connection's daemon run.
     pub sequence: u64,
+    /// The `health_alert_request` this record answers (Protocol 2.109);
+    /// `None` for the once-a-second record.
+    pub request_id: Option<String>,
     pub health: DaemonHealth,
 }

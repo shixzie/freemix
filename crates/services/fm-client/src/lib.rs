@@ -723,6 +723,7 @@ impl Client {
             | WireMessage::ScreenCapturePickRequest(_)
             | WireMessage::ReplayStatusRequest(_)
             | WireMessage::ReelStatusRequest(_)
+            | WireMessage::HealthAlertRequest(_)
             | WireMessage::Command(_)
             | WireMessage::HandshakeRequest(_)
             | WireMessage::DurableEventBatch(_)

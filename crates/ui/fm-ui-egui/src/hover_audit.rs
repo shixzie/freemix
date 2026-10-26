@@ -2533,6 +2533,7 @@ fn daemon_health() -> fm_protocol::HealthStatusMessage {
                 severity: fm_protocol::HealthSeverity::Critical,
                 since_ms: 25_000,
                 value_milli: Some(1_000),
+                acknowledged_until_ms: None,
             }],
             notifications: vec![fm_protocol::HealthNotification {
                 sequence: 2,
@@ -2542,7 +2543,9 @@ fn daemon_health() -> fm_protocol::HealthStatusMessage {
                 at_ms: 25_000,
                 value_milli: Some(1_000),
             }],
+            silences: Vec::new(),
         },
+        request_id: None,
     }
 }
 

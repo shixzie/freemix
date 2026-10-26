@@ -232,6 +232,7 @@ mod tests {
             },
             sequence: 1,
             health,
+            request_id: None,
         }));
         state
     }
@@ -274,6 +275,7 @@ mod tests {
                 severity: HealthSeverity::Critical,
                 since_ms: 1_000,
                 value_milli: None,
+                acknowledged_until_ms: None,
             }],
             ..DaemonHealth::default()
         };
@@ -306,6 +308,7 @@ mod tests {
                 severity: HealthSeverity::Warning,
                 since_ms: 8_000,
                 value_milli: Some(950),
+                acknowledged_until_ms: None,
             }],
             ..DaemonHealth::default()
         });
@@ -346,12 +349,14 @@ mod tests {
                     severity: HealthSeverity::Warning,
                     since_ms: 8_000,
                     value_milli: Some(950),
+                    acknowledged_until_ms: None,
                 },
                 HealthAlert {
                     rule: HealthAlertRule::OutputFailed,
                     severity: HealthSeverity::Critical,
                     since_ms: 19_000,
                     value_milli: Some(1_000),
+                    acknowledged_until_ms: None,
                 },
             ],
             notifications: vec![HealthNotification {
@@ -362,6 +367,7 @@ mod tests {
                 at_ms: 19_000,
                 value_milli: Some(1_000),
             }],
+            silences: Vec::new(),
         };
         let items = health_items(l, &state(health), None);
         assert_eq!(items[0].label, "CPU 95%");
@@ -438,18 +444,21 @@ mod tests {
                     severity: HealthSeverity::Warning,
                     since_ms: 2_000,
                     value_milli: Some(4_000),
+                    acknowledged_until_ms: None,
                 },
                 HealthAlert {
                     rule: HealthAlertRule::StreamReconnecting,
                     severity: HealthSeverity::Warning,
                     since_ms: 5_000,
                     value_milli: Some(2_000),
+                    acknowledged_until_ms: None,
                 },
                 HealthAlert {
                     rule: HealthAlertRule::SyncDegraded,
                     severity: HealthSeverity::Info,
                     since_ms: 9_000,
                     value_milli: Some(250),
+                    acknowledged_until_ms: None,
                 },
             ],
             notifications: vec![HealthNotification {

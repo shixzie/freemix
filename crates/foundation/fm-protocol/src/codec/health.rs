@@ -1,13 +1,15 @@
 //! Daemon health fields (Protocol 2.100): `uptime_ms`, optional
 //! `cpu_permille` and `gpu_permille`, `alerts` as
-//! `<rule>:<severity>:<since_ms>:<value>` entries and `notifications` as
-//! `<sequence>:<rule>:<severity>:<kind>:<at_ms>:<value>` entries, each list
+//! `<rule>:<severity>:<since_ms>:<value>:<acknowledged_until_ms>` entries
+//! (the last `none` while unacknowledged; Protocol 2.109), `notifications`
+//! as `<sequence>:<rule>:<severity>:<kind>:<at_ms>:<value>` entries, and
+//! `silences` as `<rule>:<until_ms>` entries (Protocol 2.109), each list
 //! `;`-separated. `<value>` is a canonical signed decimal or `none`. Both
 //! `health_status` and `diagnostics_response` carry them.
 
 use crate::{
     CodecError, DaemonHealth, HealthAlert, HealthAlertRule, HealthNotification,
-    HealthNotificationKind, HealthSeverity, MAX_HEALTH_NOTIFICATIONS,
+    HealthNotificationKind, HealthSeverity, HealthSilence, MAX_HEALTH_NOTIFICATIONS,
 };
 
 use super::source_sync::parse_canonical_i64;
@@ -53,11 +55,14 @@ pub(super) fn encode(health: &DaemonHealth) -> Result<Vec<(&'static str, String)
         .iter()
         .map(|alert| {
             format!(
-                "{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}",
                 alert.rule.token(),
                 alert.severity.token(),
                 alert.since_ms,
                 encode_value(alert.value_milli),
+                alert
+                    .acknowledged_until_ms
+                    .map_or_else(|| "none".to_owned(), |until| until.to_string()),
             )
         })
         .collect::<Vec<_>>()
@@ -80,6 +85,13 @@ pub(super) fn encode(health: &DaemonHealth) -> Result<Vec<(&'static str, String)
         .collect::<Vec<_>>()
         .join(";");
     fields.push(("notifications", notifications));
+    let silences = health
+        .silences
+        .iter()
+        .map(|silence| format!("{}:{}", silence.rule.token(), silence.until_ms))
+        .collect::<Vec<_>>()
+        .join(";");
+    fields.push(("silences", silences));
     Ok(fields)
 }
 
@@ -90,6 +102,7 @@ pub(super) struct HealthFields {
     pub(super) gpu_permille: Option<String>,
     pub(super) alerts: String,
     pub(super) notifications: String,
+    pub(super) silences: String,
 }
 
 fn permille(field: &'static str, value: Option<String>) -> Result<Option<u16>, CodecError> {
@@ -115,7 +128,9 @@ fn decode_alerts(value: &str) -> Result<Vec<HealthAlert>, CodecError> {
         .into_iter()
         .map(|entry| {
             let bad = || invalid("alerts", entry);
-            let [rule, severity, since, value] = entry.split(':').collect::<Vec<_>>()[..] else {
+            let [rule, severity, since, value, acknowledged] =
+                entry.split(':').collect::<Vec<_>>()[..]
+            else {
                 return Err(bad());
             };
             Ok(HealthAlert {
@@ -123,6 +138,31 @@ fn decode_alerts(value: &str) -> Result<Vec<HealthAlert>, CodecError> {
                 severity: HealthSeverity::from_token(severity).ok_or_else(bad)?,
                 since_ms: parse_canonical_u64(since).ok_or_else(bad)?,
                 value_milli: decode_value(value, bad)?,
+                acknowledged_until_ms: match acknowledged {
+                    "none" => None,
+                    until => Some(parse_canonical_u64(until).ok_or_else(bad)?),
+                },
+            })
+        })
+        .collect()
+}
+
+fn decode_silences(value: &str) -> Result<Vec<HealthSilence>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let entries: Vec<_> = value.split(';').collect();
+    if entries.len() > HealthAlertRule::ALL.len() {
+        return Err(CodecError::TooManyItems("silences"));
+    }
+    entries
+        .into_iter()
+        .map(|entry| {
+            let bad = || invalid("silences", entry);
+            let (rule, until) = entry.split_once(':').ok_or_else(bad)?;
+            Ok(HealthSilence {
+                rule: HealthAlertRule::from_token(rule).ok_or_else(bad)?,
+                until_ms: parse_canonical_u64(until).ok_or_else(bad)?,
             })
         })
         .collect()
@@ -167,17 +207,31 @@ pub(super) fn decode(fields: HealthFields) -> Result<DaemonHealth, CodecError> {
         gpu_permille: permille("gpu_permille", fields.gpu_permille)?,
         alerts: decode_alerts(&fields.alerts)?,
         notifications: decode_notifications(&fields.notifications)?,
+        silences: decode_silences(&fields.silences)?,
     };
     if !health
         .alerts
         .windows(2)
         .all(|pair| pair[0].rule < pair[1].rule)
-        || !health
-            .alerts
-            .iter()
-            .all(|alert| alert.since_ms <= uptime_ms)
+        || !health.alerts.iter().all(|alert| {
+            alert.since_ms <= uptime_ms
+                && alert
+                    .acknowledged_until_ms
+                    .is_none_or(|until| until > uptime_ms)
+        })
     {
         return Err(invalid("alerts", fields.alerts));
+    }
+    if !health
+        .silences
+        .windows(2)
+        .all(|pair| pair[0].rule < pair[1].rule)
+        || !health
+            .silences
+            .iter()
+            .all(|silence| silence.until_ms > uptime_ms)
+    {
+        return Err(invalid("silences", fields.silences));
     }
     if !health.is_valid() {
         return Err(invalid("notifications", fields.notifications));

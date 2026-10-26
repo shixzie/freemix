@@ -2260,6 +2260,7 @@ fn health_status(sequence: u64, cpu_permille: u16) -> fm_protocol::HealthStatusM
     fm_protocol::HealthStatusMessage {
         server: server(),
         sequence,
+        request_id: None,
         health: fm_protocol::DaemonHealth {
             uptime_ms: sequence * 1_000,
             cpu_permille: Some(cpu_permille),
@@ -2270,11 +2271,13 @@ fn health_status(sequence: u64, cpu_permille: u16) -> fm_protocol::HealthStatusM
                     severity: fm_protocol::HealthSeverity::Warning,
                     since_ms: sequence * 1_000,
                     value_milli: Some(i64::from(cpu_permille)),
+                    acknowledged_until_ms: None,
                 }]
             } else {
                 Vec::new()
             },
             notifications: Vec::new(),
+            silences: Vec::new(),
         },
     }
 }

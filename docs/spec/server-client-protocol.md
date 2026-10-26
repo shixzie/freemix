@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.108 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.109 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4231,6 +4231,33 @@ other wire shape changes and no schema change.
   live source whose clock sync stayed degraded. Severities, readings, and the
   record shapes are unchanged.
 - 2.107 is refused.
+
+Protocol 2.109 lets an operator acknowledge and silence health alerts
+(`RC-015`). No schema change.
+
+- Client record `health_alert_request` with `protocol`, `request_id`, `rule`
+  (an alert rule token), `action` (`acknowledge`, `silence`, or
+  `unsilence`), and `duration_ms` (canonical, 1 to 86400000, present exactly
+  for `acknowledge` and `silence`). It needs `transition` (Operator or
+  Admin); a Viewer is refused `permission_denied`.
+- `acknowledge` holds a firing alert acknowledged until `duration_ms` from
+  now (a rule that is not firing is refused `conflict`); the
+  acknowledgement ends when the rule resolves, and one that expires while
+  the rule still fires raises a `reminder`. `silence` keeps the rule's state
+  tracked but raises no notification until it ends; silencing a silenced
+  rule replaces its end. `unsilence` ends a rule's silence at once (none is
+  no error). Both are runtime state, gone when the daemon restarts, and
+  each is logged as a `FREEMIXD_ALERT_ACTION` line.
+- The daemon answers with a `health_status` carrying the request's
+  `request_id` (written after any older sample the session had waiting, so
+  its `sequence` still strictly increases), or an `error` naming it. The
+  once-a-second `health_status` has no `request_id`.
+- Every `alerts` entry gains a fifth component, its acknowledgement's end
+  on the `uptime_ms` clock or `none`; `health_status` and
+  `diagnostics_response` gain the required `silences` field,
+  `<rule>:<until_ms>` per silenced rule in strictly increasing rule order,
+  `;`-separated, empty when none. Every end lies after `uptime_ms`.
+- 2.108 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

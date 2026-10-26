@@ -105,8 +105,29 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
             record.kind("health_status");
             encode_server_identity(&mut record, &message.server)?;
             record.field("sequence", message.sequence)?;
+            if let Some(request_id) = &message.request_id {
+                validate_request_id(request_id)?;
+                record.field_str("request_id", request_id)?;
+            }
             for (name, value) in fields {
                 record.field_string(name, value)?;
+            }
+        }
+        WireMessage::HealthAlertRequest(message) => {
+            if !message.action.is_valid() {
+                return Err(CodecError::InvalidField {
+                    field: "duration_ms",
+                    value: format!("{:?}", message.action.duration_ms()),
+                });
+            }
+            record.kind("health_alert_request");
+            record.field("protocol", message.protocol)?;
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+            record.field_str("rule", message.rule.token())?;
+            record.field_str("action", message.action.token())?;
+            if let Some(duration_ms) = message.action.duration_ms() {
+                record.field("duration_ms", duration_ms)?;
             }
         }
         WireMessage::MonitorFrame(message) => encode_monitor_frame(&mut record, message)?,

@@ -2415,6 +2415,7 @@ fn remote_diagnostics_prints_health_and_alerts() {
             severity: fm_protocol::HealthSeverity::Warning,
             since_ms: 50_000,
             value_milli: Some(925),
+            acknowledged_until_ms: None,
         }],
         notifications: vec![
             fm_protocol::HealthNotification {
@@ -2434,6 +2435,7 @@ fn remote_diagnostics_prints_health_and_alerts() {
                 value_milli: None,
             },
         ],
+        silences: Vec::new(),
     };
     let server = FakeRemoteServer::start_diagnostics_health("secret-log", Vec::new(), health);
     let address = server.address();
@@ -2449,6 +2451,134 @@ fn remote_diagnostics_prints_health_and_alerts() {
             "AlertNotification(sequence=4, rule=cpu_saturated, severity=warning, kind=firing, at_ms=50000, value=none)",
         ]
     );
+}
+
+/// RC-015 / Protocol 2.109: `remote-alert` sends one `health_alert_request`
+/// as an Operator and prints the health the daemon answers with, its
+/// acknowledgements and silences included; a refusal fails the command, and
+/// the arguments are checked before connecting.
+#[test]
+#[allow(clippy::too_many_lines)] // two sessions and the argument checks
+fn remote_alert_acknowledges_and_silences_one_rule() {
+    use fm_protocol::{
+        HealthAlertAction, HealthAlertRequest, HealthAlertRule, HealthSeverity, HealthSilence,
+    };
+    fn serve(
+        stream: TcpStream,
+        expected: (HealthAlertRule, HealthAlertAction),
+        answer: Option<fm_protocol::DaemonHealth>,
+    ) {
+        stream.set_read_timeout(Some(TEST_PEER_TIMEOUT)).unwrap();
+        let engine = EngineIdentity {
+            engine_id: "project-42".into(),
+            state_epoch: 1,
+            log_id: "fake-remote-log".into(),
+        };
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_handshake_request_role(read_message(&mut reader), Role::Operator);
+        write_handshake_role(&mut writer, &engine, 0, Role::Operator);
+        let WireMessage::HealthAlertRequest(HealthAlertRequest {
+            protocol,
+            request_id,
+            rule,
+            action,
+        }) = read_message(&mut reader)
+        else {
+            panic!("expected a health alert request");
+        };
+        assert_eq!(protocol, CURRENT_PROTOCOL_VERSION);
+        assert_eq!((rule, action), expected);
+        let reply = match answer {
+            Some(health) => WireMessage::HealthStatus(fm_protocol::HealthStatusMessage {
+                server: server_identity(&engine),
+                sequence: 9,
+                request_id: Some(request_id),
+                health,
+            }),
+            None => WireMessage::Error(fm_protocol::ErrorMessage {
+                request_id: Some(request_id),
+                current_revision: Some(0),
+                error: fm_protocol::StructuredError {
+                    code: "conflict".into(),
+                    message: "only a firing alert can be acknowledged".into(),
+                    fields: Vec::new(),
+                    retryable: false,
+                },
+            }),
+        };
+        write_message(&mut writer, &reply);
+    }
+    let health = fm_protocol::DaemonHealth {
+        uptime_ms: 60_000,
+        cpu_permille: None,
+        gpu_permille: None,
+        alerts: vec![fm_protocol::HealthAlert {
+            rule: HealthAlertRule::DiskLow,
+            severity: HealthSeverity::Critical,
+            since_ms: 50_000,
+            value_milli: None,
+            acknowledged_until_ms: Some(960_000),
+        }],
+        notifications: Vec::new(),
+        silences: vec![HealthSilence {
+            rule: HealthAlertRule::StreamReconnecting,
+            until_ms: 3_660_000,
+        }],
+    };
+    let acknowledge = HealthAlertAction::Acknowledge {
+        duration_ms: 900_000,
+    };
+    let server = FakeRemoteServer::start_test_peer(move |stream| {
+        serve(
+            stream,
+            (HealthAlertRule::DiskLow, acknowledge),
+            Some(health),
+        );
+    });
+    let output = invoke_bounded(&[
+        "remote-alert",
+        &server.address(),
+        "disk_low",
+        "acknowledge",
+        "15",
+    ]);
+    server.finish();
+    assert_success(&output);
+    assert_eq!(
+        stdout(&output).lines().collect::<Vec<_>>(),
+        [
+            "Health(uptime_ms=60000, cpu=unavailable, gpu=unavailable, alerts=1, notifications=0)",
+            "Alert(rule=disk_low, severity=critical, since_ms=50000, value=none, acknowledged_until_ms=960000)",
+            "AlertSilence(rule=stream_reconnecting, until_ms=3660000)",
+        ]
+    );
+
+    let server = FakeRemoteServer::start_test_peer(move |stream| {
+        serve(stream, (HealthAlertRule::CpuSaturated, acknowledge), None);
+    });
+    let output = invoke_bounded(&[
+        "remote-alert",
+        &server.address(),
+        "cpu_saturated",
+        "acknowledge",
+        "15",
+    ]);
+    server.finish();
+    assert_failure_contains(&output, "only a firing alert can be acknowledged");
+
+    for (arguments, message) in [
+        (&["disk_full", "silence", "5"][..], "alert rule"),
+        (&["disk_low", "snooze", "5"], "alert action"),
+        (&["disk_low", "silence", "0"], "minutes"),
+        (&["disk_low", "silence", "1441"], "minutes"),
+        (&["disk_low", "silence"], "minutes"),
+        (&["disk_low", "unsilence", "5"], "5"),
+    ] {
+        let mut command = vec!["remote-alert", "127.0.0.1:9"];
+        command.extend_from_slice(arguments);
+        assert_failure_contains(&invoke(&command), message);
+    }
 }
 
 #[test]

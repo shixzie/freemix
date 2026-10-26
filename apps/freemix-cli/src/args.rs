@@ -1084,6 +1084,13 @@ pub enum Command {
     RemoteDiagnostics {
         address: SocketAddr,
     },
+    /// Acknowledges, silences, or unsilences one daemon alert rule
+    /// (RC-015, Protocol 2.109).
+    RemoteAlert {
+        address: SocketAddr,
+        rule: fm_protocol::HealthAlertRule,
+        action: fm_protocol::HealthAlertAction,
+    },
     /// Configures one fullscreen display-output slot (OR-011).
     DisplayOutputSet {
         path: PathBuf,
@@ -2328,6 +2335,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "ftb" => parse_local_fade_to_black(arguments),
         "remote-status" => parse_remote_status(arguments),
         "remote-diagnostics" => parse_remote_diagnostics(arguments),
+        "remote-alert" => parse_remote_alert(arguments),
         display @ ("display-output-set"
         | "display-output-clear"
         | "display-output-list"
@@ -6396,6 +6404,56 @@ fn parse_remote_diagnostics(
     let address = socket_address(&required(&mut arguments, "address")?)?;
     reject_extra(&mut arguments)?;
     Ok(Command::RemoteDiagnostics { address })
+}
+
+/// Longest acknowledgement or silence `remote-alert` sets, in minutes: the
+/// protocol's day.
+const MAX_ALERT_HOLD_MINUTES: u64 = fm_protocol::MAX_HEALTH_ALERT_HOLD_MS / 60_000;
+
+/// `remote-alert <address> <rule> acknowledge|silence <minutes>` or
+/// `remote-alert <address> <rule> unsilence` (RC-015, Protocol 2.109).
+fn parse_remote_alert(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let token = required(&mut arguments, "alert rule")?;
+    let rule =
+        fm_protocol::HealthAlertRule::from_token(&token).ok_or(ArgsError::InvalidChoice {
+            field: "alert rule",
+            value: token,
+        })?;
+    let action = required(&mut arguments, "alert action")?;
+    let mut minutes = || -> Result<u64, ArgsError> {
+        let value = required(&mut arguments, "minutes")?;
+        let minutes: u64 = number(&value, "minutes")?;
+        if (1..=MAX_ALERT_HOLD_MINUTES).contains(&minutes) {
+            Ok(minutes * 60_000)
+        } else {
+            Err(ArgsError::InvalidChoice {
+                field: "minutes",
+                value,
+            })
+        }
+    };
+    let action = match action.as_str() {
+        "acknowledge" => fm_protocol::HealthAlertAction::Acknowledge {
+            duration_ms: minutes()?,
+        },
+        "silence" => fm_protocol::HealthAlertAction::Silence {
+            duration_ms: minutes()?,
+        },
+        "unsilence" => fm_protocol::HealthAlertAction::Unsilence,
+        _ => {
+            return Err(ArgsError::InvalidChoice {
+                field: "alert action",
+                value: action,
+            });
+        }
+    };
+    reject_extra(&mut arguments)?;
+    Ok(Command::RemoteAlert {
+        address,
+        rule,
+        action,
+    })
 }
 
 fn parse_remote_audio_strip(

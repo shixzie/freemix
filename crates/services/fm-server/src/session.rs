@@ -307,6 +307,28 @@ impl Session {
         Ok(())
     }
 
+    /// Authorizes one operator action on a health alert (Protocol 2.109,
+    /// `RC-015`): acknowledging a firing alert or silencing a rule is the
+    /// operator's call, so it requires [`CommandClass::Transition`], and the
+    /// request must carry the session's protocol.
+    ///
+    /// # Errors
+    ///
+    /// Returns a session, authorization, or protocol error when the action
+    /// cannot be admitted.
+    pub fn admit_alert_action(&self, protocol: ProtocolVersion) -> Result<(), SessionError> {
+        self.ensure_connected()?;
+        self.policy
+            .authorize(&self.principal, CommandClass::Transition)?;
+        if protocol != self.protocol {
+            return Err(SessionError::ProtocolMismatch {
+                expected: self.protocol,
+                received: protocol,
+            });
+        }
+        Ok(())
+    }
+
     /// Authorizes one request for a server device inventory: the capture
     /// devices (IN-001), the presenter's displays (OR-011), or the system
     /// audio devices (AU-011).

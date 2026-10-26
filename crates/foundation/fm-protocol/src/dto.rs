@@ -3398,6 +3398,9 @@ pub enum WireMessage {
     SourceSyncStatus(crate::SourceSyncStatusMessage),
     /// Lossy daemon utilization and alerts (Protocol 2.100).
     HealthStatus(crate::HealthStatusMessage),
+    /// Acknowledges, silences, or unsilences one alert rule (Protocol
+    /// 2.109).
+    HealthAlertRequest(crate::HealthAlertRequest),
     MonitorFrame(MonitorFrameMessage),
     CapabilityReport(CapabilityReportMessage),
     DiagnosticsRequest(DiagnosticsRequest),

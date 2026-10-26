@@ -1327,6 +1327,11 @@ pub fn run(command: Command) -> AppResult<()> {
         )?,
         Command::RemoteStatus { address } => remote::status(address)?,
         Command::RemoteDiagnostics { address } => remote::diagnostics(address)?,
+        Command::RemoteAlert {
+            address,
+            rule,
+            action,
+        } => remote::alert(address, rule, action)?,
         Command::DisplayOutputSet {
             path,
             slot,
@@ -6563,6 +6568,7 @@ Usage:
   freemix-cli input-screen-capture-status <show.freemix>
   freemix-cli remote-status <127.0.0.1:port>
   freemix-cli remote-diagnostics <127.0.0.1:port>
+  freemix-cli remote-alert <127.0.0.1:port> <rule> acknowledge|silence <1..1440 minutes> | unsilence
     also prints one SourceSync line per live source clock: drift, ratio, buffer, and recovery counts
     then a Health line (CPU and GPU-proxy utilization) and one Alert and AlertNotification line per firing alert and recent notification
   freemix-cli remote-audio-strip <127.0.0.1:port> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp>] [--key <key>] [--expect <revision>]

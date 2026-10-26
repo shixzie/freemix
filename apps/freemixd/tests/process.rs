@@ -4735,6 +4735,144 @@ fn simulated_studio_peer_receives_health_status_once_a_second() {
     daemon.stop();
 }
 
+/// RC-015 / Protocol 2.109: an operator's Studio session silences a rule
+/// and ends the silence, each answered by a `health_status` echoing the
+/// request with the silence state, while the sequence it sees keeps
+/// increasing across answers and once-a-second records; acknowledging a
+/// rule that is not firing is refused `conflict`, and a Viewer may not
+/// silence anything.
+#[test]
+#[allow(clippy::too_many_lines)] // two sessions, each action in turn
+fn studio_operator_silences_and_unsilences_a_health_alert_rule() {
+    use fm_protocol::{HealthAlertAction, HealthAlertRequest, HealthAlertRule};
+
+    let directory = TestDirectory::new("simulated-health-alert-actions");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+
+    let mut studio = daemon.connect();
+    studio
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    studio.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        build: "process-test".into(),
+        client_type: ClientType::Studio,
+        desired_role: Role::Operator,
+        resume_cursor: None,
+    }));
+    let WireMessage::HandshakeResponse(_) = studio.receive() else {
+        panic!("expected handshake response");
+    };
+    studio.receive_snapshot();
+    let request = |id: &str, action| {
+        WireMessage::HealthAlertRequest(HealthAlertRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id: id.into(),
+            rule: HealthAlertRule::DiskLow,
+            action,
+        })
+    };
+    // Every health sequence the session sees, in order.
+    let mut sequences = Vec::new();
+    let answer = |client: &mut Client, id: &str, sequences: &mut Vec<u64>| {
+        receive_within(
+            client,
+            Duration::from_secs(5),
+            id,
+            |message| match message {
+                WireMessage::HealthStatus(status) => {
+                    sequences.push(status.sequence);
+                    (status.request_id.as_deref() == Some(id)).then_some(Ok(status))
+                }
+                WireMessage::Error(error) if error.request_id.as_deref() == Some(id) => {
+                    Some(Err(error.error.code))
+                }
+                _ => None,
+            },
+        )
+    };
+    // One once-a-second record first, so the answer must follow it.
+    receive_within(
+        &mut studio,
+        Duration::from_secs(5),
+        "health_status",
+        |message| matches!(message, WireMessage::HealthStatus(_)).then_some(()),
+    );
+
+    studio.send(&request(
+        "silence-1",
+        HealthAlertAction::Silence {
+            duration_ms: 600_000,
+        },
+    ));
+    let silenced = answer(&mut studio, "silence-1", &mut sequences).unwrap();
+    assert!(silenced.health.is_valid());
+    let silence = silenced.health.silence(HealthAlertRule::DiskLow).unwrap();
+    assert!(silence.until_ms > silenced.health.uptime_ms);
+    assert!(silence.until_ms <= silenced.health.uptime_ms + 600_000);
+    assert_eq!(silenced.health.silences.len(), 1);
+
+    // The simulated daemon fires nothing, so there is nothing to
+    // acknowledge.
+    studio.send(&request(
+        "ack-1",
+        HealthAlertAction::Acknowledge {
+            duration_ms: 60_000,
+        },
+    ));
+    assert_eq!(
+        answer(&mut studio, "ack-1", &mut sequences).unwrap_err(),
+        "conflict"
+    );
+
+    // Later records keep the silence until it is ended.
+    let kept = receive_within(
+        &mut studio,
+        Duration::from_secs(5),
+        "a later health_status",
+        |message| match message {
+            WireMessage::HealthStatus(status) if status.request_id.is_none() => Some(status),
+            _ => None,
+        },
+    );
+    sequences.push(kept.sequence);
+    assert!(kept.health.silence(HealthAlertRule::DiskLow).is_some());
+    studio.send(&request("unsilence-1", HealthAlertAction::Unsilence));
+    let unsilenced = answer(&mut studio, "unsilence-1", &mut sequences).unwrap();
+    assert!(unsilenced.health.silences.is_empty());
+    assert!(
+        sequences.windows(2).all(|pair| pair[0] < pair[1]),
+        "{sequences:?}"
+    );
+
+    let mut viewer = daemon.connect();
+    viewer.handshake_as(Role::Viewer, None);
+    viewer.receive_snapshot();
+    viewer.send(&request(
+        "viewer-silence",
+        HealthAlertAction::Silence { duration_ms: 1_000 },
+    ));
+    let refused = receive_within(
+        &mut viewer,
+        Duration::from_secs(5),
+        "the viewer's refusal",
+        |message| match message {
+            WireMessage::Error(error) if error.request_id.as_deref() == Some("viewer-silence") => {
+                Some(error.error.code)
+            }
+            _ => None,
+        },
+    );
+    assert_eq!(refused, "permission_denied");
+    drop(studio);
+    drop(viewer);
+    daemon.stop();
+}
+
 #[test]
 fn viewer_diagnostics_query_is_read_only_and_correlated() {
     let directory = TestDirectory::new("viewer-diagnostics");
@@ -7625,11 +7763,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.108.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 108));
+    // The previous protocol is refused; the current one is 2.109.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 109));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 107),
+        protocol: ProtocolVersion::new(2, 108),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -7645,7 +7783,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 108)
+        ProtocolVersion::new(2, 109)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.108 / schema 83 (2026-10-24).
+(2026-10-19); items refreshed through protocol 2.109 / schema 83 (2026-10-26).
 Every parity row is still `planned` (or `blocked`); these are the
 highest-value remaining items, ranked:
 
@@ -169,9 +169,9 @@ from the server's ALSA outputs and a failed or unplugged device is reopened
 on its own; macOS and Windows still list and open no output device.
 `fm-observability`'s `MetricRegistry` and `AlertEngine` now run in
 both daemons with CPU and GPU-proxy utilization, default alert rules, and a
-`health_status` view in Studio and `remote-diagnostics` (`RC-015`); network,
-sync, and encoder-capacity sampling, operator acknowledgement and silencing,
-and configurable rules remain. Native daemons now group commit the
+`health_status` view in Studio and `remote-diagnostics` (`RC-015`), and
+operators acknowledge and silence alerts (Protocol 2.109); configurable
+rules remain. Native daemons now group commit the
 commands queued at a command turn (see Native group commit below), but the
 group's disk sync still runs in front of its frame.
 
@@ -3391,11 +3391,20 @@ adds the same sample to `diagnostics_response`: utilization permille, firing
 alerts, and the 16 most recent fired, resolved, and reminder notifications.
 Studio's health strip shows `CPU`, `GPU`, and alert lamps with hover help in
 English and Spanish, and `freemix-cli remote-diagnostics` prints `Health`,
-`Alert`, and `AlertNotification` lines. Remaining gaps: no input-health or
+`Alert`, and `AlertNotification` lines. Protocol 2.109 adds operator
+acknowledgement and silencing: a `health_alert_request` (needing
+`transition`) acknowledges a firing alert or silences a rule for up to a
+day, or ends a silence, and the daemon answers with a `health_status`
+echoing the request; every sample carries each alert's acknowledgement end
+and the silenced rules, the CLI's `remote-alert` sends the request and
+`remote-diagnostics` prints `acknowledged_until_ms` and `AlertSilence`
+lines (statistics unit test, `fm-protocol` health tests, the simulated
+daemon's process test, and a CLI e2e test). Acknowledgements and silences
+are runtime state, gone on restart. Remaining gaps: no input-health or
 hardware-encoder session sampling, and the simulated daemon has no network,
 sync, or encoder readings (an unsupported reading stays unknown rather than
-zero); rules are fixed in code, so there is no operator acknowledgement,
-silencing, threshold editing, or persistence of any of them; the CPU reading
+zero); rules are fixed in code, so there is no threshold editing and no
+persistence of rule changes; the CPU reading
 excludes child encoders and the GPU reading is a compositor-pass proxy; and
 Web pages receive no health view. `RC-015` remains planned.
 
