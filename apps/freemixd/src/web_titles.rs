@@ -44,8 +44,9 @@
 //! sessions, and the daemon's own cue clock, are not checked.
 //!
 //! A script failure's English message may quote its source (an unknown
-//! name, a stray token), so a Web session is sent a run's fault, and the
-//! refusal of a run that failed, with its typed reason's text instead.
+//! name, a stray token), so a Web session is sent a run's fault, a cue's
+//! fault at a script step, and the refusal of a run that failed, with its
+//! typed reason's text instead.
 //!
 //! [`PhasePacer`] decides when the lossy `title_phases` record is sent to
 //! the sessions that take it (Web pages and raw Studio sessions).
@@ -181,6 +182,17 @@ pub(crate) fn web_cue_list(list: &mut CueListStatus, hidden: &HiddenFields) {
     for cue in &mut list.spec.cues {
         hidden.redact(&mut cue.actions);
     }
+    withhold_cue_fault(&mut list.state);
+}
+
+/// A cue run's fault as a Web session sees it: a script step's failure
+/// worded by its typed reason alone (see [`withhold_fault`]).
+fn withhold_cue_fault(state: &mut fm_protocol::CueRunStatus) {
+    if let Some(fault) = &mut state.fault
+        && let Some(reason @ RefusalReason::ScriptFailed { .. }) = &fault.detail.reason
+    {
+        fault.detail = FaultDetail::new(Some(reason.clone()), &reason.to_string());
+    }
 }
 
 /// A shortcut as a Web session sees it (see [`web_cue_list`]).
@@ -266,6 +278,7 @@ pub(crate) fn web_live_message(message: WireMessage, hidden: &HiddenFields) -> W
             change
                 .titles
                 .retain(|text| !hidden.hides(text.input, text.field));
+            withhold_cue_fault(&mut change.state);
         }
         EventPayload::ScriptRan(change) => {
             change
@@ -1116,6 +1129,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // every record a fault reaches, in turn
     fn script_faults_reach_a_web_session_without_their_source() {
         let faulted = |reason: Option<RefusalReason>| ScriptRunStatus::Faulted {
             run: 5,
@@ -1172,6 +1186,67 @@ mod tests {
                 assert_eq!(detail.message, text);
             }
         }
+        // A cue stopped at a script step is worded by its reason; a cue
+        // stopped at another refused action keeps its message.
+        let cue_fault = |reason: RefusalReason| fm_protocol::CueFaultStatus {
+            cue: 1,
+            action: 0,
+            detail: FaultDetail::new(Some(reason), "script 1 stopped at `script_secret`"),
+        };
+        let failed = RefusalReason::ScriptFailed {
+            failure: fm_command::ScriptFailureKind::Syntax,
+            line: 1,
+            column: 3,
+        };
+        for (reason, text) in [
+            (failed.clone(), failed.to_string()),
+            (
+                RefusalReason::ProjectLocked,
+                "script 1 stopped at `script_secret`".to_owned(),
+            ),
+        ] {
+            let mut cues = list();
+            cues.state.fault = Some(cue_fault(reason.clone()));
+            let mut change = fm_protocol::CueRunChange {
+                list: 1,
+                frame: 0,
+                state: cues.state.clone(),
+                fired: Vec::new(),
+                program: input(1),
+                preview: input(2),
+                manual_transition: fm_protocol::ManualTransitionStatus::Inactive,
+                fade_to_black: fm_protocol::FadeToBlackState {
+                    target_active: false,
+                    position: fm_protocol::FadeToBlackPosition::LIVE,
+                },
+                overlays: Vec::new(),
+                input_audio_strips: Vec::new(),
+                streams: Vec::new(),
+                recordings: Vec::new(),
+                playlist: fm_protocol::PlaylistRunState::Stopped,
+                titles: Vec::new(),
+                media: Vec::new(),
+                scripts: Vec::new(),
+            };
+            web_cue_list(&mut cues, &hidden());
+            let WireMessage::Event(EventMessage {
+                payload: EventPayload::CueRunChanged(web_change),
+                ..
+            }) = web_live_message(
+                event(EventPayload::CueRunChanged(Box::new(change.clone()))),
+                &hidden(),
+            )
+            else {
+                unreachable!()
+            };
+            change = *web_change;
+            for state in [&cues.state, &change.state] {
+                let fault = state.fault.as_ref().unwrap();
+                assert_eq!(fault.detail.reason.as_ref(), Some(&reason));
+                assert_eq!(fault.detail.message, text);
+            }
+        }
+
         // An idle run passes unchanged.
         let mut idle = ScriptRunStatus::Idle;
         withhold_fault(&mut idle);

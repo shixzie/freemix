@@ -4088,8 +4088,10 @@ schema change.
   name and run state only. `script_set` never carries the marker. A
   faulted run's `message` in a Web session's `script_state`, `script_ran`,
   and `script_run_changed` is the English text of its `reason` (or, without
-  one, of the failure's kind and place), and a Web session's refused run
-  (`script_failed`) is worded by its reason alone, since a failure's own
+  one, of the failure's kind and place), a cue's fault at a script step
+  (reason `script_failed`) in its `cue_list_state`, `cue_list_changed`, and
+  `cue_run_changed` is worded by that reason, and a Web session's refused
+  run (`script_failed`) is worded by its reason alone, since a failure's own
   message may quote the source (no wire change).
 - After a `title_exposure_changed` (and the `title_state` records that
   follow it, Protocol 2.96), a Web session receives one `cue_list_state`

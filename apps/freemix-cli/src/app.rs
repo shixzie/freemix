@@ -530,20 +530,51 @@ pub fn run(command: Command) -> AppResult<()> {
             key,
             expected_revision,
         } => {
-            let auto =
-                crate::auto_key::read_ppm(&picture)?.auto_key(crate::auto_key::sample(point))?;
+            // The daemon's layer is read only for what was not given: the
+            // input's picture, and the key whose matte refinement is kept.
+            let source = if picture.is_none() || refinement.is_none() {
+                let layer = core::num::NonZeroU32::new(layer)
+                    .ok_or_else(|| AppFailure("layer ID must be nonzero".into()))?;
+                Some(remote::scene_layer_key_source(
+                    address,
+                    scene_id(scene)?,
+                    fm_protocol::WireSceneLayerId::new(layer),
+                    picture.is_none(),
+                )?)
+            } else {
+                None
+            };
+            let picture = match (
+                picture,
+                source.as_ref().and_then(|source| source.picture.as_ref()),
+            ) {
+                (Some(file), _) => crate::auto_key::read_ppm(&file)?,
+                (None, Some(image)) => crate::auto_key::Picture {
+                    width: u32::from(image.width),
+                    height: u32::from(image.height),
+                    rgba: image.rgba.to_vec(),
+                },
+                (None, None) => {
+                    return Err(AppFailure("the daemon sent no input picture".into()).into());
+                }
+            };
+            let auto = picture.auto_key(crate::auto_key::sample(point))?;
             println!("{}", crate::auto_key::describe(&auto));
-            let previous =
-                fm_control::wire_key(fm_model::LayerKey::Chroma(fm_model::ChromaLayerKey {
-                    refinement,
-                    ..fm_model::ChromaLayerKey::GREEN
-                }));
+            let previous = match refinement {
+                Some(refinement) => Some(fm_control::wire_key(fm_model::LayerKey::Chroma(
+                    fm_model::ChromaLayerKey {
+                        refinement,
+                        ..fm_model::ChromaLayerKey::GREEN
+                    },
+                ))),
+                None => source.and_then(|source| source.key),
+            };
             remote::execute(
                 address,
                 remote_scene_layer_edit(
                     scene,
                     layer,
-                    fm_protocol::SceneLayerOperation::SetKey(Some(auto.layer_key(Some(previous)))),
+                    fm_protocol::SceneLayerOperation::SetKey(Some(auto.layer_key(previous))),
                 )?,
                 key,
                 expected_revision,
@@ -6417,7 +6448,7 @@ Usage:
   freemix-cli scene-layer-key <show.freemix> <scene-id> <zero-based-layer-index> none|chroma <red> <green> <blue> <similarity> <smoothness> <spill>|luma <low> <high> <softness> <invert:on|off>|fill <key-input-id> luma|alpha <low> <high> <softness> <invert:on|off> [--clip <black> <white>] [--choke <-8..8>] [--edge-softness <0..8>] [--despill green|blue <strength>] [--light-wrap <amount> <1..8>] [--matte inside|outside <x:y,...>]
   freemix-cli remote-scene-layer-key <127.0.0.1:port> <scene-id> <layer-id> <key spec as above> [--key <key>] [--expect <revision>]
   freemix-cli scene-layer-auto-key <show.freemix> <scene-id> <zero-based-layer-index> [--picture <file.ppm>] [--point <x> <y>]
-  freemix-cli remote-scene-layer-auto-key <127.0.0.1:port> <scene-id> <layer-id> --picture <file.ppm> [--point <x> <y>] [--clip <black> <white>] [--choke <-8..8>] [--edge-softness <0..8>] [--light-wrap <amount> <1..8>] [--key <key>] [--expect <revision>]
+  freemix-cli remote-scene-layer-auto-key <127.0.0.1:port> <scene-id> <layer-id> [--picture <file.ppm>] [--point <x> <y>] [--clip <black> <white>] [--choke <-8..8>] [--edge-softness <0..8>] [--light-wrap <amount> <1..8>] [--matte inside|outside <x:y,...>] [--key <key>] [--expect <revision>]
   freemix-cli remote-scene-layer-effects <127.0.0.1:port> <scene-id> <layer-id> none|<name>[:<i32>,...]... [--key <key>] [--expect <revision>]
   freemix-cli project-rename <show.freemix> <name>
   freemix-cli input-remove <show.freemix> <input-id>

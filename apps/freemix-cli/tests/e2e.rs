@@ -16504,6 +16504,156 @@ fn local_scene_layer_auto_key_samples_the_input_and_keys_it() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// SW-008: without `--picture` or matte options, `remote-scene-layer-auto-key`
+/// asks the daemon for the layer input's picture (a `scene_preview_request`
+/// naming the input, fitted within 640x360) and keys it, keeping the
+/// layer's matte refinement, in one live `scene_layer_key_set` edit.
+#[allow(clippy::too_many_lines)] // two remote sessions end to end
+#[test]
+fn remote_scene_layer_auto_key_samples_the_daemons_input_picture() {
+    use fm_protocol::{
+        SceneLayerEdit, SceneLayerOperation, WireChromaKey, WireKeyDespill, WireKeyRefinement,
+        WireLayerKey, WireSceneId, WireSceneLayerId, WireSceneLayerOutline, WireSceneLayerSource,
+        WireSceneLayout,
+    };
+    let scene = WireSceneId::new(NonZeroU128::new(11).unwrap());
+    let layer = WireSceneLayerId::new(core::num::NonZeroU32::new(3).unwrap());
+    let existing = WireLayerKey::Chroma(WireChromaKey {
+        red: 0,
+        green: 255,
+        blue: 0,
+        similarity: 40,
+        smoothness: 10,
+        spill: 0,
+        refinement: WireKeyRefinement {
+            clip_black: 12,
+            clip_white: 240,
+            choke: -2,
+            edge_softness: 3,
+            despill: WireKeyDespill::Off,
+            light_wrap: 60,
+            light_wrap_width: 2,
+            garbage_matte: None,
+        },
+    });
+    let layout = WireSceneLayout {
+        width: 1_920,
+        height: 1_080,
+        layers: vec![WireSceneLayerOutline {
+            id: layer,
+            name: "Presenter".into(),
+            source: WireSceneLayerSource::Input(input(2)),
+            x: 0,
+            y: 0,
+            width: 1_920,
+            height: 1_080,
+            quarter_turns: 0,
+            tilt_millidegrees: 0,
+            anchor_x: 5_000,
+            anchor_y: 5_000,
+            opacity: 255,
+            enabled: true,
+            z_order: 0,
+            crop: None,
+            mask: None,
+            key: Some(existing),
+            effects: Vec::new(),
+        }],
+    };
+    // The green screen fixture's pixels, which the fake daemon answers with.
+    let (width, height) = (16_u16, 9_u16);
+    let mut rgba = Vec::new();
+    for y in 0..9 {
+        for x in 0..16 {
+            if (6..10).contains(&x) && y >= 3 {
+                rgba.extend_from_slice(&[210, 60, 50, 255]);
+            } else {
+                rgba.extend_from_slice(&[30, 190, 60, 255]);
+            }
+        }
+    }
+    let auto = fm_ui_model::auto_key::auto_key(
+        fm_ui_model::auto_key::AutoKeyPicture::new(16, 9, &rgba).unwrap(),
+        fm_ui_model::auto_key::AutoKeySample::Dominant,
+    )
+    .unwrap();
+    let key = SceneLayerOperation::SetKey(Some(auto.layer_key(Some(existing))));
+    let WireLayerKey::Chroma(chroma) = auto.layer_key(None) else {
+        unreachable!()
+    };
+    assert_eq!((chroma.red, chroma.green, chroma.blue), (30, 190, 60));
+    let edit = |operation| SceneLayerEdit {
+        scene,
+        layer,
+        operation,
+        continues: false,
+        gesture: 0,
+    };
+    let remote_edit = RemoteEdit {
+        role: Role::Graphics,
+        key: "remote-auto-key",
+        payload: CommandPayload::SceneLayer(edit(key.clone())),
+        event: EventPayload::SceneLayoutChanged {
+            edit: edit(key),
+            layout: Box::new(layout.clone()),
+        },
+        domain: "project",
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let worker = thread::spawn(move || {
+        SNAPSHOT_LAYOUTS.with(|cell| *cell.borrow_mut() = vec![(scene, layout)]);
+        let engine = EngineIdentity {
+            engine_id: "project-42".into(),
+            state_epoch: 1,
+            log_id: "fake-remote-log".into(),
+        };
+        // The first session asks for the input's picture.
+        let (stream, _) = listener.accept().unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_handshake_request_role(read_message(&mut reader), Role::Graphics);
+        write_handshake_role(&mut writer, &engine, 0, Role::Graphics);
+        let WireMessage::ScenePreviewRequest(request) = read_message(&mut reader) else {
+            panic!("expected the input picture request");
+        };
+        assert_eq!(request.input, input(2));
+        assert_eq!((request.width, request.height), (640, 360));
+        assert_eq!(request.sample, fm_protocol::TitlePreviewSample::Static);
+        assert_eq!(request.clip, None);
+        let qoi = fm_protocol::encode_qoi_rgba(width, height, &rgba).unwrap();
+        for part in fm_protocol::title_preview_parts(
+            &server_identity(&engine),
+            &request.request_id,
+            request.input,
+            0,
+            false,
+            width,
+            height,
+            &qoi,
+        ) {
+            write_message(&mut writer, &WireMessage::ScenePreviewFrame(part));
+        }
+        drop((reader, writer));
+        // The second sends the key.
+        serve_edit(&listener, &remote_edit);
+    });
+    let server = FakeRemoteServer { address, worker };
+    let output = invoke(&[
+        "remote-scene-layer-auto-key",
+        &server.address(),
+        "11",
+        "3",
+        "--key",
+        "remote-auto-key",
+        "--expect",
+        "0",
+    ]);
+    assert_success(&output);
+    assert!(stdout(&output).contains("backing=green colour=30,190,60"));
+    server.finish();
+}
+
 /// SW-008: `remote-scene-layer-auto-key` sends the key derived from a saved
 /// picture as one live `scene_layer_key_set` edit with the given matte
 /// refinement and the auto key's despill.
@@ -16603,11 +16753,7 @@ fn remote_scene_layer_auto_key_is_one_live_key_edit() {
     assert!(stdout(&output).contains("backing=green colour=30,190,60"));
     server.finish();
 
-    // The picture is required, and the despill is the auto key's.
-    assert_failure_contains(
-        &invoke(&["remote-scene-layer-auto-key", "127.0.0.1:9", "11", "3"]),
-        "--picture",
-    );
+    // The despill is the auto key's.
     assert_failure_contains(
         &invoke(&[
             "remote-scene-layer-auto-key",

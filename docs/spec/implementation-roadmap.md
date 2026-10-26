@@ -86,9 +86,10 @@ highest-value remaining items, ranked:
    BT.709 Cb/Cr distance, and one-click auto key (Studio's Auto key button
    and eyedropper, `scene-layer-auto-key`) sets a whole chroma key from a
    picture of the input up to 640x360 that Studio asks the server for
-   (Protocol 2.97). What remains: the CLI's remote auto key still needs a
-   saved picture, key/fill is not tied to paired SDI/NDI fill and key
-   inputs, and mattes are not animatable or feathered.
+   (Protocol 2.97), which the CLI's remote auto key now asks for too
+   (keeping the layer's matte refinement unless given new options). What
+   remains: key/fill is not tied to paired SDI/NDI fill and key inputs,
+   and mattes are not animatable or feathered.
 7. **Source clock drift on real devices and other OSes (`AU-004`).** Every
    live source the native daemon ingests (V4L2/ALSA capture, network
    streams, system audio) runs its audio through a drift-correcting
@@ -2607,10 +2608,13 @@ fixed-point Cb and Cr differences (on the CPU reference, natively, and in
 both auto keys), and Studio's designer asks the server for the selected
 layer's input picture at up to 640x360 (a `scene_preview_request` naming a
 non-Scene input) and auto key samples it instead of the 160x90 thumbnail
-when it has arrived. Remaining gaps: the CLI cannot fetch a picture from a
-daemon (no frame channel for CLI peers), so the remote command needs a saved
-picture and replaces the clip, choke, and edge softness with the ones it is
-given; the `fm-compositor` border/region auto key remains a separate CPU
+when it has arrived. `remote-scene-layer-auto-key` without `--picture` asks
+the daemon the same way (a `scene_preview_request` naming the layer's input,
+fitted within 640x360) and keys the picture it renders, and without matte
+options it keeps the layer's clip, choke, edge softness, light wrap, and
+matte (`freemix-cli` e2e test against a fake daemon, checked by hand against
+a simulated `freemixd`). Remaining gaps: the `fm-compositor` border/region
+auto key remains a separate CPU
 reference; key/fill is not tied to paired SDI or NDI fill and key inputs,
 and a Scene cannot be a key input; garbage mattes are hard-edged (only edge
 softness softens them) and not animatable; light wrap on a tilted layer
@@ -4231,7 +4235,8 @@ default rather than its stored value (`title_preview.rs` unit test and the
 native browser-editor test, where the page's preview of a logo Studio hid
 shows the template's red while Studio's shows the saved green), and a
 script run's fault in its `script_state`, `script_ran`, and
-`script_run_changed` records, and a refused run's command result, carry
+`script_run_changed` records, a cue's fault at a script step in its cue list
+and `cue_run_changed` records, and a refused run's command result, carry
 the typed reason's text instead of the failure's message, which may quote
 the source (`web_titles.rs` unit tests); neither changes the wire.
 Remaining gap: the capability profiles are not certified. `GX-006` remains

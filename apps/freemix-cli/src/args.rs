@@ -703,11 +703,12 @@ pub enum Command {
         address: SocketAddr,
         scene: u128,
         layer: u32,
-        picture: PathBuf,
+        /// A saved picture; `None` asks the daemon for the layer input's.
+        picture: Option<PathBuf>,
         point: Option<(u32, u32)>,
-        /// The key's clip, choke, and edge softness (the despill is the
-        /// auto key's).
-        refinement: fm_model::KeyRefinement,
+        /// The key's clip, choke, edge softness, light wrap, and matte (the
+        /// despill is the auto key's); `None` keeps the layer's.
+        refinement: Option<fm_model::KeyRefinement>,
         key: Option<String>,
         expected_revision: Option<u64>,
     },
@@ -5193,10 +5194,12 @@ fn parse_scene_layer_auto_key(
     })
 }
 
-/// `remote-scene-layer-auto-key <address> <scene> <layer-id> --picture
-/// <file.ppm> [--point <x> <y>] [--clip <black> <white>] [--choke <n>]
-/// [--edge-softness <n>] [--light-wrap <amount> <width>] [--key <key>]
-/// [--expect <revision>]` (SW-008).
+/// `remote-scene-layer-auto-key <address> <scene> <layer-id> [--picture
+/// <file.ppm>] [--point <x> <y>] [--clip <black> <white>] [--choke <n>]
+/// [--edge-softness <n>] [--light-wrap <amount> <width>] [--matte <side>
+/// <points>] [--key <key>] [--expect <revision>]` (SW-008). Without
+/// `--picture` the daemon renders the layer input's picture; without a
+/// matte option the layer keeps its refinement.
 fn parse_remote_scene_layer_auto_key(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<Command, ArgsError> {
@@ -5204,11 +5207,13 @@ fn parse_remote_scene_layer_auto_key(
     let scene = number(&required(&mut arguments, "scene")?, "scene")?;
     let layer = number(&required(&mut arguments, "layer id")?, "layer id")?;
     let (picture, point, rest) = auto_key_options(arguments)?;
-    let picture = picture.ok_or(ArgsError::MissingValue("--picture <file.ppm>"))?;
+    let given = rest.len();
     let (refinement, rest) = key_refinement_options(&mut rest.into_iter())?;
     if refinement.despill != fm_model::KeyDespill::Off {
         return Err(ArgsError::UnknownOption("--despill".to_owned()));
     }
+    // Any matte option consumed an argument: the refinement was given.
+    let refinement = (rest.len() != given).then_some(refinement);
     let (key, expected_revision) = command_options(rest.into_iter())?;
     Ok(Command::RemoteSceneLayerAutoKey {
         address,

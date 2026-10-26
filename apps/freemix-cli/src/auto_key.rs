@@ -5,9 +5,12 @@
 //!
 //! Locally the picture is the layer's simulated input rendered at the
 //! project size, or a binary PPM (`--picture`); the key is stored like
-//! `scene-layer-key`. Remotely the picture is a PPM the operator saved and
-//! the key is sent as one `scene_layer_key_set` edit, so the daemon
-//! padlocks, journals, and can undo it like any key edit.
+//! `scene-layer-key`. Remotely the picture is the layer input's picture the
+//! daemon renders at up to 640x360 (as Studio's designer asks for it), or a
+//! saved PPM, and the key is sent as one `scene_layer_key_set` edit, so the
+//! daemon padlocks, journals, and can undo it like any key edit. Without
+//! matte options the remote key keeps the layer's clip, choke, edge
+//! softness, light wrap, and matte.
 
 use std::path::Path;
 

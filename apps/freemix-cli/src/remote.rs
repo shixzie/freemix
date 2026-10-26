@@ -123,6 +123,117 @@ fn request_replay_status(remote: &mut Remote) -> RemoteResult<fm_protocol::Repla
     }
 }
 
+/// Largest picture `remote-scene-layer-auto-key` asks the daemon for: the
+/// size Studio's auto key samples (SW-008).
+const AUTO_KEY_PICTURE: (u16, u16) = (
+    fm_protocol::MAX_TITLE_PREVIEW_WIDTH,
+    fm_protocol::MAX_TITLE_PREVIEW_HEIGHT,
+);
+
+/// What `remote-scene-layer-auto-key` reads from the daemon (SW-008): the
+/// layer's key now and, when asked for, the picture of the input it shows.
+pub(crate) struct LayerKeySource {
+    pub(crate) key: Option<fm_protocol::WireLayerKey>,
+    pub(crate) picture: Option<fm_protocol::TitlePreviewImage>,
+}
+
+/// `width`x`height` scaled to fit within `bound`, keeping its aspect, each
+/// side at least 1.
+fn fit_within(width: u32, height: u32, bound: (u16, u16)) -> (u16, u16) {
+    let (bound_width, bound_height) = (u64::from(bound.0), u64::from(bound.1));
+    let (width, height) = (u64::from(width.max(1)), u64::from(height.max(1)));
+    // Width-bound when the picture is at least as wide as the bound.
+    let (fitted_width, fitted_height) = if width * bound_height >= height * bound_width {
+        (
+            bound_width.min(width),
+            (height * bound_width.min(width)) / width,
+        )
+    } else {
+        (
+            (width * bound_height.min(height)) / height,
+            bound_height.min(height),
+        )
+    };
+    let side = |value: u64| u16::try_from(value.max(1)).unwrap_or(u16::MAX);
+    (side(fitted_width), side(fitted_height))
+}
+
+/// Reads layer `layer` of `scene` from the daemon at `address`: its key and,
+/// with `picture`, the picture of the input it shows at up to 640x360,
+/// which the daemon renders as Studio's designer asks it to (a
+/// `scene_preview_request` naming the input, Protocol 2.97).
+pub(crate) fn scene_layer_key_source(
+    address: SocketAddr,
+    scene: fm_types::SceneId,
+    layer: fm_protocol::WireSceneLayerId,
+    picture: bool,
+) -> RemoteResult<LayerKeySource> {
+    // A preview needs project-edit authority, which the edit needs too.
+    let mut remote = Remote::connect(address, Role::Graphics)?;
+    let state = remote
+        .client
+        .model()
+        .state()
+        .ok_or_else(|| RemoteFailure("remote project state is unavailable".into()))?;
+    let layout = state
+        .scene_layout(scene)
+        .and_then(|status| status.layout.clone())
+        .ok_or_else(|| RemoteFailure(format!("scene {scene} does not exist")))?;
+    let outline = layout
+        .layers
+        .iter()
+        .find(|outline| outline.id == layer)
+        .ok_or_else(|| RemoteFailure(format!("scene {scene} has no layer {}", layer.get())))?;
+    let key = outline.key;
+    if !picture {
+        return Ok(LayerKeySource { key, picture: None });
+    }
+    let fm_protocol::WireSceneLayerSource::Input(input) = outline.source else {
+        return Err(RemoteFailure(
+            "the layer shows a scene, which has no single input picture; pass --picture".into(),
+        )
+        .into());
+    };
+    let (width, height) = fit_within(layout.width, layout.height, AUTO_KEY_PICTURE);
+    let request_id = format!("cli-auto-key-{}", unique_client_id()?);
+    remote.write(&WireMessage::ScenePreviewRequest(
+        fm_protocol::ScenePreviewRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id: request_id.clone(),
+            input,
+            sample: fm_protocol::TitlePreviewSample::Static,
+            width,
+            height,
+            clip: None,
+        },
+    ))?;
+    let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
+    let mut assembler = fm_protocol::TitlePreviewAssembler::new();
+    loop {
+        match remote.read_until(deadline)? {
+            WireMessage::ScenePreviewFrame(part) if part.request_id == request_id => {
+                let image = assembler.push(&part).map_err(|error| {
+                    RemoteFailure(format!("the input picture is malformed: {error}"))
+                })?;
+                if let Some(image) = image {
+                    return Ok(LayerKeySource {
+                        key,
+                        picture: Some(image),
+                    });
+                }
+            }
+            WireMessage::Error(error) if error.request_id.as_deref() == Some(&request_id) => {
+                return Err(protocol_error(&error.error).into());
+            }
+            message @ (WireMessage::Event(_) | WireMessage::RuntimeEvent(_)) => {
+                remote.client.intake(message)?;
+            }
+            // Status records and other answers are not the picture.
+            _ => {}
+        }
+    }
+}
+
 /// Prints the daemon's replay recording, events, and Replay inputs (OR-012,
 /// Protocol 2.106).
 pub fn replay(address: SocketAddr) -> RemoteResult<()> {
