@@ -768,4 +768,23 @@ fn a_browser_uploads_and_edits_a_native_title_beside_studio() {
         "{state:?}"
     );
     assert_eq!(state.fields[2].value, TitleFieldValue::Text("cue".into()));
+
+    // Studio hides the logo: the page's preview draws the template's red
+    // default rather than the stored green upload, which Studio still sees.
+    studio.accepted(&command(
+        "studio-hide-logo",
+        CommandPayload::SetTitleFieldExposure {
+            input: wire(2),
+            field: wire_field(2),
+            exposed: false,
+        },
+    ));
+    page.until(|_, message| {
+        matches!(message, WireMessage::TitleState(state) if state.fields.len() == 2).then_some(())
+    });
+    let (pixel, draft) = page.preview("hidden-logo", &[]);
+    assert!(close_to(pixel, RED), "{pixel:?}");
+    assert!(!draft);
+    let (pixel, _) = studio.preview("studio-hidden-logo", &[]);
+    assert!(close_to(pixel, GREEN), "{pixel:?}");
 }

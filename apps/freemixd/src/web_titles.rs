@@ -43,17 +43,22 @@
 //! a whole, so the session cannot read the value back. Studio and raw
 //! sessions, and the daemon's own cue clock, are not checked.
 //!
+//! A script failure's English message may quote its source (an unknown
+//! name, a stray token), so a Web session is sent a run's fault, and the
+//! refusal of a run that failed, with its typed reason's text instead.
+//!
 //! [`PhasePacer`] decides when the lossy `title_phases` record is sent to
 //! the sessions that take it (Web pages and raw Studio sessions).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
+use fm_command::{FaultDetail, RefusalReason};
 use fm_protocol::{
     CommandMessage, CommandPayload, CommandResult, CueListSpec, CueListStatus, EventPayload,
-    ShortcutSpec, ShortcutStatus, TitlePhase, TitlePhasesMessage, TitleStateMessage,
-    TitleTimelineStatus, WireCueAction, WireInputId, WireInputTarget, WireMessage,
-    WireShortcutAction, WireTitleFieldId,
+    ScriptRunStatus, ShortcutSpec, ShortcutStatus, TitlePhase, TitlePhasesMessage,
+    TitleStateMessage, TitleTimelineStatus, WireCueAction, WireInputId, WireInputTarget,
+    WireMessage, WireShortcutAction, WireTitleFieldId,
 };
 
 /// How often the daemon looks at the titles' phases.
@@ -266,7 +271,9 @@ pub(crate) fn web_live_message(message: WireMessage, hidden: &HiddenFields) -> W
             change
                 .titles
                 .retain(|text| !hidden.hides(text.input, text.field));
+            withhold_fault(&mut change.run);
         }
+        EventPayload::ScriptRunChanged { run, .. } => withhold_fault(run),
         EventPayload::ShortcutFired(change) => {
             change
                 .titles
@@ -285,6 +292,47 @@ fn withhold_source(script: &mut fm_protocol::ScriptStatus) {
     script.source_hidden = true;
 }
 
+/// A run's fault as a Web session sees it: the message replaced by the
+/// typed reason's text (or, without one, the failure's place), since the
+/// failure's own message may quote the source.
+fn withhold_fault(run: &mut ScriptRunStatus) {
+    if let ScriptRunStatus::Faulted {
+        failure,
+        line,
+        column,
+        detail,
+        ..
+    } = run
+    {
+        let text = detail.reason.as_ref().map_or_else(
+            || {
+                RefusalReason::ScriptFailed {
+                    failure: *failure,
+                    line: *line,
+                    column: *column,
+                }
+                .to_string()
+            },
+            ToString::to_string,
+        );
+        *detail = FaultDetail::new(detail.reason.take(), &text);
+    }
+}
+
+/// A command result as a Web session sees it: a refused script run (of
+/// `script_run`, or a cue or shortcut step) worded by its typed reason
+/// alone, since the failure's message may quote the source.
+pub(crate) fn web_result(result: &mut CommandResult) {
+    if let CommandResult::Rejected {
+        message,
+        reason: Some(reason @ RefusalReason::ScriptFailed { .. }),
+        ..
+    } = result
+    {
+        *message = reason.to_string();
+    }
+}
+
 /// A record a Web session is sent (Protocol 2.104): a live event as
 /// [`web_live_message`] filters it, and a cue list, shortcut, or script
 /// state record redacted as the matching `_changed` event is. A
@@ -301,6 +349,7 @@ pub(crate) fn web_message(message: WireMessage, hidden: &HiddenFields) -> WireMe
         }
         WireMessage::ScriptState(mut state) => {
             withhold_source(&mut state.script);
+            withhold_fault(&mut state.run);
             WireMessage::ScriptState(state)
         }
         message => web_live_message(message, hidden),
@@ -1064,6 +1113,96 @@ mod tests {
             field: field(id),
             number,
         }
+    }
+
+    #[test]
+    fn script_faults_reach_a_web_session_without_their_source() {
+        let faulted = |reason: Option<RefusalReason>| ScriptRunStatus::Faulted {
+            run: 5,
+            frame: 9,
+            failure: fm_command::ScriptFailureKind::Runtime,
+            line: 2,
+            column: 7,
+            detail: FaultDetail::new(reason, "unknown name `script_secret`"),
+        };
+        let fault_of = |message: WireMessage| match message {
+            WireMessage::ScriptState(state) => state.run,
+            WireMessage::Event(EventMessage {
+                payload: EventPayload::ScriptRunChanged { run, .. },
+                ..
+            }) => run,
+            message => panic!("unexpected {message:?}"),
+        };
+        for (reason, text) in [
+            (
+                None,
+                "the script stopped with a runtime error at line 2, column 7".to_owned(),
+            ),
+            (
+                Some(RefusalReason::ProjectLocked),
+                RefusalReason::ProjectLocked.to_string(),
+            ),
+        ] {
+            let records = [
+                WireMessage::ScriptState(fm_protocol::ScriptStateMessage {
+                    revision: 4,
+                    script: fm_protocol::ScriptStatus::new(
+                        1,
+                        fm_protocol::ScriptSpec {
+                            name: "Open".into(),
+                            source: "script_secret".into(),
+                        },
+                    ),
+                    run: faulted(reason.clone()),
+                }),
+                event(EventPayload::ScriptRunChanged {
+                    script: 1,
+                    frame: 9,
+                    run: faulted(reason.clone()),
+                }),
+            ];
+            for record in records {
+                let ScriptRunStatus::Faulted { detail, line, .. } =
+                    fault_of(web_message(record, &hidden()))
+                else {
+                    panic!("the fault was dropped");
+                };
+                assert_eq!(line, 2);
+                assert_eq!(detail.reason, reason);
+                assert_eq!(detail.message, text);
+            }
+        }
+        // An idle run passes unchanged.
+        let mut idle = ScriptRunStatus::Idle;
+        withhold_fault(&mut idle);
+        assert_eq!(idle, ScriptRunStatus::Idle);
+
+        // A refused run is worded by its typed reason alone; other
+        // refusals keep their message.
+        let rejected = |reason| CommandResult::Rejected {
+            id: "run".into(),
+            code: "invalid_command".into(),
+            message: "script 1 stopped at unknown name `script_secret`".into(),
+            fields: Vec::new(),
+            current_revision: 4,
+            retryable: false,
+            reason,
+        };
+        let failed = RefusalReason::ScriptFailed {
+            failure: fm_command::ScriptFailureKind::Syntax,
+            line: 1,
+            column: 3,
+        };
+        let mut result = rejected(Some(failed.clone()));
+        web_result(&mut result);
+        let CommandResult::Rejected { message, .. } = &result else {
+            unreachable!()
+        };
+        assert_eq!(*message, failed.to_string());
+        assert!(!message.contains("script_secret"));
+        let mut other = rejected(Some(RefusalReason::ProjectLocked));
+        web_result(&mut other);
+        assert_eq!(other, rejected(Some(RefusalReason::ProjectLocked)));
     }
 
     #[test]

@@ -126,9 +126,10 @@ highest-value remaining items, ranked:
    (and hidden ones leave them) without a reconnect; tighter image uploads;
    and a native-daemon check of the browser flow. Protocol 2.104 keeps
    hidden values out of the cue lists, shortcuts, and scripts a browser is
-   sent, and its edits keep the stored values. Still missing: the
-   rendered preview draws hidden fields as on air, and `GX-006` awaits its
-   capability-profile certification.
+   sent, and its edits keep the stored values. A browser's rendered
+   preview now draws hidden fields at their template defaults, never their
+   stored values. Still missing: `GX-006` awaits its capability-profile
+   certification.
 
 10. **Instant replay, end to end (`OR-012`).** The show persists replay
     settings (Protocol 2.106, schema 82), the engine owns marks, Capture and
@@ -4225,9 +4226,16 @@ position, title target, field, and kind); a marker anywhere else is refused
 `invalid_command` (from Studio too), and an action setting a hidden field
 with its own value, or any `script_set`, is refused `permission_denied`.
 `apps/freemixd/tests/web_tally.rs` scans every record a Graphics page gets.
-Remaining gaps: the rendered preview draws hidden fields as on air, a script
-fault's message may quote a token of its source, and the capability
-profiles are not certified. `GX-006` remains planned.
+A Web session's title preview draws each hidden field at its template
+default rather than its stored value (`title_preview.rs` unit test and the
+native browser-editor test, where the page's preview of a logo Studio hid
+shows the template's red while Studio's shows the saved green), and a
+script run's fault in its `script_state`, `script_ran`, and
+`script_run_changed` records, and a refused run's command result, carry
+the typed reason's text instead of the failure's message, which may quote
+the source (`web_titles.rs` unit tests); neither changes the wire.
+Remaining gap: the capability profiles are not certified. `GX-006` remains
+planned.
 
 
 Current implementation boundary for item 3: `fm-browser-input` provides a

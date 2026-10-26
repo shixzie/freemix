@@ -25,8 +25,9 @@
 //! so the browser title editor shows its unsaved edits before Take or
 //! Update live. A Web session's request is answered through its paced
 //! feed (see [`crate::web_feed`]), at most 320x180, and may name only the
-//! fields the template exposes to browsers. The rendered image draws every
-//! field, hidden ones included, as on air.
+//! fields the template exposes to browsers. The rendered image draws a
+//! hidden field at its template default, never its stored value, so a
+//! browser's pixels reveal no more than its `title_state` records.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -173,6 +174,9 @@ pub(crate) fn prepare_preview(
     let engine = control
         .title_template(input)
         .ok_or_else(|| refusal("not_found", format!("title {input} has no loaded template")))?;
+    if web {
+        withhold_hidden_fields(&mut title, &engine.template);
+    }
     apply_draft_fields(&mut title, &engine.template, &request.fields, web)?;
     let animation_revision = engine.animation().revision;
     let template: Arc<TitleTemplate> = match &request.clip {
@@ -210,6 +214,18 @@ pub(crate) fn prepare_preview(
         width: request.width,
         height: request.height,
     })
+}
+
+/// Drops `title`'s stored values of the fields `template` hides from
+/// browsers, so a Web preview draws them at the template default.
+fn withhold_hidden_fields(title: &mut TitleInput, template: &TitleTemplate) {
+    title.fields.retain(|entry| {
+        template
+            .fields
+            .iter()
+            .find(|definition| definition.id.get() == entry.id.get())
+            .is_none_or(|definition| definition.exposed)
+    });
 }
 
 /// Replaces `title`'s persisted values with a preview's unsaved drafts
@@ -542,6 +558,51 @@ mod tests {
             )),
             "invalid_request"
         );
+    }
+
+    /// GX-006: a Web preview drops the stored values of fields the template
+    /// hides, so they draw at the template default; exposed fields and
+    /// fields the template does not name keep theirs.
+    #[test]
+    fn web_previews_withhold_hidden_field_values() {
+        use fm_model::{TitleFieldEntry, TitleFieldId, TitleFieldValue as Model, TitleInput};
+        use fm_titles::{FieldDefinition, FieldId, FieldValue, TemplateId, TitleTemplate};
+
+        let id = |value| core::num::NonZeroU128::new(value).unwrap();
+        let definition = |value, exposed| FieldDefinition {
+            id: FieldId::new(id(value)),
+            name: format!("Field {value}"),
+            default: FieldValue::Text("default".into()),
+            exposed,
+        };
+        let template = TitleTemplate {
+            id: TemplateId::new(id(1)),
+            name: "Lower".into(),
+            width: 640,
+            height: 360,
+            background: fm_titles::Color::TRANSPARENT,
+            fields: vec![definition(1, true), definition(2, false)],
+            elements: Vec::new(),
+            animation: fm_titles::TitleAnimation::default(),
+        };
+        let mut title = TitleInput {
+            template_uri: "asset://titles/lower.fmtitle".into(),
+            field_revision: 0,
+            fields: [1, 2, 3]
+                .map(|value| TitleFieldEntry {
+                    id: TitleFieldId::new(id(value)),
+                    value: Model::Text("secret".into()),
+                    revision: 0,
+                })
+                .to_vec(),
+        };
+        super::withhold_hidden_fields(&mut title, &template);
+        let kept: Vec<_> = title
+            .fields
+            .iter()
+            .map(|entry| entry.id.get().get())
+            .collect();
+        assert_eq!(kept, [1, 3]);
     }
 
     /// Regression: previews render off the session loop. Submitting never

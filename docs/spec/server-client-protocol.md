@@ -3516,8 +3516,10 @@ the title template.
   raw-only): at most 320x180, naming only exposed fields (`not_found`
   otherwise), answered through the session's paced feed one record per
   part, ahead of status records, a newer answer replacing one not yet
-  started. The image draws every field, hidden ones included, as on air;
-  the session's `title_previews` rate and `edit_project` still apply.
+  started. The image draws each field the template hides from browsers at
+  its template default, never its stored value (no wire change), and every
+  other field as on air; the session's `title_previews` rate and
+  `edit_project` still apply.
 - Lossy record `title_phases` with `frame` (the engine frame) and `titles`
   (`<input>:<phase>:<phase_frame>:<phase_frames>:<shown>:<since_frame>`,
   comma separated, ascending by input, the `title_state` phase and timeline
@@ -4083,7 +4085,12 @@ schema change.
 - `script_state` and `script_changed` carry `source=hidden` in place of
   the source's hex when the source is withheld; a Web session's always are
   (a script's verbs cannot be reliably redacted), so it sees each script's
-  name and run state only. `script_set` never carries the marker.
+  name and run state only. `script_set` never carries the marker. A
+  faulted run's `message` in a Web session's `script_state`, `script_ran`,
+  and `script_run_changed` is the English text of its `reason` (or, without
+  one, of the failure's kind and place), and a Web session's refused run
+  (`script_failed`) is worded by its reason alone, since a failure's own
+  message may quote the source (no wire change).
 - After a `title_exposure_changed` (and the `title_state` records that
   follow it, Protocol 2.96), a Web session receives one `cue_list_state`
   per cue list and one `shortcut_state` per shortcut that sets a title

@@ -2219,10 +2219,11 @@ impl Runtime<'_> {
                 }
                 return Err(DispatchError::Daemon(error.into()));
             }
-            if peer
-                .reply(WireMessage::CommandResult(outcome.delivery.result))
-                .is_err()
-            {
+            let mut result = outcome.delivery.result;
+            if peer.transport.is_web() {
+                crate::web_titles::web_result(&mut result);
+            }
+            if peer.reply(WireMessage::CommandResult(result)).is_err() {
                 close[*index] = dropping(peer.id, "dispatch_refused");
             }
         }
@@ -2271,7 +2272,10 @@ impl Runtime<'_> {
                     }
                 })?;
                 self.sync_title_templates();
-                let CommandDelivery { result, .. } = delivery;
+                let CommandDelivery { mut result, .. } = delivery;
+                if peer.transport.is_web() {
+                    crate::web_titles::web_result(&mut result);
+                }
                 if let Some(slot) = recording_start_slot(&command.payload, &result)
                     && native
                         .as_deref()
