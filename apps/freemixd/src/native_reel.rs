@@ -21,13 +21,26 @@
 //! handing the encoder one RGBA picture and one silent audio block per
 //! output frame.
 //!
-//! On success the recorder drains and finalizes the part file, which is
+//! On success the recorder drains and finalizes the part file (a
+//! fragmented MP4, since it writes through a pipe), which a stream copy
+//! remuxes into `<destination>.faststart.part`, a regular MP4 with its
+//! index ahead of the media; the part file is removed, and the remux is
 //! renamed to the destination and reported through
-//! [`ReelHost::reel_export_finished`]. On an encoding or I/O failure the
-//! worker cancels the recorder, removes the part file, and the failure is
-//! reported through [`ReelHost::reel_export_failed`]. A cancelled export
+//! [`ReelHost::reel_export_finished`]. On an encoding, remux
+//! (`output:faststart`), or I/O failure the worker cancels the recorder,
+//! removes both part files, and the failure is reported through
+//! [`ReelHost::reel_export_failed`]. A cancelled export
 //! (the engine already reported `Cancelled`) stops the worker, drops its
 //! chunk queue, and removes the part file; nothing is reported back.
+//!
+//! An export starts only when the filesystem of its destination has room
+//! for its budget ([`export_budget`], a generous bound on the encoder's
+//! default rate) above the recording floor
+//! ([`crate::disk::RECORDING_MINIMUM_FREE_BYTES`]); otherwise it fails
+//! `output:space` (or `output:space_unavailable` when the free space cannot
+//! be read) before its part file exists. The worker reads the free space
+//! again after each chunk and fails `output:space` once it drops below the
+//! floor, so an export never fills the disk a live recording shares.
 
 use std::{
     fs::{self, File, OpenOptions},
@@ -46,6 +59,7 @@ use fm_codec_ffmpeg::record::{
     CleanupStatus, OutputFinalization, PairedFrame, RecordConfig, RecordFormat, RecordLimits,
     Recorder, RecorderState, StopOutcome, X264Preset,
 };
+use fm_codec_ffmpeg::{Adapter, Config};
 use fm_control::ControlService;
 use fm_engine::{
     EngineReelChunk, EngineReelError, EngineReelExportState, EngineReelExportStatus,
@@ -60,6 +74,9 @@ use crate::native_replay::{AUDIO_RATE, ReplayFormat, SegmentDecoder, enqueue, re
 const MAX_QUEUED_CHUNKS: usize = 2;
 /// Most output frames one chunk handed to an export worker holds.
 const MAX_CHUNK_FRAMES: u64 = 60;
+/// Bytes budgeted per output frame beyond its picture: the AAC audio and
+/// the MP4 fragment overhead, generously.
+const FRAME_OVERHEAD_BYTES: u64 = 4_096;
 
 /// What the export worker needs from the engine.
 pub(crate) trait ReelHost {
@@ -234,9 +251,19 @@ impl NativeReel {
         }
     }
 
-    /// Starts the worker of `status`, creating its part file exclusively.
+    /// Starts the worker of `status`, creating its part file exclusively,
+    /// once its destination has room for it.
     fn start(&mut self, host: &mut dyn ReelHost, status: &EngineReelExportStatus) {
         let destination = PathBuf::from(status.destination.as_str());
+        let available = destination
+            .parent()
+            .and_then(crate::disk::existing_ancestor)
+            .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+            .and_then(crate::disk::available_bytes);
+        if let Err(reason) = room_for(available, export_budget(self.format, status.total_frames)) {
+            report_failed(host, status.job, reason);
+            return;
+        }
         let part = part_path(&destination);
         let Ok(file) = OpenOptions::new().write(true).create_new(true).open(&part) else {
             report_failed(host, status.job, "output:create");
@@ -287,11 +314,48 @@ impl Drop for NativeReel {
     }
 }
 
+/// The bytes an export of `frames` output frames at `format` is budgeted:
+/// an eighth of a byte per pixel per frame (about 6 Mbit/s at 1280x720 and
+/// 25 fps, well above the default `libx264` rate of a replay picture) plus
+/// [`FRAME_OVERHEAD_BYTES`], twice over, since the encoded part file and
+/// its faststart copy coexist until the remux ends; saturating.
+fn export_budget(format: ReplayFormat, frames: u64) -> u64 {
+    let picture = u64::from(format.width) * u64::from(format.height) / 8;
+    frames
+        .saturating_mul(picture.saturating_add(FRAME_OVERHEAD_BYTES))
+        .saturating_mul(2)
+}
+
+/// Whether `available` free bytes hold `budget` above the recording floor:
+/// the failure reason when they do not, or cannot be read.
+fn room_for(available: std::io::Result<u64>, budget: u64) -> Result<(), &'static str> {
+    let available = available.map_err(|_| "output:space_unavailable")?;
+    if available < budget.saturating_add(crate::disk::RECORDING_MINIMUM_FREE_BYTES) {
+        return Err("output:space");
+    }
+    Ok(())
+}
+
 /// `destination`'s part file: the same name with `.part` appended.
 fn part_path(destination: &Path) -> PathBuf {
     let mut part = destination.as_os_str().to_os_string();
     part.push(".part");
     PathBuf::from(part)
+}
+
+/// `destination`'s faststart remux: the same name with `.faststart.part`
+/// appended.
+fn remux_path(destination: &Path) -> PathBuf {
+    let mut remuxed = destination.as_os_str().to_os_string();
+    remuxed.push(".faststart.part");
+    PathBuf::from(remuxed)
+}
+
+/// How long the faststart remux of `frames` output frames may run: a copy
+/// remux moves thousands of frames a second, so half a minute plus a
+/// second per hundred frames is ample.
+fn remux_timeout(frames: u64) -> Duration {
+    Duration::from_secs(30_u64.saturating_add(frames / 100))
 }
 
 /// Removes a part file, retrying briefly while a killed recorder's output
@@ -438,13 +502,16 @@ fn export_run(worker: Worker) {
         events,
         cancelled,
     } = worker;
+    let remuxed = remux_path(&destination);
     let fail = |reason: &str| {
         remove_part(&part);
+        remove_part(&remuxed);
         let _ = events.send(WorkerEvent::Failed(reason.to_owned()));
     };
     let cancel = |recorder: &mut Recorder| {
         let _ = recorder.cancel();
         remove_part(&part);
+        remove_part(&remuxed);
         let _ = events.send(WorkerEvent::Cancelled);
     };
     let Some(sample_rate) = SampleRate::new(AUDIO_RATE) else {
@@ -520,6 +587,10 @@ fn export_run(worker: Worker) {
             }
             sequence += 1;
         }
+        if let Err(reason) = room_for(crate::disk::available_bytes(&part), 0) {
+            let _ = recorder.cancel();
+            return fail(reason);
+        }
         if !chunk.completed {
             continue;
         }
@@ -541,14 +612,27 @@ fn export_run(worker: Worker) {
             cancel(&mut recorder);
             return;
         }
-        let Ok(metadata) = fs::metadata(&part) else {
+        // The recorder writes a fragmented MP4 through a pipe; a copy remux
+        // puts the index ahead of the media so any player or editor opens
+        // the reel at once.
+        let remux = Adapter::new(Config::default())
+            .and_then(|adapter| adapter.remux_faststart(&part, &remuxed, remux_timeout(sequence)));
+        if remux.is_err() {
+            return fail("output:faststart");
+        }
+        remove_part(&part);
+        if cancelled.load(Ordering::Acquire) {
+            cancel(&mut recorder);
+            return;
+        }
+        let Ok(metadata) = fs::metadata(&remuxed) else {
             return fail("output:metadata");
         };
         let bytes = metadata.len();
         if destination.exists() {
             return fail("output:exists");
         }
-        if fs::rename(&part, &destination).is_err() {
+        if fs::rename(&remuxed, &destination).is_err() {
             return fail("output:rename");
         }
         let _ = events.send(WorkerEvent::Finished { bytes });
@@ -614,4 +698,57 @@ fn compose(
         *value = u8::try_from(u64::from(*value) * numerator / denominator).ok()?;
     }
     Some(scaled)
+}
+
+#[cfg(test)]
+mod tests {
+    use core::num::NonZeroU128;
+    use std::io;
+
+    use fm_frame::ClockDomainId;
+    use fm_types::FrameRate;
+
+    use super::{FRAME_OVERHEAD_BYTES, ReplayFormat, export_budget, room_for};
+    use crate::disk::RECORDING_MINIMUM_FREE_BYTES;
+
+    fn format(width: u32, height: u32) -> ReplayFormat {
+        ReplayFormat {
+            width,
+            height,
+            rate: FrameRate::new(25, 1).unwrap(),
+            clock_domain: ClockDomainId::new(NonZeroU128::MIN),
+        }
+    }
+
+    /// OR-013: an export's budget grows with its frames and picture size
+    /// and saturates rather than wrapping.
+    #[test]
+    fn an_export_is_budgeted_by_its_frames_and_picture() {
+        let frame = 1_280 * 720 / 8 + FRAME_OVERHEAD_BYTES;
+        assert_eq!(export_budget(format(1_280, 720), 0), 0);
+        assert_eq!(export_budget(format(1_280, 720), 250), 2 * 250 * frame);
+        assert!(export_budget(format(1_920, 1_080), 250) > 2 * 250 * frame);
+        assert_eq!(export_budget(format(1_920, 1_080), u64::MAX), u64::MAX);
+    }
+
+    /// OR-013: an export needs its budget above the recording floor, and an
+    /// unreadable free space refuses it as such.
+    #[test]
+    fn an_export_needs_room_above_the_recording_floor() {
+        let budget = 1_000;
+        let floor = RECORDING_MINIMUM_FREE_BYTES;
+        assert_eq!(room_for(Ok(floor + budget), budget), Ok(()));
+        assert_eq!(
+            room_for(Ok(floor + budget - 1), budget),
+            Err("output:space")
+        );
+        assert_eq!(room_for(Ok(floor), 0), Ok(()));
+        assert_eq!(room_for(Ok(floor - 1), 0), Err("output:space"));
+        // A saturated budget is never met short of every byte.
+        assert_eq!(room_for(Ok(u64::MAX - 1), u64::MAX), Err("output:space"));
+        assert_eq!(
+            room_for(Err(io::Error::from(io::ErrorKind::NotFound)), 0),
+            Err("output:space_unavailable")
+        );
+    }
 }

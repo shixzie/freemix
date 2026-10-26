@@ -59,6 +59,9 @@ pub use playback::{
 pub use probe::{FormatInfo, Probe, StreamInfo, StreamKind, StreamSelector};
 use process::{RunOutput, RunRequest};
 
+/// Longest one [`Adapter::remux_faststart`] may run.
+pub const MAX_REMUX_TIMEOUT: std::time::Duration = std::time::Duration::from_hours(1);
+
 /// Bounded discovery result for one executable.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ToolAvailability {
@@ -281,6 +284,59 @@ impl Adapter {
         } else {
             Err(Error::SourceChanged)
         }
+    }
+
+    /// Rewrites the MP4 at `input` (fragmented, as a recorder writes it) as
+    /// a regular MP4 at `output` with its index ahead of the media
+    /// (`-movflags +faststart`), copying every stream unchanged. `FFmpeg` is
+    /// told never to overwrite, so `output` must not exist. `timeout` is
+    /// capped at [`MAX_REMUX_TIMEOUT`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed tool, process, or timeout error. A failed remux may
+    /// leave a partial `output` behind for the caller to remove.
+    pub fn remux_faststart(
+        &self,
+        input: &Path,
+        output: &Path,
+        timeout: std::time::Duration,
+    ) -> Result<(), Error> {
+        let mut args: Vec<OsString> = ["-nostdin", "-hide_banner", "-loglevel", "error", "-n"]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        args.push("-i".into());
+        args.push(input.as_os_str().to_owned());
+        args.extend(
+            [
+                "-map",
+                "0",
+                "-c",
+                "copy",
+                "-movflags",
+                "+faststart",
+                "-f",
+                "mp4",
+            ]
+            .into_iter()
+            .map(OsString::from),
+        );
+        args.push(output.as_os_str().to_owned());
+        let input_redaction = input.to_string_lossy();
+        let output_redaction = output.to_string_lossy();
+        process::run(RunRequest {
+            executable: self.executable(Tool::Ffmpeg),
+            tool: Tool::Ffmpeg,
+            args: &args,
+            env: &[],
+            timeout: timeout.min(MAX_REMUX_TIMEOUT),
+            kill_timeout: self.limits.kill_timeout,
+            max_stdout: self.limits.max_version_stdout_bytes,
+            max_stderr: self.limits.max_stderr_bytes,
+            redactions: &[&input_redaction, &output_redaction],
+        })
+        .map(|_| ())
     }
 
     pub(crate) const fn limits(&self) -> Limits {

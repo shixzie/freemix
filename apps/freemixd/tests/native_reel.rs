@@ -500,6 +500,29 @@ fn part_of(destination: &Path) -> PathBuf {
     PathBuf::from(part)
 }
 
+/// The four-character types of the top-level MP4 boxes in `path`.
+fn top_level_boxes(path: &Path) -> Vec<String> {
+    let bytes = std::fs::read(path).unwrap();
+    let mut boxes = Vec::new();
+    let mut at = 0_usize;
+    while at + 8 <= bytes.len() {
+        let size = u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
+        let size = match size {
+            0 => bytes.len() - at,
+            1 => usize::try_from(u64::from_be_bytes(
+                bytes[at + 8..at + 16].try_into().unwrap(),
+            ))
+            .unwrap(),
+            size => usize::try_from(size).unwrap(),
+        };
+        assert!(size >= 8, "a malformed box at byte {at}");
+        boxes.push(String::from_utf8_lossy(&bytes[at + 4..at + 8]).into_owned());
+        at += size;
+    }
+    assert_eq!(at, bytes.len(), "the boxes do not end with the file");
+    boxes
+}
+
 fn assert_no_reel_failures(daemon: &NativeDaemon) {
     let failures: Vec<String> = std::iter::from_fn(|| daemon.log.try_recv().ok())
         .filter(|line| line.contains("FREEMIXD_REEL_FAILURE"))
@@ -592,7 +615,16 @@ fn native_daemon_exports_a_reel_with_the_exact_frame_count() {
     assert_eq!(audio.get("codec_name").map(String::as_str), Some("aac"));
     assert_eq!(audio.get("sample_rate").map(String::as_str), Some("48000"));
     assert_eq!(audio.get("channels").map(String::as_str), Some("2"));
+    // Faststart: one index ahead of the media, and no fragments.
+    let boxes = top_level_boxes(&destination);
+    let moov = boxes.iter().position(|kind| kind == "moov");
+    let mdat = boxes.iter().position(|kind| kind == "mdat");
+    assert!(moov.is_some() && mdat.is_some() && moov < mdat, "{boxes:?}");
+    assert!(!boxes.iter().any(|kind| kind == "moof"), "{boxes:?}");
     assert!(!part_of(&destination).exists());
+    let mut remuxed = destination.as_os_str().to_os_string();
+    remuxed.push(".faststart.part");
+    assert!(!Path::new(&remuxed).exists());
     assert_no_reel_failures(&daemon);
 }
 

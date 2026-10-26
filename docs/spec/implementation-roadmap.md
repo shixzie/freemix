@@ -151,10 +151,10 @@ highest-value remaining items, ranked:
     resolves exact segment frames, the native daemon encodes a reel to an
     H.264/AAC MP4 with progress and cancellation, Studio edits and exports
     them in the Replay panel, and the CLI has local and remote reel commands.
-    Remaining: exports are silent, cuts only, and fragmented rather than
-    faststart; a music bed, ducking, dissolve, and open-segment deferral are
-    absent; there is no free-space check; and nothing is certified (see the
-    Phase 7 boundary).
+    Exports are now remuxed to faststart MP4s and start only with room on
+    the destination's disk. Remaining: exports are silent and cuts only; a
+    music bed, ducking, dissolve, and open-segment deferral are absent; and
+    nothing is certified (see the Phase 7 boundary).
 
 Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
 since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
@@ -5457,14 +5457,21 @@ them from retention, advances in bounded frame chunks with progress and
 cancellation, and revalidates segments and source frames so an export never
 resolves pruned media. The native daemon decodes each resolved segment frame
 with ffmpeg, retimes it to the output grid, and encodes a fragmented H.264/AAC
-MP4 to `<destination>.part`, renaming it only when the recorder has stopped
-cleanly; a cancel removes the part file and releases the protection. Studio
+MP4 to `<destination>.part`; once the recorder has stopped cleanly a stream
+copy remuxes it to a faststart MP4 (`moov` ahead of `mdat`, no fragments) at
+`<destination>.faststart.part`, which is renamed to the destination (a failed
+remux fails `output:faststart`). An export starts only when the destination's
+filesystem has room for twice a generous size budget (an eighth of a byte
+per pixel per frame plus 4 KiB) above the 512 MiB recording floor, else it
+fails `output:space` (`output:space_unavailable` when free space cannot be
+read) before any part file exists, and the worker fails `output:space` when
+free space falls below that floor between chunks. A cancel removes both part
+files and releases the protection. Studio
 edits and exports reels in its Replay panel, and `freemix-cli` has local and
 remote reel commands with `remote-reel-export` polling to a terminal state.
 Remaining gaps: exports carry silent audio (no music bed, ducking, or decoded
 input audio); only cuts are compiled, clips play forward only, and dissolve is
 not wired; exports needing an open segment are refused rather than deferred;
-the output is fragmented rather than faststart; there is no free-space check;
 and nothing is certified. `OR-013` remains planned.
 
 Current end-to-end slice for items 1, 3, and 4: the show persists replay
