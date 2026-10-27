@@ -2324,8 +2324,10 @@ processing. Remaining gaps: the matrix is not wired into `MasterMixer`, the
 engine, persistence, protocol, or Studio and does not consume the existing
 bus-send authoring; destinations perform no I/O; strips and buses share one
 channel count without mapping or balance; there are no gain ramps, clipping
-policy, or meter ballistics; and allocation-free rendering is by construction
-rather than tested. `AU-002` remains planned.
+policy, or meter ballistics. A counting global allocator
+(`tests/bus_matrix_allocations.rs`) shows a warmed-up render of four strips
+sending pre- and post-fader to every bus, two processed buses, and three
+destinations (two mix-minus) allocates nothing. `AU-002` remains planned.
 
 Current implementation boundary for multichannel audio (`AU-003`): `fm-audio`
 provides a 1–16 channel layout catalog (1.0, 2.0, 2.1, 5.1, 7.1, and 16
