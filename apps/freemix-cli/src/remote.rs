@@ -605,6 +605,12 @@ pub(crate) fn print_reels(
                 clip.dissolve_frames,
             );
         }
+        if let Some(music) = &reel.spec.music {
+            println!(
+                "ReelMusic(reel={}, path={:?}, level={}, duck={})",
+                reel.id, music.path, music.level_percent, music.duck_percent,
+            );
+        }
     }
     for export in exports {
         println!(

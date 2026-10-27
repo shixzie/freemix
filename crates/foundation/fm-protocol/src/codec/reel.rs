@@ -5,7 +5,8 @@
 //! optional `total_frames` and `error`); `clips` is a comma-separated list of
 //! 1 to [`crate::MAX_REEL_CLIPS`]
 //! `<event>:<angle>:<trim in>:<trim out>:<speed>:<dissolve>` records, the
-//! first clip's `dissolve` 0. A `reel_status`
+//! first clip's `dissolve` 0. A reel with a music bed also carries
+//! `music`, `<level>:<duck>:<path>` (the path last, raw). A `reel_status`
 //! carries two `;`-separated lists whose names, errors, destinations, and
 //! failures are percent-escaped inside their record and escaped again with
 //! the field.
@@ -16,9 +17,9 @@ use fm_types::replay::ReplaySpeed;
 
 use crate::{
     CodecError, MAX_REEL_CLIPS, MAX_REEL_DISSOLVE_FRAMES, MAX_REEL_EXPORTS, MAX_REELS, ReelClip,
-    ReelExportState, ReelExportStatus, ReelOperation, ReelSpec, ReelStatus, ReelStatusMessage,
-    ReelStatusRequest, clip_dissolve_is_valid, reel_error_is_valid, reel_export_path_is_valid,
-    reel_name_is_valid,
+    ReelExportState, ReelExportStatus, ReelMusic, ReelOperation, ReelSpec, ReelStatus,
+    ReelStatusMessage, ReelStatusRequest, clip_dissolve_is_valid, reel_error_is_valid,
+    reel_export_path_is_valid, reel_name_is_valid,
 };
 
 use super::MAX_FIELD_VALUE_BYTES;
@@ -103,6 +104,9 @@ fn check_spec(spec: &ReelSpec) -> Result<(), CodecError> {
     for clip in &spec.clips {
         check_clip("clips", clip)?;
     }
+    if let Some(music) = &spec.music {
+        encode_music(music)?;
+    }
     check_dissolves(&spec.clips)
 }
 
@@ -125,6 +129,39 @@ fn check_export(status: &ReelExportStatus) -> Result<(), CodecError> {
         check_error("failure", failure)?;
     }
     Ok(())
+}
+
+fn encode_music(music: &ReelMusic) -> Result<String, CodecError> {
+    if !music.is_valid() {
+        return Err(invalid("music", music.path.clone()));
+    }
+    Ok(format!(
+        "{}:{}:{}",
+        music.level_percent, music.duck_percent, music.path
+    ))
+}
+
+fn decode_music(value: &str) -> Result<ReelMusic, CodecError> {
+    // The path is last and may hold `:` of its own.
+    let [level, duck, path] = value.splitn(3, ':').collect::<Vec<_>>()[..] else {
+        return Err(invalid("music", value));
+    };
+    let music = ReelMusic {
+        path: path.to_owned(),
+        level_percent: parse_number("music", level)?,
+        duck_percent: parse_number("music", duck)?,
+    };
+    if !music.is_valid() {
+        return Err(invalid("music", value));
+    }
+    Ok(music)
+}
+
+fn decode_optional_music(fields: &mut dyn FieldSource) -> Result<Option<ReelMusic>, CodecError> {
+    fields
+        .optional("music")
+        .map(|value| decode_music(&value))
+        .transpose()
 }
 
 fn encode_clip(clip: &ReelClip) -> Result<String, CodecError> {
@@ -190,7 +227,11 @@ pub(super) fn encode_operation(
             check_spec(spec)?;
             push("reel", spec.id.to_string())?;
             push("name", spec.name.clone())?;
-            push("clips", encode_clips(&spec.clips)?)
+            push("clips", encode_clips(&spec.clips)?)?;
+            if let Some(music) = &spec.music {
+                push("music", encode_music(music)?)?;
+            }
+            Ok(())
         }
         ReelOperation::Delete { reel } => push("reel", reel.to_string()),
         ReelOperation::Export {
@@ -221,10 +262,12 @@ pub(super) fn decode_operation(
             let reel = parse_number("reel", &fields.required("reel")?)?;
             let name = fields.required("name")?;
             let clips = decode_clips(&fields.required("clips")?)?;
+            let music = decode_optional_music(fields)?;
             let spec = ReelSpec {
                 id: reel,
                 name,
                 clips,
+                music,
             };
             check_spec(&spec)?;
             ReelOperation::Set(Box::new(spec))
@@ -261,6 +304,9 @@ pub(super) fn encode_reel(status: &ReelStatus, push: &mut Push<'_>) -> Result<()
     push("reel", status.id.to_string())?;
     push("name", status.spec.name.clone())?;
     push("clips", encode_clips(&status.spec.clips)?)?;
+    if let Some(music) = &status.spec.music {
+        push("music", encode_music(music)?)?;
+    }
     if let Some(frames) = status.total_frames {
         push("total_frames", frames.to_string())?;
     }
@@ -275,6 +321,7 @@ pub(super) fn decode_reel(fields: &mut dyn FieldSource) -> Result<ReelStatus, Co
     let id = parse_number("reel", &fields.required("reel")?)?;
     let name = fields.required("name")?;
     let clips = decode_clips(&fields.required("clips")?)?;
+    let music = decode_optional_music(fields)?;
     let total_frames = fields
         .optional("total_frames")
         .map(|value| parse_number("total_frames", &value))
@@ -285,7 +332,12 @@ pub(super) fn decode_reel(fields: &mut dyn FieldSource) -> Result<ReelStatus, Co
     }
     let status = ReelStatus {
         id,
-        spec: ReelSpec { id, name, clips },
+        spec: ReelSpec {
+            id,
+            name,
+            clips,
+            music,
+        },
         total_frames,
         error,
     };
@@ -314,20 +366,26 @@ fn encode_reel_record(status: &ReelStatus) -> Result<String, CodecError> {
         Some(error) => escape_bounded(error)?,
         None => String::new(),
     };
+    let music = match &status.spec.music {
+        Some(music) => escape_bounded(&encode_music(music)?)?,
+        None => String::new(),
+    };
     Ok(format!(
-        "{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}",
         status.id,
         escape_bounded(&status.spec.name)?,
         optional_text(status.total_frames),
         error,
+        music,
         encode_clips(&status.spec.clips)?
     ))
 }
 
 fn decode_reel_record(entry: &str) -> Result<ReelStatus, CodecError> {
     // `clips` is the last field and holds raw `:` separators of its own, so
-    // split only the four fields before it.
-    let [id, name, total_frames, error, clips] = entry.splitn(5, ':').collect::<Vec<_>>()[..]
+    // split only the five fields before it.
+    let [id, name, total_frames, error, music, clips] =
+        entry.splitn(6, ':').collect::<Vec<_>>()[..]
     else {
         return Err(invalid("reels", entry));
     };
@@ -347,6 +405,11 @@ fn decode_reel_record(entry: &str) -> Result<ReelStatus, CodecError> {
             id,
             name,
             clips: decode_clips(clips)?,
+            music: if music.is_empty() {
+                None
+            } else {
+                Some(decode_music(&unescape(music)?)?)
+            },
         },
         total_frames,
         error,

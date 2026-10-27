@@ -35,9 +35,9 @@
 use crate::ServerIdentity;
 
 pub use fm_types::reel::{
-    MAX_REEL_CLIPS, MAX_REEL_DISSOLVE_FRAMES, MAX_REEL_NAME_BYTES, MAX_REEL_PATH_BYTES,
-    MAX_REEL_TRIM_FRAMES, MAX_REELS, ReelClip, ReelSpec, ReelSpecError, clip_dissolve_is_valid,
-    reel_export_path_is_valid, reel_name_is_valid,
+    MAX_REEL_CLIPS, MAX_REEL_DISSOLVE_FRAMES, MAX_REEL_MUSIC_PATH_BYTES, MAX_REEL_MUSIC_PERCENT,
+    MAX_REEL_NAME_BYTES, MAX_REEL_PATH_BYTES, MAX_REEL_TRIM_FRAMES, MAX_REELS, ReelClip, ReelMusic,
+    ReelSpec, ReelSpecError, clip_dissolve_is_valid, reel_export_path_is_valid, reel_name_is_valid,
 };
 
 /// Most export jobs one `reel_status` lists: the running jobs and the

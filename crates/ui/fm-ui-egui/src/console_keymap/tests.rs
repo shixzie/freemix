@@ -24,7 +24,10 @@ const fn press(command: bool, shift: bool, alt: bool) -> Modifiers {
 #[test]
 fn tokens_round_trip_and_profiles_are_unambiguous() {
     let all = ConsoleAction::all();
-    assert_eq!(all.len(), 3 * usize::from(NUMBERED_INPUTS) + 3 + 4 + 1);
+    assert_eq!(
+        all.len(),
+        3 * usize::from(NUMBERED_INPUTS) + 3 + 4 + 4 + 1 + 3
+    );
     for action in &all {
         assert_eq!(ConsoleAction::from_token(&action.token()), Some(*action));
     }
@@ -171,9 +174,18 @@ fn reference_rows_fold_numbered_runs() {
             "Enter",
             "Ctrl+B",
             "Ctrl+F1 – F4",
-            "G"
+            "F9 – F12",
+            "G",
+            "I",
+            "O",
+            "E"
         ]
     );
+    assert_eq!(
+        vmix[7].1,
+        "Put the Preview input on the numbered overlay, or take it off"
+    );
+    assert_eq!(vmix[11].1, "Capture the marked replay event");
     // A broken run lists its keys one by one.
     let mut profiles = ConsoleKeyProfiles::default();
     let ProfileChoice::Custom(index) = profiles
@@ -320,20 +332,23 @@ fn profiles_travel_through_key_files() {
     let vmix = desk
         .export_text(l, ProfileChoice::Builtin(BuiltinProfile::Vmix))
         .unwrap();
-    assert_eq!(vmix, "# FreeMix key profile\nname = vMix style\nbase = vmix\n");
+    assert_eq!(
+        vmix,
+        "# FreeMix key profile\nname = vMix style\nbase = vmix\n"
+    );
     assert_eq!(desk.export_text(l, ProfileChoice::Custom(5)), None);
 
     // Blank lines, comments, and unusable lines are skipped.
     let mut read = ConsoleKeyProfiles::default();
     let loose =
-        "\n# hand edited\n  name =  Booth \nbase = vmix\nwarp = W\ncut = Shift+Ctrl+C\nfade = F9\n";
+        "\n# hand edited\n  name =  Booth \nbase = vmix\nwarp = W\ncut = Shift+Ctrl+C\nfade = F8\n";
     assert_eq!(read.import_text(loose), Ok(ProfileChoice::Custom(0)));
     let booth = &read.custom()[0];
     assert_eq!(booth.name, "Booth");
     assert_eq!(booth.base, BuiltinProfile::Vmix);
     assert_eq!(
         booth.keymap().stroke(ConsoleAction::Fade),
-        Some(ConsoleStroke::plain(Key::F9))
+        Some(ConsoleStroke::plain(Key::F8))
     );
 
     // A file naming no profile, one too long, or one past the limit adds

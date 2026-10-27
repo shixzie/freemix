@@ -4827,6 +4827,7 @@ mod tests {
                         speed_percent: 100,
                         dissolve_frames: 0,
                     }],
+                    music: None,
                 },
                 total_frames: Some(300),
                 error: None,

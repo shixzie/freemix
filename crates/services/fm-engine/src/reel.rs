@@ -39,7 +39,7 @@ use fm_replay::{
 };
 use fm_types::{
     InputId,
-    reel::{ReelSpec, ReelSpecError, reel_export_path_is_valid},
+    reel::{ReelMusic, ReelSpec, ReelSpecError, reel_export_path_is_valid},
     replay::ReplaySpeed,
 };
 
@@ -120,6 +120,9 @@ pub struct EngineReelExportStatus {
     pub bytes: Option<u64>,
     /// Why the export failed.
     pub failure: Option<String>,
+    /// The reel's music bed as the export was accepted, mixed under the
+    /// clips by the media plane.
+    pub music: Option<ReelMusic>,
 }
 
 /// The reels and their exports as clients see them (OR-013).
@@ -233,6 +236,8 @@ pub(crate) struct ReelExportPlan {
     pub(crate) reel: u64,
     pub(crate) destination: String,
     pub(crate) compiled: CompiledReel,
+    /// The reel's music bed as the export was accepted.
+    pub(crate) music: Option<ReelMusic>,
 }
 
 /// The runtime work one accepted reel command leaves for the engine: a
@@ -408,6 +413,7 @@ pub(crate) fn spec_rejection(state: &ShowState, error: ReelSpecError) -> Rejecti
         ReelSpecError::Speed(_) => invalid("clips", "invalid_speed", message),
         ReelSpecError::Trim => invalid("clips", "trim_out_of_range", message),
         ReelSpecError::Dissolve => invalid("clips", "invalid_dissolve", message),
+        ReelSpecError::Music => invalid("music", "invalid_music", message),
     }
 }
 

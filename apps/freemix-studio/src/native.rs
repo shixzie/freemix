@@ -6857,6 +6857,7 @@ mod tests {
                 speed_percent: 100,
                 dissolve_frames: 0,
             }],
+            music: None,
         };
         for operation in [
             fm_protocol::ReelOperation::Set(Box::new(reel)),

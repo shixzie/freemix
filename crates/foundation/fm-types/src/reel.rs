@@ -4,8 +4,10 @@
 //! list of at most [`MAX_REEL_CLIPS`] clips cut from recorded replay events:
 //! each clip names the event, the recorded angle it plays, trims before and
 //! after the event marks, a playback speed, and how many frames it dissolves
-//! in from the clip before (zero for a cut, always on the first clip). The
-//! recorded media itself is never part of the project.
+//! in from the clip before (zero for a cut, always on the first clip). A
+//! reel may also carry a music bed: an audio file on the server, played
+//! from the reel's start at a level and ducked while real-time clip audio
+//! plays. The recorded media itself is never part of the project.
 
 use std::fmt;
 
@@ -25,6 +27,10 @@ pub const MAX_REEL_TRIM_FRAMES: u32 = 3_600 * 60;
 /// Longest dissolve between two clips, in frames (ten seconds at 60 frames
 /// per second).
 pub const MAX_REEL_DISSOLVE_FRAMES: u32 = 600;
+/// Longest music bed path, in UTF-8 bytes.
+pub const MAX_REEL_MUSIC_PATH_BYTES: usize = 512;
+/// The music bed level and ducked level, in percent of full scale.
+pub const MAX_REEL_MUSIC_PERCENT: u8 = 100;
 
 /// One highlight reel: an ordered selection of replay-event clips.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -35,6 +41,35 @@ pub struct ReelSpec {
     pub name: String,
     /// The clips, in play order.
     pub clips: Vec<ReelClip>,
+    /// The music bed under the clips, if any.
+    pub music: Option<ReelMusic>,
+}
+
+/// A highlight reel's music bed: an audio file on the server played from
+/// the reel's first frame (silent once the file ends) and faded out over
+/// the reel's last second.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ReelMusic {
+    /// The audio file's absolute path on the server.
+    pub path: String,
+    /// The bed's level in percent of full scale, 0 to 100.
+    pub level_percent: u8,
+    /// The bed's level while real-time clip audio plays, in percent of
+    /// `level_percent`, 0 to 100 (100 is no ducking).
+    pub duck_percent: u8,
+}
+
+impl ReelMusic {
+    /// Whether the bed is usable: an absolute path of at most
+    /// [`MAX_REEL_MUSIC_PATH_BYTES`] and both levels at most
+    /// [`MAX_REEL_MUSIC_PERCENT`].
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.path.len() <= MAX_REEL_MUSIC_PATH_BYTES
+            && reel_export_path_is_valid(&self.path)
+            && self.level_percent <= MAX_REEL_MUSIC_PERCENT
+            && self.duck_percent <= MAX_REEL_MUSIC_PERCENT
+    }
 }
 
 /// One clip of a highlight reel.
@@ -78,6 +113,9 @@ pub enum ReelSpecError {
     /// The first clip dissolves, or a dissolve is longer than
     /// [`MAX_REEL_DISSOLVE_FRAMES`].
     Dissolve,
+    /// The music bed's path or a level is unusable (see
+    /// [`ReelMusic::is_valid`]).
+    Music,
 }
 
 impl fmt::Display for ReelSpecError {
@@ -112,6 +150,12 @@ impl fmt::Display for ReelSpecError {
                 "the first reel clip must cut, and a dissolve must be at most \
                  {MAX_REEL_DISSOLVE_FRAMES} frames"
             ),
+            Self::Music => write!(
+                formatter,
+                "a reel music bed needs an absolute path of at most \
+                 {MAX_REEL_MUSIC_PATH_BYTES} bytes and levels of at most \
+                 {MAX_REEL_MUSIC_PERCENT} percent"
+            ),
         }
     }
 }
@@ -136,6 +180,9 @@ impl ReelSpec {
         }
         if !reel_name_is_valid(&self.name) {
             return Err(ReelSpecError::Name);
+        }
+        if self.music.as_ref().is_some_and(|music| !music.is_valid()) {
+            return Err(ReelSpecError::Music);
         }
         for (index, clip) in self.clips.iter().enumerate() {
             if !clip_dissolve_is_valid(index, clip.dissolve_frames) {
@@ -223,6 +270,7 @@ mod tests {
             id: 1,
             name: "Highlights".to_owned(),
             clips: vec![clip(7, input(1)), clip(8, input(2))],
+            music: None,
         };
         assert_eq!(reel.check(recorded), Ok(()));
         reel.clips.clear();
@@ -267,6 +315,37 @@ mod tests {
         assert_eq!(reel.check(recorded), Ok(()));
         reel.clips[1].dissolve_frames = MAX_REEL_DISSOLVE_FRAMES + 1;
         assert_eq!(reel.check(recorded), Err(ReelSpecError::Dissolve));
+
+        // A music bed needs an absolute, bounded path and levels to 100.
+        reel.clips = vec![clip(7, input(1))];
+        let bed = ReelMusic {
+            path: "/srv/music/bed.wav".to_owned(),
+            level_percent: 80,
+            duck_percent: 25,
+        };
+        reel.music = Some(bed.clone());
+        assert_eq!(reel.check(recorded), Ok(()));
+        for unusable in [
+            ReelMusic {
+                path: "music/bed.wav".to_owned(),
+                ..bed.clone()
+            },
+            ReelMusic {
+                path: format!("/{}", "a".repeat(MAX_REEL_MUSIC_PATH_BYTES)),
+                ..bed.clone()
+            },
+            ReelMusic {
+                level_percent: 101,
+                ..bed.clone()
+            },
+            ReelMusic {
+                duck_percent: 101,
+                ..bed.clone()
+            },
+        ] {
+            reel.music = Some(unusable);
+            assert_eq!(reel.check(recorded), Err(ReelSpecError::Music));
+        }
     }
 
     #[test]

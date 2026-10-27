@@ -1449,7 +1449,7 @@ fn console_action_intents(
     (preview_available, transition_available): (bool, bool),
     (inputs, favorites): (&[InputId], &[TransitionFavoriteStatus]),
     (transition_duration_frames, fade_to_black_duration_frames): (u32, u32),
-    cue_key: &dyn Fn(CueKey) -> Option<CueIntent>,
+    (cue_key, live_key): StateKeys<'_>,
 ) -> Vec<StudioIntent> {
     let input = |n: u8| inputs.get(usize::from(n).checked_sub(1)?).copied();
     let fade = StudioIntent::Fade {
@@ -1485,8 +1485,43 @@ fn console_action_intents(
             .map(StudioIntent::Cue)
             .into_iter()
             .collect(),
+        // The overlay toggles and replay marks read the session's state,
+        // gated like their panels' keys.
+        ConsoleAction::Overlay(_)
+        | ConsoleAction::ReplayMarkIn
+        | ConsoleAction::ReplayMarkOut
+        | ConsoleAction::ReplayCapture
+            if transition_available =>
+        {
+            live_key(action)
+        }
         _ => Vec::new(),
     }
+}
+
+/// What the console keys read from the session: the cue keys' intents
+/// ([`CueKey`]) and the overlay and replay actions' (see
+/// [`live_console_intents`]).
+type StateKeys<'a> = (
+    &'a dyn Fn(CueKey) -> Option<CueIntent>,
+    &'a dyn Fn(ConsoleAction) -> Vec<StudioIntent>,
+);
+
+/// The intents of a profile action that reads the session's state: an
+/// overlay channel's toggle, or a replay mark or capture.
+fn live_console_intents(state: &StudioUiState, action: ConsoleAction) -> Vec<StudioIntent> {
+    let replay = |operation| replay_ui::key_intent(state, operation);
+    match action {
+        ConsoleAction::Overlay(n) => overlays::toggle_intent(state, n),
+        ConsoleAction::ReplayMarkIn => replay(fm_protocol::ReplayOperation::MarkIn),
+        ConsoleAction::ReplayMarkOut => replay(fm_protocol::ReplayOperation::MarkOut),
+        ConsoleAction::ReplayCapture => {
+            replay(fm_protocol::ReplayOperation::CaptureMarks { name: None })
+        }
+        _ => None,
+    }
+    .into_iter()
+    .collect()
 }
 
 #[allow(clippy::too_many_arguments)] // the console keys' gates and parameters
@@ -1497,7 +1532,7 @@ fn studio_shortcuts(
     t_bar: TBarKeys,
     (inputs, favorites, keymap): (&[InputId], &[TransitionFavoriteStatus], &ConsoleKeymap),
     durations: (u32, u32),
-    cue_key: &dyn Fn(CueKey) -> Option<CueIntent>,
+    (cue_key, live_key): StateKeys<'_>,
 ) -> Vec<StudioIntent> {
     if ui.ctx().egui_wants_keyboard_input() {
         return Vec::new();
@@ -1551,7 +1586,7 @@ fn studio_shortcuts(
                     (preview_available, transition_available),
                     (inputs, favorites),
                     durations,
-                    cue_key,
+                    (cue_key, live_key),
                 );
                 let handled = !sent.is_empty();
                 intents.extend(sent);
@@ -1972,7 +2007,9 @@ impl StudioShell {
                 self.transition_duration_frames,
                 self.fade_to_black_duration_frames,
             ),
-            &|key| self.cues.key_intent(state, key),
+            (&|key| self.cues.key_intent(state, key), &|action| {
+                live_console_intents(state, action)
+            }),
         );
         intents.extend(edit_history::history_shortcuts(
             ui,
@@ -2567,7 +2604,7 @@ mod tests {
                     console_keymap::freemix(),
                 ),
                 (duration, fade_to_black_duration),
-                &|_| None,
+                (&|_| None, &|_| Vec::new()),
             );
             let remaining = context.input(|input| input.events.clone());
             drop(ui);
@@ -2832,12 +2869,15 @@ mod tests {
                 },
                 (&inputs, &favorites, console_keymap::freemix()),
                 (30, 30),
-                &|_| {
-                    Some(CueIntent::Control {
-                        list: 1,
-                        operation: fm_protocol::CueOperation::Skip,
-                    })
-                },
+                (
+                    &|_| {
+                        Some(CueIntent::Control {
+                            list: 1,
+                            operation: fm_protocol::CueOperation::Skip,
+                        })
+                    },
+                    &|_| Vec::new(),
+                ),
             );
             drop(ui);
             let _ = context.end_pass();

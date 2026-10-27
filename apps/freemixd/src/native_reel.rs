@@ -21,6 +21,17 @@
 //! handing the encoder one RGBA picture and one silent audio block per
 //! output frame.
 //!
+//! A reel with a music bed ([`ReelMusic`]) also streams its audio file
+//! through one sequential decoder from the first output frame: each frame
+//! takes the file's samples of exactly that frame's span, fitted to the
+//! frame's 48 kHz stereo block, scaled by the bed's level, and added under
+//! the clips' audio. While a real-time clip's recorded audio plays the bed
+//! ramps to its ducked level over [`MUSIC_DUCK_SECONDS`] and back up after,
+//! and it fades out over the reel's last [`MUSIC_FADE_SECONDS`] (or the
+//! whole reel when shorter). Once the file ends the bed is silent. A bed
+//! that cannot be opened fails the export `music:open`, and one that stops
+//! decoding `music:decode`.
+//!
 //! On success the recorder drains and finalizes the part file (a
 //! fragmented MP4, since it writes through a pipe), which a stream copy
 //! remuxes into `<destination>.faststart.part`, a regular MP4 with its
@@ -59,18 +70,26 @@ use fm_codec_ffmpeg::record::{
     CleanupStatus, OutputFinalization, PairedFrame, RecordConfig, RecordFormat, RecordLimits,
     Recorder, RecorderState, StopOutcome, X264Preset,
 };
-use fm_codec_ffmpeg::{Adapter, Config};
+use fm_codec_ffmpeg::{Adapter, Config, LocalAudioDecoder, StreamSelector};
 use fm_control::ControlService;
 use fm_engine::{
     EngineReelChunk, EngineReelError, EngineReelExportState, EngineReelExportStatus,
     EngineReelLayer,
 };
-use fm_frame::SequenceNumber;
+use fm_frame::{AudioBlock, SequenceNumber};
+use fm_protocol::ReelMusic;
 use fm_types::{ChannelLayout, SampleRate};
 
 use crate::native_replay::{
     AUDIO_RATE, ReplayFormat, SegmentDecoder, enqueue, recorded_audio, retimed, silence,
 };
+
+/// Seconds a music bed takes to duck under clip audio, and to come back.
+const MUSIC_DUCK_SECONDS: f32 = 0.25;
+/// Seconds a music bed fades out over at the end of the reel.
+const MUSIC_FADE_SECONDS: u32 = 1;
+/// Audio blocks a music bed decodes at a time.
+const MUSIC_DECODE_BLOCKS: u32 = 32;
 
 /// Most chunks one export worker may hold beyond the chunk it encodes.
 const MAX_QUEUED_CHUNKS: usize = 2;
@@ -278,6 +297,8 @@ impl NativeReel {
         let worker_part = part.clone();
         let worker_cancelled = Arc::clone(&cancelled);
         let job = status.job;
+        let music = status.music.clone();
+        let total_frames = status.total_frames;
         let spawned = thread::Builder::new()
             .name(format!("freemixd-reel-export-{job}"))
             .spawn(move || {
@@ -289,6 +310,8 @@ impl NativeReel {
                     queue,
                     events: sender,
                     cancelled: worker_cancelled,
+                    music,
+                    total_frames,
                 });
             });
         if spawned.is_err() {
@@ -488,6 +511,8 @@ struct Worker {
     queue: Receiver<EngineReelChunk>,
     events: Sender<WorkerEvent>,
     cancelled: Arc<AtomicBool>,
+    music: Option<ReelMusic>,
+    total_frames: u64,
 }
 
 /// One export's worker: starts the recorder, then encodes every frame of
@@ -503,6 +528,8 @@ fn export_run(worker: Worker) {
         queue,
         events,
         cancelled,
+        music,
+        total_frames,
     } = worker;
     let remuxed = remux_path(&destination);
     let fail = |reason: &str| {
@@ -538,6 +565,14 @@ fn export_run(worker: Worker) {
         max_outstanding_pairs: 8,
         ..RecordLimits::default()
     };
+    let mut bed = None;
+    if let Some(music) = music {
+        let Some(opened) = MusicBed::open(&music, format, total_frames) else {
+            drop(file);
+            return fail("music:open");
+        };
+        bed = Some(opened);
+    }
     let Ok(mut recorder) = Recorder::start(file, config) else {
         return fail("encode:start");
     };
@@ -570,10 +605,25 @@ fn export_run(worker: Worker) {
                 let _ = recorder.cancel();
                 return fail("frame:decode");
             };
-            let Some(audio) = mix_audio(format, frame.output_frame, &frame.layers, &mut decoders)
+            let Some((audio, clip_audio)) =
+                mix_audio(format, frame.output_frame, &frame.layers, &mut decoders)
             else {
                 let _ = recorder.cancel();
                 return fail("frame:audio");
+            };
+            let audio = match &mut bed {
+                Some(bed) => match bed.mix_under(audio, frame.output_frame, clip_audio) {
+                    Ok(Some(audio)) => audio,
+                    Ok(None) => {
+                        let _ = recorder.cancel();
+                        return fail("frame:audio");
+                    }
+                    Err(reason) => {
+                        let _ = recorder.cancel();
+                        return fail(reason);
+                    }
+                },
+                None => audio,
             };
             let Ok(pair) = PairedFrame::new(
                 &record_format,
@@ -646,13 +696,13 @@ fn export_run(worker: Worker) {
 /// `output_frame`'s audio: each real-time layer's recorded audio of its
 /// frame, weighted like its picture (so a dissolve crossfades), summed;
 /// slow-motion layers and layers without audio add nothing, and a frame
-/// without any is silent.
+/// without any is silent. The flag says whether any clip audio played.
 fn mix_audio(
     format: ReplayFormat,
     output_frame: u64,
     layers: &[EngineReelLayer],
     decoders: &mut Vec<SegmentDecoder>,
-) -> Option<fm_frame::AudioBlock> {
+) -> Option<(AudioBlock, bool)> {
     let mut mixed: Option<Vec<Vec<f32>>> = None;
     for (index, layer) in layers.iter().enumerate() {
         if !layer.full_speed || layer.weight_num == 0 || layer.weight_den == 0 {
@@ -685,9 +735,182 @@ fn mix_audio(
         }
     }
     match mixed {
-        Some(planes) => recorded_audio(format.rate, format.clock_domain, output_frame, &planes),
-        None => silence(format.rate, format.clock_domain, output_frame),
+        Some(planes) => recorded_audio(format.rate, format.clock_domain, output_frame, &planes)
+            .map(|block| (block, true)),
+        None => silence(format.rate, format.clock_domain, output_frame).map(|block| (block, false)),
     }
+}
+
+/// One export's music bed: a sequential decoder over its audio file and
+/// the source samples decoded but not yet played.
+struct MusicBed {
+    format: ReplayFormat,
+    decoder: LocalAudioDecoder,
+    /// The file's sample rate, once its first block is decoded.
+    rate: Option<u32>,
+    /// Decoded source samples not yet played, per channel.
+    pending: Vec<Vec<f32>>,
+    /// The file has no more samples.
+    ended: bool,
+    level: f32,
+    ducked: f32,
+    /// The current duck gain, ramping between `ducked` and 1.
+    gain: f32,
+    /// The reel's last sample at 48 kHz, where the fade ends.
+    end_sample: u64,
+}
+
+impl MusicBed {
+    fn open(music: &ReelMusic, format: ReplayFormat, total_frames: u64) -> Option<Self> {
+        let adapter = Adapter::new(Config::default()).ok()?;
+        let decoder = adapter
+            .open_local_audio(&music.path, format.clock_domain, StreamSelector::Best)
+            .ok()?;
+        Some(Self {
+            format,
+            decoder,
+            rate: None,
+            pending: Vec::new(),
+            ended: false,
+            level: f32::from(music.level_percent) / 100.0,
+            ducked: f32::from(music.duck_percent) / 100.0,
+            gain: 1.0,
+            end_sample: sample_at(format, AUDIO_RATE, total_frames),
+        })
+    }
+
+    /// Decodes one more window into `pending`.
+    fn decode_more(&mut self) -> Result<(), &'static str> {
+        let count = std::num::NonZeroU32::new(MUSIC_DECODE_BLOCKS).ok_or("music:decode")?;
+        let window = self
+            .decoder
+            .decode_up_to(count)
+            .map_err(|_| "music:decode")?;
+        for block in &window.blocks {
+            let rate = block.sample_rate().hertz();
+            if self.rate.is_some_and(|known| known != rate) {
+                return Err("music:decode");
+            }
+            self.rate = Some(rate);
+            if self.pending.is_empty() {
+                self.pending = vec![Vec::new(); block.planes().len()];
+            }
+            for (plane, samples) in self.pending.iter_mut().zip(block.planes()) {
+                plane.extend_from_slice(samples);
+            }
+        }
+        if window.end_of_stream || window.blocks.is_empty() {
+            self.ended = true;
+        }
+        Ok(())
+    }
+
+    /// The file's samples of `output_frame`'s span, or `None` once the file
+    /// has ended; the file's last samples are padded with silence.
+    fn take(&mut self, output_frame: u64) -> Result<Option<Vec<Vec<f32>>>, &'static str> {
+        if self.rate.is_none() && !self.ended {
+            self.decode_more()?;
+        }
+        let Some(rate) = self.rate else {
+            return Ok(None);
+        };
+        let start = sample_at(self.format, rate, output_frame);
+        let end = sample_at(self.format, rate, output_frame + 1);
+        let needed = usize::try_from(end - start).map_err(|_| "music:decode")?;
+        while self.pending.first().map_or(0, Vec::len) < needed && !self.ended {
+            self.decode_more()?;
+        }
+        let available = self.pending.first().map_or(0, Vec::len);
+        if available == 0 {
+            return Ok(None);
+        }
+        let taken = needed.min(available);
+        Ok(Some(
+            self.pending
+                .iter_mut()
+                .map(|plane| {
+                    let mut samples: Vec<f32> = plane.drain(..taken).collect();
+                    samples.resize(needed, 0.0);
+                    samples
+                })
+                .collect(),
+        ))
+    }
+
+    /// `clips` with the bed's audio of `output_frame` added under it,
+    /// ducked while `clip_audio` plays and faded at the reel's end; `None`
+    /// when the frame's block cannot be built.
+    fn mix_under(
+        &mut self,
+        clips: AudioBlock,
+        output_frame: u64,
+        clip_audio: bool,
+    ) -> Result<Option<AudioBlock>, &'static str> {
+        let Some(source) = self.take(output_frame)? else {
+            return Ok(Some(clips));
+        };
+        let Some(bed) = recorded_audio(
+            self.format.rate,
+            self.format.clock_domain,
+            output_frame,
+            &source,
+        ) else {
+            return Ok(None);
+        };
+        let target = if clip_audio { self.ducked } else { 1.0 };
+        #[allow(clippy::cast_precision_loss)] // the sample rate is small
+        let step = 1.0 / (AUDIO_RATE as f32 * MUSIC_DUCK_SECONDS);
+        let first = sample_at(self.format, AUDIO_RATE, output_frame);
+        let fade = u64::from(AUDIO_RATE * MUSIC_FADE_SECONDS).min(self.end_sample);
+        let samples = clips.sample_count();
+        let mut gains = Vec::with_capacity(samples);
+        for index in 0..samples {
+            self.gain = if self.gain < target {
+                (self.gain + step).min(target)
+            } else {
+                (self.gain - step).max(target)
+            };
+            let remaining = self
+                .end_sample
+                .saturating_sub(first + u64::try_from(index).unwrap_or(u64::MAX));
+            #[allow(clippy::cast_precision_loss)] // sample counts of a second
+            let faded = if fade == 0 || remaining >= fade {
+                1.0
+            } else {
+                remaining as f32 / fade as f32
+            };
+            gains.push(self.level * self.gain * faded);
+        }
+        let planes = clips
+            .planes()
+            .iter()
+            .zip(bed.planes())
+            .map(|(clip, music)| {
+                clip.iter()
+                    .zip(music)
+                    .zip(&gains)
+                    .map(|((clip, music), gain)| clip + music * gain)
+                    .collect()
+            })
+            .collect();
+        Ok(AudioBlock::new(
+            clips.timing(),
+            clips.sample_rate(),
+            clips.channel_layout().clone(),
+            planes,
+        )
+        .ok())
+    }
+}
+
+/// The first sample of `frame` at `hertz` on the reel's frame grid.
+fn sample_at(format: ReplayFormat, hertz: u32, frame: u64) -> u64 {
+    let rate = format.rate;
+    u64::try_from(
+        u128::from(frame) * u128::from(hertz) * u128::from(rate.denominator())
+            / u128::from(rate.numerator()),
+    )
+    .unwrap_or(u64::MAX)
 }
 
 /// Composes `output_frame`'s layers into one RGBA picture at the show size:

@@ -15,6 +15,29 @@ use crate::theme::{
 };
 use crate::{StudioIntent, StudioUiState, overlay_status};
 
+/// What a profile's key for overlay channel `channel_number` does (vMix's
+/// `OverlayInputN`): off while the channel is on, else the Preview input on
+/// it; `None` while the overlay keys are unavailable.
+pub(crate) fn toggle_intent(state: &StudioUiState, channel_number: u8) -> Option<StudioIntent> {
+    let view = state.view.as_ref()?;
+    if !(state.connection_status.controls_enabled() && state.can_transition) {
+        return None;
+    }
+    let channel = WireOverlayChannelId::new(channel_number)?;
+    let on = view
+        .desired_overlays
+        .iter()
+        .any(|overlay| overlay.channel == channel_number && overlay.active);
+    Some(if on {
+        StudioIntent::OverlayOff { channel }
+    } else {
+        StudioIntent::TakeOverlay {
+            channel,
+            source: view.switcher.desired.preview,
+        }
+    })
+}
+
 /// The specific reason when session gates pass, the session reason otherwise.
 fn why(enabled: bool, session: &'static str, specific: &'static str) -> &'static str {
     if enabled { specific } else { session }
@@ -53,6 +76,21 @@ fn take_key(text: &str, enabled: bool) -> Button<'static> {
     } else {
         key
     }
+}
+
+/// `msg` with the active key profile's key for overlay channel
+/// `channel_number`, when it has one.
+fn overlay_key_hint(
+    state: &StudioUiState,
+    l: crate::l10n::Locale,
+    msg: Msg,
+    channel_number: u8,
+) -> String {
+    state.console_keymap().hint(
+        l,
+        l.text(msg),
+        crate::console_keymap::ConsoleAction::Overlay(channel_number),
+    )
 }
 
 /// Vertical gap between overlay rows.
@@ -179,7 +217,7 @@ fn draw_overlay_channel(
                     if ui
                         .add_enabled(take_enabled, take_key(l.text(Msg::TakeKey), take_enabled))
                         .hint(
-                            l.text(Msg::OverlayTakeHover),
+                            &overlay_key_hint(state, l, Msg::OverlayTakeHover, channel_number),
                             why(enabled, reason, Msg::ReasonNoPreviewSource.en()),
                         )
                         .clicked()
@@ -197,7 +235,7 @@ fn draw_overlay_channel(
                         })
                         .inner
                         .hint(
-                            l.text(Msg::OverlayOffHover),
+                            &overlay_key_hint(state, l, Msg::OverlayOffHover, channel_number),
                             why(enabled, reason, Msg::ReasonOverlayAlreadyOff.en()),
                         )
                         .clicked()

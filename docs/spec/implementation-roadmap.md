@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.112 / schema 85 (2026-10-27).
+(2026-10-19); items refreshed through protocol 2.113 / schema 86 (2026-10-27).
 Every parity row is still `planned` (or `blocked`); these are the
 highest-value remaining items, ranked:
 
@@ -68,8 +68,9 @@ highest-value remaining items, ranked:
    Designer tool windows, with a pop-out the platform embeds in the main
    window answering its panel's and window's keys (Protocol 2.105, schema
    81). Console key profiles (built-in FreeMix and vMix style, and up to
-   eight of the operator's own) now choose the console's switching,
-   transition, and cue keys (see the RC-004 boundary below). This closes
+   eight of the operator's own, carried between consoles as `.fmkeys`
+   files) now choose the console's switching, transition, overlay, replay
+   mark, and cue keys (see the RC-004 boundary below). This closes
    the gaps this item named; the row stays planned until
    its acceptance evidence covers its Windows and macOS profiles (see the
    RC-004 boundary below). This is a P0 row.
@@ -160,9 +161,10 @@ highest-value remaining items, ranked:
     the destination's disk, and a clip dissolves in from the one before for
     up to 600 frames (Protocol 2.111, schema 84), and exports carry each
     real-time clip's recorded audio (crossfaded through a dissolve; slow
-    motion is silent). Remaining: a music bed, ducking, and open-segment
-    deferral are absent, and nothing is certified (see the Phase 7
-    boundary).
+    motion is silent), with an optional music bed under it, ducked while
+    clip audio plays and faded at the end (Protocol 2.113, schema 86).
+    Remaining: open-segment deferral is absent, and nothing is certified
+    (see the Phase 7 boundary).
 
 Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
 since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
@@ -1192,7 +1194,11 @@ operators commonly give vMix's shortcut functions: `1`–`9` `PreviewInput`,
 `Ctrl+1`–`9` `ActiveInput` (Preview then Cut, so the input goes straight
 to Program), `Alt+1`–`9` `QuickPlay` (Preview then the Fade), `Space`
 `Cut`, `Enter` `Fade`, `Ctrl+B` `FadeToBlack`, and `Ctrl+F1`–`F4`
-`Transition1`–`4` (vMix itself ships no fixed key map). The Key profiles
+`Transition1`–`4`, `F9`–`F12` `OverlayInput1`–`4` (the Preview input on
+the overlay channel, or off while it is on), and `I`, `O`, and `E` the
+replay in mark, out mark, and capture (vMix itself ships no fixed key
+map; FreeMix leaves the overlay and replay actions without a key, so no
+project shortcut loses its key). The Key profiles
 window copies any profile into one of up to eight of the operator's own
 and gives each action another key or none ("Set key" takes the next
 press; a console key outside the profiles, such as the T-bar keys, the
@@ -1207,7 +1213,8 @@ every key hint on the console (Cut, Fade, FTB, the favourites, the input
 tiles, the cue GO) names the active profile's key, and a project shortcut
 may take any key the active profile leaves free but none it uses. Tested
 by unit tests of the profiles, their preference lines, and the console's
-key dispatch under the vMix style profile, a Studio preferences round
+key dispatch under the vMix style profile (overlay toggles and replay
+marks included), a Studio preferences round
 trip, a `.fmkeys` file round trip, and hover audit scenes of the Key
 profiles window.
 
@@ -5558,9 +5565,17 @@ optional `/<dissolve>`) with `remote-reel-export` polling to a terminal
 state. An export's audio is each real-time clip's recorded audio of its
 frame, weighted like its picture, so a dissolve crossfades it; slow-motion
 clips add none (the native test hears the red camera's tone before a
-dissolve and silence on the silent camera after it). Remaining gaps: no
-music bed or ducking; clips play forward only; exports needing an open
-segment are refused rather than deferred; and nothing is certified.
+dissolve and silence on the silent camera after it). A reel may carry a
+music bed (Protocol 2.113, schema 86): an audio file on the server played
+from the first frame at its level, ramped over a quarter second to its
+ducked level while real-time clip audio plays, faded over the last second,
+and silent once the file ends; an export keeps the bed it was accepted
+with, and an unreadable bed fails it `music:open` (the native test mixes a
+mono 44.1 kHz bed under a real-time clip and a slow-motion one and hears it
+ducked, alone, and faded). Studio's reel editor sets the bed and its two
+levels, and `reel-set --music` does in the CLI. Remaining gaps: clips play
+forward only; exports needing an open segment are refused rather than
+deferred; and nothing is certified.
 `OR-013` remains planned.
 
 Current end-to-end slice for items 1, 3, and 4: the show persists replay

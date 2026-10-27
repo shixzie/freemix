@@ -1071,7 +1071,8 @@ mod tests {
 
     /// RC-004 key profiles: the vMix style profile answers its keys (Space
     /// cuts, Enter fades, Ctrl+1 cuts input 1 straight to Program, Alt+1
-    /// fades it there, Ctrl+B fades to black, Ctrl+F1 takes favourite 1),
+    /// fades it there, Ctrl+B fades to black, Ctrl+F1 takes favourite 1,
+    /// F9 toggles overlay 1, I, O, and E mark and capture a replay event),
     /// and `FreeMix`'s own `C`, `F`, and `B` do nothing; a project shortcut
     /// may then take `C` but not Space.
     #[test]
@@ -1127,6 +1128,58 @@ mod tests {
         assert!(
             matches!(&intents[..], [StudioIntent::ToggleFadeToBlack { .. }, _]),
             "{intents:?}"
+        );
+        // F9 puts Preview on overlay 1, and takes it off once it is on;
+        // I, O, and E mark and capture a replay event while one records.
+        state.replay = Some(Box::new(crate::hover_audit::replay_status()));
+        let preview = state.view.as_ref().unwrap().switcher.desired.preview;
+        let channel = fm_protocol::WireOverlayChannelId::new(1).unwrap();
+        let intents = run_keys(
+            &mut shell,
+            &state,
+            &[
+                (Key::F9, NONE),
+                (Key::I, NONE),
+                (Key::O, NONE),
+                (Key::E, NONE),
+            ],
+            false,
+        );
+        assert_eq!(
+            intents,
+            vec![
+                StudioIntent::TakeOverlay {
+                    channel,
+                    source: preview,
+                },
+                StudioIntent::Replay(fm_protocol::ReplayOperation::MarkIn),
+                StudioIntent::Replay(fm_protocol::ReplayOperation::MarkOut),
+                StudioIntent::Replay(fm_protocol::ReplayOperation::CaptureMarks { name: None }),
+            ]
+        );
+        let view = state.view.as_mut().unwrap();
+        view.desired_overlays.retain(|overlay| overlay.channel != 1);
+        view.desired_overlays.push(fm_ui_model::OverlayStatus {
+            channel: 1,
+            source: Some(first),
+            active: true,
+            opacity: 255,
+            transition: fm_protocol::OverlayTransitionKind::default(),
+            duration_frames: 0,
+            position: fm_protocol::OverlayPositionPreset::default(),
+            border: fm_protocol::OverlayBorderPreset::default(),
+            queued_sources: Vec::new(),
+            included_outputs: Vec::new(),
+        });
+        assert_eq!(
+            run_keys(&mut shell, &state, &[(Key::F9, NONE)], false),
+            vec![StudioIntent::OverlayOff { channel }]
+        );
+        // Without a recording the replay keys do nothing.
+        state.replay = None;
+        assert_eq!(
+            run_keys(&mut shell, &state, &[(Key::I, NONE)], false),
+            Vec::new()
         );
         // The profile's keys, not FreeMix's, are reserved from shortcuts.
         let key = |name: &str| fm_protocol::WireShortcutKey::stroke(name, false, false, false);

@@ -15,7 +15,7 @@ use fm_persistence::{
     ProjectPosition, ProjectStore, ProjectValidationError, RuntimeRouting, StoreError,
     StoredProject,
 };
-use fm_types::reel::{MAX_REEL_TRIM_FRAMES, ReelClip, ReelSpec};
+use fm_types::reel::{MAX_REEL_TRIM_FRAMES, ReelClip, ReelMusic, ReelSpec};
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,
     SampleFormat, SampleRate, ScanMode, VideoDimensions, VideoFormat,
@@ -102,6 +102,7 @@ fn reel(id: u64, name: &str, clips: Vec<ReelClip>) -> ReelSpec {
         id,
         name: name.to_owned(),
         clips,
+        music: None,
     }
 }
 
@@ -147,7 +148,14 @@ fn reels_round_trip_exactly_and_strictly_in_project_json() {
         ))
         .unwrap();
     expected
-        .set_reel(reel(1, "Warm-up", vec![clip(5, 2, 4, 0, 25)]))
+        .set_reel(ReelSpec {
+            music: Some(ReelMusic {
+                path: "/srv/music/warm \"up\".wav".to_owned(),
+                level_percent: 80,
+                duck_percent: 25,
+            }),
+            ..reel(1, "Warm-up", vec![clip(5, 2, 4, 0, 25)])
+        })
         .unwrap();
     save(&store, expected.clone());
     let loaded = store.load().unwrap();
@@ -161,7 +169,8 @@ fn reels_round_trip_exactly_and_strictly_in_project_json() {
                  50, \"dissolve\": 0}, {\"event\": 2, \"angle\": 1, \"trim_in\": 0, \"trim_out\": \
                  12, \"speed\": 100, \"dissolve\": 6}]}, {\"id\": 1, \"name\": \"Warm-up\", \
                  \"clips\": [{\"event\": 5, \"angle\": 2, \"trim_in\": 4, \"trim_out\": 0, \
-                 \"speed\": 25, \"dissolve\": 0}]}]";
+                 \"speed\": 25, \"dissolve\": 0}], \"music\": {\"path\": \
+                 \"/srv/music/warm \\\"up\\\".wav\", \"level\": 80, \"duck\": 25}}]";
     assert!(text.contains(reels), "{text}");
 
     for (from, to) in [
@@ -169,6 +178,12 @@ fn reels_round_trip_exactly_and_strictly_in_project_json() {
         ("\"speed\": 50", "\"speed\": 50, \"fade\": 1"),
         (", \"trim_out\": 30", ""),
         (", \"dissolve\": 6", ""),
+        (", \"duck\": 25", ""),
+        ("\"duck\": 25", "\"duck\": 25, \"fade\": 1"),
+        // A music bed with a relative path or a level over 100 (schema 86).
+        ("\"path\": \"/srv", "\"path\": \"srv"),
+        ("\"level\": 80", "\"level\": 101"),
+        ("\"duck\": 25", "\"duck\": 101"),
         (
             "{\"id\": 1, \"name\": \"Warm-up\"",
             "{\"id\": 2, \"name\": \"Warm-up\"",
@@ -206,15 +221,15 @@ fn reels_round_trip_exactly_and_strictly_in_project_json() {
     // The previous schema is refused outright; no migration path exists.
     fs::write(
         &manifest,
-        text.replacen("\"schema_version\": 85", "\"schema_version\": 84", 1),
+        text.replacen("\"schema_version\": 86", "\"schema_version\": 85", 1),
     )
     .unwrap();
     assert!(matches!(
         store.load(),
         Err(StoreError::Validation(
             ProjectValidationError::UnsupportedSchema {
-                found: 84,
-                supported: 85
+                found: 85,
+                supported: 86
             }
         ))
     ));

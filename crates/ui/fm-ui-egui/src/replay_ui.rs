@@ -26,15 +26,16 @@
 
 use egui::{Checkbox, ComboBox, DragValue, Id, RichText, TextEdit, Ui};
 use fm_protocol::{
-    MAX_REEL_CLIPS, MAX_REEL_DISSOLVE_FRAMES, MAX_REEL_EXPORTS, MAX_REEL_TRIM_FRAMES, MAX_REELS,
-    MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS, MIN_REPLAY_RETENTION_SECONDS,
-    REPLAY_LAST_SECONDS, ReelClip, ReelExportState, ReelExportStatus, ReelOperation, ReelSpec,
-    ReelStatus, ReplayEventStatus, ReplayOperation, ReplayPlayerStatus, ReplaySettings,
-    ReplaySpeed, ReplayStatusMessage, reel_export_path_is_valid, reel_name_is_valid,
-    replay_event_name_is_valid,
+    MAX_REEL_CLIPS, MAX_REEL_DISSOLVE_FRAMES, MAX_REEL_EXPORTS, MAX_REEL_MUSIC_PERCENT,
+    MAX_REEL_TRIM_FRAMES, MAX_REELS, MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS,
+    MIN_REPLAY_RETENTION_SECONDS, REPLAY_LAST_SECONDS, ReelClip, ReelExportState, ReelExportStatus,
+    ReelMusic, ReelOperation, ReelSpec, ReelStatus, ReplayEventStatus, ReplayOperation,
+    ReplayPlayerStatus, ReplaySettings, ReplaySpeed, ReplayStatusMessage,
+    reel_export_path_is_valid, reel_name_is_valid, replay_event_name_is_valid,
 };
 use fm_types::{FrameRate, InputId};
 
+use crate::console_keymap::ConsoleAction;
 use crate::edit_history::stinger_edit_lock_reason;
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
@@ -163,6 +164,7 @@ fn new_reel(reels: &[ReelStatus], event: &ReplayEventStatus) -> Option<ReelSpec>
         id,
         name: format!("Reel {id}"),
         clips: vec![clip_from(event, angle)],
+        music: None,
     })
 }
 
@@ -240,6 +242,35 @@ fn move_clip(reel: &ReelStatus, index: usize, up: bool) -> Option<ReelOperation>
     Some(ReelOperation::Set(Box::new(spec)))
 }
 
+/// The level a new music bed starts at, in percent.
+const DEFAULT_MUSIC_LEVEL: u8 = 80;
+/// The ducked level a new music bed starts at, in percent of its level.
+const DEFAULT_MUSIC_DUCK: u8 = 25;
+
+/// Gives `reel` the music bed `music` (or none), or `None` when unchanged
+/// or unusable.
+fn set_music(reel: &ReelStatus, music: Option<ReelMusic>) -> Option<ReelOperation> {
+    if music == reel.spec.music || music.as_ref().is_some_and(|music| !music.is_valid()) {
+        return None;
+    }
+    let mut spec = reel.spec.clone();
+    spec.music = music;
+    Some(ReelOperation::Set(Box::new(spec)))
+}
+
+/// `reel`'s bed playing the file at `path`, keeping its levels (a new bed
+/// takes the default ones).
+fn music_with_path(reel: &ReelStatus, path: &str) -> ReelMusic {
+    ReelMusic {
+        path: path.trim().to_owned(),
+        ..reel.spec.music.clone().unwrap_or(ReelMusic {
+            path: String::new(),
+            level_percent: DEFAULT_MUSIC_LEVEL,
+            duck_percent: DEFAULT_MUSIC_DUCK,
+        })
+    }
+}
+
 /// The export command of `reel` to `destination` as job `job`.
 fn export_reel(reel: &ReelStatus, job: u64, destination: &str) -> Option<ReelOperation> {
     if job == 0
@@ -269,6 +300,18 @@ pub(crate) fn live_block(state: &StudioUiState) -> Option<&'static str> {
         && state.view.is_some()
         && state.can_transition;
     (!ready).then(|| unavailable_reason(state, Capability::Transition))
+}
+
+/// What a profile's replay mark or capture key does: `operation`, while
+/// the marks can be taken.
+pub(crate) fn key_intent(
+    state: &StudioUiState,
+    operation: ReplayOperation,
+) -> Option<StudioIntent> {
+    let status = state.replay.as_deref()?;
+    capture_block(state, status)
+        .is_none()
+        .then_some(StudioIntent::Replay(operation))
 }
 
 /// Why the recording settings cannot be changed.
@@ -523,6 +566,7 @@ fn draw_marks(
 ) {
     let block = capture_block(state, status);
     let reason = block.unwrap_or(Msg::ReplayReasonNotRecording.en());
+    let keymap = state.console_keymap();
     let mut push = |operation| intents.push(StudioIntent::Replay(operation));
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
@@ -530,19 +574,31 @@ fn draw_marks(
             (
                 ReplayOperation::MarkIn,
                 l.text(Msg::ReplayMarkIn),
-                l.text(Msg::ReplayMarkInHover).to_owned(),
+                keymap.hint(
+                    l,
+                    l.text(Msg::ReplayMarkInHover),
+                    ConsoleAction::ReplayMarkIn,
+                ),
                 status.mark_in.is_some().then_some(PREVIEW),
             ),
             (
                 ReplayOperation::MarkOut,
                 l.text(Msg::ReplayMarkOut),
-                l.text(Msg::ReplayMarkOutHover).to_owned(),
+                keymap.hint(
+                    l,
+                    l.text(Msg::ReplayMarkOutHover),
+                    ConsoleAction::ReplayMarkOut,
+                ),
                 status.mark_out.is_some().then_some(PREVIEW),
             ),
             (
                 ReplayOperation::CaptureMarks { name: None },
                 l.text(Msg::ReplayCapture),
-                l.text(Msg::ReplayCaptureHover).to_owned(),
+                keymap.hint(
+                    l,
+                    l.text(Msg::ReplayCaptureHover),
+                    ConsoleAction::ReplayCapture,
+                ),
                 None,
             ),
         ];
@@ -1030,7 +1086,155 @@ fn draw_reel_detail(
     {
         intents.push(StudioIntent::Reel(operation));
     }
+    draw_music(ui, l, reel, edit, intents);
     draw_export_controls(ui, l, state, reel, intents);
+}
+
+/// The reel's music bed: its file, and its level and ducked level while
+/// one is set (schema 86).
+fn draw_music(
+    ui: &mut Ui,
+    l: Locale,
+    reel: &ReelStatus,
+    edit: Option<&'static str>,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let reason = edit.unwrap_or(Msg::ReasonStateDisallows.en());
+    ui.add_space(4.0);
+    ui.label(caption(l.text(Msg::ReelMusicSection)));
+    ui.horizontal_wrapped(|ui| {
+        ui.label(l.text(Msg::ReelDestination));
+        let id = Id::new(("studio-reel-music-path", reel.id));
+        let current = reel
+            .spec
+            .music
+            .as_ref()
+            .map(|music| music.path.clone())
+            .unwrap_or_default();
+        let mut path = ui
+            .data(|data| data.get_temp::<String>(id))
+            .unwrap_or_else(|| current.clone());
+        let response = ui
+            .add_enabled(
+                edit.is_none(),
+                TextEdit::singleline(&mut path).desired_width(180.0),
+            )
+            .hint(l.text(Msg::ReelMusicPathHover), reason);
+        if response.changed() {
+            ui.data_mut(|data| data.insert_temp(id, path.clone()));
+        }
+        let bed = music_with_path(reel, &path);
+        let set_reason = edit
+            .or_else(|| (!bed.is_valid()).then_some(Msg::ReelReasonInvalidPath.en()))
+            .or_else(|| {
+                (reel.spec.music.as_ref() == Some(&bed)).then_some(Msg::ReelReasonMusicSet.en())
+            });
+        if ui
+            .add_enabled(
+                set_reason.is_none(),
+                key_button(l.text(Msg::ReelMusicSet), None, 52.0),
+            )
+            .hint(
+                l.text(Msg::ReelMusicSetHover),
+                set_reason.unwrap_or(Msg::ReasonStateDisallows.en()),
+            )
+            .clicked()
+            && let Some(operation) = set_music(reel, Some(bed))
+        {
+            ui.data_mut(|data| data.remove::<String>(id));
+            intents.push(StudioIntent::Reel(operation));
+        }
+        let remove_reason = edit.or_else(|| {
+            reel.spec
+                .music
+                .is_none()
+                .then_some(Msg::ReelReasonNoMusic.en())
+        });
+        if ui
+            .add_enabled(
+                remove_reason.is_none(),
+                key_button(l.text(Msg::ReelMusicRemove), None, 100.0),
+            )
+            .hint(
+                l.text(Msg::ReelMusicRemoveHover),
+                remove_reason.unwrap_or(Msg::ReasonStateDisallows.en()),
+            )
+            .clicked()
+            && let Some(operation) = set_music(reel, None)
+        {
+            ui.data_mut(|data| data.remove::<String>(id));
+            intents.push(StudioIntent::Reel(operation));
+        }
+    });
+    let Some(music) = &reel.spec.music else {
+        ui.label(caption(l.text(Msg::ReelMusicNone)));
+        return;
+    };
+    ui.horizontal_wrapped(|ui| {
+        for level in [MusicLevel::Level, MusicLevel::Ducked] {
+            ui.label(l.text(level.label()));
+            let value = level.value(music);
+            let id = Id::new(("studio-reel-music-level", reel.id, level));
+            let mut percent = ui.data(|data| data.get_temp::<u8>(id)).unwrap_or(value);
+            let response = ui
+                .add_enabled(
+                    edit.is_none(),
+                    DragValue::new(&mut percent)
+                        .range(0..=MAX_REEL_MUSIC_PERCENT)
+                        .suffix(" %"),
+                )
+                .hint(l.text(level.hover()), reason);
+            if response.dragged() || response.has_focus() {
+                ui.data_mut(|data| data.insert_temp(id, percent));
+            } else {
+                ui.data_mut(|data| data.remove::<u8>(id));
+            }
+            if (response.drag_stopped() || response.lost_focus()) && percent != value {
+                let mut updated = music.clone();
+                level.set(&mut updated, percent);
+                if let Some(operation) = set_music(reel, Some(updated)) {
+                    intents.push(StudioIntent::Reel(operation));
+                }
+            }
+        }
+    });
+}
+
+/// One of a music bed's two levels.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum MusicLevel {
+    Level,
+    Ducked,
+}
+
+impl MusicLevel {
+    const fn value(self, music: &ReelMusic) -> u8 {
+        match self {
+            Self::Level => music.level_percent,
+            Self::Ducked => music.duck_percent,
+        }
+    }
+
+    const fn set(self, music: &mut ReelMusic, percent: u8) {
+        match self {
+            Self::Level => music.level_percent = percent,
+            Self::Ducked => music.duck_percent = percent,
+        }
+    }
+
+    const fn label(self) -> Msg {
+        match self {
+            Self::Level => Msg::ReelMusicLevel,
+            Self::Ducked => Msg::ReelMusicDucked,
+        }
+    }
+
+    const fn hover(self) -> Msg {
+        match self {
+            Self::Level => Msg::ReelMusicLevelHover,
+            Self::Ducked => Msg::ReelMusicDuckedHover,
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // one clip's angle, trims, speed, and keys
@@ -1558,6 +1762,48 @@ mod tests {
     }
 
     /// OR-013: each reel key builds exactly its Set/Export command.
+    #[test]
+    fn music_keys_set_change_and_remove_the_bed() {
+        let status = crate::hover_audit::reel_status();
+        let scored = &status.reels[0];
+        let bed = scored.spec.music.clone().expect("the goal reel has music");
+        // A new file keeps the bed's levels; the same file changes nothing.
+        let moved = music_with_path(scored, " /srv/music/other.wav ");
+        assert_eq!(moved.path, "/srv/music/other.wav");
+        assert_eq!(
+            (moved.level_percent, moved.duck_percent),
+            (bed.level_percent, bed.duck_percent)
+        );
+        assert_eq!(
+            set_music(scored, Some(moved.clone())),
+            Some(ReelOperation::Set(Box::new(ReelSpec {
+                music: Some(moved),
+                ..scored.spec.clone()
+            })))
+        );
+        assert_eq!(set_music(scored, Some(bed)), None);
+        assert_eq!(
+            set_music(scored, None),
+            Some(ReelOperation::Set(Box::new(ReelSpec {
+                music: None,
+                ..scored.spec.clone()
+            })))
+        );
+        // A reel without music takes the default levels, and refuses a
+        // relative path.
+        let silent = &status.reels[1];
+        let fresh = music_with_path(silent, "/srv/music/bed.wav");
+        assert_eq!(
+            (fresh.level_percent, fresh.duck_percent),
+            (DEFAULT_MUSIC_LEVEL, DEFAULT_MUSIC_DUCK)
+        );
+        assert_eq!(set_music(silent, None), None);
+        assert_eq!(
+            set_music(silent, Some(music_with_path(silent, "music/bed.wav"))),
+            None
+        );
+    }
+
     #[test]
     fn reel_keys_build_the_expected_reel_operations() {
         let status = crate::hover_audit::reel_status();

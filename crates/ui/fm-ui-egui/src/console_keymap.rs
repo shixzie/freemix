@@ -1,5 +1,5 @@
 //! Console key profiles (RC-004): which keys drive the console's switching,
-//! transition, and cue actions on this console.
+//! transition, overlay, replay, and cue actions on this console.
 //!
 //! The console's own keys come in profiles. Two are built in: **`FreeMix`**
 //! (the keys the console always had: `1`–`8` to Preview, `C` Cut, `F` Fade,
@@ -8,7 +8,11 @@
 //! vMix's shortcut functions: `1`–`9` `PreviewInput`, `Ctrl+1`–`9`
 //! `ActiveInput` (straight to Program on a cut), `Alt+1`–`9` `QuickPlay`
 //! (straight to Program on the Fade), `Space` `Cut`, `Enter` `Fade`,
-//! `Ctrl+B` `FadeToBlack`, and `Ctrl+F1`–`F4` `Transition1`–`4`. (vMix
+//! `Ctrl+B` `FadeToBlack`, `Ctrl+F1`–`F4` `Transition1`–`4`, `F9`–`F12`
+//! `OverlayInput1`–`4` (the Preview input on the overlay, or off while
+//! on), and `I`, `O`, and `E` `ReplayMarkIn`, `ReplayMarkOut`, and the
+//! capture of the marked event. The `FreeMix` profile leaves the overlay
+//! and replay actions without a key. (vMix
 //! itself ships no fixed key map; its keys are whatever the operator binds
 //! in its Shortcuts settings.) An operator may make up to
 //! [`MAX_CUSTOM_PROFILES`] profiles of their own, each a copy of a built-in
@@ -40,8 +44,9 @@
 //!
 //! where `<n>` is the custom profile's position from 1 and `<action>` an
 //! [`ConsoleAction::token`] (`preview.3`, `take.3`, `quick_play.3`, `cut`,
-//! `fade`, `fade_to_black`, `favorite.2`, `cue_go`); only the actions whose
-//! key differs from the base profile are written.
+//! `fade`, `fade_to_black`, `favorite.2`, `overlay.1`, `cue_go`,
+//! `replay_mark_in`, `replay_mark_out`, `replay_capture`); only the actions
+//! whose key differs from the base profile are written.
 
 use std::collections::BTreeMap;
 
@@ -57,6 +62,8 @@ pub const MAX_PROFILE_NAME_BYTES: usize = 48;
 pub const NUMBERED_INPUTS: u8 = 9;
 /// Favourite transition buttons a key may take.
 pub const FAVORITE_KEYS: u8 = 4;
+/// Overlay channels a key may turn on or off.
+pub const OVERLAY_KEYS: u8 = 4;
 
 const PREFIX: &str = "keymap.";
 const PROFILE_KEY: &str = "keymap.profile";
@@ -80,8 +87,17 @@ pub enum ConsoleAction {
     FadeToBlack,
     /// Favourite transition button `n` (1 to [`FAVORITE_KEYS`]).
     Favorite(u8),
+    /// Overlay channel `n` (1 to [`OVERLAY_KEYS`]): the Preview input on
+    /// it, or off while it is on (vMix's `OverlayInputN`).
+    Overlay(u8),
     /// GO on the Cues panel's list.
     CueGo,
+    /// The replay in mark at the live frame.
+    ReplayMarkIn,
+    /// The replay out mark at the live frame.
+    ReplayMarkOut,
+    /// Capture the marked range as a replay event.
+    ReplayCapture,
 }
 
 impl ConsoleAction {
@@ -94,7 +110,13 @@ impl ConsoleAction {
             .chain(numbered(Self::QuickPlay))
             .chain([Self::Cut, Self::Fade, Self::FadeToBlack])
             .chain((1..=FAVORITE_KEYS).map(Self::Favorite))
-            .chain([Self::CueGo])
+            .chain((1..=OVERLAY_KEYS).map(Self::Overlay))
+            .chain([
+                Self::CueGo,
+                Self::ReplayMarkIn,
+                Self::ReplayMarkOut,
+                Self::ReplayCapture,
+            ])
             .collect()
     }
 
@@ -109,7 +131,11 @@ impl ConsoleAction {
             Self::Fade => "fade".to_owned(),
             Self::FadeToBlack => "fade_to_black".to_owned(),
             Self::Favorite(n) => format!("favorite.{n}"),
+            Self::Overlay(n) => format!("overlay.{n}"),
             Self::CueGo => "cue_go".to_owned(),
+            Self::ReplayMarkIn => "replay_mark_in".to_owned(),
+            Self::ReplayMarkOut => "replay_mark_out".to_owned(),
+            Self::ReplayCapture => "replay_capture".to_owned(),
         }
     }
 
@@ -125,11 +151,16 @@ impl ConsoleAction {
     #[must_use]
     pub(crate) const fn group(self) -> crate::ShortcutGroup {
         match self {
-            Self::Preview(_) | Self::Take(_) | Self::QuickPlay(_) | Self::Cut => {
-                crate::ShortcutGroup::Switching
-            }
+            Self::Preview(_)
+            | Self::Take(_)
+            | Self::QuickPlay(_)
+            | Self::Cut
+            | Self::Overlay(_) => crate::ShortcutGroup::Switching,
             Self::Fade | Self::FadeToBlack | Self::Favorite(_) => crate::ShortcutGroup::Transitions,
             Self::CueGo => crate::ShortcutGroup::Cues,
+            Self::ReplayMarkIn | Self::ReplayMarkOut | Self::ReplayCapture => {
+                crate::ShortcutGroup::Output
+            }
         }
     }
 
@@ -145,7 +176,11 @@ impl ConsoleAction {
             Self::Fade => l.text(Msg::ShortcutFade).to_owned(),
             Self::FadeToBlack => l.text(Msg::ShortcutFadeToBlack).to_owned(),
             Self::Favorite(n) => numbered(Msg::ConsoleActionFavorite, n),
+            Self::Overlay(n) => numbered(Msg::ConsoleActionOverlay, n),
             Self::CueGo => l.text(Msg::ShortcutCueGo).to_owned(),
+            Self::ReplayMarkIn => l.text(Msg::ConsoleActionReplayMarkIn).to_owned(),
+            Self::ReplayMarkOut => l.text(Msg::ConsoleActionReplayMarkOut).to_owned(),
+            Self::ReplayCapture => l.text(Msg::ConsoleActionReplayCapture).to_owned(),
         }
     }
 }
@@ -354,7 +389,15 @@ impl BuiltinProfile {
                 for (n, key) in [(1, Key::F1), (2, Key::F2), (3, Key::F3), (4, Key::F4)] {
                     bindings.push((ConsoleAction::Favorite(n), ConsoleStroke::command(key)));
                 }
-                bindings.push((ConsoleAction::CueGo, ConsoleStroke::plain(Key::G)));
+                for (n, key) in [(1, Key::F9), (2, Key::F10), (3, Key::F11), (4, Key::F12)] {
+                    bindings.push((ConsoleAction::Overlay(n), ConsoleStroke::plain(key)));
+                }
+                bindings.extend([
+                    (ConsoleAction::CueGo, ConsoleStroke::plain(Key::G)),
+                    (ConsoleAction::ReplayMarkIn, ConsoleStroke::plain(Key::I)),
+                    (ConsoleAction::ReplayMarkOut, ConsoleStroke::plain(Key::O)),
+                    (ConsoleAction::ReplayCapture, ConsoleStroke::plain(Key::E)),
+                ]);
             }
         }
         let mut keymap = ConsoleKeymap { bindings };
@@ -519,7 +562,8 @@ fn same_kind(first: ConsoleAction, next: ConsoleAction, offset: u8) -> bool {
         (ConsoleAction::Preview(a), ConsoleAction::Preview(b))
         | (ConsoleAction::Take(a), ConsoleAction::Take(b))
         | (ConsoleAction::QuickPlay(a), ConsoleAction::QuickPlay(b))
-        | (ConsoleAction::Favorite(a), ConsoleAction::Favorite(b)) => step(a, b),
+        | (ConsoleAction::Favorite(a), ConsoleAction::Favorite(b))
+        | (ConsoleAction::Overlay(a), ConsoleAction::Overlay(b)) => step(a, b),
         _ => offset == 0 && first == next,
     }
 }
@@ -537,6 +581,9 @@ const fn digit_of(key: Key) -> Option<u8> {
         Key::Num7 | Key::F7 => 7,
         Key::Num8 | Key::F8 => 8,
         Key::Num9 | Key::F9 => 9,
+        Key::F10 => 10,
+        Key::F11 => 11,
+        Key::F12 => 12,
         _ => return None,
     })
 }
@@ -547,6 +594,7 @@ fn run_label(l: Locale, action: ConsoleAction) -> String {
         ConsoleAction::Preview(_) => Msg::ConsoleActionPreviewRun,
         ConsoleAction::Take(_) => Msg::ConsoleActionTakeRun,
         ConsoleAction::QuickPlay(_) => Msg::ConsoleActionQuickPlayRun,
+        ConsoleAction::Overlay(_) => Msg::ConsoleActionOverlayRun,
         _ => Msg::ShortcutFavorite,
     })
     .to_owned()

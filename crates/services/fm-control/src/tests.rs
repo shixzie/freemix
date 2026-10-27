@@ -2864,6 +2864,7 @@ fn wire_edit_payload_round_trips_every_undoable_engine_edit() {
                 speed_percent: 100,
                 dissolve_frames: 0,
             }],
+            music: None,
         }))),
     ];
     for edit in edits {
@@ -8708,6 +8709,7 @@ fn reel_edits_are_project_commands_and_exports_are_live() {
             speed_percent: 100,
             dissolve_frames: 0,
         }],
+        music: None,
     };
     let set = fm_protocol::ReelOperation::Set(Box::new(spec.clone()));
     let delete = fm_protocol::ReelOperation::Delete { reel: 1 };
@@ -8797,6 +8799,7 @@ fn reel_status_carries_the_stored_spec_and_export_progress() {
             speed_percent: 100,
             dissolve_frames: 0,
         }],
+        music: None,
     };
     let status = fm_engine::EngineReelStatus {
         reels: vec![fm_engine::EngineReelSummary {
@@ -8815,6 +8818,7 @@ fn reel_status_carries_the_stored_spec_and_export_progress() {
             total_frames: 300,
             bytes: None,
             failure: None,
+            music: None,
         }],
     };
     let message = reel::status_message(

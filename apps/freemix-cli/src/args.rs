@@ -6083,6 +6083,24 @@ fn reel_clips(value: &str) -> Result<Vec<fm_protocol::ReelClip>, ArgsError> {
     Ok(clips)
 }
 
+/// The level a `reel-set --music` bed takes without `--music-level`.
+const DEFAULT_REEL_MUSIC_LEVEL: u8 = 80;
+/// The ducked level a `reel-set --music` bed takes without `--music-duck`.
+const DEFAULT_REEL_MUSIC_DUCK: u8 = 25;
+
+/// A music bed level in percent, 0 to
+/// [`fm_protocol::MAX_REEL_MUSIC_PERCENT`] (schema 86).
+fn reel_music_percent(value: &str, field: &'static str) -> Result<u8, ArgsError> {
+    let percent: u8 = number(value, field)?;
+    if percent > fm_protocol::MAX_REEL_MUSIC_PERCENT {
+        return Err(ArgsError::InvalidChoice {
+            field,
+            value: percent.to_string(),
+        });
+    }
+    Ok(percent)
+}
+
 /// `reel`, `reel-set`, `reel-delete`, and their `remote-` forms, plus the
 /// live export controls (OR-013, Protocol 2.107).
 #[allow(clippy::too_many_lines)] // one arm per command shape
@@ -6112,6 +6130,9 @@ fn parse_reel(
             let mut id = None;
             let mut name = None;
             let mut clips = None;
+            let mut music_path = None;
+            let mut music_level = None;
+            let mut music_duck = None;
             let mut key = None;
             let mut expected_revision = None;
             while let Some(option) = arguments.next() {
@@ -6121,6 +6142,30 @@ fn parse_reel(
                             return Err(ArgsError::DuplicateOption("--id"));
                         }
                         id = Some(reel_id(&required(&mut arguments, "reel id")?)?);
+                    }
+                    "--music" => {
+                        if music_path.is_some() {
+                            return Err(ArgsError::DuplicateOption("--music"));
+                        }
+                        music_path = Some(required(&mut arguments, "reel music path")?);
+                    }
+                    "--music-level" => {
+                        if music_level.is_some() {
+                            return Err(ArgsError::DuplicateOption("--music-level"));
+                        }
+                        music_level = Some(reel_music_percent(
+                            &required(&mut arguments, "reel music level")?,
+                            "reel music level",
+                        )?);
+                    }
+                    "--music-duck" => {
+                        if music_duck.is_some() {
+                            return Err(ArgsError::DuplicateOption("--music-duck"));
+                        }
+                        music_duck = Some(reel_music_percent(
+                            &required(&mut arguments, "reel music duck")?,
+                            "reel music duck",
+                        )?);
                     }
                     "--name" => {
                         if name.is_some() {
@@ -6150,10 +6195,28 @@ fn parse_reel(
                     _ => return Err(ArgsError::UnknownOption(option)),
                 }
             }
+            let music = match music_path {
+                Some(path) => {
+                    let music = fm_protocol::ReelMusic {
+                        path,
+                        level_percent: music_level.unwrap_or(DEFAULT_REEL_MUSIC_LEVEL),
+                        duck_percent: music_duck.unwrap_or(DEFAULT_REEL_MUSIC_DUCK),
+                    };
+                    if !music.is_valid() {
+                        return Err(ArgsError::InvalidReel(fm_protocol::ReelSpecError::Music));
+                    }
+                    Some(music)
+                }
+                None if music_level.is_some() || music_duck.is_some() => {
+                    return Err(ArgsError::MissingValue("reel music path"));
+                }
+                None => None,
+            };
             let spec = Box::new(fm_protocol::ReelSpec {
                 id: id.ok_or(ArgsError::MissingValue("reel id"))?,
                 name: name.ok_or(ArgsError::MissingValue("reel name"))?,
                 clips: clips.ok_or(ArgsError::MissingValue("reel clips"))?,
+                music,
             });
             Ok(if remote {
                 Command::RemoteReelSet {
@@ -11390,6 +11453,7 @@ mod tests {
             id: 3,
             name: "Highlights".into(),
             clips: vec![clip(7, angle(1), 0, 0, 100), clip(8, angle(2), 5, 6, 50)],
+            music: None,
         });
         assert_eq!(
             parse(strings(&["reel", "show.freemix"])),

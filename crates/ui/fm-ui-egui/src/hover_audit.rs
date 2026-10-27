@@ -2675,9 +2675,22 @@ pub(crate) fn reel_status() -> fm_protocol::ReelStatusMessage {
             id,
             name: name.into(),
             clips,
+            music: None,
         },
         total_frames,
         error: error.map(ToOwned::to_owned),
+    };
+    // The goal reel plays a music bed (schema 86), so its levels draw.
+    let scored = |reel: ReelStatus| ReelStatus {
+        spec: ReelSpec {
+            music: Some(fm_protocol::ReelMusic {
+                path: "/srv/music/anthem.wav".into(),
+                level_percent: 80,
+                duck_percent: 25,
+            }),
+            ..reel.spec
+        },
+        ..reel
     };
     fm_protocol::ReelStatusMessage {
         server: fm_protocol::ServerIdentity {
@@ -2689,7 +2702,7 @@ pub(crate) fn reel_status() -> fm_protocol::ReelStatusMessage {
         sequence: 5,
         request_id: None,
         reels: vec![
-            reel(
+            scored(reel(
                 1,
                 "Goal reel",
                 vec![
@@ -2701,7 +2714,7 @@ pub(crate) fn reel_status() -> fm_protocol::ReelStatusMessage {
                 ],
                 Some(250),
                 None,
-            ),
+            )),
             reel(
                 2,
                 "Last plays",

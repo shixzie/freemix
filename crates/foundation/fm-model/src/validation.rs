@@ -1951,6 +1951,11 @@ fn validate_reels(project: &Project, errors: &mut Vec<ValidationError>) {
                 field: "reels.clips.dissolve",
                 kind: ValidationErrorKind::OutOfRange,
             },
+            ReelSpecError::Music => ValidationError {
+                entity: None,
+                field: "reels.music",
+                kind: ValidationErrorKind::OutOfRange,
+            },
         });
     }
 }

@@ -13,7 +13,7 @@ use fm_engine::{
     EngineInputLifecycleEdit, EngineReelExportState, EngineReelOperation, EngineReplayFeed,
     EngineReplayOperation, FrameResult, ShowState,
 };
-use fm_types::reel::{ReelClip, ReelSpec};
+use fm_types::reel::{ReelClip, ReelMusic, ReelSpec};
 use fm_types::replay::ReplaySettings;
 use fm_types::{FrameRate, InputId};
 
@@ -129,6 +129,7 @@ fn spec(id: u64, event: u32, angle: u128) -> ReelSpec {
             speed_percent: 100,
             dissolve_frames: 0,
         }],
+        music: None,
     }
 }
 
@@ -538,6 +539,50 @@ fn a_dissolve_overlaps_two_clips_with_linear_weights() {
         EngineCommand::Reel(EngineReelOperation::Set(Box::new(first_dissolves))),
     );
     assert_eq!(rejection(&outcome).fields[0].code, "invalid_dissolve");
+}
+
+#[test]
+fn an_export_snapshots_the_music_bed_and_an_unusable_bed_is_refused() {
+    let (mut engine, mut recording) = external_engine(&[1], 60);
+    recording.record(&mut engine, input(1), 6 * FPS);
+    capture_last(&mut engine, "first", 5);
+    recording.record(&mut engine, input(1), FPS);
+    let event = engine.replay_status().events[0].clone();
+    assert!(event.complete);
+    let bed = ReelMusic {
+        path: "/srv/music/bed.wav".to_owned(),
+        level_percent: 80,
+        duck_percent: 25,
+    };
+    reel(
+        &mut engine,
+        "set",
+        ReelSpec {
+            music: Some(bed.clone()),
+            ..spec(1, event.id, 1)
+        },
+    );
+    export(&mut engine, "export", 1, 1, "/srv/reels/music.mp4");
+    // A later edit of the reel leaves the accepted export's bed alone.
+    reel(&mut engine, "unset", spec(1, event.id, 1));
+    let exports = engine.reel_status().exports;
+    assert_eq!(exports.len(), 1);
+    assert_eq!(exports[0].music, Some(bed.clone()));
+
+    let outcome = execute(
+        &mut engine,
+        "relative",
+        EngineCommand::Reel(EngineReelOperation::Set(Box::new(ReelSpec {
+            music: Some(ReelMusic {
+                path: "music/bed.wav".to_owned(),
+                ..bed
+            }),
+            ..spec(2, event.id, 1)
+        }))),
+    );
+    assert_eq!(rejection(&outcome).code, RejectionCode::InvalidCommand);
+    assert_eq!(rejection(&outcome).fields[0].field, "music");
+    assert_eq!(rejection(&outcome).fields[0].code, "invalid_music");
 }
 
 #[test]

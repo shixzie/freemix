@@ -7,8 +7,8 @@ use core::num::NonZeroU128;
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, EditHistoryStatus, EngineIdentity,
     EventCursor, EventMessage, EventPayload, ProtocolVersion, ReelClip, ReelExportState,
-    ReelExportStatus, ReelOperation, ReelSpec, ReelStatus, ReelStatusMessage, ReelStatusRequest,
-    ServerIdentity, WireInputId, WireMessage, decode_line, encode_line,
+    ReelExportStatus, ReelMusic, ReelOperation, ReelSpec, ReelStatus, ReelStatusMessage,
+    ReelStatusRequest, ServerIdentity, WireInputId, WireMessage, decode_line, encode_line,
 };
 use fm_types::InputId;
 
@@ -82,6 +82,15 @@ fn spec() -> ReelSpec {
                 ..clip(4, 2, 12, 6, 50)
             },
         ],
+        music: Some(music()),
+    }
+}
+
+fn music() -> ReelMusic {
+    ReelMusic {
+        path: "/srv/music/bed:1.wav".to_owned(),
+        level_percent: 80,
+        duck_percent: 25,
     }
 }
 
@@ -90,7 +99,8 @@ fn operations() -> Vec<(ReelOperation, &'static str)> {
         (
             ReelOperation::Set(Box::new(spec())),
             "reel_set\treel=1\tname=Goals%3A%201%3B%202\t\
-             clips=3%3A1%3A0%3A0%3A100%3A0%2C4%3A2%3A12%3A6%3A50%3A9",
+             clips=3%3A1%3A0%3A0%3A100%3A0%2C4%3A2%3A12%3A6%3A50%3A9\t\
+             music=80%3A25%3A%2Fsrv%2Fmusic%2Fbed%3A1.wav",
         ),
         (ReelOperation::Delete { reel: 2 }, "reel_delete\treel=2"),
         (
@@ -177,6 +187,7 @@ fn reel_changed_carries_frames_and_a_usable_error() {
         line.contains(
             "\tevent=reel_changed\treel=1\tname=Goals%3A%201%3B%202\t\
              clips=3%3A1%3A0%3A0%3A100%3A0%2C4%3A2%3A12%3A6%3A50%3A9\t\
+             music=80%3A25%3A%2Fsrv%2Fmusic%2Fbed%3A1.wav\t\
              total_frames=1500\terror=event%203%3B%20angle%202%3A%20incomplete\tundo_depth=0"
         ),
         "{line}"
@@ -218,6 +229,7 @@ fn reel_changed_carries_frames_and_a_usable_error() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one refusal per command shape and bound
 fn commands_are_strict() {
     let prefix = prefix();
     for fields in [
@@ -255,6 +267,7 @@ fn commands_are_strict() {
                 id: 1,
                 name: " ".to_owned(),
                 clips: vec![clip(1, 1, 0, 0, 100)],
+                music: None,
             })
         ))))
         .is_err()
@@ -273,11 +286,66 @@ fn commands_are_strict() {
             id: 1,
             name: "Full".to_owned(),
             clips: (0..count).map(|event| clip(event, 1, 0, 0, 100)).collect(),
+            music: None,
         };
         command(CommandPayload::Reel(ReelOperation::Set(Box::new(spec))))
     };
     assert!(encode_line(&full(64)).is_ok());
     assert!(encode_line(&full(65)).is_err());
+    // A music bed needs an absolute, bounded path and levels to 100.
+    let bed = |music: ReelMusic| {
+        command(CommandPayload::Reel(ReelOperation::Set(Box::new(
+            ReelSpec {
+                music: Some(music),
+                ..spec()
+            },
+        ))))
+    };
+    round_trip(&bed(ReelMusic {
+        level_percent: 100,
+        duck_percent: 0,
+        ..music()
+    }));
+    round_trip(&bed(ReelMusic {
+        path: format!(
+            "/{}",
+            "a".repeat(fm_protocol::MAX_REEL_MUSIC_PATH_BYTES - 1)
+        ),
+        ..music()
+    }));
+    for unusable in [
+        ReelMusic {
+            level_percent: 101,
+            ..music()
+        },
+        ReelMusic {
+            duck_percent: 101,
+            ..music()
+        },
+        ReelMusic {
+            path: "music/bed.wav".to_owned(),
+            ..music()
+        },
+        ReelMusic {
+            path: format!("/{}", "a".repeat(fm_protocol::MAX_REEL_MUSIC_PATH_BYTES)),
+            ..music()
+        },
+    ] {
+        assert!(encode_line(&bed(unusable)).is_err());
+    }
+    let set = encode_line(&command(CommandPayload::Reel(ReelOperation::Set(
+        Box::new(spec()),
+    ))))
+    .unwrap();
+    for (from, to) in [
+        ("music=80%3A25%3A", "music=080%3A25%3A"),
+        ("music=80%3A25%3A", "music=80%3A"),
+        ("music=80%3A25%3A", "music=80%3A101%3A"),
+        ("music=80%3A25%3A%2Fsrv", "music=80%3A25%3Asrv"),
+    ] {
+        assert!(set.contains(from), "{from}");
+        refused(&set.replacen(from, to, 1));
+    }
     // The longest dissolve is accepted on a later clip, never on the first.
     let dissolving = |first: u32, second: u32| {
         command(CommandPayload::Reel(ReelOperation::Set(Box::new(
@@ -294,6 +362,7 @@ fn commands_are_strict() {
                         ..clip(2, 1, 0, 0, 100)
                     },
                 ],
+                music: None,
             },
         ))))
     };
@@ -336,6 +405,7 @@ fn status(request_id: Option<&str>) -> ReelStatusMessage {
                     id: 2,
                     name: "Last 5 s".to_owned(),
                     clips: vec![clip(7, 3, 0, 0, 25)],
+                    music: None,
                 },
                 total_frames: None,
                 error: None,
@@ -378,8 +448,8 @@ fn export_state_tokens_are_stable() {
 
 #[test]
 fn protocol_2_109_is_current() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 112));
-    assert_eq!(prefix(), "command\tprotocol=2.112\tid=a\tidempotency_key=k");
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 113));
+    assert_eq!(prefix(), "command\tprotocol=2.113\tid=a\tidempotency_key=k");
 }
 
 #[test]
@@ -390,8 +460,9 @@ fn status_and_its_request_have_an_exact_wire_form() {
             "reel_status\tengine_id=e\tproject_id=p\tstate_epoch=1\tlog_id=l\tsequence=7\t\
              reels=1%3AGoals%253A%25201%253B%25202%3A1500%3A\
              event%25203%2520is%2520incomplete%3A\
+             80%253A25%253A%252Fsrv%252Fmusic%252Fbed%253A1.wav%3A\
              3%3A1%3A0%3A0%3A100%3A0%2C4%3A2%3A12%3A6%3A50%3A9%3B\
-             2%3ALast%25205%2520s%3A%3A%3A7%3A3%3A0%3A0%3A25%3A0\t"
+             2%3ALast%25205%2520s%3A%3A%3A%3A7%3A3%3A0%3A0%3A25%3A0\t"
         ),
         "{line}"
     );
@@ -429,6 +500,9 @@ fn status_and_its_request_have_an_exact_wire_form() {
         ("%3Arunning%3A", "%3Alive%3A"),
         ("%3B2%3ALast", "%3B1%3ALast"),
         ("%3B2%3A2%3AC", "%3B1%3A2%3AC"),
+        // A music bed's level over 100, or a relative path.
+        ("80%253A25%253A%252F", "101%253A25%253A%252F"),
+        ("80%253A25%253A%252Fsrv", "80%253A25%253Asrv"),
     ] {
         assert!(good.contains(from), "{from}");
         refused(&good.replacen(from, to, 1));
@@ -463,6 +537,7 @@ fn malformed_and_oversized_status_records_are_refused() {
                 id,
                 name: format!("Reel {id}"),
                 clips: vec![clip(1, 1, 0, 0, 100)],
+                music: None,
             },
             total_frames: None,
             error: None,

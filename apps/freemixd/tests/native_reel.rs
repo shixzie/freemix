@@ -690,6 +690,7 @@ fn native_daemon_exports_a_reel_with_the_exact_frame_count() {
         id: REEL,
         name: "Highlights".into(),
         clips: vec![clip(first_event.id), clip(second_event.id)],
+        music: None,
     }));
     let planned = client.poll_reel_status("the reel plan", |status| {
         status
@@ -803,6 +804,7 @@ fn native_daemon_exports_a_dissolve_between_two_angles() {
                 ..clip(second_event.id)
             },
         ],
+        music: None,
     }));
     let planned = client.poll_reel_status("the reel plan", |status| {
         status
@@ -868,6 +870,165 @@ fn native_daemon_exports_a_dissolve_between_two_angles() {
     assert_no_reel_failures(&daemon);
 }
 
+/// A mono 44.1 kHz WAV of a 300 Hz sine at half scale, `seconds` long.
+fn generate_music_bed(path: &Path, seconds: u32) {
+    let status = Command::new("ffmpeg")
+        .args(["-nostdin", "-hide_banner", "-loglevel", "error"])
+        .args([
+            "-f",
+            "lavfi",
+            "-i",
+            &format!("sine=frequency=300:sample_rate=44100:d={seconds}"),
+        ])
+        .args(["-af", "volume=4", "-ac", "1", "-c:a", "pcm_s16le", "-y"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "fixture generation failed: {status}");
+}
+
+/// Schema 86: a reel's music bed plays under its clips at its level,
+/// ducks while a real-time clip's recorded audio plays, and fades out at
+/// the reel's end; a bed that cannot be opened fails the export.
+#[test]
+#[allow(clippy::too_many_lines)] // the reel, two exports, then the audio
+fn native_daemon_mixes_a_ducked_music_bed_under_a_reel() {
+    if !tools_available() {
+        eprintln!("native reel integration skipped: FFmpeg tools unavailable");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("reel.freemix");
+    save_project(&project_path);
+    let bed = directory.path().join("bed.wav");
+    generate_music_bed(&bed, 30);
+    let daemon = match start_native(&project_path) {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            assert!(
+                std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+            );
+            eprintln!("native reel integration skipped: {error}");
+            return;
+        }
+    };
+    let mut client = Client::connect(daemon.address);
+    client.command(CommandPayload::Media {
+        input: fm_protocol::WireInputId::from_domain(input(CAMERA)),
+        operation: fm_protocol::MediaOperation::Play,
+    });
+    let (first, second) = two_complete_events(&mut client);
+    let first_event = &first.events[0];
+    let second_event = second
+        .events
+        .iter()
+        .find(|event| event.id != first_event.id)
+        .expect("the second event");
+    // Five seconds in real time (the tone plays), then ten at half speed
+    // (slow motion is silent, so only the bed plays).
+    let expected = 125 + 250;
+    let music = fm_protocol::ReelMusic {
+        path: bed.to_string_lossy().into_owned(),
+        level_percent: 80,
+        duck_percent: 25,
+    };
+    client.reel(set_reel(ReelSpec {
+        id: REEL,
+        name: "Music".into(),
+        clips: vec![
+            clip(first_event.id),
+            fm_protocol::ReelClip {
+                speed_percent: 50,
+                ..clip(second_event.id)
+            },
+        ],
+        music: Some(music.clone()),
+    }));
+    let planned = client.poll_reel_status("the reel plan", |status| {
+        status.reels.first().is_some_and(|reel| {
+            reel.total_frames == Some(expected) && reel.spec.music.as_ref() == Some(&music)
+        })
+    });
+    assert_eq!(planned.reels[0].error, None);
+
+    let destination = directory.path().join("music.mp4");
+    client.reel(ReelOperation::Export {
+        job: JOB,
+        reel: REEL,
+        destination: destination.to_string_lossy().into_owned(),
+    });
+    let completed = client.poll_reel_status("the export completed", |status| {
+        status
+            .exports
+            .iter()
+            .any(|export| export.job == JOB && export.state == ReelExportState::Completed)
+    });
+    let export = completed
+        .exports
+        .iter()
+        .find(|export| export.job == JOB)
+        .unwrap();
+    assert_eq!(export.completed_frames, expected);
+    assert_no_reel_failures(&daemon);
+
+    // The bed alone at 80 % of its half-scale sine.
+    let alone = audio_peak(&destination, 6.0, 13.5);
+    assert!((0.3..0.5).contains(&alone), "bed alone {alone}");
+    // Under the tone (1/8 scale) it is ducked to a quarter: far below the
+    // 0.525 the two would reach undocked.
+    let ducked = audio_peak(&destination, 1.0, 4.5);
+    assert!((0.1..0.3).contains(&ducked), "ducked {ducked}");
+    // The last quarter second fades toward silence.
+    let faded = audio_peak(&destination, 14.75, 14.95);
+    assert!(faded < 0.16, "faded {faded}");
+
+    // A bed that cannot be opened fails the export.
+    client.reel(set_reel(ReelSpec {
+        id: REEL,
+        name: "Music".into(),
+        clips: vec![clip(first_event.id)],
+        music: Some(fm_protocol::ReelMusic {
+            path: directory
+                .path()
+                .join("missing.wav")
+                .to_string_lossy()
+                .into_owned(),
+            ..music
+        }),
+    }));
+    let missing = directory.path().join("missing.mp4");
+    client.reel(ReelOperation::Export {
+        job: JOB + 1,
+        reel: REEL,
+        destination: missing.to_string_lossy().into_owned(),
+    });
+    let failed = client.poll_reel_status("the export failed", |status| {
+        status
+            .exports
+            .iter()
+            .any(|export| export.job == JOB + 1 && export.state == ReelExportState::Failed)
+    });
+    let export = failed
+        .exports
+        .iter()
+        .find(|export| export.job == JOB + 1)
+        .unwrap();
+    assert!(
+        export
+            .failure
+            .as_deref()
+            .is_some_and(|failure| failure.contains("music:open")),
+        "{:?}",
+        export.failure
+    );
+    assert!(!missing.exists());
+    assert!(!part_of(&missing).exists());
+}
+
 #[test]
 fn native_daemon_cancels_a_reel_export_without_a_destination() {
     if !tools_available() {
@@ -918,6 +1079,7 @@ fn native_daemon_cancels_a_reel_export_without_a_destination() {
         id: REEL,
         name: "Long reel".into(),
         clips,
+        music: None,
     }));
     client.poll_reel_status("the long reel plan", |status| {
         status

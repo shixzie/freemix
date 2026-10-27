@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.112 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.113 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4346,6 +4346,39 @@ schema 85).
   [--fires-at <value>] [--clears-at <value>] [--hold <seconds>] |
   --defaults` changes one (values in the same units).
 - 2.111 is refused.
+
+Protocol 2.113 gives a highlight reel a music bed (`OR-013`, schema 86).
+
+- `reel_set` and `reel_changed` carry an optional `music` field,
+  `<level>:<duck>:<path>`: the bed's level in percent of full scale (0 to
+  100), its level while real-time clip audio plays in percent of that (0
+  to 100; 100 does not duck), and the audio file's absolute path on the
+  server (at most 512 bytes, last because it may hold `:`). A reel without
+  a bed omits the field. Inside `reel_status`, each reel record gains a
+  component before `clips`, the same text percent-escaped, empty without a
+  bed: `<reel>:<name>:<total frames>:<error>:<music>:<clips>`. A relative or
+  overlong path or a level over 100 is refused, and an engine refuses such
+  a `reel_set` as `invalid_music`.
+- An accepted export keeps the bed the reel had then. The native daemon
+  streams the file from the reel's first frame, fits each frame's span of
+  it to the frame's 48 kHz stereo block (a mono file plays on both
+  channels), and adds it under the clips' audio at its level; while a
+  real-time clip's recorded audio plays the bed ramps to its ducked level
+  over a quarter second and back after, and it fades out over the reel's
+  last second (or the whole reel when shorter). Once the file ends the bed
+  is silent. A bed that cannot be opened fails the export `music:open`
+  before its part file is written; one that stops decoding fails it
+  `music:decode`.
+- Durability (schema 86): a reel in `project.json` may carry `music`,
+  `{"path", "level", "duck"}`, omitted without a bed; schema 85 projects
+  are refused.
+- Studio's reel editor gains a Music bed row (the file with Set and Remove,
+  then Music level and Under clip audio while a bed is set), with English
+  and Spanish help. `freemix-cli reel-set` / `remote-reel-set` take
+  `--music <path> [--music-level <0..=100>] [--music-duck <0..=100>]`
+  (defaults 80 and 25), and `reel` / `remote-reel` print a `ReelMusic` line
+  for a reel with a bed.
+- 2.112 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

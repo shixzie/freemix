@@ -6558,7 +6558,7 @@ Usage:
       seconds, and an absolute storage root or the default root. Absent
       options keep their value.
   freemix-cli reel <show.freemix>
-  freemix-cli reel-set <show.freemix> --id <1..=18446744073709551615> --name <name> --clips <event>/<angle>/<in>/<out>/<speed>[/<dissolve>][,...] [--key <key>] [--expect <revision>]
+  freemix-cli reel-set <show.freemix> --id <1..=18446744073709551615> --name <name> --clips <event>/<angle>/<in>/<out>/<speed>[/<dissolve>][,...] [--music <absolute path> [--music-level <0..=100>] [--music-duck <0..=100>]] [--key <key>] [--expect <revision>]
   freemix-cli reel-delete <show.freemix> --id <1..=18446744073709551615> [--key <key>] [--expect <revision>]
       Prints a project's highlight reels (id, name, clip count, and the
       compiled total frames when the local engine can plan them), replaces or
@@ -6568,7 +6568,12 @@ Usage:
       of 0..=216000 frames, a name of 1..=64 bytes, a speed of 25, 50, 75, or
       100 percent, and the frames the clip dissolves in from the clip before
       (0..=600, absent or 0 for a cut; the first clip always cuts; Protocol
-      2.111). A project holds at most 8 reels. The compiled plan
+      2.111). --music plays an audio file on the server (an absolute path of
+      at most 512 bytes) under the clips at --music-level percent (default
+      80), ducked to --music-duck percent of that (default 25) while a
+      real-time clip's audio plays, and faded over the last second; without
+      --music the reel has no bed (Protocol 2.113). A project holds at most 8
+      reels. The compiled plan
       needs recorded replay events, which a local project does not hold, so
       reel prints the stored clips and the plan error.
   freemix-cli live-lan <show.freemix>

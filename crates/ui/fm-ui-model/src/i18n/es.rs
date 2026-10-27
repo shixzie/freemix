@@ -10430,6 +10430,26 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::ConsoleActionFavorite, t("Transición favorita {n}")),
     (
+        Msg::ConsoleActionOverlay,
+        t("Activar o quitar el overlay {n}"),
+    ),
+    (
+        Msg::ConsoleActionOverlayRun,
+        t("Poner la entrada de Previo en el overlay con ese número, o quitarla"),
+    ),
+    (
+        Msg::ConsoleActionReplayMarkIn,
+        t("Marca de entrada de repetición"),
+    ),
+    (
+        Msg::ConsoleActionReplayMarkOut,
+        t("Marca de salida de repetición"),
+    ),
+    (
+        Msg::ConsoleActionReplayCapture,
+        t("Capturar el evento de repetición marcado"),
+    ),
+    (
         Msg::ConsoleActionPreviewRun,
         t("Poner la entrada con ese número en Previo"),
     ),
@@ -10452,7 +10472,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::KeyProfileVmixHover,
         t(
-            "Las teclas que los operadores de vMix suelen dar a las funciones de atajo de vMix: 1–9 PreviewInput, Ctrl+1–9 ActiveInput (corte directo a Programa), Alt+1–9 QuickPlay (fundido directo a Programa), Espacio Cut, Intro Fade, Ctrl+B FadeToBlack, Ctrl+F1–F4 Transition 1–4. vMix no trae un mapa de teclas fijo",
+            "Las teclas que los operadores de vMix suelen dar a las funciones de atajo de vMix: 1–9 PreviewInput, Ctrl+1–9 ActiveInput (corte directo a Programa), Alt+1–9 QuickPlay (fundido directo a Programa), Espacio Cut, Intro Fade, Ctrl+B FadeToBlack, Ctrl+F1–F4 Transition 1–4, F9–F12 OverlayInput 1–4, I y O las marcas de repetición, E la captura de repetición. vMix no trae un mapa de teclas fijo",
         ),
     ),
     (Msg::PrefsKeyboard, t("Teclado")),
@@ -10460,7 +10480,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::PrefsKeyProfileHover,
         t(
-            "Qué teclas manejan la conmutación, las transiciones y el GO de las cues en esta consola; se guarda con tus preferencias",
+            "Qué teclas manejan la conmutación, las transiciones, los overlays, las marcas de repetición y el GO de las cues en esta consola; se guarda con tus preferencias",
         ),
     ),
     (Msg::PrefsEditKeyProfiles, t("Editar perfiles…")),
@@ -10542,6 +10562,46 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("esta acción ya tiene su tecla base"),
     ),
     (Msg::ShortcutGroupProfile, t("Perfil de teclas: {name}")),
+    (Msg::ReelMusicSection, t("Música de fondo")),
+    (
+        Msg::ReelMusicPathHover,
+        t(
+            "Ruta absoluta de un archivo de audio del servidor (WAV, MP3, AAC, FLAC u Ogg), que suena bajo los clips desde el primer fotograma del resumen",
+        ),
+    ),
+    (Msg::ReelMusicSet, t("USAR")),
+    (
+        Msg::ReelMusicSetHover,
+        t("Reproduce este archivo bajo los clips del resumen"),
+    ),
+    (Msg::ReelMusicRemove, t("QUITAR MÚSICA")),
+    (
+        Msg::ReelMusicRemoveHover,
+        t("Exporta este resumen sin música"),
+    ),
+    (
+        Msg::ReelMusicNone,
+        t("Sin música: la exportación lleva solo el audio grabado de los clips"),
+    ),
+    (Msg::ReelMusicLevel, t("Nivel de la música")),
+    (
+        Msg::ReelMusicLevelHover,
+        t(
+            "Nivel de la música en porcentaje de la escala completa; se desvanece en el último segundo del resumen",
+        ),
+    ),
+    (Msg::ReelMusicDucked, t("Bajo el audio de los clips")),
+    (
+        Msg::ReelMusicDuckedHover,
+        t(
+            "Nivel de la música, en porcentaje del suyo, mientras suena el audio grabado de un clip a velocidad real; 100 no la atenúa",
+        ),
+    ),
+    (
+        Msg::ReelReasonMusicSet,
+        t("este archivo ya suena bajo el resumen"),
+    ),
+    (Msg::ReelReasonNoMusic, t("este resumen no tiene música")),
     (Msg::KeyProfilesFile, t("Archivo de perfil de teclas")),
     (
         Msg::KeyProfilesFileHover,

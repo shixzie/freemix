@@ -377,6 +377,7 @@ enum ReelExportOutcome {
 struct ReelExportMeta {
     reel: u64,
     destination: String,
+    music: Option<fm_types::reel::ReelMusic>,
     outcome: Option<ReelExportOutcome>,
 }
 
@@ -1164,6 +1165,7 @@ impl ReplayRuntime {
             reel,
             destination: destination.to_owned(),
             compiled,
+            music: spec.music.clone(),
         })
     }
 
@@ -1189,6 +1191,7 @@ impl ReplayRuntime {
                 ReelExportMeta {
                     reel: plan.reel,
                     destination: plan.destination,
+                    music: plan.music,
                     outcome: None,
                 },
             );
@@ -1427,6 +1430,7 @@ impl ReplayRuntime {
             total_frames: progress.total_frames,
             bytes,
             failure,
+            music: meta.music.clone(),
         })
     }
 
