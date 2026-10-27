@@ -27,11 +27,11 @@
 use egui::{Checkbox, ComboBox, DragValue, Id, RichText, TextEdit, Ui};
 use fm_protocol::{
     MAX_REEL_CLIPS, MAX_REEL_DISSOLVE_FRAMES, MAX_REEL_EXPORTS, MAX_REEL_MUSIC_PERCENT,
-    MAX_REEL_TRIM_FRAMES, MAX_REELS, MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS,
-    MIN_REPLAY_RETENTION_SECONDS, REPLAY_LAST_SECONDS, ReelClip, ReelExportState, ReelExportStatus,
-    ReelMusic, ReelOperation, ReelSpec, ReelStatus, ReplayEventStatus, ReplayOperation,
-    ReplayPlayerStatus, ReplaySettings, ReplaySpeed, ReplayStatusMessage,
-    reel_export_path_is_valid, reel_name_is_valid, replay_event_name_is_valid,
+    MAX_REEL_TRIM_FRAMES, MAX_REELS, MAX_REPLAY_AUTO_RETURN_FRAMES, MAX_REPLAY_RECORD_SOURCES,
+    MAX_REPLAY_RETENTION_SECONDS, MIN_REPLAY_RETENTION_SECONDS, REPLAY_LAST_SECONDS, ReelClip,
+    ReelExportState, ReelExportStatus, ReelMusic, ReelOperation, ReelSpec, ReelStatus,
+    ReplayEventStatus, ReplayOperation, ReplayPlayerStatus, ReplaySettings, ReplaySpeed,
+    ReplayStatusMessage, reel_export_path_is_valid, reel_name_is_valid, replay_event_name_is_valid,
 };
 use fm_types::{FrameRate, InputId};
 
@@ -542,6 +542,7 @@ fn draw_recording(
             ))));
         }
     });
+    draw_auto_return(ui, l, status, block, intents);
     for source in &status.recorded {
         let input = source.input.to_domain();
         ui.label(caption(l.format(
@@ -554,6 +555,59 @@ fn draw_recording(
         )))
         .on_hover_text(l.text(Msg::ReplayRecHover));
     }
+}
+
+/// Auto return (Protocol 2.116): whether a Replay input that plays its
+/// event to the end on Program hands it back to the live source, and the
+/// mix's frames.
+fn draw_auto_return(
+    ui: &mut Ui,
+    l: Locale,
+    status: &ReplayStatusMessage,
+    block: Option<&'static str>,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let reason = block.unwrap_or(Msg::ReplayReasonNotRecording.en());
+    let configure = |auto_return| {
+        StudioIntent::Replay(ReplayOperation::Configure(Box::new(ReplaySettings {
+            auto_return,
+            ..status.settings.clone()
+        })))
+    };
+    ui.horizontal(|ui| {
+        let mut on = status.settings.auto_return.is_some();
+        if ui
+            .add_enabled(
+                block.is_none(),
+                Checkbox::new(&mut on, l.text(Msg::ReplayAutoReturn)),
+            )
+            .hint(l.text(Msg::ReplayAutoReturnHover), reason)
+            .changed()
+        {
+            intents.push(configure(on.then_some(0)));
+        }
+        let Some(current) = status.settings.auto_return else {
+            return;
+        };
+        let id = Id::new("studio-replay-auto-return");
+        let mut frames = ui.data(|data| data.get_temp::<u32>(id)).unwrap_or(current);
+        let response = ui
+            .add_enabled(
+                block.is_none(),
+                DragValue::new(&mut frames)
+                    .range(0..=MAX_REPLAY_AUTO_RETURN_FRAMES)
+                    .suffix(" fr"),
+            )
+            .hint(l.text(Msg::ReplayAutoReturnFramesHover), reason);
+        if response.dragged() || response.has_focus() {
+            ui.data_mut(|data| data.insert_temp(id, frames));
+        } else {
+            ui.data_mut(|data| data.remove::<u32>(id));
+        }
+        if (response.drag_stopped() || response.lost_focus()) && frames != current {
+            intents.push(configure(Some(frames)));
+        }
+    });
 }
 
 fn draw_marks(
@@ -1652,6 +1706,7 @@ mod tests {
             sources: vec![input(3), input(1)],
             retention_seconds: 120,
             storage_root: Some("/srv/replay".to_owned()),
+            auto_return: None,
         };
         let added = with_source(&settings, input(2), true);
         assert_eq!(added.sources, vec![input(3), input(1), input(2)]);

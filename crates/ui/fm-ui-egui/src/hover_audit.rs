@@ -2571,6 +2571,7 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
             sources: vec![wire(1).to_domain(), wire(2).to_domain()],
             retention_seconds: 600,
             storage_root: None,
+            auto_return: None,
         },
         root: "/var/lib/freemix/replay".into(),
         live_frame: Some(3_000),

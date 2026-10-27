@@ -101,6 +101,9 @@ fn push_settings(settings: &ReplaySettings, push: &mut Push<'_>) -> Result<(), C
     if let Some(root) = &settings.storage_root {
         push("storage_root", root.clone())?;
     }
+    if let Some(frames) = settings.auto_return {
+        push("auto_return", frames.to_string())?;
+    }
     Ok(())
 }
 
@@ -112,6 +115,10 @@ fn decode_settings(fields: &mut dyn FieldSource) -> Result<ReplaySettings, Codec
             &fields.required("retention_seconds")?,
         )?,
         storage_root: fields.optional("storage_root"),
+        auto_return: fields
+            .optional("auto_return")
+            .map(|frames| parse_number("auto_return", &frames))
+            .transpose()?,
     };
     check_settings("sources", &settings)?;
     Ok(settings)
@@ -174,6 +181,10 @@ pub(super) fn encode_operation(
             }
             push("input", input.to_string())?;
             push("frames", frames.to_string())
+        }
+        ReplayOperation::Return { input, to } => {
+            push("input", input.to_string())?;
+            push("to", to.to_string())
         }
     }
 }
@@ -241,6 +252,10 @@ pub(super) fn decode_operation(
                 .ok_or_else(|| invalid("frames", value))?;
             ReplayOperation::Step { input, frames }
         }
+        "replay_return" => ReplayOperation::Return {
+            input: input(fields)?,
+            to: parse_input("to", &fields.required("to")?)?,
+        },
         _ => return Ok(None),
     }))
 }

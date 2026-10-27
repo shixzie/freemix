@@ -13,7 +13,7 @@ use fm_protocol::{
 };
 use fm_types::FrameRate;
 
-const PREFIX: &str = "command\tprotocol=2.115\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.116\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -103,7 +103,7 @@ source_rate=30000%2F1001\tfault=-";
 
 #[test]
 fn protocol_is_2_39() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 115));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 116));
 }
 
 #[test]

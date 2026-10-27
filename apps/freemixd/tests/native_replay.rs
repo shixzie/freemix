@@ -175,6 +175,7 @@ fn save_project(path: &Path) {
             sources: vec![input(CAMERA)],
             retention_seconds: 10,
             storage_root: None,
+            auto_return: None,
         })
         .unwrap();
     let stored = StoredProject::from_project_with_complete_runtime_state(
@@ -607,6 +608,31 @@ fn native_daemon_records_replay_segments_and_plays_an_event_at_half_speed() {
         speed: ReplaySpeed::Half,
     });
     level(&mut client, "a quiet Program back in slow motion", false);
+
+    // Auto return (Protocol 2.116): played to its end on Program, the
+    // Replay input hands Program back to the live camera, on the daemon's
+    // cue clock.
+    let mut settings = status.settings.clone();
+    settings.auto_return = Some(0);
+    client.replay(ReplayOperation::Configure(Box::new(settings)));
+    client.replay(ReplayOperation::Play {
+        input: wire(PLAYER),
+        speed: ReplaySpeed::Full,
+    });
+    client.wait_for("the auto return", |message| match message {
+        Some(WireMessage::Event(event))
+            if matches!(
+                &event.payload,
+                fm_protocol::EventPayload::ReplayChanged {
+                    operation: ReplayOperation::Return { input, to },
+                    ..
+                } if *input == wire(PLAYER) && *to == wire(CAMERA)
+            ) =>
+        {
+            Some(())
+        }
+        _ => None,
+    });
     let failures: Vec<String> = std::iter::from_fn(|| daemon.log.try_recv().ok())
         .filter(|line| line.contains("FREEMIXD_REPLAY_FAILURE"))
         .collect();

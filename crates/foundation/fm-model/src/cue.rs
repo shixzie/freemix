@@ -858,7 +858,7 @@ pub fn validate_cue_list(list: &CueList) -> Result<(), CueListError> {
 /// Returns the first [`CueListError`], or `Err(None)` for too many lists,
 /// a zero list id, or a duplicate list id.
 pub fn validate_cue_lists(lists: &[CueList]) -> Result<(), Option<CueListError>> {
-    if lists.len() > MAX_CUE_LISTS || lists.iter().any(|list| list.id == 0) {
+    if lists.len() > MAX_CUE_LISTS || lists.iter().any(|list| list.id == 0 || list.id == u64::MAX) {
         return Err(None);
     }
     for (index, list) in lists.iter().enumerate() {

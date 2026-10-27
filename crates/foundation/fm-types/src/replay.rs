@@ -42,6 +42,10 @@ pub const fn replay_step_is_valid(frames: i32) -> bool {
     frames != 0 && frames.unsigned_abs() <= MAX_REPLAY_STEP_FRAMES
 }
 
+/// Longest mix back to the live source when a Replay input finishes on
+/// Program (ten seconds at 30 frames per second).
+pub const MAX_REPLAY_AUTO_RETURN_FRAMES: u32 = 300;
+
 /// What a project records for replay and how long it keeps it.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ReplaySettings {
@@ -55,6 +59,12 @@ pub struct ReplaySettings {
     /// An absolute directory for the segment files; `None` lets the server
     /// choose (a `replay` directory beside its runtime state).
     pub storage_root: Option<String>,
+    /// Auto return: when a Replay input on Program plays its event to the
+    /// end, Program goes back to the last non-Replay source it showed, with
+    /// a mix of this many frames (0 cuts, at most
+    /// [`MAX_REPLAY_AUTO_RETURN_FRAMES`]); `None` leaves the Replay input
+    /// on air.
+    pub auto_return: Option<u32>,
 }
 
 impl Default for ReplaySettings {
@@ -63,6 +73,7 @@ impl Default for ReplaySettings {
             sources: Vec::new(),
             retention_seconds: DEFAULT_REPLAY_RETENTION_SECONDS,
             storage_root: None,
+            auto_return: None,
         }
     }
 }
@@ -83,6 +94,9 @@ pub enum ReplaySettingsError {
     /// The storage root is empty, too long, relative, or holds control
     /// characters.
     StorageRoot,
+    /// The auto return mix is longer than
+    /// [`MAX_REPLAY_AUTO_RETURN_FRAMES`].
+    AutoReturn,
 }
 
 impl fmt::Display for ReplaySettingsError {
@@ -106,6 +120,10 @@ impl fmt::Display for ReplaySettingsError {
             ),
             Self::StorageRoot => formatter.write_str(
                 "the replay storage root must be an absolute path of at most 1024 bytes",
+            ),
+            Self::AutoReturn => write!(
+                formatter,
+                "the replay auto return mixes for at most {MAX_REPLAY_AUTO_RETURN_FRAMES} frames"
             ),
         }
     }
@@ -161,6 +179,12 @@ impl ReplaySettings {
             && !replay_storage_root_is_valid(root)
         {
             return Err(ReplaySettingsError::StorageRoot);
+        }
+        if self
+            .auto_return
+            .is_some_and(|frames| frames > MAX_REPLAY_AUTO_RETURN_FRAMES)
+        {
+            return Err(ReplaySettingsError::AutoReturn);
         }
         Ok(())
     }

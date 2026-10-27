@@ -93,6 +93,7 @@ fn project() -> Project {
             sources: vec![input_id(3), input_id(1)],
             retention_seconds: 120,
             storage_root: Some("/srv/replay \"angles\"".to_owned()),
+            auto_return: Some(12),
         })
         .unwrap();
     project
@@ -128,7 +129,7 @@ fn replay_settings_and_inputs_round_trip_exactly_and_are_strict() {
     let text = fs::read_to_string(&manifest).unwrap();
     for fragment in [
         "\"replay\": {\"sources\": [3, 1], \"retention_seconds\": 120, \"storage_root\": \
-         \"/srv/replay \\\"angles\\\"\"}",
+         \"/srv/replay \\\"angles\\\"\", \"auto_return\": 12}",
         "\"kind\": {\"type\": \"replay\"}",
     ] {
         assert!(text.contains(fragment), "{fragment} in {text}");
@@ -147,6 +148,11 @@ fn replay_settings_and_inputs_round_trip_exactly_and_are_strict() {
             "\"storage_root\": \"/srv/replay",
             "\"storage_root\": \"srv/replay",
         ),
+        // Auto return (schema 88): at most 300 frames, a number or null,
+        // never absent.
+        ("\"auto_return\": 12", "\"auto_return\": 301"),
+        ("\"auto_return\": 12", "\"auto_return\": \"12\""),
+        (", \"auto_return\": 12", ""),
         // Syntax: every field is required, ids are nonzero numbers, and
         // nothing else is accepted.
         ("\"sources\": [3, 1]", "\"sources\": [0]"),

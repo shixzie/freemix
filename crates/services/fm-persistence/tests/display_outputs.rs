@@ -159,7 +159,7 @@ fn display_output_slots_round_trip_exactly_and_strictly() {
     assert_eq!(loaded.project(), &expected);
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 87"));
+    assert!(text.contains("\"schema_version\": 88"));
     let first = "{\"slot\": 1, \"display\": {\"id\": \"cg:69733382\", \"name\": \"DELL \\\"U2720Q\\\"\"}, \"source\": \"program\", \"mode\": \"current\", \"scaling\": \"fit\", \"hdr\": \"off\"}";
     let second = "{\"slot\": 2, \"display\": {\"index\": 1}, \"source\": \"output:41\", \"mode\": {\"width\": 1920, \"height\": 1080, \"refresh_millihertz\": 59940}, \"scaling\": \"1:1\", \"hdr\": \"auto\"}";
     assert!(
@@ -271,7 +271,7 @@ fn live_lan_round_trips_exactly_and_strictly() {
     store.save(&stored(expected.clone())).unwrap();
     assert_eq!(store.load().unwrap().project(), &expected);
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    let live_lan = "\"live_lan\": {\"enabled\": true, \"source\": \"output:41\", \"max_viewers\": 12, \"pin\": \"024680\"},\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null}\n  },";
+    let live_lan = "\"live_lan\": {\"enabled\": true, \"source\": \"output:41\", \"max_viewers\": 12, \"pin\": \"024680\"},\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null}\n  },";
     assert!(text.contains(live_lan), "{text}");
 
     let mut open = expected.clone();

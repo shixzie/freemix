@@ -4517,7 +4517,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 87,
+  "schema_version": 88,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -4725,7 +4725,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 87", "\"schema_version\": 47"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 88", "\"schema_version\": 47"),
     )
     .unwrap();
     assert_failure_contains(
@@ -4739,7 +4739,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 47 is unsupported; expected 87",
+        "title template schema 47 is unsupported; expected 88",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -4757,7 +4757,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 87,
+  "schema_version": 88,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -5020,7 +5020,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 87,
+  "schema_version": 88,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -5250,7 +5250,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
 /// that stretches image field 1 nearest-neighbor; its default names
 /// `asset://images/logo.png`.
 const IMAGE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 87,
+  "schema_version": 88,
   "template": {
     "id": 12,
     "name": "Logo",
@@ -5347,7 +5347,7 @@ fn image_golden() -> Vec<u8> {
 /// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
 /// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
 const CLOCK_RENDER_SOURCE: &str = r##"{
-  "schema_version": 87,
+  "schema_version": 88,
   "template": {
     "id": 13,
     "name": "Clock render",
@@ -6572,13 +6572,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        87
+        88
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 87);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 88);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -6591,7 +6591,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 87);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 88);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -6667,7 +6667,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        87
+        88
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -6675,7 +6675,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 87);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 88);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -6685,7 +6685,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 87);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 88);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -6693,7 +6693,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 87);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 88);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
@@ -8029,13 +8029,15 @@ fn local_replay_settings_persist_and_print_the_synthetic_feed() {
         "30",
         "--root",
         root,
+        "--auto-return",
+        "12",
     ]));
     let shown = invoke_bounded(&["replay", context.project_path()]);
     assert_success(&shown);
     assert_eq!(
         stdout(&shown),
         format!(
-            "ReplaySettings(sources=[2,1], retention_seconds=30, storage_root={root:?})\n\
+            "ReplaySettings(sources=[2,1], retention_seconds=30, storage_root={root:?}, auto_return=12)\n\
              Replay(feed=synthetic, root={root:?}, live_frame=none, mark_in=none, \
              mark_out=none)"
         )
@@ -8051,6 +8053,7 @@ fn local_replay_settings_persist_and_print_the_synthetic_feed() {
     );
     assert_eq!(replay.retention_seconds, 30);
     assert_eq!(replay.storage_root.as_deref(), Some(root));
+    assert_eq!(replay.auto_return, Some(12));
 
     // `--sources none` turns recording off and `--default-root` drops the
     // root; the absent retention keeps its value.
@@ -8065,7 +8068,7 @@ fn local_replay_settings_persist_and_print_the_synthetic_feed() {
     assert_success(&shown);
     assert_eq!(
         stdout(&shown),
-        "ReplaySettings(sources=[], retention_seconds=30, storage_root=default)\n\
+        "ReplaySettings(sources=[], retention_seconds=30, storage_root=default, auto_return=12)\n\
          Replay(feed=synthetic, root=\"replay\", live_frame=none, mark_in=none, \
          mark_out=none)"
     );

@@ -1285,6 +1285,7 @@ mod tests {
                 sources: vec![input(1)],
                 retention_seconds: 10,
                 storage_root: Some(root.to_string_lossy().into_owned()),
+                auto_return: None,
             }))),
         );
         let format = ReplayFormat {

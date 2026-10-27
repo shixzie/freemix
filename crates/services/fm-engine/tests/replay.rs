@@ -79,6 +79,7 @@ fn settings(sources: &[u128], retention_seconds: u32) -> ReplaySettings {
         sources: sources.iter().copied().map(input).collect(),
         retention_seconds,
         storage_root: Some("/srv/replay".to_owned()),
+        auto_return: None,
     }
 }
 
@@ -623,4 +624,120 @@ fn a_replay_step_jogs_a_cued_player_within_its_event() {
         );
         assert_eq!(rejection(&outcome).fields[0].code, "invalid_step", "{key}");
     }
+}
+
+/// OR-012 auto return (Protocol 2.116): a Replay input on Program that plays
+/// its event to the end hands the cue clock a due advance on its reserved
+/// list, which takes Program back to the last live source; nothing is due
+/// with auto return off, a client's `Return` is refused, and once Program
+/// has left the Replay input nothing is due again.
+#[test]
+#[allow(clippy::too_many_lines)] // the recording, the take, the return
+fn a_finished_replay_on_program_returns_to_the_live_source() {
+    let program = |engine: &Engine| engine.show().desired_switcher().program();
+    let mut engine = engine();
+    add_player(&mut engine, 9);
+    let mut settings = settings(&[1], 600);
+    replay(
+        &mut engine,
+        "configure",
+        EngineReplayOperation::Configure(Box::new(settings.clone())),
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 12 * FPS);
+    replay(
+        &mut engine,
+        "last",
+        EngineReplayOperation::CaptureLast { seconds: 5 },
+    );
+    replay(
+        &mut engine,
+        "cue",
+        EngineReplayOperation::Cue {
+            input: input(9),
+            event: 1,
+            angle: None,
+        },
+    );
+    accept(
+        &mut engine,
+        "preview",
+        EngineCommand::SelectPreview(input(9)),
+    );
+    accept(&mut engine, "take", EngineCommand::Cut);
+    settle(&mut engine);
+    assert_eq!(program(&engine), input(9));
+    let play = |engine: &mut Engine, key: &str| {
+        replay(
+            engine,
+            key,
+            EngineReplayOperation::Play {
+                input: input(9),
+                speed: ReplaySpeed::Full,
+            },
+        );
+    };
+    // Auto return off: the finished replay stays on air.
+    play(&mut engine, "play-off");
+    ticks(&mut engine, 6 * FPS);
+    assert_eq!(engine.cue_advance_frame(), None);
+    assert_eq!(program(&engine), input(9));
+
+    settings.auto_return = Some(0);
+    replay(
+        &mut engine,
+        "auto-return",
+        EngineReplayOperation::Configure(Box::new(settings)),
+    );
+    settle(&mut engine);
+    replay(
+        &mut engine,
+        "cue-in",
+        EngineReplayOperation::CueIn { input: input(9) },
+    );
+    play(&mut engine, "play-on");
+    ticks(&mut engine, 4 * FPS);
+    assert_eq!(engine.cue_advance_frame(), None, "still playing");
+    ticks(&mut engine, 2 * FPS);
+    let (list, frame) = engine.cue_advance_frame().expect("a return is due");
+    assert_eq!(list, fm_engine::REPLAY_RETURN_LIST);
+
+    // A client cannot ask for the return itself.
+    let outcome = execute(
+        &mut engine,
+        "client-return",
+        EngineCommand::Replay(EngineReplayOperation::Return {
+            input: input(9),
+            to: input(1),
+        }),
+    );
+    assert_eq!(rejection(&outcome).code, RejectionCode::Conflict);
+
+    let outcome = accept(
+        &mut engine,
+        "return",
+        EngineCommand::CueAdvance { list, frame },
+    );
+    assert!(outcome.events.iter().any(|event| matches!(
+        event.payload,
+        EngineEvent::ReplayChanged {
+            operation: EngineReplayOperation::Return { input: from, to },
+            ..
+        } if from == input(9) && to == input(1)
+    )));
+    settle(&mut engine);
+    assert_eq!(program(&engine), input(1));
+    assert_eq!(engine.cue_advance_frame(), None);
+    // Taking the finished replay back to air does not return at once: it
+    // has to play to its end again.
+    accept(
+        &mut engine,
+        "preview-again",
+        EngineCommand::SelectPreview(input(9)),
+    );
+    accept(&mut engine, "take-again", EngineCommand::Cut);
+    settle(&mut engine);
+    ticks(&mut engine, 2);
+    assert_eq!(engine.cue_advance_frame(), None);
+    assert_eq!(program(&engine), input(9));
 }

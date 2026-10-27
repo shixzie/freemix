@@ -54,6 +54,10 @@ pub(super) fn engine_operation(operation: &ReplayOperation) -> EngineReplayOpera
             input: input.to_domain(),
             frames: *frames,
         },
+        ReplayOperation::Return { input, to } => EngineReplayOperation::Return {
+            input: input.to_domain(),
+            to: to.to_domain(),
+        },
     }
 }
 
@@ -102,6 +106,10 @@ pub(super) fn wire_operation(operation: &EngineReplayOperation) -> ReplayOperati
         EngineReplayOperation::Step { input, frames } => ReplayOperation::Step {
             input: WireInputId::from_domain(*input),
             frames: *frames,
+        },
+        EngineReplayOperation::Return { input, to } => ReplayOperation::Return {
+            input: WireInputId::from_domain(*input),
+            to: WireInputId::from_domain(*to),
         },
     }
 }

@@ -114,6 +114,7 @@ fn settings(sources: &[u128], retention_seconds: u32) -> ReplaySettings {
         sources: sources.iter().copied().map(input).collect(),
         retention_seconds,
         storage_root: Some("/srv/replay".to_owned()),
+        auto_return: None,
     }
 }
 

@@ -6556,12 +6556,14 @@ Usage:
   freemix-cli display-output-clear <show.freemix> <slot:1|2> [--key <key>] [--expect <revision>]
   freemix-cli display-output-list <show.freemix>
   freemix-cli replay <show.freemix>
-  freemix-cli replay-set <show.freemix> [--sources <input,input|none>] [--retention <10..=3600>] [--root <absolute-dir>|--default-root] [--key <key>] [--expect <revision>]
+  freemix-cli replay-set <show.freemix> [--sources <input,input|none>] [--retention <10..=3600>] [--root <absolute-dir>|--default-root] [--auto-return off|<0..=300>] [--key <key>] [--expect <revision>]
       Prints what the project records for instant replay (its settings, feed,
       and effective root), or edits it: the recorded inputs in angle order
       (at most four; none turns recording off), the retention window in
-      seconds, and an absolute storage root or the default root. Absent
-      options keep their value.
+      seconds, an absolute storage root or the default root, and auto return
+      (a Replay input that plays its event to the end on Program hands it
+      back to the last live source with a mix of that many frames, 0 a cut;
+      Protocol 2.116). Absent options keep their value.
   freemix-cli reel <show.freemix>
   freemix-cli reel-set <show.freemix> --id <1..=18446744073709551615> --name <name> --clips <event>/<angle>/<in>/<out>/<speed>[/<dissolve>][,...] [--music <absolute path> [--music-level <0..=100>] [--music-duck <0..=100>]] [--key <key>] [--expect <revision>]
   freemix-cli reel-delete <show.freemix> --id <1..=18446744073709551615> [--key <key>] [--expect <revision>]

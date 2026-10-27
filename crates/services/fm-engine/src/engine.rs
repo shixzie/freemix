@@ -1878,7 +1878,24 @@ impl Engine {
             (Some(cue), Some(script)) if script.1 < cue.1 => Some(script),
             (cue, script) => cue.or(script),
         };
-        earliest.map(|(list, due)| (list, due.max(self.scheduler.pacer().next_frame().get())))
+        let next = self.scheduler.pacer().next_frame().get();
+        // A replay auto return is due at once (OR-012).
+        let replay = self
+            .replay
+            .return_due(self.show())
+            .map(|_| (crate::replay::REPLAY_RETURN_LIST, next));
+        let earliest = match (earliest, replay) {
+            (Some(cue), Some(replay)) if cue.1 <= next => Some(cue).or(Some(replay)),
+            (Some(_), Some(replay)) => Some(replay),
+            (cue, replay) => cue.or(replay),
+        };
+        earliest.map(|(list, due)| (list, due.max(next)))
+    }
+
+    /// The replay auto return due now (OR-012), if any: the finished Replay
+    /// input on Program, the source to go back to, and the mix's frames.
+    pub(crate) fn replay_return_due(&self) -> Option<(InputId, InputId, u32)> {
+        self.replay.return_due(self.show())
     }
 
     /// The command a fire of user shortcut `shortcut` stands for on the
@@ -2553,6 +2570,12 @@ impl Engine {
             Ok(EngineCommand::CueAdvance { list: 0, frame }) => {
                 Some(crate::script::plan_resume(self, *frame, target_frame))
             }
+            // Its reserved list takes Program back from a finished Replay
+            // input (OR-012 auto return).
+            Ok(EngineCommand::CueAdvance {
+                list: crate::replay::REPLAY_RETURN_LIST,
+                frame,
+            }) => Some(crate::replay::plan_return(self, *frame, target_frame)),
             Ok(command @ (EngineCommand::CueControl { .. } | EngineCommand::CueAdvance { .. })) => {
                 Some(self.cue_plan(command, target_frame))
             }

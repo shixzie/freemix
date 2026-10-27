@@ -10569,6 +10569,17 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("esta acción ya tiene su tecla base"),
     ),
     (Msg::ShortcutGroupProfile, t("Perfil de teclas: {name}")),
+    (Msg::ReplayAutoReturn, t("Volver al directo")),
+    (
+        Msg::ReplayAutoReturnHover,
+        t(
+            "Cuando una entrada de repetición en Programa reproduce su evento hasta el final, volver en Programa a la última fuente en directo",
+        ),
+    ),
+    (
+        Msg::ReplayAutoReturnFramesHover,
+        t("Fotogramas del fundido de vuelta a la fuente en directo; 0 corta"),
+    ),
     (Msg::ReplayStepBackHover, t("Un fotograma atrás, en pausa")),
     (
         Msg::ReplayStepForwardHover,

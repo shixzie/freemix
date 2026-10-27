@@ -173,7 +173,7 @@ fn shortcuts_round_trip_exactly_and_strictly() {
              \"Back\", \"enabled\": true, \"key\": {\"key\": \"K\", \"command\": true, \
              \"shift\": false, \"alt\": false, \"then\": {\"key\": \"1\", \"command\": false, \
              \"shift\": false, \"alt\": false}, \"scope\": \"cues\"}, \"osc\": null, \"action\": {\"type\": \"cue\", \
-             \"list\": 1, \"operation\": \"back\"}}\n    ],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null}\n  },"
+             \"list\": 1, \"operation\": \"back\"}}\n    ],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null}\n  },"
         ),
         "{text}"
     );

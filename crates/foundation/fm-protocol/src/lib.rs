@@ -217,8 +217,8 @@ pub use reel::{
     clip_dissolve_is_valid, reel_error_is_valid, reel_export_path_is_valid, reel_name_is_valid,
 };
 pub use replay::{
-    DEFAULT_REPLAY_RETENTION_SECONDS, MAX_REPLAY_EVENT_NAME_BYTES, MAX_REPLAY_EVENTS,
-    MAX_REPLAY_INPUTS, MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS,
+    DEFAULT_REPLAY_RETENTION_SECONDS, MAX_REPLAY_AUTO_RETURN_FRAMES, MAX_REPLAY_EVENT_NAME_BYTES,
+    MAX_REPLAY_EVENTS, MAX_REPLAY_INPUTS, MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS,
     MAX_REPLAY_STEP_FRAMES, MAX_REPLAY_STORAGE_ROOT_BYTES, MIN_REPLAY_RETENTION_SECONDS,
     REPLAY_LAST_SECONDS, ReplayEventStatus, ReplayFeed, ReplayOperation, ReplayPlayerStatus,
     ReplaySettings, ReplaySettingsError, ReplaySourceStatus, ReplaySpeed, ReplayStatusMessage,

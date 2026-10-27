@@ -392,6 +392,7 @@ pub(crate) fn edited_replay(
             .storage_root
             .clone()
             .unwrap_or_else(|| settings.storage_root.clone()),
+        auto_return: edit.auto_return.unwrap_or(settings.auto_return),
     })
 }
 
@@ -650,7 +651,7 @@ pub(crate) fn print_reel_export(export: &fm_protocol::ReelExportStatus) {
 /// Prints one `ReplaySettings(...)` line.
 pub(crate) fn print_replay_settings(settings: &fm_protocol::ReplaySettings) {
     println!(
-        "ReplaySettings(sources=[{}], retention_seconds={}, storage_root={})",
+        "ReplaySettings(sources=[{}], retention_seconds={}, storage_root={}, auto_return={})",
         settings
             .sources
             .iter()
@@ -662,6 +663,9 @@ pub(crate) fn print_replay_settings(settings: &fm_protocol::ReplaySettings) {
             .storage_root
             .as_deref()
             .map_or_else(|| "default".to_owned(), |root| format!("{root:?}")),
+        settings
+            .auto_return
+            .map_or_else(|| "off".to_owned(), |frames| frames.to_string()),
     );
 }
 

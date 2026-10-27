@@ -654,7 +654,7 @@ fn hls_stream_destination_round_trips_with_a_null_key_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 87"));
+    assert!(encoded.contains("\"schema_version\": 88"));
     assert!(encoded.contains("\"protocol\": \"hls\""));
     assert!(encoded.contains("\"endpoint\": \"/var/lib/freemix/live\""));
     assert!(encoded.contains("\"backup_endpoint\": null"));
@@ -724,7 +724,7 @@ fn hls_stream_ladder_round_trips_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 87"));
+    assert!(encoded.contains("\"schema_version\": 88"));
     // The ladder is written as an inline array of rung objects, in list order
     // and with exactly the authored fields.
     assert!(
@@ -880,7 +880,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // boolean value and the manifest must carry the current schema version.
     store.save(&stored_rich_project()).unwrap();
     let valid = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(valid.contains("\"schema_version\": 87"));
+    assert!(valid.contains("\"schema_version\": 88"));
     for malformed in [
         valid.replacen(",\n        \"running\": true", "", 1),
         valid.replacen("\"running\": true", "\"running\": \"true\"", 1),
@@ -896,7 +896,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // An older manifest is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        valid.replacen("\"schema_version\": 87", "\"schema_version\": 21", 1),
+        valid.replacen("\"schema_version\": 88", "\"schema_version\": 21", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -1398,7 +1398,7 @@ fn scene_layer_effects_round_trip_in_order_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 87"));
+    assert!(encoded.contains("\"schema_version\": 88"));
     // Every layer writes the field explicitly in layer order: the plain layer
     // as an empty array, the effected layer as inline ordered descriptors.
     assert!(
@@ -1966,7 +1966,7 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 87"));
+    assert!(encoded.contains("\"schema_version\": 88"));
     assert!(encoded.contains(
         "{\"type\": \"alias\", \"target\": 1, \"crop\": {\"x\": 10, \"y\": 20, \"width\": 640, \
          \"height\": 360}}"
@@ -2038,7 +2038,7 @@ fn edit_locks_round_trip_exactly_and_are_strict_at_the_current_schema() {
     store.save(&stored_rich_project()).unwrap();
     let unlocked = fs::read_to_string(store.manifest_path()).unwrap();
     assert!(unlocked.contains(
-        "\"recording_desired\": [false, false],\n    \"edit_locks\": {\"project\": false, \"inputs\": []},\n    \"playlist\": {\"loop\": \"off\", \"entries\": [], \"state\": {\"type\": \"stopped\"}, \"next_take\": 1, \"observed_frame\": 0},\n    \"cue_lists\": [],\n    \"luts\": [],\n    \"grades\": [],\n    \"input_grades\": [],\n    \"layer_grades\": [],\n    \"program_grade\": null,\n    \"animation_presets\": [],\n    \"transition_favorites\": [\n      {\"effect\": \"fade\", \"duration_frames\": 30},\n      {\"effect\": \"wipe\", \"duration_frames\": 30},\n      {\"effect\": \"fly\", \"duration_frames\": 30},\n      {\"effect\": \"cube\", \"duration_frames\": 30}\n    ],\n    \"input_categories\": [],\n    \"input_lifecycle\": [],\n    \"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 2\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"audio_solo_mode\": \"sip\",\n    \"audio_monitor_output\": {\"device\": null, \"gain_milli_db\": 0, \"muted\": false},\n    \"master_audio_dsp\": null,\n    \"fade_to_black_excluded_outputs\": [],\n    \"fade_to_black_output_durations\": [],\n    \"fade_to_black_curve\": \"linear\",\n    \"display_outputs\": [],\n    \"live_lan\": {\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null},\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null}\n  },\n  \"runtime\": {"
+        "\"recording_desired\": [false, false],\n    \"edit_locks\": {\"project\": false, \"inputs\": []},\n    \"playlist\": {\"loop\": \"off\", \"entries\": [], \"state\": {\"type\": \"stopped\"}, \"next_take\": 1, \"observed_frame\": 0},\n    \"cue_lists\": [],\n    \"luts\": [],\n    \"grades\": [],\n    \"input_grades\": [],\n    \"layer_grades\": [],\n    \"program_grade\": null,\n    \"animation_presets\": [],\n    \"transition_favorites\": [\n      {\"effect\": \"fade\", \"duration_frames\": 30},\n      {\"effect\": \"wipe\", \"duration_frames\": 30},\n      {\"effect\": \"fly\", \"duration_frames\": 30},\n      {\"effect\": \"cube\", \"duration_frames\": 30}\n    ],\n    \"input_categories\": [],\n    \"input_lifecycle\": [],\n    \"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 2\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"audio_solo_mode\": \"sip\",\n    \"audio_monitor_output\": {\"device\": null, \"gain_milli_db\": 0, \"muted\": false},\n    \"master_audio_dsp\": null,\n    \"fade_to_black_excluded_outputs\": [],\n    \"fade_to_black_output_durations\": [],\n    \"fade_to_black_curve\": \"linear\",\n    \"display_outputs\": [],\n    \"live_lan\": {\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null},\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null}\n  },\n  \"runtime\": {"
     ));
 
     // Locks are written in identifier order regardless of the order applied.
@@ -2059,11 +2059,11 @@ fn edit_locks_round_trip_exactly_and_are_strict_at_the_current_schema() {
     .unwrap();
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 87"));
+    assert!(encoded.contains("\"schema_version\": 88"));
     let locks = "\"edit_locks\": {\"project\": true, \"inputs\": [18446744073709551716, 18446744073709551718]}";
     assert!(
         encoded.contains(&format!(
-            "\"recording_desired\": [false, false],\n    {locks},\n    \"playlist\": {{\"loop\": \"off\", \"entries\": [], \"state\": {{\"type\": \"stopped\"}}, \"next_take\": 1, \"observed_frame\": 0}},\n    \"cue_lists\": [],\n    \"luts\": [],\n    \"grades\": [],\n    \"input_grades\": [],\n    \"layer_grades\": [],\n    \"program_grade\": null,\n    \"animation_presets\": [],\n    \"transition_favorites\": [\n      {{\"effect\": \"fade\", \"duration_frames\": 30}},\n      {{\"effect\": \"wipe\", \"duration_frames\": 30}},\n      {{\"effect\": \"fly\", \"duration_frames\": 30}},\n      {{\"effect\": \"cube\", \"duration_frames\": 30}}\n    ],\n    \"input_categories\": [],\n    \"input_lifecycle\": [],\n    \"audio_groups\": [\n      {{\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}},\n      {{\"name\": \"Group 2\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}},\n      {{\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}},\n      {{\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}}\n    ],\n    \"audio_solo_mode\": \"sip\",\n    \"audio_monitor_output\": {{\"device\": null, \"gain_milli_db\": 0, \"muted\": false}},\n    \"master_audio_dsp\": null,\n    \"fade_to_black_excluded_outputs\": [],\n    \"fade_to_black_output_durations\": [],\n    \"fade_to_black_curve\": \"linear\",\n    \"display_outputs\": [],\n    \"live_lan\": {{\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null}},\n    \"scripts\": [],\n    \"script_runs\": {{\"last_run\": 0, \"runs\": [], \"faults\": []}},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {{\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null}}\n  }},\n  \"runtime\": {{"
+            "\"recording_desired\": [false, false],\n    {locks},\n    \"playlist\": {{\"loop\": \"off\", \"entries\": [], \"state\": {{\"type\": \"stopped\"}}, \"next_take\": 1, \"observed_frame\": 0}},\n    \"cue_lists\": [],\n    \"luts\": [],\n    \"grades\": [],\n    \"input_grades\": [],\n    \"layer_grades\": [],\n    \"program_grade\": null,\n    \"animation_presets\": [],\n    \"transition_favorites\": [\n      {{\"effect\": \"fade\", \"duration_frames\": 30}},\n      {{\"effect\": \"wipe\", \"duration_frames\": 30}},\n      {{\"effect\": \"fly\", \"duration_frames\": 30}},\n      {{\"effect\": \"cube\", \"duration_frames\": 30}}\n    ],\n    \"input_categories\": [],\n    \"input_lifecycle\": [],\n    \"audio_groups\": [\n      {{\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}},\n      {{\"name\": \"Group 2\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}},\n      {{\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}},\n      {{\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}}\n    ],\n    \"audio_solo_mode\": \"sip\",\n    \"audio_monitor_output\": {{\"device\": null, \"gain_milli_db\": 0, \"muted\": false}},\n    \"master_audio_dsp\": null,\n    \"fade_to_black_excluded_outputs\": [],\n    \"fade_to_black_output_durations\": [],\n    \"fade_to_black_curve\": \"linear\",\n    \"display_outputs\": [],\n    \"live_lan\": {{\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null}},\n    \"scripts\": [],\n    \"script_runs\": {{\"last_run\": 0, \"runs\": [], \"faults\": []}},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {{\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null}}\n  }},\n  \"runtime\": {{"
         )),
         "unexpected edit lock encoding in {encoded}"
     );
@@ -2202,7 +2202,7 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 87,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 88,\n"));
     let title = "{\"type\": \"title\", \"template_uri\": \"asset://titles/lower-third.fmtitle\", \
          \"field_revision\": 3, \"fields\": [{\"id\": 1, \"type\": \"text\", \"value\": \
          \"Jane \\\"JD\\\" Doe\", \"revision\": 0}, {\"id\": 2, \"type\": \"number\", \"value\": -4, \
@@ -2297,7 +2297,7 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
     // The previous schema is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        encoded.replacen("\"schema_version\": 87", "\"schema_version\": 26", 1),
+        encoded.replacen("\"schema_version\": 88", "\"schema_version\": 26", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -2501,7 +2501,7 @@ fn playlist_round_trips_every_state_exactly_and_is_strict_at_the_current_schema(
     });
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 87"));
+    assert!(encoded.contains("\"schema_version\": 88"));
     let playlist = "\"playlist\": {\"loop\": \"all\", \"entries\": [{\"id\": 7, \"input\": 18446744073709551716, \"duration_frames\": 90, \"transition\": {\"kind\": \"cut\", \"duration_frames\": 0}, \"enabled\": true}, {\"id\": 18446744073709551615, \"input\": 18446744073709551719, \"duration_frames\": 45, \"transition\": {\"kind\": \"alpha_fade\", \"duration_frames\": 12}, \"enabled\": false}], \"state\": {\"type\": \"playing\", \"entry\": 7, \"take\": 3, \"cycle\": 1, \"started_frame\": 300}, \"next_take\": 4, \"observed_frame\": 321}";
     assert!(
         encoded.contains(&format!(
@@ -2802,7 +2802,7 @@ fn capture_inputs_round_trip_exactly_and_reject_malformed_values() {
         Some(("decklink:1", &settings))
     );
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 87"));
+    assert!(encoded.contains("\"schema_version\": 88"));
     let object = "{\"type\": \"device\", \"stable_key\": \"decklink:1\", \"capture\": {\"format\": \"1920x1080@30000/1001:yuyv:tff\", \"audio\": \"alsa:hw:CARD=C920,DEV=0\", \"loss\": \"black\"}}";
     assert!(encoded.contains(object), "{encoded}");
 
@@ -2903,7 +2903,7 @@ fn system_audio_inputs_round_trip_exactly_and_reject_malformed_values() {
         .kind;
     assert_eq!(*kind, InputKind::SystemAudio(config));
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 87"));
+    assert!(encoded.contains("\"schema_version\": 88"));
     let object = "{\"type\": \"system_audio\", \"backend\": \"pulse\", \"device\": \"alsa_output.pci-0000_00_1f.3.analog-stereo.monitor\"}";
     assert!(encoded.contains(object), "{encoded}");
 
@@ -3229,7 +3229,7 @@ fn screen_capture_restore_tokens_round_trip_exactly_and_strictly() {
         ((screen, "9a2b-screen"), (window, "6e1f-window"))
     };
     let field = format!(
-        ",\n    \"screen_capture_restore_tokens\": [\n      {{\"input\": {}, \"token\": \"{}\"}},\n      {{\"input\": {}, \"token\": \"{}\"}}\n    ],\n    \"replay\": {{\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null}}\n  }},",
+        ",\n    \"screen_capture_restore_tokens\": [\n      {{\"input\": {}, \"token\": \"{}\"}},\n      {{\"input\": {}, \"token\": \"{}\"}}\n    ],\n    \"replay\": {{\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null}}\n  }},",
         low.0, low.1, high.0, high.1
     );
     assert!(encoded.contains(&field), "{encoded}");

@@ -67,8 +67,10 @@ fn operations() -> Vec<(ReplayOperation, &'static str)> {
                 sources: vec![input(3), input(1)],
                 retention_seconds: 600,
                 storage_root: Some("/srv/replay a".to_owned()),
+                auto_return: Some(12),
             })),
-            "replay_configure\tsources=3%2C1\tretention_seconds=600\tstorage_root=%2Fsrv%2Freplay%20a",
+            "replay_configure\tsources=3%2C1\tretention_seconds=600\tstorage_root=%2Fsrv%2Freplay%20a\t\
+             auto_return=12",
         ),
         (
             ReplayOperation::Configure(Box::default()),
@@ -146,6 +148,13 @@ fn operations() -> Vec<(ReplayOperation, &'static str)> {
             },
             "replay_step\tinput=9\tframes=-12",
         ),
+        (
+            ReplayOperation::Return {
+                input: wire(9),
+                to: wire(1),
+            },
+            "replay_return\tinput=9\tto=1",
+        ),
     ]
 }
 
@@ -209,6 +218,10 @@ fn commands_are_strict() {
         "replay_step\tinput=9\tframes=601",
         "replay_step\tinput=9\tframes=-601",
         "replay_step\tinput=9",
+        // Auto return: a canonical count of at most 300 frames.
+        "replay_configure\tsources=1\tretention_seconds=600\tauto_return=301",
+        "replay_configure\tsources=1\tretention_seconds=600\tauto_return=012",
+        "replay_return\tinput=9",
     ] {
         refused(&format!("{prefix}\tpayload={fields}\n"));
     }
@@ -254,6 +267,7 @@ fn status(request_id: Option<&str>) -> ReplayStatusMessage {
             sources: vec![input(1), input(2)],
             retention_seconds: 120,
             storage_root: None,
+            auto_return: None,
         },
         root: "/var/lib/freemix/replay".to_owned(),
         live_frame: Some(3_000),

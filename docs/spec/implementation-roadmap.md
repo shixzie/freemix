@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.115 / schema 87 (2026-10-27).
+(2026-10-19); items refreshed through protocol 2.116 / schema 88 (2026-10-27).
 Every parity row is still `planned` (or `blocked`); these are the
 highest-value remaining items, ranked:
 
@@ -150,8 +150,9 @@ highest-value remaining items, ranked:
     (slow motion stays silent). Remaining: the recorder takes a source's last decoded
     picture rather than a genlocked one, segment files from a previous run
     are removed rather than reloaded, and A/B linking, shuttle (a player
-    now jogs frame by frame; Protocol 2.114),
-    transitions, auto-return, playlists, multiview, controller and
+    now jogs frame by frame, Protocol 2.114, and a finished replay returns
+    Program to the live source, Protocol 2.116),
+    transitions, playlists, multiview, controller and
     disk-health wiring, and certification are absent (see the Phase 7
     boundary).
 11. **Highlight reels, end to end (`OR-013`).** The show persists up to eight
@@ -5626,8 +5627,12 @@ what the source last decoded rather than a genlocked frame, so a stalled
 source repeats its picture; segment files from a previous run are removed
 rather than reloaded; a cued player jogs any number of frames up to 600
 either way, paused (Protocol 2.114, Studio's ◀ and ▶ keys and `remote-replay-do
-step`), but there is no A/B linking, shuttle, transition,
-auto-return, playlist, multiview, controller, or disk-health wiring; and
+step`), and with auto return on a Replay input that plays its event to the
+end on Program hands Program back to the last live source with a cut or a
+mix (Protocol 2.116, schema 88; the daemon's cue clock issues it on a
+reserved list, and the native test hears the return on the wire), but
+there is no A/B linking, shuttle, replay transition,
+playlist, multiview, controller, or disk-health wiring; and
 nothing is certified. `OR-012`, `OR-013`, and `OR-014` remain planned.
 
 

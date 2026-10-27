@@ -1861,6 +1861,11 @@ fn validate_replay(project: &Project, errors: &mut Vec<ValidationError>) {
             field: "replay.storage_root",
             kind: ValidationErrorKind::OutOfRange,
         },
+        ReplaySettingsError::AutoReturn => ValidationError {
+            entity: None,
+            field: "replay.auto_return",
+            kind: ValidationErrorKind::OutOfRange,
+        },
     });
 }
 

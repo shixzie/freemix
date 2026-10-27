@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.115 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.116 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4419,6 +4419,29 @@ Protocol 2.115 feathers garbage mattes (`SW-008`, schema 87).
   `--matte-feather <0..64>` with `--matte`, and `scenes` prints
   `matte_feather=` for a feathered matte.
 - 2.114 is refused.
+
+Protocol 2.116 returns a finished replay to the live source (`OR-012`,
+schema 88).
+
+- Replay settings (`replay_configure` and `replay_status`) carry an optional
+  `auto_return`, the frames of the mix back to the live source (a
+  canonical `0..=300`, 0 a cut); absent, auto return is off.
+- With auto return on, a Replay input that plays its event to the end
+  while on Program hands Program back to the last source Program showed
+  that is not a Replay input. The daemon's cue clock issues it as a
+  journaled `cue_advance` naming the reserved list `18446744073709551615`
+  (no cue list may take that id), due on the next frame; the engine plans
+  one take of the live source with the show's mix and announces it as
+  `event=replay_changed` with `operation=replay_return`, `input`, and `to`.
+  A client's `replay_return` command is refused. Cueing, playing, jumping
+  to the cue-in point, or stepping the player again rearms it, and once
+  Program has left the Replay input nothing is due.
+- Durability (schema 88): `project.json`'s `replay` carries a required
+  `auto_return` (`null` or the frames); schema 87 projects are refused.
+- Studio's Replay recording card gains Auto return and its frames, with
+  English and Spanish help; `freemix-cli replay-set` / `remote-replay-set`
+  take `--auto-return off|<0..=300>`, and `replay` prints `auto_return=`.
+- 2.115 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

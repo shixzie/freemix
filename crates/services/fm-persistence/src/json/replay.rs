@@ -1,9 +1,13 @@
-//! Replay recording settings in `project.json` (OR-012, schema 82).
+//! Replay recording settings in `project.json` (OR-012, schema 82; auto
+//! return since schema 88).
 //!
 //! ```text
 //! "replay": {"sources": [3, 5], "retention_seconds": 600,
-//!            "storage_root": "/srv/replay"}
+//!            "storage_root": "/srv/replay", "auto_return": 12}
 //! ```
+//!
+//! `auto_return` is `null` (a finished Replay input stays on Program) or
+//! the frames of the mix back to the live source (0 cuts).
 //!
 //! `sources` are the recorded inputs in angle order, `retention_seconds` is
 //! how much of each the server keeps, and `storage_root` is `null` (the
@@ -44,6 +48,11 @@ pub(crate) fn write_replay(output: &mut String, project: &fm_model::Project) {
         }
         None => output.push_str("null"),
     }
+    output.push_str(", \"auto_return\": ");
+    match settings.auto_return {
+        Some(frames) => write!(output, "{frames}").expect("writing to a string cannot fail"),
+        None => output.push_str("null"),
+    }
     output.push('}');
 }
 
@@ -65,10 +74,17 @@ pub(crate) fn parse_replay(object: &mut Object) -> Result<ReplaySettings, Decode
         };
         Ok(root)
     })?;
+    let auto_return = parse_optional(replay.take("auto_return")?, |value| {
+        let Value::Number(frames) = value else {
+            return Err(syntax("replay auto_return must be a frame count or null"));
+        };
+        u32::try_from(frames).map_err(|_| syntax("replay auto_return is out of range"))
+    })?;
     replay.finish()?;
     Ok(ReplaySettings {
         sources,
         retention_seconds,
         storage_root,
+        auto_return,
     })
 }

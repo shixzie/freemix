@@ -75,7 +75,7 @@ pub use reel::{
 pub use replay::{
     DEFAULT_REPLAY_ROOT, EngineReplayEventStatus, EngineReplayFeed, EngineReplayFrame,
     EngineReplayLocation, EngineReplayOperation, EngineReplayPlayerStatus,
-    EngineReplaySourceStatus, EngineReplayStatus, SYNTHETIC_REPLAY_FRAME_BYTES,
+    EngineReplaySourceStatus, EngineReplayStatus, REPLAY_RETURN_LIST, SYNTHETIC_REPLAY_FRAME_BYTES,
     SYNTHETIC_REPLAY_SEGMENT_SECONDS,
 };
 pub use scene_animation::{

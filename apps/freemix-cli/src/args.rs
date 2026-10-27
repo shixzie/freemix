@@ -5718,6 +5718,10 @@ pub struct ReplayEdit {
     /// `Some(None)` lets the server choose (`--default-root`).
     #[allow(clippy::option_option)] // keep, the server's default, or a root
     pub storage_root: Option<Option<String>>,
+    /// `Some(None)` switches auto return off (`--auto-return off`), else
+    /// the mix's frames (Protocol 2.116).
+    #[allow(clippy::option_option)] // keep, off, or a mix
+    pub auto_return: Option<Option<u32>>,
 }
 
 /// The inputs `--sources` names, in angle order (OR-012): distinct, nonzero,
@@ -5832,6 +5836,20 @@ fn parse_replay(
                     &mut arguments,
                     "storage root",
                 )?)?));
+            }
+            "--auto-return" => {
+                let value = required(&mut arguments, "auto return")?;
+                edit.auto_return = Some(if value == "off" {
+                    None
+                } else {
+                    let frames: u32 = number(&value, "auto return frames")?;
+                    if frames > fm_protocol::MAX_REPLAY_AUTO_RETURN_FRAMES {
+                        return Err(ArgsError::InvalidReplay(
+                            fm_protocol::ReplaySettingsError::AutoReturn,
+                        ));
+                    }
+                    Some(frames)
+                });
             }
             "--default-root" => {
                 if matches!(edit.storage_root, Some(Some(_))) {
@@ -11364,6 +11382,7 @@ mod tests {
                     sources: Some(vec![3, 1]),
                     retention_seconds: Some(30),
                     storage_root: Some(None),
+                    auto_return: None,
                 },
                 key: None,
                 expected_revision: None,

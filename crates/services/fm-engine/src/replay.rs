@@ -115,7 +115,15 @@ pub enum EngineReplayOperation {
     /// Moves Replay input `input` `frames` source frames (back when
     /// negative), paused, clamped to its event (jog).
     Step { input: InputId, frames: i32 },
+    /// Program went back from Replay input `input`, which played its event
+    /// to the end on air, to `to` (auto return). Only the cue clock's
+    /// advance issues it ([`REPLAY_RETURN_LIST`]); a client's is refused.
+    Return { input: InputId, to: InputId },
 }
+
+/// The cue list number the cue clock's `cue_advance` names for an auto
+/// return (no cue list may take it).
+pub const REPLAY_RETURN_LIST: u64 = u64::MAX;
 
 impl EngineReplayOperation {
     /// Whether this is a live operation (everything but
@@ -134,7 +142,8 @@ impl EngineReplayOperation {
             | Self::Play { input, .. }
             | Self::Pause { input }
             | Self::CueIn { input }
-            | Self::Step { input, .. } => Some(*input),
+            | Self::Step { input, .. }
+            | Self::Return { input, .. } => Some(*input),
             _ => None,
         }
     }
@@ -239,6 +248,9 @@ struct Player {
     playing: bool,
     /// Quarter frames since the event's first frame.
     position: u64,
+    /// The player played its event to the end while on Program, and
+    /// Program has not left it since (auto return).
+    ended_on_air: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -399,6 +411,9 @@ pub(crate) struct ReplayRuntime {
     mark_in: Option<u64>,
     mark_out: Option<u64>,
     players: BTreeMap<InputId, Player>,
+    /// The last source Program showed that is not a Replay input (auto
+    /// return goes back to it).
+    live_program: Option<InputId>,
     pruned: Vec<PathBuf>,
     /// The reel exports, in job order (OR-013).
     exports: RecordExportQueue,
@@ -455,6 +470,7 @@ impl ReplayRuntime {
             mark_in: None,
             mark_out: None,
             players: BTreeMap::new(),
+            live_program: None,
             pruned: Vec::new(),
             exports: RecordExportQueue::default(),
             export_meta: BTreeMap::new(),
@@ -943,8 +959,10 @@ impl ReplayRuntime {
         frame: u64,
     ) {
         self.follow(show.replay());
+        self.rearm(operation);
         match operation {
-            EngineReplayOperation::Configure(_) => {}
+            // A return is realized as a take by its plan's own action.
+            EngineReplayOperation::Configure(_) | EngineReplayOperation::Return { .. } => {}
             EngineReplayOperation::MarkIn => {
                 self.mark_in = Some(frame);
                 self.touch();
@@ -1036,6 +1054,30 @@ impl ReplayRuntime {
         }
     }
 
+    /// A player cued, played, or moved again has to reach its end again
+    /// before it returns (auto return).
+    fn rearm(&mut self, operation: &EngineReplayOperation) {
+        if let EngineReplayOperation::Cue { input, .. }
+        | EngineReplayOperation::Play { input, .. }
+        | EngineReplayOperation::CueIn { input }
+        | EngineReplayOperation::Step { input, .. } = operation
+            && let Some(player) = self.players.get_mut(input)
+        {
+            player.ended_on_air = false;
+        }
+    }
+
+    /// The auto return due on `show`, if any: the Replay input on Program
+    /// that played its event to the end there, the source to go back to,
+    /// and the mix's frames.
+    pub(crate) fn return_due(&self, show: &ShowState) -> Option<(InputId, InputId, u32)> {
+        let frames = show.replay().auto_return?;
+        let live = self.live_program?;
+        let program = show.desired_switcher().program();
+        let player = self.players.get(&program)?;
+        (player.ended_on_air && live != program).then_some((program, live, frames))
+    }
+
     /// Moves Replay input `input` `frames` source frames (back when
     /// negative), paused, clamped to its event's first and last frames.
     fn jog(&mut self, input: InputId, frames: i32) {
@@ -1090,9 +1132,20 @@ impl ReplayRuntime {
             self.players.retain(|input, _| inputs.contains(input));
             self.touch();
         }
+        let program = show.desired_switcher().program();
+        if !inputs.contains(&program) {
+            self.live_program = Some(program);
+        }
         let mut frames = Vec::with_capacity(inputs.len());
         let mut finished = false;
         for input in inputs {
+            if input != program
+                && let Some(player) = self.players.get_mut(&input)
+                && player.ended_on_air
+            {
+                player.ended_on_air = false;
+                self.generation = self.generation.wrapping_add(1);
+            }
             let player = self.players.entry(input).or_default().clone();
             let event = player.event.and_then(|id| self.store.event_frames.get(&id));
             let source_frame = event.map(|event| {
@@ -1120,6 +1173,7 @@ impl ReplayRuntime {
                 if next / 4 >= length {
                     stored.position = (length - 1) * 4;
                     stored.playing = false;
+                    stored.ended_on_air = input == program;
                     finished = true;
                 } else {
                     stored.position = next;
@@ -1626,6 +1680,7 @@ pub(crate) fn settings_rejection(error: ReplaySettingsError) -> Rejection {
         }
         ReplaySettingsError::Retention => invalid("retention_seconds", "out_of_range", message),
         ReplaySettingsError::StorageRoot => invalid("storage_root", "invalid", message),
+        ReplaySettingsError::AutoReturn => invalid("auto_return", "out_of_range", message),
     }
 }
 
@@ -1715,6 +1770,10 @@ pub(crate) fn accept(
         EngineReplayOperation::Play { input, .. }
         | EngineReplayOperation::Pause { input }
         | EngineReplayOperation::CueIn { input } => check_player(state, *input),
+        EngineReplayOperation::Return { .. } => Err(Rejection::new(
+            RejectionCode::Conflict,
+            "replay_return is issued by the server's auto return",
+        )),
         EngineReplayOperation::Step { input, frames } => {
             check_player(state, *input)?;
             if fm_types::replay::replay_step_is_valid(*frames) {
@@ -1743,4 +1802,63 @@ fn check_angle(state: &ShowState, angle: InputId) -> Result<(), Rejection> {
             format!("input {angle} is not recorded for replay"),
         ))
     }
+}
+
+/// Plans the auto return the cue clock's advance for `frame` names
+/// ([`REPLAY_RETURN_LIST`]): Program takes the last live source back with
+/// the show's auto return mix, as one cue action.
+pub(crate) fn plan_return(
+    engine: &crate::Engine,
+    frame: u64,
+    target_frame: fm_scheduler::FrameNumber,
+) -> Result<crate::engine::CuePlan, Rejection> {
+    let state = engine.show();
+    let Some((input, to, frames)) = engine.replay_return_due() else {
+        return Err(Rejection::new(
+            RejectionCode::Conflict,
+            format!("no replay auto return is due at frame {frame}"),
+        ));
+    };
+    let effect = if frames == 0 {
+        fm_model::TransitionEffect::Cut
+    } else {
+        fm_model::TransitionEffect::Fade
+    };
+    let fired = [fm_automation::FiredCueAction {
+        cue: REPLAY_RETURN_LIST,
+        step: 0,
+        action: fm_model::CueAction::Take {
+            input: Some(fm_types::InputTarget::Fixed(to)),
+            effect,
+            duration_frames: frames,
+        },
+    }];
+    let mut show = state.clone();
+    let mut runtime = Vec::new();
+    let mut transition = None;
+    let mut title_texts = Vec::new();
+    engine
+        .apply_cue_actions(
+            &mut show,
+            &fired,
+            target_frame,
+            &mut crate::engine::CueFrame {
+                runtime: &mut runtime,
+                transition: &mut transition,
+                title_texts: &mut title_texts,
+                scripts: None,
+                takes: 0,
+                targets: fm_types::TargetBindings::default(),
+            },
+        )
+        .map_err(|(_, _, rejection)| rejection)?;
+    Ok(crate::engine::CuePlan {
+        show: Box::new(show),
+        event: crate::EngineEvent::ReplayChanged {
+            frame: target_frame.get(),
+            operation: EngineReplayOperation::Return { input, to },
+        },
+        runtime,
+        transition,
+    })
 }
