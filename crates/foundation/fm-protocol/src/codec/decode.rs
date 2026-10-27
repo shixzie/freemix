@@ -757,6 +757,7 @@ fn decode_command_payload(
                 }
             })?)
         }
+        "alert_rule_set" => CommandPayload::SetAlertRule(super::alert_rules::decode_set(fields)?),
         "live_lan_set" => {
             let (config, pin) = super::live_lan::decode_set(fields)?;
             CommandPayload::SetLiveLan { config, pin }
@@ -2033,6 +2034,7 @@ fn decode_snapshot(fields: &mut Fields) -> Result<SnapshotMessage, CodecError> {
         live_lan_status: super::live_lan::decode_snapshot_status(
             &fields.required("live_lan_status")?,
         )?,
+        alert_rules: super::alert_rules::decode_settings(&fields.required("alert_rules")?)?,
         transitions_in_flight: decode_transitions_in_flight(
             &fields.required("transitions_in_flight")?,
             revision,
@@ -2804,6 +2806,9 @@ fn decode_event(fields: &mut Fields) -> Result<EventMessage, CodecError> {
                 super::network_stream::Secrets::Redacted,
             )?),
         },
+        "alert_rules_changed" => EventPayload::AlertRulesChanged(
+            super::alert_rules::decode_settings(&fields.required("alert_rules")?)?,
+        ),
         "live_lan_changed" => {
             EventPayload::LiveLanChanged(super::live_lan::decode_changed(fields)?)
         }

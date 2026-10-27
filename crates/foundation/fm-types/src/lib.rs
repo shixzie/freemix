@@ -1,5 +1,6 @@
 //! Small, portable domain types shared across `FreeMix`.
 
+pub mod alert_rules;
 mod audio;
 pub mod audio_output;
 pub mod capture;

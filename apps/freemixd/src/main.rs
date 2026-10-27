@@ -12950,6 +12950,9 @@ fn restore_display_outputs(show: &mut ShowState, project: &fm_model::Project) ->
         show.set_display_output(slot, Some(config.clone()))?;
     }
     show.set_live_lan(project.live_lan().clone())?;
+    for setting in project.alert_rules() {
+        show.set_alert_rule(*setting)?;
+    }
     Ok(())
 }
 
@@ -12961,6 +12964,16 @@ fn sync_project_display_outputs(
     project: &mut fm_model::Project,
     show: &ShowState,
 ) -> AppResult<()> {
+    if project.alert_rules() != show.alert_rules() {
+        for rule in fm_types::alert_rules::HealthAlertRule::ALL {
+            project
+                .set_alert_rule(fm_types::alert_rules::effective_setting(
+                    show.alert_rules(),
+                    rule,
+                ))
+                .map_err(|error| AppFailure(format!("project cannot take alert rules: {error}")))?;
+        }
+    }
     if project.live_lan() != show.live_lan() {
         project
             .set_live_lan(show.live_lan().clone())
@@ -15571,6 +15584,7 @@ fn command_base_ticks(
         | CommandPayload::SetDisplayOutput { .. }
         | CommandPayload::ClearDisplayOutput { .. }
         | CommandPayload::SetLiveLan { .. }
+        | CommandPayload::SetAlertRule(_)
         | CommandPayload::Replay(_)
         | CommandPayload::Reel(_)
         | CommandPayload::SetNetworkStream { .. }

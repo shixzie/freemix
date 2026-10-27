@@ -177,6 +177,7 @@ fn snapshot(revision: u64) -> SnapshotMessage {
         stream_targets: Vec::new(),
         live_lan: fm_protocol::LiveLanEntry::default(),
         live_lan_status: fm_protocol::LiveLanStatus::default(),
+        alert_rules: Vec::new(),
         transitions_in_flight: Vec::new(),
     }
 }

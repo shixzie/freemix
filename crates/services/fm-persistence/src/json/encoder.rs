@@ -133,6 +133,7 @@ fn write_project_runtime(output: &mut String, project: &fm_model::Project) {
     super::screen_capture_tokens::write_screen_capture_restore_tokens(output, project);
     super::replay::write_replay(output, project);
     super::reel::write_reels(output, project);
+    super::alert_rules::write_alert_rules(output, project);
     output.push_str("\n  },");
 }
 

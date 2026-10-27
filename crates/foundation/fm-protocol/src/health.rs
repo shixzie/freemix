@@ -46,71 +46,15 @@
 
 use crate::ServerIdentity;
 
-/// One default alert rule, in wire (rule ID) order.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum HealthAlertRule {
-    /// The daemon process kept most of the machine's CPUs busy; the reading
-    /// is the share of every logical CPU.
-    CpuSaturated,
-    /// An output filesystem's free space ran low; the reading is free bytes.
-    DiskLow,
-    /// Realized frames kept waking half a frame late; the reading is the
-    /// late share of frames.
-    FrameLate,
-    /// Outputs kept dropping pictures; the reading is drops per second.
-    FramesDropped,
-    /// The GPU utilization proxy stayed near full; the reading is its share.
-    GpuSaturated,
-    /// A stream target or recorder slot latched a failure; the reading is
-    /// the number of failed outputs.
-    OutputFailed,
-    /// An encoder's queue stayed saturated; the reading is the deepest queue
-    /// depth.
-    EncoderSaturated,
-    /// Stream outputs kept reconnecting; the reading is the number of
-    /// reconnecting outputs.
-    StreamReconnecting,
-    /// A live source's clock sync stayed degraded; the reading is the worst
-    /// drift.
-    SyncDegraded,
-}
-
-impl HealthAlertRule {
-    /// Every rule in wire order.
-    pub const ALL: [Self; 9] = [
-        Self::CpuSaturated,
-        Self::DiskLow,
-        Self::FrameLate,
-        Self::FramesDropped,
-        Self::GpuSaturated,
-        Self::OutputFailed,
-        Self::EncoderSaturated,
-        Self::StreamReconnecting,
-        Self::SyncDegraded,
-    ];
-
-    /// The wire token, which is also the daemon's rule ID.
-    #[must_use]
-    pub const fn token(self) -> &'static str {
-        match self {
-            Self::CpuSaturated => "cpu_saturated",
-            Self::DiskLow => "disk_low",
-            Self::FrameLate => "frame_late",
-            Self::FramesDropped => "frames_dropped",
-            Self::GpuSaturated => "gpu_saturated",
-            Self::OutputFailed => "output_failed",
-            Self::EncoderSaturated => "encoder_saturated",
-            Self::StreamReconnecting => "stream_reconnecting",
-            Self::SyncDegraded => "sync_degraded",
-        }
-    }
-
-    /// Parses [`Self::token`].
-    #[must_use]
-    pub fn from_token(token: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|rule| rule.token() == token)
-    }
-}
+/// One alert rule, in wire (rule ID) order; since schema 85 a show may
+/// set each rule's thresholds and hold ([`fm_types::alert_rules`]).
+pub use fm_types::alert_rules::HealthAlertRule;
+/// A show's settings for its alert rules (Protocol 2.112): see
+/// [`fm_types::alert_rules`].
+pub use fm_types::alert_rules::{
+    AlertReading, AlertRuleDefaults, AlertRuleError, AlertRuleSetting, MAX_ALERT_HOLD_MS,
+    check_settings as check_alert_rule_settings, effective_setting as effective_alert_rule,
+};
 
 /// How serious an alert is.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

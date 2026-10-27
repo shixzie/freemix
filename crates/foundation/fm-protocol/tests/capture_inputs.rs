@@ -18,7 +18,7 @@ use fm_protocol::{
 };
 use fm_types::FrameRate;
 
-const PREFIX: &str = "command\tprotocol=2.111\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.112\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -113,7 +113,7 @@ const SETTINGS: &str = "format=1920x1080%4030000%2F1001%3Ayuyv%3Atff\taudio=alsa
 
 #[test]
 fn the_current_protocol_is_2_47() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 111));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 112));
 }
 
 #[test]
@@ -514,7 +514,7 @@ fn snapshot_entries_round_trip_and_are_bounded() {
     assert_eq!(decoded.capture_inputs, entries);
     assert!(
         line.ends_with(
-            "~-~paired~hold~idle~-~-~-~0~0~0~0~0\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\ttransitions_in_flight=\n"
+            "~-~paired~hold~idle~-~-~-~0~0~0~0~0\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\talert_rules=\ttransitions_in_flight=\n"
                 .replace('~', "%7E")
                 .as_str()
         ),
@@ -630,6 +630,7 @@ fn snapshot(capture_inputs: Vec<CaptureInputEntry>) -> WireMessage {
         stream_targets: Vec::new(),
         live_lan: fm_protocol::LiveLanEntry::default(),
         live_lan_status: fm_protocol::LiveLanStatus::default(),
+        alert_rules: Vec::new(),
         transitions_in_flight: Vec::new(),
     })
 }

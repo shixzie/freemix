@@ -1522,6 +1522,8 @@ pub(super) fn run(
                 .as_deref_mut()
                 .map(NativeDaemon::take_statistics_sample);
             let mut statistics = runtime.statistics.borrow_mut();
+            // The show's alert rule settings (RC-015) apply from this sample.
+            statistics.apply_alert_rules(control.borrow().alert_rules());
             statistics.sample(now, sample, native_sample);
             process_shutdown.publish_statistics(|| statistics.render());
             if let Some(status) = statistics.health_status(authority, now) {

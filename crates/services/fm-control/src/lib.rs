@@ -1605,6 +1605,13 @@ impl<A: AuthorizationHook> ControlService<A> {
         )
     }
 
+    /// The show's own health alert rule settings, in rule order (RC-015,
+    /// Protocol 2.112); a rule without one uses its default.
+    #[must_use]
+    pub fn alert_rules(&self) -> &[fm_protocol::AlertRuleSetting] {
+        self.engine.show().alert_rules()
+    }
+
     /// The `LiveLAN` status as clients see it (OR-017).
     #[must_use]
     pub fn live_lan_status(&self) -> fm_protocol::LiveLanStatus {
@@ -3449,6 +3456,7 @@ const fn runtime_domain(command: &EngineCommand) -> &'static str {
         | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLiveLan(_)
+        | EngineCommand::SetAlertRule(_)
         | EngineCommand::SetNetworkStream { .. }
         | EngineCommand::SetCaptureSettings { .. }
         | EngineCommand::SetStreamTarget { .. } => "project",
@@ -3567,7 +3575,8 @@ const fn command_class(payload: &CommandPayload) -> CommandClass {
         | CommandPayload::SetCaptureSettings { .. }
         | CommandPayload::SetStreamTarget { .. }
         | CommandPayload::RemoveStreamTarget { .. }
-        | CommandPayload::SetLiveLan { .. } => CommandClass::EditProject,
+        | CommandPayload::SetLiveLan { .. }
+        | CommandPayload::SetAlertRule(_) => CommandClass::EditProject,
         CommandPayload::TakeTitle { .. } | CommandPayload::TitleOffAir { .. } => {
             CommandClass::Transition
         }
@@ -3677,6 +3686,7 @@ fn engine_command(payload: &CommandPayload) -> EngineCommand {
             EngineCommand::Replay(replay::engine_operation(operation))
         }
         CommandPayload::Reel(operation) => EngineCommand::Reel(reel::engine_operation(operation)),
+        CommandPayload::SetAlertRule(setting) => EngineCommand::SetAlertRule(*setting),
         payload @ (CommandPayload::ReorderInputs { .. }
         | CommandPayload::RenameInput { .. }
         | CommandPayload::AddInput { .. }
@@ -4220,6 +4230,7 @@ fn wire_edit_payload(command: &EngineCommand) -> Option<CommandPayload> {
             included: *included,
         },
         EngineCommand::Grade(edit) => grade::wire_grade_payload(edit),
+        EngineCommand::SetAlertRule(setting) => CommandPayload::SetAlertRule(*setting),
         EngineCommand::InputLifecycle(edit) => {
             CommandPayload::InputLifecycle(input_lifecycle::wire_operation(edit))
         }
@@ -4754,6 +4765,16 @@ fn accepted_event_payload(
     {
         return payload;
     }
+    if let Some(settings) = outcome
+        .events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EngineEvent::AlertRulesChanged(settings) => Some(settings),
+            _ => None,
+        })
+    {
+        return EventPayload::AlertRulesChanged(settings.clone());
+    }
     if let Some(payload) = outcome
         .events
         .iter()
@@ -5080,6 +5101,7 @@ fn snapshot_record(
         stream_targets: stream_target::wire_entries(engine.show()),
         live_lan: live_lan::wire_entry(engine.show()),
         live_lan_status: live_lan::wire_status(engine.show(), live_lan_status),
+        alert_rules: engine.show().alert_rules().to_vec(),
         transitions_in_flight,
     };
 

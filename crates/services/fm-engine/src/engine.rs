@@ -497,6 +497,11 @@ pub enum EngineCommand {
     /// undone by restoring the previous configuration; the daemon realizes
     /// it live.
     SetLiveLan(Box<fm_types::live_lan::LiveLanConfig>),
+    /// Sets one health alert rule's thresholds, hold, and switch for the
+    /// show (RC-015); the rule's default removes the show's own setting. A
+    /// project edit, undone by restoring the rule's previous setting; the
+    /// daemon's alert engine follows it live.
+    SetAlertRule(fm_types::alert_rules::AlertRuleSetting),
     /// One replay command (OR-012): a settings change is a project edit,
     /// everything else a live operation realized on its target frame
     /// (see [`crate::EngineReplayOperation`]).
@@ -843,6 +848,9 @@ pub enum EngineEvent {
     /// The `LiveLAN` configuration changed (or the edit was undone or redone)
     /// (OR-017); it is read from [`ShowState::live_lan`].
     LiveLanChanged(Box<fm_types::live_lan::LiveLanConfig>),
+    /// The show's health alert rule settings after an edit (or its undo or
+    /// redo) (RC-015).
+    AlertRulesChanged(Vec<fm_types::alert_rules::AlertRuleSetting>),
     /// A replay command was accepted for frame `frame` (OR-012); settings
     /// are read from [`ShowState::replay`].
     ReplayChanged {
@@ -4049,6 +4057,21 @@ impl EngineMutation {
                 target_frame: self.target_frame,
             });
         }
+        if let EngineCommand::SetAlertRule(setting) = self.command {
+            state.set_alert_rule(setting).map_err(|error| {
+                Rejection::new(RejectionCode::InvalidCommand, error.to_string()).with_field(
+                    fm_command::FieldIssue::new(
+                        "alert_rule",
+                        "invalid_alert_rule",
+                        error.to_string(),
+                    ),
+                )
+            })?;
+            events.push(EngineEvent::AlertRulesChanged(state.alert_rules().to_vec()));
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if let EngineCommand::SetLiveLan(config) = self.command {
             state
                 .set_live_lan((*config).clone())
@@ -4547,6 +4570,7 @@ impl EngineMutation {
             | EngineCommand::SetFadeToBlackCurve { .. }
             | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::SetLiveLan(_)
+            | EngineCommand::SetAlertRule(_)
             | EngineCommand::Replay(_)
             | EngineCommand::Reel(_)
             | EngineCommand::SetNetworkStream { .. }
@@ -5174,6 +5198,7 @@ fn apply_runtime(
             | EngineCommand::AudioMixer(_)
             | EngineCommand::SetDisplayOutput { .. }
             | EngineCommand::SetLiveLan(_)
+            | EngineCommand::SetAlertRule(_)
             | EngineCommand::Replay(_)
             | EngineCommand::Reel(_)
             | EngineCommand::SetNetworkStream { .. }
@@ -5371,6 +5396,7 @@ fn apply_runtime(
         | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLiveLan(_)
+        | EngineCommand::SetAlertRule(_)
         | EngineCommand::Replay(_)
         | EngineCommand::Reel(_)
         | EngineCommand::SetNetworkStream { .. }
@@ -5571,6 +5597,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::SetFadeToBlackCurve { .. }
         | EngineCommand::SetDisplayOutput { .. }
         | EngineCommand::SetLiveLan(_)
+        | EngineCommand::SetAlertRule(_)
         | EngineCommand::Replay(_)
         | EngineCommand::Reel(_)
         | EngineCommand::SetNetworkStream { .. }
@@ -5612,6 +5639,7 @@ fn refused_during_transition(command: &EngineCommand) -> bool {
         && !matches!(command, EngineCommand::SetFadeToBlackCurve { .. })
         && !matches!(command, EngineCommand::SetDisplayOutput { .. })
         && !matches!(command, EngineCommand::SetLiveLan(_))
+        && !matches!(command, EngineCommand::SetAlertRule(_))
         && !matches!(command, EngineCommand::Replay(_))
         && !matches!(command, EngineCommand::Reel(_))
         && !matches!(command, EngineCommand::SetNetworkStream { .. })

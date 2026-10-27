@@ -2137,6 +2137,10 @@ pub enum CommandPayload {
         config: crate::LiveLanEntry,
         pin: crate::SecretEdit,
     },
+    /// Sets one health alert rule's thresholds, hold, and switch for the
+    /// show (Protocol 2.112, RC-015); the rule's default setting removes
+    /// the show's own. Wire payload `alert_rule_set`.
+    SetAlertRule(crate::AlertRuleSetting),
     /// One instant replay command (OR-012); see [`crate::ReplayOperation`].
     Replay(crate::ReplayOperation),
     /// One highlight reel command (Protocol 2.107, OR-013); see
@@ -2621,6 +2625,9 @@ pub struct SnapshotMessage {
     pub stream_targets: Vec<crate::StreamTargetEntry>,
     /// The `LiveLAN` configuration, without its PIN (Protocol 2.57, OR-017).
     pub live_lan: crate::LiveLanEntry,
+    /// The show's own health alert rule settings, in rule order (Protocol
+    /// 2.112).
+    pub alert_rules: Vec<crate::AlertRuleSetting>,
     /// The `LiveLAN` stream's latest runtime status (Protocol 2.57).
     pub live_lan_status: crate::LiveLanStatus,
     /// The revisions of the timed Program operations (a transition, or a
@@ -2850,6 +2857,9 @@ pub enum EventPayload {
     /// The `LiveLAN` configuration changed, or that edit was undone or redone
     /// (Protocol 2.57). It carries whether a PIN is stored, never the PIN.
     LiveLanChanged(crate::LiveLanEntry),
+    /// The show's health alert rule settings after an `alert_rule_set`
+    /// (Protocol 2.112).
+    AlertRulesChanged(Vec<crate::AlertRuleSetting>),
     /// A replay command was accepted, realized on `frame` (OR-012).
     ReplayChanged {
         frame: u64,

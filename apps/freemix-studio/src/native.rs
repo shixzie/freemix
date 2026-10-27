@@ -3015,6 +3015,7 @@ fn intent_payload(
         }
         StudioIntent::ClearDisplayOutput { slot } => CommandPayload::ClearDisplayOutput { slot },
         StudioIntent::SetLiveLan { config, pin } => CommandPayload::SetLiveLan { config, pin },
+        StudioIntent::SetAlertRule(setting) => CommandPayload::SetAlertRule(setting),
         StudioIntent::Replay(operation) => CommandPayload::Replay(operation),
         StudioIntent::Reel(operation) => CommandPayload::Reel(operation),
         StudioIntent::RemoveInput { input } => {
@@ -3859,6 +3860,7 @@ mod tests {
             stream_targets: Vec::new(),
             live_lan: fm_protocol::LiveLanEntry::default(),
             live_lan_status: fm_protocol::LiveLanStatus::default(),
+            alert_rules: Vec::new(),
             transitions_in_flight: Vec::new(),
         }
     }

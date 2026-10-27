@@ -519,6 +519,9 @@ pub struct ProjectSnapshot {
     pub live_lan: fm_protocol::LiveLanEntry,
     /// The `LiveLAN` stream's latest status (Protocol 2.57).
     pub live_lan_status: fm_protocol::LiveLanStatus,
+    /// The show's own health alert rule settings, in rule order (Protocol
+    /// 2.112).
+    pub alert_rules: Vec<fm_protocol::AlertRuleSetting>,
     /// The revisions of the timed Program operations still in flight,
     /// strictly ascending (Protocol 2.94): the realized buses hold until
     /// each is realized.
@@ -636,6 +639,7 @@ impl ProjectSnapshot {
             stream_targets: message.stream_targets,
             live_lan: message.live_lan,
             live_lan_status: message.live_lan_status,
+            alert_rules: message.alert_rules,
             transitions_in_flight: message
                 .transitions_in_flight
                 .into_iter()
@@ -810,6 +814,8 @@ pub enum DurableChange {
     },
     /// The `LiveLAN` configuration changed (Protocol 2.57); never the PIN.
     LiveLanChanged(fm_protocol::LiveLanEntry),
+    /// The show's health alert rule settings changed (Protocol 2.112).
+    AlertRulesChanged(Vec<fm_protocol::AlertRuleSetting>),
     /// A replay command was accepted (OR-012). The recording, events, and
     /// players arrive in `replay_status`; the project keeps nothing else.
     ReplayChanged {
@@ -1142,6 +1148,7 @@ impl DurableProjectEvent {
                 DurableChange::DisplayOutputChanged { slot, config }
             }
             EventPayload::LiveLanChanged(entry) => DurableChange::LiveLanChanged(entry),
+            EventPayload::AlertRulesChanged(settings) => DurableChange::AlertRulesChanged(settings),
             EventPayload::ReplayChanged { frame, operation } => {
                 DurableChange::ReplayChanged { frame, operation }
             }
@@ -1341,9 +1348,18 @@ pub struct ProjectState {
     live_lan: fm_protocol::LiveLanEntry,
     /// The `LiveLAN` stream's status as last reported (Protocol 2.57).
     live_lan_status: fm_protocol::LiveLanStatus,
+    /// The show's own health alert rule settings (Protocol 2.112).
+    alert_rules: Vec<fm_protocol::AlertRuleSetting>,
 }
 
 impl ProjectState {
+    /// The show's own health alert rule settings, in rule order (Protocol
+    /// 2.112); a rule without one uses its default.
+    #[must_use]
+    pub fn alert_rules(&self) -> &[fm_protocol::AlertRuleSetting] {
+        &self.alert_rules
+    }
+
     /// The `LiveLAN` configuration, without its PIN (Protocol 2.57).
     #[must_use]
     pub const fn live_lan(&self) -> &fm_protocol::LiveLanEntry {
@@ -1970,6 +1986,9 @@ pub struct ClientView {
     pub live_lan: fm_protocol::LiveLanEntry,
     /// The `LiveLAN` stream's status (Protocol 2.57).
     pub live_lan_status: fm_protocol::LiveLanStatus,
+    /// The show's own health alert rule settings, in rule order (Protocol
+    /// 2.112); a rule without one uses its default.
+    pub alert_rules: Vec<fm_protocol::AlertRuleSetting>,
 }
 
 impl ClientView {
@@ -2370,6 +2389,9 @@ pub enum ModelError {
     InvalidDisplayOutputChange,
     /// A `LiveLAN` change streams an unknown output (Protocol 2.57).
     InvalidLiveLanChange,
+    /// An alert rule change carries settings a show cannot keep (Protocol
+    /// 2.112).
+    InvalidAlertRulesChange,
     /// A `cue_list_state` arrived that the snapshot did not announce or at
     /// another revision (Protocol 2.50).
     CueListStateMismatch,
@@ -2534,6 +2556,9 @@ impl fmt::Display for ModelError {
             }
             Self::InvalidLiveLanChange => {
                 formatter.write_str("LiveLAN change streams an unknown output")
+            }
+            Self::InvalidAlertRulesChange => {
+                formatter.write_str("alert rule change carries settings a show cannot keep")
             }
             Self::CueListStateMismatch => {
                 formatter.write_str("cue list state does not match the snapshot it follows")
@@ -3134,6 +3159,7 @@ impl ClientModel {
             stream_targets: state.stream_targets.clone(),
             live_lan: state.live_lan,
             live_lan_status: state.live_lan_status(),
+            alert_rules: state.alert_rules.clone(),
         })
     }
 
@@ -3409,6 +3435,7 @@ impl ClientModel {
             stream_targets: snapshot.stream_targets,
             live_lan: snapshot.live_lan,
             live_lan_status: snapshot.live_lan_status,
+            alert_rules: snapshot.alert_rules,
         });
         self.applied_events.clear();
         self.sync_status = SyncStatus::Current;
@@ -4929,6 +4956,10 @@ fn validate_change(change: &DurableChange, state: &ProjectState) -> Result<(), M
                 Err(ModelError::InvalidAudioMixerChange)
             };
         }
+        DurableChange::AlertRulesChanged(settings) => {
+            return fm_protocol::check_alert_rule_settings(settings)
+                .map_err(|_| ModelError::InvalidAlertRulesChange);
+        }
         DurableChange::LiveLanChanged(entry) => {
             return match entry.source {
                 fm_protocol::LiveLanSource::Output(output)
@@ -5596,6 +5627,7 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                 state.display_outputs.remove(&slot);
             }
         },
+        DurableChange::AlertRulesChanged(settings) => state.alert_rules = settings,
         DurableChange::LiveLanChanged(entry) => {
             // Disabled, it forgets its last report, as the server does.
             if !entry.enabled {

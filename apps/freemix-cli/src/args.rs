@@ -1084,6 +1084,20 @@ pub enum Command {
     RemoteDiagnostics {
         address: SocketAddr,
     },
+    /// Prints every daemon alert rule's setting for the show (RC-015,
+    /// Protocol 2.112).
+    RemoteAlertRules {
+        address: SocketAddr,
+    },
+    /// Changes one daemon alert rule's setting for the show (RC-015,
+    /// Protocol 2.112).
+    RemoteAlertRule {
+        address: SocketAddr,
+        rule: fm_protocol::HealthAlertRule,
+        edit: AlertRuleEdit,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     /// Acknowledges, silences, or unsilences one daemon alert rule
     /// (RC-015, Protocol 2.109).
     RemoteAlert {
@@ -2337,6 +2351,12 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "remote-status" => parse_remote_status(arguments),
         "remote-diagnostics" => parse_remote_diagnostics(arguments),
         "remote-alert" => parse_remote_alert(arguments),
+        "remote-alert-rules" => {
+            let address = socket_address(&required(&mut arguments, "address")?)?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::RemoteAlertRules { address })
+        }
+        "remote-alert-rule" => parse_remote_alert_rule(arguments),
         display @ ("display-output-set"
         | "display-output-clear"
         | "display-output-list"
@@ -6470,6 +6490,139 @@ fn parse_remote_alert(mut arguments: impl Iterator<Item = String>) -> Result<Com
         address,
         rule,
         action,
+    })
+}
+
+/// What `remote-alert-rule` changes in a rule's setting; absent fields keep
+/// theirs. Thresholds are typed in the rule's unit (a percentage, free GiB,
+/// events a second, or a count) and kept as the reading times 1000.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AlertRuleEdit {
+    pub enabled: Option<bool>,
+    pub trigger_milli: Option<i64>,
+    pub clear_milli: Option<i64>,
+    pub hold_ms: Option<u32>,
+    /// Back to the rule's defaults (alone).
+    pub defaults: bool,
+}
+
+impl AlertRuleEdit {
+    /// `current` with this edit applied.
+    #[must_use]
+    pub fn apply(&self, current: fm_protocol::AlertRuleSetting) -> fm_protocol::AlertRuleSetting {
+        if self.defaults {
+            return fm_protocol::AlertRuleSetting::default_for(current.rule);
+        }
+        fm_protocol::AlertRuleSetting {
+            enabled: self.enabled.unwrap_or(current.enabled),
+            trigger_milli: self.trigger_milli.unwrap_or(current.trigger_milli),
+            clear_milli: self.clear_milli.unwrap_or(current.clear_milli),
+            hold_ms: self.hold_ms.unwrap_or(current.hold_ms),
+            ..current
+        }
+    }
+}
+
+/// A non-negative, finite decimal threshold.
+fn threshold(field: &'static str, value: String) -> Result<f64, ArgsError> {
+    value
+        .parse::<f64>()
+        .ok()
+        .filter(|parsed| parsed.is_finite() && *parsed >= 0.0)
+        .ok_or(ArgsError::InvalidChoice { field, value })
+}
+
+/// `remote-alert-rule <address> <rule> [--on|--off] [--fires-at <value>]
+/// [--clears-at <value>] [--hold <seconds>] | --defaults [--key <key>]
+/// [--expect <revision>]` (RC-015, Protocol 2.112).
+fn parse_remote_alert_rule(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let token = required(&mut arguments, "alert rule")?;
+    let rule =
+        fm_protocol::HealthAlertRule::from_token(&token).ok_or(ArgsError::InvalidChoice {
+            field: "alert rule",
+            value: token,
+        })?;
+    let mut edit = AlertRuleEdit::default();
+    let mut key = None;
+    let mut expected_revision = None;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--on" | "--off" => {
+                let enabled = option == "--on";
+                if edit.enabled == Some(!enabled) {
+                    return Err(ArgsError::ConflictingOptions {
+                        option: "--on",
+                        conflicts: "--off",
+                    });
+                }
+                edit.enabled = Some(enabled);
+            }
+            "--fires-at" => {
+                let shown = threshold(
+                    "alert threshold",
+                    required(&mut arguments, "alert threshold")?,
+                )?;
+                edit.trigger_milli = Some(rule.reading().milli(shown));
+            }
+            "--clears-at" => {
+                let shown = threshold(
+                    "alert threshold",
+                    required(&mut arguments, "alert threshold")?,
+                )?;
+                edit.clear_milli = Some(rule.reading().milli(shown));
+            }
+            "--hold" => {
+                let value = required(&mut arguments, "hold seconds")?;
+                let seconds: u32 = number(&value, "hold seconds")?;
+                edit.hold_ms = Some(
+                    seconds
+                        .checked_mul(1_000)
+                        .filter(|ms| *ms <= fm_protocol::MAX_ALERT_HOLD_MS)
+                        .ok_or(ArgsError::InvalidChoice {
+                            field: "hold seconds",
+                            value,
+                        })?,
+                );
+            }
+            "--defaults" => edit.defaults = true,
+            "--key" => {
+                let value = required(&mut arguments, "idempotency key")?;
+                if value.trim().is_empty() {
+                    return Err(ArgsError::BlankValue("idempotency key"));
+                }
+                key = Some(value);
+            }
+            "--expect" => {
+                expected_revision = Some(number(
+                    &required(&mut arguments, "expected revision")?,
+                    "expected revision",
+                )?);
+            }
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    let changes = edit.enabled.is_some()
+        || edit.trigger_milli.is_some()
+        || edit.clear_milli.is_some()
+        || edit.hold_ms.is_some();
+    if edit.defaults && changes {
+        return Err(ArgsError::ConflictingOptions {
+            option: "--defaults",
+            conflicts: "--on, --off, --fires-at, --clears-at, and --hold",
+        });
+    }
+    if !edit.defaults && !changes {
+        return Err(ArgsError::MissingValue("alert rule change"));
+    }
+    Ok(Command::RemoteAlertRule {
+        address,
+        rule,
+        edit,
+        key,
+        expected_revision,
     })
 }
 

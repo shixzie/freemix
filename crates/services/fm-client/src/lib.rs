@@ -2020,6 +2020,7 @@ impl Client {
             | CommandPayload::SetDisplayOutput { .. }
             | CommandPayload::ClearDisplayOutput { .. }
             | CommandPayload::SetLiveLan { .. }
+            | CommandPayload::SetAlertRule(_)
             | CommandPayload::Replay(_)
             | CommandPayload::Reel(_)
             | CommandPayload::SetNetworkStream { .. }

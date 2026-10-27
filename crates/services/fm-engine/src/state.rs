@@ -251,6 +251,8 @@ pub struct ShowState {
     live_lan: fm_types::live_lan::LiveLanConfig,
     /// What is recorded for replay (OR-012).
     replay: fm_types::replay::ReplaySettings,
+    /// The show's own health alert rule settings, in rule order (RC-015).
+    alert_rules: Vec<fm_types::alert_rules::AlertRuleSetting>,
     /// The project's highlight reels, in display order (OR-013).
     reels: Vec<fm_types::reel::ReelSpec>,
     /// Every configured stream destination's authored configuration in
@@ -348,6 +350,7 @@ impl ShowState {
             display_outputs: BTreeMap::new(),
             live_lan: fm_types::live_lan::LiveLanConfig::default(),
             replay: fm_types::replay::ReplaySettings::default(),
+            alert_rules: Vec::new(),
             reels: Vec::new(),
             stream_targets: Vec::new(),
         })
@@ -1069,6 +1072,30 @@ impl ShowState {
             .collect::<Vec<_>>();
         config.check(&outputs)?;
         self.live_lan = config;
+        Ok(())
+    }
+
+    /// The show's own health alert rule settings, in rule order (RC-015);
+    /// a rule without one uses its default.
+    #[must_use]
+    pub fn alert_rules(&self) -> &[fm_types::alert_rules::AlertRuleSetting] {
+        &self.alert_rules
+    }
+
+    /// Sets one health alert rule's setting, checked exactly as
+    /// [`fm_model::Project::set_alert_rule`] checks it; the rule's default
+    /// removes the show's own setting.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`fm_types::alert_rules::AlertRuleError`]. Nothing
+    /// changes on error.
+    pub fn set_alert_rule(
+        &mut self,
+        setting: fm_types::alert_rules::AlertRuleSetting,
+    ) -> Result<(), fm_types::alert_rules::AlertRuleError> {
+        setting.check()?;
+        fm_types::alert_rules::put_setting(&mut self.alert_rules, setting);
         Ok(())
     }
 

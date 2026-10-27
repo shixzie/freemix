@@ -270,6 +270,9 @@ pub enum StudioIntent {
         rule: fm_protocol::HealthAlertRule,
         action: fm_protocol::HealthAlertAction,
     },
+    /// Sets one health alert rule's setting for the show (RC-015, Protocol
+    /// 2.112): an undoable project edit.
+    SetAlertRule(fm_protocol::AlertRuleSetting),
     /// Asks the server for the screens and windows it can capture
     /// (IN-011); the reply updates
     /// [`fm_ui_model::ClientView::screen_capture_inventory`].
@@ -3430,6 +3433,7 @@ mod tests {
             stream_targets: Vec::new(),
             live_lan: fm_protocol::LiveLanEntry::default(),
             live_lan_status: fm_protocol::LiveLanStatus::default(),
+            alert_rules: Vec::new(),
         }
     }
 

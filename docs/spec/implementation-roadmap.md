@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.111 / schema 84 (2026-10-27).
+(2026-10-19); items refreshed through protocol 2.112 / schema 85 (2026-10-27).
 Every parity row is still `planned` (or `blocked`); these are the
 highest-value remaining items, ranked:
 
@@ -176,7 +176,8 @@ both daemons with CPU and GPU-proxy utilization, default alert rules, and a
 `health_status` view in Studio and `remote-diagnostics` (`RC-015`), and
 operators acknowledge and silence alerts (Protocol 2.109) from Studio, the
 CLI, and the Web operator page, which shows the daemon's health too
-(Protocol 2.110); configurable rules remain. Native daemons now group commit the
+(Protocol 2.110), and a show sets each rule's thresholds and hold or
+switches it off (Protocol 2.112, schema 85). Native daemons now group commit the
 commands queued at a command turn (see Native group commit below), but the
 group's disk sync still runs in front of its frame.
 
@@ -3444,12 +3445,21 @@ buttons gated on `transition`, each sent as the page's own
 `health_alert_request` and answered or refused by name (the page's parser
 checked under Node.js against the Rust codec, and a gateway test where an
 Operator page silences and unsilences a rule while a Viewer page is
-refused). Remaining
+refused). Protocol 2.112 (schema 85) lets a show set its own rules: an
+undoable `alert_rule_set` project edit (needing `edit_project`) changes one
+rule's trigger, clear threshold, and hold or switches it off, the project
+keeps only rules that differ from their defaults, the snapshot and an
+`alert_rules_changed` event carry them, and both daemons restart only the
+changed rules from their next statistics sample. Studio's Health alerts
+window edits them under each rule in natural units, and `freemix-cli`
+prints and changes them with `remote-alert-rules` and `remote-alert-rule`
+(type, persistence, codec, engine undo, statistics, and process tests).
+Remaining
 gaps: no input-health or
 hardware-encoder session sampling, and the simulated daemon has no network,
 sync, or encoder readings (an unsupported reading stays unknown rather than
-zero); rules are fixed in code, so there is no threshold editing and no
-persistence of rule changes; the CPU reading
+zero); a show changes each rule's thresholds, hold, and switch but not its
+severity or the reading it watches, and cannot add rules; the CPU reading
 excludes child encoders and the GPU reading is a compositor-pass proxy; and
 the Web pages show no notification history. `RC-015` remains planned.
 

@@ -151,6 +151,7 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
         stream_targets: Vec::new(),
         live_lan: fm_protocol::LiveLanEntry::default(),
         live_lan_status: fm_protocol::LiveLanStatus::default(),
+        alert_rules: Vec::new(),
         transitions_in_flight: Vec::new(),
     }
 }
@@ -2019,6 +2020,7 @@ mod titles {
             stream_targets: Vec::new(),
             live_lan: fm_protocol::LiveLanEntry::default(),
             live_lan_status: fm_protocol::LiveLanStatus::default(),
+            alert_rules: Vec::new(),
             transitions_in_flight: Vec::new(),
         }
     }

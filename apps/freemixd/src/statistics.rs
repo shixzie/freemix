@@ -53,8 +53,8 @@ use fm_observability::{
     SeriesKey, SeriesValue, StatisticsError, StatisticsSnapshot,
 };
 use fm_protocol::{
-    DaemonHealth, HealthAlert, HealthAlertAction, HealthAlertRule, HealthNotification,
-    HealthNotificationKind, HealthSeverity, HealthSilence, HealthStatusMessage,
+    AlertRuleSetting, DaemonHealth, HealthAlert, HealthAlertAction, HealthAlertRule,
+    HealthNotification, HealthNotificationKind, HealthSeverity, HealthSilence, HealthStatusMessage,
     MAX_UTILIZATION_PERMILLE, ServerIdentity, SourceClockState, SourceSyncSample,
 };
 
@@ -164,15 +164,12 @@ pub(crate) struct DefaultRule {
     /// `true` for a per-second rate of the metric, `false` for its value.
     pub(crate) rate: bool,
     pub(crate) direction: ThresholdDirection,
-    pub(crate) trigger: f64,
-    pub(crate) clear: f64,
-    /// How long the trigger must hold before the rule fires.
-    pub(crate) for_millis: u64,
 }
 
 /// Every default rule, in [`HealthAlertRule::ALL`] order (which is also the
-/// wire order), so the engine's insertion order matches the protocol.
-#[allow(clippy::cast_precision_loss)] // the disk thresholds are exact in an f64
+/// wire order), so the engine's insertion order matches the protocol. Their
+/// thresholds and holds are the show's settings, else each rule's
+/// [`HealthAlertRule::defaults`].
 pub(crate) const DEFAULT_RULES: [DefaultRule; 9] = [
     // The process keeps most of the machine busy for ten seconds.
     DefaultRule {
@@ -181,9 +178,6 @@ pub(crate) const DEFAULT_RULES: [DefaultRule; 9] = [
         severity: AlertSeverity::Warning,
         rate: false,
         direction: ThresholdDirection::Above,
-        trigger: 0.9,
-        clear: 0.75,
-        for_millis: 10_000,
     },
     // The configured outputs' filesystem runs low, at the native daemon's
     // fixed free-space band.
@@ -193,9 +187,6 @@ pub(crate) const DEFAULT_RULES: [DefaultRule; 9] = [
         severity: AlertSeverity::Critical,
         rate: false,
         direction: ThresholdDirection::Below,
-        trigger: crate::disk::DISK_LOW_FREE_BYTES as f64,
-        clear: crate::disk::DISK_CLEAR_FREE_BYTES as f64,
-        for_millis: 0,
     },
     // A quarter of the realized frames woke half a frame late for five
     // seconds.
@@ -205,9 +196,6 @@ pub(crate) const DEFAULT_RULES: [DefaultRule; 9] = [
         severity: AlertSeverity::Warning,
         rate: false,
         direction: ThresholdDirection::Above,
-        trigger: 0.25,
-        clear: 0.05,
-        for_millis: 5_000,
     },
     // Outputs keep dropping at least a picture a second for three seconds.
     DefaultRule {
@@ -216,9 +204,6 @@ pub(crate) const DEFAULT_RULES: [DefaultRule; 9] = [
         severity: AlertSeverity::Warning,
         rate: true,
         direction: ThresholdDirection::Above,
-        trigger: 1.0,
-        clear: 0.0,
-        for_millis: 3_000,
     },
     // The timestamped GPU passes keep the GPU nearly busy for five seconds.
     DefaultRule {
@@ -227,9 +212,6 @@ pub(crate) const DEFAULT_RULES: [DefaultRule; 9] = [
         severity: AlertSeverity::Warning,
         rate: false,
         direction: ThresholdDirection::Above,
-        trigger: 0.9,
-        clear: 0.7,
-        for_millis: 5_000,
     },
     // A stream target or recorder slot latched a failure.
     DefaultRule {
@@ -238,9 +220,6 @@ pub(crate) const DEFAULT_RULES: [DefaultRule; 9] = [
         severity: AlertSeverity::Critical,
         rate: false,
         direction: ThresholdDirection::Above,
-        trigger: 1.0,
-        clear: 0.0,
-        for_millis: 0,
     },
     // An encoder's queue stayed nearly full for five seconds.
     DefaultRule {
@@ -249,9 +228,6 @@ pub(crate) const DEFAULT_RULES: [DefaultRule; 9] = [
         severity: AlertSeverity::Warning,
         rate: false,
         direction: ThresholdDirection::Above,
-        trigger: 0.9,
-        clear: 0.6,
-        for_millis: 5_000,
     },
     // A stream target kept waiting out reconnect backoff for ten seconds.
     DefaultRule {
@@ -260,9 +236,6 @@ pub(crate) const DEFAULT_RULES: [DefaultRule; 9] = [
         severity: AlertSeverity::Warning,
         rate: false,
         direction: ThresholdDirection::Above,
-        trigger: 1.0,
-        clear: 0.0,
-        for_millis: 10_000,
     },
     // A live source's clock loop stayed degraded for ten seconds.
     DefaultRule {
@@ -271,9 +244,6 @@ pub(crate) const DEFAULT_RULES: [DefaultRule; 9] = [
         severity: AlertSeverity::Warning,
         rate: false,
         direction: ThresholdDirection::Above,
-        trigger: 1.0,
-        clear: 0.0,
-        for_millis: 10_000,
     },
 ];
 
@@ -318,26 +288,42 @@ impl AlertActionError {
     }
 }
 
+/// The protocol rule a default rule implements.
+fn protocol_rule(rule: &DefaultRule) -> HealthAlertRule {
+    HealthAlertRule::from_token(rule.id).expect("every default rule is a protocol rule")
+}
+
+/// `rule` evaluated with a show's `setting` (RC-015, Protocol 2.112): its
+/// thresholds (readings times 1000) and hold.
+#[allow(clippy::cast_precision_loss)] // thresholds are far below 2^53 milli units
+fn alert_rule(rule: &DefaultRule, setting: AlertRuleSetting) -> AlertRule {
+    let policy = AlertPolicy::new(
+        rule.direction,
+        setting.trigger_milli as f64 / 1000.0,
+        setting.clear_milli as f64 / 1000.0,
+    )
+    .expect("checked settings form hysteresis bands");
+    let condition = if rule.rate {
+        RuleCondition::RateOfChange(policy)
+    } else {
+        RuleCondition::Threshold(policy)
+    };
+    AlertRule::new(
+        RuleId::new(rule.id).expect("default rule IDs keep the grammar"),
+        rule.severity,
+        SeriesKey::new(metric(rule.metric), LabelSet::new()),
+        RuleReading::Value,
+        condition,
+    )
+    .for_duration(u64::from(setting.hold_ms))
+}
+
 fn default_engine(registry: &MetricRegistry) -> AlertEngine {
     let mut engine = AlertEngine::new(AlertEngineLimits::default()).expect("default limits");
     for rule in DEFAULT_RULES {
-        let policy = AlertPolicy::new(rule.direction, rule.trigger, rule.clear)
-            .expect("default rules form hysteresis bands");
-        let condition = if rule.rate {
-            RuleCondition::RateOfChange(policy)
-        } else {
-            RuleCondition::Threshold(policy)
-        };
         engine
             .add_rule(
-                AlertRule::new(
-                    RuleId::new(rule.id).expect("default rule IDs keep the grammar"),
-                    rule.severity,
-                    SeriesKey::new(metric(rule.metric), LabelSet::new()),
-                    RuleReading::Value,
-                    condition,
-                )
-                .for_duration(rule.for_millis),
+                alert_rule(&rule, AlertRuleSetting::default_for(protocol_rule(&rule))),
                 registry,
             )
             .expect("default rules read registered metrics");
@@ -589,6 +575,8 @@ pub(crate) struct DaemonStatistics {
     health_sequence: u64,
     /// The whole-run total each counter last advanced to, by series.
     totals: std::collections::BTreeMap<(&'static str, LabelSet), u64>,
+    /// The show's alert rule settings the engine evaluates (RC-015).
+    alert_settings: Vec<AlertRuleSetting>,
 }
 
 impl DaemonStatistics {
@@ -652,6 +640,7 @@ impl DaemonStatistics {
             recent: VecDeque::with_capacity(MAX_RECENT_NOTIFICATIONS),
             health_sequence: 0,
             totals: std::collections::BTreeMap::new(),
+            alert_settings: Vec::new(),
             registry,
             sampled_at: None,
             errors: 0,
@@ -771,6 +760,36 @@ impl DaemonStatistics {
     /// Applies an operator's alert `action` to `rule` at `now` (Protocol
     /// 2.109): acknowledges the firing rule, silences it (replacing any
     /// silence it has), or ends its silence (none is no error).
+    /// Evaluates the show's alert rule settings (RC-015, Protocol 2.112):
+    /// each rule whose setting changed restarts with its new thresholds and
+    /// hold (a switched-off rule is no longer evaluated, and a firing alert
+    /// of a changed rule ends without a notification); the others keep
+    /// their state, acknowledgements, and silences.
+    pub(crate) fn apply_alert_rules(&mut self, settings: &[AlertRuleSetting]) {
+        if settings == self.alert_settings.as_slice() {
+            return;
+        }
+        for rule in DEFAULT_RULES {
+            let protocol = protocol_rule(&rule);
+            let before = fm_protocol::effective_alert_rule(&self.alert_settings, protocol);
+            let after = fm_protocol::effective_alert_rule(settings, protocol);
+            if before == after {
+                continue;
+            }
+            let id = RuleId::new(rule.id).expect("default rule IDs keep the grammar");
+            let _ = self.alerts.remove_rule(&id);
+            if after.enabled && after.check().is_ok() {
+                let added = self
+                    .alerts
+                    .add_rule(alert_rule(&rule, after), &self.registry);
+                if added.is_err() {
+                    self.errors += 1;
+                }
+            }
+        }
+        settings.clone_into(&mut self.alert_settings);
+    }
+
     pub(crate) fn alert_action(
         &mut self,
         rule: HealthAlertRule,
@@ -1236,6 +1255,60 @@ mod tests {
         alerts.iter().map(|alert| alert.rule.as_str()).collect()
     }
 
+    /// RC-015 / Protocol 2.112: a show's settings restart only the rules
+    /// they change. A switched-off rule no longer fires; a stricter trigger
+    /// fires on a reading the default lets pass; going back to the default
+    /// restores every rule.
+    #[test]
+    fn show_settings_change_only_their_rules() {
+        let origin = Instant::now();
+        let mut statistics = DaemonStatistics::new(origin);
+        let off = AlertRuleSetting {
+            enabled: false,
+            ..AlertRuleSetting::default_for(HealthAlertRule::OutputFailed)
+        };
+        // Two failed outputs is a failure only from two on.
+        let two = AlertRuleSetting {
+            trigger_milli: 2_000,
+            clear_milli: 1_000,
+            ..AlertRuleSetting::default_for(HealthAlertRule::OutputFailed)
+        };
+        statistics.apply_alert_rules(&[off]);
+        assert_eq!(statistics.alerts.statuses().len(), DEFAULT_RULES.len() - 1);
+        statistics.record_sample(origin, ControlSample::default(), None, None);
+        let failed = |count| {
+            let mut sample = native(vec![1.0]);
+            sample.outputs_failed = count;
+            sample
+        };
+        let mut at = origin;
+        let mut step = |statistics: &mut DaemonStatistics, count| {
+            at += STATISTICS_INTERVAL;
+            statistics.record_sample(at, ControlSample::default(), Some(failed(count)), None);
+        };
+        let fires = |statistics: &DaemonStatistics| {
+            statistics
+                .active_alerts()
+                .iter()
+                .any(|alert| alert.rule.as_str() == "output_failed")
+        };
+        step(&mut statistics, 1);
+        assert!(!fires(&statistics), "switched off");
+
+        statistics.apply_alert_rules(&[two]);
+        assert_eq!(statistics.alerts.statuses().len(), DEFAULT_RULES.len());
+        step(&mut statistics, 1);
+        assert!(!fires(&statistics), "one is below two");
+        step(&mut statistics, 2);
+        assert!(fires(&statistics), "two fires");
+
+        // Back to the default: one failed output fires again.
+        statistics.apply_alert_rules(&[]);
+        assert!(!fires(&statistics), "the rule restarted");
+        step(&mut statistics, 1);
+        assert!(fires(&statistics), "one fires again");
+    }
+
     /// Protocol 2.109: an operator acknowledges a firing alert and silences
     /// a rule until a bounded time; a rule holds one silence, a new one
     /// replacing it, and both leave the health sample once they end.
@@ -1425,41 +1498,47 @@ mod tests {
             .collect();
         assert_eq!(ids, expected);
         for rule in DEFAULT_RULES {
+            let defaults = protocol_rule(&rule).defaults();
             // A trigger at zero would fire on an idle daemon.
-            assert!(rule.trigger > 0.0, "{} triggers at zero", rule.id);
-            match rule.direction {
-                ThresholdDirection::Above => {
-                    assert!(rule.clear < rule.trigger, "{} has no band", rule.id);
-                }
-                ThresholdDirection::Below => {
-                    assert!(rule.clear > rule.trigger, "{} has no band", rule.id);
-                }
-            }
+            assert!(defaults.trigger_milli > 0, "{} triggers at zero", rule.id);
+            assert_eq!(
+                rule.direction == ThresholdDirection::Above,
+                protocol_rule(&rule).fires_above(),
+                "{}",
+                rule.id
+            );
         }
         // The RC-015 rules: one degraded output or a 90%-full encoder queue,
         // each held before firing.
         let rule = |id: &str| DEFAULT_RULES.iter().find(|rule| rule.id == id).unwrap();
-        let encoder = rule("encoder_saturated");
-        assert_eq!(encoder.metric, names::ENCODER_QUEUE_UTILIZATION);
-        assert_eq!(
-            (encoder.trigger, encoder.clear, encoder.for_millis),
-            (0.9, 0.6, 5_000)
-        );
-        let reconnecting = rule("stream_reconnecting");
-        assert_eq!(reconnecting.metric, names::NETWORK_RECONNECTING_TARGETS);
-        assert_eq!(
+        let defaults = |id: &str| {
+            let defaults = protocol_rule(rule(id)).defaults();
             (
-                reconnecting.trigger,
-                reconnecting.clear,
-                reconnecting.for_millis
-            ),
-            (1.0, 0.0, 10_000)
-        );
-        let sync = rule("sync_degraded");
-        assert_eq!(sync.metric, names::SYNC_DEGRADED_SOURCES);
+                defaults.trigger_milli,
+                defaults.clear_milli,
+                defaults.hold_ms,
+            )
+        };
         assert_eq!(
-            (sync.trigger, sync.clear, sync.for_millis),
-            (1.0, 0.0, 10_000)
+            rule("encoder_saturated").metric,
+            names::ENCODER_QUEUE_UTILIZATION
+        );
+        assert_eq!(defaults("encoder_saturated"), (900, 600, 5_000));
+        assert_eq!(
+            rule("stream_reconnecting").metric,
+            names::NETWORK_RECONNECTING_TARGETS
+        );
+        assert_eq!(defaults("stream_reconnecting"), (1_000, 0, 10_000));
+        assert_eq!(rule("sync_degraded").metric, names::SYNC_DEGRADED_SOURCES);
+        assert_eq!(defaults("sync_degraded"), (1_000, 0, 10_000));
+        // The disk rule fires at the native daemon's free-space band.
+        assert_eq!(
+            protocol_rule(rule("disk_low")).defaults().trigger_milli,
+            i64::try_from(crate::disk::DISK_LOW_FREE_BYTES).unwrap() * 1000
+        );
+        assert_eq!(
+            protocol_rule(rule("disk_low")).defaults().clear_milli,
+            i64::try_from(crate::disk::DISK_CLEAR_FREE_BYTES).unwrap() * 1000
         );
         let statistics = DaemonStatistics::new(Instant::now());
         assert_eq!(statistics.alerts.statuses().len(), DEFAULT_RULES.len());

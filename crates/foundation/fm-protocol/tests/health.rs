@@ -381,8 +381,8 @@ fn alerts_carry_one_entry_per_rule_up_to_nine() {
 }
 
 #[test]
-fn protocol_2_109_is_current() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 111));
+fn protocol_is_current() {
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 112));
 }
 
 /// Protocol 2.109: an acknowledged alert carries its end, silences are
@@ -557,4 +557,147 @@ fn health_alert_request_is_exact() {
     );
     // An action outside the contract is never encoded.
     assert!(encode_line(&request(HealthAlertAction::Silence { duration_ms: 0 })).is_err());
+}
+
+/// Protocol 2.112: `alert_rule_set` carries one rule's setting and
+/// `alert_rules_changed` the show's whole list, both exact and strict.
+#[test]
+#[allow(clippy::too_many_lines)] // the command, then the event, each strict
+fn alert_rule_settings_have_an_exact_wire_form() {
+    use fm_protocol::{
+        AlertRuleSetting, CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload,
+        EditHistoryStatus, EngineIdentity, EventCursor, EventMessage, EventPayload,
+    };
+
+    let cpu = AlertRuleSetting {
+        trigger_milli: 800,
+        clear_milli: 600,
+        hold_ms: 5_000,
+        ..AlertRuleSetting::default_for(HealthAlertRule::CpuSaturated)
+    };
+    let off = AlertRuleSetting {
+        enabled: false,
+        ..AlertRuleSetting::default_for(HealthAlertRule::OutputFailed)
+    };
+    let command = WireMessage::Command(CommandMessage {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        id: "a".into(),
+        idempotency_key: "k".into(),
+        expected_revision: None,
+        deadline_ms: None,
+        payload: CommandPayload::SetAlertRule(cpu),
+    });
+    let line = encode_line(&command).unwrap();
+    assert_eq!(
+        line,
+        format!(
+            "command\tprotocol={CURRENT_PROTOCOL_VERSION}\tid=a\tidempotency_key=k\t\
+             payload=alert_rule_set\trule=cpu_saturated\tenabled=1\ttrigger=800\tclear=600\t\
+             hold_ms=5000\n"
+        )
+    );
+    assert_eq!(decode_line(&line).unwrap(), command);
+    // The disk rule's thresholds are signed milli bytes.
+    let disk = AlertRuleSetting {
+        trigger_milli: 5_368_709_120_000,
+        clear_milli: 10_737_418_240_000,
+        ..AlertRuleSetting::default_for(HealthAlertRule::DiskLow)
+    };
+    let disk_line = encode_line(&WireMessage::Command(CommandMessage {
+        payload: CommandPayload::SetAlertRule(disk),
+        ..match &command {
+            WireMessage::Command(message) => message.clone(),
+            _ => unreachable!(),
+        }
+    }))
+    .unwrap();
+    assert!(
+        disk_line.contains("\ttrigger=5368709120000\t"),
+        "{disk_line}"
+    );
+    for (from, to) in [
+        ("rule=cpu_saturated", "rule=cpu_hot"),
+        ("enabled=1", "enabled=yes"),
+        ("trigger=800", "trigger=0800"),
+        ("trigger=800", "trigger=+800"),
+        ("clear=600", "clear=900"),
+        ("trigger=800", "trigger=1001"),
+        ("hold_ms=5000", "hold_ms=3600001"),
+        ("\thold_ms=5000", ""),
+    ] {
+        assert!(line.contains(from), "{from}");
+        assert!(
+            decode_line(&line.replacen(from, to, 1)).is_err(),
+            "{from} -> {to}"
+        );
+    }
+    // A setting without a band is refused at encode time too.
+    assert!(
+        encode_line(&WireMessage::Command(CommandMessage {
+            payload: CommandPayload::SetAlertRule(AlertRuleSetting {
+                clear_milli: 900,
+                ..cpu
+            }),
+            ..match &command {
+                WireMessage::Command(message) => message.clone(),
+                _ => unreachable!(),
+            }
+        }))
+        .is_err()
+    );
+
+    let event = |settings: Vec<AlertRuleSetting>| {
+        WireMessage::Event(EventMessage {
+            cursor: EventCursor {
+                engine: EngineIdentity {
+                    engine_id: "e".into(),
+                    state_epoch: 1,
+                    log_id: "l".into(),
+                },
+                revision: 4,
+            },
+            edit_history: EditHistoryStatus::EMPTY,
+            payload: EventPayload::AlertRulesChanged(settings),
+        })
+    };
+    let changed = event(vec![cpu, off]);
+    let line = encode_line(&changed).unwrap();
+    assert!(
+        line.contains(
+            "\tevent=alert_rules_changed\talert_rules=cpu_saturated%3A1%3A800%3A600%3A5000%3B\
+             output_failed%3A0%3A1000%3A0%3A0\t"
+        ),
+        "{line}"
+    );
+    assert_eq!(decode_line(&line).unwrap(), changed);
+    let empty = encode_line(&event(Vec::new())).unwrap();
+    assert!(empty.contains("\talert_rules=\t"), "{empty}");
+    assert_eq!(decode_line(&empty).unwrap(), event(Vec::new()));
+    // Out of order, repeated, or default entries are refused both ways.
+    for settings in [
+        vec![off, cpu],
+        vec![cpu, cpu],
+        vec![AlertRuleSetting::default_for(HealthAlertRule::GpuSaturated)],
+    ] {
+        assert!(encode_line(&event(settings)).is_err());
+    }
+    for (from, to) in [
+        (
+            "alert_rules=cpu_saturated%3A1%3A800%3A600%3A5000%3B",
+            "alert_rules=",
+        ),
+        (
+            "output_failed%3A0%3A1000%3A0%3A0",
+            "output_failed%3A1%3A1000%3A0%3A0",
+        ),
+        ("%3A5000%3B", "%3A5000%3A1%3B"),
+    ] {
+        let edited = line.replacen(from, to, 1);
+        if from.ends_with("%3B") && to == "alert_rules=" {
+            // Dropping the first entry still leaves a valid list.
+            assert!(decode_line(&edited).is_ok());
+        } else {
+            assert!(decode_line(&edited).is_err(), "{from} -> {to}");
+        }
+    }
 }

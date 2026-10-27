@@ -165,6 +165,87 @@ pub fn alert(
     }
 }
 
+/// One `AlertRule(...)` line per rule: the show's setting, in the rule's
+/// unit, and whether it is the rule's default (Protocol 2.112).
+pub(crate) fn format_alert_rules(settings: &[fm_protocol::AlertRuleSetting]) -> Vec<String> {
+    fm_protocol::HealthAlertRule::ALL
+        .into_iter()
+        .map(|rule| {
+            let setting = fm_protocol::effective_alert_rule(settings, rule);
+            let reading = rule.reading();
+            let shown = |milli| {
+                let value = reading.shown(milli);
+                let text = format!("{value:.3}");
+                let text = text.trim_end_matches('0').trim_end_matches('.');
+                format!("{text}{}", reading.unit())
+            };
+            format!(
+                "AlertRule(rule={}, enabled={}, fires_at={}, clears_at={}, hold_ms={}, default={})",
+                rule.token(),
+                if setting.enabled { "on" } else { "off" },
+                shown(setting.trigger_milli),
+                shown(setting.clear_milli),
+                setting.hold_ms,
+                setting.is_default(),
+            )
+        })
+        .collect()
+}
+
+/// Prints every alert rule's setting for the show (Protocol 2.112).
+pub fn alert_rules(address: SocketAddr) -> RemoteResult<()> {
+    let remote = Remote::connect(address, Role::Viewer)?;
+    let state = remote
+        .client
+        .model()
+        .state()
+        .ok_or_else(|| RemoteFailure("remote project state is unavailable".into()))?;
+    for line in format_alert_rules(state.alert_rules()) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// Changes one alert rule's setting for the show and prints every rule's
+/// (Protocol 2.112).
+pub fn set_alert_rule(
+    address: SocketAddr,
+    rule: fm_protocol::HealthAlertRule,
+    edit: &crate::args::AlertRuleEdit,
+    key: Option<String>,
+    expected_revision: Option<u64>,
+) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Admin)?;
+    let current = fm_protocol::effective_alert_rule(
+        remote
+            .client
+            .model()
+            .state()
+            .ok_or_else(|| RemoteFailure("remote project state is unavailable".into()))?
+            .alert_rules(),
+        rule,
+    );
+    let setting = edit.apply(current);
+    setting
+        .check()
+        .map_err(|error| RemoteFailure(format!("invalid alert rule setting: {error}")))?;
+    let payload = CommandPayload::SetAlertRule(setting);
+    let key = match key {
+        Some(key) => key,
+        None => implicit_key(&payload)?,
+    };
+    remote.execute(payload, key, expected_revision, CommandCompletion::Project)?;
+    let state = remote
+        .client
+        .model()
+        .state()
+        .ok_or_else(|| RemoteFailure("remote project state is unavailable".into()))?;
+    for line in format_alert_rules(state.alert_rules()) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
 /// Largest picture `remote-scene-layer-auto-key` asks the daemon for: the
 /// size Studio's auto key samples (SW-008).
 const AUTO_KEY_PICTURE: (u16, u16) = (
@@ -2458,6 +2539,7 @@ impl CommandCompletion {
             | CommandPayload::SetStreamTarget { .. }
             | CommandPayload::RemoveStreamTarget { .. }
             | CommandPayload::SetLiveLan { .. }
+            | CommandPayload::SetAlertRule(_)
             | CommandPayload::SceneLayer(_) => Self::Project,
             CommandPayload::SetInputAudioStrip { .. } => Self::Audio,
             CommandPayload::AudioMixer(operation) => Self::Mixer {
@@ -2783,6 +2865,7 @@ impl Remote {
                         | EventPayload::SceneLayoutChanged { .. }
                         | EventPayload::DisplayOutputChanged { .. }
                         | EventPayload::LiveLanChanged(_)
+                        | EventPayload::AlertRulesChanged(_)
                         | EventPayload::NetworkStreamChanged { .. }
                         | EventPayload::CaptureSettingsChanged { .. }
                         | EventPayload::StreamTargetChanged { .. }

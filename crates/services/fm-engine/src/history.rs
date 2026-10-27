@@ -161,6 +161,7 @@ impl EngineCommand {
             | Self::SetFadeToBlackCurve { .. }
             | Self::SetDisplayOutput { .. }
             | Self::SetLiveLan(_)
+            | Self::SetAlertRule(_)
             | Self::SetNetworkStream { .. }
             | Self::SetCaptureSettings { .. }
             | Self::SetCueList { .. }
@@ -1120,6 +1121,9 @@ pub(crate) fn inverse_for(state: &ShowState, command: &EngineCommand) -> Option<
         EngineCommand::SetLiveLan(_) => Some(EngineCommand::SetLiveLan(Box::new(
             state.live_lan().clone(),
         ))),
+        EngineCommand::SetAlertRule(setting) => Some(EngineCommand::SetAlertRule(
+            fm_types::alert_rules::effective_setting(state.alert_rules(), setting.rule),
+        )),
         EngineCommand::Replay(crate::EngineReplayOperation::Configure(_)) => {
             Some(EngineCommand::Replay(
                 crate::EngineReplayOperation::Configure(Box::new(state.replay().clone())),

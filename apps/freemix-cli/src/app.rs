@@ -1332,6 +1332,14 @@ pub fn run(command: Command) -> AppResult<()> {
             rule,
             action,
         } => remote::alert(address, rule, action)?,
+        Command::RemoteAlertRules { address } => remote::alert_rules(address)?,
+        Command::RemoteAlertRule {
+            address,
+            rule,
+            edit,
+            key,
+            expected_revision,
+        } => remote::set_alert_rule(address, rule, &edit, key, expected_revision)?,
         Command::DisplayOutputSet {
             path,
             slot,
@@ -5146,6 +5154,9 @@ fn restore_display_outputs(show: &mut ShowState, project: &Project) -> AppResult
         show.set_display_output(slot, Some(config.clone()))?;
     }
     show.set_live_lan(project.live_lan().clone())?;
+    for setting in project.alert_rules() {
+        show.set_alert_rule(*setting)?;
+    }
     Ok(())
 }
 
@@ -5154,6 +5165,16 @@ fn restore_display_outputs(show: &mut ShowState, project: &Project) -> AppResult
 /// slot is cleared first, so a display moving between slots is never
 /// claimed twice.
 fn sync_display_outputs(project: &mut Project, show: &ShowState) -> AppResult<()> {
+    if project.alert_rules() != show.alert_rules() {
+        for rule in fm_types::alert_rules::HealthAlertRule::ALL {
+            project
+                .set_alert_rule(fm_types::alert_rules::effective_setting(
+                    show.alert_rules(),
+                    rule,
+                ))
+                .map_err(|error| format!("project cannot take alert rules: {error}"))?;
+        }
+    }
     if project.live_lan() != show.live_lan() {
         project
             .set_live_lan(show.live_lan().clone())
@@ -6571,6 +6592,12 @@ Usage:
   freemix-cli remote-status <127.0.0.1:port>
   freemix-cli remote-diagnostics <127.0.0.1:port>
   freemix-cli remote-alert <127.0.0.1:port> <rule> acknowledge|silence <1..1440 minutes> | unsilence
+  freemix-cli remote-alert-rules <127.0.0.1:port>
+  freemix-cli remote-alert-rule <127.0.0.1:port> <rule> [--on|--off] [--fires-at <value>] [--clears-at <value>] [--hold <0..=3600 seconds>] | --defaults [--key <key>] [--expect <revision>]
+      Prints, or changes for the show, each alert rule's setting (Protocol 2.112):
+      whether it is evaluated, the reading it fires and clears at (a percentage,
+      free GiB, events a second, or a count), and its hold. One AlertRule line
+      per rule; a change is one undoable project edit.
     also prints one SourceSync line per live source clock: drift, ratio, buffer, and recovery counts
     then a Health line (CPU and GPU-proxy utilization) and one Alert and AlertNotification line per firing alert and recent notification
   freemix-cli remote-audio-strip <127.0.0.1:port> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp>] [--key <key>] [--expect <revision>]

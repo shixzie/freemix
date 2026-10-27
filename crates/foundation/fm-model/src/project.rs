@@ -933,7 +933,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(84);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(85);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -997,6 +997,9 @@ pub struct Project {
     replay: fm_types::replay::ReplaySettings,
     /// The project's highlight reels (OR-013, schema 83).
     reels: Vec<fm_types::reel::ReelSpec>,
+    /// The show's own settings for health alert rules, in rule order, none
+    /// equal to its rule's default (RC-015, schema 85).
+    alert_rules: Vec<fm_types::alert_rules::AlertRuleSetting>,
 }
 
 impl Project {
@@ -1043,6 +1046,7 @@ impl Project {
             screen_capture_restore_tokens: BTreeMap::new(),
             replay: fm_types::replay::ReplaySettings::default(),
             reels: Vec::new(),
+            alert_rules: Vec::new(),
         }
     }
 
@@ -1496,6 +1500,39 @@ impl Project {
     /// by [`Self::validate`].
     pub fn restore_reels(&mut self, reels: Vec<fm_types::reel::ReelSpec>) {
         self.reels = reels;
+    }
+
+    /// The show's own health alert rule settings, in rule order (RC-015,
+    /// schema 85); a rule without one uses its default
+    /// ([`fm_types::alert_rules::effective_setting`]).
+    #[must_use]
+    pub fn alert_rules(&self) -> &[fm_types::alert_rules::AlertRuleSetting] {
+        &self.alert_rules
+    }
+
+    /// Sets one rule's setting (a default setting removes the show's own)
+    /// and returns the setting the rule had.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`fm_types::alert_rules::AlertRuleError`] for thresholds
+    /// out of range or without a hysteresis band, or a hold too long.
+    /// Nothing changes on error.
+    pub fn set_alert_rule(
+        &mut self,
+        setting: fm_types::alert_rules::AlertRuleSetting,
+    ) -> Result<fm_types::alert_rules::AlertRuleSetting, fm_types::alert_rules::AlertRuleError>
+    {
+        setting.check()?;
+        let previous = fm_types::alert_rules::effective_setting(&self.alert_rules, setting.rule);
+        fm_types::alert_rules::put_setting(&mut self.alert_rules, setting);
+        Ok(previous)
+    }
+
+    /// Restores persisted alert rule settings without checking them;
+    /// problems are reported by [`Self::validate`].
+    pub fn restore_alert_rules(&mut self, settings: Vec<fm_types::alert_rules::AlertRuleSetting>) {
+        self.alert_rules = settings;
     }
 
     /// The `LiveLAN` viewer stream's configuration (OR-017, schema 53).

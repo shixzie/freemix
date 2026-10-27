@@ -4735,6 +4735,114 @@ fn simulated_studio_peer_receives_health_status_once_a_second() {
     daemon.stop();
 }
 
+/// RC-015 / Protocol 2.112: an Admin switches a rule off for the show;
+/// the edit is announced, every new session's snapshot carries it, the
+/// daemon stops evaluating the rule (silencing it is refused `not_found`),
+/// an Operator may not change rules, and the setting survives a restart.
+#[test]
+#[allow(clippy::too_many_lines)] // three sessions and a restart
+fn admin_switches_an_alert_rule_off_for_the_show() {
+    use fm_protocol::{
+        AlertRuleSetting, EventPayload, HealthAlertAction, HealthAlertRequest, HealthAlertRule,
+    };
+
+    let directory = TestDirectory::new("simulated-alert-rule-settings");
+    let project_path = directory.project_path();
+    create_project(&project_path);
+    let daemon = Daemon::start_without_once(&project_path);
+    let off = AlertRuleSetting {
+        enabled: false,
+        ..AlertRuleSetting::default_for(HealthAlertRule::DiskLow)
+    };
+
+    // An Operator may not change the show's rules.
+    let mut operator = daemon.connect();
+    operator.handshake_as(Role::Operator, None);
+    operator.receive_snapshot();
+    operator.send(&command(
+        "operator-rule",
+        "operator-rule-key",
+        CommandPayload::SetAlertRule(off),
+    ));
+    assert!(matches!(
+        operator.next_result(),
+        CommandResult::Rejected { code, .. } if code == "permission_denied"
+    ));
+    drop(operator);
+
+    let mut admin = daemon.connect();
+    admin
+        .reader
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    admin.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        build: "process-test".into(),
+        client_type: ClientType::Studio,
+        desired_role: Role::Admin,
+        resume_cursor: None,
+    }));
+    let WireMessage::HandshakeResponse(_) = admin.receive() else {
+        panic!("expected handshake response");
+    };
+    assert!(admin.receive_snapshot().alert_rules.is_empty());
+    admin.send(&command(
+        "rule-off",
+        "rule-off-key",
+        CommandPayload::SetAlertRule(off),
+    ));
+    let revision = accepted_revision(&mut admin, "rule-off");
+    let announced = receive_within(
+        &mut admin,
+        Duration::from_secs(5),
+        "alert_rules_changed",
+        |message| match message {
+            WireMessage::Event(event) if event.cursor.revision == revision => match event.payload {
+                EventPayload::AlertRulesChanged(settings) => Some(settings),
+                _ => None,
+            },
+            _ => None,
+        },
+    );
+    assert_eq!(announced, [off]);
+    assert_eq!(snapshot_of(&daemon, Role::Viewer).alert_rules, [off]);
+
+    // From the next statistics sample the rule is not evaluated.
+    receive_within(
+        &mut admin,
+        Duration::from_secs(5),
+        "a health_status after the edit",
+        |message| matches!(message, WireMessage::HealthStatus(_)).then_some(()),
+    );
+    admin.send(&WireMessage::HealthAlertRequest(HealthAlertRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: "silence-off".into(),
+        rule: HealthAlertRule::DiskLow,
+        action: HealthAlertAction::Silence {
+            duration_ms: 60_000,
+        },
+    }));
+    let code = receive_within(
+        &mut admin,
+        Duration::from_secs(5),
+        "the silence refusal",
+        |message| match message {
+            WireMessage::Error(error) if error.request_id.as_deref() == Some("silence-off") => {
+                Some(error.error.code)
+            }
+            _ => None,
+        },
+    );
+    assert_eq!(code, "not_found");
+    drop(admin);
+    daemon.stop();
+
+    // The setting is durable.
+    let daemon = Daemon::start_without_once(&project_path);
+    assert_eq!(snapshot_of(&daemon, Role::Viewer).alert_rules, [off]);
+}
+
 /// RC-015 / Protocol 2.109: an operator's Studio session silences a rule
 /// and ends the silence, each answered by a `health_status` echoing the
 /// request with the silence state, while the sequence it sees keeps
@@ -7763,11 +7871,11 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     create_title_project(&project_path);
     let daemon = Daemon::start_without_once(&project_path);
 
-    // The previous protocol is refused; the current one is 2.111.
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 111));
+    // The previous protocol is refused; the current one is 2.112.
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 112));
     let mut old = daemon.connect();
     old.send(&WireMessage::HandshakeRequest(HandshakeRequest {
-        protocol: ProtocolVersion::new(2, 110),
+        protocol: ProtocolVersion::new(2, 111),
         build: "process-test".into(),
         client_type: ClientType::Integration,
         desired_role: Role::Viewer,
@@ -7783,7 +7891,7 @@ fn title_fields_take_and_off_air_round_trip_through_the_daemon() {
     let mut viewer = daemon.connect();
     assert_eq!(
         viewer.handshake_as(Role::Viewer, None).protocol,
-        ProtocolVersion::new(2, 111)
+        ProtocolVersion::new(2, 112)
     );
     let (snapshot, states) = title_sync(&mut viewer);
     assert_eq!(

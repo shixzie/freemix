@@ -90,6 +90,7 @@ struct ProjectDto {
     live_lan: fm_types::live_lan::LiveLanConfig,
     replay: fm_types::replay::ReplaySettings,
     reels: Vec<fm_types::reel::ReelSpec>,
+    alert_rules: Vec<fm_types::alert_rules::AlertRuleSetting>,
     scripts: Vec<fm_model::Script>,
     script_run: fm_model::ScriptRunState,
     shortcuts: Vec<fm_model::Shortcut>,
@@ -157,6 +158,7 @@ impl ProjectDto {
             live_lan: super::live_lan::parse_live_lan(&mut object)?,
             replay: super::replay::parse_replay(&mut object)?,
             reels: super::reel::parse_reels(&mut object)?,
+            alert_rules: super::alert_rules::parse_alert_rules(&mut object)?,
             scripts: super::script::parse_scripts(&mut object)?,
             script_run: super::script::parse_script_run(&mut object)?,
             shortcuts: super::shortcut::parse_shortcuts(&mut object)?,
@@ -287,6 +289,7 @@ impl ProjectDto {
         // Reel bounds, names, speeds, trims, and angles are reported by
         // project validation.
         project.restore_reels(self.reels);
+        project.restore_alert_rules(self.alert_rules);
         // Script bounds and duplicate ids are reported by project
         // validation.
         project.set_scripts(self.scripts);

@@ -10542,6 +10542,60 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("esta acción ya tiene su tecla base"),
     ),
     (Msg::ShortcutGroupProfile, t("Perfil de teclas: {name}")),
+    (Msg::HealthRuleEvaluate, t("Evaluar")),
+    (
+        Msg::HealthRuleEvaluateHover,
+        t("Si este espectáculo evalúa la regla; apagada, nunca se activa"),
+    ),
+    (Msg::HealthRuleFiresAt, t("Se activa en")),
+    (
+        Msg::HealthRuleFiresAtHover,
+        t(
+            "La lectura en la que la regla empieza a activarse, cuando se mantiene durante el tiempo de espera",
+        ),
+    ),
+    (Msg::HealthRuleClearsAt, t("Se borra en")),
+    (
+        Msg::HealthRuleClearsAtHover,
+        t(
+            "La lectura a partir de la cual una alerta activa se borra; debe quedar al otro lado de la lectura de activación, para que la alerta no oscile",
+        ),
+    ),
+    (Msg::HealthRuleHold, t("Espera")),
+    (
+        Msg::HealthRuleHoldHover,
+        t("Cuánto debe mantenerse la lectura de activación antes de que la regla se active"),
+    ),
+    (Msg::HealthRuleUseDefaults, t("Usar valores por defecto")),
+    (
+        Msg::HealthRuleUseDefaultsHover,
+        t("Devolver a esta regla sus umbrales y espera por defecto y evaluarla"),
+    ),
+    (
+        Msg::HealthRuleReasonDefault,
+        t("esta regla ya usa sus valores por defecto"),
+    ),
+    (
+        Msg::HealthRuleReasonOff,
+        t("esta regla está apagada en este espectáculo"),
+    ),
+    (Msg::HealthRuleUnitPercent, t("%")),
+    (Msg::HealthRuleUnitGib, t("GiB libres")),
+    (Msg::HealthRuleUnitPerSecond, t("por segundo")),
+    (Msg::HealthRuleUnitCount, t("salidas o fuentes")),
+    (Msg::HealthRuleUnitSeconds, t("s")),
+    (
+        Msg::HealthRuleRefusedBandBelow,
+        t("No enviado: la lectura de borrado debe quedar por debajo de la de activación."),
+    ),
+    (
+        Msg::HealthRuleRefusedBandAbove,
+        t("No enviado: la lectura de borrado debe quedar por encima de la de activación."),
+    ),
+    (
+        Msg::HealthRuleRefusedRange,
+        t("No enviado: una lectura o la espera está fuera de rango."),
+    ),
     (Msg::ReelClipRemove, t("QUITAR CLIP")),
     (Msg::ReelClipRemoveHover, t("Quitar este clip del reel")),
     (Msg::ReelClipMoveUpHover, t("Reproducir este clip antes")),

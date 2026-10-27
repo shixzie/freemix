@@ -741,6 +741,12 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
                 record.field_string(name, value)
             })?;
         }
+        CommandPayload::SetAlertRule(setting) => {
+            record.field("payload", "alert_rule_set")?;
+            super::alert_rules::encode_set(setting, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         CommandPayload::SetLiveLan { config, pin } => {
             record.field("payload", "live_lan_set")?;
             super::live_lan::encode_set(config, pin, &mut |name, value| {
@@ -2004,6 +2010,10 @@ fn encode_snapshot(record: &mut Record, message: &SnapshotMessage) -> Result<(),
         super::live_lan::encode_snapshot_status(&message.live_lan_status)?,
     )?;
     record.field_string(
+        "alert_rules",
+        super::alert_rules::encode_settings(&message.alert_rules)?,
+    )?;
+    record.field_string(
         "transitions_in_flight",
         encode_transitions_in_flight(&message.transitions_in_flight, message.revision)?,
     )
@@ -2832,6 +2842,13 @@ fn encode_event(record: &mut Record, message: &EventMessage) -> Result<(), Codec
         EventPayload::ReelRemoved { reel } => {
             record.field("event", "reel_removed")?;
             record.field("reel", reel)?;
+        }
+        EventPayload::AlertRulesChanged(settings) => {
+            record.field("event", "alert_rules_changed")?;
+            record.field_string(
+                "alert_rules",
+                super::alert_rules::encode_settings(settings)?,
+            )?;
         }
         EventPayload::LiveLanChanged(entry) => {
             record.field("event", "live_lan_changed")?;

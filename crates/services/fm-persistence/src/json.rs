@@ -1,3 +1,4 @@
+mod alert_rules;
 mod animation_preset;
 mod audio_mixer;
 mod capture;

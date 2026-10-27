@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.111 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.112 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4307,6 +4307,45 @@ Protocol 2.111 dissolves between highlight reel clips (`OR-013`, schema 84).
   an optional `/<dissolve>`; `reel` and `remote-reel` print `dissolve=` on
   each `ReelClip` line.
 - 2.110 is refused.
+
+Protocol 2.112 lets a show set its own health alert rules (`RC-015`,
+schema 85).
+
+- Command payload `alert_rule_set` carries `rule` (an alert rule token),
+  `enabled` (`0|1`), `trigger` and `clear` (the reading times 1000,
+  canonical signed decimals), and `hold_ms` (canonical, at most 3600000).
+  It is an undoable project edit needing `edit_project` and following the
+  project padlock; a rule set to its default removes the show's own
+  setting. Thresholds lie in the rule's range (shares 0 to 1000, free bytes
+  1 MiB to 64 TiB, events a second and counts 0 to 1000000, all times
+  1000), and the clear threshold lies past the trigger away from the firing
+  side (below it, except for `disk_low`, which fires low and clears above);
+  anything else is refused `invalid_alert_rule`.
+- The durable `event=alert_rules_changed` and the snapshot's required
+  `alert_rules` list the show's own settings as
+  `<rule>:<enabled>:<trigger>:<clear>:<hold_ms>` entries, `;`-separated in
+  strictly increasing rule order, none at its rule's default, empty when
+  every rule uses its default.
+- Both daemons evaluate the effective settings from their next statistics
+  sample: a changed rule restarts with its new thresholds and hold (a
+  firing alert of a changed rule ends without a notification), a
+  switched-off rule is not evaluated (acknowledging or silencing it is
+  refused `not_found`), and the other rules keep their state,
+  acknowledgements, and silences. The defaults are the Protocol 2.100
+  rules. The native daemon's own free-space refusal of a recording is not a
+  rule setting and does not change.
+- Durability (schema 85): `project.json` gains an optional `alert_rules`
+  list of `{"rule", "enabled", "trigger", "clear", "hold_ms"}` objects, in
+  rule order, omitted when empty; schema 84 projects are refused.
+- Studio's Health alerts window shows each rule's setting under it
+  (Evaluate, Fires at, Clears at, Holds for, and Use defaults, thresholds as
+  a percentage, free GiB, events a second, or a count), with English and
+  Spanish help, and offers no Acknowledge or Silence for a switched-off
+  rule. `freemix-cli remote-alert-rules <address>` prints one `AlertRule`
+  line per rule, and `remote-alert-rule <address> <rule> [--on|--off]
+  [--fires-at <value>] [--clears-at <value>] [--hold <seconds>] |
+  --defaults` changes one (values in the same units).
+- 2.111 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

@@ -55,6 +55,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_unique_entities(project, &mut errors);
     validate_inputs(project, &mut errors);
     validate_input_audio_strips(project, &mut errors);
+    validate_alert_rules(project, &mut errors);
     validate_input_locks(project, &mut errors);
     validate_input_lifecycle(project, &mut errors);
     validate_screen_capture_restore_tokens(project, &mut errors);
@@ -1949,6 +1950,25 @@ fn validate_reels(project: &Project, errors: &mut Vec<ValidationError>) {
                 entity: None,
                 field: "reels.clips.dissolve",
                 kind: ValidationErrorKind::OutOfRange,
+            },
+        });
+    }
+}
+
+/// The show's health alert rule settings (RC-015, schema 85): each in range
+/// with a hysteresis band, at most one per rule in rule order, none at its
+/// default.
+fn validate_alert_rules(project: &Project, errors: &mut Vec<ValidationError>) {
+    if let Err(error) = fm_types::alert_rules::check_settings(project.alert_rules()) {
+        errors.push(ValidationError {
+            entity: None,
+            field: "alert_rules",
+            kind: match error {
+                fm_types::alert_rules::AlertRuleError::Order => ValidationErrorKind::OutOfOrder,
+                fm_types::alert_rules::AlertRuleError::Default => {
+                    ValidationErrorKind::DuplicateReference
+                }
+                _ => ValidationErrorKind::OutOfRange,
             },
         });
     }
