@@ -1158,7 +1158,17 @@ mod tests {
             started.elapsed() < Duration::from_millis(100),
             "asking waited on the probe"
         );
-        let probe_thread = probed.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Asking never waits, so a first ask that finds the poller holding
+        // the lock is dropped; the render loop asks again every frame, and
+        // so does this test until the probe runs.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let probe_thread = loop {
+            if let Ok(thread) = probed.recv_timeout(Duration::from_millis(50)) {
+                break thread;
+            }
+            assert!(Instant::now() < deadline, "the probe never ran");
+            let _ = presence("phones");
+        };
         assert_ne!(probe_thread, asker, "the probe ran on the asking thread");
         let started = Instant::now();
         while presence("phones") != Some(true) {
