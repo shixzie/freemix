@@ -8616,6 +8616,57 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("el servidor no ha informado ninguna dirección"),
     ),
     // Web access (RC-007, Protocol 2.71).
+    (Msg::MenuHealthAlerts, t("Alertas de salud…")),
+    (
+        Msg::MenuHealthAlertsHover,
+        t(
+            "Reconocer las alertas activas del daemon o silenciar sus reglas de alerta durante un tiempo",
+        ),
+    ),
+    (Msg::HealthAlertsTitle, t("Alertas de salud")),
+    (
+        Msg::HealthAlertsIntro,
+        t(
+            "Reconozca una alerta activa para que deje de recordársela, o silencie una regla para que no envíe avisos durante un tiempo. Ambas cosas terminan solas y se olvidan cuando el daemon se reinicia.",
+        ),
+    ),
+    (Msg::HealthAlertsQuiet, t("Sin activar")),
+    (
+        Msg::HealthAlertsAcknowledgedFor,
+        t("reconocida durante {time}"),
+    ),
+    (Msg::HealthAlertsSilencedFor, t("Silenciada durante {time}")),
+    (Msg::HealthAlertsAcknowledge, t("Reconocer 15 min")),
+    (
+        Msg::HealthAlertsAcknowledgeHover,
+        t(
+            "Reconocer esta alerta activa durante 15 minutos: sigue en la lista pero no envía recordatorios hasta entonces o hasta que se resuelva",
+        ),
+    ),
+    (Msg::HealthAlertsSilence, t("Silenciar 1 h")),
+    (
+        Msg::HealthAlertsSilenceHover,
+        t(
+            "No enviar avisos de esta regla durante una hora mientras su estado se sigue vigilando; silenciarla de nuevo reinicia la hora",
+        ),
+    ),
+    (Msg::HealthAlertsUnsilence, t("Quitar silencio")),
+    (
+        Msg::HealthAlertsUnsilenceHover,
+        t("Terminar ahora el silencio de esta regla"),
+    ),
+    (
+        Msg::HealthAlertsReasonNoReport,
+        t("el daemon no ha informado de su salud"),
+    ),
+    (
+        Msg::HealthAlertsReasonNotFiring,
+        t("la alerta no está activa"),
+    ),
+    (
+        Msg::HealthAlertsReasonNotSilenced,
+        t("la regla no está silenciada"),
+    ),
     (Msg::MenuWebAccess, t("Acceso web (teléfonos y tabletas)…")),
     (
         Msg::MenuWebAccessHover,

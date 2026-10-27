@@ -3400,7 +3400,12 @@ and the silenced rules, the CLI's `remote-alert` sends the request and
 `remote-diagnostics` prints `acknowledged_until_ms` and `AlertSilence`
 lines (statistics unit test, `fm-protocol` health tests, the simulated
 daemon's process test, and a CLI e2e test). Acknowledgements and silences
-are runtime state, gone on restart. Remaining gaps: no input-health or
+are runtime state, gone on restart. Studio's Output ▸ Health alerts window
+lists every rule with its state (firing and how long it stays acknowledged,
+silenced and for how long, or quiet) and offers Acknowledge 15 min, Silence
+1 h, and Unsilence keys gated on transition authority, with English and
+Spanish help (hover audit scenes for an operator and a viewer). Remaining
+gaps: no input-health or
 hardware-encoder session sampling, and the simulated daemon has no network,
 sync, or encoder readings (an unsupported reading stays unknown rather than
 zero); rules are fixed in code, so there is no threshold editing and no

@@ -1280,6 +1280,7 @@ fn run_worker(
                 | StudioIntent::RequestSystemAudioDevices
                 | StudioIntent::RequestAudioOutputDevices
                 | StudioIntent::WebAccess(_)
+                | StudioIntent::HealthAlert { .. }
                 | StudioIntent::RequestSlideshowSlides { .. }
                 | StudioIntent::PagedPage(_)
                 | StudioIntent::RequestScreenCaptureTargets
@@ -1384,6 +1385,7 @@ fn run_worker(
                 | StudioIntent::RequestSystemAudioDevices
                 | StudioIntent::RequestAudioOutputDevices
                 | StudioIntent::WebAccess(_)
+                | StudioIntent::HealthAlert { .. }
                 | StudioIntent::RequestSlideshowSlides { .. }
                 | StudioIntent::PagedPage(_)
                 | StudioIntent::RequestScreenCaptureTargets
@@ -1478,6 +1480,15 @@ fn handle_preview_request(
         }
         return true;
     }
+    // An operator's alert acknowledgement or silence (RC-015, Protocol
+    // 2.109) goes out only while connected; one lost to a reconnect is not
+    // replayed, and the window shows the daemon's state either way.
+    if let StudioIntent::HealthAlert { rule, action } = request {
+        if !recovery.active() {
+            runtime.request_health_alert(rule, action);
+        }
+        return true;
+    }
     // A slideshow's slide list window (IN-009) is asked for when connected;
     // the Media tab asks again for one that never arrives.
     if let StudioIntent::RequestSlideshowSlides { input, offset } = request {
@@ -1567,6 +1578,7 @@ fn handle_worker_intent(
         | StudioIntent::RequestSystemAudioDevices
         | StudioIntent::RequestAudioOutputDevices
         | StudioIntent::WebAccess(_)
+        | StudioIntent::HealthAlert { .. }
         | StudioIntent::RequestSlideshowSlides { .. }
         | StudioIntent::PagedPage(_)
         | StudioIntent::RequestScreenCaptureTargets
@@ -2964,6 +2976,9 @@ fn intent_payload(
         }
         StudioIntent::WebAccess(_) => {
             return Err("A web access request is not a command".to_owned());
+        }
+        StudioIntent::HealthAlert { .. } => {
+            return Err("A health alert request is not a command".to_owned());
         }
         StudioIntent::RequestScreenCaptureTargets => {
             return Err("A screen capture targets request is not a command".to_owned());

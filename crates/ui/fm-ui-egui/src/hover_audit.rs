@@ -1134,7 +1134,7 @@ fn cue_lists() -> Vec<fm_protocol::CueListStatus> {
 /// Which optional live states the fixture show is in.
 #[derive(Clone, Copy, Default)]
 #[allow(clippy::struct_excessive_bools)] // independent fixture switches
-struct Variant {
+pub(crate) struct Variant {
     manual: bool,
     locked: bool,
     black: bool,
@@ -2451,7 +2451,7 @@ fn title_design() -> fm_ui_model::title_animation::TitleDesign {
 }
 
 /// A ready session over [`model`]; `operator` grants every permission.
-fn ready(operator: bool, variant: Variant) -> StudioUiState {
+pub(crate) fn ready(operator: bool, variant: Variant) -> StudioUiState {
     ready_over(&model(variant), operator)
 }
 
@@ -3585,6 +3585,31 @@ fn scenes(language: Language) -> Vec<Scene> {
     ];
     for (name, open, state) in web_access {
         scenes.push(Scene::console(name, shell(open), state));
+    }
+    // RC-015: the Health alerts window with a firing, acknowledged alert and
+    // a silenced rule, for an operator and for a viewer whose keys are off.
+    let alerted = |operator: bool| {
+        let mut state = ready(operator, Variant::default());
+        if let Some(status) = state.health.as_mut() {
+            if let Some(alert) = status.health.alerts.first_mut() {
+                alert.acknowledged_until_ms = Some(600_000);
+            }
+            status.health.silences = vec![fm_protocol::HealthSilence {
+                rule: fm_protocol::HealthAlertRule::DiskLow,
+                until_ms: 3_600_000,
+            }];
+        }
+        state
+    };
+    for (name, operator) in [
+        ("dialog/health-alerts", true),
+        ("dialog/health-alerts-viewer", false),
+    ] {
+        scenes.push(Scene::console(
+            name,
+            shell(&|shell| shell.health_alerts.open = true),
+            alerted(operator),
+        ));
     }
     let scripts: Vec<(&str, Configure, StudioUiState)> = vec![
         (

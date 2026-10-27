@@ -1398,6 +1398,14 @@ impl StudioShell {
             self.web_access.open = true;
             ui.close();
         }
+        if ui
+            .button(l.text(Msg::MenuHealthAlerts))
+            .on_hover_text(l.text(Msg::MenuHealthAlertsHover))
+            .clicked()
+        {
+            self.health_alerts.open = true;
+            ui.close();
+        }
     }
 
     /// Output ▸ Stingers: assign the Preview input to a slot, or clear a slot.

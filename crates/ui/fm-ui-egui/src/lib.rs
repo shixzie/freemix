@@ -48,6 +48,7 @@ mod edit_history;
 mod fade_to_black;
 mod gating;
 mod health;
+mod health_alerts;
 #[doc(hidden)]
 pub mod hover_audit;
 mod input_bank;
@@ -256,6 +257,13 @@ pub enum StudioIntent {
     /// Protocol 2.71); the answer updates
     /// [`fm_ui_model::ClientView::web_access`].
     WebAccess(fm_protocol::WebAccessAction),
+    /// Acknowledges, silences, or unsilences one daemon alert rule
+    /// (RC-015, Protocol 2.109); the daemon's answering `health_status`
+    /// updates [`StudioUiState::health`].
+    HealthAlert {
+        rule: fm_protocol::HealthAlertRule,
+        action: fm_protocol::HealthAlertAction,
+    },
     /// Asks the server for the screens and windows it can capture
     /// (IN-011); the reply updates
     /// [`fm_ui_model::ClientView::screen_capture_inventory`].
@@ -1732,6 +1740,7 @@ pub struct StudioShell {
     /// The `LiveLAN` viewers window and the PIN being typed (OR-017).
     live_lan: live_lan::LiveLanWindow,
     web_access: web_access::WebAccessWindow,
+    health_alerts: health_alerts::HealthAlertsWindow,
     scripts: scripts::ScriptsWindow,
     user_shortcuts: user_shortcuts::ShortcutsWindow,
     /// This console's own keys for project shortcuts, a console
@@ -2163,6 +2172,7 @@ impl StudioShell {
         self.draw_display_outputs_dialog(ui.ctx(), state, &mut intents);
         self.draw_live_lan_window(ui.ctx(), state, &mut intents);
         self.draw_web_access_window(ui.ctx(), state, &mut intents);
+        self.draw_health_alerts_window(ui.ctx(), state, &mut intents);
         self.draw_scripts_window(ui.ctx(), state, &mut intents);
         self.draw_user_shortcuts_window(ui.ctx(), state, &mut intents);
         self.draw_catalogue_dialogs(ui.ctx(), state, &mut intents);
@@ -2329,6 +2339,7 @@ impl Default for StudioShell {
             display_outputs: display_outputs::DisplayOutputsDialog::default(),
             live_lan: live_lan::LiveLanWindow::default(),
             web_access: web_access::WebAccessWindow::default(),
+            health_alerts: health_alerts::HealthAlertsWindow::default(),
             scripts: scripts::ScriptsWindow::default(),
             user_shortcuts: user_shortcuts::ShortcutsWindow::default(),
             shortcut_keys: ShortcutKeyOverrides::default(),

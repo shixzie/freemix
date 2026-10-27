@@ -377,6 +377,32 @@ impl StudioRuntime {
                 .is_ok()
     }
 
+    /// Acknowledges, silences, or unsilences one daemon alert rule (RC-015,
+    /// Protocol 2.109). Returns whether the request went out; the daemon's
+    /// answering `health_status` updates the health view.
+    pub(crate) fn request_health_alert(
+        &mut self,
+        rule: fm_protocol::HealthAlertRule,
+        action: fm_protocol::HealthAlertAction,
+    ) -> bool {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let request_id = format!(
+            "studio-health-alert-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        self.transport == ControlTransport::Tcp
+            && self.session.is_connected()
+            && self
+                .session
+                .send_health_alert_request(fm_protocol::HealthAlertRequest {
+                    protocol: fm_protocol::CURRENT_PROTOCOL_VERSION,
+                    request_id,
+                    rule,
+                    action,
+                })
+                .is_ok()
+    }
+
     /// Asks the server for one window of slideshow `input`'s slide list
     /// from `offset` (IN-009); the reply fills the replicated listing.
     /// Returns whether the request went out; the Media tab asks again for

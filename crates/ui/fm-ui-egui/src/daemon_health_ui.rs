@@ -116,7 +116,7 @@ fn utilization_item(l: Locale, health: &DaemonHealth, which: Utilization) -> Hea
     }
 }
 
-const fn rule_word(rule: HealthAlertRule) -> Msg {
+pub(crate) const fn rule_word(rule: HealthAlertRule) -> Msg {
     match rule {
         HealthAlertRule::CpuSaturated => Msg::AlertRuleCpuSaturated,
         HealthAlertRule::DiskLow => Msg::AlertRuleDiskLow,
@@ -147,7 +147,7 @@ const fn kind_word(kind: HealthNotificationKind) -> Msg {
 }
 
 /// `CPU saturated (warning) for 12.0 s`.
-fn alert_text(l: Locale, health: &DaemonHealth, alert: &HealthAlert) -> String {
+pub(crate) fn alert_text(l: Locale, health: &DaemonHealth, alert: &HealthAlert) -> String {
     l.format(
         Msg::AlertLine,
         &[
