@@ -2,9 +2,8 @@
 //! change what Program hears end to end, edits glide without clicks, the
 //! transactional mixer pair carries DSP state.
 //!
-//! The workspace forbids `unsafe`, so no counting global allocator can
-//! observe the render path; its allocation freedom rests on construction
-//! (fixed-size per-channel state, preallocated scratch, stack sub-blocks).
+//! The render path's allocation freedom is measured by a counting global
+//! allocator in `tests/realtime_allocations.rs`.
 
 use std::num::NonZeroU128;
 

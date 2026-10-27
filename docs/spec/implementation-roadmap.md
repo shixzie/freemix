@@ -48,8 +48,9 @@ highest-value remaining items, ranked:
    Web operator page's Strip FX disclosures (no protocol change), with each
    strip's gain reduction shown there too (Protocol 2.103); the simulated
    daemon now renders a synthetic tone through the persisted strips and
-   chains and meters it, so an allocation-counting real-time test and
-   hardware acceptance remain.
+   chains and meters it, and a counting global allocator now shows the
+   native daemon's Master mix entry point allocates nothing once warmed up
+   with every strip and Master stage on, so hardware acceptance remains.
 4. **Finish user shortcuts (`RC-004`).** Project shortcuts now persist, travel
    on the wire, fire on the authority under per-action permissions, and are
    edited and dispatched in Studio (keys and OSC), with `.fmshortcuts`
@@ -1512,10 +1513,16 @@ daemon now renders a deterministic synthetic tone per input through the
 persisted strip states, groups, solo, and the strip and Master chains, feeds
 the same Master, strip, dynamics, and loudness meters as the native daemon,
 and applies a loudness reset; meter demand never advances the engine
-(`tests/sim_strip_dsp.rs`). Remaining for `AU-005`: an allocation-counting
-real-time test (the workspace forbids the `unsafe` a
-counting allocator needs; the no-allocation property rests on preallocated
-buffers and review), and hardware acceptance.
+(`tests/sim_strip_dsp.rs`). An allocation-counting real-time test
+(`fm-audio`'s `tests/realtime_allocations.rs`, through `stats_alloc`'s
+counting wrapper of the system allocator, so the workspace keeps
+forbidding `unsafe`) renders ten seconds of three strips with every stage
+on (delay, polarity, high-pass, five EQ bands, gate, expander, compressor,
+limiter), per-input sample delay, the Master chain, a Master bus insert,
+the monitor bus, every meter, and per-strip and Program loudness through
+`mix_planar_timed_into_with_monitor`, the native daemon's entry point,
+and counts no allocation, reallocation, or free after a two-second warm
+up. Remaining for `AU-005`: hardware acceptance.
 
 Current implementation boundary for item 1: `fm-io-macos` is the first native
 platform leaf. An isolated Swift helper uses `AVFoundation` to enumerate camera
