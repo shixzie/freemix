@@ -1197,7 +1197,10 @@ window copies any profile into one of up to eight of the operator's own
 and gives each action another key or none ("Set key" takes the next
 press; a console key outside the profiles, such as the T-bar keys, the
 cue step keys, the window and output chords, help, and undo, is refused,
-as is another action's key), with English and Spanish hover help. Space
+as is another action's key), with English and Spanish hover help. Any
+profile exports to a `.fmkeys` text file (its name, base, and changed
+keys, at most 64 KiB) that another console imports as one of its own,
+skipping keys it cannot use. Space
 and Enter press a focused control while one has keyboard focus. The
 keyboard reference lists the active profile's keys and names the profile,
 every key hint on the console (Cut, Fade, FTB, the favourites, the input
@@ -1205,7 +1208,8 @@ tiles, the cue GO) names the active profile's key, and a project shortcut
 may take any key the active profile leaves free but none it uses. Tested
 by unit tests of the profiles, their preference lines, and the console's
 key dispatch under the vMix style profile, a Studio preferences round
-trip, and hover audit scenes of the Key profiles window.
+trip, a `.fmkeys` file round trip, and hover audit scenes of the Key
+profiles window.
 
 Current implementation boundary for item 8: `fm-scopes` now provides a bounded
 reference color-monitoring session on top of its scope math: an exact

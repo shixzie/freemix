@@ -31,6 +31,21 @@ const _: () =
 const MAX_BUNDLED_LUT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// The `.cube` text of project LUT `lut` in `bundle`, if it can be read.
+/// A `.fmkeys` file's text, at most [`fm_ui_egui::MAX_KEY_FILE_BYTES`].
+fn read_key_profile(path: &Path) -> Result<String, String> {
+    use std::io::Read as _;
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut text = String::new();
+    let limit = u64::try_from(fm_ui_egui::MAX_KEY_FILE_BYTES).unwrap_or(u64::MAX) + 1;
+    file.take(limit)
+        .read_to_string(&mut text)
+        .map_err(|error| error.to_string())?;
+    if text.len() > fm_ui_egui::MAX_KEY_FILE_BYTES {
+        return Err("the file is too long".to_owned());
+    }
+    Ok(text)
+}
+
 fn bundled_lut(bundle: &Path, lut: u32) -> Option<String> {
     let path = bundle
         .join("assets")
@@ -132,6 +147,15 @@ pub(crate) fn carry_out(request: &PresetFileRequest, bundle: Option<&Path>) -> P
             Ok(set) => PresetFileAnswer::Shortcuts(set.shortcuts),
             Err(error) => failed(&error),
         },
+        // Console key profiles (RC-004) are plain text.
+        PresetFileRequest::ExportKeyProfile { path, text } => match std::fs::write(path, text) {
+            Ok(()) => PresetFileAnswer::Exported { lut: None },
+            Err(error) => PresetFileAnswer::Failed(error.to_string()),
+        },
+        PresetFileRequest::ImportKeyProfile { path } => match read_key_profile(path) {
+            Ok(text) => PresetFileAnswer::KeyProfile(text),
+            Err(error) => PresetFileAnswer::Failed(error),
+        },
     }
 }
 
@@ -209,6 +233,37 @@ mod tests {
         let missing = directory.join("missing.fmshortcuts");
         assert!(matches!(
             carry_out(&PresetFileRequest::ImportShortcuts { path: missing }, None),
+            PresetFileAnswer::Failed(_)
+        ));
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn key_profiles_round_trip_through_files() {
+        let directory = scratch("keys");
+        let path = directory.join("booth.fmkeys");
+        let text = "# FreeMix key profile\nname = Booth\nbase = vmix\n".to_owned();
+        let export = PresetFileRequest::ExportKeyProfile {
+            path: path.clone(),
+            text: text.clone(),
+        };
+        assert_eq!(
+            carry_out(&export, None),
+            PresetFileAnswer::Exported { lut: None }
+        );
+        assert_eq!(
+            carry_out(&PresetFileRequest::ImportKeyProfile { path }, None),
+            PresetFileAnswer::KeyProfile(text)
+        );
+        let long = directory.join("long.fmkeys");
+        std::fs::write(&long, "#".repeat(fm_ui_egui::MAX_KEY_FILE_BYTES + 1)).unwrap();
+        assert!(matches!(
+            carry_out(&PresetFileRequest::ImportKeyProfile { path: long }, None),
+            PresetFileAnswer::Failed(_)
+        ));
+        let missing = directory.join("missing.fmkeys");
+        assert!(matches!(
+            carry_out(&PresetFileRequest::ImportKeyProfile { path: missing }, None),
             PresetFileAnswer::Failed(_)
         ));
         let _ = std::fs::remove_dir_all(directory);

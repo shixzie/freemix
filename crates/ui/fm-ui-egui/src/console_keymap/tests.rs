@@ -2,7 +2,8 @@ use egui::{Key, Modifiers};
 
 use super::{
     BuiltinProfile, ConsoleAction, ConsoleKeyProfiles, ConsoleKeymap, ConsoleStroke, CustomProfile,
-    KeyRefusal, MAX_CUSTOM_PROFILES, NUMBERED_INPUTS, ProfileChoice,
+    KeyFileError, KeyRefusal, MAX_CUSTOM_PROFILES, MAX_KEY_FILE_BYTES, NUMBERED_INPUTS,
+    ProfileChoice,
 };
 use crate::l10n::Locale;
 
@@ -287,6 +288,69 @@ fn custom_profiles_change_keys_within_the_rules() {
         ProfileChoice::Builtin(BuiltinProfile::FreeMix)
     );
     assert_eq!(profiles.custom().len(), MAX_CUSTOM_PROFILES - 1);
+}
+
+#[test]
+fn profiles_travel_through_key_files() {
+    let l = Locale::ENGLISH;
+    let mut desk = ConsoleKeyProfiles::default();
+    let late = desk
+        .add("Late show", ProfileChoice::Builtin(BuiltinProfile::Vmix))
+        .unwrap();
+    desk.set_key(0, ConsoleAction::Cut, Some(ConsoleStroke::command(Key::K)))
+        .unwrap();
+    desk.set_key(0, ConsoleAction::CueGo, None).unwrap();
+    let text = desk.export_text(l, late).unwrap();
+    assert_eq!(
+        text,
+        "# FreeMix key profile\nname = Late show\nbase = vmix\ncut = Ctrl+K\ncue_go = none\n"
+    );
+
+    // Another console reads it as one more profile of its own, without
+    // choosing it.
+    let mut other = ConsoleKeyProfiles::default();
+    other
+        .add("Mine", ProfileChoice::Builtin(BuiltinProfile::FreeMix))
+        .unwrap();
+    assert_eq!(other.import_text(&text), Ok(ProfileChoice::Custom(1)));
+    assert_eq!(other.custom()[1], desk.custom()[0]);
+    assert_eq!(other.active(), ProfileChoice::default());
+
+    // A built-in profile exports as an unchanged copy of itself.
+    let vmix = desk
+        .export_text(l, ProfileChoice::Builtin(BuiltinProfile::Vmix))
+        .unwrap();
+    assert_eq!(vmix, "# FreeMix key profile\nname = vMix style\nbase = vmix\n");
+    assert_eq!(desk.export_text(l, ProfileChoice::Custom(5)), None);
+
+    // Blank lines, comments, and unusable lines are skipped.
+    let mut read = ConsoleKeyProfiles::default();
+    let loose =
+        "\n# hand edited\n  name =  Booth \nbase = vmix\nwarp = W\ncut = Shift+Ctrl+C\nfade = F9\n";
+    assert_eq!(read.import_text(loose), Ok(ProfileChoice::Custom(0)));
+    let booth = &read.custom()[0];
+    assert_eq!(booth.name, "Booth");
+    assert_eq!(booth.base, BuiltinProfile::Vmix);
+    assert_eq!(
+        booth.keymap().stroke(ConsoleAction::Fade),
+        Some(ConsoleStroke::plain(Key::F9))
+    );
+
+    // A file naming no profile, one too long, or one past the limit adds
+    // nothing.
+    let mut read = ConsoleKeyProfiles::default();
+    assert_eq!(
+        read.import_text("base = vmix\n"),
+        Err(KeyFileError::Invalid)
+    );
+    let long = format!("name = Big\n#{}\n", "x".repeat(MAX_KEY_FILE_BYTES));
+    assert_eq!(read.import_text(&long), Err(KeyFileError::Invalid));
+    assert!(read.custom().is_empty());
+    for _ in 0..MAX_CUSTOM_PROFILES {
+        read.import_text(&text).unwrap();
+    }
+    assert_eq!(read.import_text(&text), Err(KeyFileError::Full));
+    assert_eq!(read.custom().len(), MAX_CUSTOM_PROFILES);
 }
 
 #[test]

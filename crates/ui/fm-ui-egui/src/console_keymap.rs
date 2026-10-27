@@ -34,6 +34,10 @@
 //! keymap.custom.<n>.<action> = Ctrl+Shift+F9 | none
 //! ```
 //!
+//! A profile also travels as a `.fmkeys` file of the same lines without
+//! the `keymap.custom.<n>.` prefix (`name = …`, `base = …`, one line per
+//! changed action), so an operator carries their keys to another console.
+//!
 //! where `<n>` is the custom profile's position from 1 and `<action>` an
 //! [`ConsoleAction::token`] (`preview.3`, `take.3`, `quick_play.3`, `cut`,
 //! `fade`, `fade_to_black`, `favorite.2`, `cue_go`); only the actions whose
@@ -898,11 +902,78 @@ impl ConsoleKeyProfiles {
         }
     }
 
+    /// The `.fmkeys` text of `choice`: its name, base, and changed keys (a
+    /// built-in profile exports as a copy of itself with no changes).
+    #[must_use]
+    pub fn export_text(&self, l: Locale, choice: ProfileChoice) -> Option<String> {
+        let profile = match choice {
+            ProfileChoice::Builtin(base) => CustomProfile::new(self.name(l, choice), base),
+            ProfileChoice::Custom(index) => self.custom.get(index)?.clone(),
+        };
+        let mut text = String::from("# FreeMix key profile\n");
+        let single = Self {
+            active: ProfileChoice::default(),
+            custom: vec![profile],
+        };
+        for (key, value) in single.preference_entries() {
+            let field = key.strip_prefix("keymap.custom.1.")?;
+            text.push_str(field);
+            text.push_str(" = ");
+            text.push_str(&value);
+            text.push('\n');
+        }
+        Some(text)
+    }
+
+    /// Adds the profile `.fmkeys` text describes as one of the operator's
+    /// own and returns its choice. Unknown or unusable lines are skipped,
+    /// as in the preferences file.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyFileError::Full`] at [`MAX_CUSTOM_PROFILES`], or
+    /// [`KeyFileError::Invalid`] for text too long or without a usable
+    /// name.
+    pub fn import_text(&mut self, text: &str) -> Result<ProfileChoice, KeyFileError> {
+        if self.custom.len() >= MAX_CUSTOM_PROFILES {
+            return Err(KeyFileError::Full);
+        }
+        if text.len() > MAX_KEY_FILE_BYTES {
+            return Err(KeyFileError::Invalid);
+        }
+        let mut read = Self::default();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once('=') {
+                read.apply_preference(&format!("{CUSTOM_PREFIX}1.{}", key.trim()), value.trim());
+            }
+        }
+        read.finish_preferences();
+        let profile = read.custom.pop().ok_or(KeyFileError::Invalid)?;
+        self.custom.push(profile);
+        Ok(ProfileChoice::Custom(self.custom.len() - 1))
+    }
+
     /// Whether `key` is one of this module's preference keys.
     #[must_use]
     pub fn is_preference_key(key: &str) -> bool {
         key.starts_with(PREFIX)
     }
+}
+
+/// Longest `.fmkeys` file read.
+pub const MAX_KEY_FILE_BYTES: usize = 64 * 1024;
+
+/// Why a `.fmkeys` file adds no profile.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KeyFileError {
+    /// The operator already has [`MAX_CUSTOM_PROFILES`] profiles.
+    Full,
+    /// The file is too long or names no usable profile.
+    Invalid,
 }
 
 /// Whether `name` is a usable custom profile name: non-blank, at most

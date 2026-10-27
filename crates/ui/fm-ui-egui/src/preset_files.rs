@@ -79,6 +79,10 @@ pub enum PresetFileRequest {
     },
     /// Reads a `.fmshortcuts` file into the project's shortcuts.
     ImportShortcuts { path: PathBuf },
+    /// Writes one console key profile's `.fmkeys` text (RC-004).
+    ExportKeyProfile { path: PathBuf, text: String },
+    /// Reads a `.fmkeys` file into the console's key profiles.
+    ImportKeyProfile { path: PathBuf },
 }
 
 impl PresetFileRequest {
@@ -91,7 +95,9 @@ impl PresetFileRequest {
             | Self::ExportGrade { path, .. }
             | Self::ImportGrade { path }
             | Self::ExportShortcuts { path, .. }
-            | Self::ImportShortcuts { path } => path,
+            | Self::ImportShortcuts { path }
+            | Self::ExportKeyProfile { path, .. }
+            | Self::ImportKeyProfile { path } => path,
         }
     }
 
@@ -101,6 +107,9 @@ impl PresetFileRequest {
             Self::ExportGrade { .. } | Self::ImportGrade { .. } => Msg::ColorGradeFileFailed,
             Self::ExportShortcuts { .. } | Self::ImportShortcuts { .. } => {
                 Msg::UserShortcutFileFailed
+            }
+            Self::ExportKeyProfile { .. } | Self::ImportKeyProfile { .. } => {
+                Msg::KeyProfilesFileFailed
             }
             Self::ExportAnimation { .. } | Self::ImportAnimation { .. } => {
                 Msg::AnimPresetFileFailed
@@ -148,6 +157,8 @@ pub enum PresetFileAnswer {
     },
     /// A `.fmshortcuts` was read.
     Shortcuts(Vec<ShortcutSpec>),
+    /// A `.fmkeys` file's text was read.
+    KeyProfile(String),
     /// A grade export was refused because its LUT would overwrite the
     /// existing `.cube` file `path`; nothing was written.
     LutFileExists { path: PathBuf },
@@ -172,6 +183,7 @@ impl StudioShell {
         let mut requests = std::mem::take(&mut self.animation.file_requests);
         requests.append(&mut self.color.grade_file_requests);
         requests.append(&mut self.user_shortcuts.file_requests);
+        requests.append(&mut self.key_profiles_window.file_requests);
         requests
     }
 
@@ -334,6 +346,42 @@ impl StudioShell {
                         ToastKind::Error,
                         l.format(failed, &[file_arg, ("error", Arg::Str(&error.text(l)))]),
                     ),
+                }
+            }
+            (PresetFileRequest::ExportKeyProfile { .. }, PresetFileAnswer::Exported { .. }) => {
+                self.toasts.push(
+                    ToastKind::Success,
+                    l.format(Msg::KeyProfilesExported, &[file_arg]),
+                );
+            }
+            (PresetFileRequest::ImportKeyProfile { .. }, PresetFileAnswer::KeyProfile(text)) => {
+                match self.key_profiles.import_text(&text) {
+                    Ok(choice) => {
+                        let name = self.key_profiles.name(l, choice);
+                        self.key_profiles_window.selected = choice;
+                        self.key_profiles_window.name.clone_from(&name);
+                        self.toasts.push(
+                            ToastKind::Success,
+                            l.format(
+                                Msg::KeyProfilesImported,
+                                &[("name", Arg::Str(&name)), file_arg],
+                            ),
+                        );
+                    }
+                    Err(error) => {
+                        let reason = match error {
+                            crate::console_keymap::KeyFileError::Full => {
+                                l.text(Msg::KeyProfilesReasonFull)
+                            }
+                            crate::console_keymap::KeyFileError::Invalid => {
+                                l.text(Msg::KeyProfilesImportInvalid)
+                            }
+                        };
+                        self.toasts.push(
+                            ToastKind::Error,
+                            l.format(failed, &[file_arg, ("error", Arg::Str(reason))]),
+                        );
+                    }
                 }
             }
             // An answer of the wrong kind is the host's mistake.

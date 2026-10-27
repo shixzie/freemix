@@ -6,7 +6,9 @@
 //! Built-in profiles are shown read only. "Set key" takes the next key
 //! press (Esc cancels); a console key outside the profiles, another
 //! action's key, or a key the console cannot bind is refused with the
-//! reason. While the window is open no console key acts.
+//! reason. While the window is open no console key acts. Any profile
+//! exports to a `.fmkeys` file, and an imported file becomes one of the
+//! operator's own.
 
 use egui::{Button, ComboBox, RichText, TextEdit, Ui, Vec2};
 
@@ -17,7 +19,8 @@ use crate::console_keymap::{
 };
 use crate::gating::Hint;
 use crate::l10n::{Arg, Locale, Msg};
-use crate::theme::{caption, section_label, text_dim_color};
+use crate::preset_files::PresetFileRequest;
+use crate::theme::{caption, section_label, small_button, text_dim_color};
 use crate::user_shortcuts::{Captured, capture};
 
 const WINDOW_WIDTH: f32 = 560.0;
@@ -35,6 +38,11 @@ pub(crate) struct KeyProfilesWindow {
     pub(crate) refusal: Option<String>,
     /// The selected custom profile's name as typed.
     pub(crate) name: String,
+    /// The `.fmkeys` path typed for export and import.
+    pub(crate) file_path: String,
+    /// File work for the host, taken by
+    /// [`StudioShell::take_preset_file_requests`].
+    pub(crate) file_requests: Vec<PresetFileRequest>,
 }
 
 /// Every profile the picker offers: the built-in ones, then the
@@ -196,6 +204,7 @@ impl StudioShell {
             .is_none()
             .then_some(Msg::KeyProfilesReasonBuiltin.en());
 
+        let full = profiles.custom().len() >= MAX_CUSTOM_PROFILES;
         ui.horizontal_wrapped(|ui| {
             ComboBox::from_id_salt("studio-key-profiles-picker")
                 .selected_text(profiles.name(l, selected))
@@ -234,7 +243,6 @@ impl StudioShell {
             {
                 profiles.choose(selected);
             }
-            let full = profiles.custom().len() >= MAX_CUSTOM_PROFILES;
             if ui
                 .add_enabled(!full, Button::new(l.text(Msg::KeyProfilesCopy)))
                 .hint(
@@ -289,6 +297,56 @@ impl StudioShell {
         if let Some(refusal) = &window.refusal {
             ui.label(RichText::new(refusal).color(WARN));
         }
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(section_label(l.text(Msg::KeyProfilesFile)))
+                .on_hover_text(l.text(Msg::KeyProfilesFileHover));
+            ui.add(
+                TextEdit::singleline(&mut window.file_path)
+                    .hint_text(l.text(Msg::KeyProfilesPathHint))
+                    .desired_width(240.0),
+            )
+            .on_hover_text(l.text(Msg::KeyProfilesPathHover));
+            let no_path = window.file_path.trim().is_empty();
+            if ui
+                .add_enabled(!no_path, small_button(l.text(Msg::KeyProfilesExport)))
+                .hint(
+                    l.text(Msg::KeyProfilesExportHover),
+                    Msg::AnimReasonNoPath.en(),
+                )
+                .clicked()
+                && let Some(text) = profiles.export_text(l, selected)
+            {
+                window
+                    .file_requests
+                    .push(PresetFileRequest::ExportKeyProfile {
+                        path: window.file_path.trim().into(),
+                        text,
+                    });
+            }
+            let import_block = if no_path {
+                Some(Msg::AnimReasonNoPath.en())
+            } else {
+                full.then_some(Msg::KeyProfilesReasonFull.en())
+            };
+            if ui
+                .add_enabled(
+                    import_block.is_none(),
+                    small_button(l.text(Msg::KeyProfilesImport)),
+                )
+                .hint(
+                    l.text(Msg::KeyProfilesImportHover),
+                    import_block.unwrap_or(""),
+                )
+                .clicked()
+            {
+                window
+                    .file_requests
+                    .push(PresetFileRequest::ImportKeyProfile {
+                        path: window.file_path.trim().into(),
+                    });
+            }
+        });
         ui.add_space(6.0);
         let Some(keymap) = profiles.keymap(selected) else {
             return;
@@ -386,7 +444,40 @@ impl StudioShell {
 #[cfg(test)]
 mod tests {
     use super::stroke_of;
-    use crate::console_keymap::ConsoleStroke;
+    use crate::console_keymap::{BuiltinProfile, ConsoleStroke, ProfileChoice};
+    use crate::preset_files::{PresetFileAnswer, PresetFileRequest};
+    use crate::{StudioShell, StudioUiState};
+
+    #[test]
+    fn imported_key_files_become_profiles_of_your_own() {
+        let state = StudioUiState::default();
+        let mut shell = StudioShell::default();
+        let request = PresetFileRequest::ImportKeyProfile {
+            path: "booth.fmkeys".into(),
+        };
+        let text = "name = Booth\nbase = vmix\n";
+        let intents = shell.receive_preset_file(
+            &state,
+            &request,
+            PresetFileAnswer::KeyProfile(text.to_owned()),
+        );
+        assert!(intents.is_empty());
+        let profiles = shell.console_key_profiles();
+        assert_eq!(profiles.custom().len(), 1);
+        assert_eq!(profiles.custom()[0].base, BuiltinProfile::Vmix);
+        // The window shows the new profile; the console keeps its own.
+        assert_eq!(shell.key_profiles_window.selected, ProfileChoice::Custom(0));
+        assert_eq!(shell.key_profiles_window.name, "Booth");
+        assert_eq!(profiles.active(), ProfileChoice::default());
+
+        // A file naming no profile adds nothing.
+        shell.receive_preset_file(
+            &state,
+            &request,
+            PresetFileAnswer::KeyProfile("base = vmix\n".to_owned()),
+        );
+        assert_eq!(shell.console_key_profiles().custom().len(), 1);
+    }
 
     #[test]
     fn captured_keys_become_strokes_but_mouse_buttons_and_chords_do_not() {

@@ -101,7 +101,8 @@ mod workspace;
 
 pub use console_keymap::{
     BuiltinProfile, ConsoleAction, ConsoleKeyProfiles, ConsoleKeymap, ConsoleStroke, CustomProfile,
-    KeyRefusal, MAX_CUSTOM_PROFILES, MAX_PROFILE_NAME_BYTES, ProfileChoice, profile_name_is_valid,
+    KeyFileError, KeyRefusal, MAX_CUSTOM_PROFILES, MAX_KEY_FILE_BYTES, MAX_PROFILE_NAME_BYTES,
+    ProfileChoice, profile_name_is_valid,
 };
 pub use cues::{
     ActionKind as CueActionKind, CueIntent, CueKey, CueRole, control_block as cue_control_block,

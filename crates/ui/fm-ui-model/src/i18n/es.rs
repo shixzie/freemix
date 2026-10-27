@@ -10542,6 +10542,48 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("esta acción ya tiene su tecla base"),
     ),
     (Msg::ShortcutGroupProfile, t("Perfil de teclas: {name}")),
+    (Msg::KeyProfilesFile, t("Archivo de perfil de teclas")),
+    (
+        Msg::KeyProfilesFileHover,
+        t("Lleva un perfil de teclas a otra consola con un archivo .fmkeys"),
+    ),
+    (Msg::KeyProfilesPathHint, t("Ruta a un archivo .fmkeys")),
+    (
+        Msg::KeyProfilesPathHover,
+        t(
+            "Ruta de un archivo .fmkeys en este equipo, para exportar el perfil mostrado o importar uno",
+        ),
+    ),
+    (Msg::KeyProfilesExport, t("Exportar perfil")),
+    (
+        Msg::KeyProfilesExportHover,
+        t(
+            "Escribe el nombre, la base y las teclas del perfil mostrado en el archivo .fmkeys de la ruta",
+        ),
+    ),
+    (Msg::KeyProfilesImport, t("Importar perfil")),
+    (
+        Msg::KeyProfilesImportHover,
+        t(
+            "Lee el archivo .fmkeys de la ruta como un perfil propio nuevo; las teclas que no puede usar quedan con su tecla base",
+        ),
+    ),
+    (
+        Msg::KeyProfilesExported,
+        t("Perfil de teclas exportado a {file}"),
+    ),
+    (
+        Msg::KeyProfilesImported,
+        t("Perfil de teclas {name} importado de {file}"),
+    ),
+    (
+        Msg::KeyProfilesFileFailed,
+        t("Archivo de perfil de teclas {file}: {error}"),
+    ),
+    (
+        Msg::KeyProfilesImportInvalid,
+        t("el archivo no describe ningún perfil de teclas"),
+    ),
     (Msg::HealthRuleEvaluate, t("Evaluar")),
     (
         Msg::HealthRuleEvaluateHover,
