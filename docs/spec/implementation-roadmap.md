@@ -2332,7 +2332,14 @@ channel count without mapping or balance; there are no gain ramps, clipping
 policy, or meter ballistics. A counting global allocator
 (`tests/bus_matrix_allocations.rs`) shows a warmed-up render of four strips
 sending pre- and post-fader to every bus, two processed buses, and three
-destinations (two mix-minus) allocates nothing. `AU-002` remains planned.
+destinations (two mix-minus) allocates nothing. The live `MasterMixer` now
+renders aux buses A–G beside Master (`mix_planar_timed_into_with_aux`):
+each strip sends to a bus at its own level, pre-fader (unity, no balance,
+pan, or transition envelope) or post-fader (exactly its Program
+contribution); strip and group mute and follow-video cut every send while
+solo never does; each bus has its own ramped fader, mute, clipping, and
+peak/RMS meters (`tests/aux_buses.rs`), and the Master allocation test
+renders every bus. `AU-002` remains planned.
 
 Current implementation boundary for multichannel audio (`AU-003`): `fm-audio`
 provides a 1–16 channel layout catalog (1.0, 2.0, 2.1, 5.1, 7.1, and 16

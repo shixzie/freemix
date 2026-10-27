@@ -3,9 +3,9 @@
 //! (`mix_planar_timed_into_with_monitor`), with every strip DSP stage
 //! switched on (delay, polarity, high-pass, the five EQ bands, gate,
 //! expander, compressor, limiter), the Master chain, per-input sample
-//! delay, a Master bus insert (a stinger's own audio), the monitor bus, the
-//! strip, Master, and monitor meters, and per-strip and Program BS.1770
-//! loudness.
+//! delay, a Master bus insert (a stinger's own audio), the monitor bus,
+//! aux buses A–G fed pre- and post-fader (AU-002), the strip, Master,
+//! monitor, and aux meters, and per-strip and Program BS.1770 loudness.
 //!
 //! The workspace forbids `unsafe`, so the counting global allocator is
 //! `stats_alloc`'s: it wraps the system allocator and counts every
@@ -16,8 +16,9 @@ use std::alloc::System;
 use std::num::NonZeroU128;
 
 use fm_audio::{
-    ChannelMapping, ChannelMeter, InputState, LoudnessMeter, MasterBusInsert, MasterMixer,
-    MixerMeterSlices, PlanarAudioSource, SourceGain,
+    AUX_BUS_COUNT, AuxBusOutput, BusSend, ChannelMapping, ChannelMeter, Gain, GroupState,
+    InputState, LoudnessMeter, MasterBusInsert, MasterMixer, MixBus, MixerMeterSlices,
+    PlanarAudioSource, SendTap, SourceGain,
 };
 use fm_frame::{
     ClockDomainId, MediaTiming, NormalizedDuration, NormalizedTimestamp, OriginalTimestamp,
@@ -105,7 +106,25 @@ fn tone(planes: &mut [Vec<f32>], frequency: f64, amplitude: f32, block: usize) {
     right[0].copy_from_slice(&left[0]);
 }
 
+/// Sends `id` to every aux bus at -6 dB, alternating pre- and post-fader.
+fn send_to_every_aux_bus(mixer: &mut MasterMixer, id: InputId) {
+    for bus in &MixBus::ALL[1..] {
+        let tap = if bus.index() % 2 == 0 {
+            SendTap::PreFader
+        } else {
+            SendTap::PostFader
+        };
+        let send = BusSend {
+            enabled: true,
+            level: Gain::from_db(-6.0).unwrap(),
+            tap,
+        };
+        mixer.set_aux_send(id, *bus, send).unwrap();
+    }
+}
+
 #[test]
+#[allow(clippy::too_many_lines)] // one measured render loop, set up in place
 fn the_master_mix_with_every_dsp_stage_renders_without_allocating() {
     let format = stereo();
     let layout = ChannelLayout::stereo();
@@ -125,7 +144,15 @@ fn the_master_mix_with_every_dsp_stage_renders_without_allocating() {
             .unwrap();
         mixer.set_input_dsp(id, &full_chain()).unwrap();
         mixer.set_input_delay(id, 240 * (index + 1)).unwrap();
+        send_to_every_aux_bus(&mut mixer, id);
     }
+    let bus_b = GroupState {
+        gain: Gain::from_db(-3.0).unwrap(),
+        muted: false,
+    };
+    mixer.set_aux_bus_state(MixBus::B, bus_b, 480).unwrap();
+    let mut aux = vec![vec![0.0; BLOCK]; AUX_BUS_COUNT * 2];
+    let mut aux_meters = vec![ChannelMeter::default(); AUX_BUS_COUNT * 2];
     let mut master_chain = StripDspPreset::Master.chain();
     master_chain.eq.enabled = true;
     mixer.set_master_dsp(&master_chain).unwrap();
@@ -161,13 +188,12 @@ fn the_master_mix_with_every_dsp_stage_renders_without_allocating() {
             source_gain: SourceGain::UNITY,
         });
         mixer
-            .mix_planar_timed_into_with_monitor(
+            .mix_planar_timed_into_with_aux(
                 timing(block),
                 BLOCK,
                 &submissions,
                 &ids[..1],
-                output,
-                &mut monitor,
+                (output, &mut monitor),
                 MixerMeterSlices {
                     master: &mut master,
                     inputs: &mut input_meters,
@@ -178,8 +204,14 @@ fn the_master_mix_with_every_dsp_stage_renders_without_allocating() {
                     planes: &sting,
                     replace: false,
                 }),
+                Some(AuxBusOutput {
+                    planes: &mut aux,
+                    meters: &mut aux_meters,
+                }),
             )
             .unwrap();
+        // Every bus hears its sends once the delay lines have filled.
+        assert!(block < WARM_UP_BLOCKS || aux_meters.iter().all(|meter| meter.peak > 0.0));
         for id in ids {
             assert!(mixer.input_dynamics(id).is_some());
         }

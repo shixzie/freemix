@@ -110,6 +110,9 @@ pub const MAX_CHANNELS: usize = 32;
 pub const MAX_SAMPLES_PER_BLOCK: usize = 48_000;
 /// Maximum duration of a scheduled gain ramp, in samples.
 pub const MAX_RAMP_SAMPLES: usize = 48_000;
+/// Auxiliary buses (A–G) the live Master mixer renders beside Master
+/// (AU-002).
+pub const AUX_BUS_COUNT: usize = BUS_COUNT - 1;
 /// Maximum bytes of sample-delay history retained by one [`MasterMixer`].
 ///
 /// The limit is four times the maximum retained by one [`SampleDelay`], which
@@ -181,6 +184,9 @@ pub enum AudioError {
     },
     /// A strip or Master DSP chain was refused (AU-005).
     Dsp(DspError),
+    /// An aux send or aux bus operation named Master, which is not an
+    /// auxiliary bus (AU-002).
+    NotAuxBus(MixBus),
     /// A render longer than an active strip DSP chain's scratch, which is
     /// sized at configuration time and never grows on the audio thread
     /// ([`MasterMixer::set_dsp_block_capacity`]).
@@ -282,6 +288,7 @@ impl fmt::Display for AudioError {
                 parent.number()
             ),
             Self::Dsp(error) => write!(formatter, "strip DSP error: {error}"),
+            Self::NotAuxBus(bus) => write!(formatter, "{} is not an auxiliary bus", bus.label()),
             Self::DspBlockOverCapacity { samples, capacity } => write!(
                 formatter,
                 "a render of {samples} samples exceeds the strip DSP block capacity of {capacity}"
@@ -1094,6 +1101,8 @@ struct InputStrip {
     /// The strip's DSP chain (AU-005), created by the first non-default
     /// chain and kept so later edits crossfade.
     dsp: Option<Box<StripDspSlot>>,
+    /// The strip's sends to aux buses A–G (AU-002), in bus order.
+    aux_sends: [BusSend; AUX_BUS_COUNT],
 }
 
 /// One strip's live DSP chain and its processed-sample scratch.
@@ -1279,6 +1288,17 @@ pub struct MixerMeterSlices<'a> {
     pub loudness: Option<&'a mut [LoudnessMeter]>,
 }
 
+/// Where one render writes aux buses A–G (AU-002) and their meters.
+///
+/// `planes` holds [`AUX_BUS_COUNT`] buses of one plane per Master channel,
+/// bus-major (A's channels, then B's), each at least the render's length;
+/// `meters` is laid out the same way.
+#[derive(Debug)]
+pub struct AuxBusOutput<'a> {
+    pub planes: &'a mut [Vec<f32>],
+    pub meters: &'a mut [ChannelMeter],
+}
+
 /// Audio summed into (or replacing) the Program bus after the strips and
 /// before the Master DSP chain, clipping, and the Master meters, so it is
 /// processed and metered like the strips (a stinger clip's own audio).
@@ -1428,6 +1448,7 @@ struct RenderMeters {
 struct RenderExtras<'a> {
     loudness: Option<&'a mut [LoudnessMeter]>,
     insert: Option<MasterBusInsert<'a>>,
+    aux: Option<AuxBusOutput<'a>>,
 }
 
 /// Where one render writes the monitor bus and its meters.
@@ -1489,6 +1510,8 @@ pub struct MasterMixer {
     master_checkpoint: Option<Box<LiveStripDsp>>,
     /// Samples each strip DSP scratch holds without growing.
     dsp_block_capacity: usize,
+    /// The fader and mute of aux buses A–G (AU-002), in bus order.
+    aux: [GroupStrip; AUX_BUS_COUNT],
 }
 
 impl MasterMixer {
@@ -1511,6 +1534,7 @@ impl MasterMixer {
             master_dsp: None,
             master_checkpoint: None,
             dsp_block_capacity: DEFAULT_DSP_BLOCK_CAPACITY,
+            aux: [GroupStrip::unity(); AUX_BUS_COUNT],
         })
     }
 
@@ -1789,6 +1813,7 @@ impl MasterMixer {
                 pan_ramp,
                 delay,
                 dsp: None,
+                aux_sends: [BusSend::DISABLED; AUX_BUS_COUNT],
             },
         );
         Ok(())
@@ -1888,6 +1913,67 @@ impl MasterMixer {
         strip.ramp.set(state.gain, ramp_samples);
         strip.state = state;
         Ok(())
+    }
+
+    /// Sets `input`'s send to aux bus `bus` (AU-002); takes effect at the
+    /// next rendered sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AudioError::NotAuxBus`] for Master and
+    /// [`AudioError::UnknownInput`] for an unconfigured strip. Nothing
+    /// changes on error.
+    pub fn set_aux_send(
+        &mut self,
+        input: InputId,
+        bus: MixBus,
+        send: BusSend,
+    ) -> Result<(), AudioError> {
+        let index = aux_index(bus)?;
+        let strip = self
+            .inputs
+            .get_mut(&input)
+            .ok_or(AudioError::UnknownInput(input))?;
+        strip.aux_sends[index] = send;
+        Ok(())
+    }
+
+    /// `input`'s send to aux bus `bus`, or `None` for Master or an
+    /// unconfigured strip.
+    #[must_use]
+    pub fn aux_send(&self, input: InputId, bus: MixBus) -> Option<BusSend> {
+        let index = aux_index(bus).ok()?;
+        self.inputs.get(&input).map(|strip| strip.aux_sends[index])
+    }
+
+    /// Replaces aux bus `bus`'s fader and mute and schedules its gain ramp,
+    /// like [`Self::set_group_state`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AudioError::NotAuxBus`] for Master and
+    /// [`AudioError::RampTooLong`] for an excessive ramp. Nothing changes on
+    /// error.
+    pub fn set_aux_bus_state(
+        &mut self,
+        bus: MixBus,
+        state: GroupState,
+        ramp_samples: usize,
+    ) -> Result<(), AudioError> {
+        let index = aux_index(bus)?;
+        if ramp_samples > MAX_RAMP_SAMPLES {
+            return Err(AudioError::RampTooLong(ramp_samples));
+        }
+        let strip = &mut self.aux[index];
+        strip.ramp.set(state.gain, ramp_samples);
+        strip.state = state;
+        Ok(())
+    }
+
+    /// Aux bus `bus`'s fader and mute, or `None` for Master.
+    #[must_use]
+    pub fn aux_bus_state(&self, bus: MixBus) -> Option<GroupState> {
+        aux_index(bus).ok().map(|index| self.aux[index].state)
     }
 
     #[must_use]
@@ -2015,6 +2101,7 @@ impl MasterMixer {
             strip.ramp = source.ramp;
             strip.balance_ramp = source.balance_ramp;
             strip.pan_ramp = source.pan_ramp;
+            strip.aux_sends = source.aux_sends;
             strip.delay.copy_runtime_state_from(&source.delay);
             if let (Some(own), Some(other)) = (&mut strip.dsp, &source.dsp) {
                 own.live
@@ -2027,6 +2114,7 @@ impl MasterMixer {
                 .map_err(|_| AudioError::FormatMismatch)?;
         }
         self.groups = other.groups;
+        self.aux = other.aux;
         self.solo_mode = other.solo_mode;
         self.retained_delay_bytes = other.retained_delay_bytes;
         self.clipping_policy = other.clipping_policy;
@@ -2046,7 +2134,7 @@ impl MasterMixer {
                 slot.live.reset();
             }
         }
-        for group in &mut self.groups {
+        for group in self.groups.iter_mut().chain(&mut self.aux) {
             group.ramp = GainRamp::immediate(group.state.gain);
         }
         if let Some(live) = &mut self.master_dsp {
@@ -2230,6 +2318,46 @@ impl MasterMixer {
         meters: MixerMeterSlices<'_>,
         insert: Option<MasterBusInsert<'_>>,
     ) -> Result<bool, AudioError> {
+        self.mix_planar_timed_into_with_aux(
+            output_timing,
+            samples,
+            sources,
+            active_video_inputs,
+            (output, monitor),
+            meters,
+            insert,
+            None,
+        )
+    }
+
+    /// Like [`Self::mix_planar_timed_into_with_monitor`] (`buses` is the
+    /// Master and monitor planes), and also renders aux buses A–G (AU-002)
+    /// into `aux` when given.
+    ///
+    /// Each strip sends to an aux bus at its send level, pre-fader (unity,
+    /// no balance, pan, or source envelope) or post-fader (exactly its
+    /// Program contribution). Strip and group mute and follow-video cut
+    /// every send; solo never does, so a solo stays a monitoring action.
+    /// Each bus then takes its own fader ramp and mute, the clipping
+    /// policy, and its meters. Master processing does not apply.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::mix_planar_timed_into_with_monitor`]
+    /// plus plane-shape and meter-count errors for `aux`.
+    #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+    pub fn mix_planar_timed_into_with_aux(
+        &mut self,
+        output_timing: fm_frame::MediaTiming,
+        samples: usize,
+        sources: &[PlanarAudioSource<'_>],
+        active_video_inputs: &[InputId],
+        buses: (&mut [Vec<f32>], &mut [Vec<f32>]),
+        meters: MixerMeterSlices<'_>,
+        insert: Option<MasterBusInsert<'_>>,
+        aux: Option<AuxBusOutput<'_>>,
+    ) -> Result<bool, AudioError> {
+        let (output, monitor) = buses;
         validate_sample_count(samples)?;
         validate_canonical_output(&self.format, samples)?;
         validate_timed_duration(output_timing, self.format.sample_rate, samples)?;
@@ -2253,6 +2381,15 @@ impl MasterMixer {
             validate_mixer_output_planes(samples, channels, insert.planes)?;
             validate_finite_sample_prefix(insert.planes, samples)?;
         }
+        if let Some(aux) = &aux {
+            validate_mixer_output_planes(samples, AUX_BUS_COUNT * channels, aux.planes)?;
+            if aux.meters.len() != AUX_BUS_COUNT * channels {
+                return Err(AudioError::MeterCountMismatch {
+                    expected: AUX_BUS_COUNT * channels,
+                    actual: aux.meters.len(),
+                });
+            }
+        }
         let solo = self.monitor_carries_solo();
         self.mix_block_views_into(
             samples,
@@ -2268,6 +2405,7 @@ impl MasterMixer {
             RenderExtras {
                 loudness: meters.loudness,
                 insert,
+                aux,
             },
         )?;
         Ok(solo)
@@ -2427,6 +2565,7 @@ impl MasterMixer {
         let RenderExtras {
             mut loudness,
             insert,
+            mut aux,
         } = extras;
         validate_sample_count(samples)?;
         validate_mixer_submissions(samples, blocks, &self.inputs)?;
@@ -2457,6 +2596,11 @@ impl MasterMixer {
         };
         if listen && let Some(monitor) = &mut monitor {
             for plane in monitor.planes.iter_mut() {
+                plane[..samples].fill(0.0);
+            }
+        }
+        if let Some(aux) = &mut aux {
+            for plane in aux.planes.iter_mut() {
                 plane[..samples].fill(0.0);
             }
         }
@@ -2516,6 +2660,32 @@ impl MasterMixer {
                     None,
                     monitor.planes,
                 )?;
+            }
+            if let Some(aux) = &mut aux
+                && !strip.state.muted
+                && !groups.muted
+                && (!strip.state.follow_video || active_video_inputs.contains(id))
+            {
+                for (send, planes) in strip
+                    .aux_sends
+                    .iter()
+                    .zip(aux.planes.chunks_exact_mut(channels))
+                    .filter(|(send, _)| send.enabled)
+                {
+                    let tap = match send.tap {
+                        SendTap::PreFader => StripTap::PreFader,
+                        SendTap::PostFader => StripTap::Program,
+                    };
+                    mix_strip_samples(
+                        samples,
+                        &self.format.channels,
+                        block,
+                        strip,
+                        (&mut { ramps }, tap, send.level.linear()),
+                        None,
+                        planes,
+                    )?;
+                }
             }
             if metering {
                 let readings = meter_channels.expect("input metering was requested");
@@ -2589,12 +2759,49 @@ impl MasterMixer {
         if let Some((master_meters, _)) = &mut meter_output {
             measure_plane_prefix_into(output, samples, master_meters);
         }
+        if let Some(aux) = &mut aux {
+            self.finish_aux_buses(samples, channels, aux)?;
+        }
         let meters = allocated_input_meters.map(|inputs| RenderMeters {
             master: measure_plane_prefix(output, samples),
             inputs,
         });
         self.commit_render(samples, blocks);
         Ok(meters)
+    }
+
+    /// Applies each aux bus's fader ramp, mute, and the clipping policy to
+    /// its summed sends, then meters it.
+    fn finish_aux_buses(
+        &self,
+        samples: usize,
+        channels: usize,
+        aux: &mut AuxBusOutput<'_>,
+    ) -> Result<(), AudioError> {
+        for ((bus, planes), meters) in self
+            .aux
+            .iter()
+            .zip(aux.planes.chunks_exact_mut(channels))
+            .zip(aux.meters.chunks_exact_mut(channels))
+        {
+            for plane in planes.iter_mut() {
+                let plane = &mut plane[..samples];
+                if bus.state.muted {
+                    plane.fill(0.0);
+                    continue;
+                }
+                let mut ramp = bus.ramp;
+                for sample in plane {
+                    *sample *= ramp.next();
+                    if self.clipping_policy == ClippingPolicy::Clamp {
+                        *sample = sample.clamp(-1.0, 1.0);
+                    }
+                }
+            }
+            validate_finite_sample_prefix(planes, samples)?;
+            measure_plane_prefix_into(planes, samples, meters);
+        }
+        Ok(())
     }
 
     /// Refuses a render of `samples` longer than an active strip chain's
@@ -2673,12 +2880,17 @@ impl MasterMixer {
                 strip.pan_ramp.next();
             }
         }
-        for group in &mut self.groups {
+        for group in self.groups.iter_mut().chain(&mut self.aux) {
             for _ in 0..samples {
                 group.ramp.next();
             }
         }
     }
+}
+
+/// The index of aux bus `bus` among A–G.
+fn aux_index(bus: MixBus) -> Result<usize, AudioError> {
+    bus.index().checked_sub(1).ok_or(AudioError::NotAuxBus(bus))
 }
 
 fn balance_gain(balance: f32, destination: fm_types::Channel) -> f32 {
@@ -2784,6 +2996,29 @@ fn mix_audible_strip_samples<B: MixerBlockView>(
     strip: &InputStrip,
     ramps: &mut StripRamps,
     tap: StripTap,
+    meter_channels: Option<(&mut [ChannelMeterAccumulator], Option<&mut LoudnessMeter>)>,
+    output: &mut [Vec<f32>],
+) -> Result<(), AudioError> {
+    mix_strip_samples(
+        samples,
+        master_layout,
+        block,
+        strip,
+        (ramps, tap, 1.0),
+        meter_channels,
+        output,
+    )
+}
+
+/// [`mix_audible_strip_samples`] scaled by a constant `level` (an aux
+/// send's level).
+#[allow(clippy::needless_range_loop)]
+fn mix_strip_samples<B: MixerBlockView>(
+    samples: usize,
+    master_layout: &ChannelLayout,
+    block: Option<(&B, SourceGain)>,
+    strip: &InputStrip,
+    (ramps, tap, level): (&mut StripRamps, StripTap, f32),
     mut meter_channels: Option<(&mut [ChannelMeterAccumulator], Option<&mut LoudnessMeter>)>,
     output: &mut [Vec<f32>],
 ) -> Result<(), AudioError> {
@@ -2819,7 +3054,8 @@ fn mix_audible_strip_samples<B: MixerBlockView>(
                 .unwrap_or_else(|| strip.delay.preview_sample(source, sample, input));
             let label = master_layout.channels()[destination];
             let balance_gain = balance_gain(balance, label) * pan_gain(pan, label);
-            let contribution = delayed * strip_gain * balance_gain * source_gain * coefficient;
+            let contribution =
+                delayed * strip_gain * balance_gain * source_gain * coefficient * level;
             let mapped = output[destination][sample] + contribution;
             if !mapped.is_finite() {
                 return Err(AudioError::NonFiniteSample {
