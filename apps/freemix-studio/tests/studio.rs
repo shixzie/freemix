@@ -2933,6 +2933,9 @@ fn console_key_profiles_round_trip_and_save_debounced() {
         .set_key(index, ConsoleAction::Cut, ConsoleStroke::parse("Ctrl+K"))
         .unwrap();
     assert!(profiles.choose(late));
+    // MIDI controller bindings (RC-005) are saved with the profiles.
+    let pad = fm_ui_egui::MidiTrigger::new(fm_ui_egui::MidiControlKind::Note, 1, 60).unwrap();
+    assert!(profiles.midi.bind(pad, ConsoleAction::Fade));
     let keyed = SavedPreferences {
         key_profiles: Some(profiles.clone()),
         ..SavedPreferences::default()
@@ -2943,6 +2946,7 @@ fn console_key_profiles_round_trip_and_save_debounced() {
         "keymap.custom.1.name = Late show\n",
         "keymap.custom.1.base = vmix\n",
         "keymap.custom.1.cut = Ctrl+K\n",
+        "keymap.midi.note.1.60 = fade\n",
     ] {
         assert!(text.contains(line), "{text}");
     }

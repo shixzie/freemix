@@ -60,6 +60,8 @@ const REQUEST_CAPACITY: usize = 16;
 const DEFERRED_INTENT_CAPACITY: usize = 16;
 const STATE_NOTIFICATION_CAPACITY: usize = 1;
 const MAX_COMMAND_RECORDS: usize = 8;
+/// MIDI controller messages one UI frame hands the console.
+const MIDI_EVENTS_PER_FRAME: usize = 256;
 /// OSC actions one UI frame turns into intents.
 const OSC_ACTIONS_PER_FRAME: usize = 8;
 const TERMINAL_UNCERTAINTY_CAPACITY: usize = 8;
@@ -350,6 +352,8 @@ struct StudioApp {
     worker: Option<JoinHandle<()>>,
     shutdown_sent: bool,
     osc: Option<OscReceiver>,
+    /// The MIDI controllers this console reads (RC-005).
+    midi: Option<crate::midi::MidiReader>,
     osc_rejected: u64,
     osc_notice: Option<String>,
     /// Saves the language, clock, layout, UI scale, and theme for the next
@@ -440,6 +444,10 @@ impl StudioApp {
             worker: Some(worker),
             shutdown_sent: false,
             osc,
+            midi: Some(crate::midi::MidiReader::start(
+                std::path::PathBuf::from(crate::midi::MIDI_ROOT),
+                creation_context.egui_ctx.clone(),
+            )),
             osc_rejected: 0,
             osc_notice: None,
             preferences,
@@ -550,6 +558,27 @@ impl StudioApp {
         match intent {
             Some(intent) => self.enqueue_intent(intent),
             None => self.osc_rejected = self.osc_rejected.saturating_add(1),
+        }
+    }
+
+    /// Hands the console this frame's MIDI controller messages (RC-005):
+    /// the ports read, and the notes and controllers its bindings act on.
+    fn drain_midi(&mut self) {
+        let mut inputs = Vec::new();
+        for _ in 0..MIDI_EVENTS_PER_FRAME {
+            match self.midi.as_ref().map(crate::midi::MidiReader::try_recv) {
+                Some(Ok(crate::midi::MidiEvent::Devices(names))) => {
+                    self.shell.set_midi_devices(names);
+                }
+                Some(Ok(crate::midi::MidiEvent::Input(input))) => inputs.push(input),
+                _ => break,
+            }
+        }
+        if inputs.is_empty() {
+            return;
+        }
+        for intent in self.shell.receive_midi(&self.state, &inputs) {
+            self.enqueue_intent(intent);
         }
     }
 
@@ -664,6 +693,7 @@ impl eframe::App for StudioApp {
         crate::capture_signal::inject(&mut self.state);
         self.check_worker_health();
         self.drain_osc();
+        self.drain_midi();
         if self.state.external_notice.is_none() {
             self.state
                 .external_notice
@@ -4306,6 +4336,7 @@ mod tests {
             worker: Some(worker),
             shutdown_sent: false,
             osc: None,
+            midi: None,
             osc_rejected: 0,
             osc_notice: None,
             preferences: PreferenceStore::new(
@@ -7418,6 +7449,7 @@ mod tests {
             worker: None,
             shutdown_sent: false,
             osc: Some(receiver),
+            midi: None,
             osc_rejected: 0,
             osc_notice: None,
             preferences: PreferenceStore::new(

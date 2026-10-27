@@ -1208,6 +1208,47 @@ mod tests {
         assert_eq!(state.console_keys, None);
     }
 
+    /// RC-005: Learn binds the next MIDI press to its action, a bound
+    /// pad then drives it under the key's gates once per press, and a
+    /// controller button fires on reaching 64; unbound controls do nothing.
+    #[test]
+    fn midi_presses_learn_and_drive_console_actions() {
+        use crate::midi_bindings::{MidiControlKind, MidiInput, MidiTrigger};
+        let state = output_state();
+        let mut shell = StudioShell::default();
+        let pad = MidiTrigger::new(MidiControlKind::Note, 1, 60).unwrap();
+        let button = MidiTrigger::new(MidiControlKind::Control, 2, 20).unwrap();
+        let press = |trigger, value| MidiInput { trigger, value };
+        shell.key_profiles_window.midi_learning = Some(crate::ConsoleAction::Cut);
+        assert_eq!(shell.receive_midi(&state, &[press(pad, 100)]), Vec::new());
+        assert_eq!(shell.key_profiles_window.midi_learning, None);
+        assert_eq!(
+            shell.console_key_profiles().midi.action(pad),
+            Some(crate::ConsoleAction::Cut)
+        );
+        assert!(
+            shell
+                .key_profiles
+                .midi
+                .bind(button, crate::ConsoleAction::Preview(1))
+        );
+        let first = state.view.as_ref().unwrap().inputs[0];
+        let intents = shell.receive_midi(
+            &state,
+            &[
+                press(pad, 0),
+                press(pad, 90),
+                press(pad, 90),
+                press(button, 127),
+                press(MidiTrigger::new(MidiControlKind::Note, 1, 61).unwrap(), 100),
+            ],
+        );
+        assert_eq!(
+            intents,
+            vec![StudioIntent::Cut, StudioIntent::SelectPreview(first)]
+        );
+    }
+
     /// RC-004: the keys no user shortcut may take mirror, in order, every
     /// key the console reads in every context and while no panel owns the
     /// keyboard outside the key profiles, so a new console key is reserved

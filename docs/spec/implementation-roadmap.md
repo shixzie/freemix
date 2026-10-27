@@ -4958,9 +4958,21 @@ absolute faders, and relative encoders to typed actions with velocity ranges,
 deadband, inversion, and soft takeover, offers a learn mode with conflict
 policies, and re-associates bindings on reconnect by device key. A feedback
 router turns tally and level state into coalesced MIDI and OSC messages for
-LEDs and motor faders. Remaining gaps: no MIDI port enumeration, hotplug, UDP
-transport, or raw HID parsing; nothing is wired into `freemixd`, Studio, or
-persistence; there is no learn UI; and NRPN/RPN, MIDI 2.0, and GPIO or
+LEDs and motor faders. Studio now reads MIDI controllers: on Linux it lists
+the ALSA raw MIDI ports (`/dev/snd/midiC*D*`, named by their card's ALSA id)
+every second, so a controller plugged in while it runs is picked up, reads
+each port through the `fm-automation` parser, and a note or controller
+press (a note on, or a controller reaching 64) drives any console key
+profile action (switching, transitions, favourites, overlays, replay marks,
+the cue GO) under that action's key gates. The Key profiles window lists
+the controllers and binds each action by Learn (the next press) or Unbind,
+and the bindings are saved with the console's preferences
+(`keymap.midi.note.<channel>.<number> = <action>`), at most 64 (unit tests
+of the bindings and the dispatch, the reader against a FIFO port, and the
+preferences round trip). Remaining gaps: no MIDI on macOS or Windows, no
+feedback to controller LEDs, no fader or encoder value mapping (a
+controller acts as a button), no UDP transport or raw HID parsing; nothing
+reaches `freemixd` or the project; and NRPN/RPN, MIDI 2.0, and GPIO or
 network tally adapters are absent. `RC-005` and `RC-006` remain planned.
 
 Current implementation boundary for item 8 fader feedback (`AU-009`):

@@ -43,6 +43,8 @@ pub(crate) struct KeyProfilesWindow {
     /// File work for the host, taken by
     /// [`StudioShell::take_preset_file_requests`].
     pub(crate) file_requests: Vec<PresetFileRequest>,
+    /// The action the next MIDI press binds (RC-005).
+    pub(crate) midi_learning: Option<ConsoleAction>,
 }
 
 /// Every profile the picker offers: the built-in ones, then the
@@ -192,6 +194,7 @@ impl StudioShell {
         let l = self.locale;
         let profiles = &mut self.key_profiles;
         let window = &mut self.key_profiles_window;
+        let devices = &self.midi_devices;
         if profiles.keymap(window.selected).is_none() {
             window.selected = profiles.active();
         }
@@ -348,6 +351,16 @@ impl StudioShell {
             }
         });
         ui.add_space(6.0);
+        let device_text = if devices.is_empty() {
+            l.text(Msg::MidiNoDevices).to_owned()
+        } else {
+            l.format(
+                Msg::MidiDevices,
+                &[("names", Arg::Str(&devices.join(", ")))],
+            )
+        };
+        ui.label(caption(&device_text))
+            .on_hover_text(l.text(Msg::MidiDevicesHover));
         let Some(keymap) = profiles.keymap(selected) else {
             return;
         };
@@ -359,13 +372,14 @@ impl StudioShell {
             .max_height(420.0)
             .show(ui, |ui| {
                 egui::Grid::new("studio-key-profiles-grid")
-                    .num_columns(3)
+                    .num_columns(4)
                     .spacing(Vec2::new(12.0, 4.0))
                     .striped(true)
                     .show(ui, |ui| {
                         ui.label(caption(l.text(Msg::KeyProfilesAction)));
                         ui.label(caption(l.text(Msg::KeyProfilesKey)));
                         ui.label("");
+                        ui.label(caption(l.text(Msg::MidiColumn)));
                         ui.end_row();
                         for action in ConsoleAction::all() {
                             let stroke = keymap.stroke(action);
@@ -434,11 +448,50 @@ impl StudioShell {
                                         );
                                 }
                             });
+                            midi_cell(ui, l, &mut profiles.midi, &mut window.midi_learning, action);
                             ui.end_row();
                         }
                     });
             });
     }
+}
+
+/// One action's MIDI binding (RC-005): its control, Learn, and Unbind.
+fn midi_cell(
+    ui: &mut Ui,
+    l: Locale,
+    midi: &mut crate::midi_bindings::MidiBindings,
+    learning: &mut Option<ConsoleAction>,
+    action: ConsoleAction,
+) {
+    ui.horizontal(|ui| {
+        let bound = midi.trigger_of(action);
+        let text = bound.map_or_else(
+            || l.text(Msg::KeyProfilesNoKeyText).to_owned(),
+            |trigger| trigger.text(l),
+        );
+        ui.label(RichText::new(text).monospace());
+        let waiting = *learning == Some(action);
+        let learn_text = if waiting {
+            l.text(Msg::MidiLearning)
+        } else {
+            l.text(Msg::MidiLearn)
+        };
+        if ui
+            .button(learn_text)
+            .on_hover_text(l.text(Msg::MidiLearnHover))
+            .clicked()
+        {
+            *learning = if waiting { None } else { Some(action) };
+        }
+        if ui
+            .add_enabled(bound.is_some(), Button::new(l.text(Msg::MidiUnbind)))
+            .hint(l.text(Msg::MidiUnbindHover), Msg::MidiReasonUnbound.en())
+            .clicked()
+        {
+            midi.unbind(action);
+        }
+    });
 }
 
 #[cfg(test)]

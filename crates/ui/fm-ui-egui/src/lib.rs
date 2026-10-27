@@ -64,6 +64,7 @@ mod media_list_ui;
 mod media_transport;
 mod menu;
 mod meter_ballistics;
+mod midi_bindings;
 mod mixer;
 mod monitors;
 mod network_stream_ui;
@@ -134,6 +135,7 @@ pub use media_transport::{
     MEDIA_SPEEDS, media_settings_block, media_transport_block, speed_label as media_speed_label,
 };
 pub use menu::ConsoleLayout;
+pub use midi_bindings::{MAX_MIDI_BINDINGS, MidiBindings, MidiControlKind, MidiInput, MidiTrigger};
 pub use playlist::{
     Countdown, EntryForm, EntryRole, ListEdit, PlaylistIntent, PlaylistPhase,
     TransportAvailability, control_block as playlist_control_block,
@@ -1803,6 +1805,8 @@ pub struct StudioShell {
     /// The console key profiles and the one the console answers (RC-004).
     key_profiles: ConsoleKeyProfiles,
     key_profiles_window: key_profiles_ui::KeyProfilesWindow,
+    /// The MIDI controllers the host reads (RC-005), by name.
+    midi_devices: Vec<String>,
     /// The panel the operator last clicked, which scoped project shortcut
     /// keys answer in (RC-004).
     focused_panel: Option<dock::PanelId>,
@@ -1965,6 +1969,64 @@ impl StudioShell {
     /// choice is local to this console and never sent to the daemon.
     pub const fn set_locale(&mut self, locale: Locale) {
         self.locale = locale;
+    }
+
+    /// The intents this console's MIDI controllers' `inputs` press
+    /// (RC-005): each press drives its binding's console action under the
+    /// same gates as the action's key. While an action learns (the Key
+    /// profiles window's Learn), the first press binds it instead.
+    pub fn receive_midi(
+        &mut self,
+        state: &StudioUiState,
+        inputs: &[MidiInput],
+    ) -> Vec<StudioIntent> {
+        let presses = self.key_profiles.midi.presses(inputs);
+        let mut intents = Vec::new();
+        for trigger in presses {
+            if let Some(action) = self.key_profiles_window.midi_learning.take() {
+                self.key_profiles.midi.bind(trigger, action);
+                continue;
+            }
+            if let Some(action) = self.key_profiles.midi.action(trigger) {
+                intents.extend(self.console_action(state, action));
+            }
+        }
+        intents
+    }
+
+    /// Tells the console which MIDI controllers the host reads, by name.
+    pub fn set_midi_devices(&mut self, devices: Vec<String>) {
+        self.midi_devices = devices;
+    }
+
+    /// The intents console action `action` sends now, gated as its key.
+    fn console_action(&self, state: &StudioUiState, action: ConsoleAction) -> Vec<StudioIntent> {
+        let gate = TransitionGate::from_state(state);
+        let inputs = state
+            .view
+            .as_ref()
+            .map_or(&[] as &[InputId], |view| view.inputs.as_slice());
+        let favorites = state
+            .view
+            .as_ref()
+            .map_or(&[] as &[TransitionFavoriteStatus], |view| {
+                view.transition_favorites.as_slice()
+            });
+        console_action_intents(
+            action,
+            (
+                preview_selection_available(gate, state.can_select_preview),
+                transition_availability(gate).basic(),
+            ),
+            (inputs, favorites),
+            (
+                self.transition_duration_frames,
+                self.fade_to_black_duration_frames,
+            ),
+            (&|key| self.cues.key_intent(state, key), &|action| {
+                live_console_intents(state, action)
+            }),
+        )
     }
 
     /// Collects this frame's global keyboard shortcuts in UI order: switcher
@@ -2427,6 +2489,7 @@ impl Default for StudioShell {
             shortcut_keys: ShortcutKeyOverrides::default(),
             key_profiles: ConsoleKeyProfiles::default(),
             key_profiles_window: key_profiles_ui::KeyProfilesWindow::default(),
+            midi_devices: Vec::new(),
             focused_panel: None,
             focused_window: None,
             chord: None,

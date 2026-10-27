@@ -672,6 +672,9 @@ pub enum KeyRefusal {
 pub struct ConsoleKeyProfiles {
     active: ProfileChoice,
     custom: Vec<CustomProfile>,
+    /// This console's MIDI controller bindings (RC-005), saved with the
+    /// profiles.
+    pub midi: crate::midi_bindings::MidiBindings,
 }
 
 impl ConsoleKeyProfiles {
@@ -841,6 +844,7 @@ impl ConsoleKeyProfiles {
                 ));
             }
         }
+        entries.extend(self.midi.preference_entries());
         entries
     }
 
@@ -849,6 +853,9 @@ impl ConsoleKeyProfiles {
     /// Lines may come in any order; [`Self::finish_preferences`] drops what
     /// they leave unusable.
     pub fn apply_preference(&mut self, key: &str, value: &str) -> bool {
+        if crate::midi_bindings::MidiBindings::is_preference_key(key) {
+            return self.midi.apply_preference(key, value);
+        }
         if key == PROFILE_KEY {
             let choice = match value.strip_prefix("custom.") {
                 Some(position) => position
@@ -960,6 +967,7 @@ impl ConsoleKeyProfiles {
         let single = Self {
             active: ProfileChoice::default(),
             custom: vec![profile],
+            midi: crate::midi_bindings::MidiBindings::default(),
         };
         for (key, value) in single.preference_entries() {
             let field = key.strip_prefix("keymap.custom.1.")?;

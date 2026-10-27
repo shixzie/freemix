@@ -4,6 +4,7 @@ mod animation;
 mod args;
 #[cfg(feature = "capture-meter-signal")]
 mod capture_signal;
+mod midi;
 mod native;
 mod osc;
 mod prefs;

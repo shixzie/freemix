@@ -6117,6 +6117,35 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         ),
     ),
     (Msg::DesignMatteAddPoint, t("Añadir punto")),
+    (Msg::MidiNote, t("Nota {number} · canal {channel}")),
+    (Msg::MidiColumn, t("Control MIDI")),
+    (Msg::MidiDevices, t("Controladores MIDI: {names}")),
+    (
+        Msg::MidiNoDevices,
+        t("No hay ningún controlador MIDI conectado"),
+    ),
+    (
+        Msg::MidiDevicesHover,
+        t(
+            "Los controladores MIDI que lee esta consola; sus notas y controles accionan las acciones asignadas abajo, solo en esta consola",
+        ),
+    ),
+    (Msg::MidiLearn, t("Aprender")),
+    (Msg::MidiLearning, t("Pulsa un control… (clic para parar)")),
+    (
+        Msg::MidiLearnHover,
+        t("Asigna a esta acción la próxima nota o control que envíe un controlador MIDI"),
+    ),
+    (Msg::MidiUnbind, t("Desasignar")),
+    (
+        Msg::MidiUnbindHover,
+        t("Quita el control MIDI de esta acción"),
+    ),
+    (
+        Msg::MidiReasonUnbound,
+        t("esta acción no tiene control MIDI"),
+    ),
+    (Msg::MidiControl, t("CC {number} · canal {channel}")),
     (Msg::DesignEffectDeinterlace, t("Desentrelazar")),
     (
         Msg::DesignEffectDeinterlaceHover,
