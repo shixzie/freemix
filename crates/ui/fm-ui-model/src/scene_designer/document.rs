@@ -264,6 +264,9 @@ pub enum Field {
     MattePointY {
         point: u8,
     },
+    /// Pixels the garbage matte's edge softens over to each side,
+    /// `0..=MAX_GARBAGE_MATTE_FEATHER` (matte on only).
+    MatteFeather,
     /// Parameter `parameter` of the effect at list position `effect`,
     /// within its kind's range (a `levels` black stays below its white).
     EffectParameter {
@@ -983,7 +986,8 @@ impl SceneLayoutDocument {
             | Field::KeyLightWrapWidth
             | Field::Matte
             | Field::MattePointX { .. }
-            | Field::MattePointY { .. } => refinement_value(
+            | Field::MattePointY { .. }
+            | Field::MatteFeather => refinement_value(
                 layer
                     .key
                     .map_or(WireKeyRefinement::NONE, |key| key.refinement()),
@@ -1741,7 +1745,8 @@ fn apply_field(layer: &mut DesignLayer, field: Field, value: f64, canvas: (u32, 
         | Field::KeyLightWrapWidth
         | Field::Matte
         | Field::MattePointX { .. }
-        | Field::MattePointY { .. } => {
+        | Field::MattePointY { .. }
+        | Field::MatteFeather => {
             let Some(key) = layer.key else {
                 return;
             };
@@ -1768,7 +1773,9 @@ fn edit_matte(layer: &mut DesignLayer, edit: impl FnOnce(&mut Vec<fm_types::Matt
     };
     let mut points = matte.points().to_vec();
     edit(&mut points);
-    match fm_types::GarbageMatte::new(&points, matte.invert()) {
+    match fm_types::GarbageMatte::new(&points, matte.invert())
+        .and_then(|edited| edited.with_feather(matte.feather()))
+    {
         Ok(edited) => {
             refinement.garbage_matte = Some(edited);
             layer.key = Some(with_refinement(key, refinement));
@@ -1831,6 +1838,9 @@ fn refinement_value(refinement: WireKeyRefinement, field: Field) -> f64 {
                     at.y
                 })
             }),
+        Field::MatteFeather => {
+            f64::from(refinement.garbage_matte.map_or(0, |matte| matte.feather()))
+        }
         _ => f64::from(match refinement.despill {
             WireKeyDespill::Off => 0,
             WireKeyDespill::Green { strength } | WireKeyDespill::Blue { strength } => strength,
@@ -1905,8 +1915,18 @@ fn apply_refinement_field(refinement: &mut WireKeyRefinement, field: Field, valu
             } else {
                 at.y = coordinate;
             }
-            if let Ok(moved) = fm_types::GarbageMatte::new(&points, matte.invert()) {
+            if let Ok(moved) = fm_types::GarbageMatte::new(&points, matte.invert())
+                .and_then(|moved| moved.with_feather(matte.feather()))
+            {
                 refinement.garbage_matte = Some(moved);
+            }
+        }
+        Field::MatteFeather => {
+            if let Some(matte) = refinement.garbage_matte
+                && let Ok(feathered) =
+                    matte.with_feather(to_u8(value, 0, fm_types::MAX_GARBAGE_MATTE_FEATHER))
+            {
+                refinement.garbage_matte = Some(feathered);
             }
         }
         Field::KeyLightWrapWidth => {

@@ -660,7 +660,8 @@ fn write_layer_key(output: &mut String, key: Option<fm_model::LayerKey>) {
                 write!(output, "[{}, {}]", point.x, point.y)
                     .expect("writing to a string cannot fail");
             }
-            output.push_str("]}");
+            write!(output, "], \"feather\": {}}}", matte.feather())
+                .expect("writing to a string cannot fail");
         }
     }
     output.push_str("}}");

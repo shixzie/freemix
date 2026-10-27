@@ -197,10 +197,11 @@ struct LayerOperation {
     despill_backing: u32,
     despill_strength: u32,
     // The polygon garbage matte: its point count (0 none), whether it keeps
-    // the outside, and its points in half-pixel units, two per vector.
+    // the outside, its feather in pixels, and its points in half-pixel
+    // units, two per vector.
     matte_count: u32,
     matte_invert: u32,
-    padding_0: u32,
+    matte_feather: u32,
     padding_1: u32,
     matte_points: array<vec4<i32>, 4>,
 };
@@ -289,13 +290,34 @@ fn matte_point(index: u32) -> vec2<i32> {
     return pair.zw;
 }
 
-// Whether the polygon garbage matte keeps `pixel` (even-odd rule at the
-// pixel centre, in half-pixel units; fm_types::garbage_matte).
-fn garbage_keeps(pixel: vec2<u32>) -> bool {
+// How much of `pixel` the polygon garbage matte keeps, 0 to 255: the
+// even-odd rule at the pixel centre in half-pixel units, or with a feather
+// the share of a 9x9 grid of points the feather to each side of it, each
+// clamped to the layer's pixel centres (fm_types::garbage_matte).
+fn garbage_coverage(pixel: vec2<u32>) -> i32 {
     if op.matte_count == 0u {
-        return true;
+        return 255;
     }
-    let p = vec2<i32>(pixel) * 2 + vec2<i32>(1);
+    let centre = vec2<i32>(pixel) * 2 + vec2<i32>(1);
+    let feather = i32(op.matte_feather);
+    if feather == 0 {
+        return select(0, 255, garbage_keeps(centre));
+    }
+    let last = max(vec2<i32>(i32(op.width), i32(op.height)) * 2 - vec2<i32>(1), vec2<i32>(1));
+    var kept = 0;
+    for (var row = -4; row <= 4; row++) {
+        for (var column = -4; column <= 4; column++) {
+            let offset = vec2<i32>(column * feather / 2, row * feather / 2);
+            if garbage_keeps(clamp(centre + offset, vec2<i32>(1), last)) {
+                kept += 1;
+            }
+        }
+    }
+    return (kept * 255 + 40) / 81;
+}
+
+// Whether the polygon garbage matte keeps the point `p` in half-pixel units.
+fn garbage_keeps(p: vec2<i32>) -> bool {
     var inside = false;
     for (var index = 0u; index < op.matte_count; index++) {
         let a = matte_point(index);
@@ -401,10 +423,7 @@ fn key_stage(pixel: vec2<u32>) -> vec4<i32> {
     } else {
         key_alpha = key_factor(codes);
     }
-    var factor = multiply_u8(key_alpha, mask_factor(pixel));
-    if !garbage_keeps(pixel) {
-        factor = 0;
-    }
+    let factor = multiply_u8(multiply_u8(key_alpha, mask_factor(pixel)), garbage_coverage(pixel));
     let spill = i32(op.key_spill);
     if op.key_kind == 1u && spill != 0 && key_alpha != 255 {
         let amount = multiply_u8(spill, 255 - key_alpha);
@@ -847,6 +866,7 @@ fn encode_key_words(words: &mut [u32; LAYER_UNIFORM_SIZE / 4], stage: KeyStage) 
         let points = matte.half_pixel_points(stage.width, stage.height);
         words[28] = u32::try_from(points.len()).unwrap_or(0);
         words[29] = u32::from(matte.invert());
+        words[30] = u32::from(matte.feather());
         for (index, (x, y)) in points.into_iter().enumerate() {
             words[32 + 2 * index] = x.cast_unsigned();
             words[33 + 2 * index] = y.cast_unsigned();

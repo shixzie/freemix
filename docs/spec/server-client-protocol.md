@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.114 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.115 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4399,6 +4399,26 @@ Protocol 2.114 jogs a Replay input (`OR-012`).
   or on, with English and Spanish hover help, and `freemix-cli
   remote-replay-do <address> step <input> <frames>` sends one step.
 - 2.113 is refused.
+
+Protocol 2.115 feathers garbage mattes (`SW-008`, schema 87).
+
+- A `scene_layer_key_set` whose `matte` is `inside` or `outside` carries a
+  required `matte_feather` after `matte_points`: the pixels the edge
+  softens over to each side, a canonical `0..=64`. In the binary scene
+  layout codec a matte's points are followed by a feather byte.
+- A feathered matte tests each pixel at an 81-point grid reaching the
+  feather to each side of its centre, every point clamped to the layer's
+  pixel centres (so an edge on the layer's own border stays hard), with
+  the same integer even-odd rule as the edge; the pixel keeps
+  `(kept * 255 + 40) / 81` of the layer. The native compositor and the CPU
+  reference agree exactly. A feather of 0 is the hard edge it always was.
+- Durability (schema 87): a garbage matte in `project.json` carries a
+  required `feather`; schema 86 projects are refused.
+- Studio's matte inspector gains a Feather field (English and Spanish
+  help), the CLI's `scene-layer-key` and `remote-scene-layer-auto-key` take
+  `--matte-feather <0..64>` with `--matte`, and `scenes` prints
+  `matte_feather=` for a feathered matte.
+- 2.114 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

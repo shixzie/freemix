@@ -18,7 +18,7 @@ use fm_protocol::{
     encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.114\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.115\tid=a\tidempotency_key=k";
 
 fn scene(value: u128) -> WireSceneId {
     WireSceneId::new(NonZeroU128::new(value).unwrap())
@@ -152,6 +152,7 @@ fn fill() -> WireLayerKey {
                     ],
                     false,
                 )
+                .and_then(|matte| matte.with_feather(12))
                 .unwrap(),
             ),
         },
@@ -211,7 +212,7 @@ fn operations() -> Vec<SceneLayerOperation> {
 
 #[test]
 fn protocol_is_2_43() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 114));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 115));
 }
 
 #[test]
@@ -300,7 +301,8 @@ fn scene_layer_commands_have_an_exact_wire_form() {
              key_input=9\tchannel=alpha\tlow=4\thigh=250\t\
              softness=60\tinvert=false\tclip_black=12\tclip_white=240\tchoke=-8\t\
              edge_softness=3\tdespill=blue\tdespill_strength=90\tlight_wrap=200\tlight_wrap_width=8\t\
-             matte=inside\tmatte_points=100%3A200%2C900%3A200%2C1000%3A1000%2C0%3A900\n",
+             matte=inside\tmatte_points=100%3A200%2C900%3A200%2C1000%3A1000%2C0%3A900\t\
+             matte_feather=12\n",
         ),
         (
             SceneLayerOperation::SetKey(None),
@@ -406,6 +408,10 @@ fn scene_layer_commands_are_strict() {
         fill_line.replace("%2C0%3A900", &"%2C0%3A900".repeat(6)),
         fill_line.replace("matte=inside", "matte=off"),
         key_line.replace("matte=off", "matte=inside"),
+        // A feather (2.115) of at most 64 pixels, canonical, never absent.
+        fill_line.replace("matte_feather=12", "matte_feather=65"),
+        fill_line.replace("matte_feather=12", "matte_feather=012"),
+        fill_line.replace("\tmatte_feather=12", ""),
         key_line.replace("\tclip_white=255", ""),
         // Effects are a known kind with in-range values, no trailing bytes.
         effects_line.replace("effects=AQAg1gM", "effects=AQUg1gM"),

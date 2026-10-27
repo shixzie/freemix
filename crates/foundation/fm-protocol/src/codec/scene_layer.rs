@@ -16,7 +16,8 @@
 //! `light_wrap` and `light_wrap_width` (`0` exactly when `light_wrap` is),
 //! and `matte` (`off`, `inside`, or `outside`) with, unless `off`,
 //! `matte_points`: three to eight canonical `x:y` points (each
-//! `0..=1000`) joined by commas.
+//! `0..=1000`) joined by commas and (since 2.115) `matte_feather`, the
+//! pixels the edge softens over to each side (`0..=64`).
 
 use core::num::NonZeroU32;
 
@@ -229,7 +230,8 @@ fn push_refinement(push: &mut Push<'_>, refinement: WireKeyRefinement) -> Result
                 .map(|point| format!("{}:{}", point.x, point.y))
                 .collect::<Vec<_>>()
                 .join(",");
-            push("matte_points", points)
+            push("matte_points", points)?;
+            push("matte_feather", matte.feather().to_string())
         }
     }
 }
@@ -278,10 +280,15 @@ fn refinement_fields(fields: &mut dyn FieldSource) -> Result<WireKeyRefinement, 
     let matte = fields.required("matte")?;
     let garbage_matte = match matte.as_str() {
         "off" => None,
-        "inside" | "outside" => Some(matte_points(
-            &fields.required("matte_points")?,
-            matte == "outside",
-        )?),
+        "inside" | "outside" => {
+            let points = matte_points(&fields.required("matte_points")?, matte == "outside")?;
+            let feather = bounded(fields, "matte_feather", fm_types::MAX_GARBAGE_MATTE_FEATHER)?;
+            Some(
+                points
+                    .with_feather(feather)
+                    .map_err(|_| invalid("matte_feather", feather.to_string()))?,
+            )
+        }
         _ => return Err(invalid("matte", matte)),
     };
     Ok(WireKeyRefinement {

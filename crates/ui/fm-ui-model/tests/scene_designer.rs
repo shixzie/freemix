@@ -935,6 +935,20 @@ fn garbage_matte_points_edit_live_and_export() {
     // Keeping the outside keeps the points.
     assert!(document.set_field(Field::Matte, 2.0));
     assert_eq!(matte(&document), Some(inset.with_invert(true)));
+    // A feather (Protocol 2.115) clamps to 64 pixels and survives point
+    // edits; it ends at 0 again for the checks below.
+    assert!(document.set_field(Field::MatteFeather, 500.0));
+    assert_eq!(
+        document.field_value(layer_id(2), Field::MatteFeather),
+        Some(64.0)
+    );
+    assert!(document.set_field(Field::MattePointX { point: 1 }, 880.0));
+    assert!(document.add_matte_point());
+    assert_eq!(matte(&document).unwrap().feather(), 64);
+    assert!(document.undo());
+    assert!(document.undo());
+    assert!(document.set_field(Field::MatteFeather, 0.0));
+    assert_eq!(matte(&document), Some(inset.with_invert(true)));
     // Points clamp to the layer; a missing point is not edited.
     assert!(document.set_field(Field::MattePointX { point: 0 }, -40.0));
     assert!(document.set_field(Field::MattePointY { point: 0 }, 5_000.0));

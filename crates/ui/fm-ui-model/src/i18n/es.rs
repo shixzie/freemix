@@ -6117,6 +6117,13 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         ),
     ),
     (Msg::DesignMatteAddPoint, t("Añadir punto")),
+    (Msg::DesignMatteFeather, t("Difuminado")),
+    (
+        Msg::DesignMatteFeatherHover,
+        t(
+            "Suaviza el borde del recorte hasta 64 píxeles a cada lado; 0 lo deja nítido, y un borde sobre el límite de la capa sigue nítido",
+        ),
+    ),
     (
         Msg::DesignMatteAddPointHover,
         t("Añadir un punto a mitad del borde que cierra la forma, como mucho 8 puntos"),

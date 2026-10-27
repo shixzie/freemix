@@ -2972,6 +2972,7 @@ fn garbage_matte_fields(
     let Some(matte) = matte else {
         return;
     };
+    matte_feather_field(ui, l, document, id, lock);
     let count = matte.points().len();
     let mut remove = None;
     egui::Grid::new("studio-designer-key-garbage-matte-points")
@@ -3019,6 +3020,37 @@ fn garbage_matte_fields(
     {
         document.add_matte_point();
     }
+}
+
+/// The garbage matte's feather in pixels (Protocol 2.115).
+fn matte_feather_field(
+    ui: &mut Ui,
+    l: Locale,
+    document: &mut SceneLayoutDocument,
+    id: WireSceneLayerId,
+    lock: Option<&'static str>,
+) {
+    egui::Grid::new("studio-designer-key-garbage-matte-feather")
+        .num_columns(2)
+        .show(ui, |ui| {
+            scrub(
+                ui,
+                l,
+                document,
+                id,
+                Scrub {
+                    field: Field::MatteFeather,
+                    label: l.text(Msg::DesignMatteFeather),
+                    hover: l.text(Msg::DesignMatteFeatherHover).to_owned(),
+                    range: 0.0..=f64::from(fm_types::MAX_GARBAGE_MATTE_FEATHER),
+                    speed: 0.1,
+                    suffix: " px",
+                    shown_per_stored: 1.0,
+                },
+                lock,
+            );
+            ui.end_row();
+        });
 }
 
 /// One garbage matte coordinate as a percentage of the layer: drag to

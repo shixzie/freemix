@@ -772,7 +772,8 @@ fn parse_layer_key(value: Value) -> Result<fm_model::LayerKey, DecodeError> {
 /// "clip_white", "choke", "edge_softness", "despill", "light_wrap",
 /// "light_wrap_width"}` where `despill` is `{"type": "off"}` or
 /// `{"type": "green"|"blue", "strength"}`, and (since schema 79)
-/// `"garbage_matte"`: `null` or `{"invert", "points": [[x, y], ...]}`.
+/// `"garbage_matte"`: `null` or `{"invert", "points": [[x, y], ...],
+/// "feather"}` (the feather since schema 87).
 fn parse_key_refinement(value: Value) -> Result<fm_model::KeyRefinement, DecodeError> {
     let mut object = Object::new(value, "key refinement")?;
     let clip_black = object.u8("clip_black")?;
@@ -826,8 +827,10 @@ fn parse_garbage_matte(value: Value) -> Result<fm_types::GarbageMatte, DecodeErr
         };
         Ok(fm_types::MattePoint::new(x, y))
     })?;
+    let feather = object.u8("feather")?;
     object.finish()?;
     fm_types::GarbageMatte::new(&points, invert)
+        .and_then(|matte| matte.with_feather(feather))
         .map_err(|error| syntax(format!("invalid garbage matte: {error}")))
 }
 

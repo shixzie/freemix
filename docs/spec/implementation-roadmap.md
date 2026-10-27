@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.114 / schema 86 (2026-10-27).
+(2026-10-19); items refreshed through protocol 2.115 / schema 87 (2026-10-27).
 Every parity row is still `planned` (or `blocked`); these are the
 highest-value remaining items, ranked:
 
@@ -94,7 +94,8 @@ highest-value remaining items, ranked:
    (Protocol 2.97), which the CLI's remote auto key now asks for too
    (keeping the layer's matte refinement unless given new options). What
    remains: key/fill is not tied to paired SDI/NDI fill and key inputs,
-   and mattes are not animatable or feathered.
+   and mattes are not animatable (they feather since Protocol 2.115,
+   exactly alike on the GPU and the CPU reference).
 7. **Source clock drift on real devices and other OSes (`AU-004`).** Every
    live source the native daemon ingests (V4L2/ALSA capture, network
    streams, system audio) runs its audio through a drift-correcting
@@ -2672,8 +2673,11 @@ matte (`freemix-cli` e2e test against a fake daemon, checked by hand against
 a simulated `freemixd`). Remaining gaps: the `fm-compositor` border/region
 auto key remains a separate CPU
 reference; key/fill is not tied to paired SDI or NDI fill and key inputs,
-and a Scene cannot be a key input; garbage mattes are hard-edged (only edge
-softness softens them) and not animatable; light wrap on a tilted layer
+and a Scene cannot be a key input; garbage mattes feather up to 64 pixels
+to each side (Protocol 2.115, schema 87: an 81-point integer grid per
+pixel, clamped to the layer, so the native compositor matches the CPU
+reference exactly, checked by `native_keys` on llvmpipe) but are not
+animatable; light wrap on a tilted layer
 matches the CPU reference only within the bilinear sampling difference.
 `SW-008` remains planned.
 

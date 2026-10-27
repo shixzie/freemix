@@ -22,6 +22,20 @@
 //! comparison reversed when `b.y < a.y`). Every product fits in 32 bits for
 //! layers up to [`MAX_GARBAGE_MATTE_LAYER_SIDE`] pixels a side, so CPU and GPU
 //! agree exactly; the native compositor refuses a matte over a larger layer.
+//!
+//! # Feather
+//!
+//! A matte with a feather of `f` pixels (at most
+//! [`MAX_GARBAGE_MATTE_FEATHER`]) softens its edge: pixel `(px, py)` is
+//! tested at the 81 points `(2 px + 1 + c * f / 2, 2 py + 1 + r * f / 2)`
+//! for `c` and `r` in `-4..=4` (integer division rounding toward zero), a
+//! grid `f` pixels to each side of the centre, each clamped to the layer's
+//! pixel centres (`1..=2 width - 1` and `1..=2 height - 1`, so an edge on the
+//! layer's own border stays hard), and keeps
+//! `(kept * 255 + 40) / 81` of the layer, `kept` being the points the
+//! matte keeps. Every point is tested exactly as above, so the ramp is as
+//! exact as the edge; sample points stay within 32-bit products for the
+//! largest layer and feather. A feather of 0 keeps the hard edge.
 
 use core::fmt;
 
@@ -35,6 +49,11 @@ pub const MAX_GARBAGE_MATTE_POINTS: usize = 8;
 pub const MAX_GARBAGE_MATTE_LAYER_SIDE: u32 = 16_384;
 /// The normalized coordinate of a layer's right or bottom edge.
 pub const GARBAGE_MATTE_UNIT: u16 = 1_000;
+/// Widest garbage matte feather, in pixels to each side of the edge.
+pub const MAX_GARBAGE_MATTE_FEATHER: u8 = 64;
+/// Sample points per side of the feather grid (see the module
+/// documentation).
+const FEATHER_SAMPLES: i64 = 9;
 
 /// One garbage matte point, normalized to the keyed layer
 /// (`0..=GARBAGE_MATTE_UNIT` on both axes).
@@ -57,6 +76,8 @@ pub struct GarbageMatte {
     points: [MattePoint; MAX_GARBAGE_MATTE_POINTS],
     len: u8,
     invert: bool,
+    /// Pixels the edge softens over to each side; 0 is a hard edge.
+    feather: u8,
 }
 
 /// Why a garbage matte is invalid.
@@ -70,6 +91,8 @@ pub enum GarbageMatteError {
     /// Every point lies on one line (or on one spot), so the polygon has
     /// no area.
     Flat,
+    /// A feather wider than [`MAX_GARBAGE_MATTE_FEATHER`].
+    Feather(u8),
 }
 
 impl fmt::Display for GarbageMatteError {
@@ -86,6 +109,10 @@ impl fmt::Display for GarbageMatteError {
             ),
             Self::Flat => formatter
                 .write_str("a garbage matte's points all lie on one line, so it has no area"),
+            Self::Feather(feather) => write!(
+                formatter,
+                "a garbage matte feathers at most {MAX_GARBAGE_MATTE_FEATHER} pixels, not {feather}"
+            ),
         }
     }
 }
@@ -119,6 +146,7 @@ impl GarbageMatte {
             points: stored,
             len: u8::try_from(points.len()).unwrap_or(u8::MAX),
             invert,
+            feather: 0,
         })
     }
 
@@ -139,6 +167,7 @@ impl GarbageMatte {
             points,
             len: 4,
             invert: false,
+            feather: 0,
         }
     }
 
@@ -159,6 +188,39 @@ impl GarbageMatte {
     pub const fn with_invert(mut self, invert: bool) -> Self {
         self.invert = invert;
         self
+    }
+
+    /// Pixels the edge softens over to each side; 0 is a hard edge.
+    #[must_use]
+    pub const fn feather(&self) -> u8 {
+        self.feather
+    }
+
+    /// The same matte feathered over `feather` pixels.
+    ///
+    /// # Errors
+    ///
+    /// [`GarbageMatteError::Feather`] beyond
+    /// [`MAX_GARBAGE_MATTE_FEATHER`].
+    pub const fn with_feather(mut self, feather: u8) -> Result<Self, GarbageMatteError> {
+        if feather > MAX_GARBAGE_MATTE_FEATHER {
+            return Err(GarbageMatteError::Feather(feather));
+        }
+        self.feather = feather;
+        Ok(self)
+    }
+
+    /// How much of pixel `(x, y)` of a `width` x `height` layer the matte
+    /// keeps, 0 to 255 (see the module documentation).
+    #[must_use]
+    pub fn coverage(&self, x: u32, y: u32, width: u32, height: u32) -> u8 {
+        polygon_coverage(
+            &self.half_pixel_points(width, height),
+            (self.invert, self.feather),
+            (width, height),
+            x,
+            y,
+        )
     }
 
     /// The polygon's points in half-pixel units of a `width` x `height`
@@ -208,8 +270,51 @@ fn is_flat(points: &[MattePoint]) -> bool {
 /// half-pixel units (see the module documentation).
 #[must_use]
 pub fn polygon_contains(points: &[(i32, i32)], x: u32, y: u32) -> bool {
+    contains_point(points, i64::from(x) * 2 + 1, i64::from(y) * 2 + 1)
+}
+
+/// How much of pixel `(x, y)` of a `width` x `height` layer a matte of
+/// `points` (in half-pixel units), keeping the outside when `invert`, keeps
+/// with a `feather` (see the module documentation).
+#[must_use]
+pub fn polygon_coverage(
+    points: &[(i32, i32)],
+    (invert, feather): (bool, u8),
+    (width, height): (u32, u32),
+    x: u32,
+    y: u32,
+) -> u8 {
     let px = i64::from(x) * 2 + 1;
     let py = i64::from(y) * 2 + 1;
+    if feather == 0 {
+        return if contains_point(points, px, py) == invert {
+            0
+        } else {
+            u8::MAX
+        };
+    }
+    let feather = i64::from(feather);
+    let (right, bottom) = (
+        (i64::from(width) * 2 - 1).max(1),
+        (i64::from(height) * 2 - 1).max(1),
+    );
+    let half = FEATHER_SAMPLES / 2;
+    let mut kept = 0_i64;
+    for row in -half..=half {
+        for column in -half..=half {
+            let sample_x = (px + column * feather / 2).clamp(1, right);
+            let sample_y = (py + row * feather / 2).clamp(1, bottom);
+            if contains_point(points, sample_x, sample_y) != invert {
+                kept += 1;
+            }
+        }
+    }
+    let total = FEATHER_SAMPLES * FEATHER_SAMPLES;
+    u8::try_from((kept * 255 + total / 2) / total).unwrap_or(u8::MAX)
+}
+
+/// The even-odd test of the point `(px, py)` in half-pixel units.
+fn contains_point(points: &[(i32, i32)], px: i64, py: i64) -> bool {
     let mut inside = false;
     for (index, &(ax, ay)) in points.iter().enumerate() {
         let (bx, by) = points[(index + 1) % points.len()];
@@ -298,6 +403,55 @@ mod tests {
         // The widest inset still keeps a middle.
         let widest = GarbageMatte::inset(u16::MAX);
         assert_eq!(GarbageMatte::new(widest.points(), false), Ok(widest));
+    }
+
+    /// A feather ramps coverage across the edge: whole well inside, none
+    /// well outside, part way on the edge, never decreasing toward the
+    /// inside; no feather is the hard edge; more than 64 is refused.
+    #[test]
+    fn a_feather_ramps_coverage_across_the_edge() {
+        // The left half of a 40x10 layer.
+        let half = GarbageMatte::new(
+            &[
+                MattePoint::new(0, 0),
+                MattePoint::new(500, 0),
+                MattePoint::new(500, 1_000),
+                MattePoint::new(0, 1_000),
+            ],
+            false,
+        )
+        .unwrap();
+        for x in 0..40 {
+            assert_eq!(
+                half.coverage(x, 5, 40, 10),
+                if half.keeps(x, 5, 40, 10) { 255 } else { 0 },
+                "{x}"
+            );
+        }
+        let soft = half.with_feather(4).unwrap();
+        assert_eq!(soft.feather(), 4);
+        let row: Vec<u8> = (0..40).map(|x| soft.coverage(x, 5, 40, 10)).collect();
+        assert_eq!(row[10], 255);
+        assert_eq!(row[30], 0);
+        assert!((100..=155).contains(&row[20]), "{row:?}");
+        assert!(row.windows(2).all(|pair| pair[0] >= pair[1]), "{row:?}");
+        // The ramp spans the feather to each side of the edge: four pixels.
+        assert_eq!(row[15], 255);
+        assert_eq!(row[24], 0);
+        // An edge on the layer's own border stays hard.
+        assert_eq!(row[0], 255);
+        // Inverted, it is the complement up to rounding.
+        let inverted = soft.with_invert(true);
+        for x in 0..40 {
+            let sum =
+                u16::from(soft.coverage(x, 5, 40, 10)) + u16::from(inverted.coverage(x, 5, 40, 10));
+            assert!((254..=256).contains(&sum), "{x}: {sum}");
+        }
+        assert_eq!(
+            half.with_feather(MAX_GARBAGE_MATTE_FEATHER + 1),
+            Err(GarbageMatteError::Feather(MAX_GARBAGE_MATTE_FEATHER + 1))
+        );
+        assert!(half.with_feather(MAX_GARBAGE_MATTE_FEATHER).is_ok());
     }
 
     #[test]

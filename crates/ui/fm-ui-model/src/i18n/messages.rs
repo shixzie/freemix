@@ -2281,6 +2281,8 @@ messages! {
     DesignMatteOutsideHover => t("Remove what lies inside the shape and keep the rest"),
     DesignMattePointHover => t("Point {number} of the garbage matte, across (first) and down (second) the cropped layer in percent; drag its numbered dot on the canvas to move it"),
     DesignMatteAddPoint => t("Add point"),
+    DesignMatteFeather => t("Feather"),
+    DesignMatteFeatherHover => t("Soften the matte's edge over up to 64 pixels to each side; 0 keeps it hard, and an edge on the layer's own border stays hard"),
     DesignMatteAddPointHover => t("Add a point halfway along the shape's closing edge, at most 8 points"),
     DesignMatteRemovePointHover => t("Remove this point; the shape keeps at least 3"),
     DesignMatteFlat => t("Not moved: the points would all lie on one line"),

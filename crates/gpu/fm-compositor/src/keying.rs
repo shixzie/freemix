@@ -760,9 +760,13 @@ pub(crate) fn apply_layer_keying(
         matte = soften_matte(&matte, width_usize, height_usize, refinement.edge_softness);
     }
 
-    let garbage = refinement
-        .garbage_matte
-        .map(|garbage| (garbage.half_pixel_points(width, height), garbage.invert()));
+    let garbage = refinement.garbage_matte.map(|garbage| {
+        (
+            garbage.half_pixel_points(width, height),
+            garbage.invert(),
+            garbage.feather(),
+        )
+    });
     let mut bytes = Vec::with_capacity(area * 4);
     for (index, alpha) in matte.into_iter().enumerate() {
         let x = u32::try_from(index % width_usize).map_err(|_| FrameError::LayoutOverflow)?;
@@ -777,14 +781,18 @@ pub(crate) fn apply_layer_keying(
             adjusted = despill.apply(adjusted);
         }
         let mask_alpha = mask.map_or(u8::MAX, |mask| mask_factor(x, y, mask));
-        let kept = garbage.as_ref().is_none_or(|(points, invert)| {
-            fm_types::garbage_matte::polygon_contains(points, x, y) != *invert
-        });
-        let factor = if kept {
-            multiply_u8(alpha, mask_alpha)
-        } else {
-            0
-        };
+        let coverage = garbage
+            .as_ref()
+            .map_or(u8::MAX, |(points, invert, feather)| {
+                fm_types::garbage_matte::polygon_coverage(
+                    points,
+                    (*invert, *feather),
+                    (width, height),
+                    x,
+                    y,
+                )
+            });
+        let factor = multiply_u8(multiply_u8(alpha, mask_alpha), coverage);
         match alpha_mode {
             AlphaMode::Straight => adjusted.a = multiply_u8(adjusted.a, factor),
             AlphaMode::Premultiplied => {

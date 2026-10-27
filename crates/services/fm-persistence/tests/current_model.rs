@@ -654,7 +654,7 @@ fn hls_stream_destination_round_trips_with_a_null_key_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 86"));
+    assert!(encoded.contains("\"schema_version\": 87"));
     assert!(encoded.contains("\"protocol\": \"hls\""));
     assert!(encoded.contains("\"endpoint\": \"/var/lib/freemix/live\""));
     assert!(encoded.contains("\"backup_endpoint\": null"));
@@ -724,7 +724,7 @@ fn hls_stream_ladder_round_trips_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 86"));
+    assert!(encoded.contains("\"schema_version\": 87"));
     // The ladder is written as an inline array of rung objects, in list order
     // and with exactly the authored fields.
     assert!(
@@ -880,7 +880,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // boolean value and the manifest must carry the current schema version.
     store.save(&stored_rich_project()).unwrap();
     let valid = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(valid.contains("\"schema_version\": 86"));
+    assert!(valid.contains("\"schema_version\": 87"));
     for malformed in [
         valid.replacen(",\n        \"running\": true", "", 1),
         valid.replacen("\"running\": true", "\"running\": \"true\"", 1),
@@ -896,7 +896,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // An older manifest is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        valid.replacen("\"schema_version\": 86", "\"schema_version\": 21", 1),
+        valid.replacen("\"schema_version\": 87", "\"schema_version\": 21", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -1398,7 +1398,7 @@ fn scene_layer_effects_round_trip_in_order_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 86"));
+    assert!(encoded.contains("\"schema_version\": 87"));
     // Every layer writes the field explicitly in layer order: the plain layer
     // as an empty array, the effected layer as inline ordered descriptors.
     assert!(
@@ -1554,6 +1554,7 @@ fn key_fill_keys_and_refinements_round_trip_at_the_current_schema() {
                             ],
                             true,
                         )
+                        .and_then(|matte| matte.with_feather(6))
                         .unwrap(),
                     ),
                 },
@@ -1590,7 +1591,7 @@ fn key_fill_keys_and_refinements_round_trip_at_the_current_schema() {
              {\"clip_black\": 12, \"clip_white\": 230, \"choke\": -8, \"edge_softness\": 8, \
              \"despill\": {\"type\": \"green\", \"strength\": 200}, \"light_wrap\": 150, \
              \"light_wrap_width\": 8, \"garbage_matte\": {\"invert\": true, \"points\": \
-             [[100, 200], [900, 200], [500, 900]]}}}"
+             [[100, 200], [900, 200], [500, 900]], \"feather\": 6}}}"
         ),
         "{encoded}"
     );
@@ -1737,7 +1738,16 @@ fn layer_effect_bounds_are_rejected_at_the_current_schema() {
             &key.replace(
                 "\"garbage_matte\": null",
                 "\"garbage_matte\": {\"invert\": false, \"points\": \
-                 [[0, 0], [1000, 0], [0, 1000]], \"feather\": 1}",
+                 [[0, 0], [1000, 0], [0, 1000]], \"feather\": 65}",
+            ),
+            1,
+        ),
+        valid.replacen(
+            key,
+            &key.replace(
+                "\"garbage_matte\": null",
+                "\"garbage_matte\": {\"invert\": false, \"points\": \
+                 [[0, 0], [1000, 0], [0, 1000]]}",
             ),
             1,
         ),
@@ -1956,7 +1966,7 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 86"));
+    assert!(encoded.contains("\"schema_version\": 87"));
     assert!(encoded.contains(
         "{\"type\": \"alias\", \"target\": 1, \"crop\": {\"x\": 10, \"y\": 20, \"width\": 640, \
          \"height\": 360}}"
@@ -2049,7 +2059,7 @@ fn edit_locks_round_trip_exactly_and_are_strict_at_the_current_schema() {
     .unwrap();
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 86"));
+    assert!(encoded.contains("\"schema_version\": 87"));
     let locks = "\"edit_locks\": {\"project\": true, \"inputs\": [18446744073709551716, 18446744073709551718]}";
     assert!(
         encoded.contains(&format!(
@@ -2192,7 +2202,7 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 86,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 87,\n"));
     let title = "{\"type\": \"title\", \"template_uri\": \"asset://titles/lower-third.fmtitle\", \
          \"field_revision\": 3, \"fields\": [{\"id\": 1, \"type\": \"text\", \"value\": \
          \"Jane \\\"JD\\\" Doe\", \"revision\": 0}, {\"id\": 2, \"type\": \"number\", \"value\": -4, \
@@ -2287,7 +2297,7 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
     // The previous schema is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        encoded.replacen("\"schema_version\": 86", "\"schema_version\": 26", 1),
+        encoded.replacen("\"schema_version\": 87", "\"schema_version\": 26", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -2491,7 +2501,7 @@ fn playlist_round_trips_every_state_exactly_and_is_strict_at_the_current_schema(
     });
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 86"));
+    assert!(encoded.contains("\"schema_version\": 87"));
     let playlist = "\"playlist\": {\"loop\": \"all\", \"entries\": [{\"id\": 7, \"input\": 18446744073709551716, \"duration_frames\": 90, \"transition\": {\"kind\": \"cut\", \"duration_frames\": 0}, \"enabled\": true}, {\"id\": 18446744073709551615, \"input\": 18446744073709551719, \"duration_frames\": 45, \"transition\": {\"kind\": \"alpha_fade\", \"duration_frames\": 12}, \"enabled\": false}], \"state\": {\"type\": \"playing\", \"entry\": 7, \"take\": 3, \"cycle\": 1, \"started_frame\": 300}, \"next_take\": 4, \"observed_frame\": 321}";
     assert!(
         encoded.contains(&format!(
@@ -2792,7 +2802,7 @@ fn capture_inputs_round_trip_exactly_and_reject_malformed_values() {
         Some(("decklink:1", &settings))
     );
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 86"));
+    assert!(encoded.contains("\"schema_version\": 87"));
     let object = "{\"type\": \"device\", \"stable_key\": \"decklink:1\", \"capture\": {\"format\": \"1920x1080@30000/1001:yuyv:tff\", \"audio\": \"alsa:hw:CARD=C920,DEV=0\", \"loss\": \"black\"}}";
     assert!(encoded.contains(object), "{encoded}");
 
@@ -2893,7 +2903,7 @@ fn system_audio_inputs_round_trip_exactly_and_reject_malformed_values() {
         .kind;
     assert_eq!(*kind, InputKind::SystemAudio(config));
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 86"));
+    assert!(encoded.contains("\"schema_version\": 87"));
     let object = "{\"type\": \"system_audio\", \"backend\": \"pulse\", \"device\": \"alsa_output.pci-0000_00_1f.3.analog-stereo.monitor\"}";
     assert!(encoded.contains(object), "{encoded}");
 

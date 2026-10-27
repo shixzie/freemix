@@ -743,16 +743,36 @@ fn refined_key_fill_with_crop_garbage_mask_and_effects_matches_the_cpu_reference
         false,
     )
     .unwrap();
+    let matted = |matte| {
+        SourceLayer::new(FILL, 0, Transform::new(1, 2, 30, 21, Rotation::Deg0))
+            .with_crop(CropRect::new(3, 2, 25, 19))
+            .with_key(Key::Chroma(green_screen(0)))
+            .with_key_refinement(KeyRefinement::new().with_choke(1).with_garbage_matte(matte))
+    };
     for (case, matte) in [
         ("polygon garbage matte", polygon),
         ("inverted polygon garbage matte", polygon.with_invert(true)),
+        (
+            "feathered polygon garbage matte",
+            polygon.with_feather(4).unwrap(),
+        ),
+        (
+            "feathered inverted polygon garbage matte",
+            polygon.with_invert(true).with_feather(9).unwrap(),
+        ),
     ] {
-        let layer = SourceLayer::new(FILL, 0, Transform::new(1, 2, 30, 21, Rotation::Deg0))
-            .with_crop(CropRect::new(3, 2, 25, 19))
-            .with_key(Key::Chroma(green_screen(0)))
-            .with_key_refinement(KeyRefinement::new().with_choke(1).with_garbage_matte(matte));
-        worst.add(harness.check(case, layer, budget(GREEN_SOFTNESS, u8::MAX)));
+        worst.add(harness.check(case, matted(matte), budget(GREEN_SOFTNESS, u8::MAX)));
     }
+    // The feather changes what the matte keeps, so the cases above compare
+    // a real ramp.
+    let render = |matte| {
+        execute_cpu(
+            &Harness::plan(matted(matte), WIDTH, HEIGHT),
+            &harness.cpu_sources(None),
+        )
+        .unwrap()
+    };
+    assert_ne!(render(polygon), render(polygon.with_feather(4).unwrap()));
     worst.report("refined combinations");
 }
 

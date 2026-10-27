@@ -26,7 +26,8 @@
 //!          despill(byte: 0 off, 1 green, 2 blue) strength(byte, 0 when off)
 //!          light_wrap light_wrap_width (bytes, 2.97; width 0 exactly when
 //!          light_wrap is 0) matte(byte, 2.97: 0 none, else count << 1 |
-//!          outside, count 3..=8) [points, unless none]
+//!          outside, count 3..=8) [points feather(byte, 2.115: 0..=64),
+//!          unless none]
 //! points = the count x, y pairs as 10-bit coordinates (each 0..=1000),
 //!          packed least significant bit first into ceil(20 * count / 8)
 //!          bytes whose spare high bits are zero
@@ -269,6 +270,7 @@ fn push_key(out: &mut Vec<u8>, key: WireLayerKey) {
             if pending > 0 {
                 out.push(bits.to_le_bytes()[0]);
             }
+            out.push(matte.feather());
         }
     }
 }
@@ -557,7 +559,9 @@ impl Reader<'_> {
             .iter()
             .map(|&[x, y]| fm_types::MattePoint::new(x, y))
             .collect();
+        let feather = self.byte()?;
         fm_types::GarbageMatte::new(&points, header & 1 == 1)
+            .and_then(|matte| matte.with_feather(feather))
             .ok()
             .map(Some)
     }
@@ -890,8 +894,20 @@ mod tests {
         let bits: u64 = 1 | 2 << 10 | 1_000 << 20 | 1_000 << 50;
         let mut expected = vec![7];
         expected.extend_from_slice(&bits.to_le_bytes());
+        // Then the feather (2.115).
+        expected.push(0);
         assert_eq!(packed, expected);
         assert_eq!(read_matte(packed), Some(Some(matte)));
+        let feathered = matte.with_feather(64).unwrap();
+        let mut soft = expected.clone();
+        soft[9] = 64;
+        assert_eq!(
+            refinement_bytes(matte_refinement(Some(feathered)))[none.len() - 1..],
+            soft[..]
+        );
+        assert_eq!(read_matte(&soft), Some(Some(feathered)));
+        soft[9] = 65;
+        assert_eq!(read_matte(&soft), None);
         assert_eq!(read_matte(&[0]), Some(None));
 
         // Spare bits, a short stream, and bad counts are refused.

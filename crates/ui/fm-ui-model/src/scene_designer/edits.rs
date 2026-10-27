@@ -175,6 +175,9 @@ fn key_arguments(index: usize, key: Option<WireLayerKey>) -> Vec<String> {
                 if matte.invert() { "outside" } else { "inside" }.to_owned(),
                 points,
             ]);
+            if matte.feather() != 0 {
+                arguments.extend(["--matte-feather".to_owned(), matte.feather().to_string()]);
+            }
         }
     }
     arguments

@@ -5083,16 +5083,18 @@ fn garbage_matte(value: &str, invert: bool) -> Result<fm_types::GarbageMatte, Ar
 
 /// A key's refinement options (SW-008): `--clip <black> <white>`,
 /// `--choke <n>`, `--edge-softness <n>`, `--despill green|blue
-/// <strength>`, `--light-wrap <amount> <width>`, and `--matte
-/// inside|outside <x:y,x:y,...>`; every other argument is returned in
-/// order.
+/// <strength>`, `--light-wrap <amount> <width>`, `--matte
+/// inside|outside <x:y,x:y,...>`, and `--matte-feather <0..=64>` (with
+/// `--matte`, Protocol 2.115); every other argument is returned in order.
 fn key_refinement_options(
     arguments: &mut impl Iterator<Item = String>,
 ) -> Result<(fm_model::KeyRefinement, Vec<String>), ArgsError> {
     let mut refinement = fm_model::KeyRefinement::NONE;
     let mut rest = Vec::new();
+    let mut feather = None;
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
+            "--matte-feather" => feather = Some(read_byte(arguments, "matte feather")?),
             "--clip" => {
                 refinement.clip_black = read_byte(arguments, "clip black")?;
                 refinement.clip_white = read_byte(arguments, "clip white")?;
@@ -5138,6 +5140,20 @@ fn key_refinement_options(
             }
             _ => rest.push(argument),
         }
+    }
+    if let Some(feather) = feather {
+        let matte = refinement
+            .garbage_matte
+            .ok_or(ArgsError::MissingValue("--matte for --matte-feather"))?;
+        refinement.garbage_matte =
+            Some(
+                matte
+                    .with_feather(feather)
+                    .map_err(|_| ArgsError::InvalidChoice {
+                        field: "matte feather",
+                        value: feather.to_string(),
+                    })?,
+            );
     }
     Ok((refinement, rest))
 }
