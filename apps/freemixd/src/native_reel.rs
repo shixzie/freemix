@@ -68,7 +68,9 @@ use fm_engine::{
 use fm_frame::SequenceNumber;
 use fm_types::{ChannelLayout, SampleRate};
 
-use crate::native_replay::{AUDIO_RATE, ReplayFormat, SegmentDecoder, enqueue, retimed, silence};
+use crate::native_replay::{
+    AUDIO_RATE, ReplayFormat, SegmentDecoder, enqueue, recorded_audio, retimed, silence,
+};
 
 /// Most chunks one export worker may hold beyond the chunk it encodes.
 const MAX_QUEUED_CHUNKS: usize = 2;
@@ -568,7 +570,8 @@ fn export_run(worker: Worker) {
                 let _ = recorder.cancel();
                 return fail("frame:decode");
             };
-            let Some(audio) = silence(format.rate, format.clock_domain, frame.output_frame) else {
+            let Some(audio) = mix_audio(format, frame.output_frame, &frame.layers, &mut decoders)
+            else {
                 let _ = recorder.cancel();
                 return fail("frame:audio");
             };
@@ -637,6 +640,53 @@ fn export_run(worker: Worker) {
         }
         let _ = events.send(WorkerEvent::Finished { bytes });
         return;
+    }
+}
+
+/// `output_frame`'s audio: each real-time layer's recorded audio of its
+/// frame, weighted like its picture (so a dissolve crossfades), summed;
+/// slow-motion layers and layers without audio add nothing, and a frame
+/// without any is silent.
+fn mix_audio(
+    format: ReplayFormat,
+    output_frame: u64,
+    layers: &[EngineReelLayer],
+    decoders: &mut Vec<SegmentDecoder>,
+) -> Option<fm_frame::AudioBlock> {
+    let mut mixed: Option<Vec<Vec<f32>>> = None;
+    for (index, layer) in layers.iter().enumerate() {
+        if !layer.full_speed || layer.weight_num == 0 || layer.weight_den == 0 {
+            continue;
+        }
+        while decoders.len() <= index {
+            decoders.push(SegmentDecoder::new(format));
+        }
+        let Some(planes) = decoders[index].audio(&layer.path, layer.frame) else {
+            continue;
+        };
+        #[allow(clippy::cast_precision_loss)] // weights are small integers
+        let weight = layer.weight_num as f32 / layer.weight_den as f32;
+        match &mut mixed {
+            None => {
+                mixed = Some(
+                    planes
+                        .into_iter()
+                        .map(|plane| plane.into_iter().map(|sample| sample * weight).collect())
+                        .collect(),
+                );
+            }
+            Some(sum) => {
+                for (target, plane) in sum.iter_mut().zip(planes) {
+                    for (value, sample) in target.iter_mut().zip(plane) {
+                        *value += sample * weight;
+                    }
+                }
+            }
+        }
+    }
+    match mixed {
+        Some(planes) => recorded_audio(format.rate, format.clock_domain, output_frame, &planes),
+        None => silence(format.rate, format.clock_domain, output_frame),
     }
 }
 

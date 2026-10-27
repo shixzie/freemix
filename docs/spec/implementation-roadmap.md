@@ -158,9 +158,11 @@ highest-value remaining items, ranked:
     them in the Replay panel, and the CLI has local and remote reel commands.
     Exports are now remuxed to faststart MP4s and start only with room on
     the destination's disk, and a clip dissolves in from the one before for
-    up to 600 frames (Protocol 2.111, schema 84). Remaining: exports are
-    silent; a music bed, ducking, and open-segment deferral are absent; and
-    nothing is certified (see the Phase 7 boundary).
+    up to 600 frames (Protocol 2.111, schema 84), and exports carry each
+    real-time clip's recorded audio (crossfaded through a dissolve; slow
+    motion is silent). Remaining: a music bed, ducking, and open-segment
+    deferral are absent, and nothing is certified (see the Phase 7
+    boundary).
 
 Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
 since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
@@ -5549,8 +5551,11 @@ edits and exports reels in its Replay panel, each clip with a Dissolve
 field (off on the first clip, which a reorder or removal keeps a cut), and
 `freemix-cli` has local and remote reel commands (`--clips` records take an
 optional `/<dissolve>`) with `remote-reel-export` polling to a terminal
-state. Remaining gaps: exports carry silent audio (no music bed, ducking, or
-decoded input audio); clips play forward only; exports needing an open
+state. An export's audio is each real-time clip's recorded audio of its
+frame, weighted like its picture, so a dissolve crossfades it; slow-motion
+clips add none (the native test hears the red camera's tone before a
+dissolve and silence on the silent camera after it). Remaining gaps: no
+music bed or ducking; clips play forward only; exports needing an open
 segment are refused rather than deferred; and nothing is certified.
 `OR-013` remains planned.
 
@@ -5582,7 +5587,7 @@ paused or cued player stay silent (the unit test reads a recorded tone back
 from a segment; the native test hears the camera's tone on Program at 100%
 and silence in slow motion). Remaining gaps: a run's first segment replays
 silent (it opens with the encoder's start offset, which the adapter refuses
-to place), slow motion has no audio, and reel exports stay silent; the recorder captures
+to place), and slow motion has no audio; the recorder captures
 what the source last decoded rather than a genlocked frame, so a stalled
 source repeats its picture; segment files from a previous run are removed
 rather than reloaded; there is no A/B linking, jog or shuttle, transition,

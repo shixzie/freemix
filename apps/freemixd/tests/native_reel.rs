@@ -79,6 +79,7 @@ fn tools_available() -> bool {
 /// A 128x72 show with red input 1 on Program, blue input 2 on Preview, and
 /// input 1 recorded for replay with a ten-second window in the daemon's
 /// default root.
+#[allow(clippy::too_many_lines)] // one fixture: inputs, scene, output, replay
 fn save_project(path: &Path) {
     let rate = FrameRate::new(25, 1).unwrap();
     let mut project = Project::new(
@@ -106,17 +107,32 @@ fn save_project(path: &Path) {
         name: "Program bus".into(),
         sends: Vec::new(),
     });
-    for (index, color) in [(1, [210, 20, 20]), (2, [20, 30, 210])] {
-        project.add_input(Input {
-            id: input(index),
-            name: format!("Camera {index}"),
-            kind: InputKind::Simulated(SimulatedInput::new(
-                SimulatedVideo::Solid(SolidColor::new(color[0], color[1], color[2], 255)),
-                SimulatedAudio::Silence,
-            )),
-            required_capabilities: Vec::new(),
-        });
-    }
+    // Camera 1 is a looping red clip with a 1 kHz tone, so exports carry
+    // its recorded audio; camera 2 a silent blue generator.
+    let store = ProjectStore::new(path).unwrap();
+    std::fs::create_dir_all(store.assets_root()).unwrap();
+    generate_tone_clip(&store.assets_root().join(CAMERA_CLIP));
+    project.add_input(Input {
+        id: input(CAMERA),
+        name: "Camera 1".into(),
+        kind: InputKind::Media {
+            asset_uri: format!("asset://{CAMERA_CLIP}"),
+            playback: fm_model::MediaPlaybackSettings {
+                end_action: fm_model::MediaEndAction::Loop,
+                ..fm_model::MediaPlaybackSettings::default()
+            },
+        },
+        required_capabilities: Vec::new(),
+    });
+    project.add_input(Input {
+        id: input(PREVIEW),
+        name: "Camera 2".into(),
+        kind: InputKind::Simulated(SimulatedInput::new(
+            SimulatedVideo::Solid(SolidColor::new(20, 30, 210, 255)),
+            SimulatedAudio::Silence,
+        )),
+        required_capabilities: Vec::new(),
+    });
     let scene = SceneId::new(id(9_510));
     project.add_scene(Scene {
         id: scene,
@@ -168,7 +184,66 @@ fn save_project(path: &Path) {
         Vec::new(),
     )
     .unwrap();
-    ProjectStore::new(path).unwrap().save(&stored).unwrap();
+    store.save(&stored).unwrap();
+}
+
+/// The red camera's clip asset.
+const CAMERA_CLIP: &str = "camera.mkv";
+
+/// Thirty seconds of a red (210, 20, 20) 128x72 picture at 25 fps with a
+/// 1 kHz tone.
+fn generate_tone_clip(path: &Path) {
+    let status = Command::new("ffmpeg")
+        .args(["-nostdin", "-hide_banner", "-loglevel", "error"])
+        .args([
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=0xd21414:s=128x72:r=25:d=30,format=yuv420p,\
+             setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv",
+        ])
+        .args([
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:sample_rate=48000:d=30",
+        ])
+        .args(["-map", "0:v", "-map", "1:a"])
+        .args(["-c:v", "mpeg2video", "-g", "12", "-q:v", "2"])
+        .args(["-pix_fmt", "yuv420p", "-c:a", "pcm_f32le", "-ac", "2"])
+        .args([
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "bt709",
+            "-colorspace",
+            "bt709",
+        ])
+        .args(["-f", "matroska", "-y"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "fixture generation failed: {status}");
+}
+
+/// The peak sample of `path`'s audio between `from` and `to` seconds.
+fn audio_peak(path: &Path, from: f64, to: f64) -> f32 {
+    let output = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args(["-ss", &from.to_string(), "-to", &to.to_string()])
+        .args(["-map", "0:a", "-f", "f32le", "-ac", "2", "-"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    output
+        .stdout
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()).abs())
+        .fold(0.0, f32::max)
 }
 
 struct NativeDaemon {
@@ -595,6 +670,10 @@ fn native_daemon_exports_a_reel_with_the_exact_frame_count() {
         }
     };
     let mut client = Client::connect(daemon.address);
+    client.command(CommandPayload::Media {
+        input: fm_protocol::WireInputId::from_domain(input(CAMERA)),
+        operation: fm_protocol::MediaOperation::Play,
+    });
     let (first, second) = two_complete_events(&mut client);
     let first_event = &first.events[0];
     let second_event = second
@@ -676,6 +755,7 @@ fn native_daemon_exports_a_reel_with_the_exact_frame_count() {
 /// another (blue) is that many frames shorter, and its overlap blends the
 /// two pictures linearly: red before, an even mix halfway, blue after.
 #[test]
+#[allow(clippy::too_many_lines)] // the reel, its export, then pictures and audio
 fn native_daemon_exports_a_dissolve_between_two_angles() {
     if !tools_available() {
         eprintln!("native reel dissolve skipped: FFmpeg tools unavailable");
@@ -696,6 +776,10 @@ fn native_daemon_exports_a_dissolve_between_two_angles() {
         }
     };
     let mut client = Client::connect(daemon.address);
+    client.command(CommandPayload::Media {
+        input: fm_protocol::WireInputId::from_domain(input(CAMERA)),
+        operation: fm_protocol::MediaOperation::Play,
+    });
     let (first, second) = two_complete_events(&mut client);
     let first_event = &first.events[0];
     let second_event = second
@@ -754,10 +838,33 @@ fn native_daemon_exports_a_dissolve_between_two_angles() {
         Some(expected_text.as_str())
     );
     // The overlap is output frames 100..125: frame 112 weights each angle
-    // 13/26.
-    assert_near(centre_pixel(&destination, 50), [210, 20, 20], "before");
-    assert_near(centre_pixel(&destination, 112), [115, 25, 115], "halfway");
-    assert_near(centre_pixel(&destination, 180), [20, 30, 210], "after");
+    // 13/26, an even mix of the red clip and the blue camera.
+    let before = centre_pixel(&destination, 50);
+    let after = centre_pixel(&destination, 180);
+    assert!(
+        before[0] > 150 && before[2] < 80,
+        "before: {before:?} is not red"
+    );
+    assert_near(after, [20, 30, 210], "after");
+    let average: Vec<u8> = before
+        .iter()
+        .zip(after)
+        .map(|(red, blue)| red.midpoint(blue))
+        .collect();
+    assert_near(
+        centre_pixel(&destination, 112),
+        average.try_into().unwrap(),
+        "halfway",
+    );
+    // The red camera's recorded tone plays before the dissolve, and the
+    // silent blue camera after it.
+    let before = audio_peak(&destination, 0.5, 3.5);
+    let after = audio_peak(&destination, 6.0, 8.5);
+    assert!(
+        before > 0.05,
+        "no recorded audio before the dissolve: {before}"
+    );
+    assert!(after < 0.01, "audio after the dissolve: {after}");
     assert_no_reel_failures(&daemon);
 }
 
@@ -782,6 +889,10 @@ fn native_daemon_cancels_a_reel_export_without_a_destination() {
         }
     };
     let mut client = Client::connect(daemon.address);
+    client.command(CommandPayload::Media {
+        input: fm_protocol::WireInputId::from_domain(input(CAMERA)),
+        operation: fm_protocol::MediaOperation::Play,
+    });
     client.status("three recorded segments", |status| {
         status
             .recorded

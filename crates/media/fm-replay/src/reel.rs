@@ -103,6 +103,12 @@ impl ReelSpeed {
         denominator: 1,
     };
 
+    /// Whether the speed is real time (`n/n`).
+    #[must_use]
+    pub const fn is_real_time(self) -> bool {
+        self.numerator == self.denominator
+    }
+
     /// Creates an exact forward speed.
     ///
     /// # Errors
@@ -428,6 +434,8 @@ pub struct ReelLayerPlan {
     /// Synchronized source time requested for this layer.
     pub target: NormalizedTimestamp,
     pub weight: MixWeight,
+    /// The clip's playback speed.
+    pub speed: ReelSpeed,
 }
 
 /// One layer resolved to an exact recorded frame and segment.
@@ -559,6 +567,7 @@ impl CompiledReel {
             local_frame,
             target: clip.source_time(local_frame, self.frame_rate),
             weight,
+            speed: clip.speed,
         }
     }
 

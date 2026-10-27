@@ -141,6 +141,8 @@ pub struct EngineReelLayer {
     /// Exact mix weight `weight_num / weight_den` in `[0, 1]`.
     pub weight_num: u32,
     pub weight_den: u32,
+    /// The clip plays in real time, so its recorded audio plays too.
+    pub full_speed: bool,
 }
 
 /// One output frame of a reel export.
@@ -352,6 +354,7 @@ pub(crate) fn resolve_chunk(
                             frame: index,
                             weight_num: layer.plan.weight.numerator,
                             weight_den: layer.plan.weight.denominator,
+                            full_speed: layer.plan.speed.is_real_time(),
                         })
                     })
                     .collect::<Result<Vec<_>, EngineReelError>>()?;
