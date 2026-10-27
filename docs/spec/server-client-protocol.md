@@ -4359,6 +4359,11 @@ Protocol 2.113 gives a highlight reel a music bed (`OR-013`, schema 86).
   bed: `<reel>:<name>:<total frames>:<error>:<music>:<clips>`. A relative or
   overlong path or a level over 100 is refused, and an engine refuses such
   a `reel_set` as `invalid_music`.
+- The bed path is bounded tighter than an export destination, but eight
+  full reels can still exceed the line bound. A pushed `reel_status` that
+  would is not sent, and `reel_status_request` is then answered with an
+  `error` (`status_too_large`) carrying its `request_id` rather than
+  closing the session.
 - An accepted export keeps the bed the reel had then. The native daemon
   streams the file from the reel's first frame, fits each frame's span of
   it to the frame's 48 kHz stereo block (a mono file plays on both

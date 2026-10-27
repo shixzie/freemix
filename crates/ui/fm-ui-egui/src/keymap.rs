@@ -1076,6 +1076,7 @@ mod tests {
     /// and `FreeMix`'s own `C`, `F`, and `B` do nothing; a project shortcut
     /// may then take `C` but not Space.
     #[test]
+    #[allow(clippy::too_many_lines)] // every kind of profile key, then the reservations
     fn the_vmix_profile_drives_the_console_keys() {
         let mut state = output_state();
         let mut shell = StudioShell::default();

@@ -924,21 +924,19 @@ impl ConsoleKeyProfiles {
         }
         for profile in &mut kept {
             let base = profile.base.keymap();
-            let changes = std::mem::take(&mut profile.changes);
-            let mut keymap = base.clone();
-            for (action, stroke) in changes {
-                if base.stroke(action) == stroke {
-                    continue;
-                }
-                let usable = stroke.is_none_or(|stroke| {
-                    crate::user_shortcuts::fixed_console_key(stroke).is_none()
-                        && keymap.owner(stroke).is_none_or(|owner| owner == action)
-                });
-                if usable {
-                    keymap.set(action, stroke);
-                    profile.changes.insert(action, stroke);
-                }
+            let mut changes: Vec<_> = std::mem::take(&mut profile.changes)
+                .into_iter()
+                .filter(|(action, stroke)| base.stroke(*action) != *stroke)
+                .collect();
+            // Every changed action lets go of its base key, so a key moved
+            // between two actions, or two swapped keys, read back whichever
+            // comes first. A change onto a fixed key or a key another action
+            // keeps is forgotten (its action takes its base key back), and
+            // the rest are checked again until all fit.
+            while let Some(refused) = refused_change(&base, &changes) {
+                changes.remove(refused);
             }
+            profile.changes = changes.into_iter().collect();
         }
         self.custom = kept;
         if let ProfileChoice::Custom(index) = self.active {
@@ -1010,6 +1008,31 @@ impl ConsoleKeyProfiles {
     pub fn is_preference_key(key: &str) -> bool {
         key.starts_with(PREFIX)
     }
+}
+
+/// The first of `changes` (actions' keys other than `base`'s) that does
+/// not fit: onto a fixed console key, or a key an action keeps from `base`
+/// or an earlier change takes.
+fn refused_change(
+    base: &ConsoleKeymap,
+    changes: &[(ConsoleAction, Option<ConsoleStroke>)],
+) -> Option<usize> {
+    let mut keymap = base.clone();
+    for (action, _) in changes {
+        keymap.set(*action, None);
+    }
+    for (index, (action, stroke)) in changes.iter().enumerate() {
+        let Some(stroke) = stroke else {
+            continue;
+        };
+        if crate::user_shortcuts::fixed_console_key(*stroke).is_some()
+            || keymap.owner(*stroke).is_some()
+        {
+            return Some(index);
+        }
+        keymap.set(*action, Some(*stroke));
+    }
+    None
 }
 
 /// Longest `.fmkeys` file read.

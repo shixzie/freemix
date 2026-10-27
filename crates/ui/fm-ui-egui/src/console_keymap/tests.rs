@@ -302,6 +302,57 @@ fn custom_profiles_change_keys_within_the_rules() {
     assert_eq!(profiles.custom().len(), MAX_CUSTOM_PROFILES - 1);
 }
 
+/// A key moved from one action to another, or two swapped keys, read back
+/// whichever action the file lists first.
+#[test]
+fn moved_and_swapped_keys_read_back() {
+    let mut desk = ConsoleKeyProfiles::default();
+    desk.add("Moved", ProfileChoice::Builtin(BuiltinProfile::Vmix))
+        .unwrap();
+    // Cut takes Fade's Enter, and Fade takes F8.
+    desk.set_key(0, ConsoleAction::Fade, Some(ConsoleStroke::plain(Key::F8)))
+        .unwrap();
+    desk.set_key(
+        0,
+        ConsoleAction::Cut,
+        Some(ConsoleStroke::plain(Key::Enter)),
+    )
+    .unwrap();
+    // Overlay 1 and overlay 2 swap F9 and F10 through a free key.
+    let swap = |desk: &mut ConsoleKeyProfiles, action, key| {
+        desk.set_key(0, action, Some(ConsoleStroke::plain(key)))
+            .unwrap();
+    };
+    swap(&mut desk, ConsoleAction::Overlay(1), Key::F7);
+    swap(&mut desk, ConsoleAction::Overlay(2), Key::F9);
+    swap(&mut desk, ConsoleAction::Overlay(1), Key::F10);
+    let mut read = ConsoleKeyProfiles::default();
+    for (key, value) in desk.preference_entries() {
+        assert!(read.apply_preference(&key, &value), "{key}");
+    }
+    read.finish_preferences();
+    assert_eq!(read, desk);
+    let text = desk
+        .export_text(Locale::ENGLISH, ProfileChoice::Custom(0))
+        .unwrap();
+    let mut imported = ConsoleKeyProfiles::default();
+    imported.import_text(&text).unwrap();
+    assert_eq!(imported.custom()[0], desk.custom()[0]);
+    let keymap = imported.keymap(ProfileChoice::Custom(0)).unwrap();
+    assert_eq!(
+        keymap.stroke(ConsoleAction::Cut),
+        Some(ConsoleStroke::plain(Key::Enter))
+    );
+    assert_eq!(
+        keymap.stroke(ConsoleAction::Overlay(1)),
+        Some(ConsoleStroke::plain(Key::F10))
+    );
+    assert_eq!(
+        keymap.stroke(ConsoleAction::Overlay(2)),
+        Some(ConsoleStroke::plain(Key::F9))
+    );
+}
+
 #[test]
 fn profiles_travel_through_key_files() {
     let l = Locale::ENGLISH;

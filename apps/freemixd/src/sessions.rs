@@ -2560,12 +2560,12 @@ impl Runtime<'_> {
                     return Ok(());
                 }
                 let sequence = self.reel_pacer.borrow_mut().next_sequence();
-                let status = self.control.borrow().reel_status(
-                    self.authority,
-                    sequence,
-                    Some(request.request_id),
-                );
-                peer.reply(WireMessage::ReelStatus(Box::new(status)))?;
+                let control = self.control.borrow();
+                let status =
+                    control.reel_status(self.authority, sequence, Some(request.request_id.clone()));
+                let revision = control.diagnostics().current_revision;
+                drop(control);
+                peer.reply(reel_status_reply(status, request.request_id, revision))?;
                 Ok(())
             }
             // An operator acknowledges or silences a health alert (Protocol
@@ -3595,6 +3595,32 @@ fn publish_replay_status(peers: &mut [Peer], status: fm_protocol::ReplayStatusMe
     for peer in peers {
         peer.replace_replay_status(bytes.clone());
     }
+}
+
+/// The answer to a `reel_status_request`: the status, or an `error`
+/// (`status_too_large`) carrying the request id when the status is too long
+/// for one line, which would otherwise close the session.
+fn reel_status_reply(
+    status: fm_protocol::ReelStatusMessage,
+    request_id: String,
+    current_revision: u64,
+) -> WireMessage {
+    let message = WireMessage::ReelStatus(Box::new(status));
+    if encode_line(&message).is_ok() {
+        return message;
+    }
+    WireMessage::Error(ErrorMessage {
+        request_id: Some(request_id),
+        current_revision: Some(current_revision),
+        error: StructuredError {
+            code: "status_too_large".into(),
+            message: "the reel status is too long for one line; shorten reel names or music \
+                      paths, or remove reels"
+                .into(),
+            fields: Vec::new(),
+            retryable: false,
+        },
+    })
 }
 
 /// The highlight reel status (OR-013) goes to raw Studio peers in its own
@@ -4806,6 +4832,53 @@ mod tests {
                 },
             ],
         }
+    }
+
+    /// A reel status too long for one line is answered with an error that
+    /// names the request, never a record the session cannot carry.
+    #[test]
+    fn an_oversized_reel_status_request_is_answered_with_an_error() {
+        let fits = reel_status_message(3);
+        assert!(matches!(
+            reel_status_reply(fits.clone(), "r-1".to_owned(), 4),
+            WireMessage::ReelStatus(status) if *status == fits
+        ));
+        let clip = fm_protocol::ReelClip {
+            event: u32::MAX,
+            angle: fm_protocol::WireInputId::new(NonZeroU128::new(u128::MAX).unwrap()).to_domain(),
+            trim_in_frames: fm_protocol::MAX_REEL_TRIM_FRAMES,
+            trim_out_frames: fm_protocol::MAX_REEL_TRIM_FRAMES,
+            speed_percent: 100,
+            dissolve_frames: 0,
+        };
+        let reels = (1..=u64::try_from(fm_protocol::MAX_REELS).unwrap())
+            .map(|id| fm_protocol::ReelStatus {
+                id,
+                spec: fm_protocol::ReelSpec {
+                    id,
+                    name: ":".repeat(fm_protocol::MAX_REEL_NAME_BYTES),
+                    clips: vec![clip; fm_protocol::MAX_REEL_CLIPS],
+                    music: Some(fm_protocol::ReelMusic {
+                        path: "/".repeat(fm_protocol::MAX_REEL_MUSIC_PATH_BYTES),
+                        level_percent: 100,
+                        duck_percent: 100,
+                    }),
+                },
+                total_frames: Some(u64::MAX),
+                error: None,
+            })
+            .collect();
+        let oversized = fm_protocol::ReelStatusMessage {
+            reels,
+            ..reel_status_message(3)
+        };
+        let WireMessage::Error(error) = reel_status_reply(oversized, "r-2".to_owned(), 4) else {
+            panic!("an oversized status must be refused");
+        };
+        assert_eq!(error.request_id.as_deref(), Some("r-2"));
+        assert_eq!(error.current_revision, Some(4));
+        assert_eq!(error.error.code, "status_too_large");
+        assert!(encode_line(&WireMessage::Error(error)).is_ok());
     }
 
     fn reel_status_message(sequence: u64) -> fm_protocol::ReelStatusMessage {
