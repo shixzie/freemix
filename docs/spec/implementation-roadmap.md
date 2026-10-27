@@ -142,8 +142,9 @@ highest-value remaining items, ranked:
     angle back through a Replay input, Studio creates Replay inputs and
     edits recording in a dockable Replay panel, and the CLI has local and
     remote `replay` and `replay-set` plus `remote-replay-do`, with argument
-    validation for sources, retention, and the storage root. Remaining:
-    recorded segments are silent, the recorder takes a source's last decoded
+    validation for sources, retention, and the storage root. Segments now
+    record each source's own audio, which a Replay input plays at 100%
+    (slow motion stays silent). Remaining: the recorder takes a source's last decoded
     picture rather than a genlocked one, segment files from a previous run
     are removed rather than reloaded, and A/B linking, jog or shuttle,
     transitions, auto-return, playlists, multiview, controller and
@@ -5573,8 +5574,15 @@ Spanish hover help on every control), creates Replay inputs from Add input,
 and disables its recording settings while the project is locked; `freemix-cli`
 has local and remote `replay` and `replay-set` plus `remote-replay-do`, with
 typed argument validation for sources, retention, and the storage root.
-Remaining gaps: recorded segments carry
-silent audio and no input audio is recorded or played; the recorder captures
+Each recorded frame now carries the source's own audio of that frame
+(before its strip, fader, and the mix, as stereo; a source without audio
+records silence), and a Replay input playing forward at 100% plays each
+shown frame's recorded audio through its own strip, while slow motion and a
+paused or cued player stay silent (the unit test reads a recorded tone back
+from a segment; the native test hears the camera's tone on Program at 100%
+and silence in slow motion). Remaining gaps: a run's first segment replays
+silent (it opens with the encoder's start offset, which the adapter refuses
+to place), slow motion has no audio, and reel exports stay silent; the recorder captures
 what the source last decoded rather than a genlocked frame, so a stalled
 source repeats its picture; segment files from a previous run are removed
 rather than reloaded; there is no A/B linking, jog or shuttle, transition,

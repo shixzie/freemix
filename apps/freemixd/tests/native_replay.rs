@@ -81,6 +81,7 @@ fn tools_available() -> bool {
 /// A 128x72 show with red input 1 on Program, blue input 2 on Preview,
 /// and Replay input 3; input 1 is recorded for replay with a ten-second
 /// window in the daemon's default root.
+#[allow(clippy::too_many_lines)] // one fixture: inputs, scene, output, replay
 fn save_project(path: &Path) {
     let rate = FrameRate::new(25, 1).unwrap();
     let mut project = Project::new(
@@ -108,17 +109,32 @@ fn save_project(path: &Path) {
         name: "Program bus".into(),
         sends: Vec::new(),
     });
-    for (index, color) in [(1, [210, 20, 20]), (2, [20, 30, 210])] {
-        project.add_input(Input {
-            id: input(index),
-            name: format!("Camera {index}"),
-            kind: InputKind::Simulated(SimulatedInput::new(
-                SimulatedVideo::Solid(SolidColor::new(color[0], color[1], color[2], 255)),
-                SimulatedAudio::Silence,
-            )),
-            required_capabilities: Vec::new(),
-        });
-    }
+    // The recorded camera is a looping clip with a 1 kHz tone, so replay
+    // audio has something to carry (OR-012).
+    let store = ProjectStore::new(path).unwrap();
+    std::fs::create_dir_all(store.assets_root()).unwrap();
+    generate_tone_clip(&store.assets_root().join(CAMERA_CLIP));
+    project.add_input(Input {
+        id: input(CAMERA),
+        name: "Camera 1".into(),
+        kind: InputKind::Media {
+            asset_uri: format!("asset://{CAMERA_CLIP}"),
+            playback: fm_model::MediaPlaybackSettings {
+                end_action: fm_model::MediaEndAction::Loop,
+                ..fm_model::MediaPlaybackSettings::default()
+            },
+        },
+        required_capabilities: Vec::new(),
+    });
+    project.add_input(Input {
+        id: input(2),
+        name: "Camera 2".into(),
+        kind: InputKind::Simulated(SimulatedInput::new(
+            SimulatedVideo::Solid(SolidColor::new(20, 30, 210, 255)),
+            SimulatedAudio::Silence,
+        )),
+        required_capabilities: Vec::new(),
+    });
     project.add_input(Input {
         id: input(PLAYER),
         name: "Replay".into(),
@@ -176,7 +192,48 @@ fn save_project(path: &Path) {
         Vec::new(),
     )
     .unwrap();
-    ProjectStore::new(path).unwrap().save(&stored).unwrap();
+    store.save(&stored).unwrap();
+}
+
+/// The camera's clip asset.
+const CAMERA_CLIP: &str = "camera.mkv";
+
+/// Thirty seconds of a red 128x72 picture at 25 fps with a 1 kHz tone.
+fn generate_tone_clip(path: &Path) {
+    let status = Command::new("ffmpeg")
+        .args(["-nostdin", "-hide_banner", "-loglevel", "error"])
+        .args([
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=0xd21414:s=128x72:r=25:d=30,format=yuv420p,\
+             setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv",
+        ])
+        .args([
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:sample_rate=48000:d=30",
+        ])
+        .args(["-map", "0:v", "-map", "1:a"])
+        .args(["-c:v", "mpeg2video", "-g", "12", "-q:v", "2"])
+        .args(["-pix_fmt", "yuv420p", "-c:a", "pcm_f32le", "-ac", "2"])
+        .args([
+            "-color_primaries",
+            "bt709",
+            "-color_trc",
+            "bt709",
+            "-colorspace",
+            "bt709",
+        ])
+        .args(["-f", "matroska", "-y"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(status.success(), "fixture generation failed: {status}");
 }
 
 struct NativeDaemon {
@@ -366,6 +423,10 @@ impl Client {
     }
 
     fn replay(&mut self, operation: ReplayOperation) {
+        self.command(CommandPayload::Replay(operation));
+    }
+
+    fn command(&mut self, payload: CommandPayload) {
         let id = format!(
             "replay-{}",
             COMMANDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
@@ -376,7 +437,7 @@ impl Client {
             idempotency_key: id,
             expected_revision: None,
             deadline_ms: None,
-            payload: CommandPayload::Replay(operation),
+            payload,
         }));
         let result = self.wait_for("the command result", |message| match message {
             Some(WireMessage::CommandResult(result)) => Some(result),
@@ -410,6 +471,7 @@ fn segment_files(root: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // recording, an event, then playback at two speeds
 fn native_daemon_records_replay_segments_and_plays_an_event_at_half_speed() {
     if !tools_available() {
         eprintln!("native replay integration skipped: FFmpeg tools unavailable");
@@ -430,6 +492,10 @@ fn native_daemon_records_replay_segments_and_plays_an_event_at_half_speed() {
         }
     };
     let mut client = Client::connect(daemon.address);
+    client.command(CommandPayload::Media {
+        input: wire(CAMERA),
+        operation: fm_protocol::MediaOperation::Play,
+    });
     let root = project_path.join("replay");
 
     // The camera is recorded into rolling two-second segment files.
@@ -499,6 +565,48 @@ fn native_daemon_records_replay_segments_and_plays_an_event_at_half_speed() {
         status.request_id.as_deref() == Some("replay-test")
     });
     assert_eq!(answered.events.len(), 1);
+
+    // On Program, the Replay input is silent in slow motion and plays the
+    // camera's recorded tone at 100%; audio follows video, so the live
+    // camera is not heard.
+    client.command(CommandPayload::SelectPreview {
+        input: wire(PLAYER),
+    });
+    client.command(CommandPayload::Cut);
+    let level = |client: &mut Client, what: &str, loud: bool| {
+        client.wait_for(what, |message| match message {
+            Some(WireMessage::AudioMeters(meters))
+                if meters
+                    .master
+                    .iter()
+                    .any(|channel| channel.rms_millionths >= 30_000)
+                    == loud
+                    && meters
+                        .master
+                        .iter()
+                        .all(|channel| loud || channel.rms_millionths < 1_000) =>
+            {
+                Some(())
+            }
+            _ => None,
+        });
+    };
+    level(&mut client, "a quiet Program in slow motion", false);
+    client.replay(ReplayOperation::Cue {
+        input: wire(PLAYER),
+        event: event.id,
+        angle: None,
+    });
+    client.replay(ReplayOperation::Play {
+        input: wire(PLAYER),
+        speed: ReplaySpeed::Full,
+    });
+    level(&mut client, "the replayed tone on Program at 100%", true);
+    client.replay(ReplayOperation::Play {
+        input: wire(PLAYER),
+        speed: ReplaySpeed::Half,
+    });
+    level(&mut client, "a quiet Program back in slow motion", false);
     let failures: Vec<String> = std::iter::from_fn(|| daemon.log.try_recv().ok())
         .filter(|line| line.contains("FREEMIXD_REPLAY_FAILURE"))
         .collect();

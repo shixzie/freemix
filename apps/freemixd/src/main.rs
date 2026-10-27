@@ -5193,6 +5193,15 @@ impl NativeDaemon {
         {
             master.attach_pushed_audio(input)?;
         }
+        // Replay inputs play their recorded audio (OR-012).
+        for input in stored
+            .project()
+            .inputs()
+            .iter()
+            .filter(|input| matches!(input.kind, fm_model::InputKind::Replay))
+        {
+            master.attach_pushed_audio(input.id)?;
+        }
         let (playback, stingers) = preflight_native_video(
             &runtime,
             adapter.as_ref(),
@@ -7172,13 +7181,24 @@ impl NativeDaemon {
             .projected_frame
             .as_ref()
             .expect("next frame projection was initialized");
-        // Replay inputs show their recorded frames (OR-012).
+        // Replay inputs show their recorded frames and, at 100%, play their
+        // recorded audio (OR-012).
+        let master = &mut self.master;
         let replay_covered = match &mut self.replay {
             Some(replay) => replay.present(
                 projected,
                 replay_deadline,
                 &self.runtime,
                 &mut self.playback,
+                &mut |input, block| {
+                    if let Err(error) = master.push_frame_audio(input, projected.frame.get(), block)
+                    {
+                        eprintln!(
+                            "FREEMIXD_REPLAY_FAILURE\tv=1\tinput={input}\tfailure={}",
+                            diagnostic_field(&format!("audio:{error}"))
+                        );
+                    }
+                },
             ),
             None => true,
         };
@@ -7510,10 +7530,14 @@ impl NativeDaemon {
         if let (Some(live_lan), Some(sequence)) = (&mut self.live_lan, next_sequence) {
             live_lan.sync(control.live_lan(), &self.runtime, sequence);
         }
-        // The replay recording (OR-012) takes every source's newest picture.
+        // The replay recording (OR-012) takes every source's newest picture
+        // and its own audio of this frame.
         if let (Some(replay), Some((frame, _))) = (&mut self.replay, monitor_frame) {
             let latest = self.playback.latest_frames();
-            replay.record(control, frame, &|input| latest.get(input));
+            let master = &self.master;
+            replay.record(control, frame, &|input| latest.get(input), &|input| {
+                master.rendered_input_audio(input)
+            });
         }
         // Highlight reel exports (OR-013) take their frames from the engine
         // on the frame loop; the encoder runs off it.

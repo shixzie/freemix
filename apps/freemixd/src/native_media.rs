@@ -3116,6 +3116,8 @@ impl NativeAudioTelemetry {
 
 struct NativeAudioScratch {
     rendered: BTreeMap<InputId, Vec<Vec<f32>>>,
+    /// Samples of the last rendered frame in each `rendered` plane (OR-012).
+    rendered_samples: usize,
     mix: Vec<Vec<f32>>,
     plans: Vec<(InputId, AudioRenderPlan)>,
     uncovered: Vec<InputId>,
@@ -3214,6 +3216,7 @@ impl NativeAudioScratch {
         let meter_inputs = sources.keys().copied().collect::<Vec<_>>();
         Self {
             rendered,
+            rendered_samples: 0,
             mix: vec![vec![0.0; samples]; channels],
             plans: Vec::with_capacity(source_count),
             uncovered: Vec::with_capacity(source_count),
@@ -5048,6 +5051,28 @@ impl NativeMasterRuntime {
         self.render_frame_audio(frame).map(drop)
     }
 
+    /// Input `input`'s own audio in the last rendered frame, before its
+    /// strip, fader, and the mix (OR-012 replay recording): one plane per
+    /// Program channel. `None` for an input without audio, one that is
+    /// explicitly silent, or before the first render.
+    #[must_use]
+    pub fn rendered_input_audio(&self, input: InputId) -> Option<Vec<Vec<f32>>> {
+        let samples = self.scratch.rendered_samples;
+        if samples == 0
+            || self
+                .sources
+                .get(&input)
+                .is_none_or(|source| source.explicit_silence)
+        {
+            return None;
+        }
+        let planes = self.scratch.rendered.get(&input)?;
+        planes
+            .iter()
+            .map(|plane| plane.get(..samples).map(<[f32]>::to_vec))
+            .collect()
+    }
+
     /// Mixes one serviced authoritative Program interval and returns its exact
     /// owned audio block. A clone is retained in the bounded fake sink so
     /// existing diagnostics remain identical to [`Self::render_frame`].
@@ -5140,6 +5165,7 @@ impl NativeMasterRuntime {
             None => native_audio_mix_plan(frame.program)?,
         };
         self.scratch.plans.clear();
+        self.scratch.rendered_samples = samples;
         for (&input, source) in &mut self.sources {
             if source.explicit_silence {
                 continue;

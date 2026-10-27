@@ -31,10 +31,16 @@
 //! nothing cued shows black; one whose frame is not in a finished segment
 //! yet (the live edge) holds its picture.
 //!
+//! Each frame's segment audio is the source's own audio of that frame,
+//! before its strip, fader, and the mix, as stereo (a mono source on both
+//! channels); a source without audio records silence. A Replay input
+//! playing forward at 100% plays each shown frame's recorded audio through
+//! its own strip; slow motion and a paused or cued player are silent, as
+//! is a run's first segment, which opens with the encoder's start offset.
+//!
 //! Limitations: the recorded picture is each source's newest decoded
 //! picture when the frame is realized (for a media file that can be a few
-//! frames ahead of what aired), and the recording is video only: replay
-//! plays silent.
+//! frames ahead of what aired).
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -86,6 +92,9 @@ const ENQUEUE_RETRY: Duration = Duration::from_millis(2);
 /// `<pid>-<16 hex digits>`.
 pub(crate) const SESSION_PREFIX: &str = "freemixd-replay-";
 const SEGMENT_PREFIX: &str = "segment";
+/// Most decoded audio blocks read from one segment file: the adapter's
+/// bound, well over its two seconds of AAC frames.
+const SEGMENT_AUDIO_BLOCKS: u32 = 256;
 pub(crate) const AUDIO_RATE: u32 = 48_000;
 
 /// What the recording needs from the engine.
@@ -164,7 +173,8 @@ enum RunEvent {
 }
 
 enum Job {
-    Frame(Option<Arc<CpuVideoFrame>>),
+    /// One frame's picture and the source's own audio planes.
+    Frame(Option<Arc<CpuVideoFrame>>, Option<Vec<Vec<f32>>>),
     /// Drains the recorder and closes its last segment.
     #[cfg_attr(not(test), allow(dead_code))]
     Stop,
@@ -308,12 +318,14 @@ impl NativeReplay {
     }
 
     /// Records engine frame `frame`: every running source's newest picture
-    /// (`latest`), then [`Self::sync`].
+    /// (`latest`) and its own audio of the frame (`audio`), then
+    /// [`Self::sync`].
     pub(crate) fn record(
         &mut self,
         host: &mut dyn ReplayHost,
         frame: u64,
         latest: &dyn Fn(InputId) -> Option<Arc<CpuVideoFrame>>,
+        audio: &dyn Fn(InputId) -> Option<Vec<Vec<f32>>>,
     ) {
         self.sync(host);
         let mut failed = Vec::new();
@@ -324,7 +336,7 @@ impl NativeReplay {
             if !run.ready {
                 continue;
             }
-            match run.jobs.try_send(Job::Frame(latest(input))) {
+            match run.jobs.try_send(Job::Frame(latest(input), audio(input))) {
                 Ok(()) => {
                     host.observe(input, frame, run.base + run.sent);
                     run.engine_frames.push_back(frame);
@@ -559,6 +571,7 @@ impl NativeReplay {
         deadline: Instant,
         runtime: &NativeMediaRuntime,
         playback: &mut NativeSourcePlayback,
+        push_audio: &mut dyn FnMut(InputId, &AudioBlock),
     ) -> bool {
         let frame = projected.frame.get();
         self.players
@@ -595,9 +608,26 @@ impl NativeReplay {
                     )
                 }),
                 Shown::Frame(path, index) => match &player.decoded {
-                    Some((key, picture)) if key.0 == *path && key.1 == *index => picture
-                        .as_ref()
-                        .and_then(|picture| retimed(picture, frame, self.format)),
+                    Some((key, picture, audio)) if key.0 == *path && key.1 == *index => {
+                        // Forward play at 100% plays the frame's recorded
+                        // audio; slow motion stays silent.
+                        if replay.playing
+                            && replay.speed == fm_types::replay::ReplaySpeed::Full
+                            && let Some(block) = audio.as_deref().and_then(|planes| {
+                                recorded_audio(
+                                    self.format.rate,
+                                    self.format.clock_domain,
+                                    frame,
+                                    planes,
+                                )
+                            })
+                        {
+                            push_audio(replay.input, &block);
+                        }
+                        picture
+                            .as_ref()
+                            .and_then(|picture| retimed(picture, frame, self.format))
+                    }
                     _ => {
                         pending = true;
                         continue;
@@ -679,8 +709,14 @@ fn record_run(
     let mut sequence = 0_u64;
     loop {
         match queue.recv() {
-            Ok(Job::Frame(picture)) => {
-                let Some(pair) = pair(&record_format, format, sequence, picture.as_deref()) else {
+            Ok(Job::Frame(picture, audio)) => {
+                let Some(pair) = pair(
+                    &record_format,
+                    format,
+                    sequence,
+                    picture.as_deref(),
+                    audio.as_deref(),
+                ) else {
                     let _ = recorder.cancel();
                     return fail("frame:invalid".to_owned());
                 };
@@ -726,12 +762,14 @@ pub(crate) fn enqueue(recorder: &mut Recorder, pair: PairedFrame) -> Result<(), 
 }
 
 /// The recorded pair of stream frame `sequence`: `picture` scaled to the
-/// project size (black without one), with silence.
+/// project size (black without one), with the source's `audio` (silence
+/// without it).
 fn pair(
     record_format: &RecordFormat,
     format: ReplayFormat,
     sequence: u64,
     picture: Option<&CpuVideoFrame>,
+    audio: Option<&[Vec<f32>]>,
 ) -> Option<PairedFrame> {
     let rgba = picture
         .and_then(|picture| {
@@ -745,17 +783,52 @@ fn pair(
             },
             |image| Some(image.pixels().to_vec()),
         )?;
-    let audio = silence(format.rate, format.clock_domain, sequence)?;
+    let audio = match audio {
+        Some(planes) => recorded_audio(format.rate, format.clock_domain, sequence, planes)?,
+        None => silence(format.rate, format.clock_domain, sequence)?,
+    };
     PairedFrame::new(record_format, SequenceNumber::new(sequence), rgba, audio).ok()
 }
 
-/// Silent stereo audio of stream frame `sequence` at [`AUDIO_RATE`], on the
-/// recorder's absolute sample grid.
-pub(crate) fn silence(
+/// A source's own `planes` as stereo audio of stream frame `sequence`: a
+/// mono source on both channels, the first two of more, each plane
+/// stretched to the frame's span on the recorder's sample grid; silence for
+/// a source without planes.
+pub(crate) fn recorded_audio(
     rate: FrameRate,
     clock_domain: ClockDomainId,
     sequence: u64,
+    planes: &[Vec<f32>],
 ) -> Option<AudioBlock> {
+    let (timing, samples) = frame_audio_span(rate, clock_domain, sequence)?;
+    let fit = |plane: &[f32]| {
+        if plane.len() == samples {
+            plane.to_vec()
+        } else {
+            fm_engine::fm_playback::resample_linear(plane, samples)
+        }
+    };
+    let stereo = match planes {
+        [] => return silence(rate, clock_domain, sequence),
+        [mono] => vec![fit(mono), fit(mono)],
+        [left, right, ..] => vec![fit(left), fit(right)],
+    };
+    AudioBlock::new(
+        timing,
+        SampleRate::new(AUDIO_RATE)?,
+        ChannelLayout::stereo(),
+        stereo,
+    )
+    .ok()
+}
+
+/// The timing and sample count of stream frame `sequence` at
+/// [`AUDIO_RATE`], on the recorder's absolute sample grid.
+fn frame_audio_span(
+    rate: FrameRate,
+    clock_domain: ClockDomainId,
+    sequence: u64,
+) -> Option<(MediaTiming, usize)> {
     let hertz = u128::from(AUDIO_RATE);
     let boundary = |frame: u64| {
         u128::from(frame) * hertz * u128::from(rate.denominator()) / u128::from(rate.numerator())
@@ -775,11 +848,22 @@ pub(crate) fn silence(
         SequenceNumber::new(sequence),
     )
     .ok()?;
+    Some((timing, usize::try_from(end - start).ok()?))
+}
+
+/// Silent stereo audio of stream frame `sequence` at [`AUDIO_RATE`], on the
+/// recorder's absolute sample grid.
+pub(crate) fn silence(
+    rate: FrameRate,
+    clock_domain: ClockDomainId,
+    sequence: u64,
+) -> Option<AudioBlock> {
+    let (timing, samples) = frame_audio_span(rate, clock_domain, sequence)?;
     AudioBlock::silence(
         timing,
         SampleRate::new(AUDIO_RATE)?,
         ChannelLayout::stereo(),
-        usize::try_from(end - start).ok()?,
+        samples,
     )
     .ok()
 }
@@ -806,7 +890,12 @@ impl Shown {
     }
 }
 
-type Decoded = ((PathBuf, u64), Option<Arc<CpuVideoFrame>>);
+/// A decoded request: its picture and the frame's recorded audio planes.
+type Decoded = (
+    (PathBuf, u64),
+    Option<Arc<CpuVideoFrame>>,
+    Option<Vec<Vec<f32>>>,
+);
 
 #[derive(Default)]
 struct DecodeSlot {
@@ -889,7 +978,8 @@ fn decode_worker(shared: &DecodeShared, format: ReplayFormat) {
             }
         };
         let picture = decoder.decode(&request.0, request.1);
-        shared.lock().done = Some((request, picture));
+        let audio = decoder.audio(&request.0, request.1);
+        shared.lock().done = Some((request, picture, audio));
     }
 }
 
@@ -898,6 +988,9 @@ pub(crate) struct SegmentDecoder {
     format: ReplayFormat,
     adapter: Option<Adapter>,
     open: Option<(PathBuf, FilePlayer)>,
+    /// The audio of the last segment asked for, decoded whole (two seconds
+    /// of stereo).
+    audio: Option<(PathBuf, Option<Vec<Vec<f32>>>)>,
 }
 
 impl SegmentDecoder {
@@ -906,7 +999,60 @@ impl SegmentDecoder {
             format,
             adapter: None,
             open: None,
+            audio: None,
         }
+    }
+
+    /// The recorded audio planes of frame `frame` of segment file `path`:
+    /// the segment's audio from the frame's first sample on the recorder's
+    /// grid, one frame long; `None` for a segment without audio.
+    pub(crate) fn audio(&mut self, path: &Path, frame: u64) -> Option<Vec<Vec<f32>>> {
+        if self.audio.as_ref().is_none_or(|(open, _)| open != path) {
+            if self.adapter.is_none() {
+                self.adapter = Adapter::new(fm_codec_ffmpeg::Config::default()).ok();
+            }
+            let planes = self.adapter.as_ref().and_then(|adapter| {
+                let decoded = adapter
+                    .decode_local_up_to(
+                        path,
+                        fm_codec_ffmpeg::DecodeRequest {
+                            clock_domain: self.format.clock_domain,
+                            video: None,
+                            audio: Some(fm_codec_ffmpeg::SequenceRequest {
+                                selector: fm_codec_ffmpeg::StreamSelector::Best,
+                                count: NonZeroU32::new(SEGMENT_AUDIO_BLOCKS)?,
+                            }),
+                        },
+                    )
+                    .ok()?;
+                let mut planes: Vec<Vec<f32>> = Vec::new();
+                for block in &decoded.audio {
+                    if planes.is_empty() {
+                        planes = vec![Vec::new(); block.planes().len()];
+                    }
+                    for (plane, samples) in planes.iter_mut().zip(block.planes()) {
+                        plane.extend_from_slice(samples);
+                    }
+                }
+                (!planes.is_empty()).then_some(planes)
+            });
+            self.audio = Some((path.to_path_buf(), planes));
+        }
+        let planes = self.audio.as_ref()?.1.as_ref()?;
+        let rate = self.format.rate;
+        let boundary = |frame: u64| {
+            usize::try_from(
+                u128::from(frame) * u128::from(AUDIO_RATE) * u128::from(rate.denominator())
+                    / u128::from(rate.numerator()),
+            )
+            .ok()
+        };
+        let (start, end) = (boundary(frame)?, boundary(frame.checked_add(1)?)?);
+        planes
+            .iter()
+            .map(|plane| plane.get(start..end.min(plane.len())).map(<[f32]>::to_vec))
+            .collect::<Option<Vec<_>>>()
+            .filter(|planes| planes.first().is_some_and(|plane| !plane.is_empty()))
     }
 
     /// Frame `frame` of segment file `path`.
@@ -1155,7 +1301,17 @@ mod tests {
         // retention (ten seconds) releases what is older and no event holds.
         let mut event_frames = None;
         for step in 0..525 {
-            replay.record(&mut engine, frame, &|_| Some(picture(frame)));
+            // A mono 1 kHz tone at half scale: the source's own audio.
+            let tone: Vec<f32> = (0..1_920)
+                .map(|sample| {
+                    0.5 * (f32::from(u16::try_from(sample).unwrap()) * core::f32::consts::TAU
+                        / 48.0)
+                        .sin()
+                })
+                .collect();
+            replay.record(&mut engine, frame, &|_| Some(picture(frame)), &|_| {
+                Some(vec![tone.clone()])
+            });
             if step == 125 {
                 accept(
                     &mut engine,
@@ -1201,6 +1357,34 @@ mod tests {
         for index in 4..=5 {
             assert!(!segment(index).exists(), "{index}: {files:?}");
         }
+        // The segments carry the source's own audio on both channels.
+        let pcm = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(segment(1))
+            .args(["-map", "0:a", "-f", "f32le", "-ac", "2", "-"])
+            .output()
+            .unwrap();
+        assert!(pcm.status.success(), "{pcm:?}");
+        let samples: Vec<f32> = pcm
+            .stdout
+            .chunks_exact(4)
+            .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+            .collect();
+        assert!(samples.len() >= 48_000 * 2, "{} samples", samples.len());
+        #[allow(clippy::cast_precision_loss)] // a few hundred thousand samples
+        let rms =
+            (samples.iter().map(|value| value * value).sum::<f32>() / samples.len() as f32).sqrt();
+        // A half-scale sine has an RMS of about 0.35; AAC keeps it close.
+        assert!((0.3..0.4).contains(&rms), "recorded audio RMS {rms}");
+        // The Replay input's decoder reads one frame of it back. (A run's
+        // first segment opens with the encoder's start offset, which the
+        // adapter refuses to place: it replays silent.)
+        let mut decoder = SegmentDecoder::new(format);
+        assert_eq!(decoder.audio(&segment(1), 10), None);
+        let planes = decoder.audio(&segment(2), 10).expect("recorded audio");
+        assert_eq!(planes.len(), 2);
+        assert_eq!(planes[0].len(), 1_920);
+        assert!(planes[0].iter().any(|sample| sample.abs() > 0.3));
         assert!(status.sources[0].first_frame.unwrap() <= in_frame);
 
         accept(
