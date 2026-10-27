@@ -276,9 +276,10 @@ fn frames_in_nanos(rate: fm_types::FrameRate, frames: u32) -> u64 {
 }
 
 /// Compiles `spec` against the recorded events, exactly as
-/// [`fm_replay::HighlightReel::compile`] does: every clip cuts on the
-/// recorded angle, its trims are frame-exact, and clips play at the fixed
-/// replay speeds.
+/// [`fm_replay::HighlightReel::compile`] does: every clip plays the recorded
+/// angle, its trims are frame-exact, clips play at the fixed replay speeds,
+/// and a clip with `dissolve_frames` overlaps that many frames of the clip
+/// before it in a linear dissolve (schema 84); the others cut.
 pub(crate) fn compile(
     runtime: &ReplayRuntime,
     spec: &ReelSpec,
@@ -303,7 +304,10 @@ pub(crate) fn compile(
             trim_out_nanos: frames_in_nanos(rate, clip.trim_out_frames),
             speed: ReelSpeed::new(u32::from(speed.percent()), 100)
                 .map_err(|_| EngineReelError::InvalidSpeed(clip.speed_percent))?,
-            transition_in: ReelTransition::Cut,
+            transition_in: match clip.dissolve_frames {
+                0 => ReelTransition::Cut,
+                frames => ReelTransition::Dissolve { frames },
+            },
             program_audio: false,
         })
         .map_err(EngineReelError::Plan)?;
@@ -400,6 +404,7 @@ pub(crate) fn spec_rejection(state: &ShowState, error: ReelSpecError) -> Rejecti
         }
         ReelSpecError::Speed(_) => invalid("clips", "invalid_speed", message),
         ReelSpecError::Trim => invalid("clips", "trim_out_of_range", message),
+        ReelSpecError::Dissolve => invalid("clips", "invalid_dissolve", message),
     }
 }
 
@@ -428,6 +433,9 @@ pub(crate) fn plan_rejection(error: &EngineReelError) -> Rejection {
         }
         EngineReelError::Plan(ReelError::ReelTooLong { .. }) => {
             invalid("reel", "reel_too_long", message)
+        }
+        EngineReelError::Plan(ReelError::TransitionTooLong { .. }) => {
+            invalid("clips", "dissolve_too_long", message)
         }
         _ => invalid("reel", "invalid_reel", message),
     }

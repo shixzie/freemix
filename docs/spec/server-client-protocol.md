@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.110 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.111 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4282,6 +4282,31 @@ it acknowledge and silence alerts (`RC-015`). No record or schema change.
   with a note once no record has arrived for 3.5 s. The tally and title
   pages ignore the record.
 - 2.109 is refused.
+
+Protocol 2.111 dissolves between highlight reel clips (`OR-013`, schema 84).
+
+- Every `clips` record (`reel_set`, `reel_changed`, and inside
+  `reel_status` `reels`) gains a sixth component:
+  `<event>:<angle>:<trim in>:<trim out>:<speed>:<dissolve>`, the frames the
+  clip dissolves in over the end of the clip before, a canonical unsigned
+  decimal. The first clip's is 0 (a cut) and every other's at most 600; a
+  record with five components, a dissolving first clip, or a longer
+  dissolve is refused, and an engine refuses a `reel_set` with a dissolving
+  first clip as `invalid_dissolve`.
+- A dissolve of `n` frames overlaps the last `n` frames of the clip before
+  with the first `n` of the clip, so the reel's `total_frames` is `n`
+  shorter; overlap frame `k` weights the incoming clip `(k + 1) / (n + 1)`
+  and the outgoing one the rest. A dissolve longer than either clip it joins
+  leaves the reel's plan in `error`, and its export is refused as
+  `dissolve_too_long`.
+- Durability (schema 84): every reel clip in `project.json` carries a
+  required `dissolve`; schema 83 projects are refused.
+- Studio's reel clip editor gains a Dissolve field (disabled on the first
+  clip; a reorder or removal that makes another clip first sets it to a
+  cut), and `freemix-cli reel-set` / `remote-reel-set` `--clips` records take
+  an optional `/<dissolve>`; `reel` and `remote-reel` print `dissolve=` on
+  each `ReelClip` line.
+- 2.110 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

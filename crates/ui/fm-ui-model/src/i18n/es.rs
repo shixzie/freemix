@@ -10408,6 +10408,17 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReelClipSpeedHover,
         t("Velocidad de reproducción de este clip"),
     ),
+    (Msg::ReelClipDissolve, t("Fundido")),
+    (
+        Msg::ReelClipDissolveHover,
+        t(
+            "Fotogramas en que este clip entra con un fundido sobre el final del clip anterior; 0 es un corte",
+        ),
+    ),
+    (
+        Msg::ReelReasonFirstClipCuts,
+        t("el primer clip siempre entra por corte"),
+    ),
     (Msg::ReelClipRemove, t("QUITAR CLIP")),
     (Msg::ReelClipRemoveHover, t("Quitar este clip del reel")),
     (Msg::ReelClipMoveUpHover, t("Reproducir este clip antes")),

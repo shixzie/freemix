@@ -3,8 +3,9 @@
 //! A project holds at most [`MAX_REELS`] [`ReelSpec`]s. A reel is an ordered
 //! list of at most [`MAX_REEL_CLIPS`] clips cut from recorded replay events:
 //! each clip names the event, the recorded angle it plays, trims before and
-//! after the event marks, and a playback speed. The recorded media itself is
-//! never part of the project.
+//! after the event marks, a playback speed, and how many frames it dissolves
+//! in from the clip before (zero for a cut, always on the first clip). The
+//! recorded media itself is never part of the project.
 
 use std::fmt;
 
@@ -21,6 +22,9 @@ pub const MAX_REEL_PATH_BYTES: usize = 1_024;
 /// Largest trim before or after an event mark, in frames (one hour at 60
 /// frames per second).
 pub const MAX_REEL_TRIM_FRAMES: u32 = 3_600 * 60;
+/// Longest dissolve between two clips, in frames (ten seconds at 60 frames
+/// per second).
+pub const MAX_REEL_DISSOLVE_FRAMES: u32 = 600;
 
 /// One highlight reel: an ordered selection of replay-event clips.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -46,6 +50,9 @@ pub struct ReelClip {
     pub trim_out_frames: u32,
     /// Playback speed in percent of real time: 25, 50, 75, or 100.
     pub speed_percent: u8,
+    /// Frames this clip dissolves in over the end of the clip before; zero
+    /// is a cut, and the first clip always cuts.
+    pub dissolve_frames: u32,
 }
 
 /// Why a reel is refused.
@@ -68,6 +75,9 @@ pub enum ReelSpecError {
     Speed(u8),
     /// A trim is larger than [`MAX_REEL_TRIM_FRAMES`].
     Trim,
+    /// The first clip dissolves, or a dissolve is longer than
+    /// [`MAX_REEL_DISSOLVE_FRAMES`].
+    Dissolve,
 }
 
 impl fmt::Display for ReelSpecError {
@@ -97,6 +107,11 @@ impl fmt::Display for ReelSpecError {
                 formatter,
                 "reel clip trims must be at most {MAX_REEL_TRIM_FRAMES} frames"
             ),
+            Self::Dissolve => write!(
+                formatter,
+                "the first reel clip must cut, and a dissolve must be at most \
+                 {MAX_REEL_DISSOLVE_FRAMES} frames"
+            ),
         }
     }
 }
@@ -122,7 +137,10 @@ impl ReelSpec {
         if !reel_name_is_valid(&self.name) {
             return Err(ReelSpecError::Name);
         }
-        for clip in &self.clips {
+        for (index, clip) in self.clips.iter().enumerate() {
+            if !clip_dissolve_is_valid(index, clip.dissolve_frames) {
+                return Err(ReelSpecError::Dissolve);
+            }
             if !is_recorded(clip.angle) {
                 return Err(ReelSpecError::UnrecordedAngle(clip.angle));
             }
@@ -136,6 +154,17 @@ impl ReelSpec {
             }
         }
         Ok(())
+    }
+}
+
+/// Whether clip `index` of a reel may dissolve in over `frames`: the first
+/// clip cuts, the others dissolve for at most [`MAX_REEL_DISSOLVE_FRAMES`].
+#[must_use]
+pub const fn clip_dissolve_is_valid(index: usize, frames: u32) -> bool {
+    if index == 0 {
+        frames == 0
+    } else {
+        frames <= MAX_REEL_DISSOLVE_FRAMES
     }
 }
 
@@ -183,6 +212,7 @@ mod tests {
             trim_in_frames: 0,
             trim_out_frames: 0,
             speed_percent: 100,
+            dissolve_frames: 0,
         }
     }
 
@@ -220,7 +250,23 @@ mod tests {
             trim_out_frames: MAX_REEL_TRIM_FRAMES,
             ..clip(7, input(1))
         }];
+        assert_eq!(reel.check(recorded), Ok(())); // The first clip cuts; a later one dissolves for at most
+        // MAX_REEL_DISSOLVE_FRAMES.
+        reel.clips = vec![ReelClip {
+            dissolve_frames: 1,
+            ..clip(7, input(1))
+        }];
+        assert_eq!(reel.check(recorded), Err(ReelSpecError::Dissolve));
+        reel.clips = vec![
+            clip(7, input(1)),
+            ReelClip {
+                dissolve_frames: MAX_REEL_DISSOLVE_FRAMES,
+                ..clip(8, input(2))
+            },
+        ];
         assert_eq!(reel.check(recorded), Ok(()));
+        reel.clips[1].dissolve_frames = MAX_REEL_DISSOLVE_FRAMES + 1;
+        assert_eq!(reel.check(recorded), Err(ReelSpecError::Dissolve));
     }
 
     #[test]

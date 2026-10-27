@@ -27,6 +27,7 @@ fn clip(event: u32, angle: u128, trim_in_frames: u32, trim_out_frames: u32, spee
         trim_in_frames,
         trim_out_frames,
         speed_percent: speed,
+        dissolve_frames: 0,
     }
 }
 
@@ -74,7 +75,13 @@ fn spec() -> ReelSpec {
     ReelSpec {
         id: 1,
         name: "Goals: 1; 2".to_owned(),
-        clips: vec![clip(3, 1, 0, 0, 100), clip(4, 2, 12, 6, 50)],
+        clips: vec![
+            clip(3, 1, 0, 0, 100),
+            ReelClip {
+                dissolve_frames: 9,
+                ..clip(4, 2, 12, 6, 50)
+            },
+        ],
     }
 }
 
@@ -83,7 +90,7 @@ fn operations() -> Vec<(ReelOperation, &'static str)> {
         (
             ReelOperation::Set(Box::new(spec())),
             "reel_set\treel=1\tname=Goals%3A%201%3B%202\t\
-             clips=3%3A1%3A0%3A0%3A100%2C4%3A2%3A12%3A6%3A50",
+             clips=3%3A1%3A0%3A0%3A100%3A0%2C4%3A2%3A12%3A6%3A50%3A9",
         ),
         (ReelOperation::Delete { reel: 2 }, "reel_delete\treel=2"),
         (
@@ -169,7 +176,7 @@ fn reel_changed_carries_frames_and_a_usable_error() {
     assert!(
         line.contains(
             "\tevent=reel_changed\treel=1\tname=Goals%3A%201%3B%202\t\
-             clips=3%3A1%3A0%3A0%3A100%2C4%3A2%3A12%3A6%3A50\t\
+             clips=3%3A1%3A0%3A0%3A100%3A0%2C4%3A2%3A12%3A6%3A50%3A9\t\
              total_frames=1500\terror=event%203%3B%20angle%202%3A%20incomplete\tundo_depth=0"
         ),
         "{line}"
@@ -220,12 +227,18 @@ fn commands_are_strict() {
         "reel_delete\treel=01",
         "reel_delete\treel=1\treel=1",
         "reel_set\treel=1\tname=Goals",
-        "reel_set\treel=1\tname= \tclips=1:1:0:0:100",
+        "reel_set\treel=1\tname= \tclips=1:1:0:0:100:0",
         "reel_set\treel=1\tname=Goals\tclips=",
-        "reel_set\treel=1\tname=Goals\tclips=1:1:0:0:60",
-        "reel_set\treel=1\tname=Goals\tclips=1:1:216001:0:100",
-        "reel_set\treel=1\tname=Goals\tclips=1:0:0:0:100",
-        "reel_set\treel=1\tname=Goals\tclips=1:1:0:0:100:",
+        "reel_set\treel=1\tname=Goals\tclips=1:1:0:0:60:0",
+        "reel_set\treel=1\tname=Goals\tclips=1:1:216001:0:100:0",
+        "reel_set\treel=1\tname=Goals\tclips=1:0:0:0:100:0",
+        "reel_set\treel=1\tname=Goals\tclips=1:1:0:0:100:0:",
+        // A clip without its dissolve, a first clip that dissolves, an
+        // overlong or non-canonical dissolve (Protocol 2.111).
+        "reel_set\treel=1\tname=Goals\tclips=1:1:0:0:100",
+        "reel_set\treel=1\tname=Goals\tclips=1:1:0:0:100:5",
+        "reel_set\treel=1\tname=Goals\tclips=1:1:0:0:100:0,2:1:0:0:100:601",
+        "reel_set\treel=1\tname=Goals\tclips=1:1:0:0:100:0,2:1:0:0:100:09",
         "reel_export\tjob=1\treel=1\tdestination=relative.mp4",
         "reel_export\tjob=1\treel=1",
         "reel_export\tjob=01\treel=1\tdestination=%2Ftmp%2Fa.mp4",
@@ -265,8 +278,30 @@ fn commands_are_strict() {
     };
     assert!(encode_line(&full(64)).is_ok());
     assert!(encode_line(&full(65)).is_err());
+    // The longest dissolve is accepted on a later clip, never on the first.
+    let dissolving = |first: u32, second: u32| {
+        command(CommandPayload::Reel(ReelOperation::Set(Box::new(
+            ReelSpec {
+                id: 1,
+                name: "Dissolves".to_owned(),
+                clips: vec![
+                    ReelClip {
+                        dissolve_frames: first,
+                        ..clip(1, 1, 0, 0, 100)
+                    },
+                    ReelClip {
+                        dissolve_frames: second,
+                        ..clip(2, 1, 0, 0, 100)
+                    },
+                ],
+            },
+        ))))
+    };
+    round_trip(&dissolving(0, fm_protocol::MAX_REEL_DISSOLVE_FRAMES));
+    assert!(encode_line(&dissolving(1, 0)).is_err());
+    assert!(encode_line(&dissolving(0, fm_protocol::MAX_REEL_DISSOLVE_FRAMES + 1)).is_err());
     let clips = (0..65)
-        .map(|event| format!("{event}:1:0:0:100"))
+        .map(|event| format!("{event}:1:0:0:100:0"))
         .collect::<Vec<_>>()
         .join(",");
     refused(&format!(
@@ -343,8 +378,8 @@ fn export_state_tokens_are_stable() {
 
 #[test]
 fn protocol_2_109_is_current() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 110));
-    assert_eq!(prefix(), "command\tprotocol=2.110\tid=a\tidempotency_key=k");
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 111));
+    assert_eq!(prefix(), "command\tprotocol=2.111\tid=a\tidempotency_key=k");
 }
 
 #[test]
@@ -355,8 +390,8 @@ fn status_and_its_request_have_an_exact_wire_form() {
             "reel_status\tengine_id=e\tproject_id=p\tstate_epoch=1\tlog_id=l\tsequence=7\t\
              reels=1%3AGoals%253A%25201%253B%25202%3A1500%3A\
              event%25203%2520is%2520incomplete%3A\
-             3%3A1%3A0%3A0%3A100%2C4%3A2%3A12%3A6%3A50%3B\
-             2%3ALast%25205%2520s%3A%3A%3A7%3A3%3A0%3A0%3A25\t"
+             3%3A1%3A0%3A0%3A100%3A0%2C4%3A2%3A12%3A6%3A50%3A9%3B\
+             2%3ALast%25205%2520s%3A%3A%3A7%3A3%3A0%3A0%3A25%3A0\t"
         ),
         "{line}"
     );

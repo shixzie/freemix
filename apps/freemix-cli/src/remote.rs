@@ -514,13 +514,14 @@ pub(crate) fn print_reels(
         );
         for clip in &reel.spec.clips {
             println!(
-                "ReelClip(reel={}, event={}, angle={}, in={}, out={}, speed={})",
+                "ReelClip(reel={}, event={}, angle={}, in={}, out={}, speed={}, dissolve={})",
                 reel.id,
                 clip.event,
                 clip.angle,
                 clip.trim_in_frames,
                 clip.trim_out_frames,
                 clip.speed_percent,
+                clip.dissolve_frames,
             );
         }
     }

@@ -2862,6 +2862,7 @@ fn wire_edit_payload_round_trips_every_undoable_engine_edit() {
                 trim_in_frames: 0,
                 trim_out_frames: 0,
                 speed_percent: 100,
+                dissolve_frames: 0,
             }],
         }))),
     ];
@@ -8705,6 +8706,7 @@ fn reel_edits_are_project_commands_and_exports_are_live() {
             trim_in_frames: 0,
             trim_out_frames: 0,
             speed_percent: 100,
+            dissolve_frames: 0,
         }],
     };
     let set = fm_protocol::ReelOperation::Set(Box::new(spec.clone()));
@@ -8793,6 +8795,7 @@ fn reel_status_carries_the_stored_spec_and_export_progress() {
             trim_in_frames: 0,
             trim_out_frames: 0,
             speed_percent: 100,
+            dissolve_frames: 0,
         }],
     };
     let status = fm_engine::EngineReelStatus {

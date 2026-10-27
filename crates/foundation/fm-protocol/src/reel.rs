@@ -3,8 +3,9 @@
 //! A project holds at most [`MAX_REELS`] [`ReelSpec`]s. A reel is an ordered
 //! list of at most [`MAX_REEL_CLIPS`] clips cut from recorded replay events:
 //! each clip names the event, the recorded angle it plays, trims before and
-//! after the event marks, and a playback speed. The recorded media itself is
-//! never part of the project.
+//! after the event marks, a playback speed, and the frames it dissolves in
+//! from the clip before (Protocol 2.111). The recorded media itself is never
+//! part of the project.
 //!
 //! | Command | Payload | Fields | Class |
 //! |---|---|---|---|
@@ -15,9 +16,10 @@
 //! | [`ReelOperation::ForgetExport`] | `reel_export_forget` | `job` | runtime |
 //!
 //! `clips` is a comma-separated list of 1 to [`MAX_REEL_CLIPS`]
-//! `<event>:<angle>:<trim in>:<trim out>:<speed>` records, every number a
-//! canonical unsigned decimal, `speed` 25, 50, 75, or 100, and each trim at
-//! most [`MAX_REEL_TRIM_FRAMES`]. A `destination` is an absolute path (see
+//! `<event>:<angle>:<trim in>:<trim out>:<speed>:<dissolve>` records, every
+//! number a canonical unsigned decimal, `speed` 25, 50, 75, or 100, each trim
+//! at most [`MAX_REEL_TRIM_FRAMES`], and `dissolve` 0 (a cut) on the first
+//! clip and at most [`MAX_REEL_DISSOLVE_FRAMES`] on the others. A `destination` is an absolute path (see
 //! [`reel_export_path_is_valid`]).
 //!
 //! `reel_set` and `reel_delete` are padlocked, undoable project edits. An
@@ -33,8 +35,9 @@
 use crate::ServerIdentity;
 
 pub use fm_types::reel::{
-    MAX_REEL_CLIPS, MAX_REEL_NAME_BYTES, MAX_REEL_PATH_BYTES, MAX_REEL_TRIM_FRAMES, MAX_REELS,
-    ReelClip, ReelSpec, ReelSpecError, reel_export_path_is_valid, reel_name_is_valid,
+    MAX_REEL_CLIPS, MAX_REEL_DISSOLVE_FRAMES, MAX_REEL_NAME_BYTES, MAX_REEL_PATH_BYTES,
+    MAX_REEL_TRIM_FRAMES, MAX_REELS, ReelClip, ReelSpec, ReelSpecError, clip_dissolve_is_valid,
+    reel_export_path_is_valid, reel_name_is_valid,
 };
 
 /// Most export jobs one `reel_status` lists: the running jobs and the

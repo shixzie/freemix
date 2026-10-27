@@ -782,6 +782,7 @@ fn serve_reel_sessions(listener: &TcpListener) {
                 trim_in_frames: 0,
                 trim_out_frames: 0,
                 speed_percent: 100,
+                dissolve_frames: 0,
             },
             ReelClip {
                 event: 8,
@@ -789,6 +790,7 @@ fn serve_reel_sessions(listener: &TcpListener) {
                 trim_in_frames: 5,
                 trim_out_frames: 6,
                 speed_percent: 50,
+                dissolve_frames: 0,
             },
         ],
     };
@@ -4511,7 +4513,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 83,
+  "schema_version": 84,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -4719,7 +4721,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
     let stale = context.root.join("stale.fmtitle");
     fs::write(
         &stale,
-        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 83", "\"schema_version\": 47"),
+        SHAPE_TITLE_SOURCE.replace("\"schema_version\": 84", "\"schema_version\": 47"),
     )
     .unwrap();
     assert_failure_contains(
@@ -4733,7 +4735,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
             "--template",
             stale.to_str().unwrap(),
         ]),
-        "title template schema 47 is unsupported; expected 83",
+        "title template schema 47 is unsupported; expected 84",
     );
     assert_eq!(
         fs::read(context.project.join("project.json")).unwrap(),
@@ -4751,7 +4753,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 83,
+  "schema_version": 84,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -5014,7 +5016,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 83,
+  "schema_version": 84,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -5244,7 +5246,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
 /// that stretches image field 1 nearest-neighbor; its default names
 /// `asset://images/logo.png`.
 const IMAGE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 83,
+  "schema_version": 84,
   "template": {
     "id": 12,
     "name": "Logo",
@@ -5341,7 +5343,7 @@ fn image_golden() -> Vec<u8> {
 /// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
 /// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
 const CLOCK_RENDER_SOURCE: &str = r##"{
-  "schema_version": 83,
+  "schema_version": 84,
   "template": {
     "id": 13,
     "name": "Clock render",
@@ -6566,13 +6568,13 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        83
+        84
     );
 
     let started = invoke_bounded(&["stream-start", context.project_path(), "40"]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 83);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 84);
     assert!(started_manifest.contains("\"running\": true"));
     let loaded = store.load().unwrap();
     let target = &loaded.project().stream_targets()[0];
@@ -6585,7 +6587,7 @@ fn local_stream_start_stop_round_trip_persists_desired_running() {
     let stopped = invoke_bounded(&["stream-stop", context.project_path(), "40"]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 83);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 84);
     assert!(stopped_manifest.contains("\"running\": false"));
     assert!(!stopped_manifest.contains("\"running\": true"));
     assert!(!store.load().unwrap().project().stream_targets()[0].running());
@@ -6661,7 +6663,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let store = ProjectStore::new(&context.project).unwrap();
     assert_eq!(
         json_number(&manifest(&context.project), "schema_version"),
-        83
+        84
     );
     assert!(manifest(&context.project).contains("\"recording_desired\": [false, false]"));
 
@@ -6669,7 +6671,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let started = invoke_bounded(&["record-start", context.project_path()]);
     assert_success(&started);
     let started_manifest = manifest(&context.project);
-    assert_eq!(json_number(&started_manifest, "schema_version"), 83);
+    assert_eq!(json_number(&started_manifest, "schema_version"), 84);
     assert!(started_manifest.contains("\"recording_desired\": [true, false]"));
     assert!(stdout(&started).contains("recording_desired=[true,false]"));
     assert_eq!(status(&context.project), stdout(&started));
@@ -6679,7 +6681,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let second = invoke_bounded(&["record-start", context.project_path(), "--recorder", "2"]);
     assert_success(&second);
     let second_manifest = manifest(&context.project);
-    assert_eq!(json_number(&second_manifest, "schema_version"), 83);
+    assert_eq!(json_number(&second_manifest, "schema_version"), 84);
     assert!(second_manifest.contains("\"recording_desired\": [true, true]"));
     assert!(stdout(&second).contains("recording_desired=[true,true]"));
 
@@ -6687,7 +6689,7 @@ fn local_record_start_stop_round_trip_persists_per_slot_recording_desired() {
     let stopped = invoke_bounded(&["record-stop", context.project_path()]);
     assert_success(&stopped);
     let stopped_manifest = manifest(&context.project);
-    assert_eq!(json_number(&stopped_manifest, "schema_version"), 83);
+    assert_eq!(json_number(&stopped_manifest, "schema_version"), 84);
     assert!(stopped_manifest.contains("\"recording_desired\": [false, true]"));
     assert!(stdout(&stopped).contains("recording_desired=[false,true]"));
     assert_eq!(status(&context.project), stdout(&stopped));
@@ -8133,7 +8135,7 @@ fn local_reel_set_persists_and_reel_prints_the_plan() {
         "--name",
         "Highlights",
         "--clips",
-        "7/1/0/0/100,8/2/5/6/50",
+        "7/1/0/0/100,8/2/5/6/50/15",
     ]));
     let store = ProjectStore::new(&context.project).unwrap();
     let stored = store.load().unwrap();
@@ -8149,6 +8151,7 @@ fn local_reel_set_persists_and_reel_prints_the_plan() {
                 trim_in_frames: 0,
                 trim_out_frames: 0,
                 speed_percent: 100,
+                dissolve_frames: 0,
             },
             ReelClip {
                 event: 8,
@@ -8156,6 +8159,7 @@ fn local_reel_set_persists_and_reel_prints_the_plan() {
                 trim_in_frames: 5,
                 trim_out_frames: 6,
                 speed_percent: 50,
+                dissolve_frames: 15,
             },
         ]
     );
@@ -8166,8 +8170,8 @@ fn local_reel_set_persists_and_reel_prints_the_plan() {
         concat!(
             "Reel(id=1, name=\"Highlights\", clips=2, total_frames=none, ",
             "error=\"unknown replay event 7\")\n",
-            "ReelClip(reel=1, event=7, angle=1, in=0, out=0, speed=100)\n",
-            "ReelClip(reel=1, event=8, angle=2, in=5, out=6, speed=50)"
+            "ReelClip(reel=1, event=7, angle=1, in=0, out=0, speed=100, dissolve=0)\n",
+            "ReelClip(reel=1, event=8, angle=2, in=5, out=6, speed=50, dissolve=15)"
         )
     );
 
@@ -8191,7 +8195,7 @@ fn local_reel_set_persists_and_reel_prints_the_plan() {
         concat!(
             "Reel(id=1, name=\"Second\", clips=1, total_frames=none, ",
             "error=\"unknown replay event 9\")\n",
-            "ReelClip(reel=1, event=9, angle=2, in=0, out=0, speed=75)"
+            "ReelClip(reel=1, event=9, angle=2, in=0, out=0, speed=75, dissolve=0)"
         )
     );
 
@@ -8224,7 +8228,24 @@ fn local_reel_set_refuses_bad_clips_and_leaves_the_project_untouched() {
         .map(|_| "1/1/0/0/100")
         .collect::<Vec<_>>()
         .join(",");
-    let cases: [(&[&str], &str); 9] = [
+    let cases: [(&[&str], &str); 11] = [
+        (
+            &["--id", "1", "--name", "First", "--clips", "1/1/0/0/100/5"],
+            "invalid reel: the first reel clip must cut, and a dissolve must be at most \
+             600 frames",
+        ),
+        (
+            &[
+                "--id",
+                "1",
+                "--name",
+                "Long",
+                "--clips",
+                "1/1/0/0/100,2/1/0/0/100/601",
+            ],
+            "invalid reel: the first reel clip must cut, and a dissolve must be at most \
+             600 frames",
+        ),
         (
             &["--id", "1", "--name", "Speed", "--clips", "1/1/0/0/60"],
             "invalid reel: reel clip speed must be 25, 50, 75, or 100 percent, got 60",
@@ -8244,7 +8265,7 @@ fn local_reel_set_refuses_bad_clips_and_leaves_the_project_untouched() {
         (
             &["--id", "1", "--name", "Shape", "--clips", "1/1/0/0"],
             "invalid reel clip `1/1/0/0`; expected \
-             <event>/<angle>/<trim-in>/<trim-out>/<speed>",
+             <event>/<angle>/<trim-in>/<trim-out>/<speed>[/<dissolve>]",
         ),
         (
             &["--id", "1", "--name", "Trim", "--clips", "1/1/216001/0/100"],
@@ -8345,8 +8366,8 @@ fn remote_reel_prints_status_and_export_polls_to_completed() {
         stdout(&shown),
         concat!(
             "Reel(id=1, name=\"Highlights\", clips=2, total_frames=120, error=none)\n",
-            "ReelClip(reel=1, event=7, angle=1, in=0, out=0, speed=100)\n",
-            "ReelClip(reel=1, event=8, angle=2, in=5, out=6, speed=50)\n",
+            "ReelClip(reel=1, event=7, angle=1, in=0, out=0, speed=100, dissolve=0)\n",
+            "ReelClip(reel=1, event=8, angle=2, in=5, out=6, speed=50, dissolve=0)\n",
             "ReelExport(job=4, reel=1, ",
             "destination=\"/srv/reels/highlights.mp4\", state=completed, ",
             "frames=120/120, bytes=4096, failure=none)"

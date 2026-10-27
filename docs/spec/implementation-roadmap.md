@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.110 / schema 83 (2026-10-26).
+(2026-10-19); items refreshed through protocol 2.111 / schema 84 (2026-10-27).
 Every parity row is still `planned` (or `blocked`); these are the
 highest-value remaining items, ranked:
 
@@ -153,8 +153,9 @@ highest-value remaining items, ranked:
     H.264/AAC MP4 with progress and cancellation, Studio edits and exports
     them in the Replay panel, and the CLI has local and remote reel commands.
     Exports are now remuxed to faststart MP4s and start only with room on
-    the destination's disk. Remaining: exports are silent and cuts only; a
-    music bed, ducking, dissolve, and open-segment deferral are absent; and
+    the destination's disk, and a clip dissolves in from the one before for
+    up to 600 frames (Protocol 2.111, schema 84). Remaining: exports are
+    silent; a music bed, ducking, and open-segment deferral are absent; and
     nothing is certified (see the Phase 7 boundary).
 
 Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
@@ -5475,10 +5476,16 @@ storage profile is certified. `OR-014` remains planned.
 
 Current end-to-end slice for item 7: the show persists up to eight highlight
 reels of up to 64 clips (Protocol 2.107, schema 83); each clip names a captured
-replay event, its angle, trims before and after the event marks, and a
-25/50/75/100 percent speed, and reel edits are padlocked, undoable project
-edits. `fm-replay` compiles a reel of cuts into an exact output timeline whose
-frames resolve to one or two recorded source layers with exact mix weights; a
+replay event, its angle, trims before and after the event marks, a
+25/50/75/100 percent speed, and (Protocol 2.111, schema 84) the frames it
+dissolves in from the clip before (0 cuts, at most 600, and the first clip
+always cuts), and reel edits are padlocked, undoable project edits.
+`fm-replay` compiles a reel into an exact output timeline whose frames
+resolve to one or two recorded source layers with exact mix weights (a
+dissolve of `n` frames weights its `k`th frame `(k + 1) / (n + 1)` to the
+incoming clip and the rest to the outgoing one, so the reel is `n` frames
+shorter, and a dissolve longer than either clip is refused at export as
+`dissolve_too_long`); a
 music bed still plans once-through or looping playlists with linear
 crossfades, sample-exact ducking, merged nearby ducks, and an end fade. An
 export-during-record queue accepts only gap-free, closed segments, protects
@@ -5495,13 +5502,17 @@ per pixel per frame plus 4 KiB) above the 512 MiB recording floor, else it
 fails `output:space` (`output:space_unavailable` when free space cannot be
 read) before any part file exists, and the worker fails `output:space` when
 free space falls below that floor between chunks. A cancel removes both part
-files and releases the protection. Studio
-edits and exports reels in its Replay panel, and `freemix-cli` has local and
-remote reel commands with `remote-reel-export` polling to a terminal state.
-Remaining gaps: exports carry silent audio (no music bed, ducking, or decoded
-input audio); only cuts are compiled, clips play forward only, and dissolve is
-not wired; exports needing an open segment are refused rather than deferred;
-and nothing is certified. `OR-013` remains planned.
+files and releases the protection. The export blends a dissolve's two
+decoded layers with their exact weights (the native test exports a red to
+blue dissolve and reads red, an even mix, and blue from the file). Studio
+edits and exports reels in its Replay panel, each clip with a Dissolve
+field (off on the first clip, which a reorder or removal keeps a cut), and
+`freemix-cli` has local and remote reel commands (`--clips` records take an
+optional `/<dissolve>`) with `remote-reel-export` polling to a terminal
+state. Remaining gaps: exports carry silent audio (no music bed, ducking, or
+decoded input audio); clips play forward only; exports needing an open
+segment are refused rather than deferred; and nothing is certified.
+`OR-013` remains planned.
 
 Current end-to-end slice for items 1, 3, and 4: the show persists replay
 settings (up to four recorded inputs in angle order, a retention of 10 seconds

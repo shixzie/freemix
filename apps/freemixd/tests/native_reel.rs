@@ -148,7 +148,7 @@ fn save_project(path: &Path) {
     project.set_main_mix(MainMix::new(input(CAMERA), input(PREVIEW)));
     project
         .set_replay(ReplaySettings {
-            sources: vec![input(CAMERA)],
+            sources: vec![input(CAMERA), input(PREVIEW)],
             retention_seconds: 10,
             storage_root: None,
         })
@@ -433,6 +433,7 @@ fn clip(event: u32) -> fm_protocol::ReelClip {
         trim_in_frames: 0,
         trim_out_frames: 0,
         speed_percent: 100,
+        dissolve_frames: 0,
     }
 }
 
@@ -521,6 +522,49 @@ fn top_level_boxes(path: &Path) -> Vec<String> {
     }
     assert_eq!(at, bytes.len(), "the boxes do not end with the file");
     boxes
+}
+
+/// The RGB of the centre pixel of video frame `index` of `path`.
+fn centre_pixel(path: &Path, index: u64) -> [u8; 3] {
+    let output = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args([
+            "-vf",
+            &format!("select=eq(n\\,{index})"),
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "ffmpeg failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // 128x72 RGB: the centre is row 36, column 64.
+    let at = (36 * 128 + 64) * 3;
+    assert!(output.stdout.len() >= at + 3, "frame {index} is missing");
+    [
+        output.stdout[at],
+        output.stdout[at + 1],
+        output.stdout[at + 2],
+    ]
+}
+
+fn assert_near(found: [u8; 3], wanted: [u8; 3], what: &str) {
+    assert!(
+        found
+            .iter()
+            .zip(wanted)
+            .all(|(found, wanted)| found.abs_diff(wanted) <= 24),
+        "{what}: {found:?}, wanted about {wanted:?}"
+    );
 }
 
 fn assert_no_reel_failures(daemon: &NativeDaemon) {
@@ -625,6 +669,95 @@ fn native_daemon_exports_a_reel_with_the_exact_frame_count() {
     let mut remuxed = destination.as_os_str().to_os_string();
     remuxed.push(".faststart.part");
     assert!(!Path::new(&remuxed).exists());
+    assert_no_reel_failures(&daemon);
+}
+
+/// Schema 84: a reel that dissolves from one recorded angle (red) into
+/// another (blue) is that many frames shorter, and its overlap blends the
+/// two pictures linearly: red before, an even mix halfway, blue after.
+#[test]
+fn native_daemon_exports_a_dissolve_between_two_angles() {
+    if !tools_available() {
+        eprintln!("native reel dissolve skipped: FFmpeg tools unavailable");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("dissolve.freemix");
+    save_project(&project_path);
+    let daemon = match start_native(&project_path) {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            assert!(
+                std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+            );
+            eprintln!("native reel dissolve skipped: {error}");
+            return;
+        }
+    };
+    let mut client = Client::connect(daemon.address);
+    let (first, second) = two_complete_events(&mut client);
+    let first_event = &first.events[0];
+    let second_event = second
+        .events
+        .iter()
+        .find(|event| event.id != first_event.id)
+        .expect("the second event");
+    assert_eq!(first_event.out_frame - first_event.in_frame, 125);
+    assert_eq!(second_event.out_frame - second_event.in_frame, 125);
+    let dissolve: u32 = 25;
+    let expected = 125 + 125 - u64::from(dissolve);
+
+    client.reel(set_reel(ReelSpec {
+        id: REEL,
+        name: "Dissolve".into(),
+        clips: vec![
+            clip(first_event.id),
+            fm_protocol::ReelClip {
+                angle: input(PREVIEW),
+                dissolve_frames: dissolve,
+                ..clip(second_event.id)
+            },
+        ],
+    }));
+    let planned = client.poll_reel_status("the reel plan", |status| {
+        status
+            .reels
+            .first()
+            .is_some_and(|reel| reel.total_frames == Some(expected))
+    });
+    assert_eq!(planned.reels[0].error, None);
+
+    let destination = directory.path().join("dissolve.mp4");
+    client.reel(ReelOperation::Export {
+        job: JOB,
+        reel: REEL,
+        destination: destination.to_string_lossy().into_owned(),
+    });
+    let completed = client.poll_reel_status("the export completed", |status| {
+        status.exports.iter().any(|export| {
+            export.job == JOB
+                && matches!(
+                    export.state,
+                    ReelExportState::Completed | ReelExportState::Failed
+                )
+        })
+    });
+    let export = &completed.exports[0];
+    assert_eq!(export.failure, None);
+    assert_eq!(export.state, ReelExportState::Completed);
+    assert_eq!(export.completed_frames, expected);
+    let video = probe(&destination, "v:0");
+    let expected_text = expected.to_string();
+    assert_eq!(
+        video.get("nb_read_frames").map(String::as_str),
+        Some(expected_text.as_str())
+    );
+    // The overlap is output frames 100..125: frame 112 weights each angle
+    // 13/26.
+    assert_near(centre_pixel(&destination, 50), [210, 20, 20], "before");
+    assert_near(centre_pixel(&destination, 112), [115, 25, 115], "halfway");
+    assert_near(centre_pixel(&destination, 180), [20, 30, 210], "after");
     assert_no_reel_failures(&daemon);
 }
 

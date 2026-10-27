@@ -6846,6 +6846,7 @@ mod tests {
                 trim_in_frames: 0,
                 trim_out_frames: 0,
                 speed_percent: 100,
+                dissolve_frames: 0,
             }],
         };
         for operation in [

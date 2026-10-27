@@ -6537,15 +6537,17 @@ Usage:
       seconds, and an absolute storage root or the default root. Absent
       options keep their value.
   freemix-cli reel <show.freemix>
-  freemix-cli reel-set <show.freemix> --id <1..=18446744073709551615> --name <name> --clips <event>/<angle>/<in>/<out>/<speed>[,...] [--key <key>] [--expect <revision>]
+  freemix-cli reel-set <show.freemix> --id <1..=18446744073709551615> --name <name> --clips <event>/<angle>/<in>/<out>/<speed>[/<dissolve>][,...] [--key <key>] [--expect <revision>]
   freemix-cli reel-delete <show.freemix> --id <1..=18446744073709551615> [--key <key>] [--expect <revision>]
       Prints a project's highlight reels (id, name, clip count, and the
       compiled total frames when the local engine can plan them), replaces or
       creates one, or deletes one (Protocol 2.107, OR-013). --clips lists 1 to
-      64 comma-separated <event>/<angle>/<trim-in>/<trim-out>/<speed> records:
-      a nonzero event (1..=4294967295) and nonzero input angle, trims of
-      0..=216000 frames, a name of 1..=64 bytes, and a speed of 25, 50, 75,
-      or 100 percent. A project holds at most 8 reels. The compiled plan
+      64 comma-separated <event>/<angle>/<trim-in>/<trim-out>/<speed>[/<dissolve>]
+      records: a nonzero event (1..=4294967295) and nonzero input angle, trims
+      of 0..=216000 frames, a name of 1..=64 bytes, a speed of 25, 50, 75, or
+      100 percent, and the frames the clip dissolves in from the clip before
+      (0..=600, absent or 0 for a cut; the first clip always cuts; Protocol
+      2.111). A project holds at most 8 reels. The compiled plan
       needs recorded replay events, which a local project does not hold, so
       reel prints the stored clips and the plan error.
   freemix-cli live-lan <show.freemix>

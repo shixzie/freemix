@@ -1,17 +1,20 @@
-//! Highlight reels in `project.json` (OR-013, schema 83).
+//! Highlight reels in `project.json` (OR-013, schema 83; dissolves since
+//! schema 84).
 //!
 //! ```text
 //! "reels": [{"id": 1, "name": "Goals", "clips": [
-//!   {"event": 2, "angle": 1, "trim_in": 0, "trim_out": 0, "speed": 50}
+//!   {"event": 2, "angle": 1, "trim_in": 0, "trim_out": 0, "speed": 50, "dissolve": 0},
+//!   {"event": 3, "angle": 1, "trim_in": 0, "trim_out": 0, "speed": 100, "dissolve": 15}
 //! ]}]
 //! ```
 //!
 //! Reels are written in display order and their clips in play order. Each
 //! clip names a replay event, a recorded angle, trims before and after the
-//! event marks, and a speed in percent. An empty reel list is omitted.
-//! Unknown fields are refused; repeated ids, unusable names, angles that
-//! cannot be recorded, unsupported speeds, and out-of-range trims are also
-//! reported by project validation.
+//! event marks, a speed in percent, and the frames it dissolves in from the
+//! clip before (0 for a cut). An empty reel list is omitted. Unknown fields
+//! are refused; repeated ids, unusable names, angles that cannot be
+//! recorded, unsupported speeds, out-of-range trims, and a dissolving first
+//! clip or overlong dissolve are also reported by project validation.
 
 use core::fmt::Write as _;
 
@@ -42,12 +45,13 @@ pub(crate) fn write_reels(output: &mut String, project: &fm_model::Project) {
             write!(
                 output,
                 "{{\"event\": {}, \"angle\": {}, \"trim_in\": {}, \"trim_out\": {}, \
-                 \"speed\": {}}}",
+                 \"speed\": {}, \"dissolve\": {}}}",
                 clip.event,
                 clip.angle,
                 clip.trim_in_frames,
                 clip.trim_out_frames,
-                clip.speed_percent
+                clip.speed_percent,
+                clip.dissolve_frames
             )
             .expect("writing to a string cannot fail");
         }
@@ -86,6 +90,7 @@ fn parse_clip(value: Value) -> Result<ReelClip, DecodeError> {
     let trim_in_frames = clip.u32("trim_in")?;
     let trim_out_frames = clip.u32("trim_out")?;
     let speed_percent = clip.u8("speed")?;
+    let dissolve_frames = clip.u32("dissolve")?;
     clip.finish()?;
     Ok(ReelClip {
         event,
@@ -93,5 +98,6 @@ fn parse_clip(value: Value) -> Result<ReelClip, DecodeError> {
         trim_in_frames,
         trim_out_frames,
         speed_percent,
+        dissolve_frames,
     })
 }

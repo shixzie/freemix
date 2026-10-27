@@ -2666,6 +2666,7 @@ pub(crate) fn reel_status() -> fm_protocol::ReelStatusMessage {
         trim_in_frames: trim_in,
         trim_out_frames: trim_out,
         speed_percent: speed,
+        dissolve_frames: 0,
     };
     let reel = |id, name: &str, clips, total_frames, error: Option<&str>| ReelStatus {
         id,
@@ -2690,7 +2691,13 @@ pub(crate) fn reel_status() -> fm_protocol::ReelStatusMessage {
             reel(
                 1,
                 "Goal reel",
-                vec![clip(1, 1, 0, 0, 100), clip(1, 2, 12, 0, 50)],
+                vec![
+                    clip(1, 1, 0, 0, 100),
+                    ReelClip {
+                        dissolve_frames: 8,
+                        ..clip(1, 2, 12, 0, 50)
+                    },
+                ],
                 Some(250),
                 None,
             ),

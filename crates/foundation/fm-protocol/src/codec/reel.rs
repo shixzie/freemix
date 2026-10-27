@@ -4,7 +4,8 @@
 //! `reel_changed` carries `reel`, `name`, and `clips` (and, on the event,
 //! optional `total_frames` and `error`); `clips` is a comma-separated list of
 //! 1 to [`crate::MAX_REEL_CLIPS`]
-//! `<event>:<angle>:<trim in>:<trim out>:<speed>` records. A `reel_status`
+//! `<event>:<angle>:<trim in>:<trim out>:<speed>:<dissolve>` records, the
+//! first clip's `dissolve` 0. A `reel_status`
 //! carries two `;`-separated lists whose names, errors, destinations, and
 //! failures are percent-escaped inside their record and escaped again with
 //! the field.
@@ -14,9 +15,10 @@ use std::collections::BTreeSet;
 use fm_types::replay::ReplaySpeed;
 
 use crate::{
-    CodecError, MAX_REEL_CLIPS, MAX_REEL_EXPORTS, MAX_REELS, ReelClip, ReelExportState,
-    ReelExportStatus, ReelOperation, ReelSpec, ReelStatus, ReelStatusMessage, ReelStatusRequest,
-    reel_error_is_valid, reel_export_path_is_valid, reel_name_is_valid,
+    CodecError, MAX_REEL_CLIPS, MAX_REEL_DISSOLVE_FRAMES, MAX_REEL_EXPORTS, MAX_REELS, ReelClip,
+    ReelExportState, ReelExportStatus, ReelOperation, ReelSpec, ReelStatus, ReelStatusMessage,
+    ReelStatusRequest, clip_dissolve_is_valid, reel_error_is_valid, reel_export_path_is_valid,
+    reel_name_is_valid,
 };
 
 use super::MAX_FIELD_VALUE_BYTES;
@@ -71,8 +73,19 @@ fn check_clip(field: &'static str, clip: &ReelClip) -> Result<(), CodecError> {
     }
     if clip.trim_in_frames > crate::MAX_REEL_TRIM_FRAMES
         || clip.trim_out_frames > crate::MAX_REEL_TRIM_FRAMES
+        || clip.dissolve_frames > MAX_REEL_DISSOLVE_FRAMES
     {
         return Err(invalid(field, format!("{clip:?}")));
+    }
+    Ok(())
+}
+
+/// The first clip cuts (Protocol 2.111).
+fn check_dissolves(clips: &[ReelClip]) -> Result<(), CodecError> {
+    for (index, clip) in clips.iter().enumerate() {
+        if !clip_dissolve_is_valid(index, clip.dissolve_frames) {
+            return Err(invalid("clips", format!("{clip:?}")));
+        }
     }
     Ok(())
 }
@@ -90,7 +103,7 @@ fn check_spec(spec: &ReelSpec) -> Result<(), CodecError> {
     for clip in &spec.clips {
         check_clip("clips", clip)?;
     }
-    Ok(())
+    check_dissolves(&spec.clips)
 }
 
 fn check_status(status: &ReelStatus) -> Result<(), CodecError> {
@@ -117,8 +130,13 @@ fn check_export(status: &ReelExportStatus) -> Result<(), CodecError> {
 fn encode_clip(clip: &ReelClip) -> Result<String, CodecError> {
     check_clip("clips", clip)?;
     Ok(format!(
-        "{}:{}:{}:{}:{}",
-        clip.event, clip.angle, clip.trim_in_frames, clip.trim_out_frames, clip.speed_percent
+        "{}:{}:{}:{}:{}:{}",
+        clip.event,
+        clip.angle,
+        clip.trim_in_frames,
+        clip.trim_out_frames,
+        clip.speed_percent,
+        clip.dissolve_frames
     ))
 }
 
@@ -126,6 +144,7 @@ fn encode_clips(clips: &[ReelClip]) -> Result<String, CodecError> {
     if clips.is_empty() {
         return Err(invalid("clips", "empty"));
     }
+    check_dissolves(clips)?;
     bounded_join(clips, MAX_REEL_CLIPS, "clips", encode_clip)
 }
 
@@ -137,10 +156,11 @@ fn decode_clips(value: &str) -> Result<Vec<ReelClip>, CodecError> {
     if entries.len() > MAX_REEL_CLIPS {
         return Err(CodecError::TooManyItems("clips"));
     }
-    entries
+    let clips = entries
         .into_iter()
         .map(|entry| {
-            let [event, angle, trim_in, trim_out, speed] = entry.split(':').collect::<Vec<_>>()[..]
+            let [event, angle, trim_in, trim_out, speed, dissolve] =
+                entry.split(':').collect::<Vec<_>>()[..]
             else {
                 return Err(invalid("clips", entry));
             };
@@ -150,11 +170,14 @@ fn decode_clips(value: &str) -> Result<Vec<ReelClip>, CodecError> {
                 trim_in_frames: parse_number("clips", trim_in)?,
                 trim_out_frames: parse_number("clips", trim_out)?,
                 speed_percent: parse_number("clips", speed)?,
+                dissolve_frames: parse_number("clips", dissolve)?,
             };
             check_clip("clips", &clip)?;
             Ok(clip)
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    check_dissolves(&clips)?;
+    Ok(clips)
 }
 
 /// Encodes an operation's fields after its token (`payload`).

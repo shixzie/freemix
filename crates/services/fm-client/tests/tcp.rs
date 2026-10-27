@@ -2407,6 +2407,7 @@ fn reel_status(sequence: u64, request_id: Option<&str>) -> fm_protocol::ReelStat
                     trim_in_frames: 0,
                     trim_out_frames: 0,
                     speed_percent: 100,
+                    dissolve_frames: 0,
                 }],
             },
             total_frames: Some(300),

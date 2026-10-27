@@ -26,11 +26,12 @@
 
 use egui::{Checkbox, ComboBox, DragValue, Id, RichText, TextEdit, Ui};
 use fm_protocol::{
-    MAX_REEL_CLIPS, MAX_REEL_EXPORTS, MAX_REEL_TRIM_FRAMES, MAX_REELS, MAX_REPLAY_RECORD_SOURCES,
-    MAX_REPLAY_RETENTION_SECONDS, MIN_REPLAY_RETENTION_SECONDS, REPLAY_LAST_SECONDS, ReelClip,
-    ReelExportState, ReelExportStatus, ReelOperation, ReelSpec, ReelStatus, ReplayEventStatus,
-    ReplayOperation, ReplayPlayerStatus, ReplaySettings, ReplaySpeed, ReplayStatusMessage,
-    reel_export_path_is_valid, reel_name_is_valid, replay_event_name_is_valid,
+    MAX_REEL_CLIPS, MAX_REEL_DISSOLVE_FRAMES, MAX_REEL_EXPORTS, MAX_REEL_TRIM_FRAMES, MAX_REELS,
+    MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS, MIN_REPLAY_RETENTION_SECONDS,
+    REPLAY_LAST_SECONDS, ReelClip, ReelExportState, ReelExportStatus, ReelOperation, ReelSpec,
+    ReelStatus, ReplayEventStatus, ReplayOperation, ReplayPlayerStatus, ReplaySettings,
+    ReplaySpeed, ReplayStatusMessage, reel_export_path_is_valid, reel_name_is_valid,
+    replay_event_name_is_valid,
 };
 use fm_types::{FrameRate, InputId};
 
@@ -173,6 +174,7 @@ const fn clip_from(event: &ReplayEventStatus, angle: InputId) -> ReelClip {
         trim_in_frames: 0,
         trim_out_frames: 0,
         speed_percent: 100,
+        dissolve_frames: 0,
     }
 }
 
@@ -210,13 +212,14 @@ fn set_clip(reel: &ReelStatus, index: usize, clip: ReelClip) -> Option<ReelOpera
 }
 
 /// Removes clip `index` from `reel`; the last clip stays because a reel
-/// must hold at least one.
+/// must hold at least one. A clip that becomes first cuts in.
 fn remove_clip(reel: &ReelStatus, index: usize) -> Option<ReelOperation> {
     if reel.spec.clips.len() <= 1 || index >= reel.spec.clips.len() {
         return None;
     }
     let mut spec = reel.spec.clone();
     spec.clips.remove(index);
+    spec.clips[0].dissolve_frames = 0;
     Some(ReelOperation::Set(Box::new(spec)))
 }
 
@@ -232,6 +235,8 @@ fn move_clip(reel: &ReelStatus, index: usize, up: bool) -> Option<ReelOperation>
     }
     let mut spec = reel.spec.clone();
     spec.clips.swap(index, target);
+    // The first clip always cuts in.
+    spec.clips[0].dissolve_frames = 0;
     Some(ReelOperation::Set(Box::new(spec)))
 }
 
@@ -1088,10 +1093,10 @@ fn draw_clip(
             .on_hover_text(l.text(Msg::ReelClipAngleHover));
         ui.label(caption(l.text(Msg::MediaTrimIn)))
             .on_hover_text(l.text(Msg::ReelClipTrimInHover));
-        draw_trim(ui, l, reel, index, clip, edit, true, intents);
+        draw_frames(ui, l, reel, index, clip, edit, ClipFrames::TrimIn, intents);
         ui.label(caption(l.text(Msg::MediaTrimOut)))
             .on_hover_text(l.text(Msg::ReelClipTrimOutHover));
-        draw_trim(ui, l, reel, index, clip, edit, false, intents);
+        draw_frames(ui, l, reel, index, clip, edit, ClipFrames::TrimOut, intents);
         ComboBox::from_id_salt(("studio-reel-speed", reel.id, index))
             .selected_text(l.percent(i64::from(clip.speed_percent)))
             .width(66.0)
@@ -1119,6 +1124,20 @@ fn draw_clip(
             })
             .response
             .on_hover_text(l.text(Msg::ReelClipSpeedHover));
+        ui.label(caption(l.text(Msg::ReelClipDissolve)))
+            .on_hover_text(l.text(Msg::ReelClipDissolveHover));
+        // The first clip always cuts in.
+        let dissolve_edit = edit.or((index == 0).then_some(Msg::ReelReasonFirstClipCuts.en()));
+        draw_frames(
+            ui,
+            l,
+            reel,
+            index,
+            clip,
+            dissolve_edit,
+            ClipFrames::Dissolve,
+            intents,
+        );
     });
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
@@ -1172,34 +1191,68 @@ fn draw_clip(
     });
 }
 
-#[allow(clippy::too_many_arguments)] // one trim field's draft and its reel clip
-fn draw_trim(
+/// A clip's frame-count fields.
+#[derive(Clone, Copy, Debug, Hash)]
+enum ClipFrames {
+    TrimIn,
+    TrimOut,
+    /// Frames the clip dissolves in over the clip before (schema 84).
+    Dissolve,
+}
+
+impl ClipFrames {
+    const fn value(self, clip: ReelClip) -> u32 {
+        match self {
+            Self::TrimIn => clip.trim_in_frames,
+            Self::TrimOut => clip.trim_out_frames,
+            Self::Dissolve => clip.dissolve_frames,
+        }
+    }
+
+    const fn set(self, clip: &mut ReelClip, frames: u32) {
+        match self {
+            Self::TrimIn => clip.trim_in_frames = frames,
+            Self::TrimOut => clip.trim_out_frames = frames,
+            Self::Dissolve => clip.dissolve_frames = frames,
+        }
+    }
+
+    const fn maximum(self) -> u32 {
+        match self {
+            Self::TrimIn | Self::TrimOut => MAX_REEL_TRIM_FRAMES,
+            Self::Dissolve => MAX_REEL_DISSOLVE_FRAMES,
+        }
+    }
+
+    const fn hover(self) -> Msg {
+        match self {
+            Self::TrimIn => Msg::ReelClipTrimInHover,
+            Self::TrimOut => Msg::ReelClipTrimOutHover,
+            Self::Dissolve => Msg::ReelClipDissolveHover,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // one frame field's draft and its reel clip
+fn draw_frames(
     ui: &mut Ui,
     l: Locale,
     reel: &ReelStatus,
     index: usize,
     clip: ReelClip,
     edit: Option<&'static str>,
-    before: bool,
+    field: ClipFrames,
     intents: &mut Vec<StudioIntent>,
 ) {
-    let value = if before {
-        clip.trim_in_frames
-    } else {
-        clip.trim_out_frames
-    };
-    let id = Id::new(("studio-reel-trim", reel.id, index, before));
+    let value = field.value(clip);
+    let id = Id::new(("studio-reel-frames", reel.id, index, field));
     let mut frames = ui.data(|data| data.get_temp::<u32>(id)).unwrap_or(value);
-    let hover = if before {
-        Msg::ReelClipTrimInHover
-    } else {
-        Msg::ReelClipTrimOutHover
-    };
+    let hover = field.hover();
     let response = ui
         .add_enabled(
             edit.is_none(),
             DragValue::new(&mut frames)
-                .range(0..=MAX_REEL_TRIM_FRAMES)
+                .range(0..=field.maximum())
                 .suffix(" fr"),
         )
         .hint(
@@ -1213,11 +1266,7 @@ fn draw_trim(
     }
     if (response.drag_stopped() || response.lost_focus()) && frames != value {
         let mut updated = clip;
-        if before {
-            updated.trim_in_frames = frames;
-        } else {
-            updated.trim_out_frames = frames;
-        }
+        field.set(&mut updated, frames);
         if let Some(operation) = set_clip(reel, index, updated) {
             intents.push(StudioIntent::Reel(operation));
         }
@@ -1526,6 +1575,7 @@ mod tests {
                 trim_in_frames: 0,
                 trim_out_frames: 0,
                 speed_percent: 100,
+                dissolve_frames: 0,
             }]
         );
 
@@ -1537,16 +1587,22 @@ mod tests {
         assert_eq!(spec.clips.last().map(|clip| clip.event), Some(event.id));
         assert_eq!(spec.clips.last().map(|clip| clip.speed_percent), Some(100));
 
+        // The second clip dissolves in; whichever clip becomes first cuts.
+        assert_eq!(reel.spec.clips[1].dissolve_frames, 8);
+        let cut = ReelClip {
+            dissolve_frames: 0,
+            ..reel.spec.clips[1]
+        };
         let Some(ReelOperation::Set(spec)) = move_clip(reel, 0, false) else {
             panic!("Move down must set the reel");
         };
-        assert_eq!(spec.clips[0], reel.spec.clips[1]);
+        assert_eq!(spec.clips[0], cut);
         assert_eq!(spec.clips[1], reel.spec.clips[0]);
 
         let Some(ReelOperation::Set(spec)) = remove_clip(reel, 0) else {
             panic!("Remove clip must set the reel");
         };
-        assert_eq!(spec.clips, vec![reel.spec.clips[1]]);
+        assert_eq!(spec.clips, vec![cut]);
 
         assert_eq!(
             rename_reel(reel, "Goals"),

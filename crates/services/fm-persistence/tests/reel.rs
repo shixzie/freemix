@@ -93,6 +93,7 @@ fn clip(event: u32, angle: u128, trim_in: u32, trim_out: u32, speed: u8) -> Reel
         trim_in_frames: trim_in,
         trim_out_frames: trim_out,
         speed_percent: speed,
+        dissolve_frames: 0,
     }
 }
 
@@ -136,7 +137,13 @@ fn reels_round_trip_exactly_and_strictly_in_project_json() {
         .set_reel(reel(
             2,
             "Best \"goals\"",
-            vec![clip(7, 3, 15, 30, 50), clip(2, 1, 0, 12, 100)],
+            vec![
+                clip(7, 3, 15, 30, 50),
+                ReelClip {
+                    dissolve_frames: 6,
+                    ..clip(2, 1, 0, 12, 100)
+                },
+            ],
         ))
         .unwrap();
     expected
@@ -151,15 +158,17 @@ fn reels_round_trip_exactly_and_strictly_in_project_json() {
     let text = fs::read_to_string(&manifest).unwrap();
     let reels = "\"reels\": [{\"id\": 2, \"name\": \"Best \\\"goals\\\"\", \"clips\": \
                  [{\"event\": 7, \"angle\": 3, \"trim_in\": 15, \"trim_out\": 30, \"speed\": \
-                 50}, {\"event\": 2, \"angle\": 1, \"trim_in\": 0, \"trim_out\": 12, \"speed\": \
-                 100}]}, {\"id\": 1, \"name\": \"Warm-up\", \"clips\": [{\"event\": 5, \"angle\": \
-                 2, \"trim_in\": 4, \"trim_out\": 0, \"speed\": 25}]}]";
+                 50, \"dissolve\": 0}, {\"event\": 2, \"angle\": 1, \"trim_in\": 0, \"trim_out\": \
+                 12, \"speed\": 100, \"dissolve\": 6}]}, {\"id\": 1, \"name\": \"Warm-up\", \
+                 \"clips\": [{\"event\": 5, \"angle\": 2, \"trim_in\": 4, \"trim_out\": 0, \
+                 \"speed\": 25, \"dissolve\": 0}]}]";
     assert!(text.contains(reels), "{text}");
 
     for (from, to) in [
         // Syntax: every field is required and nothing else is accepted.
         ("\"speed\": 50", "\"speed\": 50, \"fade\": 1"),
         (", \"trim_out\": 30", ""),
+        (", \"dissolve\": 6", ""),
         (
             "{\"id\": 1, \"name\": \"Warm-up\"",
             "{\"id\": 2, \"name\": \"Warm-up\"",
@@ -169,9 +178,16 @@ fn reels_round_trip_exactly_and_strictly_in_project_json() {
         ("\"angle\": 3", "\"angle\": 9"),
         ("\"speed\": 50", "\"speed\": 60"),
         ("\"name\": \"Warm-up\"", "\"name\": \"  \""),
+        // A first clip that dissolves, and a dissolve over ten seconds at
+        // 60 frames per second (schema 84).
+        (
+            "\"speed\": 50, \"dissolve\": 0",
+            "\"speed\": 50, \"dissolve\": 1",
+        ),
+        ("\"dissolve\": 6", "\"dissolve\": 601"),
         (
             "\"clips\": [{\"event\": 5, \"angle\": 2, \"trim_in\": 4, \"trim_out\": 0, \"speed\": \
-             25}]",
+             25, \"dissolve\": 0}]",
             "\"clips\": []",
         ),
     ] {
@@ -190,15 +206,15 @@ fn reels_round_trip_exactly_and_strictly_in_project_json() {
     // The previous schema is refused outright; no migration path exists.
     fs::write(
         &manifest,
-        text.replacen("\"schema_version\": 83", "\"schema_version\": 82", 1),
+        text.replacen("\"schema_version\": 84", "\"schema_version\": 83", 1),
     )
     .unwrap();
     assert!(matches!(
         store.load(),
         Err(StoreError::Validation(
             ProjectValidationError::UnsupportedSchema {
-                found: 82,
-                supported: 83
+                found: 83,
+                supported: 84
             }
         ))
     ));

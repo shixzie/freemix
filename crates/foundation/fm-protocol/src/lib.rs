@@ -206,10 +206,11 @@ pub use recorder_status::{
     MAX_RECORDER_STATUS_SAMPLES, RecorderRealizedState, RecorderStatusMessage, RecorderStatusSample,
 };
 pub use reel::{
-    MAX_REEL_CLIPS, MAX_REEL_ERROR_BYTES, MAX_REEL_EXPORTS, MAX_REEL_NAME_BYTES,
-    MAX_REEL_PATH_BYTES, MAX_REEL_TRIM_FRAMES, MAX_REELS, ReelClip, ReelExportState,
-    ReelExportStatus, ReelOperation, ReelSpec, ReelSpecError, ReelStatus, ReelStatusMessage,
-    ReelStatusRequest, reel_error_is_valid, reel_export_path_is_valid, reel_name_is_valid,
+    MAX_REEL_CLIPS, MAX_REEL_DISSOLVE_FRAMES, MAX_REEL_ERROR_BYTES, MAX_REEL_EXPORTS,
+    MAX_REEL_NAME_BYTES, MAX_REEL_PATH_BYTES, MAX_REEL_TRIM_FRAMES, MAX_REELS, ReelClip,
+    ReelExportState, ReelExportStatus, ReelOperation, ReelSpec, ReelSpecError, ReelStatus,
+    ReelStatusMessage, ReelStatusRequest, clip_dissolve_is_valid, reel_error_is_valid,
+    reel_export_path_is_valid, reel_name_is_valid,
 };
 pub use replay::{
     DEFAULT_REPLAY_RETENTION_SECONDS, MAX_REPLAY_EVENT_NAME_BYTES, MAX_REPLAY_EVENTS,

@@ -127,6 +127,7 @@ fn spec(id: u64, event: u32, angle: u128) -> ReelSpec {
             trim_in_frames: 0,
             trim_out_frames: 0,
             speed_percent: 100,
+            dissolve_frames: 0,
         }],
     }
 }
@@ -451,6 +452,92 @@ fn export_resolves_exact_frames_protects_segments_and_refuses_partial_or_existin
     assert_eq!(rejection(&outcome).code, RejectionCode::Conflict);
     assert_eq!(rejection(&outcome).fields[0].code, "destination_exists");
     std::fs::remove_file(existing).unwrap();
+}
+
+/// Schema 84: a clip with `dissolve_frames` overlaps the end of the clip
+/// before it, so the reel is that much shorter, and every frame of the
+/// overlap reads both clips' recorded frames with linear weights summing to
+/// one; a dissolve longer than either clip is refused at export.
+#[test]
+fn a_dissolve_overlaps_two_clips_with_linear_weights() {
+    let (mut engine, mut recording) = external_engine(&[1], 60);
+    recording.record(&mut engine, input(1), 6 * FPS);
+    capture_last(&mut engine, "first", 5);
+    recording.record(&mut engine, input(1), 6 * FPS);
+    capture_last(&mut engine, "second", 5);
+    // A frame later closes the segment holding the second event's last frame.
+    recording.record(&mut engine, input(1), FPS);
+    let events = engine.replay_status().events;
+    let (first, second) = (events[0].clone(), events[1].clone());
+    assert!(first.complete && second.complete);
+    let first_len = first.out_frame - first.in_frame;
+    let second_len = second.out_frame - second.in_frame;
+    let mut dissolving = spec(1, first.id, 1);
+    dissolving.clips.push(ReelClip {
+        dissolve_frames: 10,
+        ..spec(1, second.id, 1).clips[0]
+    });
+    reel(&mut engine, "set", dissolving.clone());
+    let total = engine.reel_plan(1).unwrap();
+    assert_eq!(total, first_len + second_len - 10);
+    export(&mut engine, "export", 1, 1, "/srv/reels/dissolve.mp4");
+    let mut frames = Vec::new();
+    loop {
+        let chunk = engine.reel_export_chunk(1, 64).unwrap();
+        frames.extend(chunk.frames_out);
+        if chunk.completed {
+            break;
+        }
+    }
+    assert_eq!(frames.len(), usize::try_from(total).unwrap());
+    let start = first_len - 10;
+    for (output, frame) in frames.iter().enumerate() {
+        let output = u64::try_from(output).unwrap();
+        if output < start || output >= first_len {
+            assert_eq!(frame.layers.len(), 1, "frame {output}");
+            continue;
+        }
+        // Overlap frame k weights the outgoing clip (10 - k) / 11 and the
+        // incoming one (k + 1) / 11, the outgoing clip first.
+        let k = u32::try_from(output - start).unwrap();
+        let [outgoing, incoming] = &frame.layers[..] else {
+            panic!("frame {output} has {} layers", frame.layers.len());
+        };
+        assert_eq!((outgoing.weight_num, outgoing.weight_den), (10 - k, 11));
+        assert_eq!((incoming.weight_num, incoming.weight_den), (k + 1, 11));
+        assert_ne!(
+            (&outgoing.path, outgoing.frame),
+            (&incoming.path, incoming.frame),
+            "frame {output} reads one recorded frame twice"
+        );
+    }
+    engine.reel_export_finished(1, 1_000).unwrap();
+
+    // A dissolve longer than the clips it joins leaves the reel unplayable.
+    dissolving.clips[1].dissolve_frames = 600;
+    reel(&mut engine, "too-long", dissolving);
+    assert!(engine.reel_plan(1).is_err());
+    let outcome = execute(
+        &mut engine,
+        "export-too-long",
+        EngineCommand::Reel(EngineReelOperation::Export {
+            job: 2,
+            reel: 1,
+            destination: "/srv/reels/too-long.mp4".to_owned(),
+        }),
+    );
+    assert_eq!(rejection(&outcome).code, RejectionCode::InvalidCommand);
+    assert_eq!(rejection(&outcome).fields[0].code, "dissolve_too_long");
+
+    // The first clip always cuts.
+    let mut first_dissolves = spec(2, first.id, 1);
+    first_dissolves.clips[0].dissolve_frames = 5;
+    let outcome = execute(
+        &mut engine,
+        "first-dissolves",
+        EngineCommand::Reel(EngineReelOperation::Set(Box::new(first_dissolves))),
+    );
+    assert_eq!(rejection(&outcome).fields[0].code, "invalid_dissolve");
 }
 
 #[test]

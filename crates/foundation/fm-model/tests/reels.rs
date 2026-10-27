@@ -69,6 +69,7 @@ fn clip(event: u32, angle: InputId) -> ReelClip {
         trim_in_frames: 0,
         trim_out_frames: 0,
         speed_percent: 100,
+        dissolve_frames: 0,
     }
 }
 
@@ -86,7 +87,7 @@ fn ids(project: &Project) -> Vec<u64> {
 
 #[test]
 fn reels_replace_remove_and_restore_in_order() {
-    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 83);
+    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 84);
     let mut project = project();
     assert!(project.reels().is_empty());
     let second = reel(2, "Second", input(1));

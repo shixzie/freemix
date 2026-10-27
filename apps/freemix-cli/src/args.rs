@@ -1931,7 +1931,8 @@ pub enum ArgsError {
     InvalidReplay(fm_protocol::ReplaySettingsError),
     /// A highlight reel is unusable (OR-013).
     InvalidReel(fm_protocol::ReelSpecError),
-    /// A `--clips` record is not `<event>/<angle>/<in>/<out>/<speed>`.
+    /// A `--clips` record is not `<event>/<angle>/<in>/<out>/<speed>`
+    /// with an optional `/<dissolve>`.
     InvalidReelClip(String),
     /// A reel export destination is not an absolute, bounded path.
     InvalidReelDestination,
@@ -1987,7 +1988,7 @@ impl core::fmt::Display for ArgsError {
             Self::InvalidReelClip(value) => write!(
                 formatter,
                 "invalid reel clip `{value}`; expected \
-                 <event>/<angle>/<trim-in>/<trim-out>/<speed>"
+                 <event>/<angle>/<trim-in>/<trim-out>/<speed>[/<dissolve>]"
             ),
             Self::InvalidReelDestination => write!(
                 formatter,
@@ -5992,16 +5993,24 @@ fn reel_destination(value: String) -> Result<String, ArgsError> {
 }
 
 /// The `--clips` list (OR-013): 1 to [`fm_protocol::MAX_REEL_CLIPS`]
-/// `<event>/<angle>/<trim-in>/<trim-out>/<speed>` records, comma separated.
-/// Each event and angle is nonzero, each trim is at most
-/// [`fm_protocol::MAX_REEL_TRIM_FRAMES`], and each speed is 25, 50, 75, or
-/// 100 percent.
+/// `<event>/<angle>/<trim-in>/<trim-out>/<speed>[/<dissolve>]` records,
+/// comma separated. Each event and angle is nonzero, each trim is at most
+/// [`fm_protocol::MAX_REEL_TRIM_FRAMES`], each speed is 25, 50, 75, or 100
+/// percent, and `dissolve` (frames, 0 or absent for a cut) is at most
+/// [`fm_protocol::MAX_REEL_DISSOLVE_FRAMES`] and absent or 0 on the first
+/// clip.
 fn reel_clips(value: &str) -> Result<Vec<fm_protocol::ReelClip>, ArgsError> {
     let mut clips = Vec::new();
     for record in value.split(',') {
         let fields: Vec<&str> = record.split('/').collect();
-        let [event, angle, trim_in, trim_out, speed] = fields.as_slice() else {
-            return Err(ArgsError::InvalidReelClip(record.to_owned()));
+        let (event, angle, trim_in, trim_out, speed, dissolve) = match fields.as_slice() {
+            [event, angle, trim_in, trim_out, speed] => {
+                (event, angle, trim_in, trim_out, speed, None)
+            }
+            [event, angle, trim_in, trim_out, speed, dissolve] => {
+                (event, angle, trim_in, trim_out, speed, Some(dissolve))
+            }
+            _ => return Err(ArgsError::InvalidReelClip(record.to_owned())),
         };
         let event: u32 = number(event, "reel clip event")?;
         if event == 0 {
@@ -6030,12 +6039,20 @@ fn reel_clips(value: &str) -> Result<Vec<fm_protocol::ReelClip>, ArgsError> {
                 speed,
             )));
         }
+        let dissolve: u32 = match dissolve {
+            Some(frames) => number(frames, "reel clip dissolve")?,
+            None => 0,
+        };
+        if !fm_protocol::clip_dissolve_is_valid(clips.len(), dissolve) {
+            return Err(ArgsError::InvalidReel(fm_protocol::ReelSpecError::Dissolve));
+        }
         clips.push(fm_protocol::ReelClip {
             event,
             angle,
             trim_in_frames: trim_in,
             trim_out_frames: trim_out,
             speed_percent: speed,
+            dissolve_frames: dissolve,
         });
     }
     if clips.len() > fm_protocol::MAX_REEL_CLIPS {
@@ -11214,6 +11231,7 @@ mod tests {
             trim_in_frames: trim_in,
             trim_out_frames: trim_out,
             speed_percent: speed,
+            dissolve_frames: 0,
         };
         let spec = Box::new(fm_protocol::ReelSpec {
             id: 3,
