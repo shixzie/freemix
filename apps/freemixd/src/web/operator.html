@@ -127,6 +127,13 @@
   .loudness[data-stale="1"] .readout b { opacity: .35; }
   .loudness button { margin-left: auto; }
   .row .lufs { flex: 0 1 auto; font-size: .8rem; font-variant-numeric: tabular-nums; color: #ddd; }
+  /* Each strip's share of Program as a peak bar (green, amber past -6 dBFS,
+     red past -1 dBFS); dimmed with the meters when they are stale. */
+  .row .lvl { flex: 0 0 4.5rem; height: .45rem; border-radius: 3px; background: #1a1a1a; overflow: hidden; }
+  .row .lvl .fill { display: block; height: 100%; width: 0; background: #3c3; }
+  .row .lvl[data-level="warm"] .fill { background: #ffb347; }
+  .row .lvl[data-level="hot"] .fill { background: #e33; }
+  .row .lvl[data-stale="1"] { opacity: .35; }
   .row button.reset { min-width: 0; margin-left: 0; }
   /* Live source clock drift correction (AU-004): one read-only row per
      source, its figures as compact readouts. */
@@ -403,6 +410,42 @@
   // fired, and how long its acknowledgement and silence still hold (null
   // when none). This block uses nothing else on the page: the daemon's
   // tests run it under Node.js against records the Rust codec renders.
+  // ---- Strip meters (AU-005) begin ----
+  // `audio_meters` `inputs`: `;`-separated `<input>~<channels>` entries, each
+  // channel `<peak>:<rms>` millionths of full scale, comma separated; the
+  // page keeps each input's loudest channel.
+  const INPUT_METERS = (() => {
+    function parse(value) {
+      const meters = new Map();
+      if (!value) return meters;
+      for (const entry of value.split(";")) {
+        const at = entry.indexOf("~");
+        const input = entry.slice(0, at);
+        if (at <= 0 || !/^[1-9][0-9]*$/.test(input)) throw new Error("malformed input meter");
+        let peak = 0;
+        let rms = 0;
+        for (const channel of entry.slice(at + 1).split(",")) {
+          const [channelPeak, channelRms] = channel.split(":").map(Number);
+          if (!Number.isFinite(channelPeak) || !Number.isFinite(channelRms)) {
+            throw new Error("malformed input meter");
+          }
+          peak = Math.max(peak, channelPeak / 1e6);
+          rms = Math.max(rms, channelRms / 1e6);
+        }
+        meters.set(input, { peak, rms });
+      }
+      return meters;
+    }
+    // A peak's bar: its share of the -60..0 dBFS scale, and its colour.
+    function bar(peak) {
+      const db = peak > 0 ? 20 * Math.log10(peak) : -Infinity;
+      const share = Number.isFinite(db) ? Math.min(1, Math.max(0, (db + 60) / 60)) : 0;
+      return { db, share, level: db > -1 ? "hot" : db > -6 ? "warm" : "ok" };
+    }
+    return { parse, bar };
+  })();
+  // ---- Strip meters (AU-005) end ----
+
   const HEALTH = (() => {
     // Every alert rule in wire order -> label key.
     const RULES = {
@@ -669,6 +712,7 @@
       loudnessResetStripHover: "Start {input}'s integrated loudness, loudness range, and highest true peak over from now; every console sees the reset",
       loudnessStripHover: "{input}'s share of Program (ITU-R BS.1770 / EBU R128): short-term {short} LUFS, momentary {momentary} LUFS, integrated {integrated} LUFS, loudness range {range} LU; true peak {peak} dBTP, highest {max} dBTP",
       loudnessStripIdle: "No loudness measured for {input} yet: it is measured while it is heard on Program",
+      stripLevelHover: "{input}'s share of Program: peak {peak} dBFS",
       commandLoudnessReset: "Reset the loudness of {bus}",
       programLoudnessBus: "Program",
       audio: "Audio",
@@ -1051,6 +1095,7 @@
       loudnessResetStripHover: "Vuelve a empezar desde ahora la sonoridad integrada, el rango de sonoridad y el pico real más alto de {input}; todas las consolas ven el reinicio",
       loudnessStripHover: "La parte de {input} en Programa (ITU-R BS.1770 / EBU R128): corto plazo {short} LUFS, momentánea {momentary} LUFS, integrada {integrated} LUFS, rango de sonoridad {range} LU; pico real {peak} dBTP, el más alto {max} dBTP",
       loudnessStripIdle: "Aún no se ha medido la sonoridad de {input}: se mide mientras se oye en Programa",
+      stripLevelHover: "La parte de {input} en Programa: pico {peak} dBFS",
       commandLoudnessReset: "Reiniciar la sonoridad de {bus}",
       programLoudnessBus: "Programa",
       audio: "Audio",
@@ -1396,6 +1441,8 @@
     recorders: null, recordersAt: 0, recorderSequence: -1,
     streams: new Map(), streamsAt: 0, streamSequence: -1,
     meters: null, metersAt: 0, meterSequence: -1,
+    // `audio_meters` `inputs`: input id -> its loudest channel's reading.
+    inputMeters: new Map(),
     // `audio_meters` `loudness` (Protocol 2.94 on the Web): target
     // ("master" or an input id) -> its readings.
     loudness: new Map(),
@@ -2129,6 +2176,7 @@
         const sequence = freshLossy(record, telemetry.meterSequence);
         if (sequence < 0) return LOSSY;
         telemetry.meters = parseMeterChannels(required(record, "master"));
+        telemetry.inputMeters = INPUT_METERS.parse(record.fields.get("inputs") || "");
         telemetry.loudness = parseLoudness(required(record, "loudness"));
         telemetry.dynamics = FX_GR.parse(required(record, "dynamics"));
         telemetry.metersAt = Date.now();
@@ -2535,7 +2583,7 @@
     syncChildren(ui.strips, ids, (id) => {
       const row = document.createElement("div");
       row.className = "row";
-      row.innerHTML = "<span class=\"name\"></span><span class=\"lufs\" role=\"status\" aria-live=\"off\"></span><button type=\"button\" class=\"reset\" aria-describedby=\"why-audio\"></button><button type=\"button\" class=\"mute\" aria-describedby=\"why-audio\"></button>";
+      row.innerHTML = "<span class=\"name\"></span><span class=\"lvl\" role=\"meter\" aria-valuemin=\"0\" aria-valuemax=\"100\"><span class=\"fill\"></span></span><span class=\"lufs\" role=\"status\" aria-live=\"off\"></span><button type=\"button\" class=\"reset\" aria-describedby=\"why-audio\"></button><button type=\"button\" class=\"mute\" aria-describedby=\"why-audio\"></button>";
       row.querySelector(".mute").addEventListener("click", () => toggleMute(id));
       row.querySelector(".reset").addEventListener("click", () => resetLoudness(id));
       return row;
@@ -3000,6 +3048,22 @@
       const input = show.inputs.find((candidate) => candidate.id === id);
       const lufs = row.querySelector(".lufs");
       if (!input || !lufs) continue;
+      const lvl = row.querySelector(".lvl");
+      if (lvl) {
+        const meter = live && !stale && telemetry.inputMeters ? telemetry.inputMeters.get(id) : undefined;
+        const level = INPUT_METERS.bar(meter ? meter.peak : 0);
+        lvl.hidden = !live || !telemetry.meters;
+        lvl.dataset.stale = stale ? "1" : "0";
+        lvl.dataset.level = level.level;
+        lvl.querySelector(".fill").style.width = (level.share * 100).toFixed(1) + "%";
+        lvl.setAttribute("aria-valuenow", String(Math.round(level.share * 100)));
+        const peakText = Number.isFinite(level.db)
+          ? level.db.toLocaleString(language, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+          : tr("meterSilent");
+        const levelHover = tr("stripLevelHover", { input: input.label, peak: peakText });
+        lvl.title = levelHover;
+        lvl.setAttribute("aria-label", levelHover);
+      }
       const reading = live && !stale ? telemetry.loudness.get(id) : undefined;
       lufs.hidden = !live || !telemetry.meters;
       const text = "S " + loudnessText(reading ? reading.short : null);

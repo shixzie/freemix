@@ -5198,7 +5198,11 @@ Screenshots against a native daemon recording and streaming a media clip:
 `docs/progress/web-operator-recording-meters.png`,
 `docs/progress/web-operator-recording-meters-phone-es.png`, and
 `docs/progress/web-tally-recording.png`.
-Remaining gaps: no per-input meters or audio tally on the pages, the tally
+The operator page now draws each strip's share of Program as a peak bar
+(green, amber past -6 dBFS, red past -1 dBFS) from the Web meter record,
+which carries the first 32 inputs' meters (no wire change; the page's
+parser is checked under Node.js against the Rust codec's record).
+Remaining gaps: no audio tally on the pages, the tally
 receives meters it only draws as a thin level (there is no per-session
 opt-out), and the simulated daemon sends no meters or realized recorder
 state.

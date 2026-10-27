@@ -183,8 +183,10 @@ impl WebFeed {
 pub(crate) const WEB_LOUDNESS_INPUTS: usize = 32;
 
 /// The Master/Program part of `meters` a Web page shows: the same interval
-/// and Master channels, without per-input or monitor meters, so the record
-/// stays small however many inputs the show has. Loudness (Protocol 2.94)
+/// and Master channels, the per-input meters of the first
+/// [`WEB_LOUDNESS_INPUTS`] inputs (each strip's share of Program, which the
+/// operator page draws as a level bar on its strip), and no monitor meters,
+/// so the record stays small however many inputs the show has. Loudness (Protocol 2.94)
 /// is kept for Master and the first [`WEB_LOUDNESS_INPUTS`] metered strips,
 /// which the operator page shows with each bus's loudness reset; gain
 /// reduction (Protocol 2.103) likewise for Master and the first
@@ -225,7 +227,12 @@ pub(crate) fn web_meters(meters: &AudioMetersMessage) -> AudioMetersMessage {
         start_sample: meters.start_sample,
         end_sample: meters.end_sample,
         master: meters.master.clone(),
-        inputs: Vec::new(),
+        inputs: meters
+            .inputs
+            .iter()
+            .take(WEB_LOUDNESS_INPUTS)
+            .cloned()
+            .collect(),
         monitor: None,
         dynamics: master_dynamics.chain(strip_dynamics).copied().collect(),
         loudness: master.chain(strips).copied().collect(),
@@ -286,7 +293,7 @@ mod tests {
         };
         let web = web_meters(&meters);
         assert_eq!(web.master, meters.master);
-        assert_eq!(web.inputs, Vec::new());
+        assert_eq!(web.inputs, meters.inputs);
         assert_eq!(web.loudness, all[..=WEB_LOUDNESS_INPUTS]);
         // The record still encodes as a valid wire line.
         assert!(fm_protocol::encode_line(&fm_protocol::WireMessage::AudioMeters(web)).is_ok());

@@ -4756,3 +4756,132 @@ fn web_sessions_never_see_hidden_values_in_cue_lists_shortcuts_or_scripts() {
     let line = seen.last().unwrap();
     assert!(!carries(line, "cue-secret"), "{line}");
 }
+
+/// Field `name` of the wire line `line`, unescaped (ASCII values only).
+fn field_value(line: &str, name: &str) -> String {
+    let prefix = format!("{name}=");
+    let escaped = line
+        .trim_end()
+        .split('\t')
+        .find_map(|field| field.strip_prefix(prefix.as_str()))
+        .expect("the record's field");
+    let mut value = String::new();
+    let bytes = escaped.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'%' {
+            let hex = std::str::from_utf8(&bytes[at + 1..at + 3]).unwrap();
+            value.push(char::from(u8::from_str_radix(hex, 16).unwrap()));
+            at += 3;
+        } else {
+            value.push(char::from(bytes[at]));
+            at += 1;
+        }
+    }
+    value
+}
+
+fn page_input_meters(page: &str) -> &str {
+    let begin = "  // ---- Strip meters (AU-005) begin ----\n";
+    let start = page.find(begin).expect("strip meters block begin");
+    let end = page[start..]
+        .find("  // ---- Strip meters (AU-005) end ----")
+        .expect("strip meters block end");
+    &page[start..start + end]
+}
+
+/// The operator page's strip meters read the per-input meters exactly as
+/// the Rust codec renders them (each input's loudest channel), refuse
+/// malformed entries, and colour a bar by its peak (checked under Node.js
+/// when it is on the `PATH`).
+#[test]
+fn operator_page_reads_strip_meters_like_the_rust_codec() {
+    use fm_protocol::{AudioMeterChannel, AudioMetersMessage, InputAudioMeters, WireInputId};
+    let page = include_str!("../src/web/operator.html");
+    let block = page_input_meters(page);
+    for outside in [
+        "tr(",
+        "show.",
+        "link.",
+        "ui.",
+        "telemetry.",
+        "document",
+        "send(",
+    ] {
+        assert!(
+            !block.contains(outside),
+            "the strip meter block uses {outside}"
+        );
+    }
+    let channel = |peak, rms| AudioMeterChannel {
+        peak_millionths: peak,
+        rms_millionths: rms,
+    };
+    let input = |id: u128, channels| InputAudioMeters {
+        input: WireInputId::new(core::num::NonZeroU128::new(id).unwrap()),
+        channels,
+    };
+    let record = AudioMetersMessage {
+        server: ServerIdentity {
+            engine_id: "engine".to_owned(),
+            project_id: "project".to_owned(),
+            state_epoch: 1,
+            log_id: "log".to_owned(),
+        },
+        sequence: 3,
+        frame: 9,
+        start_sample: 0,
+        end_sample: 1_920,
+        master: vec![channel(500_000, 250_000), channel(500_000, 250_000)],
+        inputs: vec![
+            input(2, vec![channel(250_000, 100_000), channel(500_000, 50_000)]),
+            input(7, vec![channel(0, 0), channel(1_000_000, 900_000)]),
+        ],
+        monitor: None,
+        dynamics: Vec::new(),
+        loudness: Vec::new(),
+    };
+    let line = fm_protocol::encode_line(&WireMessage::AudioMeters(record)).unwrap();
+    let value = field_value(&line, "inputs");
+    let script = format!(
+        "{block}\nconst failures = [];\n\
+         const check = (what, ok) => {{ if (!ok) failures.push(what); }};\n\
+         const meters = INPUT_METERS.parse({value:?});\n\
+         check(\"two inputs\", meters.size === 2);\n\
+         check(\"input 2 peak\", meters.get(\"2\").peak === 0.5 && meters.get(\"2\").rms === 0.1);\n\
+         check(\"input 7 peak\", meters.get(\"7\").peak === 1 && meters.get(\"7\").rms === 0.9);\n\
+         check(\"empty\", INPUT_METERS.parse(\"\").size === 0);\n\
+         for (const bad of [\"x~1:1\", \"0~1:1\", \"2~1\", \"2\", \"2~a:b\"]) {{\n\
+           let refused = false;\n\
+           try {{ INPUT_METERS.parse(bad); }} catch (error) {{ refused = true; }}\n\
+           check(\"refuses \" + bad, refused);\n\
+         }}\n\
+         check(\"silent\", INPUT_METERS.bar(0).share === 0 && INPUT_METERS.bar(0).level === \"ok\");\n\
+         check(\"full\", INPUT_METERS.bar(1).share === 1 && INPUT_METERS.bar(1).level === \"hot\");\n\
+         check(\"hot\", INPUT_METERS.bar(0.95).level === \"hot\");\n\
+         check(\"warm\", INPUT_METERS.bar(0.6).level === \"warm\");\n\
+         check(\"ok\", INPUT_METERS.bar(0.1).level === \"ok\" && Math.abs(INPUT_METERS.bar(0.1).share - 2 / 3) < 1e-9);\n\
+         if (failures.length) {{ console.error(failures.join(\"\\n\")); process.exit(1); }}\n\
+         console.log(\"ok\");\n"
+    );
+    if ProcessCommand::new("node")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_err()
+    {
+        eprintln!("node unavailable: the page's strip meter check skipped");
+        return;
+    }
+    let directory = TestDirectory::new("strip-meters");
+    let path = directory.0.join("strip_meters.js");
+    fs::write(&path, script).unwrap();
+    let output = ProcessCommand::new("node").arg(&path).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ok\n");
+}

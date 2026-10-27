@@ -2356,15 +2356,17 @@ status and Program meters (RC-014).
 - Raw Studio peers receive `recorder_status` in its own latest-wins slot
   beside meters and stream status.
 - Web peers (the gateway's sessions) whose role carries `view_status`
-  receive a bounded lossy feed: `audio_meters` with the Master channels only
-  (`inputs` empty, `monitor=-`), `stream_status`, and `recorder_status`.
+  receive a bounded lossy feed: `audio_meters` with the Master channels
+  (`monitor=-`; `inputs` carries the meters of the first 32 inputs, each
+  strip's share of Program, since the operator page's strip meters, with
+  no wire change), `stream_status`, and `recorder_status`.
   Each kind is latest-wins, and one feed record is handed to the gateway at
   a time, only while at most two other records are queued for the session
   and unacknowledged; meters at most every 66 ms (about 15 Hz), each status
   kind at most every 250 ms. Feed records are not charged to the session's
   outbound rate window and are dropped, never queued, for a peer that
   stops reading. Web peers still receive no monitor frames, thumbnails,
-  per-input or monitor-bus meters, or exact previews.
+  monitor-bus meters, or exact previews.
 - The operator page shows each recorder's realized state (`REC` with its
   running time, `STARTING`, `FAILED (<code>)`, `OFF`, `NOT CONFIGURED`) and
   each destination's newest sample (running time, bitrate, failure), and

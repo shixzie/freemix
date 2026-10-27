@@ -4975,7 +4975,9 @@ mod tests {
         };
         assert_eq!(web.sequence, 7);
         assert_eq!(web.master, meters.master);
-        assert!(web.inputs.is_empty() && web.monitor.is_none());
+        // Each strip's meter, for the operator page's strip bars.
+        assert_eq!(web.inputs, meters.inputs);
+        assert!(web.monitor.is_none());
 
         // Unacknowledged, it holds back every further feed record, but not
         // a command result.
