@@ -41,6 +41,9 @@
 //! 0, so the segment's audio opens with a 2816-sample hole the adapter's
 //! continuity check refuses (the shift itself keeps sound and picture in
 //! sync; dropping it, `make_non_negative`, would put the sound 59 ms early).
+//! Every segment's pictures start that 80 ms after its sound, so a frame's
+//! audio is read from the segment's first video frame on, not from its
+//! first sample.
 //!
 //! Limitations: the recorded picture is each source's newest decoded
 //! picture when the frame is realized (for a media file that can be a few
@@ -993,9 +996,14 @@ pub(crate) struct SegmentDecoder {
     adapter: Option<Adapter>,
     open: Option<(PathBuf, FilePlayer)>,
     /// The audio of the last segment asked for, decoded whole (two seconds
-    /// of stereo).
-    audio: Option<(PathBuf, Option<Vec<Vec<f32>>>)>,
+    /// of stereo), and the samples by which its first video frame starts
+    /// after its first audio sample.
+    audio: Option<(PathBuf, Option<SegmentAudio>)>,
 }
+
+/// A segment's decoded audio planes and the samples its first video frame
+/// starts after them.
+type SegmentAudio = (Vec<Vec<f32>>, i128);
 
 impl SegmentDecoder {
     pub(crate) fn new(format: ReplayFormat) -> Self {
@@ -1009,9 +1017,16 @@ impl SegmentDecoder {
 
     /// The recorded audio planes of frame `frame` of segment file `path`:
     /// the segment's audio from the frame's first sample on the recorder's
-    /// grid, one frame long; `None` for a segment without audio.
+    /// grid, one frame long; `None` for a segment without audio. The grid
+    /// starts at the segment's first video frame, not its first audio
+    /// sample: the encoder's B-frame delay starts the pictures 80 ms after
+    /// the sound, and reading the audio from its own start played it that
+    /// much early.
     pub(crate) fn audio(&mut self, path: &Path, frame: u64) -> Option<Vec<Vec<f32>>> {
         if self.audio.as_ref().is_none_or(|(open, _)| open != path) {
+            let video_start = self
+                .decode(path, 0)
+                .map(|picture| picture.timing().original_timestamp());
             if self.adapter.is_none() {
                 self.adapter = Adapter::new(fm_codec_ffmpeg::Config::default()).ok();
             }
@@ -1029,6 +1044,7 @@ impl SegmentDecoder {
                         },
                     )
                     .ok()?;
+                let audio_start = decoded.audio.first()?.timing().original_timestamp();
                 let mut planes: Vec<Vec<f32>> = Vec::new();
                 for block in &decoded.audio {
                     if planes.is_empty() {
@@ -1038,18 +1054,20 @@ impl SegmentDecoder {
                         plane.extend_from_slice(samples);
                     }
                 }
-                (!planes.is_empty()).then_some(planes)
+                let offset =
+                    video_start.map_or(Some(0), |video| samples_between(audio_start, video))?;
+                (!planes.is_empty()).then_some((planes, offset))
             });
             self.audio = Some((path.to_path_buf(), planes));
         }
-        let planes = self.audio.as_ref()?.1.as_ref()?;
+        let (planes, offset) = self.audio.as_ref()?.1.as_ref()?;
         let rate = self.format.rate;
         let boundary = |frame: u64| {
-            usize::try_from(
-                u128::from(frame) * u128::from(AUDIO_RATE) * u128::from(rate.denominator())
-                    / u128::from(rate.numerator()),
-            )
-            .ok()
+            let sample =
+                i128::from(frame) * i128::from(AUDIO_RATE) * i128::from(rate.denominator())
+                    / i128::from(rate.numerator())
+                    + offset;
+            usize::try_from(sample.max(0)).ok()
         };
         let (start, end) = (boundary(frame)?, boundary(frame.checked_add(1)?)?);
         planes
@@ -1074,6 +1092,27 @@ impl SegmentDecoder {
         let (_, player) = self.open.as_mut()?;
         player.decode_frame(FrameIndex::new(frame)).ok()
     }
+}
+
+/// The samples at [`AUDIO_RATE`] from `from` to `to` (negative when `to`
+/// comes first), rounded to the nearest sample.
+fn samples_between(from: OriginalTimestamp, to: OriginalTimestamp) -> Option<i128> {
+    let seconds = |stamp: OriginalTimestamp| {
+        let base = stamp.time_base();
+        (
+            i128::from(stamp.timestamp().ticks()) * i128::from(base.numerator()),
+            i128::from(base.denominator()),
+        )
+    };
+    let ((from_num, from_den), (to_num, to_den)) = (seconds(from), seconds(to));
+    let denominator = from_den.checked_mul(to_den)?;
+    let numerator = (to_num * from_den - from_num * to_den).checked_mul(i128::from(AUDIO_RATE))?;
+    let half = denominator / 2;
+    Some(if numerator >= 0 {
+        (numerator + half) / denominator
+    } else {
+        (numerator - half) / denominator
+    })
 }
 
 /// `picture` on the program frame grid at engine frame `frame`.
@@ -1230,6 +1269,34 @@ mod tests {
     }
 
     /// The gray level of a decoded picture's first pixel.
+    #[test]
+    fn samples_between_timestamps_round_to_the_nearest_sample() {
+        let stamp = |ticks, denominator| {
+            OriginalTimestamp::new(
+                fm_types::MediaTimestamp::new(ticks),
+                fm_types::TimeBase::new(1, denominator).unwrap(),
+            )
+        };
+        // 2.0 s of audio to 2.08 s of video.
+        assert_eq!(
+            super::samples_between(stamp(96_000, 48_000), stamp(26_624, 12_800)),
+            Some(3_840)
+        );
+        assert_eq!(
+            super::samples_between(stamp(26_624, 12_800), stamp(96_000, 48_000)),
+            Some(-3_840)
+        );
+        // A third of a sample at 48 kHz rounds away; two thirds rounds up.
+        assert_eq!(
+            super::samples_between(stamp(0, 144_000), stamp(1, 144_000)),
+            Some(0)
+        );
+        assert_eq!(
+            super::samples_between(stamp(0, 144_000), stamp(2, 144_000)),
+            Some(1)
+        );
+    }
+
     fn decoded_level(picture: &CpuVideoFrame) -> u8 {
         let payload = picture.payload();
         assert!(
@@ -1387,6 +1454,17 @@ mod tests {
         let mut decoder = SegmentDecoder::new(format);
         assert_eq!(decoder.audio(&segment(1), 10), None);
         let planes = decoder.audio(&segment(2), 10).expect("recorded audio");
+        // The segment's pictures start two 25 fps frames (the encoder's
+        // B-frame delay) after its sound, so frame 0's audio is read 3840
+        // samples in.
+        assert_eq!(
+            decoder
+                .audio
+                .as_ref()
+                .and_then(|(_, audio)| audio.as_ref())
+                .map(|audio| audio.1),
+            Some(3_840)
+        );
         assert_eq!(planes.len(), 2);
         assert_eq!(planes[0].len(), 1_920);
         assert!(planes[0].iter().any(|sample| sample.abs() > 0.3));

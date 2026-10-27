@@ -5628,7 +5628,9 @@ from a segment; the native test hears the camera's tone on Program at 100%
 and silence in slow motion). Remaining gaps: a run's first segment replays
 silent (ffmpeg's fragmented MP4 muxer leaves the AAC priming packet ahead of the
 80 ms shift its B-frame video needs, a hole the adapter's continuity check
-refuses), and slow motion has no audio; the recorder captures
+refuses; every other segment's audio is read from its first video frame,
+which the B-frame delay starts 80 ms after its sound, so replays and reel
+exports keep lip sync), and slow motion has no audio; the recorder captures
 what the source last decoded rather than a genlocked frame, so a stalled
 source repeats its picture; segment files from a previous run are removed
 rather than reloaded; a cued player jogs any number of frames up to 600
