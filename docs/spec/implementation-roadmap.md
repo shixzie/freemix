@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.116 / schema 88 (2026-10-27).
+(2026-10-19); items refreshed through protocol 2.117 / schema 89 (2026-10-27).
 Every parity row is still `planned` (or `blocked`); these are the
 highest-value remaining items, ranked:
 
@@ -1243,7 +1243,9 @@ status, and both the offline PPM renderer and the native project planner map
 the persisted stack into compositor descriptors in order. Live protocol
 mutation (`scene_layer_effects_set`, Protocol 2.43), Studio's EFFECTS
 inspector, native GPU effect execution, and the native grade pass (`SW-019`)
-have since landed. Remaining gaps: no Web effect surface and no deinterlace. The
+have since landed, and a deinterlace layer effect (blend fields, or keep the
+top or bottom field; Protocol 2.117) runs on both paths. Remaining gaps: no
+Web effect surface and no motion-adaptive deinterlace. The
 scope session is still unsurfaced: no scope renderer, monitoring-point frame
 tap, overlay, telemetry, or scope persistence exists. Item 8 therefore remains
 incomplete, and `SW-007`/`SW-010` remain planned.

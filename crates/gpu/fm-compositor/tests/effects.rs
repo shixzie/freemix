@@ -402,6 +402,38 @@ fn flip_maps_all_flag_combinations_exactly() {
     );
 }
 
+/// A three-line frame: line pairs 0-1 deinterlace together and the last
+/// line has no partner.
+#[test]
+fn deinterlace_blends_or_keeps_one_field_exactly() {
+    let line = |value: u8| Rgba8::new(value, value + 1, value + 2, 255 - value);
+    let source = frame(1, 3, &[line(10), line(21), line(40)]);
+    let blended = apply(&source, ReferenceEffect::Deinterlace { mode: 0 });
+    // (10 + 21 + 1) / 2 = 16 on both lines of the pair, alpha too.
+    assert_eq!(
+        pixels(&blended),
+        [
+            Rgba8::new(16, 17, 18, 240),
+            Rgba8::new(16, 17, 18, 240),
+            line(40),
+        ]
+    );
+    let top = apply(&source, ReferenceEffect::Deinterlace { mode: 1 });
+    assert_eq!(pixels(&top), [line(10), line(10), line(40)]);
+    let bottom = apply(&source, ReferenceEffect::Deinterlace { mode: 2 });
+    assert_eq!(pixels(&bottom), [line(21), line(21), line(40)]);
+    for mode in [0, 1, 2] {
+        assert_eq!(
+            ReferenceEffect::from_descriptor(&Effect::new("deinterlace", vec![mode])),
+            Ok(ReferenceEffect::Deinterlace {
+                mode: u8::try_from(mode).unwrap()
+            })
+        );
+    }
+    assert!(ReferenceEffect::from_descriptor(&Effect::new("deinterlace", vec![3])).is_err());
+    assert!(ReferenceEffect::from_descriptor(&Effect::new("deinterlace", vec![])).is_err());
+}
+
 #[test]
 fn strided_inputs_are_read_per_pixel_and_outputs_are_tightly_packed() {
     let source_pixels = [

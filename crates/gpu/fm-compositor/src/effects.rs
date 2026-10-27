@@ -23,6 +23,8 @@ const SATURATION_NAME: &str = "saturation";
 const SHARPEN_NAME: &str = "sharpen";
 /// Descriptor name of [`ReferenceEffect::Flip`].
 const FLIP_NAME: &str = "flip";
+/// Descriptor name of [`ReferenceEffect::Deinterlace`].
+const DEINTERLACE_NAME: &str = "deinterlace";
 
 /// Longest descriptor name echoed in a [`ReferenceEffectError`] message.
 ///
@@ -78,6 +80,13 @@ pub enum ReferenceEffect {
     /// Pixels including alpha move to their mirrored coordinates;
     /// `false, false` is the exact identity.
     Flip { horizontal: bool, vertical: bool },
+    /// Field deinterlacing. Descriptor name `"deinterlace"`, parameter
+    /// `[mode]`: `0` blends each line pair (lines `2k` and `2k + 1` both
+    /// become `(a + b + 1) / 2` per channel, alpha included; a last unpaired
+    /// line stays), `1` keeps the top field (every line shows the even line
+    /// of its pair), and `2` the bottom field (every line shows the odd line
+    /// of its pair, the last even line itself when it has none).
+    Deinterlace { mode: u8 },
 }
 
 impl ReferenceEffect {
@@ -90,6 +99,7 @@ impl ReferenceEffect {
             Self::Saturation { .. } => SATURATION_NAME,
             Self::Sharpen { .. } => SHARPEN_NAME,
             Self::Flip { .. } => FLIP_NAME,
+            Self::Deinterlace { .. } => DEINTERLACE_NAME,
         }
     }
 
@@ -115,6 +125,12 @@ impl ReferenceEffect {
             SATURATION_NAME => parse_saturation(name, parameters),
             SHARPEN_NAME => parse_sharpen(name, parameters),
             FLIP_NAME => parse_flip(name, parameters),
+            DEINTERLACE_NAME => {
+                expect_parameter_count(name, parameters, 1)?;
+                Ok(ReferenceEffect::Deinterlace {
+                    mode: u8_parameter(name, 0, parameters[0], 0, 2)?,
+                })
+            }
             _ => Err(ReferenceEffectError::UnknownEffect {
                 name: name.to_owned(),
             }),
@@ -237,6 +253,26 @@ pub fn apply_reference_effect(
             frame
                 .pixel(source_x, source_y)
                 .ok_or(FrameError::LayoutOverflow)
+        }),
+        ReferenceEffect::Deinterlace { mode } => map_pixels(frame, |x, y, pixel| {
+            let last = frame.height() - 1;
+            let at = |row: u32| frame.pixel(x, row).ok_or(FrameError::LayoutOverflow);
+            match mode {
+                1 => at(y & !1),
+                2 => at((y | 1).min(last)),
+                _ => {
+                    let other = at((y ^ 1).min(last))?;
+                    let mean = |a: u8, b: u8| {
+                        u8::try_from((u16::from(a) + u16::from(b)).div_ceil(2)).unwrap_or(u8::MAX)
+                    };
+                    Ok(Rgba8::new(
+                        mean(pixel.r, other.r),
+                        mean(pixel.g, other.g),
+                        mean(pixel.b, other.b),
+                        mean(pixel.a, other.a),
+                    ))
+                }
+            }
         }),
     }
 }

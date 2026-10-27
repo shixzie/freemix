@@ -507,6 +507,9 @@ fn every_reference_effect_matches_the_cpu_reference() {
         ("flip", vec![1, 0]),
         ("flip", vec![0, 1]),
         ("flip", vec![1, 1]),
+        ("deinterlace", vec![0]),
+        ("deinterlace", vec![1]),
+        ("deinterlace", vec![2]),
     ] {
         let case = format!("{name} {parameters:?}");
         let layer = full_layer().with_effect(Effect::new(name, parameters));

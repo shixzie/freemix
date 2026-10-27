@@ -3226,6 +3226,69 @@ fn icon_key(ui: &mut Ui, enabled: bool, icon: KeyIcon, label: &str) -> egui::Res
     )
 }
 
+/// The deinterlace effect's mode: blend the fields, or keep the top or
+/// bottom field.
+fn deinterlace_mode(
+    ui: &mut Ui,
+    l: Locale,
+    document: &mut SceneLayoutDocument,
+    effect: u8,
+    parameters: &[i32],
+    reason: Option<&'static str>,
+) {
+    let current = parameters.first().copied().unwrap_or(0);
+    let modes = [
+        (
+            0,
+            Msg::DesignDeinterlaceBlend,
+            Msg::DesignDeinterlaceBlendHover,
+        ),
+        (1, Msg::DesignDeinterlaceTop, Msg::DesignDeinterlaceTopHover),
+        (
+            2,
+            Msg::DesignDeinterlaceBottom,
+            Msg::DesignDeinterlaceBottomHover,
+        ),
+    ];
+    let shown = modes
+        .iter()
+        .find(|(mode, _, _)| *mode == current)
+        .map_or(Msg::DesignDeinterlaceBlend, |(_, text, _)| *text);
+    let mut chosen = None;
+    ui.horizontal(|ui| {
+        ui.label(field_label(l.text(Msg::DesignDeinterlaceMode)));
+        ui.add_enabled_ui(reason.is_none(), |ui| {
+            ComboBox::from_id_salt(("studio-designer-deinterlace", effect))
+                .selected_text(l.text(shown))
+                .show_ui(ui, |ui| {
+                    for (mode, text, hover) in modes {
+                        if ui
+                            .selectable_label(mode == current, l.text(text))
+                            .on_hover_text(l.text(hover))
+                            .clicked()
+                        {
+                            chosen = Some(mode);
+                        }
+                    }
+                })
+                .response
+                .hint(
+                    l.text(Msg::DesignDeinterlaceModeHover),
+                    reason.unwrap_or(""),
+                );
+        });
+    });
+    if let Some(mode) = chosen.filter(|mode| *mode != current) {
+        document.set_field(
+            Field::EffectParameter {
+                effect,
+                parameter: 0,
+            },
+            f64::from(mode),
+        );
+    }
+}
+
 /// An effect kind's name and what it does.
 fn effect_text(name: &str) -> (Msg, Msg) {
     match name {
@@ -3236,6 +3299,10 @@ fn effect_text(name: &str) -> (Msg, Msg) {
         ),
         "saturation" => (Msg::GradeSaturation, Msg::DesignEffectSaturationHover),
         "sharpen" => (Msg::DesignEffectSharpen, Msg::DesignEffectSharpenHover),
+        "deinterlace" => (
+            Msg::DesignEffectDeinterlace,
+            Msg::DesignEffectDeinterlaceHover,
+        ),
         _ => (Msg::DesignEffectFlip, Msg::DesignEffectFlipHover),
     }
 }
@@ -3370,6 +3437,10 @@ fn effects_section(
             let Ok(effect_index) = u8::try_from(index) else {
                 return;
             };
+            if effect.name == "deinterlace" {
+                deinterlace_mode(ui, l, document, effect_index, &effect.parameters, reason);
+                return;
+            }
             if effect.name == "flip" {
                 ui.horizontal(|ui| {
                     for parameter in 0..effect.parameters.len() {

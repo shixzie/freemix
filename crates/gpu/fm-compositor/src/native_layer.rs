@@ -65,6 +65,7 @@ const OPERATION_FLIP: u32 = 5;
 const OPERATION_MATTE: u32 = 6;
 const OPERATION_CHOKE: u32 = 7;
 const OPERATION_SOFTEN: u32 = 8;
+const OPERATION_DEINTERLACE: u32 = 9;
 
 /// The pass reads the canonical working texture (otherwise straight codes).
 const FLAG_DECODE_INPUT: u32 = 1;
@@ -165,7 +166,8 @@ fn multiply_u8(left: i32, right: i32) -> i32 {
 
 const LAYER_FRAGMENT_SHADER: &str = r"
 // Operations: 0 key stage, 1 levels, 2 brightness_contrast, 3 saturation,
-// 4 sharpen, 5 flip, 6 matte, 7 choke/spread, 8 edge softness. Flags:
+// 4 sharpen, 5 flip, 6 matte, 7 choke/spread, 8 edge softness,
+// 9 deinterlace. Flags:
 // 1 decode working input, 2 encode working output, 4 key alpha from matte.
 struct LayerOperation {
     operation: u32,
@@ -535,6 +537,20 @@ fn flip(pixel: vec2<u32>) -> vec4<i32> {
     return load_codes(mirrored);
 }
 
+// Field deinterlacing (fm_compositor::ReferenceEffect::Deinterlace): mode
+// 0 blends each line pair, 1 keeps the top field, 2 the bottom field.
+fn deinterlace(pixel: vec2<u32>) -> vec4<i32> {
+    let last = op.height - 1u;
+    if op.parameter_0 == 1u {
+        return load_codes(vec2<u32>(pixel.x, pixel.y & ~1u));
+    }
+    if op.parameter_0 == 2u {
+        return load_codes(vec2<u32>(pixel.x, min(pixel.y | 1u, last)));
+    }
+    let other = load_codes(vec2<u32>(pixel.x, min(pixel.y ^ 1u, last)));
+    return (load_codes(pixel) + other + vec4<i32>(1)) / 2;
+}
+
 @fragment
 fn layer_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let pixel = vec2<u32>(position.xy);
@@ -563,6 +579,9 @@ fn layer_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f
         }
         case 8u: {
             codes = soften(pixel);
+        }
+        case 9u: {
+            codes = deinterlace(pixel);
         }
         default: {
             codes = flip(pixel);
@@ -935,6 +954,10 @@ fn encode_layer_uniform(
                 words[0] = OPERATION_FLIP;
                 words[6] = u32::from(horizontal);
                 words[7] = u32::from(vertical);
+            }
+            ReferenceEffect::Deinterlace { mode } => {
+                words[0] = OPERATION_DEINTERLACE;
+                words[6] = u32::from(mode);
             }
         },
     }

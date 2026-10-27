@@ -6117,6 +6117,33 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         ),
     ),
     (Msg::DesignMatteAddPoint, t("Añadir punto")),
+    (Msg::DesignEffectDeinterlace, t("Desentrelazar")),
+    (
+        Msg::DesignEffectDeinterlaceHover,
+        t(
+            "Convierte los dos campos de una imagen entrelazada en cuadros completos, para que el movimiento no se vea en peine",
+        ),
+    ),
+    (Msg::DesignDeinterlaceMode, t("Campos")),
+    (
+        Msg::DesignDeinterlaceModeHover,
+        t("Cómo se unen los dos campos en un cuadro"),
+    ),
+    (Msg::DesignDeinterlaceBlend, t("Mezclar campos")),
+    (
+        Msg::DesignDeinterlaceBlendHover,
+        t("Promedia cada par de líneas: suave, con la mitad del detalle vertical en movimiento"),
+    ),
+    (Msg::DesignDeinterlaceTop, t("Campo superior")),
+    (
+        Msg::DesignDeinterlaceTopHover,
+        t("Muestra solo las líneas pares, cada una duplicada"),
+    ),
+    (Msg::DesignDeinterlaceBottom, t("Campo inferior")),
+    (
+        Msg::DesignDeinterlaceBottomHover,
+        t("Muestra solo las líneas impares, cada una duplicada"),
+    ),
     (Msg::DesignMatteFeather, t("Difuminado")),
     (
         Msg::DesignMatteFeatherHover,

@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.116 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.117 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4442,6 +4442,20 @@ schema 88).
   English and Spanish help; `freemix-cli replay-set` / `remote-replay-set`
   take `--auto-return off|<0..=300>`, and `replay` prints `auto_return=`.
 - 2.115 is refused.
+
+Protocol 2.117 adds a deinterlace layer effect (schema 89).
+
+- `deinterlace` joins the layer effect kinds after `flip` (kind byte 5 in
+  the binary layout), with one parameter `0..=2`: 0 blends each line pair
+  (both lines become `(a + b + 1) / 2` per channel, alpha included), 1
+  keeps the top field and 2 the bottom field (each line shows the even or
+  odd line of its pair); a last unpaired line stays. The native
+  compositor matches the CPU reference as closely as the other effects.
+- Durability (schema 89): a layer effect may be `deinterlace`; schema 88
+  projects are refused.
+- Studio's EFFECTS inspector offers Deinterlace with a Fields choice
+  (Blend fields, Top field, Bottom field), with English and Spanish help.
+- 2.116 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

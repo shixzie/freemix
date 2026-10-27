@@ -88,7 +88,7 @@ fn project() -> Project {
 
 #[test]
 fn schema_39_defaults_center_pan_unlabelled_ungrouped_and_every_output_fading() {
-    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 88);
+    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 89);
     let project = project();
     assert_eq!(
         project.input_audio_strip(input(10)).unwrap().pan,

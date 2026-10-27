@@ -43,12 +43,14 @@ pub const MAX_SCENE_LAYER_EFFECTS: usize = 8;
 /// Every effect kind a layer carries (Protocol 2.43), in wire order (the
 /// layout encoding's kind byte is the index), with the inclusive range of
 /// each of its parameters. A `levels` effect also needs `black < white`.
-pub const SCENE_LAYER_EFFECT_KINDS: [(&str, &[(i32, i32)]); 5] = [
+pub const SCENE_LAYER_EFFECT_KINDS: [(&str, &[(i32, i32)]); 6] = [
     ("levels", &[(0, 255), (0, 255)]),
     ("brightness_contrast", &[(-100, 100), (-100, 100)]),
     ("saturation", &[(-100, 100)]),
     ("sharpen", &[(0, 1_000)]),
     ("flip", &[(0, 1), (0, 1)]),
+    // Protocol 2.117: 0 blends each line pair, 1 the top field, 2 bottom.
+    ("deinterlace", &[(0, 2)]),
 ];
 
 /// A layer's source crop in canvas pixels: nonempty and inside the canvas.

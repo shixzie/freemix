@@ -933,7 +933,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(88);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(89);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -4985,12 +4985,13 @@ impl LayerEffect {
     /// Maximum effects one layer may carry.
     pub const MAX_EFFECTS_PER_LAYER: usize = 8;
     /// Every effect name a layer may carry, in their stable wire order.
-    pub const KINDS: [&'static str; 5] = [
+    pub const KINDS: [&'static str; 6] = [
         "levels",
         "brightness_contrast",
         "saturation",
         "sharpen",
         "flip",
+        "deinterlace",
     ];
 
     /// Creates one effect descriptor without checking it.
@@ -5015,7 +5016,7 @@ impl LayerEffect {
         let parameters = match name {
             "levels" => vec![0, 255],
             "brightness_contrast" | "flip" => vec![0, 0],
-            "saturation" | "sharpen" => vec![0],
+            "saturation" | "sharpen" | "deinterlace" => vec![0],
             _ => return None,
         };
         Some(Self::new(name, parameters))
@@ -5031,6 +5032,7 @@ impl LayerEffect {
             "saturation" => &[(-100, 100)],
             "sharpen" => &[(0, 1000)],
             "flip" => &[(0, 1), (0, 1)],
+            "deinterlace" => &[(0, 2)],
             _ => return None,
         })
     }
