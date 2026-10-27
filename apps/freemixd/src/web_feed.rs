@@ -33,6 +33,13 @@
 //! (`source_sync_status`, AU-004), paced like a status; the daemon builds
 //! it at most once a second, so it rarely waits for its interval (at most
 //! 64 sources, a few kilobytes).
+//!
+//! Protocol 2.110 adds the daemon's health (`health_status`, RC-015),
+//! paced like a status; the daemon builds it about once a second (at most
+//! six alerts, six silences, and 16 notifications, well under a kilobyte).
+//! The answer to the page's own alert action is a queued reply instead,
+//! so [`WebFeed::discard_health_status`] drops an older sample still
+//! waiting here first, keeping the page's `sequence` increasing.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -80,6 +87,8 @@ pub(crate) struct WebFeed {
     /// The `source_sync_status` record (Protocol 2.101), paced like a
     /// status.
     sync: Slot,
+    /// The `health_status` record (Protocol 2.110), paced like a status.
+    health: Slot,
     /// The parts of the exact title preview being handed over, one record
     /// each, in order (Protocol 2.90).
     preview: VecDeque<Vec<u8>>,
@@ -123,6 +132,17 @@ impl WebFeed {
         self.sync.latest = Some(bytes);
     }
 
+    /// Offers the newest `health_status` sample.
+    pub(crate) fn offer_health_status(&mut self, bytes: Vec<u8>) {
+        self.health.latest = Some(bytes);
+    }
+
+    /// Drops a `health_status` sample not handed over yet, before the
+    /// answer to the page's alert action is queued behind it.
+    pub(crate) fn discard_health_status(&mut self) {
+        self.health.latest = None;
+    }
+
     /// The next record due at `now`: of the kinds due, the one that has
     /// been due the longest (one never sent first), ties going to meters,
     /// then recorders, then streams. A peer that takes records more slowly
@@ -145,6 +165,7 @@ impl WebFeed {
             (&mut self.streams, WEB_STATUS_INTERVAL),
             (&mut self.phases, WEB_STATUS_INTERVAL),
             (&mut self.sync, WEB_STATUS_INTERVAL),
+            (&mut self.health, WEB_STATUS_INTERVAL),
         ]
         .into_iter()
         .filter(|(slot, _)| slot.is_due(now))
@@ -433,6 +454,27 @@ mod tests {
         assert_eq!(
             feed.next(now + WEB_STATUS_INTERVAL).as_deref(),
             Some(&b"y3"[..])
+        );
+    }
+
+    /// RC-015 (Protocol 2.110): the daemon's health is latest-wins and
+    /// paced like a status, and a waiting sample is dropped ahead of the
+    /// answer to the page's own alert action.
+    #[test]
+    fn health_is_latest_wins_paced_and_discarded_before_an_answer() {
+        let mut feed = WebFeed::default();
+        let now = Instant::now();
+        feed.offer_health_status(b"h1".to_vec());
+        feed.offer_health_status(b"h2".to_vec());
+        assert_eq!(feed.next(now).as_deref(), Some(&b"h2"[..]));
+        feed.offer_health_status(b"h3".to_vec());
+        assert!(feed.next(now + Duration::from_millis(10)).is_none());
+        feed.discard_health_status();
+        assert!(feed.next(now + WEB_STATUS_INTERVAL).is_none());
+        feed.offer_health_status(b"h4".to_vec());
+        assert_eq!(
+            feed.next(now + WEB_STATUS_INTERVAL).as_deref(),
+            Some(&b"h4"[..])
         );
     }
 

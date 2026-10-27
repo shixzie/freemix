@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.109 / schema 83 (2026-10-26).
+(2026-10-19); items refreshed through protocol 2.110 / schema 83 (2026-10-26).
 Every parity row is still `planned` (or `blocked`); these are the
 highest-value remaining items, ranked:
 
@@ -170,8 +170,9 @@ on its own; macOS and Windows still list and open no output device.
 `fm-observability`'s `MetricRegistry` and `AlertEngine` now run in
 both daemons with CPU and GPU-proxy utilization, default alert rules, and a
 `health_status` view in Studio and `remote-diagnostics` (`RC-015`), and
-operators acknowledge and silence alerts (Protocol 2.109); configurable
-rules remain. Native daemons now group commit the
+operators acknowledge and silence alerts (Protocol 2.109) from Studio, the
+CLI, and the Web operator page, which shows the daemon's health too
+(Protocol 2.110); configurable rules remain. Native daemons now group commit the
 commands queued at a command turn (see Native group commit below), but the
 group's disk sync still runs in front of its frame.
 
@@ -3404,14 +3405,23 @@ are runtime state, gone on restart. Studio's Output ▸ Health alerts window
 lists every rule with its state (firing and how long it stays acknowledged,
 silenced and for how long, or quiet) and offers Acknowledge 15 min, Silence
 1 h, and Unsilence keys gated on transition authority, with English and
-Spanish help (hover audit scenes for an operator and a viewer). Remaining
+Spanish help (hover audit scenes for an operator and a viewer). Protocol
+2.110 puts the same view on the Web: a page that may view status gets
+`health_status` in its paced lossy feed, and the operator page's Health
+section shows CPU and GPU use and every rule's state with Silence 1 h,
+Acknowledge 15 min (while it fires), and Unsilence (while it is silenced)
+buttons gated on `transition`, each sent as the page's own
+`health_alert_request` and answered or refused by name (the page's parser
+checked under Node.js against the Rust codec, and a gateway test where an
+Operator page silences and unsilences a rule while a Viewer page is
+refused). Remaining
 gaps: no input-health or
 hardware-encoder session sampling, and the simulated daemon has no network,
 sync, or encoder readings (an unsupported reading stays unknown rather than
 zero); rules are fixed in code, so there is no threshold editing and no
 persistence of rule changes; the CPU reading
 excludes child encoders and the GPU reading is a compositor-pass proxy; and
-Web pages receive no health view. `RC-015` remains planned.
+the Web pages show no notification history. `RC-015` remains planned.
 
 
 Current implementation boundary for fault-tolerant recording (`OR-003`):

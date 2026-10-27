@@ -1306,6 +1306,29 @@ fn operator_page_is_served_with_the_tally_security_model() {
     ] {
         assert!(page.contains(source), "{source}");
     }
+    // Daemon health (RC-015, Protocol 2.110 on the Web): usage and every
+    // alert rule from the lossy feed, with acknowledge, silence, and
+    // unsilence buttons sent as `health_alert_request`s, each answer or
+    // refusal matched to its request, and hover help in English and
+    // Spanish.
+    for source in [
+        "case \"health_status\":",
+        "freshLossy(record, telemetry.healthSequence)",
+        "telemetry.health = HEALTH.parse(record.fields);",
+        "send(encodeRecord(\"health_alert_request\", fields));",
+        "const sent = alertsSent.get(record.fields.get(\"request_id\"));",
+        "if (gate(\"transition\") || healthActionReason(rule, action)) return;",
+        "id=\"health-panel\" hidden aria-labelledby=\"health-heading\"",
+        "    paintSourceSync();\n    paintHealth();\n",
+        "healthAcknowledge: \"Acknowledge 15 min\"",
+        "healthAcknowledge: \"Reconocer 15 min\"",
+        "healthSilenceHover: \"Silence {rule} for an hour",
+        "healthSilenceHover: \"Silencia {rule} durante una hora",
+        "durationMs: 15 * 60 * 1000",
+        "durationMs: 60 * 60 * 1000",
+    ] {
+        assert!(page.contains(source), "{source}");
+    }
     // Accessible markup: labelled sections, live status, pressed toggles.
     for markup in [
         "aria-labelledby=\"preview-heading\"",
@@ -2551,6 +2574,277 @@ fn operator_page_shows_strip_fx_gain_reduction_from_the_meter_feed() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "ok\n");
+}
+
+fn page_health(page: &str) -> &str {
+    let begin = "  // ---- Daemon health (RC-015) begin ----\n";
+    let start = page.find(begin).expect("health block begin");
+    let end = page[start..]
+        .find("  // ---- Daemon health (RC-015) end ----")
+        .expect("health block end");
+    &page[start..start + end]
+}
+
+/// The Web `health_status` (Protocol 2.110) on the operator page: its
+/// parser reads exactly what the Rust codec renders (every rule, severity,
+/// acknowledgement, and silence), refuses malformed records, and words one
+/// rule's row from the daemon's uptime (checked under Node.js when it is on
+/// the `PATH`).
+#[test]
+#[allow(clippy::too_many_lines)]
+fn operator_page_reads_daemon_health_like_the_rust_codec() {
+    use std::fmt::Write as _;
+
+    use fm_protocol::{
+        DaemonHealth, HealthAlert, HealthAlertRule, HealthSeverity, HealthSilence,
+        HealthStatusMessage,
+    };
+    let page = include_str!("../src/web/operator.html");
+    let block = page_health(page);
+    for outside in [
+        "tr(",
+        "show.",
+        "link.",
+        "ui.",
+        "telemetry.",
+        "document",
+        "send(",
+    ] {
+        assert!(!block.contains(outside), "the health block uses {outside}");
+    }
+    // Every rule the protocol knows, in wire order.
+    let rules: Vec<&str> = HealthAlertRule::ALL
+        .iter()
+        .map(|rule| rule.token())
+        .collect();
+    let record = HealthStatusMessage {
+        server: ServerIdentity {
+            engine_id: "engine".to_owned(),
+            project_id: "project".to_owned(),
+            state_epoch: 1,
+            log_id: "log".to_owned(),
+        },
+        sequence: 7,
+        request_id: Some("operator-1".to_owned()),
+        health: DaemonHealth {
+            uptime_ms: 5_000,
+            cpu_permille: Some(930),
+            gpu_permille: None,
+            alerts: vec![
+                HealthAlert {
+                    rule: HealthAlertRule::CpuSaturated,
+                    severity: HealthSeverity::Warning,
+                    since_ms: 1_000,
+                    value_milli: Some(930),
+                    acknowledged_until_ms: Some(905_000),
+                },
+                HealthAlert {
+                    rule: HealthAlertRule::DiskLow,
+                    severity: HealthSeverity::Critical,
+                    since_ms: 2_000,
+                    value_milli: Some(-12),
+                    acknowledged_until_ms: None,
+                },
+            ],
+            notifications: Vec::new(),
+            silences: vec![HealthSilence {
+                rule: HealthAlertRule::FrameLate,
+                until_ms: 3_605_000,
+            }],
+        },
+    };
+    let line = fm_protocol::encode_line(&WireMessage::HealthStatus(record)).unwrap();
+    let line = line.trim_end().replace('\\', "\\\\").replace('"', "\\\"");
+
+    let mut script = String::from(block);
+    script.push_str(
+        "\nconst failures = [];\n\
+         const check = (ok, what) => { if (!ok) failures.push(what); };\n\
+         const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);\n\
+         // The page's record decoder, field by field.\n\
+         const fieldsOf = (line) => new Map(line.split(\"\\t\").slice(1).map((part) => {\n\
+           const at = part.indexOf(\"=\");\n\
+           return [part.slice(0, at), decodeURIComponent(part.slice(at + 1))];\n\
+         }));\n",
+    );
+    let _ = writeln!(
+        script,
+        "const base = fieldsOf(\"{line}\");\n\
+         check(same(Object.keys(HEALTH.RULES), {rules:?}), \"rules\");\n\
+         const read = HEALTH.parse(base);\n\
+         check(read.uptime === 5000 && read.cpu === 930 && read.gpu === null, \"usage\");\n\
+         check(same([...read.alerts.keys()], [\"cpu_saturated\", \"disk_low\"]), \"alerts\");\n\
+         check(same(read.alerts.get(\"cpu_saturated\"), {{ severity: \"warning\", since: 1000, acknowledgedUntil: 905000 }}), \"acknowledged\");\n\
+         check(same(read.alerts.get(\"disk_low\"), {{ severity: \"critical\", since: 2000, acknowledgedUntil: null }}), \"firing\");\n\
+         check(same([...read.silences], [[\"frame_late\", 3605000]]), \"silences\");\n\
+         check(same(HEALTH.rule(read, \"cpu_saturated\", 65000), {{ severity: \"warning\", firingFor: 64000, acknowledgedLeft: 840000, silencedLeft: null, silenced: false }}), \"acknowledged row\");\n\
+         check(same(HEALTH.rule(read, \"cpu_saturated\", 905000), {{ severity: \"warning\", firingFor: 904000, acknowledgedLeft: null, silencedLeft: null, silenced: false }}), \"acknowledgement over\");\n\
+         check(same(HEALTH.rule(read, \"frame_late\", 5000), {{ severity: null, firingFor: null, acknowledgedLeft: null, silencedLeft: 3600000, silenced: true }}), \"silenced row\");\n\
+         check(same(HEALTH.rule(read, \"gpu_saturated\", 5000), {{ severity: null, firingFor: null, acknowledgedLeft: null, silencedLeft: null, silenced: false }}), \"quiet row\");\n\
+         const empty = new Map(base); empty.set(\"alerts\", \"\"); empty.set(\"silences\", \"\");\n\
+         check(HEALTH.parse(empty).alerts.size === 0 && HEALTH.parse(empty).silences.size === 0, \"empty\");\n\
+         const bad = (name, value) => {{\n\
+           const fields = new Map(base);\n\
+           if (value === undefined) fields.delete(name); else fields.set(name, value);\n\
+           try {{ HEALTH.parse(fields); failures.push(\"accepted \" + name + \"=\" + value); }} catch (error) {{}}\n\
+         }};"
+    );
+    for (name, value) in [
+        ("alerts", Some("cpu_saturated:warning:1000:930")),
+        ("alerts", Some("bogus:warning:1000:930:none")),
+        ("alerts", Some("cpu_saturated:loud:1000:930:none")),
+        ("alerts", Some("cpu_saturated:warning:6000:930:none")),
+        ("alerts", Some("cpu_saturated:warning:1000:930:4000")),
+        ("alerts", Some("cpu_saturated:warning:01:930:none")),
+        (
+            "alerts",
+            Some("cpu_saturated:warning:1000:1:none;cpu_saturated:warning:1000:1:none"),
+        ),
+        ("alerts", None),
+        ("silences", Some("frame_late:5000")),
+        ("silences", Some("frame_late")),
+        ("silences", Some("bogus:9000")),
+        ("silences", None),
+        ("cpu_permille", Some("1001")),
+        ("cpu_permille", Some("-1")),
+        ("uptime_ms", None),
+    ] {
+        let value = value.map_or_else(|| "undefined".to_owned(), |value| format!("\"{value}\""));
+        let _ = writeln!(script, "bad(\"{name}\", {value});");
+    }
+    script.push_str(
+        "if (failures.length) { console.error(failures.join(\"\\n\")); process.exit(1); }\n\
+         console.log(\"ok\");\n",
+    );
+
+    if ProcessCommand::new("node")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_err()
+    {
+        eprintln!("node unavailable: the page's health check skipped");
+        return;
+    }
+    let directory = TestDirectory::new("web-health");
+    let path = directory.0.join("health.js");
+    fs::write(&path, script).unwrap();
+    let output = ProcessCommand::new("node").arg(&path).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ok\n");
+}
+
+/// The operator page's `health_alert_request` line.
+fn send_alert_request(socket: &mut Browser, id: &str, rule: &str, action: &str) {
+    let duration = match action {
+        "acknowledge" => "\tduration_ms=900000",
+        "silence" => "\tduration_ms=3600000",
+        _ => "",
+    };
+    socket
+        .send(Message::text(format!(
+            "health_alert_request\tprotocol={CURRENT_PROTOCOL_VERSION}\trequest_id={id}\trule={rule}\taction={action}{duration}\n"
+        )))
+        .unwrap();
+}
+
+/// The answer to alert request `id`: the health after it, or the error
+/// code naming it. Every `health_status` on the way (samples and the
+/// answer) must carry a larger `sequence` than the one before.
+fn alert_answer(
+    socket: &mut Browser,
+    id: &str,
+    sequence: &mut u64,
+) -> Result<fm_protocol::DaemonHealth, String> {
+    web_until(socket, |_, message| match message {
+        WireMessage::HealthStatus(status) => {
+            assert!(status.sequence > *sequence, "health sequence went back");
+            *sequence = status.sequence;
+            (status.request_id.as_deref() == Some(id)).then_some(Ok(status.health))
+        }
+        WireMessage::Error(error) if error.request_id.as_deref() == Some(id) => {
+            Some(Err(error.error.code))
+        }
+        _ => None,
+    })
+}
+
+/// RC-015 on the Web (Protocol 2.110): a page that may view status gets
+/// the daemon's health in its feed; an Operator page silences and
+/// unsilences a rule with the page's exact `health_alert_request` lines,
+/// each answered by the health after it with sequences still increasing,
+/// and acknowledging a rule that is not firing is refused; a Viewer
+/// page's request is refused without closing its session.
+#[test]
+fn operator_page_silences_health_alerts_within_the_session_role() {
+    use fm_protocol::HealthAlertRule;
+    let directory = TestDirectory::new("web-health-alerts");
+    let project = directory.0.join("show.freemix");
+    create_project_with(&project, false, false);
+    let daemon = Daemon::start(&project);
+
+    let (mut viewer, _, permissions, _) = web_session(daemon.web, Role::Viewer);
+    assert_eq!(permissions, ["view_status"]);
+    let mut viewer_sequence = 0;
+    web_until(&mut viewer, |_, message| match message {
+        WireMessage::HealthStatus(status) if status.request_id.is_none() => {
+            viewer_sequence = status.sequence;
+            Some(())
+        }
+        _ => None,
+    });
+    send_alert_request(&mut viewer, "viewer-silence", "disk_low", "silence");
+    assert_eq!(
+        alert_answer(&mut viewer, "viewer-silence", &mut viewer_sequence),
+        Err("permission_denied".to_owned())
+    );
+    // The refused page keeps its session and its health feed.
+    web_until(&mut viewer, |_, message| {
+        matches!(message, WireMessage::HealthStatus(status) if status.sequence > viewer_sequence)
+            .then_some(())
+    });
+
+    let (mut operator, _, permissions, _) = web_session(daemon.web, Role::Operator);
+    assert!(
+        permissions
+            .iter()
+            .any(|permission| permission == "transition")
+    );
+    let mut sequence = 0;
+    send_alert_request(&mut operator, "operator-silence", "disk_low", "silence");
+    let health = alert_answer(&mut operator, "operator-silence", &mut sequence).unwrap();
+    let silence = health.silence(HealthAlertRule::DiskLow).expect("silenced");
+    assert!(silence.until_ms > health.uptime_ms);
+    assert!(silence.until_ms <= health.uptime_ms + 3_600_000);
+    // Later samples keep the silence.
+    let sample = web_until(&mut operator, |_, message| match message {
+        WireMessage::HealthStatus(status) => {
+            assert!(status.sequence > sequence, "health sequence went back");
+            sequence = status.sequence;
+            Some(status.health)
+        }
+        _ => None,
+    });
+    assert!(sample.silence(HealthAlertRule::DiskLow).is_some());
+
+    send_alert_request(
+        &mut operator,
+        "operator-ack",
+        "cpu_saturated",
+        "acknowledge",
+    );
+    assert_eq!(
+        alert_answer(&mut operator, "operator-ack", &mut sequence),
+        Err("conflict".to_owned())
+    );
+    send_alert_request(&mut operator, "operator-unsilence", "disk_low", "unsilence");
+    let health = alert_answer(&mut operator, "operator-unsilence", &mut sequence).unwrap();
+    assert!(health.silences.is_empty());
 }
 
 /// AU-005 Web chain editing end to end: the operator page's exact

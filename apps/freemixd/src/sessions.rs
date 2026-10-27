@@ -555,12 +555,27 @@ impl Peer {
         }
     }
 
-    /// Coalesces the latest daemon health in its own slot (Protocol 2.100);
-    /// Web pages do not take it.
+    /// Coalesces the latest daemon health (Protocol 2.100): a raw Studio
+    /// session takes it in its own slot, and since Protocol 2.110 a Web
+    /// page's feed paces it.
     fn replace_health_status(&mut self, bytes: Vec<u8>) {
-        if self.phase == Phase::Active && self.web_feed.is_none() && self.recorder_status {
+        if self.phase != Phase::Active {
+            return;
+        }
+        if let Some(feed) = self.web_feed.as_mut() {
+            feed.offer_health_status(bytes);
+        } else if self.recorder_status {
             self.lossy.replace(LossySlot::HealthStatus, bytes);
         }
+    }
+
+    /// Drops a health sample not written yet, so the answer to this
+    /// session's alert action, queued next, keeps `sequence` increasing.
+    fn discard_health_status(&mut self) {
+        if let Some(feed) = self.web_feed.as_mut() {
+            feed.discard_health_status();
+        }
+        self.lossy.discard_slot(LossySlot::HealthStatus);
     }
 
     /// Coalesces the latest `title_phases` (Protocol 2.90): a Web page's
@@ -2591,7 +2606,7 @@ impl Runtime<'_> {
                 let answer = statistics.health_answer(self.authority, now, request.request_id);
                 drop(statistics);
                 if let Some(answer) = answer {
-                    peer.lossy.discard_slot(LossySlot::HealthStatus);
+                    peer.discard_health_status();
                     peer.reply(WireMessage::HealthStatus(answer))?;
                 }
                 Ok(())
@@ -3702,7 +3717,8 @@ fn publish_source_sync_status(peers: &mut [Peer], status: &SourceSyncStatusMessa
 }
 
 /// Daemon health (Protocol 2.100) goes to raw Studio peers in its own
-/// latest-wins slot, once a statistics sample.
+/// latest-wins slot, once a statistics sample, and (Protocol 2.110) to Web
+/// pages' feeds.
 fn publish_health_status(peers: &mut [Peer], status: &fm_protocol::HealthStatusMessage) {
     let Ok(bytes) = encode_line(&WireMessage::HealthStatus(status.clone())).map(String::into_bytes)
     else {
@@ -4967,6 +4983,35 @@ mod tests {
             .flat_map(|bytes| LineDecoder::new().push(&bytes).unwrap())
             .collect();
         assert_eq!(handed, [WireMessage::SourceSyncStatus(status)]);
+    }
+
+    /// RC-015 (Protocol 2.110): a Web page's feed hands over the daemon's
+    /// health; it never uses the raw lossy slot.
+    #[test]
+    fn web_feeds_take_health_status() {
+        let (mut peer, outbound, _acknowledge, _inbound) = web_peer();
+        peer.web_feed = Some(WebFeed::default());
+        let status = fm_protocol::HealthStatusMessage {
+            server: identity(),
+            sequence: 3,
+            request_id: None,
+            health: fm_protocol::DaemonHealth {
+                uptime_ms: 5_000,
+                cpu_permille: Some(420),
+                gpu_permille: None,
+                alerts: Vec::new(),
+                silences: Vec::new(),
+                notifications: Vec::new(),
+            },
+        };
+        publish_health_status(std::slice::from_mut(&mut peer), &status);
+        assert!(peer.lossy.is_empty());
+        assert!(matches!(write_peer(&mut peer), WriteOutcome::Pending));
+        let handed: Vec<WireMessage> = outbound
+            .try_iter()
+            .flat_map(|bytes| LineDecoder::new().push(&bytes).unwrap())
+            .collect();
+        assert_eq!(handed, [WireMessage::HealthStatus(status)]);
     }
 
     /// Raw Studio peers keep the recorder status in its own lossy slot.

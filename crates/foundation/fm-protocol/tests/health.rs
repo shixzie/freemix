@@ -382,7 +382,7 @@ fn alerts_carry_one_entry_per_rule_up_to_nine() {
 
 #[test]
 fn protocol_2_109_is_current() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 109));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 110));
 }
 
 /// Protocol 2.109: an acknowledged alert carries its end, silences are

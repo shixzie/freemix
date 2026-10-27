@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.109 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.110 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4258,6 +4258,30 @@ Protocol 2.109 lets an operator acknowledge and silence health alerts
   `<rule>:<until_ms>` per silenced rule in strictly increasing rule order,
   `;`-separated, empty when none. Every end lies after `uptime_ms`.
 - 2.108 is refused.
+
+Protocol 2.110 shows the daemon's health on the Web operator page and lets
+it acknowledge and silence alerts (`RC-015`). No record or schema change.
+
+- A Web page whose session may view status now also receives
+  `health_status` (Protocol 2.109 fields) in its bounded lossy feed,
+  latest-wins and paced like a status (at most every 250 ms; the daemon
+  builds one about once a second). The answer to the page's own
+  `health_alert_request` is queued like a command result instead, after
+  dropping any older sample still waiting in the feed, so the page's
+  `sequence` still strictly increases. CLI sessions still do not receive
+  it.
+- The operator page shows a Health section: the daemon's CPU and GPU use
+  and every alert rule with its state (OK, its severity while it fires, or
+  acknowledged), how long it has fired, and how long its acknowledgement
+  and silence still hold. Each rule has Silence 1 h, Acknowledge 15 min
+  (only while it fires), and Unsilence (only while it is silenced) buttons,
+  disabled without `transition` or while the rule's last request waits,
+  each sending a `health_alert_request` the page matches to its answer or
+  refusal by `request_id` (an `error` naming a page request no longer
+  closes the connection). English and Spanish hover help; the figures dim
+  with a note once no record has arrived for 3.5 s. The tally and title
+  pages ignore the record.
+- 2.109 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

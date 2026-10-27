@@ -141,6 +141,19 @@
   .sync[data-stale="1"] .readout b { opacity: .35; }
   .row .state[data-tone="failed"] { color: var(--warn); }
   .row .state[data-tone="starting"] { color: #ffe2a0; }
+  /* Daemon health (RC-015): usage readouts, then one row per alert rule
+     with its acknowledge and silence buttons. */
+  .health-usage { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .4rem; }
+  .health-usage .readout { display: inline-flex; align-items: baseline; gap: .3rem; padding: .25rem .5rem;
+    border: 1px solid var(--line); border-radius: 6px; background: #0c0c0c; font-variant-numeric: tabular-nums; }
+  .health-usage .readout small { color: var(--muted); font-size: .7rem; font-weight: 700; }
+  .health-usage .readout[data-hot="1"] b { color: #ffb347; }
+  .health .row .state[data-tone="ok"] { color: #7ee08a; }
+  .health .row .state[data-tone="warn"] { color: #ffb347; }
+  .health .row .state[data-tone="failed"] { color: #ff6b7a; }
+  .health .row .actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-left: auto; }
+  .health .row .actions button { min-width: 0; margin-left: 0; }
+  .health[data-stale="1"] .state, #health-usage[data-stale="1"] .readout b { opacity: .35; }
   /* Media lists (IN-006): read-only, the active item marked by a bar. */
   .media-list + .media-list { margin-top: .9rem; }
   .media-list h3 { font-size: 1rem; margin: 0; overflow-wrap: anywhere; }
@@ -320,6 +333,17 @@
     <p id="sync-note" class="why" aria-live="polite"></p>
   </section>
 
+  <section id="health-panel" hidden aria-labelledby="health-heading">
+    <h2 id="health-heading" data-i18n="health">Health</h2>
+    <div id="health-usage" class="health-usage">
+      <span class="readout" data-value="cpu"><small>CPU</small><b></b><small>%</small></span>
+      <span class="readout" data-value="gpu"><small>GPU</small><b></b><small>%</small></span>
+    </div>
+    <div id="health-rules" class="health" role="list" data-i18n-label="healthLabel" aria-label="Health alert rules"></div>
+    <p id="health-note" class="why" aria-live="polite"></p>
+    <p id="why-health" class="why" aria-live="polite"></p>
+  </section>
+
   <section id="media-lists-panel" hidden aria-labelledby="media-lists-heading">
     <h2 id="media-lists-heading" data-i18n="mediaLists">Media lists</h2>
     <div id="media-lists"></div>
@@ -330,7 +354,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.109";
+  const PROTOCOL = "2.110";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -363,6 +387,96 @@
   };
   const SYNC_STATE_KEY = { priming: "syncStatePriming", running: "syncStateRunning", recovering: "syncStateRecovering" };
   const SYNC_STALE_MS = 3500;
+  // Daemon health (`health_status`, RC-015, Protocol 2.110 on the Web):
+  // every alert rule in wire order -> label key. The daemon reports about
+  // once a second; acknowledge and silence hold as long as in Studio's
+  // Health alerts window.
+  // ---- Daemon health (RC-015) begin ----
+  // `health_status` (Protocol 2.110 on the Web): `uptime_ms`, optional
+  // `cpu_permille` / `gpu_permille`, `alerts` as `;`-separated
+  // `<rule>:<severity>:<since_ms>:<value>:<acknowledged_until_ms|none>`,
+  // and `silences` as `;`-separated `<rule>:<until_ms>`, every time on the
+  // daemon's `uptime_ms` clock. `parse` reads a record's decoded fields (a
+  // Map) and throws on anything malformed; the page shows no readings
+  // (`<value>`), like Studio. `rule` is one rule's row at daemon uptime
+  // `uptime`: its severity while it fires (null when not), how long it has
+  // fired, and how long its acknowledgement and silence still hold (null
+  // when none). This block uses nothing else on the page: the daemon's
+  // tests run it under Node.js against records the Rust codec renders.
+  const HEALTH = (() => {
+    // Every alert rule in wire order -> label key.
+    const RULES = {
+      cpu_saturated: "ruleCpuSaturated", disk_low: "ruleDiskLow", frame_late: "ruleFrameLate",
+      frames_dropped: "ruleFramesDropped", gpu_saturated: "ruleGpuSaturated", output_failed: "ruleOutputFailed",
+      encoder_saturated: "ruleEncoderSaturated", stream_reconnecting: "ruleStreamReconnecting",
+      sync_degraded: "ruleSyncDegraded",
+    };
+    const SEVERITIES = { info: "severityInfo", warning: "severityWarning", critical: "severityCritical" };
+    function count(text) {
+      if (typeof text !== "string" || !/^(0|[1-9]\d*)$/.test(text) || !Number.isSafeInteger(Number(text))) {
+        throw new Error("malformed health");
+      }
+      return Number(text);
+    }
+    function entries(fields, name) {
+      const value = fields.get(name);
+      if (value === undefined) throw new Error("health_status lacks " + name);
+      return value ? value.split(";").map((item) => item.split(":")) : [];
+    }
+    function parse(fields) {
+      const uptime = count(fields.get("uptime_ms"));
+      const permille = (name) => {
+        if (!fields.has(name)) return null;
+        const value = count(fields.get(name));
+        if (value > 1000) throw new Error("malformed health");
+        return value;
+      };
+      const alerts = new Map();
+      for (const parts of entries(fields, "alerts")) {
+        if (parts.length !== 5 || !Object.hasOwn(RULES, parts[0]) || !Object.hasOwn(SEVERITIES, parts[1])
+          || alerts.has(parts[0])) throw new Error("malformed health");
+        const since = count(parts[2]);
+        const acknowledgedUntil = parts[4] === "none" ? null : count(parts[4]);
+        if (since > uptime || (acknowledgedUntil !== null && acknowledgedUntil <= uptime)) {
+          throw new Error("malformed health");
+        }
+        alerts.set(parts[0], { severity: parts[1], since, acknowledgedUntil });
+      }
+      const silences = new Map();
+      for (const parts of entries(fields, "silences")) {
+        if (parts.length !== 2 || !Object.hasOwn(RULES, parts[0]) || silences.has(parts[0])) {
+          throw new Error("malformed health");
+        }
+        const until = count(parts[1]);
+        if (until <= uptime) throw new Error("malformed health");
+        silences.set(parts[0], until);
+      }
+      return { uptime, cpu: permille("cpu_permille"), gpu: permille("gpu_permille"), alerts, silences };
+    }
+    function rule(health, name, uptime) {
+      const alert = health.alerts.get(name);
+      const silencedUntil = health.silences.get(name);
+      const left = (until) => (until !== null && until !== undefined && until > uptime ? until - uptime : null);
+      return {
+        severity: alert ? alert.severity : null,
+        firingFor: alert ? Math.max(0, uptime - alert.since) : null,
+        acknowledgedLeft: alert ? left(alert.acknowledgedUntil) : null,
+        silencedLeft: left(silencedUntil),
+        silenced: silencedUntil !== undefined,
+      };
+    }
+    return { RULES, SEVERITIES, parse, rule };
+  })();
+  // ---- Daemon health (RC-015) end ----
+  const HEALTH_RULE_KEY = HEALTH.RULES;
+  const HEALTH_SEVERITY_KEY = HEALTH.SEVERITIES;
+  const HEALTH_ACTION = {
+    acknowledge: { label: "healthAcknowledge", hover: "healthAcknowledgeHover", command: "commandAcknowledge",
+      durationMs: 15 * 60 * 1000 },
+    silence: { label: "healthSilence", hover: "healthSilenceHover", command: "commandSilence", durationMs: 60 * 60 * 1000 },
+    unsilence: { label: "healthUnsilence", hover: "healthUnsilenceHover", command: "commandUnsilence", durationMs: 0 },
+  };
+  const HEALTH_STALE_MS = 3500;
   // Lossy status older than this is not trusted: the daemon stops sending
   // `stream_status` once no destination runs, so the snapshot state rules.
   const TELEMETRY_STALE_MS = 2000;
@@ -735,6 +849,46 @@
       syncPictures: "Pictures",
       syncPicturesHover: "{input}: {drops} pictures dropped and {repeats} repeated to follow the audio; {restarts} connections",
       syncStale: "These figures are stale: the daemon has not reported source sync for a few seconds.",
+      health: "Health",
+      healthLabel: "Health alert rules",
+      healthHover: "The daemon's own alerts, as FreeMix Studio's Health alerts window shows them. Acknowledging a firing alert quiets its reminders while it keeps firing; silencing a rule raises no notification until the silence ends. Both end when the daemon restarts",
+      healthCpuHover: "CPU time the daemon uses, as a share of every CPU on the server: {value}",
+      healthGpuHover: "How busy the daemon keeps the GPU compositing (an estimate from its render passes, without encoding): {value}",
+      healthUsageNone: "no reading",
+      ruleCpuSaturated: "CPU saturated",
+      ruleDiskLow: "Disk low",
+      ruleFrameLate: "Frames late",
+      ruleFramesDropped: "Frames dropped",
+      ruleGpuSaturated: "GPU saturated",
+      ruleOutputFailed: "Output failed",
+      ruleEncoderSaturated: "Encoder saturated",
+      ruleStreamReconnecting: "Stream reconnecting",
+      ruleSyncDegraded: "Source sync degraded",
+      healthOk: "OK",
+      severityInfo: "INFO",
+      severityWarning: "WARNING",
+      severityCritical: "CRITICAL",
+      healthAcknowledged: "ACKNOWLEDGED",
+      healthStateHover: "{rule}: {state}",
+      healthFiringFor: "Firing for {age}",
+      healthAcknowledgedFor: "acknowledged for {left} more",
+      healthSilencedFor: "Silenced for {left} more",
+      healthAcknowledge: "Acknowledge 15 min",
+      healthSilence: "Silence 1 h",
+      healthUnsilence: "Unsilence",
+      healthAcknowledgeHover: "Acknowledge {rule} for 15 minutes: no reminders while it keeps firing, and a reminder if it still fires then",
+      healthSilenceHover: "Silence {rule} for an hour: the daemon keeps watching it but raises no notification until the silence ends",
+      healthUnsilenceHover: "End the silence on {rule} now",
+      healthNotFiring: "Not firing",
+      healthWaiting: "Waiting for the daemon",
+      commandAcknowledge: "Acknowledge {rule}",
+      commandSilence: "Silence {rule}",
+      commandUnsilence: "Unsilence {rule}",
+      healthStale: "These figures are stale: the daemon has not reported its health for a few seconds.",
+      spanSeconds: "{n} s",
+      spanMinutes: "{n} min",
+      spanHours: "{h} h {m} min",
+      spanWholeHours: "{h} h",
       mlFade: "Fade",
       mlDip: "Dip to black",
       mlWipe: "Wipe",
@@ -1077,6 +1231,46 @@
       syncPictures: "Imágenes",
       syncPicturesHover: "{input}: {drops} imágenes descartadas y {repeats} repetidas para seguir el audio; {restarts} conexiones",
       syncStale: "Estas cifras están desactualizadas: el demonio no ha informado de la sincronía de fuentes desde hace unos segundos.",
+      health: "Estado",
+      healthLabel: "Reglas de alerta del estado",
+      healthHover: "Las alertas del propio demonio, como las muestra la ventana Alertas de estado de FreeMix Studio. Reconocer una alerta activa calla sus recordatorios mientras sigue activa; silenciar una regla no emite ninguna notificación hasta que el silencio termina. Ambos terminan cuando el demonio se reinicia",
+      healthCpuHover: "Tiempo de CPU que usa el demonio, como parte de todas las CPU del servidor: {value}",
+      healthGpuHover: "Cuánto ocupa el demonio la GPU al componer (una estimación a partir de sus pasadas de render, sin la codificación): {value}",
+      healthUsageNone: "sin lectura",
+      ruleCpuSaturated: "CPU saturada",
+      ruleDiskLow: "Disco casi lleno",
+      ruleFrameLate: "Cuadros con retraso",
+      ruleFramesDropped: "Cuadros perdidos",
+      ruleGpuSaturated: "GPU saturada",
+      ruleOutputFailed: "Salida con fallo",
+      ruleEncoderSaturated: "Codificador saturado",
+      ruleStreamReconnecting: "Emisión reconectando",
+      ruleSyncDegraded: "Sincronía de fuentes degradada",
+      healthOk: "OK",
+      severityInfo: "INFO",
+      severityWarning: "AVISO",
+      severityCritical: "CRÍTICA",
+      healthAcknowledged: "RECONOCIDA",
+      healthStateHover: "{rule}: {state}",
+      healthFiringFor: "Activa desde hace {age}",
+      healthAcknowledgedFor: "reconocida durante {left} más",
+      healthSilencedFor: "Silenciada durante {left} más",
+      healthAcknowledge: "Reconocer 15 min",
+      healthSilence: "Silenciar 1 h",
+      healthUnsilence: "Quitar silencio",
+      healthAcknowledgeHover: "Reconoce {rule} durante 15 minutos: sin recordatorios mientras siga activa, y un recordatorio si sigue activa entonces",
+      healthSilenceHover: "Silencia {rule} durante una hora: el demonio la sigue vigilando pero no emite ninguna notificación hasta que el silencio termina",
+      healthUnsilenceHover: "Termina ya el silencio de {rule}",
+      healthNotFiring: "No está activa",
+      healthWaiting: "Esperando al demonio",
+      commandAcknowledge: "Reconocer {rule}",
+      commandSilence: "Silenciar {rule}",
+      commandUnsilence: "Quitar el silencio de {rule}",
+      healthStale: "Estas cifras están desactualizadas: el demonio no ha informado de su estado desde hace unos segundos.",
+      spanSeconds: "{n} s",
+      spanMinutes: "{n} min",
+      spanHours: "{h} h {m} min",
+      spanWholeHours: "{h} h",
       mlFade: "Fundido",
       mlDip: "Fundido a negro",
       mlWipe: "Cortina",
@@ -1113,6 +1307,8 @@
     loudness: $("loudness"), loudnessReset: $("loudness-reset"), whyLoudness: $("why-loudness"),
     mediaListsPanel: $("media-lists-panel"), mediaLists: $("media-lists"),
     syncPanel: $("sync-panel"), syncHeading: $("sync-heading"), syncSources: $("sync-sources"), syncNote: $("sync-note"),
+    healthPanel: $("health-panel"), healthHeading: $("health-heading"), healthUsage: $("health-usage"),
+    healthRules: $("health-rules"), healthNote: $("health-note"), whyHealth: $("why-health"),
   };
 
   const store = window.sessionStorage;
@@ -1209,7 +1405,12 @@
     // `source_sync_status` `sources` (Protocol 2.101 on the Web): one
     // sample per live source, in input order.
     sync: [], syncAt: 0, syncSequence: -1,
+    // `health_status` (Protocol 2.110 on the Web): HEALTH.parse's reading.
+    health: null, healthAt: 0, healthSequence: -1,
   };
+  // Alert actions this page sent and has not seen answered:
+  // request_id -> { rule, label }.
+  const alertsSent = new Map();
   // Per-channel peak hold and CLIP lamp: { holdDb, holdAt, clipAt }.
   let meterHolds = [];
   const choice = {
@@ -1691,6 +1892,7 @@
     if (pending.size) note(tr("noteLost", { count: pending.size }));
     pending.clear();
     mutesSent.clear();
+    alertsSent.clear();
     muteRetries = [];
     fxClear();
     if (link.phase === "stopped" || link.phase === "idle") { render(); return; }
@@ -1739,6 +1941,9 @@
     telemetry.sync = [];
     telemetry.syncAt = 0;
     telemetry.syncSequence = -1;
+    telemetry.health = null;
+    telemetry.healthAt = 0;
+    telemetry.healthSequence = -1;
     meterHolds = [];
   }
   // What `receive` returns for a lossy status record.
@@ -1904,6 +2109,22 @@
         telemetry.syncSequence = sequence;
         return LOSSY;
       }
+      case "health_status": {
+        // The answer to this page's alert action carries its request_id
+        // and the health after it; the rest are the lossy samples.
+        const sent = alertsSent.get(record.fields.get("request_id"));
+        if (sent) {
+          alertsSent.delete(record.fields.get("request_id"));
+          note(tr("noteAccepted", { label: sent.label }));
+        }
+        const sequence = freshLossy(record, telemetry.healthSequence);
+        if (sequence >= 0) {
+          telemetry.health = HEALTH.parse(record.fields);
+          telemetry.healthAt = Date.now();
+          telemetry.healthSequence = sequence;
+        }
+        return sent ? undefined : LOSSY;
+      }
       case "audio_meters": {
         const sequence = freshLossy(record, telemetry.meterSequence);
         if (sequence < 0) return LOSSY;
@@ -1915,10 +2136,20 @@
         paintMeters();
         return LOSSY;
       }
-      case "error":
+      case "error": {
+        // The refusal of this page's alert action names its request.
+        const sent = alertsSent.get(record.fields.get("request_id"));
+        if (sent) {
+          alertsSent.delete(record.fields.get("request_id"));
+          const code = required(record, "code");
+          const message = record.fields.get("message") || "";
+          note(tr(message ? "noteRefusedMessage" : "noteRefused", { label: sent.label, code, message }));
+          return;
+        }
         // Includes server_shutting_down: reconnect after backoff.
         closeSocket();
         return;
+      }
       default:
         return; // Not shown on this page.
     }
@@ -2531,6 +2762,7 @@
     ui.whyOutputs.textContent = transitionReason;
     paintMeters();
     paintSourceSync();
+    paintHealth();
   }
 
   // ---- Live source sync (AU-004, Protocol 2.101 on the Web): each live
@@ -2615,6 +2847,101 @@
     });
     const note = samples.length > 0 && stale ? tr("syncStale") : "";
     if (ui.syncNote.textContent !== note) ui.syncNote.textContent = note;
+  }
+
+  // ---- Daemon health (RC-015, Protocol 2.110 on the Web): usage, and
+  // every alert rule with its acknowledge and silence buttons. ----
+  function spanText(ms) {
+    const total = Math.max(0, Math.round(ms / 1000));
+    if (total < 60) return tr("spanSeconds", { n: total });
+    const minutes = Math.round(total / 60);
+    if (minutes < 60) return tr("spanMinutes", { n: minutes });
+    return tr(minutes % 60 ? "spanHours" : "spanWholeHours", { h: Math.floor(minutes / 60), m: minutes % 60 });
+  }
+  // Why one alert button is off beyond the page's permission: an action
+  // already waiting for its answer, an acknowledgement of a rule not
+  // firing, or an unsilence of a rule not silenced.
+  function healthActionReason(rule, action) {
+    const health = telemetry.health;
+    if (!health) return tr("healthWaiting");
+    if ([...alertsSent.values()].some((sent) => sent.rule === rule)) return tr("healthWaiting");
+    if (action === "acknowledge" && !health.alerts.has(rule)) return tr("healthNotFiring");
+    return "";
+  }
+  function paintHealth() {
+    const health = link.phase === "live" ? telemetry.health : null;
+    ui.healthPanel.hidden = !health;
+    if (!health) return;
+    const now = Date.now();
+    const stale = now - telemetry.healthAt > HEALTH_STALE_MS;
+    // The daemon's uptime now, carried on from the newest sample.
+    const uptime = health.uptime + Math.max(0, now - telemetry.healthAt);
+    ui.healthHeading.title = tr("healthHover");
+    ui.healthUsage.dataset.stale = stale ? "1" : "0";
+    ui.healthRules.dataset.stale = stale ? "1" : "0";
+    for (const readout of ui.healthUsage.querySelectorAll(".readout")) {
+      const permille = health[readout.dataset.value];
+      const text = permille === null ? "—" : (permille / 10).toLocaleString(language, { maximumFractionDigits: 0 });
+      readout.querySelector("b").textContent = text;
+      readout.querySelector("b + small").hidden = permille === null;
+      const hover = tr(readout.dataset.value === "cpu" ? "healthCpuHover" : "healthGpuHover",
+        { value: permille === null ? tr("healthUsageNone") : text + " %" });
+      readout.title = hover;
+      readout.setAttribute("aria-label", hover);
+      readout.dataset.hot = permille !== null && permille >= 900 ? "1" : "0";
+    }
+    const permission = gate("transition");
+    syncChildren(ui.healthRules, Object.keys(HEALTH_RULE_KEY), (rule) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.setAttribute("role", "listitem");
+      row.innerHTML = "<span class=\"name\"></span><span class=\"state\"></span><span class=\"actions\"></span>"
+        + "<p class=\"detail\"></p>";
+      for (const action of Object.keys(HEALTH_ACTION)) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.dataset.action = action;
+        button.addEventListener("click", () => alertAction(rule, action));
+        row.querySelector(".actions").append(button);
+      }
+      return row;
+    }, (row, rule) => {
+      const name = tr(HEALTH_RULE_KEY[rule]);
+      const view = HEALTH.rule(health, rule, uptime);
+      const acknowledged = view.acknowledgedLeft !== null;
+      row.querySelector(".name").textContent = name;
+      const state = row.querySelector(".state");
+      const stateText = !view.severity ? tr("healthOk") : acknowledged ? tr("healthAcknowledged")
+        : tr(HEALTH_SEVERITY_KEY[view.severity]);
+      if (state.textContent !== stateText) state.textContent = stateText;
+      state.dataset.tone = !view.severity || acknowledged ? "ok" : view.severity === "critical" ? "failed" : "warn";
+      state.title = tr("healthStateHover", { rule: name, state: stateText });
+      const details = [];
+      if (view.severity) {
+        let firing = tr("healthFiringFor", { age: spanText(view.firingFor) });
+        if (acknowledged) firing += ", " + tr("healthAcknowledgedFor", { left: spanText(view.acknowledgedLeft) });
+        details.push(firing);
+      }
+      if (view.silencedLeft !== null) details.push(tr("healthSilencedFor", { left: spanText(view.silencedLeft) }));
+      const detail = row.querySelector(".detail");
+      const detailText = details.join(". ");
+      if (detail.textContent !== detailText) detail.textContent = detailText;
+      for (const button of row.querySelectorAll("button")) {
+        const action = button.dataset.action;
+        const spec = HEALTH_ACTION[action];
+        // Acknowledge only while the rule fires, unsilence only while it is
+        // silenced; silence always.
+        button.hidden = (action === "acknowledge" && !view.severity) || (action === "unsilence" && !view.silenced);
+        button.textContent = tr(spec.label);
+        button.setAttribute("aria-label", tr(spec.command, { rule: name }));
+        const reason = permission || healthActionReason(rule, action);
+        button.disabled = Boolean(reason);
+        button.title = reason || tr(spec.hover, { rule: name });
+      }
+    });
+    const note = stale ? tr("healthStale") : "";
+    if (ui.healthNote.textContent !== note) ui.healthNote.textContent = note;
+    ui.whyHealth.textContent = sectionReason("transition");
   }
 
   // ---- Program audio meters. ----
@@ -3534,6 +3861,22 @@
     const input = show.inputs.find((candidate) => candidate.id === target);
     const bus = input ? input.label : tr("programLoudnessBus");
     sendCommand(tr("commandLoudnessReset", { bus }), [["payload", "audio_loudness_reset"], ["target", target]]);
+  }
+  // Acknowledge, silence, or unsilence one alert rule (Protocol 2.110 on
+  // the Web): a `health_alert_request`, not a command; the daemon answers
+  // with the health after it or an error naming the request.
+  function alertAction(rule, action) {
+    if (gate("transition") || healthActionReason(rule, action)) return;
+    commandCounter += 1;
+    const id = "operator-" + sessionNonce + "-" + commandCounter;
+    const spec = HEALTH_ACTION[action];
+    const fields = [["protocol", PROTOCOL], ["request_id", id], ["rule", rule], ["action", action]];
+    if (spec.durationMs) fields.push(["duration_ms", String(spec.durationMs)]);
+    send(encodeRecord("health_alert_request", fields));
+    const label = tr(spec.command, { rule: tr(HEALTH_RULE_KEY[rule]) });
+    alertsSent.set(id, { rule, label });
+    note(tr("noteSent", { label }));
+    render();
   }
   function sendMute(id, retried) {
     const strip = show.strips.get(id);

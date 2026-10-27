@@ -14,7 +14,7 @@ use fm_protocol::{
     TitleTimelineStatus, WireInputId, WireMessage, WireTitleFieldId, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.109\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.110\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
@@ -63,7 +63,7 @@ fn event(payload: EventPayload) -> WireMessage {
 
 #[test]
 fn the_protocol_is_2_90() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 109));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 110));
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn previews_carry_draft_fields_only_when_there_are_any() {
     let line = round_trip(&preview(Vec::new()));
     assert_eq!(
         line,
-        "title_preview_request\tprotocol=2.109\trequest_id=web-1\tinput=7\tphase=hold\t\
+        "title_preview_request\tprotocol=2.110\trequest_id=web-1\tinput=7\tphase=hold\t\
          frame=0\twidth=320\theight=180\n"
     );
     let drafted = preview(vec![
