@@ -67,7 +67,10 @@ highest-value remaining items, ranked:
    2.99, schema 80), and keys scoped to the Colour, Animation, and
    Designer tool windows, with a pop-out the platform embeds in the main
    window answering its panel's and window's keys (Protocol 2.105, schema
-   81). This closes the gaps this item named; the row stays planned until
+   81). Console key profiles (built-in FreeMix and vMix style, and up to
+   eight of the operator's own) now choose the console's switching,
+   transition, and cue keys (see the RC-004 boundary below). This closes
+   the gaps this item named; the row stays planned until
    its acceptance evidence covers its Windows and macOS profiles (see the
    RC-004 boundary below). This is a P0 row.
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
@@ -1173,6 +1176,32 @@ window's keys. With this, every scope, chord, target, template, conflict,
 and import/export behavior the RC-004 row names is implemented and tested
 on Linux; RC-004 stays planned until its acceptance evidence covers the
 Windows and macOS profiles it lists.
+
+Console key profiles (RC-004, no protocol or schema change): the console's
+own switching, transition, and cue keys come in profiles, chosen in
+Preferences › Keyboard and saved with the console's preferences
+(`keymap.*` lines in `studio.conf`, never sent to the daemon). Two are
+built in. **FreeMix** keeps the keys the console always had (`1`–`8`
+Preview, `C` Cut, `F` Fade, `B` Fade to Black, `F5`–`F8` the favourite
+transitions, `G` the cue GO). **vMix style** follows the layout vMix
+operators commonly give vMix's shortcut functions: `1`–`9` `PreviewInput`,
+`Ctrl+1`–`9` `ActiveInput` (Preview then Cut, so the input goes straight
+to Program), `Alt+1`–`9` `QuickPlay` (Preview then the Fade), `Space`
+`Cut`, `Enter` `Fade`, `Ctrl+B` `FadeToBlack`, and `Ctrl+F1`–`F4`
+`Transition1`–`4` (vMix itself ships no fixed key map). The Key profiles
+window copies any profile into one of up to eight of the operator's own
+and gives each action another key or none ("Set key" takes the next
+press; a console key outside the profiles, such as the T-bar keys, the
+cue step keys, the window and output chords, help, and undo, is refused,
+as is another action's key), with English and Spanish hover help. Space
+and Enter press a focused control while one has keyboard focus. The
+keyboard reference lists the active profile's keys and names the profile,
+every key hint on the console (Cut, Fade, FTB, the favourites, the input
+tiles, the cue GO) names the active profile's key, and a project shortcut
+may take any key the active profile leaves free but none it uses. Tested
+by unit tests of the profiles, their preference lines, and the console's
+key dispatch under the vMix style profile, a Studio preferences round
+trip, and hover audit scenes of the Key profiles window.
 
 Current implementation boundary for item 8: `fm-scopes` now provides a bounded
 reference color-monitoring session on top of its scope math: an exact

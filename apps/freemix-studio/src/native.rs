@@ -411,6 +411,7 @@ impl StudioApp {
         shell.set_appearance(saved.appearance());
         shell.set_timeline_snapping(saved.timeline_snapping());
         shell.set_shortcut_key_overrides(saved.shortcut_keys.clone().unwrap_or_default());
+        shell.set_console_key_profiles(saved.key_profiles.clone().unwrap_or_default());
         // The first frame already draws at the saved scale.
         creation_context
             .egui_ctx
@@ -672,6 +673,8 @@ impl eframe::App for StudioApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.flush_pending_intents();
+        // The console keys answer the key profile chosen in Preferences.
+        self.shell.sync_console_keymap(&mut self.state);
         for intent in self.shell.draw(ui, &self.state) {
             self.enqueue_intent(intent);
         }
@@ -698,6 +701,8 @@ impl eframe::App for StudioApp {
             .note_timeline_snapping(now, self.shell.timeline_snapping());
         self.preferences
             .note_shortcut_keys(now, self.shell.shortcut_key_overrides());
+        self.preferences
+            .note_key_profiles(now, self.shell.console_key_profiles());
         match self.preferences.observe_at(
             now,
             self.shell.locale(),
@@ -719,6 +724,8 @@ impl eframe::App for StudioApp {
             .note_timeline_snapping(Instant::now(), self.shell.timeline_snapping());
         self.preferences
             .note_shortcut_keys(Instant::now(), self.shell.shortcut_key_overrides());
+        self.preferences
+            .note_key_profiles(Instant::now(), self.shell.console_key_profiles());
         if let Err(error) = self.preferences.observe(
             self.shell.locale(),
             self.shell.layout(),

@@ -110,7 +110,7 @@ fn toasts(shell: &StudioShell) -> Vec<String> {
 fn console_keys_are_reserved_and_free_keys_are_not() {
     for (taken, keys) in [
         (key("B", false, false, false), "B"),
-        (key("1", false, false, false), "1 – 8"),
+        (key("1", false, false, false), "1"),
         (key("R", true, true, false), crate::keymap::RECORD_SHORTCUT),
         (key("Z", true, false, false), crate::UNDO_SHORTCUT),
         // The window keys match logically: extra Shift or Alt still opens.
@@ -125,7 +125,11 @@ fn console_keys_are_reserved_and_free_keys_are_not() {
         (key("Tab", false, true, false), "Tab"),
         (key("Escape", false, false, false), "Esc"),
     ] {
-        assert_eq!(reserved_by(&taken), Some(keys), "{taken:?}");
+        assert_eq!(
+            reserved_by(&taken, crate::console_keymap::freemix()).as_deref(),
+            Some(keys),
+            "{taken:?}"
+        );
     }
     for free in [
         key("F9", false, false, false),
@@ -135,7 +139,11 @@ fn console_keys_are_reserved_and_free_keys_are_not() {
         key("R", true, false, false),
         key("J", false, false, true),
     ] {
-        assert_eq!(reserved_by(&free), None, "{free:?}");
+        assert_eq!(
+            reserved_by(&free, crate::console_keymap::freemix()),
+            None,
+            "{free:?}"
+        );
     }
     assert_eq!(key_text(&key("F9", true, true, true)), "Ctrl+Shift+Alt+F9");
     assert_eq!(key_text(&key("J", false, false, true)), "Alt+J");
@@ -610,7 +618,7 @@ fn an_imported_set_that_clashes_or_takes_a_console_key_imports_nothing() {
         ),
         Err(ImportRefusal::Reserved {
             name: "Cut".into(),
-            keys: "C",
+            keys: "C".to_owned(),
         })
     );
     // A viewer may not edit the project.
@@ -646,7 +654,7 @@ fn an_imported_set_that_clashes_or_takes_a_console_key_imports_nothing() {
         }),
         ImportRefusal::Reserved {
             name: "Cut".into(),
-            keys: "C",
+            keys: "C".to_owned(),
         },
     ] {
         assert_ne!(
@@ -780,7 +788,7 @@ fn a_console_key_capture_refuses_console_keys_and_keys_taken_here() {
     );
     assert_eq!(
         local_capture(keys, 3, Captured::Key(key("B", false, false, false))),
-        Some(Err(LocalRefusal::Reserved("B")))
+        Some(Err(LocalRefusal::Reserved("B".to_owned())))
     );
     assert_eq!(
         local_capture(keys, 3, Captured::Key(key("F9", false, false, false))),
@@ -857,7 +865,7 @@ fn set_console_key_binds_the_next_press_locally() {
     let _ = context.end_pass();
     assert_eq!(
         shell.user_shortcuts.local_refusal,
-        Some(LocalRefusal::Reserved("B"))
+        Some(LocalRefusal::Reserved("B".to_owned()))
     );
     assert_eq!(shell.shortcut_key_overrides().get(project(), 3), None);
 }
@@ -909,6 +917,7 @@ fn a_chord_fires_on_its_second_key_and_lapses() {
         shortcuts: &shortcuts,
         overrides: &overrides,
         project: None,
+        keymap: crate::console_keymap::freemix(),
     };
     let ctrl_k = key_event(Key::K, press(true, false, false), false);
     let one = key_event(Key::Num1, Modifiers::NONE, false);
@@ -993,6 +1002,7 @@ fn a_waiting_chord_ignores_repeats_and_escape_cancels_it() {
         shortcuts: &shortcuts,
         overrides: &overrides,
         project: None,
+        keymap: crate::console_keymap::freemix(),
     };
     let ctrl = press(true, false, false);
     let mut chord = None;
@@ -1149,6 +1159,7 @@ fn a_scoped_key_answers_only_in_its_panel() {
         shortcuts: &shortcuts,
         overrides: &overrides,
         project: None,
+        keymap: crate::console_keymap::freemix(),
     };
     let m = key_event(Key::M, Modifiers::NONE, false);
     let f9 = key_event(Key::F9, Modifiers::NONE, false);
@@ -1332,6 +1343,7 @@ fn a_mouse_button_fires_its_shortcut_with_exactly_its_modifiers() {
         shortcuts: &shortcuts,
         overrides: &overrides,
         project: None,
+        keymap: crate::console_keymap::freemix(),
     };
     let mut chord = None;
     let back = mouse_event(egui::PointerButton::Extra1, Modifiers::NONE);
@@ -1397,6 +1409,7 @@ fn a_mouse_button_may_start_or_end_a_chord() {
         shortcuts: &shortcuts,
         overrides: &overrides,
         project: None,
+        keymap: crate::console_keymap::freemix(),
     };
     let mut chord = None;
     let primary = mouse_event(egui::PointerButton::Primary, Modifiers::NONE);
@@ -1461,6 +1474,7 @@ fn a_window_scoped_key_answers_only_in_its_pop_out_window() {
         shortcuts: &shortcuts,
         overrides: &overrides,
         project: None,
+        keymap: crate::console_keymap::freemix(),
     };
     let presses = || {
         vec![
@@ -1803,6 +1817,7 @@ fn console_keys_may_be_chords_and_scoped() {
         shortcuts: &shortcuts,
         overrides: &overrides,
         project: Some(project()),
+        keymap: crate::console_keymap::freemix(),
     };
     let ctrl_k = key_event(Key::K, press(true, false, false), false);
     let one = key_event(Key::Num1, Modifiers::NONE, false);
@@ -2016,6 +2031,7 @@ fn a_tool_window_scoped_key_answers_only_in_its_tool_window() {
         shortcuts: &shortcuts,
         overrides: &overrides,
         project: None,
+        keymap: crate::console_keymap::freemix(),
     };
     let presses = || {
         vec![

@@ -1,7 +1,8 @@
 //! Local console preferences that survive a restart: the UI language, the
 //! top-bar clock, the UI scale and high-contrast theme, the animation
 //! timeline's Snapping toggle, this console's own keys for project
-//! shortcuts (RC-004), and the panel layout (the docked panels, popped-out
+//! shortcuts (RC-004), its key profiles and the one it answers (RC-004,
+//! `keymap.*`), and the panel layout (the docked panels, popped-out
 //! windows and their places, tool windows, and the operator's saved
 //! layouts).
 //!
@@ -17,7 +18,7 @@ use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use fm_ui_egui::{Appearance, ConsoleLayout, ShortcutKeyOverrides};
+use fm_ui_egui::{Appearance, ConsoleKeyProfiles, ConsoleLayout, ShortcutKeyOverrides};
 use fm_ui_model::i18n::{HourCycle, Language, Locale};
 
 /// Environment variable naming the preferences file explicitly.
@@ -53,6 +54,8 @@ pub struct SavedPreferences {
     /// This console's own keys for project shortcuts; `None` when the
     /// file has none.
     pub shortcut_keys: Option<ShortcutKeyOverrides>,
+    /// This console's key profiles; `None` when the file has none.
+    pub key_profiles: Option<ConsoleKeyProfiles>,
 }
 
 impl SavedPreferences {
@@ -67,6 +70,7 @@ impl SavedPreferences {
             high_contrast: None,
             timeline_snapping: None,
             shortcut_keys: None,
+            key_profiles: None,
         }
     }
 
@@ -120,6 +124,11 @@ impl SavedPreferences {
                         _ => saved.timeline_snapping,
                     };
                 }
+                key if ConsoleKeyProfiles::is_preference_key(key) => {
+                    let mut profiles = saved.key_profiles.take().unwrap_or_default();
+                    profiles.apply_preference(key, value);
+                    saved.key_profiles = Some(profiles);
+                }
                 key if key.starts_with(SHORTCUT_KEY_PREFIX) => {
                     let mut overrides = saved.shortcut_keys.take().unwrap_or_default();
                     overrides.apply_preference(key, value);
@@ -133,6 +142,13 @@ impl SavedPreferences {
                 }
             }
         }
+        if let Some(profiles) = &mut saved.key_profiles {
+            profiles.finish_preferences();
+        }
+        saved.key_profiles = saved
+            .key_profiles
+            .take()
+            .filter(|profiles| *profiles != ConsoleKeyProfiles::default());
         saved
     }
 
@@ -169,6 +185,14 @@ impl SavedPreferences {
         }
         if let Some(overrides) = &self.shortcut_keys {
             for (key, value) in overrides.preference_entries() {
+                text.push_str(&key);
+                text.push_str(" = ");
+                text.push_str(&value);
+                text.push('\n');
+            }
+        }
+        if let Some(profiles) = &self.key_profiles {
+            for (key, value) in profiles.preference_entries() {
                 text.push_str(&key);
                 text.push_str(" = ");
                 text.push_str(&value);
@@ -271,6 +295,8 @@ pub struct PreferenceStore {
     known_snapping: bool,
     /// This console's keys for project shortcuts at startup or last saved.
     known_shortcut_keys: ShortcutKeyOverrides,
+    /// This console's key profiles at startup or last saved.
+    known_key_profiles: ConsoleKeyProfiles,
     /// When the unsaved change was last seen; `None` when the file is up
     /// to date.
     pending: Option<Instant>,
@@ -290,11 +316,13 @@ impl PreferenceStore {
     ) -> Self {
         let known_snapping = saved.timeline_snapping();
         let known_shortcut_keys = saved.shortcut_keys.clone().unwrap_or_default();
+        let known_key_profiles = saved.key_profiles.clone().unwrap_or_default();
         Self {
             path,
             saved,
             known_snapping,
             known_shortcut_keys,
+            known_key_profiles,
             known_locale: locale,
             known_layout: layout,
             known_appearance: appearance,
@@ -368,6 +396,16 @@ impl PreferenceStore {
         if *overrides != self.known_shortcut_keys {
             self.known_shortcut_keys = overrides.clone();
             self.saved.shortcut_keys = Some(overrides.clone());
+            self.pending = Some(now);
+        }
+    }
+
+    /// Notes this console's key profiles at `now`: a change is saved like
+    /// the Snapping toggle's.
+    pub fn note_key_profiles(&mut self, now: Instant, profiles: &ConsoleKeyProfiles) {
+        if *profiles != self.known_key_profiles {
+            self.known_key_profiles = profiles.clone();
+            self.saved.key_profiles = Some(profiles.clone());
             self.pending = Some(now);
         }
     }

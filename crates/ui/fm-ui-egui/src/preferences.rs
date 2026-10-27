@@ -381,6 +381,7 @@ impl StudioShell {
 
         ui.add_space(8.0);
         self.display_preferences(ui);
+        self.key_profile_preferences(ui);
 
         ui.add_space(8.0);
         ui.separator();

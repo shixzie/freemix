@@ -3618,6 +3618,48 @@ fn scenes(language: Language) -> Vec<Scene> {
             alerted(operator),
         ));
     }
+    // RC-004 key profiles: a built-in profile, read only, and one of the
+    // operator's own with a changed key and a refused key change.
+    // The keyboard reference and the console's key hints under the vMix
+    // style profile.
+    scenes.push(Scene::console(
+        "dialog/shortcuts-vmix",
+        shell(&|shell| shell.show_shortcuts = true),
+        {
+            let mut state = ready(true, Variant::default());
+            state.console_keys = Some(crate::BuiltinProfile::Vmix.keymap());
+            state
+        },
+    ));
+    scenes.push(Scene::console(
+        "dialog/key-profiles",
+        shell(&|shell| shell.open_key_profiles()),
+        ready(true, Variant::default()),
+    ));
+    scenes.push(Scene::console(
+        "dialog/key-profiles-custom",
+        shell(&|shell| {
+            let mut profiles = crate::ConsoleKeyProfiles::default();
+            let choice = profiles
+                .add(
+                    "Late show",
+                    crate::ProfileChoice::Builtin(crate::BuiltinProfile::Vmix),
+                )
+                .expect("a free profile slot");
+            profiles
+                .set_key(
+                    0,
+                    crate::ConsoleAction::Cut,
+                    Some(crate::ConsoleStroke::plain(egui::Key::X)),
+                )
+                .expect("a free key");
+            profiles.choose(choice);
+            shell.key_profiles = profiles;
+            shell.open_key_profiles();
+            shell.key_profiles_window.refusal = Some("T is a console key".into());
+        }),
+        ready(true, Variant::default()),
+    ));
     let scripts: Vec<(&str, Configure, StudioUiState)> = vec![
         (
             "dialog/scripts",

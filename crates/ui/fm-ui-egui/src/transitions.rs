@@ -413,7 +413,9 @@ fn draw_favorites(
                 })
                 .inner
                 .hint(
-                    &with_key(l, &action, crate::favorite_key_name(slot)),
+                    &state
+                        .console_keymap()
+                        .hint(l, &action, crate::ConsoleAction::Favorite(slot)),
                     reason,
                 );
             if response.clicked() {
@@ -757,6 +759,7 @@ pub(crate) fn draw_fade_to_black_block(
     shell.set_fade_to_black_duration_frames(shell.fade_to_black_duration_frames);
 }
 
+#[allow(clippy::too_many_lines)] // one immediate-mode region
 fn draw_auto_transitions(
     ui: &mut Ui,
     metrics: ColumnMetrics,
@@ -791,14 +794,28 @@ fn draw_auto_transitions(
                     metrics.button,
                 ),
             )
-            .hint(&with_key(l, l.text(Msg::ShortcutCut), "C"), reason)
+            .hint(
+                &state.console_keymap().hint(
+                    l,
+                    l.text(Msg::ShortcutCut),
+                    crate::ConsoleAction::Cut,
+                ),
+                reason,
+            )
             .clicked()
         {
             intents.push(StudioIntent::Cut);
         }
         if ui
             .add_enabled(availability.basic(), primary(l.text(Msg::FadeKey)))
-            .hint(&with_key(l, l.text(Msg::AutoFadeHover), "F"), reason)
+            .hint(
+                &state.console_keymap().hint(
+                    l,
+                    l.text(Msg::AutoFadeHover),
+                    crate::ConsoleAction::Fade,
+                ),
+                reason,
+            )
             .clicked()
         {
             intents.push(StudioIntent::Fade { duration_frames });

@@ -38,6 +38,7 @@ mod capture_input_ui;
 mod chrome;
 pub mod color_panel;
 mod connection_overlay;
+mod console_keymap;
 mod cue_preview;
 mod cues;
 mod daemon_health_ui;
@@ -55,6 +56,7 @@ mod input_bank;
 mod input_catalogue;
 mod input_lifecycle;
 mod input_thumbnail_ui;
+mod key_profiles_ui;
 mod keymap;
 mod l10n;
 mod live_lan;
@@ -97,6 +99,10 @@ mod user_shortcuts;
 mod web_access;
 mod workspace;
 
+pub use console_keymap::{
+    BuiltinProfile, ConsoleAction, ConsoleKeyProfiles, ConsoleKeymap, ConsoleStroke, CustomProfile,
+    KeyRefusal, MAX_CUSTOM_PROFILES, MAX_PROFILE_NAME_BYTES, ProfileChoice, profile_name_is_valid,
+};
 pub use cues::{
     ActionKind as CueActionKind, CueIntent, CueKey, CueRole, control_block as cue_control_block,
     edit_block as cue_edit_block, go_intent as cue_go_intent,
@@ -613,6 +619,10 @@ pub struct ReconnectStatus {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct StudioUiState {
     pub connection_status: StudioConnectionStatus,
+    /// The console key profile's keys (RC-004); `None` answers the `FreeMix`
+    /// profile. Studio copies the shell's choice in with
+    /// [`StudioShell::sync_console_keymap`].
+    pub console_keys: Option<ConsoleKeymap>,
     pub view: Option<ClientView>,
     pub can_select_preview: bool,
     pub can_transition: bool,
@@ -717,11 +727,20 @@ pub struct StudioUiState {
 }
 
 impl StudioUiState {
+    /// The keys of the console key profile this console answers.
+    #[must_use]
+    pub fn console_keymap(&self) -> &ConsoleKeymap {
+        self.console_keys
+            .as_ref()
+            .unwrap_or_else(|| console_keymap::freemix())
+    }
+
     /// Creates a state without a replicated client view.
     #[must_use]
     pub const fn new(connection_status: StudioConnectionStatus) -> Self {
         Self {
             connection_status,
+            console_keys: None,
             view: None,
             can_select_preview: false,
             can_transition: false,
@@ -1126,20 +1145,6 @@ pub fn external_intent(
     }
 }
 
-const fn numbered_preview_index(key: Key) -> Option<usize> {
-    match key {
-        Key::Num1 => Some(0),
-        Key::Num2 => Some(1),
-        Key::Num3 => Some(2),
-        Key::Num4 => Some(3),
-        Key::Num5 => Some(4),
-        Key::Num6 => Some(5),
-        Key::Num7 => Some(6),
-        Key::Num8 => Some(7),
-        _ => None,
-    }
-}
-
 /// Section of the keyboard shortcuts reference.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ShortcutGroup {
@@ -1423,27 +1428,6 @@ pub(crate) fn help_key(key: Key, modifiers: Modifiers) -> bool {
     }
 }
 
-/// The favourite key F5 through F8 names, as a zero-based slot index.
-const fn favorite_key_index(key: Key) -> Option<usize> {
-    match key {
-        Key::F5 => Some(0),
-        Key::F6 => Some(1),
-        Key::F7 => Some(2),
-        Key::F8 => Some(3),
-        _ => None,
-    }
-}
-
-/// The key that takes favourite `slot` (one-based), for tooltips.
-pub(crate) const fn favorite_key_name(slot: u8) -> &'static str {
-    match slot {
-        1 => "F5",
-        2 => "F6",
-        3 => "F7",
-        _ => "F8",
-    }
-}
-
 /// The T-bar the console keys drive: the replicated desired manual
 /// transition, its availability, and the selected kind `T` starts.
 #[derive(Clone, Copy, Debug)]
@@ -1453,13 +1437,62 @@ struct TBarKeys {
     kind: ManualTransitionKind,
 }
 
+/// What a console action sends, given which controls are available: none
+/// when its control is unavailable or it names no input or favourite.
+#[allow(clippy::too_many_arguments)] // each value gates or parameterizes one action
+fn console_action_intents(
+    action: ConsoleAction,
+    (preview_available, transition_available): (bool, bool),
+    (inputs, favorites): (&[InputId], &[TransitionFavoriteStatus]),
+    (transition_duration_frames, fade_to_black_duration_frames): (u32, u32),
+    cue_key: &dyn Fn(CueKey) -> Option<CueIntent>,
+) -> Vec<StudioIntent> {
+    let input = |n: u8| inputs.get(usize::from(n).checked_sub(1)?).copied();
+    let fade = StudioIntent::Fade {
+        duration_frames: transition_duration_frames,
+    };
+    match action {
+        ConsoleAction::Preview(n) if preview_available => input(n)
+            .map(StudioIntent::SelectPreview)
+            .into_iter()
+            .collect(),
+        // vMix's ActiveInput and QuickPlay: Preview, then the take, in that
+        // order on the session.
+        ConsoleAction::Take(n) if preview_available && transition_available => input(n)
+            .map(|input| vec![StudioIntent::SelectPreview(input), StudioIntent::Cut])
+            .unwrap_or_default(),
+        ConsoleAction::QuickPlay(n) if preview_available && transition_available => input(n)
+            .map(|input| vec![StudioIntent::SelectPreview(input), fade])
+            .unwrap_or_default(),
+        ConsoleAction::Cut if transition_available => vec![StudioIntent::Cut],
+        ConsoleAction::Fade if transition_available => vec![fade],
+        ConsoleAction::FadeToBlack if transition_available => {
+            vec![StudioIntent::ToggleFadeToBlack {
+                duration_frames: fade_to_black_duration_frames,
+            }]
+        }
+        ConsoleAction::Favorite(n) if transition_available => favorites
+            .get(usize::from(n).saturating_sub(1))
+            .map(|favorite| transitions::favorite_intent(*favorite))
+            .into_iter()
+            .collect(),
+        // GO on the Cues panel's list (RC-017), gated like the panel's keys.
+        ConsoleAction::CueGo if transition_available => cue_key(CueKey::Go)
+            .map(StudioIntent::Cue)
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // the console keys' gates and parameters
 fn studio_shortcuts(
     ui: &mut Ui,
     gate: TransitionGate,
     can_select_preview: bool,
     t_bar: TBarKeys,
-    (inputs, favorites): (&[InputId], &[TransitionFavoriteStatus]),
-    (transition_duration_frames, fade_to_black_duration_frames): (u32, u32),
+    (inputs, favorites, keymap): (&[InputId], &[TransitionFavoriteStatus], &ConsoleKeymap),
+    durations: (u32, u32),
     cue_key: &dyn Fn(CueKey) -> Option<CueIntent>,
 ) -> Vec<StudioIntent> {
     if ui.ctx().egui_wants_keyboard_input() {
@@ -1471,6 +1504,9 @@ fn studio_shortcuts(
     if !preview_available && !transition_available && !manual_available {
         return Vec::new();
     }
+    // Space and Enter press a focused control rather than its profile
+    // action.
+    let focused = ui.memory(|memory| memory.focused().is_some());
     ui.input_mut(|input| {
         let mut intents = Vec::new();
         // `,` and `.` count by the character they type, so a layout that
@@ -1493,19 +1529,34 @@ fn studio_shortcuts(
                 key,
                 pressed: true,
                 repeat: false,
-                modifiers: Modifiers::NONE,
+                modifiers,
                 ..
             } = event
             else {
                 return true;
             };
+            // The active profile's actions (RC-004 key profiles).
+            if let Some(action) = keymap.action(*key, *modifiers).filter(|action| {
+                !(focused
+                    && keymap
+                        .stroke(*action)
+                        .is_some_and(ConsoleStroke::presses_focus))
+            }) {
+                let sent = console_action_intents(
+                    action,
+                    (preview_available, transition_available),
+                    (inputs, favorites),
+                    durations,
+                    cue_key,
+                );
+                let handled = !sent.is_empty();
+                intents.extend(sent);
+                return !handled;
+            }
+            if *modifiers != Modifiers::NONE {
+                return true;
+            }
             match key {
-                Key::B if transition_available => {
-                    intents.push(StudioIntent::ToggleFadeToBlack {
-                        duration_frames: fade_to_black_duration_frames,
-                    });
-                    false
-                }
                 Key::T | Key::PageUp | Key::PageDown | Key::End | Key::Escape
                     if manual_available =>
                 {
@@ -1515,42 +1566,6 @@ fn studio_shortcuts(
                     let handled = !sent.is_empty();
                     intents.extend(sent);
                     !handled
-                }
-                Key::C if transition_available => {
-                    intents.push(StudioIntent::Cut);
-                    false
-                }
-                // GO on the Cues panel's list (RC-017), gated like the
-                // panel's keys.
-                Key::G if transition_available => {
-                    let Some(intent) = cue_key(CueKey::Go) else {
-                        return true;
-                    };
-                    intents.push(StudioIntent::Cue(intent));
-                    false
-                }
-                Key::F if transition_available => {
-                    intents.push(StudioIntent::Fade {
-                        duration_frames: transition_duration_frames,
-                    });
-                    false
-                }
-                _ if transition_available && favorite_key_index(*key).is_some() => {
-                    let Some(favorite) = favorite_key_index(*key).and_then(|i| favorites.get(i))
-                    else {
-                        return true;
-                    };
-                    intents.push(transitions::favorite_intent(*favorite));
-                    false
-                }
-                _ if preview_available => {
-                    let Some(input) =
-                        numbered_preview_index(*key).and_then(|index| inputs.get(index))
-                    else {
-                        return true;
-                    };
-                    intents.push(StudioIntent::SelectPreview(*input));
-                    false
                 }
                 _ => true,
             }
@@ -1746,6 +1761,9 @@ pub struct StudioShell {
     /// This console's own keys for project shortcuts, a console
     /// preference (RC-004).
     shortcut_keys: ShortcutKeyOverrides,
+    /// The console key profiles and the one the console answers (RC-004).
+    key_profiles: ConsoleKeyProfiles,
+    key_profiles_window: key_profiles_ui::KeyProfilesWindow,
     /// The panel the operator last clicked, which scoped project shortcut
     /// keys answer in (RC-004).
     focused_panel: Option<dock::PanelId>,
@@ -1866,6 +1884,28 @@ impl StudioShell {
         self.shortcut_keys = overrides;
     }
 
+    /// The console key profiles (RC-004), to save with the preferences.
+    #[must_use]
+    pub const fn console_key_profiles(&self) -> &ConsoleKeyProfiles {
+        &self.key_profiles
+    }
+
+    /// Replaces the console key profiles, as saved preferences restore
+    /// them.
+    pub fn set_console_key_profiles(&mut self, profiles: ConsoleKeyProfiles) {
+        self.key_profiles = profiles;
+    }
+
+    /// Copies the keys of the profile this console answers into `state`,
+    /// which every key handler and hover hint reads.
+    pub fn sync_console_keymap(&self, state: &mut StudioUiState) {
+        let keymap = self.key_profiles.active_keymap();
+        let keys = (keymap != *console_keymap::freemix()).then_some(keymap);
+        if state.console_keys != keys {
+            state.console_keys = keys;
+        }
+    }
+
     /// Returns to the Default layout and default sizes, docking every
     /// panel and tool window back; saved layouts are kept.
     pub(crate) fn reset_layout(&mut self, _context: &egui::Context) {
@@ -1923,7 +1963,7 @@ impl StudioShell {
                 availability: manual_transition_controls,
                 kind: self.t_bar_kind,
             },
-            (inputs, favorites),
+            (inputs, favorites, state.console_keymap()),
             (
                 self.transition_duration_frames,
                 self.fade_to_black_duration_frames,
@@ -2169,6 +2209,7 @@ impl StudioShell {
         self.draw_toasts(ui.ctx(), central.response.rect);
         self.draw_help_windows(ui.ctx(), state);
         self.draw_preferences_window(ui.ctx());
+        self.draw_key_profiles_window(ui.ctx());
         self.draw_display_outputs_dialog(ui.ctx(), state, &mut intents);
         self.draw_live_lan_window(ui.ctx(), state, &mut intents);
         self.draw_web_access_window(ui.ctx(), state, &mut intents);
@@ -2343,6 +2384,8 @@ impl Default for StudioShell {
             scripts: scripts::ScriptsWindow::default(),
             user_shortcuts: user_shortcuts::ShortcutsWindow::default(),
             shortcut_keys: ShortcutKeyOverrides::default(),
+            key_profiles: ConsoleKeyProfiles::default(),
+            key_profiles_window: key_profiles_ui::KeyProfilesWindow::default(),
             focused_panel: None,
             focused_window: None,
             chord: None,
@@ -2514,7 +2557,11 @@ mod tests {
                     },
                     kind: ManualTransitionKind::Fade,
                 },
-                (&inputs, &TransitionFavoriteStatus::defaults()),
+                (
+                    &inputs,
+                    &TransitionFavoriteStatus::defaults(),
+                    console_keymap::freemix(),
+                ),
                 (duration, fade_to_black_duration),
                 &|_| None,
             );
@@ -2779,7 +2826,7 @@ mod tests {
                     },
                     kind: ManualTransitionKind::Fade,
                 },
-                (&inputs, &favorites),
+                (&inputs, &favorites, console_keymap::freemix()),
                 (30, 30),
                 &|_| {
                     Some(CueIntent::Control {

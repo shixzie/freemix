@@ -2,7 +2,7 @@ use egui::{Button, CornerRadius, DragValue, Rect, RichText, Sense, Stroke, Ui, V
 use fm_protocol::{FadeToBlackPosition, FadeToBlackState};
 
 use crate::gating::{Capability, Hint, unavailable_reason};
-use crate::l10n::{self, Arg, Locale, Msg, with_key};
+use crate::l10n::{self, Arg, Locale, Msg};
 use crate::theme::{
     AMBER, PROGRAM, border_color, field_label, section_label, text_color, text_dim_color,
     widget_color,
@@ -95,14 +95,22 @@ pub(super) fn draw_fade_to_black(
                 l.text(Msg::FtbOnKey),
                 false,
                 availability.to_live,
-                with_key(l, l.text(Msg::FtbReverseHover), "B"),
+                state.console_keymap().hint(
+                    l,
+                    l.text(Msg::FtbReverseHover),
+                    crate::ConsoleAction::FadeToBlack,
+                ),
             )
         } else {
             (
                 "FTB",
                 true,
                 availability.to_black,
-                with_key(l, l.text(Msg::FtbHover), "B"),
+                state.console_keymap().hint(
+                    l,
+                    l.text(Msg::FtbHover),
+                    crate::ConsoleAction::FadeToBlack,
+                ),
             )
         };
         // Lit red only while Program is (going) black, as on a hardware

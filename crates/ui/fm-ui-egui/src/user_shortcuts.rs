@@ -39,6 +39,8 @@ use fm_protocol::{
 };
 use fm_types::ProjectId;
 
+use crate::{ConsoleKeymap, ConsoleStroke};
+
 use crate::gating::Hint;
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::preset_files::PresetFileRequest;
@@ -128,9 +130,10 @@ const CMD_SHIFT: Modifiers = Modifiers::COMMAND.plus(Modifiers::SHIFT);
 
 /// Every key the console reads in every context (the help, preference,
 /// and window keys) and while no panel owns the keyboard (the console
-/// keys), as [`crate::keymap`]'s binding table lists them (a unit test
-/// there keeps the two in step), then the keys that move and press the
-/// keyboard focus.
+/// keys) outside the key profiles, as [`crate::keymap`]'s binding table
+/// lists them (a unit test there keeps the two in step), then the keys
+/// that move and press the keyboard focus. The active profile's keys
+/// ([`crate::console_keymap`]) are reserved besides these.
 pub(crate) const RESERVED_KEYS: &[ReservedKey] = &[
     reserved(
         Key::Comma,
@@ -174,29 +177,13 @@ pub(crate) const RESERVED_KEYS: &[ReservedKey] = &[
     ),
     reserved(Key::S, CMD_SHIFT, false, crate::keymap::SCRIPTS_SHORTCUT),
     reserved(Key::N, CMD_SHIFT, false, crate::keymap::LIVE_LAN_SHORTCUT),
-    reserved(Key::B, NONE, false, "B"),
     reserved(Key::T, NONE, false, "T"),
     reserved(Key::PageUp, NONE, false, "PgUp / PgDn"),
     reserved(Key::PageDown, NONE, false, "PgUp / PgDn"),
     reserved(Key::End, NONE, false, "End"),
     reserved(Key::Escape, NONE, false, "Esc"),
-    reserved(Key::C, NONE, false, "C"),
-    reserved(Key::G, NONE, false, "G"),
     reserved(Key::Comma, NONE, false, ","),
     reserved(Key::Period, NONE, false, "."),
-    reserved(Key::F, NONE, false, "F"),
-    reserved(Key::F5, NONE, false, "F5 – F8"),
-    reserved(Key::F6, NONE, false, "F5 – F8"),
-    reserved(Key::F7, NONE, false, "F5 – F8"),
-    reserved(Key::F8, NONE, false, "F5 – F8"),
-    reserved(Key::Num1, NONE, false, "1 – 8"),
-    reserved(Key::Num2, NONE, false, "1 – 8"),
-    reserved(Key::Num3, NONE, false, "1 – 8"),
-    reserved(Key::Num4, NONE, false, "1 – 8"),
-    reserved(Key::Num5, NONE, false, "1 – 8"),
-    reserved(Key::Num6, NONE, false, "1 – 8"),
-    reserved(Key::Num7, NONE, false, "1 – 8"),
-    reserved(Key::Num8, NONE, false, "1 – 8"),
     reserved(Key::Z, CMD, false, crate::UNDO_SHORTCUT),
     reserved(Key::Z, CMD_SHIFT, false, crate::REDO_SHORTCUT),
     reserved(Key::R, CMD_SHIFT, false, crate::keymap::RECORD_SHORTCUT),
@@ -250,22 +237,48 @@ const fn pattern(key: &WireShortcutKey) -> Modifiers {
     }
 }
 
-/// The console key a shortcut key would shadow, by its reference text.
+/// The fixed console key a press of `named` with `pressed` modifiers
+/// reaches, by its reference text.
+fn fixed_key(named: Key, pressed: Modifiers) -> Option<&'static ReservedKey> {
+    RESERVED_KEYS.iter().find(|reserved| {
+        reserved.key == named
+            && if reserved.logical {
+                pressed.matches_logically(reserved.modifiers)
+            } else {
+                pressed.matches_exact(reserved.modifiers)
+            }
+    })
+}
+
+/// The console key a shortcut key would shadow, by its reference text: a
+/// fixed console key, or a key of the active key profile `keymap`.
 #[must_use]
-pub(crate) fn reserved_by(key: &WireShortcutKey) -> Option<&'static str> {
+pub(crate) fn reserved_by(key: &WireShortcutKey, keymap: &ConsoleKeymap) -> Option<String> {
     let named = Key::from_name(&key.key)?;
     let pressed = press(key);
-    RESERVED_KEYS
-        .iter()
-        .find(|reserved| {
-            reserved.key == named
-                && if reserved.logical {
-                    pressed.matches_logically(reserved.modifiers)
-                } else {
-                    pressed.matches_exact(reserved.modifiers)
-                }
-        })
-        .map(|reserved| reserved.keys)
+    if let Some(reserved) = fixed_key(named, pressed) {
+        return Some(reserved.keys.to_owned());
+    }
+    keymap
+        .action(named, pressed)
+        .and_then(|action| keymap.stroke(action))
+        .map(ConsoleStroke::text)
+}
+
+/// The fixed console key (outside every key profile) a profile's `stroke`
+/// would take, by its reference text. Space and Enter, which press the
+/// focused control, are free for profiles: they reach a profile's action
+/// only while no control has focus.
+#[must_use]
+pub(crate) fn fixed_console_key(stroke: ConsoleStroke) -> Option<&'static str> {
+    if stroke.presses_focus() {
+        return None;
+    }
+    let pressed = Modifiers {
+        ctrl: stroke.command,
+        ..stroke.modifiers()
+    };
+    fixed_key(stroke.key, pressed).map(|reserved| reserved.keys)
 }
 
 /// `Ctrl+Shift+Alt+F9`, or a chord `Ctrl+K, 1`: a shortcut key's strokes
@@ -498,6 +511,8 @@ pub(crate) struct ConsoleKeys<'a> {
     /// The project the overrides are looked up under (none before a
     /// snapshot, when no override applies).
     pub(crate) project: Option<ProjectId>,
+    /// The active key profile's keys, which no shortcut key shadows.
+    pub(crate) keymap: &'a ConsoleKeymap,
 }
 
 impl<'a> ConsoleKeys<'a> {
@@ -507,6 +522,7 @@ impl<'a> ConsoleKeys<'a> {
             shortcuts: replicated(state),
             overrides,
             project: state.view.as_ref().map(|view| view.cursor.project_id),
+            keymap: state.console_keymap(),
         }
     }
 
@@ -560,7 +576,7 @@ impl<'a> ConsoleKeys<'a> {
     ) -> impl Iterator<Item = (&'a ShortcutStatus, &'a WireShortcutKey)> {
         self.shortcuts.iter().filter_map(move |shortcut| {
             let (key, _) = self.key(shortcut)?;
-            (focus.answers(key.scope.as_deref()) && reserved_by(key).is_none())
+            (focus.answers(key.scope.as_deref()) && reserved_by(key, self.keymap).is_none())
                 .then_some((shortcut, key))
         })
     }
@@ -917,7 +933,7 @@ pub fn save_block(
         } else if spec
             .key
             .as_ref()
-            .is_some_and(|key| reserved_by(key).is_some())
+            .is_some_and(|key| reserved_by(key, state.console_keymap()).is_some())
         {
             Some(Msg::UserShortcutReasonReserved.en())
         } else if spec
@@ -962,7 +978,7 @@ pub enum ImportRefusal {
     /// The merged set would break a bound or clash.
     Plan(ShortcutImportError),
     /// Shortcut `name` would take `keys`, one of the console's own keys.
-    Reserved { name: String, keys: &'static str },
+    Reserved { name: String, keys: String },
 }
 
 impl ImportRefusal {
@@ -1021,7 +1037,7 @@ pub fn import_plan(
         return Err(ImportRefusal::Blocked(reason));
     }
     if let Some((name, keys)) = imported.iter().find_map(|spec| {
-        let keys = reserved_by(spec.key.as_ref()?)?;
+        let keys = reserved_by(spec.key.as_ref()?, state.console_keymap())?;
         Some((spec.name.clone(), keys))
     }) {
         return Err(ImportRefusal::Reserved { name, keys });
@@ -1777,7 +1793,7 @@ pub(crate) enum LocalRefusal {
     /// A key a shortcut cannot name.
     Unsupported,
     /// One of the console's own keys, by its reference text.
-    Reserved(&'static str),
+    Reserved(String),
     /// The key another shortcut already answers here.
     Taken(String),
     /// The console keeps [`MAX_KEY_OVERRIDES`] overrides already.
@@ -1812,7 +1828,7 @@ pub(crate) fn local_capture(
     match captured {
         Captured::Cancel => None,
         Captured::Unsupported => Some(Err(LocalRefusal::Unsupported)),
-        Captured::Key(key) => Some(if let Some(reserved) = reserved_by(&key) {
+        Captured::Key(key) => Some(if let Some(reserved) = reserved_by(&key, keys.keymap) {
             Err(LocalRefusal::Reserved(reserved))
         } else if let Some(other) = keys.answering(shortcut, &key) {
             Err(LocalRefusal::Taken(other.spec.name.clone()))
@@ -2353,11 +2369,11 @@ fn draw_editor(
         }
     });
     if let Some(key) = &draft.key {
-        if let Some(keys) = reserved_by(key) {
+        if let Some(keys) = reserved_by(key, state.console_keymap()) {
             ui.label(
                 RichText::new(l.format(
                     Msg::UserShortcutKeyReserved,
-                    &[("keys", Arg::Str(&l.keys(keys)))],
+                    &[("keys", Arg::Str(&l.keys(&keys)))],
                 ))
                 .color(ERROR),
             );

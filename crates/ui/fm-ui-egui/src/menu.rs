@@ -1520,6 +1520,7 @@ impl StudioShell {
             let (status, tone) = shortcut_status(l, state);
             let columns = shortcut_columns(context.viewport_rect().width());
             let overrides = &self.shortcut_keys;
+            let profile_name = self.key_profiles.name(l, self.key_profiles.active());
             let response = help_modal(
                 context,
                 "studio-shortcuts-window",
@@ -1542,6 +1543,16 @@ impl StudioShell {
                             .size(crate::theme::legible(11.0))
                             .color(text_dim_color()),
                     );
+                    ui.label(
+                        RichText::new(l.format(
+                            Msg::ShortcutGroupProfile,
+                            &[("name", Arg::Str(&profile_name))],
+                        ))
+                        .size(crate::theme::legible(11.0))
+                        .strong()
+                        .color(text_dim_color()),
+                    )
+                    .on_hover_text(l.text(Msg::PrefsKeyProfileHover));
                     // Short windows scroll the reference instead of
                     // pushing its footer off screen.
                     let max_height =
@@ -1575,7 +1586,13 @@ impl StudioShell {
                                     ui.vertical(|ui| {
                                         ui.set_width(SHORTCUT_COLUMN_WIDTH);
                                         for group in groups {
-                                            shortcut_group(ui, l, *group, column);
+                                            shortcut_group(
+                                                ui,
+                                                l,
+                                                *group,
+                                                column,
+                                                state.console_keymap(),
+                                            );
                                         }
                                         if index == project {
                                             user_shortcut_group(ui, l, state, overrides, column);
@@ -1742,23 +1759,46 @@ pub(crate) fn shortcuts_width(columns: usize) -> f32 {
 
 /// One group of the keyboard reference: its title and a key cap beside
 /// each action, the action wrapping within the column.
-fn shortcut_group(ui: &mut Ui, l: Locale, group: ShortcutGroup, column: f32) {
+///
+/// The active key profile's keys (RC-004) come first, then the group's
+/// fixed keys; the `FreeMix` profile's entries of [`STUDIO_SHORTCUTS`] are the
+/// profile's and are not listed twice.
+fn shortcut_group(
+    ui: &mut Ui,
+    l: Locale,
+    group: ShortcutGroup,
+    column: f32,
+    keymap: &crate::ConsoleKeymap,
+) {
     ui.add_space(10.0);
     ui.label(section_label(l.tr(group.title())));
     ui.add_space(2.0);
     let action_width = (SHORTCUT_COLUMN_WIDTH - column - 16.0).max(120.0);
+    let profile = crate::console_keymap::freemix();
+    let fixed = STUDIO_SHORTCUTS
+        .iter()
+        .filter(|entry| entry.group == group)
+        .filter(|entry| {
+            entry
+                .key
+                .is_none_or(|key| profile.action(key, egui::Modifiers::NONE).is_none())
+        })
+        .map(|entry| (l.keys(entry.keys), l.tr(entry.action).to_owned()));
+    let rows: Vec<(String, String)> = keymap
+        .reference_rows_in(l, group)
+        .into_iter()
+        .map(|(keys, action)| (l.keys(&keys), action))
+        .chain(fixed)
+        .collect();
     egui::Grid::new(("studio-shortcuts", group.title()))
         .num_columns(2)
         .spacing(Vec2::new(16.0, 6.0))
         .show(ui, |ui| {
-            for entry in STUDIO_SHORTCUTS.iter().filter(|entry| entry.group == group) {
-                key_cap(ui, &l.keys(entry.keys), column);
+            for (keys, action) in rows {
+                key_cap(ui, &keys, column);
                 ui.scope(|ui| {
                     ui.set_max_width(action_width);
-                    ui.add(
-                        egui::Label::new(RichText::new(l.tr(entry.action)).color(text_color()))
-                            .wrap(),
-                    );
+                    ui.add(egui::Label::new(RichText::new(action).color(text_color())).wrap());
                 });
                 ui.end_row();
             }

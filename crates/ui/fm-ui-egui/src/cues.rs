@@ -1166,7 +1166,11 @@ impl CuePanel {
         if ui
             .add_enabled(go.is_ok(), go_button)
             .hint(
-                l.text(Msg::CueGoHover),
+                &state.console_keymap().hint(
+                    l,
+                    l.text(Msg::CueGoHover),
+                    crate::ConsoleAction::CueGo,
+                ),
                 go.as_ref().err().copied().unwrap_or(""),
             )
             .clicked()

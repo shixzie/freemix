@@ -2911,3 +2911,87 @@ fn console_keys_for_project_shortcuts_round_trip_and_save_debounced() {
     assert_eq!(saved.language, Some(Language::English), "the rest is kept");
     std::fs::remove_dir_all(&directory).unwrap();
 }
+
+/// RC-004 key profiles: the profile in use and the operator's own
+/// profiles round-trip through `studio.conf`, a bad line is skipped and
+/// never read as a layout entry, and a change is saved debounced.
+#[test]
+fn console_key_profiles_round_trip_and_save_debounced() {
+    use fm_ui_egui::{
+        BuiltinProfile, ConsoleAction, ConsoleKeyProfiles, ConsoleStroke, ProfileChoice,
+    };
+
+    let mut profiles = ConsoleKeyProfiles::default();
+    let late = profiles
+        .add("Late show", ProfileChoice::Builtin(BuiltinProfile::Vmix))
+        .unwrap();
+    let ProfileChoice::Custom(index) = late else {
+        panic!("a custom profile");
+    };
+    profiles
+        .set_key(index, ConsoleAction::Cut, ConsoleStroke::parse("Ctrl+K"))
+        .unwrap();
+    assert!(profiles.choose(late));
+    let keyed = SavedPreferences {
+        key_profiles: Some(profiles.clone()),
+        ..SavedPreferences::default()
+    };
+    let text = keyed.render();
+    for line in [
+        "keymap.profile = custom.1\n",
+        "keymap.custom.1.name = Late show\n",
+        "keymap.custom.1.base = vmix\n",
+        "keymap.custom.1.cut = Ctrl+K\n",
+    ] {
+        assert!(text.contains(line), "{text}");
+    }
+    assert_eq!(SavedPreferences::parse(&text), keyed);
+    // Choosing a built-in profile is one line.
+    let mut vmix = ConsoleKeyProfiles::default();
+    assert!(vmix.choose(ProfileChoice::Builtin(BuiltinProfile::Vmix)));
+    let parsed = SavedPreferences::parse("keymap.profile = vmix\n");
+    assert_eq!(parsed.key_profiles, Some(vmix));
+    // A bad line is skipped, and is never read as a layout entry.
+    let parsed = SavedPreferences::parse("keymap.profile = obs\nkeymap.custom.1.cut = T\n");
+    assert_eq!(parsed.key_profiles, None);
+    assert_eq!(parsed.layout, None);
+
+    let directory = scratch_directory("key-profile-prefs");
+    let path = directory.join("studio.conf");
+    let file = SavedPreferences::from_locale(Locale::ENGLISH);
+    file.save(&path).unwrap();
+    let layout = ConsoleLayout::default();
+    let mut store = PreferenceStore::new(
+        Some(path.clone()),
+        file,
+        Locale::ENGLISH,
+        layout.clone(),
+        Appearance::default(),
+    );
+    let start = Instant::now();
+    let delay = freemix_studio::SAVE_DELAY;
+    store.note_key_profiles(start, &ConsoleKeyProfiles::default());
+    assert!(!store.is_pending(), "unchanged");
+    store.note_key_profiles(start, &profiles);
+    assert_eq!(
+        store
+            .observe_at(start, Locale::ENGLISH, &layout, Appearance::default())
+            .unwrap(),
+        Some(delay)
+    );
+    assert_eq!(
+        store
+            .observe_at(
+                start + delay,
+                Locale::ENGLISH,
+                &layout,
+                Appearance::default()
+            )
+            .unwrap(),
+        None
+    );
+    let saved = SavedPreferences::load(&path).unwrap();
+    assert_eq!(saved.key_profiles, Some(profiles));
+    assert_eq!(saved.language, Some(Language::English), "the rest is kept");
+    std::fs::remove_dir_all(&directory).unwrap();
+}

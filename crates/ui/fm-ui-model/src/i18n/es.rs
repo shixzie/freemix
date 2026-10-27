@@ -10419,6 +10419,129 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReelReasonFirstClipCuts,
         t("el primer clip siempre entra por corte"),
     ),
+    (Msg::ConsoleActionPreview, t("Entrada {n} a Previo")),
+    (
+        Msg::ConsoleActionTake,
+        t("Entrada {n} a Programa con un corte"),
+    ),
+    (
+        Msg::ConsoleActionQuickPlay,
+        t("Entrada {n} a Programa con el fundido"),
+    ),
+    (Msg::ConsoleActionFavorite, t("Transición favorita {n}")),
+    (
+        Msg::ConsoleActionPreviewRun,
+        t("Poner la entrada con ese número en Previo"),
+    ),
+    (
+        Msg::ConsoleActionTakeRun,
+        t("Cortar la entrada con ese número directo a Programa"),
+    ),
+    (
+        Msg::ConsoleActionQuickPlayRun,
+        t("Fundir la entrada con ese número directo a Programa"),
+    ),
+    (Msg::KeyProfileFreeMix, t("FreeMix")),
+    (Msg::KeyProfileVmix, t("Estilo vMix")),
+    (
+        Msg::KeyProfileFreeMixHover,
+        t(
+            "Las teclas propias de la consola: 1–8 Previo, C Corte, F Fundido, B Fundido a negro, F5–F8 las transiciones favoritas, G el GO de las cues",
+        ),
+    ),
+    (
+        Msg::KeyProfileVmixHover,
+        t(
+            "Las teclas que los operadores de vMix suelen dar a las funciones de atajo de vMix: 1–9 PreviewInput, Ctrl+1–9 ActiveInput (corte directo a Programa), Alt+1–9 QuickPlay (fundido directo a Programa), Espacio Cut, Intro Fade, Ctrl+B FadeToBlack, Ctrl+F1–F4 Transition 1–4. vMix no trae un mapa de teclas fijo",
+        ),
+    ),
+    (Msg::PrefsKeyboard, t("Teclado")),
+    (Msg::PrefsKeyProfile, t("Perfil de teclas")),
+    (
+        Msg::PrefsKeyProfileHover,
+        t(
+            "Qué teclas manejan la conmutación, las transiciones y el GO de las cues en esta consola; se guarda con tus preferencias",
+        ),
+    ),
+    (Msg::PrefsEditKeyProfiles, t("Editar perfiles…")),
+    (
+        Msg::PrefsEditKeyProfilesHover,
+        t("Crea perfiles de teclas propios y cambia sus teclas"),
+    ),
+    (Msg::KeyProfilesTitle, t("Perfiles de teclas")),
+    (Msg::KeyProfilesUse, t("Usar")),
+    (
+        Msg::KeyProfilesUseHover,
+        t("Hacer que la consola responda a las teclas de este perfil"),
+    ),
+    (
+        Msg::KeyProfilesInUseHover,
+        t("La consola responde a las teclas de este perfil"),
+    ),
+    (Msg::KeyProfilesCopy, t("Copiar perfil")),
+    (
+        Msg::KeyProfilesCopyHover,
+        t("Crear un perfil propio a partir de este"),
+    ),
+    (Msg::KeyProfilesCopyName, t("{name} (copia)")),
+    (Msg::KeyProfilesDelete, t("Eliminar perfil")),
+    (
+        Msg::KeyProfilesDeleteHover,
+        t("Eliminar este perfil; la consola vuelve a FreeMix si estaba en uso"),
+    ),
+    (
+        Msg::KeyProfilesNameHover,
+        t("El nombre de este perfil, de 1 a 48 caracteres"),
+    ),
+    (
+        Msg::KeyProfilesBuiltinNote,
+        t("Los perfiles incluidos no cambian: copia uno para hacer el tuyo."),
+    ),
+    (
+        Msg::KeyProfilesFocusNote,
+        t(
+            "Espacio e Intro pulsan el botón enfocado mientras uno tiene el foco del teclado, y si no, llegan a su acción.",
+        ),
+    ),
+    (Msg::KeyProfilesAction, t("Acción")),
+    (Msg::KeyProfilesKey, t("Tecla asignada")),
+    (Msg::KeyProfilesNoKeyText, t("—")),
+    (
+        Msg::KeyProfilesSetKeyHover,
+        t("Pulsa la tecla a la que responde esta acción en este perfil"),
+    ),
+    (Msg::KeyProfilesPress, t("Pulsa una tecla… (Esc cancela)")),
+    (
+        Msg::KeyProfilesNoKeyHover,
+        t("Esta acción no responde a ninguna tecla en este perfil"),
+    ),
+    (Msg::KeyProfilesReset, t("Restablecer tecla")),
+    (
+        Msg::KeyProfilesResetHover,
+        t("Volver a la tecla del perfil incluido del que se copió este"),
+    ),
+    (
+        Msg::KeyProfilesFixed,
+        t("{keys} es una tecla de la consola que ningún perfil puede cambiar"),
+    ),
+    (Msg::KeyProfilesTaken, t("{keys} ya hace: {action}")),
+    (
+        Msg::KeyProfilesUnsupported,
+        t("Esa tecla no se puede asignar"),
+    ),
+    (
+        Msg::KeyProfilesReasonBuiltin,
+        t("los perfiles incluidos no cambian"),
+    ),
+    (
+        Msg::KeyProfilesReasonFull,
+        t("ya tienes 8 perfiles propios"),
+    ),
+    (
+        Msg::KeyProfilesReasonUnchanged,
+        t("esta acción ya tiene su tecla base"),
+    ),
+    (Msg::ShortcutGroupProfile, t("Perfil de teclas: {name}")),
     (Msg::ReelClipRemove, t("QUITAR CLIP")),
     (Msg::ReelClipRemoveHover, t("Quitar este clip del reel")),
     (Msg::ReelClipMoveUpHover, t("Reproducir este clip antes")),

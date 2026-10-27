@@ -713,11 +713,15 @@ impl StudioShell {
                     .hint(hover, reason)
                     .clicked()
             };
-        let key = if index < 8 {
-            format!("{}", index + 1)
-        } else {
-            String::new()
-        };
+        // The active key profile's Preview key for this tile, if any.
+        let key = u8::try_from(index + 1)
+            .ok()
+            .and_then(|n| {
+                state
+                    .console_keymap()
+                    .stroke(crate::ConsoleAction::Preview(n))
+            })
+            .map_or_else(String::new, crate::ConsoleStroke::text);
         if item(
             ui,
             enabled,

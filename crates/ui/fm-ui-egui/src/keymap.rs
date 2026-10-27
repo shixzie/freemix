@@ -207,8 +207,9 @@ fn take_chords(ui: &mut Ui, wanted: impl Fn(Chord) -> bool) -> Vec<Chord> {
 impl StudioShell {
     /// Whether a modal dialog other than the keyboard reference and
     /// Preferences (whose own keys close them) is open: About, Add or
-    /// Remove input, an input-lifecycle dialog, the layout-name dialog, or
-    /// the Shortcuts window (whose "Set key" takes the next key press).
+    /// Remove input, an input-lifecycle dialog, the layout-name dialog, the
+    /// Shortcuts window (whose "Set key" takes the next key press), or the
+    /// Key profiles window (whose "Set key" does too).
     /// No console key or chord acts behind one.
     pub(crate) const fn modal_dialog_open(&self) -> bool {
         self.show_about
@@ -217,6 +218,7 @@ impl StudioShell {
             || self.lifecycle.dialog_open()
             || self.layout_dialog_open()
             || self.user_shortcuts.open
+            || self.key_profiles_window.open
     }
 
     /// Whether any dialog blocks the window keys (Ctrl+G, Ctrl+Shift+A/L/S/N):
@@ -1067,11 +1069,112 @@ mod tests {
         assert!(shell.scripts.open && shell.live_lan.open);
     }
 
+    /// RC-004 key profiles: the vMix style profile answers its keys (Space
+    /// cuts, Enter fades, Ctrl+1 cuts input 1 straight to Program, Alt+1
+    /// fades it there, Ctrl+B fades to black, Ctrl+F1 takes favourite 1),
+    /// and `FreeMix`'s own `C`, `F`, and `B` do nothing; a project shortcut
+    /// may then take `C` but not Space.
+    #[test]
+    fn the_vmix_profile_drives_the_console_keys() {
+        let mut state = output_state();
+        let mut shell = StudioShell::default();
+        let mut profiles = shell.console_key_profiles().clone();
+        assert!(profiles.choose(crate::ProfileChoice::Builtin(crate::BuiltinProfile::Vmix)));
+        shell.set_console_key_profiles(profiles);
+        shell.sync_console_keymap(&mut state);
+        assert_eq!(
+            state.console_keymap(),
+            &crate::BuiltinProfile::Vmix.keymap()
+        );
+        let first = state.view.as_ref().unwrap().inputs[0];
+        let duration_frames = shell.transition_duration_frames;
+        let intents = run_keys(
+            &mut shell,
+            &state,
+            &[
+                (Key::Space, NONE),
+                (Key::Enter, NONE),
+                (Key::Num1, press(true, false, false)),
+                (Key::Num1, press(false, false, true)),
+                (Key::Num1, NONE),
+                (Key::C, NONE),
+                (Key::F, NONE),
+                (Key::B, NONE),
+            ],
+            false,
+        );
+        assert_eq!(
+            intents,
+            vec![
+                StudioIntent::Cut,
+                StudioIntent::Fade { duration_frames },
+                StudioIntent::SelectPreview(first),
+                StudioIntent::Cut,
+                StudioIntent::SelectPreview(first),
+                StudioIntent::Fade { duration_frames },
+                StudioIntent::SelectPreview(first),
+            ]
+        );
+        let intents = run_keys(
+            &mut shell,
+            &state,
+            &[
+                (Key::B, press(true, false, false)),
+                (Key::F1, press(true, false, false)),
+            ],
+            false,
+        );
+        assert!(
+            matches!(&intents[..], [StudioIntent::ToggleFadeToBlack { .. }, _]),
+            "{intents:?}"
+        );
+        // The profile's keys, not FreeMix's, are reserved from shortcuts.
+        let key = |name: &str| fm_protocol::WireShortcutKey::stroke(name, false, false, false);
+        assert_eq!(
+            crate::user_shortcuts::reserved_by(&key("C"), state.console_keymap()),
+            None
+        );
+        assert_eq!(
+            crate::user_shortcuts::reserved_by(&key("Space"), state.console_keymap()).as_deref(),
+            Some("Space")
+        );
+        assert_eq!(
+            crate::user_shortcuts::reserved_by(
+                &fm_protocol::WireShortcutKey::stroke("3", true, false, false),
+                state.console_keymap()
+            )
+            .as_deref(),
+            Some("Ctrl+3")
+        );
+        // Back on FreeMix the state forgets the profile.
+        let mut profiles = shell.console_key_profiles().clone();
+        assert!(profiles.choose(crate::ProfileChoice::default()));
+        shell.set_console_key_profiles(profiles);
+        shell.sync_console_keymap(&mut state);
+        assert_eq!(state.console_keys, None);
+    }
+
     /// RC-004: the keys no user shortcut may take mirror, in order, every
     /// key the console reads in every context and while no panel owns the
-    /// keyboard, so a new console key is reserved too.
+    /// keyboard outside the key profiles, so a new console key is reserved
+    /// too; the `FreeMix` profile's keys are exactly the rest, which
+    /// [`crate::user_shortcuts::reserved_by`] reserves through the active
+    /// profile.
     #[test]
     fn user_shortcuts_reserve_every_console_key() {
+        let profile = crate::console_keymap::freemix();
+        let in_profile = |binding: &&Binding| {
+            binding.scope == Console && profile.action(binding.key, own_press(**binding)).is_some()
+        };
+        for (_, stroke) in profile.bindings() {
+            assert!(
+                BINDINGS.iter().filter(in_profile).any(|binding| {
+                    binding.key == stroke.key && binding.modifiers == stroke.modifiers()
+                }),
+                "{} is not a console binding",
+                stroke.text()
+            );
+        }
         let mirrored =
             &crate::user_shortcuts::RESERVED_KEYS[..crate::user_shortcuts::MIRRORED_KEYS];
         let reserved: Vec<_> = mirrored
@@ -1081,6 +1184,7 @@ mod tests {
         let console: Vec<_> = BINDINGS
             .iter()
             .filter(|binding| matches!(binding.scope, Global | Console))
+            .filter(|binding| !in_profile(binding))
             .map(|binding| {
                 (
                     binding.key,
