@@ -112,6 +112,9 @@ pub enum EngineReplayOperation {
     Pause { input: InputId },
     /// Jumps Replay input `input` back to its event's first frame, paused.
     CueIn { input: InputId },
+    /// Moves Replay input `input` `frames` source frames (back when
+    /// negative), paused, clamped to its event (jog).
+    Step { input: InputId, frames: i32 },
 }
 
 impl EngineReplayOperation {
@@ -130,7 +133,8 @@ impl EngineReplayOperation {
             | Self::Angle { input, .. }
             | Self::Play { input, .. }
             | Self::Pause { input }
-            | Self::CueIn { input } => Some(*input),
+            | Self::CueIn { input }
+            | Self::Step { input, .. } => Some(*input),
             _ => None,
         }
     }
@@ -1028,7 +1032,30 @@ impl ReplayRuntime {
                     self.generation = self.generation.wrapping_add(1);
                 }
             }
+            EngineReplayOperation::Step { input, frames } => self.jog(*input, *frames),
         }
+    }
+
+    /// Moves Replay input `input` `frames` source frames (back when
+    /// negative), paused, clamped to its event's first and last frames.
+    fn jog(&mut self, input: InputId, frames: i32) {
+        let Some(player) = self.players.get_mut(&input) else {
+            return;
+        };
+        let Some(event) = player.event.and_then(|id| self.store.event_frames.get(&id)) else {
+            return;
+        };
+        let last = (event.out_frame - event.in_frame).saturating_sub(1);
+        let current = player.position / 4;
+        let distance = u64::from(frames.unsigned_abs());
+        let target = if frames < 0 {
+            current.saturating_sub(distance)
+        } else {
+            current.saturating_add(distance)
+        };
+        player.position = target.min(last) * 4;
+        player.playing = false;
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Where frame `frame` of source `input` was recorded.
@@ -1688,6 +1715,21 @@ pub(crate) fn accept(
         EngineReplayOperation::Play { input, .. }
         | EngineReplayOperation::Pause { input }
         | EngineReplayOperation::CueIn { input } => check_player(state, *input),
+        EngineReplayOperation::Step { input, frames } => {
+            check_player(state, *input)?;
+            if fm_types::replay::replay_step_is_valid(*frames) {
+                Ok(())
+            } else {
+                Err(invalid(
+                    "frames",
+                    "invalid_step",
+                    format!(
+                        "a replay step moves 1 to {} frames either way",
+                        fm_types::replay::MAX_REPLAY_STEP_FRAMES
+                    ),
+                ))
+            }
+        }
     }
 }
 

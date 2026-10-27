@@ -10562,6 +10562,11 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("esta acción ya tiene su tecla base"),
     ),
     (Msg::ShortcutGroupProfile, t("Perfil de teclas: {name}")),
+    (Msg::ReplayStepBackHover, t("Un fotograma atrás, en pausa")),
+    (
+        Msg::ReplayStepForwardHover,
+        t("Un fotograma adelante, en pausa"),
+    ),
     (Msg::ReelMusicSection, t("Música de fondo")),
     (
         Msg::ReelMusicPathHover,

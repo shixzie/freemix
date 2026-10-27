@@ -36,7 +36,11 @@
 //! channels); a source without audio records silence. A Replay input
 //! playing forward at 100% plays each shown frame's recorded audio through
 //! its own strip; slow motion and a paused or cued player are silent, as
-//! is a run's first segment, which opens with the encoder's start offset.
+//! is a run's first segment: ffmpeg's fragmented MP4 muxer shifts every
+//! stream 80 ms for the B-frame video but leaves the AAC priming packet at
+//! 0, so the segment's audio opens with a 2816-sample hole the adapter's
+//! continuity check refuses (the shift itself keeps sound and picture in
+//! sync; dropping it, `make_non_negative`, would put the sound 59 ms early).
 //!
 //! Limitations: the recorded picture is each source's newest decoded
 //! picture when the frame is realized (for a media file that can be a few

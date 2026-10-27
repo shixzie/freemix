@@ -856,6 +856,22 @@ fn draw_player(
                 intents.push(StudioIntent::Replay(operation));
             }
         }
+        // Jog: one frame back or on, paused (Protocol 2.114).
+        for (frames, label, hover) in [
+            (-1, "◀", Msg::ReplayStepBackHover),
+            (1, "▶", Msg::ReplayStepForwardHover),
+        ] {
+            if ui
+                .add_enabled(cued_reason.is_none(), key_button(label, None, 28.0))
+                .hint(l.text(hover), reason)
+                .clicked()
+            {
+                intents.push(StudioIntent::Replay(ReplayOperation::Step {
+                    input: player.input,
+                    frames,
+                }));
+            }
+        }
         if ui
             .add_enabled(
                 block.is_none(),

@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.113 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.114 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4384,6 +4384,21 @@ Protocol 2.113 gives a highlight reel a music bed (`OR-013`, schema 86).
   (defaults 80 and 25), and `reel` / `remote-reel` print a `ReelMusic` line
   for a reel with a bed.
 - 2.112 is refused.
+
+Protocol 2.114 jogs a Replay input (`OR-012`).
+
+- Command payload `replay_step` carries `input` (a Replay input) and
+  `frames`, a canonical signed decimal from -600 to 600 other than 0. It
+  is a live transition command like `replay_cue_in`; the engine refuses a
+  zero or longer step as `invalid_step`. On its frame the player moves that
+  many source frames back (negative) or on from the frame it shows,
+  stopping at its event's first and last frames, and pauses; a player with
+  nothing cued is unchanged. The durable `replay_changed` event carries
+  `operation=replay_step` with the same fields.
+- Studio's Replay player row gains ◀ and ▶ keys that step one frame back
+  or on, with English and Spanish hover help, and `freemix-cli
+  remote-replay-do <address> step <input> <frames>` sends one step.
+- 2.113 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

@@ -21,6 +21,7 @@
 //! | [`ReplayOperation::Play`] | `replay_play` | `input`, `speed` (`25\|50\|75\|100`) | transition |
 //! | [`ReplayOperation::Pause`] | `replay_pause` | `input` | transition |
 //! | [`ReplayOperation::CueIn`] | `replay_cue_in` | `input` | transition |
+//! | [`ReplayOperation::Step`] | `replay_step` | `input`, `frames` (a canonical signed decimal, nonzero, at most 600 either way) | transition |
 //!
 //! Only `replay_configure` is padlocked and undoable. Every accepted
 //! operation is announced by the durable `event=replay_changed` carrying
@@ -39,9 +40,9 @@ use crate::{ServerIdentity, WireInputId};
 pub use fm_types::replay::{
     DEFAULT_REPLAY_RETENTION_SECONDS, MAX_REPLAY_EVENT_NAME_BYTES, MAX_REPLAY_EVENTS,
     MAX_REPLAY_INPUTS, MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS,
-    MAX_REPLAY_STORAGE_ROOT_BYTES, MIN_REPLAY_RETENTION_SECONDS, REPLAY_LAST_SECONDS,
-    ReplaySettings, ReplaySettingsError, ReplaySpeed, replay_event_name_is_valid,
-    replay_storage_root_is_valid,
+    MAX_REPLAY_STEP_FRAMES, MAX_REPLAY_STORAGE_ROOT_BYTES, MIN_REPLAY_RETENTION_SECONDS,
+    REPLAY_LAST_SECONDS, ReplaySettings, ReplaySettingsError, ReplaySpeed,
+    replay_event_name_is_valid, replay_step_is_valid, replay_storage_root_is_valid,
 };
 
 /// One replay command.
@@ -81,11 +82,14 @@ pub enum ReplayOperation {
     Pause { input: WireInputId },
     /// Jumps a Replay input back to its event's first frame, paused.
     CueIn { input: WireInputId },
+    /// Moves a cued Replay input `frames` source frames (back when
+    /// negative), paused, within its event (Protocol 2.114, jog).
+    Step { input: WireInputId, frames: i32 },
 }
 
 impl ReplayOperation {
     /// Every payload token, in table order.
-    pub const TOKENS: [&'static str; 12] = [
+    pub const TOKENS: [&'static str; 13] = [
         "replay_configure",
         "replay_mark_in",
         "replay_mark_out",
@@ -98,6 +102,7 @@ impl ReplayOperation {
         "replay_play",
         "replay_pause",
         "replay_cue_in",
+        "replay_step",
     ];
 
     /// The payload token.
@@ -116,6 +121,7 @@ impl ReplayOperation {
             Self::Play { .. } => "replay_play",
             Self::Pause { .. } => "replay_pause",
             Self::CueIn { .. } => "replay_cue_in",
+            Self::Step { .. } => "replay_step",
         }
     }
 

@@ -168,6 +168,13 @@ pub(super) fn encode_operation(
         ReplayOperation::Pause { input } | ReplayOperation::CueIn { input } => {
             push("input", input.to_string())
         }
+        ReplayOperation::Step { input, frames } => {
+            if !crate::replay_step_is_valid(*frames) {
+                return Err(invalid("frames", frames.to_string()));
+            }
+            push("input", input.to_string())?;
+            push("frames", frames.to_string())
+        }
     }
 }
 
@@ -225,6 +232,15 @@ pub(super) fn decode_operation(
         "replay_cue_in" => ReplayOperation::CueIn {
             input: input(fields)?,
         },
+        "replay_step" => {
+            let input = input(fields)?;
+            let value = fields.required("frames")?;
+            let frames = super::source_sync::parse_canonical_i64(&value)
+                .and_then(|frames| i32::try_from(frames).ok())
+                .filter(|frames| crate::replay_step_is_valid(*frames))
+                .ok_or_else(|| invalid("frames", value))?;
+            ReplayOperation::Step { input, frames }
+        }
         _ => return Ok(None),
     }))
 }

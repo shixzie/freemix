@@ -31,6 +31,16 @@ pub const MAX_REPLAY_EVENTS: usize = 64;
 pub const MAX_REPLAY_EVENT_NAME_BYTES: usize = 64;
 /// The last-N capture lengths an operator can take, in seconds.
 pub const REPLAY_LAST_SECONDS: [u8; 3] = [5, 10, 20];
+/// Most frames one replay step (jog) moves a player, either way (ten
+/// seconds at 60 frames per second).
+pub const MAX_REPLAY_STEP_FRAMES: u32 = 600;
+
+/// Whether `frames` is a usable replay step: nonzero and at most
+/// [`MAX_REPLAY_STEP_FRAMES`] either way.
+#[must_use]
+pub const fn replay_step_is_valid(frames: i32) -> bool {
+    frames != 0 && frames.unsigned_abs() <= MAX_REPLAY_STEP_FRAMES
+}
 
 /// What a project records for replay and how long it keeps it.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]

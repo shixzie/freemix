@@ -3788,6 +3788,8 @@ messages! {
     ReelReasonLastClip => t("this clip is already last"),
     ReelEventSelect => t("SELECT"),
     ReelEventSelectHover => t("Use this event when adding a clip to a reel"),
+    ReplayStepBackHover => t("One frame back, paused"),
+    ReplayStepForwardHover => t("One frame on, paused"),
     ReelMusicSection => t("Music bed"),
     ReelMusicPathHover => t("Absolute path of an audio file on the server (WAV, MP3, AAC, FLAC, or Ogg), played under the clips from the reel's first frame"),
     ReelMusicSet => t("SET"),

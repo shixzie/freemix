@@ -5869,6 +5869,19 @@ fn replay_input(value: &str) -> Result<fm_protocol::WireInputId, ArgsError> {
         })
 }
 
+/// A replay step (jog, Protocol 2.114): nonzero frames, at most
+/// [`fm_protocol::MAX_REPLAY_STEP_FRAMES`] either way.
+fn replay_step(value: &str) -> Result<i32, ArgsError> {
+    value
+        .parse::<i32>()
+        .ok()
+        .filter(|frames| fm_protocol::replay_step_is_valid(*frames))
+        .ok_or_else(|| ArgsError::InvalidChoice {
+            field: "replay step frames",
+            value: value.to_owned(),
+        })
+}
+
 /// `remote-replay-do <address> <operation> ...` (OR-012):
 /// `mark-in`, `mark-out`, `capture [--name NAME]`, `last 5|10|20`,
 /// `rename EVENT NAME`, `delete EVENT`, `cue INPUT EVENT [--angle INPUT]`,
@@ -5952,6 +5965,10 @@ fn parse_remote_replay_do(
         },
         ("cue-in", [input]) => ReplayOperation::CueIn {
             input: replay_input(input)?,
+        },
+        ("step", [input, frames]) => ReplayOperation::Step {
+            input: replay_input(input)?,
+            frames: replay_step(frames)?,
         },
         _ => return Err(wrong()),
     };
@@ -11426,6 +11443,16 @@ mod tests {
                 angle: Some(input(3)),
             })
         );
+        assert_eq!(
+            remote(&["step", "7", "-5"]),
+            Ok(ReplayOperation::Step {
+                input: input(7),
+                frames: -5,
+            })
+        );
+        for frames in ["0", "601", "-601", "x"] {
+            assert!(remote(&["step", "7", frames]).is_err(), "{frames}");
+        }
         assert!(remote(&["last", "7"]).is_err());
         assert!(remote(&["play", "7", "60"]).is_err());
         assert!(remote(&["mark-in", "--name", "x"]).is_err());

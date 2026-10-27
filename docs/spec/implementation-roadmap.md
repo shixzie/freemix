@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.113 / schema 86 (2026-10-27).
+(2026-10-19); items refreshed through protocol 2.114 / schema 86 (2026-10-27).
 Every parity row is still `planned` (or `blocked`); these are the
 highest-value remaining items, ranked:
 
@@ -148,7 +148,8 @@ highest-value remaining items, ranked:
     record each source's own audio, which a Replay input plays at 100%
     (slow motion stays silent). Remaining: the recorder takes a source's last decoded
     picture rather than a genlocked one, segment files from a previous run
-    are removed rather than reloaded, and A/B linking, jog or shuttle,
+    are removed rather than reloaded, and A/B linking, shuttle (a player
+    now jogs frame by frame; Protocol 2.114),
     transitions, auto-return, playlists, multiview, controller and
     disk-health wiring, and certification are absent (see the Phase 7
     boundary).
@@ -5614,11 +5615,14 @@ shown frame's recorded audio through its own strip, while slow motion and a
 paused or cued player stay silent (the unit test reads a recorded tone back
 from a segment; the native test hears the camera's tone on Program at 100%
 and silence in slow motion). Remaining gaps: a run's first segment replays
-silent (it opens with the encoder's start offset, which the adapter refuses
-to place), and slow motion has no audio; the recorder captures
+silent (ffmpeg's fragmented MP4 muxer leaves the AAC priming packet ahead of the
+80 ms shift its B-frame video needs, a hole the adapter's continuity check
+refuses), and slow motion has no audio; the recorder captures
 what the source last decoded rather than a genlocked frame, so a stalled
 source repeats its picture; segment files from a previous run are removed
-rather than reloaded; there is no A/B linking, jog or shuttle, transition,
+rather than reloaded; a cued player jogs any number of frames up to 600
+either way, paused (Protocol 2.114, Studio's ◀ and ▶ keys and `remote-replay-do
+step`), but there is no A/B linking, shuttle, transition,
 auto-return, playlist, multiview, controller, or disk-health wiring; and
 nothing is certified. `OR-012`, `OR-013`, and `OR-014` remain planned.
 

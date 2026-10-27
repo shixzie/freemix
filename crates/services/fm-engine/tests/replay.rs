@@ -543,3 +543,84 @@ fn a_replay_input_plays_its_event_frame_exactly_at_every_speed() {
     assert_eq!(empty.event, None);
     assert_eq!(empty.source_frame, None);
 }
+
+/// Protocol 2.114 jog: a step moves a cued player that many source frames,
+/// paused, and stops at its event's first and last frames; a zero or
+/// overlong step is refused.
+#[test]
+fn a_replay_step_jogs_a_cued_player_within_its_event() {
+    let mut engine = engine();
+    add_player(&mut engine, 9);
+    replay(
+        &mut engine,
+        "configure",
+        EngineReplayOperation::Configure(Box::new(settings(&[1], 600))),
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 12 * FPS);
+    replay(
+        &mut engine,
+        "last",
+        EngineReplayOperation::CaptureLast { seconds: 5 },
+    );
+    settle(&mut engine);
+    let event = engine.replay_status().events[0].clone();
+    replay(
+        &mut engine,
+        "cue",
+        EngineReplayOperation::Cue {
+            input: input(9),
+            event: 1,
+            angle: None,
+        },
+    );
+    settle(&mut engine);
+    let shown = |engine: &mut Engine| {
+        let frame = settle(engine).last().unwrap().replay[0].clone();
+        assert!(!frame.playing);
+        frame.source_frame
+    };
+    let step = |engine: &mut Engine, key: &str, frames: i32| {
+        replay(
+            engine,
+            key,
+            EngineReplayOperation::Step {
+                input: input(9),
+                frames,
+            },
+        );
+    };
+    step(&mut engine, "on-3", 3);
+    assert_eq!(shown(&mut engine), Some(event.in_frame + 3));
+    step(&mut engine, "back-1", -1);
+    assert_eq!(shown(&mut engine), Some(event.in_frame + 2));
+    // Before the first frame it stays on the first frame.
+    step(&mut engine, "back-many", -600);
+    assert_eq!(shown(&mut engine), Some(event.in_frame));
+    // Past the last frame it stays on the last.
+    step(&mut engine, "on-many", 600);
+    assert_eq!(shown(&mut engine), Some(event.out_frame - 1));
+    // A playing player stops where the step puts it.
+    replay(
+        &mut engine,
+        "play",
+        EngineReplayOperation::Play {
+            input: input(9),
+            speed: ReplaySpeed::Full,
+        },
+    );
+    step(&mut engine, "back-10", -10);
+    assert_eq!(shown(&mut engine), Some(event.out_frame - 11));
+
+    for (key, frames) in [("zero", 0), ("too-far", 601), ("too-far-back", -601)] {
+        let outcome = execute(
+            &mut engine,
+            key,
+            EngineCommand::Replay(EngineReplayOperation::Step {
+                input: input(9),
+                frames,
+            }),
+        );
+        assert_eq!(rejection(&outcome).fields[0].code, "invalid_step", "{key}");
+    }
+}

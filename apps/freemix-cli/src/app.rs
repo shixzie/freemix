@@ -6712,12 +6712,13 @@ Usage:
   freemix-cli remote-display-inventory <127.0.0.1:port>
   freemix-cli remote-replay <127.0.0.1:port>
   freemix-cli remote-replay-set <127.0.0.1:port> [replay-set options]
-  freemix-cli remote-replay-do <127.0.0.1:port> <mark-in|mark-out|capture [--name <name>]|last <5|10|20>|rename <event> <name>|delete <event>|cue <input> <event> [--angle <input>]|angle <input> <angle>|play <input> [25|50|75|100]|pause <input>|cue-in <input>> [--key <key>]
+  freemix-cli remote-replay-do <127.0.0.1:port> <mark-in|mark-out|capture [--name <name>]|last <5|10|20>|rename <event> <name>|delete <event>|cue <input> <event> [--angle <input>]|angle <input> <angle>|play <input> [25|50|75|100]|pause <input>|cue-in <input>|step <input> <frames>> [--key <key>]
       Prints the daemon's replay recording, events, and Replay inputs, edits
       what it records, or sends one live replay command: mark in or out,
       capture the marks or the last 5, 10, or 20 seconds, rename or delete an
       event, cue an event angle on a Replay input, switch angle, play at 25,
-      50, 75, or 100 percent, pause, or jump back to the cue-in point.
+      50, 75, or 100 percent, pause, jump back to the cue-in point, or step
+      (jog) a cued input -600 to 600 frames, paused (Protocol 2.114).
   freemix-cli remote-reel <127.0.0.1:port>
   freemix-cli remote-reel-set <127.0.0.1:port> [reel-set options]
   freemix-cli remote-reel-delete <127.0.0.1:port> --id <1..=18446744073709551615> [--key <key>] [--expect <revision>]

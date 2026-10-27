@@ -139,6 +139,13 @@ fn operations() -> Vec<(ReplayOperation, &'static str)> {
             ReplayOperation::CueIn { input: wire(9) },
             "replay_cue_in\tinput=9",
         ),
+        (
+            ReplayOperation::Step {
+                input: wire(9),
+                frames: -12,
+            },
+            "replay_step\tinput=9\tframes=-12",
+        ),
     ]
 }
 
@@ -194,9 +201,28 @@ fn commands_are_strict() {
         "replay_configure\tsources=1\tretention_seconds=9",
         "replay_configure\tsources=1\tretention_seconds=600\tstorage_root=relative",
         "replay_configure\tsources=1",
+        // A step is a nonzero canonical signed decimal of at most 600 frames.
+        "replay_step\tinput=9\tframes=0",
+        "replay_step\tinput=9\tframes=-0",
+        "replay_step\tinput=9\tframes=+3",
+        "replay_step\tinput=9\tframes=03",
+        "replay_step\tinput=9\tframes=601",
+        "replay_step\tinput=9\tframes=-601",
+        "replay_step\tinput=9",
     ] {
         refused(&format!("{prefix}\tpayload={fields}\n"));
     }
+    round_trip(&command(CommandPayload::Replay(ReplayOperation::Step {
+        input: wire(9),
+        frames: 600,
+    })));
+    assert!(
+        encode_line(&command(CommandPayload::Replay(ReplayOperation::Step {
+            input: wire(9),
+            frames: 0,
+        })))
+        .is_err()
+    );
     // An unusable name is refused at encode time too.
     assert!(
         encode_line(&command(CommandPayload::Replay(
