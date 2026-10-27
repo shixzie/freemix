@@ -4879,7 +4879,9 @@ mod tests {
             vec![stderr],
             Some(output),
             monitor,
-            Duration::from_secs(1),
+            // Generous: under a loaded full-workspace run, reaping the
+            // child and joining its threads can take longer than a second.
+            Duration::from_secs(10),
         );
         assert_eq!(error.cleanup, CleanupStatus::Complete);
         assert_eq!(
