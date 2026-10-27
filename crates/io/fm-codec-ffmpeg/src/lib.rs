@@ -549,8 +549,12 @@ mod tests {
         fs::write(&path, b"first").unwrap();
         let adapter = Adapter::new(Config::default()).unwrap();
         let source = adapter.open_source(&path).unwrap();
-        fs::remove_file(&path).unwrap();
-        fs::write(&path, b"other").unwrap();
+        // Written beside the original and renamed over it, the replacement
+        // never reuses the original inode within one timestamp tick (as a
+        // remove then rewrite may on a filesystem with coarse timestamps).
+        let replacement = directory.path().join("replacement.nut");
+        fs::write(&replacement, b"other").unwrap();
+        fs::rename(&replacement, &path).unwrap();
         assert_eq!(adapter.check_source(&source), Err(Error::SourceChanged));
     }
 
