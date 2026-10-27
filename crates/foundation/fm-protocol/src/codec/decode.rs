@@ -674,6 +674,15 @@ fn decode_command_payload(
             soloed: fields.boolean("soloed")?,
             follow_video: fields.boolean("follow_video")?,
             delay_samples: fields.parse_required("delay_samples")?,
+            buses: {
+                let value = fields.required("buses")?;
+                fm_types::audio_bus::AudioBusMask::from_token(&value).ok_or(
+                    CodecError::InvalidField {
+                        field: "buses",
+                        value,
+                    },
+                )?
+            },
         },
         "select_preview" => CommandPayload::SelectPreview {
             input: fields.input("input")?,
@@ -717,7 +726,10 @@ fn decode_command_payload(
         | "audio_monitor_device"
         | "audio_monitor_level"
         | "audio_strip_dsp"
-        | "audio_loudness_reset") => CommandPayload::AudioMixer(
+        | "audio_loudness_reset"
+        | "audio_aux_bus_name"
+        | "audio_aux_bus_level"
+        | "audio_output_bus") => CommandPayload::AudioMixer(
             super::audio_mixer::decode_operation(mixer, fields)?
                 .expect("every listed payload is a mixer operation"),
         ),
@@ -2354,6 +2366,7 @@ fn decode_input_audio_strips(
             let follow_video = parts.next().ok_or_else(invalid)?;
             let delay_samples = parts.next().ok_or_else(invalid)?;
             let group = parts.next().ok_or_else(invalid)?;
+            let buses = parts.next().ok_or_else(invalid)?;
             if parts.next().is_some() {
                 return Err(invalid());
             }
@@ -2379,6 +2392,7 @@ fn decode_input_audio_strips(
                     _ => return Err(invalid()),
                 },
                 delay_samples: delay_samples.parse().map_err(|_| invalid())?,
+                buses: fm_types::audio_bus::AudioBusMask::from_token(buses).ok_or_else(invalid)?,
             };
             if !(-96_000..=24_000).contains(&status.gain_millidb)
                 || !(-10_000..=10_000).contains(&status.balance_basis_points)

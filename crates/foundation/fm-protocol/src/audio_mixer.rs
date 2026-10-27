@@ -75,6 +75,7 @@
 //! `fade_to_black_excluded_outputs` (the outputs Fade to Black leaves live,
 //! ascending; empty when it fades every output).
 
+use fm_types::audio_bus::{AUX_BUS_COUNT, AuxBusNumber};
 use fm_types::strip_dsp::StripDsp;
 
 use crate::{WireInputId, WireOutputId};
@@ -235,6 +236,26 @@ impl AudioGroupStatus {
     }
 }
 
+/// One aux bus's name, fader, and mute (2.118).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuxBusStatus {
+    pub name: String,
+    pub gain_millidb: i32,
+    pub muted: bool,
+}
+
+impl AuxBusStatus {
+    /// The default aux bus `bus`: "Bus A" through "Bus G" at unity, unmuted.
+    #[must_use]
+    pub fn default_for(bus: AuxBusNumber) -> Self {
+        Self {
+            name: format!("Bus {}", bus.letter()),
+            gain_millidb: 0,
+            muted: false,
+        }
+    }
+}
+
 /// How a soloed strip is heard (2.44).
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum AudioSoloMode {
@@ -297,6 +318,9 @@ pub struct AudioMixerStatus {
     /// How many [`AudioStripDspStateMessage`] records follow the snapshot
     /// (2.75); not maintained by [`Self::apply`].
     pub strip_dsp_states: u16,
+    /// The aux buses, bus A first (2.118). Each output's bus rides its
+    /// [`crate::OutputStatus`].
+    pub aux_buses: [AuxBusStatus; AUX_BUS_COUNT],
 }
 
 impl Default for AudioMixerStatus {
@@ -308,6 +332,7 @@ impl Default for AudioMixerStatus {
             monitor: AudioMonitorStatus::default(),
             master_dsp: StripDsp::DEFAULT,
             strip_dsp_states: 0,
+            aux_buses: AuxBusNumber::ALL.map(AuxBusStatus::default_for),
         }
     }
 }
@@ -368,9 +393,11 @@ impl AudioMixerStatus {
                     );
                 }
             }
-            // Membership lives in the strip records; a loudness reset changes
-            // no status (2.92).
-            AudioMixerOperation::SetGroup { .. } | AudioMixerOperation::ResetLoudness { .. } => {}
+            // Membership lives in the strip records and an output's bus in its
+            // output status; a loudness reset changes no status (2.92).
+            AudioMixerOperation::SetGroup { .. }
+            | AudioMixerOperation::ResetLoudness { .. }
+            | AudioMixerOperation::SetOutputBus { .. } => {}
             AudioMixerOperation::RenameGroup { group, name } => {
                 if audio_group_is_valid(*group) {
                     self.groups[usize::from(*group) - 1].name.clone_from(name);
@@ -412,6 +439,18 @@ impl AudioMixerStatus {
                 if *target == AudioDspTarget::Master {
                     self.master_dsp = **chain;
                 }
+            }
+            AudioMixerOperation::RenameAuxBus { bus, name } => {
+                self.aux_buses[bus.index()].name.clone_from(name);
+            }
+            AudioMixerOperation::SetAuxBusLevel {
+                bus,
+                gain_millidb,
+                muted,
+            } => {
+                let entry = &mut self.aux_buses[bus.index()];
+                entry.gain_millidb = *gain_millidb;
+                entry.muted = *muted;
             }
         }
     }
@@ -457,6 +496,19 @@ pub enum AudioMixerOperation {
     /// Restarts a bus's integrated loudness, loudness range, and maximum
     /// true peak (2.92).
     ResetLoudness { target: AudioDspTarget },
+    /// Renames an aux bus (2.118).
+    RenameAuxBus { bus: AuxBusNumber, name: String },
+    /// Moves an aux bus fader or mute (2.118).
+    SetAuxBusLevel {
+        bus: AuxBusNumber,
+        gain_millidb: i32,
+        muted: bool,
+    },
+    /// Makes `output` hear aux bus `bus`, or Master for `None` (2.118).
+    SetOutputBus {
+        output: WireOutputId,
+        bus: Option<AuxBusNumber>,
+    },
 }
 
 impl AudioMixerOperation {
@@ -475,6 +527,9 @@ impl AudioMixerOperation {
             Self::SetMonitorLevel { .. } => "audio_monitor_level",
             Self::SetStripDsp { .. } => "audio_strip_dsp",
             Self::ResetLoudness { .. } => "audio_loudness_reset",
+            Self::RenameAuxBus { .. } => "audio_aux_bus_name",
+            Self::SetAuxBusLevel { .. } => "audio_aux_bus_level",
+            Self::SetOutputBus { .. } => "audio_output_bus",
         }
     }
 
@@ -487,6 +542,7 @@ impl AudioMixerOperation {
                 | Self::SetGroupSolo { .. }
                 | Self::SetMonitorLevel { .. }
                 | Self::ResetLoudness { .. }
+                | Self::SetAuxBusLevel { .. }
         )
     }
 }

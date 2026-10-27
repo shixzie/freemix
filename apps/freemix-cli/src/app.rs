@@ -875,19 +875,23 @@ pub fn run(command: Command) -> AppResult<()> {
             soloed,
             follow_video,
             delay_samples,
+            buses,
         } => mutate(
             &path,
             EngineCommand::SetInputAudioStrip {
                 input: input_id(input)?,
-                state: engine_audio_strip_state(
-                    gain_millidb,
-                    balance_basis_points,
-                    pan_basis_points,
-                    muted,
-                    soloed,
-                    follow_video,
-                    delay_samples,
-                )?,
+                state: EngineInputAudioStripState {
+                    buses,
+                    ..engine_audio_strip_state(
+                        gain_millidb,
+                        balance_basis_points,
+                        pan_basis_points,
+                        muted,
+                        soloed,
+                        follow_video,
+                        delay_samples,
+                    )?
+                },
             },
             1,
             None,
@@ -1979,6 +1983,7 @@ pub fn run(command: Command) -> AppResult<()> {
             soloed,
             follow_video,
             delay_samples,
+            buses,
             key,
             expected_revision,
         } => remote::execute(
@@ -2005,6 +2010,7 @@ pub fn run(command: Command) -> AppResult<()> {
                 delay_samples: InputDelaySamples::new(delay_samples)
                     .ok_or_else(|| AppFailure("delay samples must be in 0..=48000".into()))?
                     .get(),
+                buses,
             },
             key,
             expected_revision,
@@ -4910,10 +4916,12 @@ fn engine_audio_strip_state(
         delay_samples: InputDelaySamples::new(delay_samples)
             .ok_or_else(|| AppFailure("delay samples must be in 0..=48000".into()))?
             .get(),
+        buses: fm_types::audio_bus::AudioBusMask::MASTER,
     })
 }
 
 /// The engine edit for a parsed mixer command.
+#[allow(clippy::too_many_lines)] // one arm per mixer command
 fn engine_audio_mixer_edit(edit: AudioMixerArgs) -> AppResult<fm_engine::EngineAudioMixerEdit> {
     let group = |number: u8| {
         fm_model::AudioGroupNumber::new(number)
@@ -4998,10 +5006,38 @@ fn engine_audio_mixer_edit(edit: AudioMixerArgs) -> AppResult<fm_engine::EngineA
                 None => fm_types::strip_dsp::StripDspTarget::Master,
             },
         },
+        AudioMixerArgs::AuxName { bus, name } => {
+            fm_model::validate_audio_group_name(&name)
+                .map_err(|error| AppFailure(error.to_string()))?;
+            fm_engine::EngineAudioMixerEdit::RenameAuxBus { bus, name }
+        }
+        AudioMixerArgs::AuxLevel {
+            bus,
+            gain_millidb,
+            muted,
+        } => fm_engine::EngineAudioMixerEdit::SetAuxBusLevel {
+            bus,
+            state: fm_engine::EngineAudioGroupState {
+                gain_millidb: InputGainMilliDb::new(gain_millidb)
+                    .ok_or_else(|| AppFailure("gain must be in -96000..=24000 millidB".into()))?
+                    .get(),
+                muted,
+            },
+        },
+        AudioMixerArgs::OutputAux { output, bus } => {
+            fm_engine::EngineAudioMixerEdit::SetOutputAuxBus {
+                output: fm_types::OutputId::new(
+                    NonZeroU128::new(output)
+                        .ok_or_else(|| AppFailure("output ID must be nonzero".into()))?,
+                ),
+                bus,
+            }
+        }
     })
 }
 
 /// The wire operation for a parsed mixer command.
+#[allow(clippy::too_many_lines)] // one arm per mixer command
 fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::AudioMixerOperation> {
     Ok(match engine_audio_mixer_edit(edit)? {
         fm_engine::EngineAudioMixerEdit::SetLabel { input, label } => {
@@ -5075,6 +5111,22 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
                 gesture: None,
             }
         }
+        fm_engine::EngineAudioMixerEdit::RenameAuxBus { bus, name } => {
+            fm_protocol::AudioMixerOperation::RenameAuxBus { bus, name }
+        }
+        fm_engine::EngineAudioMixerEdit::SetAuxBusLevel { bus, state } => {
+            fm_protocol::AudioMixerOperation::SetAuxBusLevel {
+                bus,
+                gain_millidb: state.gain_millidb,
+                muted: state.muted,
+            }
+        }
+        fm_engine::EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => {
+            fm_protocol::AudioMixerOperation::SetOutputBus {
+                output: fm_protocol::WireOutputId::from_domain(output),
+                bus,
+            }
+        }
         fm_engine::EngineAudioMixerEdit::ResetLoudness { target } => {
             fm_protocol::AudioMixerOperation::ResetLoudness {
                 target: match target {
@@ -5104,6 +5156,7 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppRes
                 soloed: strip.state.soloed,
                 follow_video: strip.state.follow_video,
                 delay_samples: strip.state.delay_samples.get(),
+                buses: strip.state.buses,
             },
         )?;
         show.set_input_audio_label(strip.input, strip.label.clone())?;
@@ -5124,6 +5177,21 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppRes
                 parent: value.parent,
             },
         )?;
+    }
+    for (bus, value) in project.aux_buses().iter() {
+        show.set_aux_bus(
+            bus,
+            fm_engine::EngineAuxBus {
+                name: value.name.clone(),
+                state: fm_engine::EngineAudioGroupState {
+                    gain_millidb: value.gain.get(),
+                    muted: value.muted,
+                },
+            },
+        )?;
+    }
+    for (&output, &bus) in project.output_aux_buses() {
+        show.set_output_aux_bus(output, Some(bus));
     }
     show.set_audio_solo_mode(project.audio_solo_mode());
     let monitor = project.audio_monitor_output();
@@ -5241,6 +5309,30 @@ fn sync_audio_mixer(project: &mut Project, show: &ShowState) -> AppResult<()> {
                 .map_err(|error| AppFailure(format!("audio group {group}: {error}")))?;
         }
     }
+    for (bus, value) in fm_model::AuxBusNumber::ALL
+        .into_iter()
+        .zip(show.aux_buses())
+    {
+        project
+            .set_aux_bus(
+                bus,
+                fm_model::AuxBus {
+                    name: value.name.clone(),
+                    gain: InputGainMilliDb::new(value.state.gain_millidb)
+                        .expect("engine aux bus gain is bounded by the model contract"),
+                    muted: value.state.muted,
+                },
+            )
+            .map_err(|error| AppFailure(format!("project cannot take aux {bus}: {error}")))?;
+    }
+    let outputs = project
+        .outputs()
+        .iter()
+        .map(|output| output.id)
+        .collect::<Vec<_>>();
+    for output in outputs {
+        project.set_output_aux_bus(output, show.output_aux_bus(output));
+    }
     project.set_audio_solo_mode(show.audio_solo_mode());
     let monitor = show.audio_monitor();
     project
@@ -5286,6 +5378,7 @@ fn sync_input_audio_strips(project: &mut Project, show: &ShowState) -> AppResult
             follow_video: state.follow_video,
             delay_samples: InputDelaySamples::new(state.delay_samples)
                 .expect("engine input audio delay is bounded by the model contract"),
+            buses: state.buses,
         };
         if !project.set_input_audio_strip(input, strip) {
             return Err(AppFailure(format!("project is missing input {input}")).into());

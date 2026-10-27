@@ -933,7 +933,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(89);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(90);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -981,6 +981,8 @@ pub struct Project {
     input_categories: Vec<crate::InputCategory>,
     input_lifecycle: BTreeMap<InputId, crate::InputLifecycle>,
     audio_groups: crate::AudioGroups,
+    aux_buses: crate::AuxBuses,
+    output_aux_buses: BTreeMap<OutputId, crate::AuxBusNumber>,
     audio_solo_mode: crate::AudioSoloMode,
     audio_monitor_output: crate::AudioMonitorOutput,
     master_audio_dsp: fm_types::strip_dsp::StripDsp,
@@ -1035,6 +1037,8 @@ impl Project {
             input_categories: Vec::new(),
             input_lifecycle: BTreeMap::new(),
             audio_groups: crate::AudioGroups::default(),
+            aux_buses: crate::AuxBuses::default(),
+            output_aux_buses: BTreeMap::new(),
             audio_solo_mode: crate::AudioSoloMode::InPlace,
             audio_monitor_output: crate::AudioMonitorOutput::default(),
             master_audio_dsp: fm_types::strip_dsp::StripDsp::DEFAULT,
@@ -1300,6 +1304,69 @@ impl Project {
     /// [`Self::validate`].
     pub fn restore_audio_groups(&mut self, groups: crate::AudioGroups) {
         self.audio_groups = groups;
+    }
+
+    /// The project's aux buses A–G (AU-002, schema 90).
+    #[must_use]
+    pub const fn aux_buses(&self) -> &crate::AuxBuses {
+        &self.aux_buses
+    }
+
+    /// Replaces one aux bus's name, fader, and mute.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetAudioMixerError::Label`] for an unusable name. Nothing
+    /// changes on error.
+    pub fn set_aux_bus(
+        &mut self,
+        bus: crate::AuxBusNumber,
+        value: crate::AuxBus,
+    ) -> Result<(), SetAudioMixerError> {
+        crate::validate_audio_group_name(&value.name).map_err(SetAudioMixerError::Label)?;
+        self.aux_buses.set(bus, value);
+        Ok(())
+    }
+
+    /// Replaces every aux bus; names are reported by [`Self::validate`].
+    pub fn restore_aux_buses(&mut self, buses: crate::AuxBuses) {
+        self.aux_buses = buses;
+    }
+
+    /// The outputs that hear an aux bus instead of Master (AU-002, schema
+    /// 90), ascending. Every other output hears Master.
+    #[must_use]
+    pub const fn output_aux_buses(&self) -> &BTreeMap<OutputId, crate::AuxBusNumber> {
+        &self.output_aux_buses
+    }
+
+    /// The aux bus `output` hears, or `None` for Master.
+    #[must_use]
+    pub fn output_aux_bus(&self, output: OutputId) -> Option<crate::AuxBusNumber> {
+        self.output_aux_buses.get(&output).copied()
+    }
+
+    /// Makes `output` hear aux bus `bus`, or Master for `None`. Returns
+    /// `false`, changing nothing, for an unknown output.
+    pub fn set_output_aux_bus(
+        &mut self,
+        output: OutputId,
+        bus: Option<crate::AuxBusNumber>,
+    ) -> bool {
+        if !self.outputs.iter().any(|candidate| candidate.id == output) {
+            return false;
+        }
+        match bus {
+            Some(bus) => self.output_aux_buses.insert(output, bus),
+            None => self.output_aux_buses.remove(&output),
+        };
+        true
+    }
+
+    /// Replaces every output's aux bus; unknown outputs are reported by
+    /// [`Self::validate`].
+    pub fn restore_output_aux_buses(&mut self, buses: BTreeMap<OutputId, crate::AuxBusNumber>) {
+        self.output_aux_buses = buses;
     }
 
     /// The project outputs Fade to Black leaves live (SW-004, schema 39).
@@ -4031,6 +4098,7 @@ impl Project {
         self.outputs.retain(|candidate| candidate.id != output);
         self.fade_to_black_excluded_outputs.remove(&output);
         self.fade_to_black_output_durations.remove(&output);
+        self.output_aux_buses.remove(&output);
         Ok(())
     }
 
@@ -4556,6 +4624,8 @@ pub struct InputAudioStripState {
     pub muted: bool,
     pub soloed: bool,
     pub follow_video: bool,
+    /// Master and the aux buses the strip feeds (AU-002, schema 90).
+    pub buses: crate::AudioBusMask,
 }
 
 impl Default for InputAudioStripState {
@@ -4568,6 +4638,7 @@ impl Default for InputAudioStripState {
             muted: false,
             soloed: false,
             follow_video: true,
+            buses: crate::AudioBusMask::MASTER,
         }
     }
 }

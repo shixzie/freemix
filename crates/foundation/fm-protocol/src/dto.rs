@@ -1618,6 +1618,8 @@ pub enum CommandPayload {
         soloed: bool,
         follow_video: bool,
         delay_samples: u32,
+        /// Master and the aux buses the strip feeds (Protocol 2.118).
+        buses: fm_types::audio_bus::AudioBusMask,
     },
     SelectPreview {
         input: WireInputId,
@@ -2494,6 +2496,8 @@ pub struct InputAudioStripStatus {
     pub soloed: bool,
     pub follow_video: bool,
     pub delay_samples: u32,
+    /// Master and the aux buses the strip feeds (Protocol 2.118).
+    pub buses: fm_types::audio_bus::AudioBusMask,
 }
 
 /// One canonical show input exposed to clients in project order.
@@ -2511,6 +2515,8 @@ pub struct InputStatus {
 pub struct OutputStatus {
     pub output: WireOutputId,
     pub name: String,
+    /// The aux bus the output hears, or `None` for Master (2.118).
+    pub aux_bus: Option<fm_types::audio_bus::AuxBusNumber>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

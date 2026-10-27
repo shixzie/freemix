@@ -1103,6 +1103,9 @@ struct InputStrip {
     dsp: Option<Box<StripDspSlot>>,
     /// The strip's sends to aux buses A–G (AU-002), in bus order.
     aux_sends: [BusSend; AUX_BUS_COUNT],
+    /// Whether the strip feeds Master (AU-002); its meters hear it either
+    /// way.
+    to_master: bool,
 }
 
 /// One strip's live DSP chain and its processed-sample scratch.
@@ -1814,6 +1817,7 @@ impl MasterMixer {
                 delay,
                 dsp: None,
                 aux_sends: [BusSend::DISABLED; AUX_BUS_COUNT],
+                to_master: true,
             },
         );
         Ok(())
@@ -1936,6 +1940,28 @@ impl MasterMixer {
             .ok_or(AudioError::UnknownInput(input))?;
         strip.aux_sends[index] = send;
         Ok(())
+    }
+
+    /// Routes `input`'s strip to Master or takes it off Master (AU-002),
+    /// from the next rendered sample. Off Master, the strip still meters
+    /// and still feeds its aux sends and the monitor bus.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AudioError::UnknownInput`] for an unconfigured strip.
+    pub fn set_master_send(&mut self, input: InputId, to_master: bool) -> Result<(), AudioError> {
+        self.inputs
+            .get_mut(&input)
+            .ok_or(AudioError::UnknownInput(input))?
+            .to_master = to_master;
+        Ok(())
+    }
+
+    /// Whether `input`'s strip feeds Master, or `None` for an unconfigured
+    /// strip.
+    #[must_use]
+    pub fn master_send(&self, input: InputId) -> Option<bool> {
+        self.inputs.get(&input).map(|strip| strip.to_master)
     }
 
     /// `input`'s send to aux bus `bus`, or `None` for Master or an
@@ -2102,6 +2128,7 @@ impl MasterMixer {
             strip.balance_ramp = source.balance_ramp;
             strip.pan_ramp = source.pan_ramp;
             strip.aux_sends = source.aux_sends;
+            strip.to_master = source.to_master;
             strip.delay.copy_runtime_state_from(&source.delay);
             if let (Some(own), Some(other)) = (&mut strip.dsp, &source.dsp) {
                 own.live
@@ -2631,17 +2658,17 @@ impl MasterMixer {
                 .and_then(|meters| meters.get_mut(input_index))
                 .filter(|_| metering);
             if audible {
-                mix_audible_strip_samples(
+                // Off Master the strip is still metered.
+                mix_strip_samples(
                     samples,
                     &self.format.channels,
                     block,
                     strip,
-                    &mut { ramps },
-                    StripTap::Program,
+                    (&mut { ramps }, StripTap::Program, 1.0),
                     meter_channels
                         .as_mut()
                         .map(|meters| (&mut meters[..channels], strip_loudness.as_deref_mut())),
-                    output,
+                    strip.to_master.then_some(&mut *output),
                 )?;
             } else if let Some(meter) = strip_loudness {
                 meter.push_silence(samples);
@@ -2683,7 +2710,7 @@ impl MasterMixer {
                         strip,
                         (&mut { ramps }, tap, send.level.linear()),
                         None,
-                        planes,
+                        Some(planes),
                     )?;
                 }
             }
@@ -3006,12 +3033,12 @@ fn mix_audible_strip_samples<B: MixerBlockView>(
         strip,
         (ramps, tap, 1.0),
         meter_channels,
-        output,
+        Some(output),
     )
 }
 
 /// [`mix_audible_strip_samples`] scaled by a constant `level` (an aux
-/// send's level).
+/// send's level); with no `output` it only meters.
 #[allow(clippy::needless_range_loop)]
 fn mix_strip_samples<B: MixerBlockView>(
     samples: usize,
@@ -3020,7 +3047,7 @@ fn mix_strip_samples<B: MixerBlockView>(
     strip: &InputStrip,
     (ramps, tap, level): (&mut StripRamps, StripTap, f32),
     mut meter_channels: Option<(&mut [ChannelMeterAccumulator], Option<&mut LoudnessMeter>)>,
-    output: &mut [Vec<f32>],
+    mut output: Option<&mut [Vec<f32>]>,
 ) -> Result<(), AudioError> {
     let source_gain = match tap {
         StripTap::Program => block.map_or(SourceGain::UNITY, |(_, source_gain)| source_gain),
@@ -3056,14 +3083,16 @@ fn mix_strip_samples<B: MixerBlockView>(
             let balance_gain = balance_gain(balance, label) * pan_gain(pan, label);
             let contribution =
                 delayed * strip_gain * balance_gain * source_gain * coefficient * level;
-            let mapped = output[destination][sample] + contribution;
-            if !mapped.is_finite() {
-                return Err(AudioError::NonFiniteSample {
-                    channel: destination,
-                    sample,
-                });
+            if let Some(output) = output.as_deref_mut() {
+                let mapped = output[destination][sample] + contribution;
+                if !mapped.is_finite() {
+                    return Err(AudioError::NonFiniteSample {
+                        channel: destination,
+                        sample,
+                    });
+                }
+                output[destination][sample] = mapped;
             }
-            output[destination][sample] = mapped;
             if let Some((meter_channels, _)) = &mut meter_channels
                 && !meter_channels[destination].add(contribution)
             {

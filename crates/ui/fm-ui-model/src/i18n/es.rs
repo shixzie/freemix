@@ -2081,6 +2081,18 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::AfvHover,
         t("El audio sigue al vídeo: abierto solo mientras la entrada está en Programa"),
     ),
+    (
+        Msg::StripBusMasterHover,
+        t(
+            "Bus Máster: encendido mientras esta entrada alimenta Programa; fuera del Máster sigue midiéndose y alimentando sus buses auxiliares",
+        ),
+    ),
+    (
+        Msg::StripBusAuxHover,
+        t(
+            "Bus auxiliar {bus}: encendido mientras esta entrada lo alimenta; las salidas asignadas al bus {bus} la oyen",
+        ),
+    ),
     (Msg::MasterStrip, t("MÁSTER")),
     (Msg::ProgramMix, t("MEZCLA PGM")),
     (Msg::MasterTap, t("PRE-STINGER/FTB")),

@@ -1808,6 +1808,7 @@ pub(crate) mod tests {
         view.outputs = vec![OutputStatus {
             output: OutputId::new(NonZeroU128::new(1).unwrap()),
             name: "Program".to_owned(),
+            aux_bus: None,
         }];
         view.stream_targets = targets.to_vec();
         view.streams = targets

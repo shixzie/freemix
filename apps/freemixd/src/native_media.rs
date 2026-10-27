@@ -21,6 +21,7 @@ use std::{
     thread,
 };
 
+use fm_audio::{AUX_BUS_COUNT, AuxBusOutput, BusSend, MixBus};
 use fm_audio::{
     AudioCadenceOrigin, AudioRenderPlan, AudioSilenceSpan, AudioSynchronizerLimits, Balance,
     ChannelMapping, ChannelMeter, ClockMappedAudioSynchronizer, GroupState, InputState,
@@ -561,6 +562,10 @@ pub struct NativeProjectPlan {
     audio_group_parents: [Option<fm_model::AudioGroupNumber>; fm_model::AUDIO_GROUP_COUNT],
     /// How a soloed strip is heard (AU-001).
     audio_solo_mode: fm_model::AudioSoloMode,
+    /// Every aux bus's fader (millidB) and mute, bus A first (AU-002).
+    aux_bus_levels: [(i32, bool); fm_model::AUX_BUS_COUNT],
+    /// The outputs that hear an aux bus instead of Master (AU-002).
+    output_aux_buses: BTreeMap<OutputId, fm_model::AuxBusNumber>,
     /// Every strip's non-default DSP chain (AU-005).
     audio_dsp: BTreeMap<InputId, fm_types::strip_dsp::StripDsp>,
     /// The Master bus DSP chain (AU-005).
@@ -947,6 +952,11 @@ impl NativeProjectPlan {
             audio_group_parents: fm_model::AudioGroupNumber::ALL
                 .map(|group| project.audio_groups().get(group).parent),
             audio_solo_mode: project.audio_solo_mode(),
+            aux_bus_levels: fm_model::AuxBusNumber::ALL.map(|bus| {
+                let level = project.aux_buses().get(bus);
+                (level.gain.get(), level.muted)
+            }),
+            output_aux_buses: project.output_aux_buses().clone(),
             audio_dsp: project
                 .input_audio_strips()
                 .iter()
@@ -1039,6 +1049,41 @@ impl NativeProjectPlan {
         muted: bool,
     ) {
         self.audio_group_levels[group.index()] = (gain_millidb, muted);
+    }
+
+    /// Records aux bus `bus`'s fader and mute (AU-002).
+    pub const fn set_aux_bus_level(
+        &mut self,
+        bus: fm_model::AuxBusNumber,
+        gain_millidb: i32,
+        muted: bool,
+    ) {
+        self.aux_bus_levels[bus.index()] = (gain_millidb, muted);
+    }
+
+    /// The aux bus `output` hears, or `None` for Master (AU-002).
+    #[must_use]
+    pub fn output_aux_bus(&self, output: OutputId) -> Option<fm_model::AuxBusNumber> {
+        self.output_aux_buses.get(&output).copied()
+    }
+
+    /// Makes `output` hear aux bus `bus`, or Master for `None` (AU-002).
+    pub fn set_output_aux_bus(&mut self, output: OutputId, bus: Option<fm_model::AuxBusNumber>) {
+        match bus {
+            Some(bus) => self.output_aux_buses.insert(output, bus),
+            None => self.output_aux_buses.remove(&output),
+        };
+    }
+
+    /// Every aux bus's mixer state, bus A first (AU-002).
+    fn native_aux_states(&self) -> Result<Vec<(MixBus, GroupState)>, NativeMasterError> {
+        fm_model::AuxBusNumber::ALL
+            .into_iter()
+            .map(|bus| {
+                let (gain, muted) = self.aux_bus_levels[bus.index()];
+                Ok((native_aux_bus(bus), native_group_state(gain, muted)?))
+            })
+            .collect()
     }
 
     /// Records group `group`'s solo.
@@ -3136,6 +3181,10 @@ struct NativeAudioScratch {
     monitor_meters: Vec<ChannelMeter>,
     /// Whether the last render's monitor bus carried a PFL/AFL solo.
     monitor_solo: bool,
+    /// Aux buses A–G of the last render (AU-002), bus-major, and their
+    /// meters.
+    aux: Vec<Vec<f32>>,
+    aux_meters: Vec<ChannelMeter>,
     meter_frame: Option<(u64, u64, u64)>,
     /// The gain reduction of every running DSP chain at the last taken
     /// interval (AU-005): Master (`None`) first, then ascending inputs.
@@ -3231,6 +3280,8 @@ impl NativeAudioScratch {
             monitor: vec![vec![0.0; samples]; channels],
             monitor_meters: vec![ChannelMeter::default(); channels],
             monitor_solo: false,
+            aux: vec![vec![0.0; samples]; AUX_BUS_COUNT * channels],
+            aux_meters: vec![ChannelMeter::default(); AUX_BUS_COUNT * channels],
             dynamics: Vec::with_capacity(source_count + 1),
             input_loudness: Vec::new(),
             loudness_inputs: Vec::new(),
@@ -4269,7 +4320,17 @@ impl NativeMasterRuntime {
         }
         project.apply_group_topology(&mut mixer)?;
         project.apply_group_topology(&mut pending_mixer)?;
+        for (bus, state) in project.native_aux_states()? {
+            mixer.set_aux_bus_state(bus, state, 0)?;
+            pending_mixer.set_aux_bus_state(bus, state, 0)?;
+        }
         for (input, state, delay) in states {
+            let buses = project
+                .audio_strip(input)
+                .ok_or(NativeMasterError::MissingAudioRoute { input })?
+                .buses;
+            apply_strip_buses(&mut mixer, input, buses)?;
+            apply_strip_buses(&mut pending_mixer, input, buses)?;
             mixer
                 .set_input_delay(input, delay)
                 .map_err(|_| NativeMasterError::BoundsExceeded)?;
@@ -4352,7 +4413,16 @@ impl NativeMasterRuntime {
                 // never see its device or level.
                 fm_engine::EngineAudioMixerUpdate::MonitorDevice(_)
                 | fm_engine::EngineAudioMixerUpdate::MonitorLevel(_)
-                | fm_engine::EngineAudioMixerUpdate::LoudnessReset { .. } => {}
+                | fm_engine::EngineAudioMixerUpdate::LoudnessReset { .. }
+                | fm_engine::EngineAudioMixerUpdate::OutputAuxBus { .. } => {}
+                // An aux bus fader ramps like a group fader (AU-002).
+                fm_engine::EngineAudioMixerUpdate::AuxBusLevel { bus, state } => {
+                    mixer.set_aux_bus_state(
+                        native_aux_bus(bus),
+                        native_group_state(state.gain_millidb, state.muted)?,
+                        LIVE_INPUT_GAIN_RAMP_SAMPLES,
+                    )?;
+                }
                 // A chain glides or crossfades from the next rendered sample
                 // (AU-005).
                 fm_engine::EngineAudioMixerUpdate::StripDsp { target, ref chain } => match target {
@@ -4435,6 +4505,8 @@ impl NativeMasterRuntime {
             .map_err(|_| NativeMasterError::BoundsExceeded)?;
         mixer.set_input_state(input, state, LIVE_INPUT_GAIN_RAMP_SAMPLES)?;
         pending_mixer.set_input_state(input, state, LIVE_INPUT_GAIN_RAMP_SAMPLES)?;
+        apply_strip_buses(&mut mixer, input, strip.buses)?;
+        apply_strip_buses(&mut pending_mixer, input, strip.buses)?;
 
         let mut stinger_mixers = Vec::new();
         if let Some(playback) = &self.stinger_audio {
@@ -5271,8 +5343,7 @@ impl NativeMasterRuntime {
                 active_video_inputs,
                 &self.sources,
                 &self.scratch.rendered,
-                &mut self.scratch.mix,
-                &mut self.scratch.monitor,
+                (&mut self.scratch.mix, &mut self.scratch.monitor),
                 self.format.sample_rate,
                 &self.format.channels,
                 MixerMeterSlices {
@@ -5282,6 +5353,10 @@ impl NativeMasterRuntime {
                     loudness: Some(&mut self.scratch.input_loudness),
                 },
                 insert,
+                AuxBusOutput {
+                    planes: &mut self.scratch.aux,
+                    meters: &mut self.scratch.aux_meters,
+                },
             )?;
         } else {
             let primary = planar_audio_submission(
@@ -5402,7 +5477,43 @@ impl NativeMasterRuntime {
         // Outputs fading over their own duration (SW-004) hear the mix
         // before the fade, faded along their own trajectory.
         self.override_audio.clear();
+        // Outputs that hear an aux bus (AU-002) take it with the fade they
+        // would give Master: their own, none while excluded, or Program's.
+        if let Some(project) = project {
+            let channels = self.format.channels.channels().len();
+            for (&output, &bus) in &project.output_aux_buses {
+                let fade = frame
+                    .fade_to_black_overrides
+                    .iter()
+                    .find(|(candidate, _)| *candidate == output)
+                    .map(|(_, fade)| *fade)
+                    .or_else(|| {
+                        (!frame.fade_to_black_excluded_outputs.contains(&output))
+                            .then_some(frame.fade_to_black)
+                    });
+                let start = bus.index() * channels;
+                let mut planes: Vec<Vec<f32>> = self.scratch.aux[start..start + channels]
+                    .iter()
+                    .map(|plane| plane[..samples].to_vec())
+                    .collect();
+                if let Some(fade) = fade {
+                    apply_fade_to_black_audio(&mut planes, samples, fade);
+                }
+                self.override_audio.push((
+                    output,
+                    AudioBlock::new(
+                        timing,
+                        self.format.sample_rate,
+                        self.format.channels.clone(),
+                        planes,
+                    )?,
+                ));
+            }
+        }
         for &(output, output_fade) in &frame.fade_to_black_overrides {
+            if project.is_some_and(|project| project.output_aux_bus(output).is_some()) {
+                continue;
+            }
             let mut planes: Vec<Vec<f32>> = self
                 .scratch
                 .mix
@@ -6213,12 +6324,12 @@ fn mix_project_audio_strips(
     active_video_inputs: &[InputId],
     sources: &BTreeMap<InputId, NativeAudioSource>,
     rendered: &BTreeMap<InputId, Vec<Vec<f32>>>,
-    output: &mut [Vec<f32>],
-    monitor: &mut [Vec<f32>],
+    (output, monitor): (&mut [Vec<f32>], &mut [Vec<f32>]),
     sample_rate: fm_types::SampleRate,
     master_layout: &fm_types::ChannelLayout,
     meters: MixerMeterSlices<'_>,
     insert: Option<MasterBusInsert<'_>>,
+    aux: AuxBusOutput<'_>,
 ) -> Result<bool, NativeMasterError> {
     let mut first = None;
     for (&logical, route) in &project.audio_routes {
@@ -6240,15 +6351,15 @@ fn mix_project_audio_strips(
         }
     }
     let Some(first) = first else {
-        return Ok(mixer.mix_planar_timed_into_with_monitor(
+        return Ok(mixer.mix_planar_timed_into_with_aux(
             timing,
             samples,
             &[],
             active_video_inputs,
-            output,
-            monitor,
+            (output, monitor),
             meters,
             insert,
+            Some(aux),
         )?);
     };
 
@@ -6277,15 +6388,15 @@ fn mix_project_audio_strips(
         *slot = submission;
         submission_count += 1;
     }
-    Ok(mixer.mix_planar_timed_into_with_monitor(
+    Ok(mixer.mix_planar_timed_into_with_aux(
         timing,
         samples,
         &submissions[..submission_count],
         active_video_inputs,
-        output,
-        monitor,
+        (output, monitor),
         meters,
         insert,
+        Some(aux),
     )?)
 }
 
@@ -6368,6 +6479,30 @@ const fn native_solo_mode(mode: fm_model::AudioSoloMode) -> SoloMode {
         fm_model::AudioSoloMode::Pfl => SoloMode::Pfl,
         fm_model::AudioSoloMode::Afl => SoloMode::Afl,
     }
+}
+
+/// The mixer bus for aux bus `bus` (AU-002).
+fn native_aux_bus(bus: fm_model::AuxBusNumber) -> MixBus {
+    MixBus::from_index(usize::from(bus.get())).expect("aux buses A-G are mixer buses 1-7")
+}
+
+/// Routes `input`'s strip to Master and each aux bus as `buses` says: a
+/// unity post-fader send, like a vMix bus button (AU-002).
+fn apply_strip_buses(
+    mixer: &mut MasterMixer,
+    input: InputId,
+    buses: fm_model::AudioBusMask,
+) -> Result<(), NativeMasterError> {
+    mixer.set_master_send(input, buses.master())?;
+    for bus in fm_model::AuxBusNumber::ALL {
+        let send = if buses.aux(bus) {
+            BusSend::UNITY
+        } else {
+            BusSend::DISABLED
+        };
+        mixer.set_aux_send(input, native_aux_bus(bus), send)?;
+    }
+    Ok(())
 }
 
 fn native_group_state(gain_millidb: i32, muted: bool) -> Result<GroupState, NativeMasterError> {
@@ -11032,6 +11167,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 follow_video: false,
+                buses: fm_types::audio_bus::AudioBusMask::MASTER,
             },
         ));
         let stored = StoredProject::from_project(
@@ -11090,6 +11226,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 follow_video: true,
+                buses: fm_types::audio_bus::AudioBusMask::MASTER,
             },
         ));
         assert!(project.set_input_audio_strip(
@@ -11102,6 +11239,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 follow_video: true,
+                buses: fm_types::audio_bus::AudioBusMask::MASTER,
             },
         ));
         let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
@@ -11130,6 +11268,7 @@ mod tests {
                 muted: true,
                 soloed: false,
                 follow_video: true,
+                buses: fm_types::audio_bus::AudioBusMask::MASTER,
             },
         ));
         let muted_plan =
@@ -11159,6 +11298,7 @@ mod tests {
             muted: true,
             soloed: true,
             follow_video: false,
+            buses: fm_types::audio_bus::AudioBusMask::MASTER,
         };
         assert!(project.set_input_audio_strip(input(1), persisted));
         let alias_persisted = InputAudioStripState {
@@ -11169,6 +11309,7 @@ mod tests {
             muted: false,
             soloed: false,
             follow_video: true,
+            buses: fm_types::audio_bus::AudioBusMask::MASTER,
         };
         assert!(project.set_input_audio_strip(input(2), alias_persisted));
         let mut plan =
@@ -11226,6 +11367,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 follow_video: true,
+                buses: fm_types::audio_bus::AudioBusMask::MASTER,
             },
         ));
         let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
@@ -11306,6 +11448,7 @@ mod tests {
             soloed: true,
             follow_video: false,
             delay_samples: InputDelaySamples::new(2).unwrap(),
+            buses: fm_types::audio_bus::AudioBusMask::MASTER,
         };
         let target = native_audio_input_state(updated).unwrap();
         assert_eq!(master.mixer.current_linear_gain(source), Some(1.0));
@@ -13283,6 +13426,96 @@ mod tests {
             }),
             Err(NativeMasterError::MissingAudioRoute { input: missing }) if missing == input(99)
         ));
+    }
+
+    #[test]
+    fn an_output_on_an_aux_bus_hears_that_bus_instead_of_master() {
+        let host = input(1);
+        let stage = fm_model::AuxBusNumber::new(2).unwrap();
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, host);
+        add_output(&mut project, output(7));
+        assert!(project.set_output_aux_bus(output(7), Some(stage)));
+        // The strip feeds bus B only: off Master.
+        let aux_only = InputAudioStripState {
+            buses: fm_model::AudioBusMask::NONE.with_aux(stage, true),
+            follow_video: false,
+            ..InputAudioStripState::default()
+        };
+        assert!(project.set_input_audio_strip(host, aux_only));
+        let mut plan =
+            NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        let mut master = audio_test_master(&[(host, 1.0)], 4);
+        master.realize_project_audio(&plan).unwrap();
+
+        assert!(master.service_next_frame().unwrap());
+        let program = master
+            .render_project_frame_audio(&frame_result(0, host, None), &plan)
+            .unwrap();
+        assert!(
+            program
+                .plane(0)
+                .unwrap()
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+        let overrides = master.take_override_audio();
+        assert_eq!(overrides.len(), 1);
+        assert_eq!(overrides[0].0, output(7));
+        assert_eq!(overrides[0].1.sample_count(), program.sample_count());
+        assert!(
+            overrides[0]
+                .1
+                .plane(0)
+                .unwrap()
+                .iter()
+                .all(|sample| (*sample - 1.0).abs() < 1.0e-6)
+        );
+
+        // A live bus fader moves the output's audio and leaves Master alone.
+        master
+            .apply_audio_mixer_update(&fm_engine::EngineAudioMixerUpdate::AuxBusLevel {
+                bus: stage,
+                state: fm_engine::EngineAudioGroupState {
+                    gain_millidb: -6_000,
+                    muted: false,
+                },
+            })
+            .unwrap();
+        assert!(master.service_next_frame().unwrap());
+        let _ = master
+            .render_project_frame_audio(&frame_result(1, host, None), &plan)
+            .unwrap();
+        let expected = 10.0_f32.powf(-6.0 / 20.0);
+        let sample = *master.take_override_audio()[0]
+            .1
+            .plane(0)
+            .unwrap()
+            .last()
+            .unwrap();
+        assert!((sample - expected).abs() < 1.0e-4, "{sample} != {expected}");
+
+        // Back on Master as well, the strip reaches Program; an output moved
+        // back to Master hears Program.
+        let both = InputAudioStripState {
+            buses: fm_model::AudioBusMask::MASTER.with_aux(stage, true),
+            ..aux_only
+        };
+        master.set_input_audio_strip(host, both).unwrap();
+        plan.set_input_audio_strip(host, both).unwrap();
+        plan.set_output_aux_bus(output(7), None);
+        assert!(master.service_next_frame().unwrap());
+        let program = master
+            .render_project_frame_audio(&frame_result(2, host, None), &plan)
+            .unwrap();
+        assert!(
+            program
+                .plane(0)
+                .unwrap()
+                .iter()
+                .all(|sample| (*sample - 1.0).abs() < 1.0e-6)
+        );
+        assert!(master.take_override_audio().is_empty());
     }
 
     #[test]

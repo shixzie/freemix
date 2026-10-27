@@ -2,6 +2,7 @@
 
 pub mod alert_rules;
 mod audio;
+pub mod audio_bus;
 pub mod audio_output;
 pub mod capture;
 mod color;

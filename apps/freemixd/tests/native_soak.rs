@@ -493,6 +493,7 @@ fn input_audio_strips(first: InputId, second: InputId) -> Vec<fm_protocol::Input
             soloed: false,
             follow_video: true,
             delay_samples: 0,
+            buses: fm_types::audio_bus::AudioBusMask::MASTER,
         })
         .collect()
 }

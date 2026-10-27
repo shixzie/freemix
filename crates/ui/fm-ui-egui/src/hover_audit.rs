@@ -385,10 +385,12 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
             OutputStatus {
                 output: output(1),
                 name: "Program Output".into(),
+                aux_bus: None,
             },
             OutputStatus {
                 output: output(2),
                 name: "Clean Feed".into(),
+                aux_bus: None,
             },
         ],
         input_audio_strips: (1..=6)
@@ -406,6 +408,7 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
                 soloed: false,
                 follow_video: value != 2,
                 delay_samples: 0,
+                buses: fm_types::audio_bus::AudioBusMask::MASTER,
             })
             .collect(),
         // A timed transition in flight has swapped the desired buses; the

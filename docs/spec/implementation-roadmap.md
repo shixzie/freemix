@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.117 / schema 89 (2026-10-27).
+(2026-10-19); items refreshed through protocol 2.118 / schema 90 (2026-10-27).
 Every parity row is still `planned` (or `blocked`); these are the
 highest-value remaining items, ranked:
 
@@ -2339,7 +2339,21 @@ pan, or transition envelope) or post-fader (exactly its Program
 contribution); strip and group mute and follow-video cut every send while
 solo never does; each bus has its own ramped fader, mute, clipping, and
 peak/RMS meters (`tests/aux_buses.rs`), and the Master allocation test
-renders every bus. `AU-002` remains planned.
+renders every bus. The live show uses them (Protocol 2.118, schema 90):
+every strip carries Master and A–G bus assignment as a live control (vMix
+style `M`/`A`–`G` keys in Studio, `--buses` in the CLI), the project keeps
+seven named aux buses with live faders and mutes, and a project output can
+hear an aux bus instead of Master, so its recordings, streams, and LiveLAN
+take that bus with the output's own Fade-to-Black trajectory. The daemon
+renders the buses beside Master every frame and a native test proves an
+output on bus B hears an aux-only strip while Program stays silent.
+Remaining gaps: Studio has no aux bus faders, names, or output bus picker
+yet (the CLI does); aux buses are not metered on the wire; sends are
+unity post-fader only through the show (per-send level and pre-fader taps
+exist in the mixer); `BusMatrix` bus processing, mix-minus feeds, and
+device or network destinations are not wired; the legacy project audio
+bus graph and each output's `audio_source` are unchanged. `AU-002` remains
+planned.
 
 Current implementation boundary for multichannel audio (`AU-003`): `fm-audio`
 provides a 1–16 channel layout catalog (1.0, 2.0, 2.1, 5.1, 7.1, and 16

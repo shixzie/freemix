@@ -130,6 +130,23 @@ pub enum AudioMixerArgs {
     /// Master's integrated loudness, loudness range, and maximum true peak
     /// (AU-005); `input` is `None` for the Master.
     LoudnessReset { input: Option<u128> },
+    /// `audio-aux-name <A-G> <name>`: renames an aux bus (AU-002).
+    AuxName {
+        bus: fm_model::AuxBusNumber,
+        name: String,
+    },
+    /// `audio-aux-level <A-G> <gain millidB> <muted on|off>` (AU-002).
+    AuxLevel {
+        bus: fm_model::AuxBusNumber,
+        gain_millidb: i32,
+        muted: bool,
+    },
+    /// `audio-output-aux <output> <A-G|master>`: what a project output
+    /// hears (AU-002).
+    OutputAux {
+        output: u128,
+        bus: Option<fm_model::AuxBusNumber>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -875,6 +892,7 @@ pub enum Command {
         soloed: bool,
         follow_video: bool,
         delay_samples: u32,
+        buses: fm_model::AudioBusMask,
     },
     Rename {
         path: PathBuf,
@@ -1265,6 +1283,7 @@ pub enum Command {
         soloed: bool,
         follow_video: bool,
         delay_samples: u32,
+        buses: fm_model::AudioBusMask,
         key: Option<String>,
         expected_revision: Option<u64>,
     },
@@ -2289,6 +2308,9 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "audio-monitor-level"
         | "audio-strip-dsp"
         | "audio-loudness-reset"
+        | "audio-aux-name"
+        | "audio-aux-level"
+        | "audio-output-aux"
         | "remote-audio-label"
         | "remote-audio-group"
         | "remote-audio-group-name"
@@ -2299,7 +2321,10 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-audio-monitor-device"
         | "remote-audio-monitor-level"
         | "remote-audio-strip-dsp"
-        | "remote-audio-loudness-reset") => parse_audio_mixer(mixer, arguments),
+        | "remote-audio-loudness-reset"
+        | "remote-audio-aux-name"
+        | "remote-audio-aux-level"
+        | "remote-audio-output-aux") => parse_audio_mixer(mixer, arguments),
         "remote-audio-output-devices" => {
             let address = socket_address(&required(&mut arguments, "address")?)?;
             reject_extra(&mut arguments)?;
@@ -3254,6 +3279,7 @@ fn parse_audio_strip(mut arguments: impl Iterator<Item = String>) -> Result<Comm
     let delay_samples = number(&required(&mut arguments, "delay samples")?, "delay samples")?;
     let mut arguments = arguments.peekable();
     let pan_basis_points = pan_option(&mut arguments)?;
+    let buses = buses_option(&mut arguments)?;
     reject_extra(&mut arguments)?;
     Ok(Command::AudioStrip {
         path,
@@ -3265,6 +3291,7 @@ fn parse_audio_strip(mut arguments: impl Iterator<Item = String>) -> Result<Comm
         soloed,
         follow_video,
         delay_samples,
+        buses,
     })
 }
 
@@ -3280,6 +3307,39 @@ fn pan_option(
         )
     } else {
         Ok(0)
+    }
+}
+
+/// An aux bus letter, `A` through `G` (AU-002).
+fn aux_bus(value: &str) -> Result<fm_model::AuxBusNumber, ArgsError> {
+    let mut letters = value.chars();
+    match (letters.next(), letters.next()) {
+        (Some(letter), None) => fm_model::AuxBusNumber::from_letter(letter),
+        _ => None,
+    }
+    .ok_or_else(|| ArgsError::InvalidChoice {
+        field: "aux bus",
+        value: value.to_owned(),
+    })
+}
+
+/// An optional trailing `--buses <M then letters A-G, or ->` (AU-002);
+/// Master only otherwise.
+fn buses_option(
+    arguments: &mut std::iter::Peekable<impl Iterator<Item = String>>,
+) -> Result<fm_model::AudioBusMask, ArgsError> {
+    if arguments
+        .peek()
+        .is_some_and(|argument| argument == "--buses")
+    {
+        arguments.next();
+        let value = required(arguments, "buses")?;
+        fm_model::AudioBusMask::from_token(&value).ok_or(ArgsError::InvalidChoice {
+            field: "buses",
+            value,
+        })
+    } else {
+        Ok(fm_model::AudioBusMask::MASTER)
     }
 }
 
@@ -3324,6 +3384,7 @@ fn parse_strip_dsp(
     })
 }
 
+#[allow(clippy::too_many_lines)] // one arm per mixer command
 fn parse_audio_mixer(
     command: &str,
     arguments: impl Iterator<Item = String>,
@@ -3400,6 +3461,27 @@ fn parse_audio_mixer(
         "audio-loudness-reset" => AudioMixerArgs::LoudnessReset {
             input: parse_dsp_target(&mut arguments)?,
         },
+        "audio-aux-name" => AudioMixerArgs::AuxName {
+            bus: aux_bus(&required(&mut arguments, "aux bus")?)?,
+            name: nonblank(&mut arguments, "aux bus name")?,
+        },
+        "audio-aux-level" => AudioMixerArgs::AuxLevel {
+            bus: aux_bus(&required(&mut arguments, "aux bus")?)?,
+            gain_millidb: number(&required(&mut arguments, "gain millidB")?, "gain millidB")?,
+            muted: boolean_choice(&required(&mut arguments, "muted")?, "muted")?,
+        },
+        "audio-output-aux" => {
+            let output = number(&required(&mut arguments, "output")?, "output")?;
+            let bus = required(&mut arguments, "aux bus")?;
+            AudioMixerArgs::OutputAux {
+                output,
+                bus: if bus == "master" {
+                    None
+                } else {
+                    Some(aux_bus(&bus)?)
+                },
+            }
+        }
         _ => AudioMixerArgs::GroupLevel {
             group: audio_group_number(&required(&mut arguments, "group")?)?,
             gain_millidb: number(&required(&mut arguments, "gain millidB")?, "gain millidB")?,
@@ -6756,6 +6838,7 @@ fn parse_remote_audio_strip(
     let delay_samples = number(&required(&mut arguments, "delay samples")?, "delay samples")?;
     let mut arguments = arguments.peekable();
     let pan_basis_points = pan_option(&mut arguments)?;
+    let buses = buses_option(&mut arguments)?;
     let (key, expected_revision) = command_options(arguments)?;
     Ok(Command::RemoteAudioStrip {
         address,
@@ -6767,6 +6850,7 @@ fn parse_remote_audio_strip(
         soloed,
         follow_video,
         delay_samples,
+        buses,
         key,
         expected_revision,
     })
@@ -10209,6 +10293,7 @@ mod tests {
                 soloed: true,
                 follow_video: false,
                 delay_samples: 48_000,
+                buses: fm_types::audio_bus::AudioBusMask::MASTER,
             })
         );
     }
@@ -10508,6 +10593,7 @@ mod tests {
                 delay_samples: 2_400,
                 key: Some("delay".into()),
                 expected_revision: Some(3),
+                buses: fm_types::audio_bus::AudioBusMask::MASTER,
             })
         );
     }

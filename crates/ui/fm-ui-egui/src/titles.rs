@@ -1701,6 +1701,7 @@ mod tests {
                     soloed: false,
                     follow_video: true,
                     delay_samples: 0,
+                    buses: fm_types::audio_bus::AudioBusMask::MASTER,
                 })
                 .collect(),
             desired_program: wire(input(1)),

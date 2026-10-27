@@ -122,6 +122,7 @@ fn snapshot(show: &Show) -> WireMessage {
                 soloed: true,
                 follow_video: false,
                 delay_samples: 480,
+                buses: fm_types::audio_bus::AudioBusMask::MASTER,
             },
             InputAudioStripStatus {
                 input: wire(SLIDES),
@@ -133,6 +134,7 @@ fn snapshot(show: &Show) -> WireMessage {
                 soloed: false,
                 follow_video: true,
                 delay_samples: 0,
+                buses: fm_types::audio_bus::AudioBusMask::MASTER,
             },
             InputAudioStripStatus {
                 input: wire(GUEST),
@@ -144,6 +146,7 @@ fn snapshot(show: &Show) -> WireMessage {
                 soloed: false,
                 follow_video: true,
                 delay_samples: 0,
+                buses: fm_types::audio_bus::AudioBusMask::MASTER,
             },
         ],
         desired_program: wire(CAMERA),
@@ -403,6 +406,7 @@ fn controls_send_the_exact_wire_commands_the_page_sends() {
             soloed: true,
             follow_video: false,
             delay_samples: 480,
+            buses: fm_types::audio_bus::AudioBusMask::MASTER,
         })
     );
     assert!(matches!(

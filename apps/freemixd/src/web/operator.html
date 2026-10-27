@@ -361,7 +361,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.117";
+  const PROTOCOL = "2.118";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -1569,15 +1569,15 @@
     const end = item.markOut === null ? length.frames : Math.min(item.markOut, length.frames);
     return Math.max(0, end - item.markIn) * 1000 * length.denominator / length.numerator;
   }
-  // `input:gain:balance:pan:muted:soloed:follow_video:delay:group`.
+  // `input:gain:balance:pan:muted:soloed:follow_video:delay:group:buses`.
   function parseStrips(value) {
     const strips = new Map();
     for (const item of value ? value.split(",") : []) {
       const parts = item.split(":");
-      if (parts.length < 9) throw new Error("malformed audio strip");
+      if (parts.length < 10) throw new Error("malformed audio strip");
       strips.set(parts[0], {
         gain: parts[1], balance: parts[2], pan: parts[3], muted: parts[4] === "1",
-        soloed: parts[5] === "1", follow: parts[6] === "1", delay: parts[7],
+        soloed: parts[5] === "1", follow: parts[6] === "1", delay: parts[7], buses: parts[9],
       });
     }
     return strips;
@@ -3950,6 +3950,7 @@
       ["balance_basis_points", strip.balance], ["pan_basis_points", strip.pan],
       ["muted", strip.muted ? "0" : "1"], ["soloed", strip.soloed ? "1" : "0"],
       ["follow_video", strip.follow ? "1" : "0"], ["delay_samples", strip.delay],
+      ["buses", strip.buses],
     ], link.revision);
     mutesSent.set(commandId, { input: id, strip: { ...strip }, retried });
   }

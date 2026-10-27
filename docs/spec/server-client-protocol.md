@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.117 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.118 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4458,6 +4458,37 @@ Protocol 2.117 adds a deinterlace layer effect (schema 89).
 - Studio's EFFECTS inspector offers Deinterlace with a Fields choice
   (Blend fields, Top field, Bottom field), with English and Spanish help.
 - 2.116 is refused.
+
+Protocol 2.118 adds Master plus seven aux buses A–G to the live mix
+(AU-002, schema 90).
+
+- `input_audio_strip` commands carry a required `buses`: `M` when the strip
+  feeds Master, then the letter of each aux bus it feeds in order (`MAC`),
+  or `-` for none. Each `input_audio_strips` snapshot and event tuple ends
+  with the same token. Bus assignment is a live strip control, like mute.
+  A strip off Master still meters and still feeds its aux buses.
+- Mixer operations `audio_aux_bus_name` (`bus` A–G, `name`; a project
+  edit), `audio_aux_bus_level` (`bus`, `gain_millidb`, `muted`; live), and
+  `audio_output_bus` (`output`, `bus` A–G or `-` for Master; a project
+  edit) travel as commands and `audio_mixer_changed` events.
+- The snapshot carries `audio_aux_buses`: seven `<name>~<gain>~<muted>`
+  entries, bus A first. Each `outputs` entry gains a third part, the aux bus
+  letter the output hears or `-` for Master.
+- An aux bus hears each strip it is assigned at unity after the strip's
+  fader, pan, and transition envelope; strip and group mute and
+  follow-video cut it, solo does not. It has its own ramped fader, mute,
+  and clipping. A project output on an aux bus (its recordings, streams,
+  and LiveLAN) hears that bus, faded by Fade to Black exactly as Master
+  would be for that output.
+- Durability (schema 90): every strip in `input_audio_strips` carries
+  `buses`; the project carries exactly seven `aux_buses` (`name`,
+  `gain_milli_db`, `muted`) and `output_aux_buses` (`output`, `bus`);
+  schema 89 projects are refused.
+- Studio's mixer strips gain `M` and `A`–`G` bus keys with English and
+  Spanish help; `freemix-cli audio-strip` / `remote-audio-strip` take
+  `--buses`, and `audio-aux-name`, `audio-aux-level`, and
+  `audio-output-aux` (with `remote-` forms) edit the buses.
+- 2.117 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

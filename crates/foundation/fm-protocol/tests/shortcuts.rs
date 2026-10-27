@@ -311,6 +311,7 @@ fn shortcut_events_and_states_round_trip_exactly() {
             soloed: false,
             follow_video: false,
             delay_samples: 0,
+            buses: fm_types::audio_bus::AudioBusMask::MASTER,
         }],
         streams: Vec::new(),
         recordings: vec![
@@ -422,6 +423,7 @@ fn snapshot(shortcut_states: u16) -> fm_protocol::SnapshotMessage {
                 soloed: false,
                 follow_video: true,
                 delay_samples: 0,
+                buses: fm_types::audio_bus::AudioBusMask::MASTER,
             })
             .into(),
         desired_program: input(1),

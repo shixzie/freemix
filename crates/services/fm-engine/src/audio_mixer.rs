@@ -49,14 +49,21 @@
 //!   target, so the whole drag undoes at once, and a drag back where it
 //!   started leaves no step.
 //!
+//! - [`EngineAudioMixerEdit::RenameAuxBus`] renames an aux bus and
+//!   [`EngineAudioMixerEdit::SetOutputAuxBus`] makes a project output hear
+//!   an aux bus instead of Master (AU-002). Both are project edits, undoable
+//!   with the exact previous name or bus. [`EngineAudioMixerEdit::SetAuxBusLevel`]
+//!   moves an aux bus fader or mute: a live operation, like a group fader.
+//!
 //! Membership, group levels, solos, parents, the solo mode, the monitor
-//! output, and DSP chains reach the media plane on the command's target
+//! output, aux bus levels and output buses, and DSP chains reach the media
+//! plane on the command's target
 //! frame through [`crate::FrameResult::audio_mixer_updates`].
 
 use fm_command::{FieldIssue, Rejection, RejectionCode};
-use fm_model::{AudioGroupNumber, AudioSoloMode};
-use fm_types::InputId;
+use fm_model::{AudioGroupNumber, AudioSoloMode, AuxBusNumber};
 use fm_types::strip_dsp::{StripDsp, StripDspTarget};
+use fm_types::{InputId, OutputId};
 
 use crate::{MAX_INPUT_AUDIO_GAIN_MILLIDB, MIN_INPUT_AUDIO_GAIN_MILLIDB, ShowState};
 
@@ -88,6 +95,25 @@ impl EngineAudioGroup {
             state: EngineAudioGroupState::default(),
             soloed: false,
             parent: None,
+        }
+    }
+}
+
+/// One aux bus (AU-002): its name and live fader and mute.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EngineAuxBus {
+    pub name: String,
+    pub state: EngineAudioGroupState,
+}
+
+impl EngineAuxBus {
+    /// The default aux bus `bus`: "Bus A" through "Bus G" at unity,
+    /// unmuted.
+    #[must_use]
+    pub fn default_for(bus: AuxBusNumber) -> Self {
+        Self {
+            name: format!("Bus {}", bus.letter()),
+            state: EngineAudioGroupState::default(),
         }
     }
 }
@@ -169,6 +195,19 @@ pub enum EngineAudioMixerEdit {
     /// Restarts a strip's or the Master bus's integrated loudness, loudness
     /// range, and maximum true peak. A live operation.
     ResetLoudness { target: StripDspTarget },
+    /// Renames an aux bus (AU-002). A project edit.
+    RenameAuxBus { bus: AuxBusNumber, name: String },
+    /// Moves an aux bus fader or mute (AU-002). A live operation.
+    SetAuxBusLevel {
+        bus: AuxBusNumber,
+        state: EngineAudioGroupState,
+    },
+    /// Makes `output` hear aux bus `bus`, or Master for `None` (AU-002). A
+    /// project edit.
+    SetOutputAuxBus {
+        output: OutputId,
+        bus: Option<AuxBusNumber>,
+    },
 }
 
 impl EngineAudioMixerEdit {
@@ -208,6 +247,7 @@ impl EngineAudioMixerEdit {
                 | Self::SetGroupSolo { .. }
                 | Self::SetMonitorLevel { .. }
                 | Self::ResetLoudness { .. }
+                | Self::SetAuxBusLevel { .. }
         )
     }
 
@@ -232,7 +272,10 @@ impl EngineAudioMixerEdit {
             | Self::SetSoloMode { .. }
             | Self::SetMonitorDevice { .. }
             | Self::SetMonitorLevel { .. }
-            | Self::ResetLoudness { .. } => None,
+            | Self::ResetLoudness { .. }
+            | Self::RenameAuxBus { .. }
+            | Self::SetAuxBusLevel { .. }
+            | Self::SetOutputAuxBus { .. } => None,
         }
     }
 
@@ -281,6 +324,16 @@ pub enum EngineAudioMixerUpdate {
     /// A strip's or the Master bus's integrated loudness, loudness range,
     /// and maximum true peak start over (AU-005).
     LoudnessReset { target: StripDspTarget },
+    /// An aux bus fader or mute moved (AU-002).
+    AuxBusLevel {
+        bus: AuxBusNumber,
+        state: EngineAudioGroupState,
+    },
+    /// An output now hears an aux bus, or Master for `None` (AU-002).
+    OutputAuxBus {
+        output: OutputId,
+        bus: Option<AuxBusNumber>,
+    },
 }
 
 impl EngineAudioMixerUpdate {
@@ -316,9 +369,17 @@ impl EngineAudioMixerUpdate {
             EngineAudioMixerEdit::ResetLoudness { target } => {
                 Some(Self::LoudnessReset { target: *target })
             }
-            EngineAudioMixerEdit::SetLabel { .. } | EngineAudioMixerEdit::RenameGroup { .. } => {
-                None
-            }
+            EngineAudioMixerEdit::SetAuxBusLevel { bus, state } => Some(Self::AuxBusLevel {
+                bus: *bus,
+                state: *state,
+            }),
+            EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => Some(Self::OutputAuxBus {
+                output: *output,
+                bus: *bus,
+            }),
+            EngineAudioMixerEdit::SetLabel { .. }
+            | EngineAudioMixerEdit::RenameGroup { .. }
+            | EngineAudioMixerEdit::RenameAuxBus { .. } => None,
         }
     }
 }
@@ -471,6 +532,53 @@ pub(crate) fn apply(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Resul
             Ok(())
         }
         EngineAudioMixerEdit::ResetLoudness { target } => loudness_target(state, *target),
+        EngineAudioMixerEdit::RenameAuxBus { .. }
+        | EngineAudioMixerEdit::SetAuxBusLevel { .. }
+        | EngineAudioMixerEdit::SetOutputAuxBus { .. } => apply_aux(state, edit),
+    }
+}
+
+/// Applies an aux bus rename, level, or output bus edit (AU-002).
+fn apply_aux(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Result<(), Rejection> {
+    match edit {
+        EngineAudioMixerEdit::RenameAuxBus { bus, name } => {
+            fm_model::validate_audio_group_name(name)
+                .map_err(|error| label_rejection("name", error))?;
+            state.aux_bus_mut(*bus).name.clone_from(name);
+            Ok(())
+        }
+        EngineAudioMixerEdit::SetAuxBusLevel { bus, state: level } => {
+            validate_group_state(*level).map_err(|_| {
+                rejection(
+                    RejectionCode::InvalidCommand,
+                    "gain_millidb",
+                    "out_of_range",
+                    format!(
+                        "aux bus gain must be between {MIN_INPUT_AUDIO_GAIN_MILLIDB} and \
+                         {MAX_INPUT_AUDIO_GAIN_MILLIDB} millidB"
+                    ),
+                )
+            })?;
+            state.aux_bus_mut(*bus).state = *level;
+            Ok(())
+        }
+        EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => {
+            if !state
+                .outputs()
+                .iter()
+                .any(|(candidate, _)| candidate == output)
+            {
+                return Err(rejection(
+                    RejectionCode::NotFound,
+                    "output",
+                    "unknown_output",
+                    format!("show does not contain output {output}"),
+                ));
+            }
+            state.set_output_aux_bus(*output, *bus);
+            Ok(())
+        }
+        _ => Ok(()),
     }
 }
 
@@ -549,9 +657,24 @@ pub(crate) fn inverse(
                     })
             }
         },
+        EngineAudioMixerEdit::RenameAuxBus { bus, .. } => {
+            Some(EngineAudioMixerEdit::RenameAuxBus {
+                bus: *bus,
+                name: state.aux_bus(*bus).name.clone(),
+            })
+        }
+        EngineAudioMixerEdit::SetOutputAuxBus { output, .. } => state
+            .outputs()
+            .iter()
+            .any(|(candidate, _)| candidate == output)
+            .then(|| EngineAudioMixerEdit::SetOutputAuxBus {
+                output: *output,
+                bus: state.output_aux_bus(*output),
+            }),
         EngineAudioMixerEdit::SetGroupLevel { .. }
         | EngineAudioMixerEdit::SetGroupSolo { .. }
         | EngineAudioMixerEdit::SetMonitorLevel { .. }
-        | EngineAudioMixerEdit::ResetLoudness { .. } => None,
+        | EngineAudioMixerEdit::ResetLoudness { .. }
+        | EngineAudioMixerEdit::SetAuxBusLevel { .. } => None,
     }
 }

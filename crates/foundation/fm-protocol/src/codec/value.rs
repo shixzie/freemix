@@ -290,9 +290,12 @@ pub(super) fn output_statuses(values: &[OutputStatus]) -> Result<String, CodecEr
             });
         }
         Ok(format!(
-            "{}~{}",
+            "{}~{}~{}",
             output.output,
-            escape_bounded(&output.name)?
+            escape_bounded(&output.name)?,
+            output
+                .aux_bus
+                .map_or('-', fm_types::audio_bus::AuxBusNumber::letter)
         ))
     })?;
     let mut outputs = BTreeSet::new();
@@ -316,7 +319,30 @@ pub(super) fn parse_output_statuses(value: &str) -> Result<Vec<OutputStatus>, Co
     value
         .split(',')
         .map(|entry| {
-            let (output, name) = entry.split_once('~').ok_or(CodecError::InvalidRecord)?;
+            let mut parts = entry.split('~');
+            let (Some(output), Some(name), Some(bus), None) =
+                (parts.next(), parts.next(), parts.next(), parts.next())
+            else {
+                return Err(CodecError::InvalidRecord);
+            };
+            let mut letters = bus.chars();
+            let aux_bus = match (letters.next(), letters.next()) {
+                (Some('-'), None) => None,
+                (Some(letter), None) => Some(
+                    fm_types::audio_bus::AuxBusNumber::from_letter(letter).ok_or_else(|| {
+                        CodecError::InvalidField {
+                            field: "outputs",
+                            value: value.to_owned(),
+                        }
+                    })?,
+                ),
+                _ => {
+                    return Err(CodecError::InvalidField {
+                        field: "outputs",
+                        value: value.to_owned(),
+                    });
+                }
+            };
             let output = output
                 .parse::<u128>()
                 .ok()
@@ -339,7 +365,11 @@ pub(super) fn parse_output_statuses(value: &str) -> Result<Vec<OutputStatus>, Co
                     value: value.to_owned(),
                 });
             }
-            Ok(OutputStatus { output, name })
+            Ok(OutputStatus {
+                output,
+                name,
+                aux_bus,
+            })
         })
         .collect()
 }

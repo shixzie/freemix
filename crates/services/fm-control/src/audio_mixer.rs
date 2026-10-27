@@ -8,6 +8,7 @@ use fm_engine::{
     Engine, EngineAudioGroupState, EngineAudioMixerEdit, EngineCommand, EngineEvent, ShowState,
 };
 use fm_model::{AudioGroupNumber, AudioSoloMode};
+use fm_protocol::AuxBusStatus;
 use fm_protocol::{
     AudioDspTarget, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioMonitorStatus,
     AudioStripDspStateMessage, CommandPayload, EventPayload, InputAudioLabel, WireInputId,
@@ -140,6 +141,27 @@ pub(super) fn engine_command(operation: &AudioMixerOperation) -> EngineCommand {
         AudioMixerOperation::ResetLoudness { target } => EngineAudioMixerEdit::ResetLoudness {
             target: dsp_target(*target),
         },
+        AudioMixerOperation::RenameAuxBus { bus, name } => EngineAudioMixerEdit::RenameAuxBus {
+            bus: *bus,
+            name: name.clone(),
+        },
+        AudioMixerOperation::SetAuxBusLevel {
+            bus,
+            gain_millidb,
+            muted,
+        } => EngineAudioMixerEdit::SetAuxBusLevel {
+            bus: *bus,
+            state: EngineAudioGroupState {
+                gain_millidb: *gain_millidb,
+                muted: *muted,
+            },
+        },
+        AudioMixerOperation::SetOutputBus { output, bus } => {
+            EngineAudioMixerEdit::SetOutputAuxBus {
+                output: output.to_domain(),
+                bus: *bus,
+            }
+        }
     })
 }
 
@@ -199,6 +221,23 @@ pub(super) fn wire_operation(edit: &EngineAudioMixerEdit) -> AudioMixerOperation
         EngineAudioMixerEdit::ResetLoudness { target } => AudioMixerOperation::ResetLoudness {
             target: wire_dsp_target(*target),
         },
+        EngineAudioMixerEdit::RenameAuxBus { bus, name } => AudioMixerOperation::RenameAuxBus {
+            bus: *bus,
+            name: name.clone(),
+        },
+        EngineAudioMixerEdit::SetAuxBusLevel { bus, state } => {
+            AudioMixerOperation::SetAuxBusLevel {
+                bus: *bus,
+                gain_millidb: state.gain_millidb,
+                muted: state.muted,
+            }
+        }
+        EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => {
+            AudioMixerOperation::SetOutputBus {
+                output: WireOutputId::from_domain(*output),
+                bus: *bus,
+            }
+        }
     }
 }
 
@@ -280,6 +319,11 @@ pub(super) fn wire_status(show: &ShowState) -> AudioMixerStatus {
         master_dsp: *show.master_audio_dsp(),
         strip_dsp_states: u16::try_from(show.input_audio_dsps().len())
             .expect("one chain per input, at most the input bound"),
+        aux_buses: show.aux_buses().clone().map(|bus| AuxBusStatus {
+            name: bus.name,
+            gain_millidb: bus.state.gain_millidb,
+            muted: bus.state.muted,
+        }),
     }
 }
 

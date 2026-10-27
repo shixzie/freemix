@@ -77,6 +77,8 @@ struct ProjectDto {
     transition_favorites: fm_model::TransitionFavorites,
     input_lifecycle: super::input_lifecycle::ParsedInputLifecycle,
     audio_groups: fm_model::AudioGroups,
+    aux_buses: fm_model::AuxBuses,
+    output_aux_buses: std::collections::BTreeMap<fm_types::OutputId, fm_model::AuxBusNumber>,
     audio_solo_mode: fm_model::AudioSoloMode,
     audio_monitor_output: fm_model::AudioMonitorOutput,
     master_audio_dsp: fm_types::strip_dsp::StripDsp,
@@ -143,6 +145,8 @@ impl ProjectDto {
             )?,
             input_lifecycle: super::input_lifecycle::parse_input_lifecycle(&mut object)?,
             audio_groups: super::audio_mixer::parse_audio_groups(&mut object)?,
+            aux_buses: super::audio_mixer::parse_aux_buses(&mut object)?,
+            output_aux_buses: super::audio_mixer::parse_output_aux_buses(&mut object)?,
             audio_solo_mode: super::audio_mixer::parse_audio_solo_mode(&mut object)?,
             audio_monitor_output: super::audio_mixer::parse_audio_monitor_output(&mut object)?,
             master_audio_dsp: super::strip_dsp::parse_strip_dsp(
@@ -216,6 +220,9 @@ impl ProjectDto {
             .expect("a parsed Master DSP chain is validated");
         // Group names are reported by project validation.
         project.restore_audio_groups(self.audio_groups);
+        // Bus names and outputs are reported by project validation.
+        project.restore_aux_buses(self.aux_buses);
+        project.restore_output_aux_buses(self.output_aux_buses);
         project.set_audio_solo_mode(self.audio_solo_mode);
         // An unusable device name is reported by project validation.
         project.restore_audio_monitor_output(self.audio_monitor_output);
@@ -383,6 +390,12 @@ fn parse_input_audio_strip(value: Value) -> Result<InputAudioStrip, DecodeError>
             muted: object.boolean("muted")?,
             soloed: object.boolean("soloed")?,
             follow_video: object.boolean("follow_video")?,
+            buses: {
+                let token = object.string("buses")?;
+                fm_model::AudioBusMask::from_token(&token).ok_or_else(|| {
+                    syntax("input audio strip buses must be \"-\" or M then bus letters A-G")
+                })?
+            },
         },
         label: object.string("label")?,
         group: parse_optional(object.take("group")?, |value| {

@@ -228,6 +228,7 @@ fn input_audio_strips() -> Vec<fm_protocol::InputAudioStripStatus> {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
+            buses: fm_types::audio_bus::AudioBusMask::MASTER,
         })
         .collect()
 }
@@ -857,6 +858,7 @@ fn manual_stingers_and_fade_to_black_timing_reduce_into_the_client_model() {
     initial.outputs = vec![fm_protocol::OutputStatus {
         output,
         name: "Program".into(),
+        aux_bus: None,
     }];
     initial.fade_to_black_output_durations = vec![(output, 90)];
     initial.desired_manual_transition = ManualTransitionStatus::Active(ManualTransitionState {

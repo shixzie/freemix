@@ -899,6 +899,8 @@ messages! {
     SoloOnHover => t("Soloed: click to release solo"),
     SoloOffHover => t("Solo this input"),
     AfvHover => t("Audio follows video: open only while the input is on Program"),
+    StripBusMasterHover => t("Master bus: lit while this input feeds Program; off Master it still meters and feeds its aux buses"),
+    StripBusAuxHover => t("Aux bus {bus}: lit while this input feeds it; outputs set to bus {bus} hear it"),
     MasterStrip => t("MASTER"),
     ProgramMix => t("PROGRAM MIX"),
     MasterTap => t("PRE-STINGER/FTB"),

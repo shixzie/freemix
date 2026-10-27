@@ -55,6 +55,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_unique_entities(project, &mut errors);
     validate_inputs(project, &mut errors);
     validate_input_audio_strips(project, &mut errors);
+    validate_aux_buses(project, &mut errors);
     validate_alert_rules(project, &mut errors);
     validate_input_locks(project, &mut errors);
     validate_input_lifecycle(project, &mut errors);
@@ -101,6 +102,36 @@ fn validate_stingers(project: &Project, errors: &mut Vec<ValidationError>) {
                 entity: None,
                 field: "stingers.media_input",
                 kind: ValidationErrorKind::MissingReference(EntityRef::Input(stinger.media_input)),
+            });
+        }
+    }
+}
+
+/// Aux bus names and the outputs that hear an aux bus (AU-002).
+fn validate_aux_buses(project: &Project, errors: &mut Vec<ValidationError>) {
+    for (_, bus) in project.aux_buses().iter() {
+        if crate::validate_audio_group_name(&bus.name).is_err() {
+            errors.push(ValidationError {
+                entity: None,
+                field: "aux_buses.name",
+                kind: if bus.name.trim().is_empty() {
+                    ValidationErrorKind::Empty
+                } else {
+                    ValidationErrorKind::OutOfRange
+                },
+            });
+        }
+    }
+    for &output in project.output_aux_buses().keys() {
+        if !project
+            .outputs()
+            .iter()
+            .any(|candidate| candidate.id == output)
+        {
+            errors.push(ValidationError {
+                entity: None,
+                field: "output_aux_buses",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Output(output)),
             });
         }
     }

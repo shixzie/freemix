@@ -28,7 +28,7 @@ mod title_timeline;
 pub use animation_preset::EngineAnimationPresetEdit;
 pub use audio_mixer::{
     EngineAudioGroup, EngineAudioGroupState, EngineAudioMixerEdit, EngineAudioMixerUpdate,
-    EngineAudioMonitor, audio_group_parent_is_acyclic,
+    EngineAudioMonitor, EngineAuxBus, audio_group_parent_is_acyclic,
 };
 pub use cue::{EngineCueListDefinition, EngineCueOperation, cue_due};
 pub use engine::{

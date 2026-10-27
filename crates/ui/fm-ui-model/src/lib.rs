@@ -203,6 +203,8 @@ pub struct InputAudioStripStatus {
     pub soloed: bool,
     pub follow_video: bool,
     pub delay_samples: u32,
+    /// Master and the aux buses the strip feeds (Protocol 2.118).
+    pub buses: fm_types::audio_bus::AudioBusMask,
 }
 
 /// Replicated desired and last-confirmed realized state of one stream target.
@@ -219,6 +221,8 @@ pub struct StreamStatus {
 pub struct OutputStatus {
     pub output: OutputId,
     pub name: String,
+    /// The aux bus the output hears, or `None` for Master (Protocol 2.118).
+    pub aux_bus: Option<fm_types::audio_bus::AuxBusNumber>,
 }
 
 /// One replicated title input.
@@ -550,6 +554,7 @@ impl ProjectSnapshot {
             .map(|output| OutputStatus {
                 output: output.output.to_domain(),
                 name: output.name,
+                aux_bus: output.aux_bus,
             })
             .collect();
         Self {
@@ -5297,6 +5302,7 @@ fn apply_input_added(state: &mut ProjectState, input: InputId, name: String) {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
+            buses: fm_types::audio_bus::AudioBusMask::MASTER,
         },
     );
 }
@@ -5617,6 +5623,14 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
                     state.audio_strip_dsp.insert(input.to_domain(), **chain);
                 }
             }
+            if let fm_protocol::AudioMixerOperation::SetOutputBus { output, bus } = &operation
+                && let Some(status) = state
+                    .outputs
+                    .iter_mut()
+                    .find(|status| status.output == output.to_domain())
+            {
+                status.aux_bus = *bus;
+            }
             state.audio_mixer.apply(&operation);
         }
         DurableChange::DisplayOutputChanged { slot, config } => match config {
@@ -5912,7 +5926,8 @@ fn validate_audio_mixer_change(
         fm_protocol::AudioMixerOperation::SetMonitorDevice { device } => device
             .as_deref()
             .is_none_or(fm_protocol::audio_monitor_device_is_valid),
-        fm_protocol::AudioMixerOperation::SetMonitorLevel { gain_millidb, .. } => {
+        fm_protocol::AudioMixerOperation::SetMonitorLevel { gain_millidb, .. }
+        | fm_protocol::AudioMixerOperation::SetAuxBusLevel { gain_millidb, .. } => {
             (-96_000..=24_000).contains(gain_millidb)
         }
         fm_protocol::AudioMixerOperation::SetStripDsp { target, chain, .. } => {
@@ -5926,6 +5941,13 @@ fn validate_audio_mixer_change(
             fm_protocol::AudioDspTarget::Master => true,
             fm_protocol::AudioDspTarget::Input(input) => known(input),
         },
+        fm_protocol::AudioMixerOperation::RenameAuxBus { name, .. } => {
+            fm_protocol::audio_label_is_valid(name, false)
+        }
+        fm_protocol::AudioMixerOperation::SetOutputBus { output, .. } => state
+            .outputs
+            .iter()
+            .any(|candidate| candidate.output == output.to_domain()),
     };
     if valid {
         Ok(())
@@ -5949,6 +5971,7 @@ fn protocol_input_audio_strips(
             soloed: status.soloed,
             follow_video: status.follow_video,
             delay_samples: status.delay_samples,
+            buses: status.buses,
         })
         .collect()
 }

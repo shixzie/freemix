@@ -107,6 +107,8 @@ pub struct EngineInputAudioStripState {
     pub soloed: bool,
     pub follow_video: bool,
     pub delay_samples: u32,
+    /// Master and the aux buses the strip feeds (AU-002). A live control.
+    pub buses: fm_types::audio_bus::AudioBusMask,
 }
 
 impl Default for EngineInputAudioStripState {
@@ -119,6 +121,7 @@ impl Default for EngineInputAudioStripState {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
+            buses: fm_types::audio_bus::AudioBusMask::MASTER,
         }
     }
 }
@@ -241,6 +244,10 @@ pub struct ShowState {
     master_audio_dsp: fm_types::strip_dsp::StripDsp,
     /// The strip groups, group 1 first (AU-001).
     audio_groups: [crate::EngineAudioGroup; fm_model::AUDIO_GROUP_COUNT],
+    /// The aux buses, bus A first (AU-002).
+    aux_buses: [crate::EngineAuxBus; fm_model::AUX_BUS_COUNT],
+    /// The outputs that hear an aux bus instead of Master (AU-002).
+    output_aux_buses: BTreeMap<fm_types::OutputId, fm_model::AuxBusNumber>,
     /// How a soloed strip is heard (AU-001).
     audio_solo_mode: fm_model::AudioSoloMode,
     audio_monitor: crate::EngineAudioMonitor,
@@ -345,6 +352,8 @@ impl ShowState {
             input_audio_dsp: BTreeMap::new(),
             master_audio_dsp: fm_types::strip_dsp::StripDsp::DEFAULT,
             audio_groups: fm_model::AudioGroupNumber::ALL.map(crate::EngineAudioGroup::default_for),
+            aux_buses: fm_model::AuxBusNumber::ALL.map(crate::EngineAuxBus::default_for),
+            output_aux_buses: BTreeMap::new(),
             audio_solo_mode: fm_model::AudioSoloMode::InPlace,
             audio_monitor: crate::EngineAudioMonitor::default(),
             display_outputs: BTreeMap::new(),
@@ -845,6 +854,67 @@ impl ShowState {
         group: fm_model::AudioGroupNumber,
     ) -> &mut crate::EngineAudioGroup {
         &mut self.audio_groups[group.index()]
+    }
+
+    /// The aux buses, bus A first (AU-002).
+    #[must_use]
+    pub const fn aux_buses(&self) -> &[crate::EngineAuxBus; fm_model::AUX_BUS_COUNT] {
+        &self.aux_buses
+    }
+
+    #[must_use]
+    pub const fn aux_bus(&self, bus: fm_model::AuxBusNumber) -> &crate::EngineAuxBus {
+        &self.aux_buses[bus.index()]
+    }
+
+    pub(crate) const fn aux_bus_mut(
+        &mut self,
+        bus: fm_model::AuxBusNumber,
+    ) -> &mut crate::EngineAuxBus {
+        &mut self.aux_buses[bus.index()]
+    }
+
+    /// Restores one aux bus.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ShowError::InvalidAudioMixer`] for an unusable name and
+    /// [`ShowError::InvalidAudioGroupGain`] for an out-of-range fader.
+    pub fn set_aux_bus(
+        &mut self,
+        bus: fm_model::AuxBusNumber,
+        value: crate::EngineAuxBus,
+    ) -> Result<(), ShowError> {
+        fm_model::validate_audio_group_name(&value.name).map_err(ShowError::InvalidAudioMixer)?;
+        crate::audio_mixer::validate_group_state(value.state)
+            .map_err(|_| ShowError::InvalidAudioGroupGain(value.state.gain_millidb))?;
+        self.aux_buses[bus.index()] = value;
+        Ok(())
+    }
+
+    /// The outputs that hear an aux bus instead of Master, ascending.
+    #[must_use]
+    pub const fn output_aux_buses(&self) -> &BTreeMap<fm_types::OutputId, fm_model::AuxBusNumber> {
+        &self.output_aux_buses
+    }
+
+    /// The aux bus `output` hears, or `None` for Master.
+    #[must_use]
+    pub fn output_aux_bus(&self, output: fm_types::OutputId) -> Option<fm_model::AuxBusNumber> {
+        self.output_aux_buses.get(&output).copied()
+    }
+
+    /// Makes `output` hear `bus`, or Master for `None`; the caller checks
+    /// that the output exists.
+    pub fn set_output_aux_bus(
+        &mut self,
+        output: fm_types::OutputId,
+        bus: Option<fm_model::AuxBusNumber>,
+    ) {
+        match bus {
+            Some(bus) => self.output_aux_buses.insert(output, bus),
+            None => self.output_aux_buses.remove(&output),
+        };
     }
 
     /// Sets the operator label of `input`'s strip; empty clears it.

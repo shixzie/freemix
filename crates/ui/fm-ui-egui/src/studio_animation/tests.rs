@@ -86,6 +86,7 @@ fn ready(edit: bool, locked: bool, animation_revision: u64) -> StudioUiState {
         soloed: false,
         follow_video: true,
         delay_samples: 0,
+        buses: fm_types::audio_bus::AudioBusMask::MASTER,
     };
     let snapshot = SnapshotMessage {
         audio_mixer: fm_protocol::AudioMixerStatus::default(),
@@ -701,6 +702,7 @@ mod scenes {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
+            buses: fm_types::audio_bus::AudioBusMask::MASTER,
         };
         let mut inputs = vec![(1, "Cam 1")];
         if title {

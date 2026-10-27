@@ -8,6 +8,11 @@
 //!   {"name": "Group 3", "gain_milli_db": 0, "muted": false, "soloed": true, "parent": null},
 //!   {"name": "Group 4", "gain_milli_db": 0, "muted": false, "soloed": false, "parent": null}
 //! ],
+//! "aux_buses": [
+//!   {"name": "Bus A", "gain_milli_db": 0, "muted": false},
+//!   ... seven buses, A first ...
+//! ],
+//! "output_aux_buses": [{"output": 4, "bus": "B"}],
 //! "audio_solo_mode": "pfl",
 //! "audio_monitor_output": {"device": "default", "gain_milli_db": -6000, "muted": false},
 //! "fade_to_black_excluded_outputs": [5],
@@ -17,7 +22,13 @@
 //!
 //! Exactly [`AUDIO_GROUP_COUNT`] groups, group 1 first; `parent` is a group
 //! number or `null`, and parents never form a cycle (checked by project
-//! validation). `audio_solo_mode` is `sip`, `pfl`, or `afl`.
+//! validation). Exactly [`AUX_BUS_COUNT`] `aux_buses` (schema 90, AU-002),
+//! bus A first, each named like a group; `output_aux_buses` lists the
+//! outputs that hear an aux bus (`A` through `G`) instead of Master,
+//! strictly ascending by output. Every strip in `input_audio_strips` carries
+//! `buses`: `M` when it feeds Master, then the letter of each aux bus it
+//! feeds (`MAC`), or `-` for none. `audio_solo_mode` is `sip`, `pfl`, or
+//! `afl`.
 //! `audio_monitor_output` (schema 50) names the local audio output device the
 //! monitor bus plays on (`null` for meter-only; an unusable name is reported
 //! by project validation) and its own level and mute. Every strip in
@@ -32,8 +43,8 @@ use core::fmt::Write as _;
 use std::collections::BTreeSet;
 
 use fm_model::{
-    AUDIO_GROUP_COUNT, AudioGroup, AudioGroupNumber, AudioGroups, AudioMonitorOutput,
-    AudioSoloMode, InputGainMilliDb,
+    AUDIO_GROUP_COUNT, AUX_BUS_COUNT, AudioGroup, AudioGroupNumber, AudioGroups,
+    AudioMonitorOutput, AudioSoloMode, AuxBus, AuxBusNumber, AuxBuses, InputGainMilliDb,
 };
 use fm_types::OutputId;
 
@@ -60,9 +71,34 @@ pub(crate) fn write_audio_mixer(output: &mut String, project: &fm_model::Project
         }
         .expect("writing to a string cannot fail");
     }
+    output.push_str("\n    ],\n    \"aux_buses\": [");
+    for (index, (_, bus)) in project.aux_buses().iter().enumerate() {
+        output.push_str(if index == 0 { "\n      " } else { ",\n      " });
+        output.push_str("{\"name\": \"");
+        escape_string(output, &bus.name);
+        write!(
+            output,
+            "\", \"gain_milli_db\": {}, \"muted\": {}}}",
+            bus.gain.get(),
+            bus.muted
+        )
+        .expect("writing to a string cannot fail");
+    }
+    output.push_str("\n    ],\n    \"output_aux_buses\": [");
+    for (index, (id, bus)) in project.output_aux_buses().iter().enumerate() {
+        if index != 0 {
+            output.push_str(", ");
+        }
+        write!(
+            output,
+            "{{\"output\": {id}, \"bus\": \"{}\"}}",
+            bus.letter()
+        )
+        .expect("writing to a string cannot fail");
+    }
     write!(
         output,
-        "\n    ],\n    \"audio_solo_mode\": \"{}\"",
+        "],\n    \"audio_solo_mode\": \"{}\"",
         project.audio_solo_mode().token()
     )
     .expect("writing to a string cannot fail");
@@ -186,6 +222,57 @@ pub(crate) fn parse_audio_groups(object: &mut Object) -> Result<AudioGroups, Dec
         ))
     })?;
     Ok(AudioGroups::new(groups))
+}
+
+/// Parses `"aux_buses"` from the project object.
+pub(crate) fn parse_aux_buses(object: &mut Object) -> Result<AuxBuses, DecodeError> {
+    let buses = parse_array(object.take("aux_buses")?, "aux_buses", |value| {
+        let mut object = Object::new(value, "aux bus")?;
+        let name = object.string("name")?;
+        let gain = InputGainMilliDb::new(object.i32("gain_milli_db")?).ok_or_else(|| {
+            syntax(format!(
+                "aux bus gain_milli_db must be between {} and {}",
+                InputGainMilliDb::MIN,
+                InputGainMilliDb::MAX
+            ))
+        })?;
+        let muted = object.boolean("muted")?;
+        object.finish()?;
+        Ok(AuxBus { name, gain, muted })
+    })?;
+    let buses: [AuxBus; AUX_BUS_COUNT] = buses
+        .try_into()
+        .map_err(|_| syntax(format!("aux_buses must hold exactly {AUX_BUS_COUNT} buses")))?;
+    Ok(AuxBuses::new(buses))
+}
+
+/// Parses `"output_aux_buses"` from the project object.
+pub(crate) fn parse_output_aux_buses(
+    object: &mut Object,
+) -> Result<std::collections::BTreeMap<OutputId, AuxBusNumber>, DecodeError> {
+    let entries = parse_array(
+        object.take("output_aux_buses")?,
+        "output_aux_buses",
+        |value| {
+            let mut entry = Object::new(value, "output aux bus")?;
+            let output = OutputId::new(entry.nonzero_u128("output")?);
+            let letter = entry.string("bus")?;
+            let mut letters = letter.chars();
+            let bus = match (letters.next(), letters.next()) {
+                (Some(letter), None) => AuxBusNumber::from_letter(letter),
+                _ => None,
+            }
+            .ok_or_else(|| syntax("output aux bus must be a letter A through G"))?;
+            entry.finish()?;
+            Ok((output, bus))
+        },
+    )?;
+    if entries.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+        return Err(syntax(
+            "output_aux_buses must be strictly ascending by output",
+        ));
+    }
+    Ok(entries.into_iter().collect())
 }
 
 /// Parses `"audio_solo_mode"` from the project object.

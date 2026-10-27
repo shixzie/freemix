@@ -1660,6 +1660,7 @@ fn encode_input_audio_strip_command(
         soloed,
         follow_video,
         delay_samples,
+        buses,
     } = payload
     else {
         unreachable!("input audio strip encoder received another command")
@@ -1672,7 +1673,8 @@ fn encode_input_audio_strip_command(
     record.field("muted", u8::from(*muted))?;
     record.field("soloed", u8::from(*soloed))?;
     record.field("follow_video", u8::from(*follow_video))?;
-    record.field("delay_samples", delay_samples)
+    record.field("delay_samples", delay_samples)?;
+    record.field_string("buses", buses.token())
 }
 
 fn encode_overlay_command(record: &mut Record, payload: &CommandPayload) -> Result<(), CodecError> {
@@ -2391,7 +2393,7 @@ fn encode_input_audio_strips(
     let mut encoded = Vec::with_capacity(strips.len());
     for status in strips {
         let entry = format!(
-            "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
             status.input,
             status.gain_millidb,
             status.balance_basis_points,
@@ -2401,6 +2403,7 @@ fn encode_input_audio_strips(
             u8::from(status.follow_video),
             status.delay_samples,
             super::audio_mixer::encode_strip_group(status.group)?,
+            status.buses.token(),
         );
         if !(-96_000..=24_000).contains(&status.gain_millidb)
             || !(-10_000..=10_000).contains(&status.balance_basis_points)

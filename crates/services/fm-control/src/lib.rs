@@ -3661,6 +3661,7 @@ fn input_audio_strip_engine_command(payload: &CommandPayload) -> EngineCommand {
         soloed,
         follow_video,
         delay_samples,
+        buses,
     } = payload
     else {
         unreachable!("only input audio strip commands are delegated")
@@ -3675,6 +3676,7 @@ fn input_audio_strip_engine_command(payload: &CommandPayload) -> EngineCommand {
             soloed: *soloed,
             follow_video: *follow_video,
             delay_samples: *delay_samples,
+            buses: *buses,
         },
     }
 }
@@ -5040,6 +5042,7 @@ fn snapshot_record(
             .map(|(output, name)| OutputStatus {
                 output: WireOutputId::from_domain(*output),
                 name: name.clone(),
+                aux_bus: engine.show().output_aux_bus(*output),
             })
             .collect(),
         input_audio_strips: protocol_input_audio_strips(engine),
@@ -5132,6 +5135,7 @@ fn protocol_input_audio_strips(engine: &Engine) -> Vec<InputAudioStripStatus> {
             soloed: state.soloed,
             follow_video: state.follow_video,
             delay_samples: state.delay_samples,
+            buses: state.buses,
         })
         .collect()
 }

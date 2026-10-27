@@ -2217,6 +2217,7 @@ fn draw_input_strip(
     let mut soloed = status.soloed;
     let mut follow_video = status.follow_video;
     let mut delay_samples = status.delay_samples;
+    let mut buses = status.buses;
     let mut gain_changed = false;
     let mut balance_changed = false;
     let mut mute_changed = false;
@@ -2339,6 +2340,7 @@ fn draw_input_strip(
                 *fx = Some(StripDspTarget::Input(status.input));
             }
         });
+        buses = bus_keys(ui, enabled, reason, buses, layout.inner_width());
         loudness_box(ui, loudness.as_ref(), false, feed.stale);
         let row_height = crate::source_sync_ui::SYNC_ROW_HEIGHT - 4.0;
         match sync {
@@ -2392,6 +2394,7 @@ fn draw_input_strip(
         soloed: solo_changed.then_some(soloed),
         follow_video: follow_changed.then_some(follow_video),
         delay_samples: delay_changed.then_some(delay_samples),
+        buses: (buses != status.buses).then_some(buses),
     };
     if update != InputAudioStripUpdate::default() {
         intents.push(StudioIntent::SetInputAudioStrip {
@@ -2400,6 +2403,62 @@ fn draw_input_strip(
         });
     }
     clear_clip
+}
+
+/// The strip's bus keys (AU-002), like a vMix strip's: `M` feeds Master and
+/// `A`–`G` feed the aux buses, four to a row. Returns the strip's buses after
+/// any click.
+fn bus_keys(
+    ui: &mut Ui,
+    enabled: bool,
+    reason: &str,
+    mut buses: fm_types::audio_bus::AudioBusMask,
+    width: f32,
+) -> fm_types::audio_bus::AudioBusMask {
+    let l = l10n::locale(ui.ctx());
+    let aux = fm_types::audio_bus::AuxBusNumber::ALL;
+    let rows: [[Option<fm_types::audio_bus::AuxBusNumber>; 4]; 2] = [
+        [None, Some(aux[0]), Some(aux[1]), Some(aux[2])],
+        [Some(aux[3]), Some(aux[4]), Some(aux[5]), Some(aux[6])],
+    ];
+    for row in rows {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let quarter = (width - 6.0) / 4.0;
+            for bus in row {
+                let (mut on, label, hover) = match bus {
+                    None => (
+                        buses.master(),
+                        "M".to_owned(),
+                        l.text(Msg::StripBusMasterHover).to_owned(),
+                    ),
+                    Some(bus) => (
+                        buses.aux(bus),
+                        bus.letter().to_string(),
+                        l.format(
+                            Msg::StripBusAuxHover,
+                            &[("bus", Arg::Str(&bus.letter().to_string()))],
+                        ),
+                    ),
+                };
+                let color = if bus.is_none() {
+                    PROGRAM
+                } else {
+                    accent_color()
+                };
+                if led_key(ui, enabled, &mut on, &label, color, quarter)
+                    .hint(&hover, reason)
+                    .changed()
+                {
+                    buses = match bus {
+                        None => buses.with_master(on),
+                        Some(bus) => buses.with_aux(bus, on),
+                    };
+                }
+            }
+        });
+    }
+    buses
 }
 
 /// A latching console key with an LED bar: lit in `color` while on, an unlit
@@ -3079,6 +3138,7 @@ mod tests {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
+            buses: fm_types::audio_bus::AudioBusMask::MASTER,
         };
         let strips = [strip(1, Some(1)), strip(2, None), strip(3, Some(3))];
         // Group 2 has no strips of its own but nests group 1.

@@ -39,7 +39,7 @@ pub use fm_types::{
 pub use audio_mixer::{
     AUDIO_GROUP_COUNT, AudioDspTarget, AudioDynamicsMeter, AudioGroupStatus, AudioLoudnessMeter,
     AudioMixerOperation, AudioMixerStatus, AudioMonitorStatus, AudioSoloMode,
-    AudioStripDspStateMessage, InputAudioLabel, MAX_AUDIO_LABEL_BYTES,
+    AudioStripDspStateMessage, AuxBusStatus, InputAudioLabel, MAX_AUDIO_LABEL_BYTES,
     MAX_AUDIO_MONITOR_DEVICE_BYTES, MAX_AUDIO_STRIP_DSP_STATES, MAX_DYNAMICS_REDUCTION_MILLIDB,
     MAX_LOUDNESS_MILLI, MAX_LOUDNESS_RANGE_MILLILU, MIN_LOUDNESS_MILLI, audio_group_is_valid,
     audio_label_is_valid, audio_monitor_device_is_valid, fade_to_black_affects,

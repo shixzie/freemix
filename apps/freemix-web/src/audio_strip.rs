@@ -62,6 +62,7 @@ impl AudioStripControls {
         soloed: bool,
         follow_video: bool,
         delay_samples: u32,
+        buses: fm_types::audio_bus::AudioBusMask,
         connection_state: &ConnectionState,
         session: Option<&Session>,
     ) -> Option<CommandPayload> {
@@ -81,6 +82,7 @@ impl AudioStripControls {
             soloed,
             follow_video,
             delay_samples,
+            buses,
         })
     }
 }
@@ -129,6 +131,7 @@ mod tests {
                 true,
                 false,
                 2_400,
+                fm_types::audio_bus::AudioBusMask::MASTER,
                 &ConnectionState::Ready,
                 Some(&ready)
             ),
@@ -141,6 +144,7 @@ mod tests {
                 soloed: true,
                 follow_video: false,
                 delay_samples: 2_400,
+                buses: fm_types::audio_bus::AudioBusMask::MASTER,
             })
         );
         assert_eq!(
@@ -153,6 +157,7 @@ mod tests {
                 false,
                 true,
                 0,
+                fm_types::audio_bus::AudioBusMask::MASTER,
                 &ConnectionState::Ready,
                 Some(&ready)
             ),
@@ -168,6 +173,7 @@ mod tests {
                 false,
                 true,
                 48_001,
+                fm_types::audio_bus::AudioBusMask::MASTER,
                 &ConnectionState::Ready,
                 Some(&ready)
             ),
@@ -183,6 +189,7 @@ mod tests {
                 false,
                 true,
                 0,
+                fm_types::audio_bus::AudioBusMask::MASTER,
                 &ConnectionState::Ready,
                 Some(&ready)
             ),

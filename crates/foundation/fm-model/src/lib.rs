@@ -1,5 +1,6 @@
 mod animation_preset;
 mod audio_mixer;
+mod aux_bus;
 mod cue;
 mod cycles;
 mod display_output;
@@ -30,6 +31,7 @@ pub use audio_mixer::{
     MAX_AUDIO_MONITOR_DEVICE_BYTES, validate_audio_group_name, validate_audio_monitor_device,
     validate_audio_strip_label,
 };
+pub use aux_bus::{AUX_BUS_COUNT, AudioBusMask, AuxBus, AuxBusNumber, AuxBuses};
 pub use cue::{
     CUE_OVERLAY_CHANNELS, Cue, CueAction, CueArmed, CueFault, CueList, CueListError,
     CueMediaOperation, CueNumberUpdate, CuePending, CueRunState, MAX_CUE_ACTIONS, MAX_CUE_ARM_MS,

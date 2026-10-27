@@ -915,3 +915,125 @@ fn loudness_resets_are_live_unrecorded_and_realized_on_their_frame() {
     assert_eq!(rejection(&outcome).code, RejectionCode::NotFound);
     assert_eq!(engine.revision(), revision);
 }
+
+fn aux(letter: char) -> fm_model::AuxBusNumber {
+    fm_model::AuxBusNumber::from_letter(letter).unwrap()
+}
+
+#[test]
+fn aux_buses_rename_and_route_outputs_undoably_and_move_their_faders_live() {
+    let mut engine = engine();
+    assert_eq!(engine.show().aux_bus(aux('A')).name, "Bus A");
+    accept(
+        &mut engine,
+        "rename",
+        mixer(EngineAudioMixerEdit::RenameAuxBus {
+            bus: aux('B'),
+            name: "Stage".to_owned(),
+        }),
+    );
+    accept(
+        &mut engine,
+        "route",
+        mixer(EngineAudioMixerEdit::SetOutputAuxBus {
+            output: output(2),
+            bus: Some(aux('B')),
+        }),
+    );
+    let level = EngineAudioGroupState {
+        gain_millidb: -6_000,
+        muted: true,
+    };
+    let live = mixer(EngineAudioMixerEdit::SetAuxBusLevel {
+        bus: aux('B'),
+        state: level,
+    });
+    assert_eq!(live.kind(), EngineCommandKind::LiveOperation);
+    accept(&mut engine, "level", live);
+    assert_eq!(engine.show().aux_bus(aux('B')).name, "Stage");
+    assert_eq!(engine.show().aux_bus(aux('B')).state, level);
+    assert_eq!(engine.show().output_aux_bus(output(2)), Some(aux('B')));
+    assert_eq!(engine.show().output_aux_bus(output(1)), None);
+    // The rename and the route are recorded; the live fader move is not.
+    assert_eq!(engine.undo_entries().len(), 2);
+    let frame = engine.tick().unwrap();
+    assert_eq!(
+        frame.audio_mixer_updates,
+        vec![
+            EngineAudioMixerUpdate::OutputAuxBus {
+                output: output(2),
+                bus: Some(aux('B')),
+            },
+            EngineAudioMixerUpdate::AuxBusLevel {
+                bus: aux('B'),
+                state: level,
+            },
+        ]
+    );
+
+    undo(&mut engine, "undo-route");
+    assert_eq!(engine.show().output_aux_bus(output(2)), None);
+    undo(&mut engine, "undo-rename");
+    assert_eq!(engine.show().aux_bus(aux('B')).name, "Bus B");
+    // Undo never reverts the live fader.
+    assert_eq!(engine.show().aux_bus(aux('B')).state, level);
+    redo(&mut engine, "redo-rename");
+    redo(&mut engine, "redo-route");
+    assert_eq!(engine.show().aux_bus(aux('B')).name, "Stage");
+    assert_eq!(engine.show().output_aux_bus(output(2)), Some(aux('B')));
+}
+
+#[test]
+fn aux_bus_refusals_name_the_problem_and_strip_buses_are_live() {
+    let mut engine = engine();
+    let unknown = execute(
+        &mut engine,
+        "unknown-output",
+        mixer(EngineAudioMixerEdit::SetOutputAuxBus {
+            output: output(9),
+            bus: Some(aux('A')),
+        }),
+    );
+    assert_eq!(rejection(&unknown).code, RejectionCode::NotFound);
+    let blank = execute(
+        &mut engine,
+        "blank",
+        mixer(EngineAudioMixerEdit::RenameAuxBus {
+            bus: aux('A'),
+            name: "  ".to_owned(),
+        }),
+    );
+    assert_eq!(rejection(&blank).code, RejectionCode::InvalidCommand);
+    let loud = execute(
+        &mut engine,
+        "loud",
+        mixer(EngineAudioMixerEdit::SetAuxBusLevel {
+            bus: aux('A'),
+            state: EngineAudioGroupState {
+                gain_millidb: 24_001,
+                muted: false,
+            },
+        }),
+    );
+    assert_eq!(rejection(&loud).code, RejectionCode::InvalidCommand);
+    assert_eq!(
+        engine.show().aux_bus(aux('A')),
+        &fm_engine::EngineAuxBus::default_for(aux('A'))
+    );
+
+    // A strip's buses ride its live strip state: off Master, onto C and G.
+    let buses = fm_model::AudioBusMask::from_token("CG").unwrap();
+    let state = EngineInputAudioStripState {
+        buses,
+        ..EngineInputAudioStripState::default()
+    };
+    let strip = EngineCommand::SetInputAudioStrip {
+        input: input(2),
+        state,
+    };
+    assert_eq!(strip.kind(), EngineCommandKind::LiveOperation);
+    accept(&mut engine, "buses", strip);
+    assert_eq!(engine.show().input_audio_strip(input(2)), Some(state));
+    let frame = engine.tick().unwrap();
+    assert!(frame.input_audio_strip_updates.contains(&(input(2), state)));
+}

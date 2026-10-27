@@ -7379,6 +7379,12 @@ impl NativeDaemon {
                     fm_engine::EngineAudioMixerUpdate::SoloMode(mode) => {
                         project_plan.set_audio_solo_mode(mode);
                     }
+                    fm_engine::EngineAudioMixerUpdate::AuxBusLevel { bus, state } => {
+                        project_plan.set_aux_bus_level(bus, state.gain_millidb, state.muted);
+                    }
+                    fm_engine::EngineAudioMixerUpdate::OutputAuxBus { output, bus } => {
+                        project_plan.set_output_aux_bus(output, bus);
+                    }
                     fm_engine::EngineAudioMixerUpdate::MonitorDevice(ref device) => {
                         monitor_output.set_device(device.clone());
                     }
@@ -12924,6 +12930,7 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &fm_model::Project)
                 soloed: strip.state.soloed,
                 follow_video: strip.state.follow_video,
                 delay_samples: strip.state.delay_samples.get(),
+                buses: strip.state.buses,
             },
         )?;
         show.set_input_audio_label(strip.input, strip.label.clone())?;
@@ -12944,6 +12951,21 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &fm_model::Project)
                 parent: value.parent,
             },
         )?;
+    }
+    for (bus, value) in project.aux_buses().iter() {
+        show.set_aux_bus(
+            bus,
+            fm_engine::EngineAuxBus {
+                name: value.name.clone(),
+                state: fm_engine::EngineAudioGroupState {
+                    gain_millidb: value.gain.get(),
+                    muted: value.muted,
+                },
+            },
+        )?;
+    }
+    for (&output, &bus) in project.output_aux_buses() {
+        show.set_output_aux_bus(output, Some(bus));
     }
     show.set_audio_solo_mode(project.audio_solo_mode());
     let monitor = project.audio_monitor_output();
@@ -13081,6 +13103,30 @@ fn sync_project_audio_mixer(project: &mut fm_model::Project, show: &ShowState) -
                 })?;
         }
     }
+    for (bus, value) in fm_model::AuxBusNumber::ALL
+        .into_iter()
+        .zip(show.aux_buses())
+    {
+        project
+            .set_aux_bus(
+                bus,
+                fm_model::AuxBus {
+                    name: value.name.clone(),
+                    gain: InputGainMilliDb::new(value.state.gain_millidb)
+                        .expect("engine aux bus gain is bounded by the model contract"),
+                    muted: value.state.muted,
+                },
+            )
+            .map_err(|error| AppFailure(format!("project cannot take aux {bus}: {error}")))?;
+    }
+    let outputs = project
+        .outputs()
+        .iter()
+        .map(|output| output.id)
+        .collect::<Vec<_>>();
+    for output in outputs {
+        project.set_output_aux_bus(output, show.output_aux_bus(output));
+    }
     project.set_audio_solo_mode(show.audio_solo_mode());
     let monitor = show.audio_monitor();
     project
@@ -13122,6 +13168,7 @@ fn model_audio_strip_state(state: EngineInputAudioStripState) -> InputAudioStrip
         follow_video: state.follow_video,
         delay_samples: InputDelaySamples::new(state.delay_samples)
             .expect("engine input audio delay is bounded by the model contract"),
+        buses: state.buses,
     }
 }
 
@@ -23295,6 +23342,7 @@ mod tests {
                     soloed: true,
                     follow_video: false,
                     delay_samples: 1_200,
+                    buses: fm_types::audio_bus::AudioBusMask::MASTER,
                 },
             ),
             0,
@@ -23314,6 +23362,7 @@ mod tests {
                 soloed: true,
                 follow_video: false,
                 delay_samples: InputDelaySamples::new(1_200).unwrap(),
+                buses: fm_types::audio_bus::AudioBusMask::MASTER,
             })
         );
     }
@@ -23631,6 +23680,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 follow_video: true,
+                buses: fm_types::audio_bus::AudioBusMask::MASTER,
             },
         ));
         project.set_main_mix(MainMix::new(test_input_id(1), test_input_id(2)));

@@ -1,7 +1,7 @@
-//! AU-001 and SW-004 at schemas 39, 42, and 50: strip pan, labels, groups
-//! (with solo and nesting), the solo mode, the monitor output, and the
-//! Fade-to-Black output selection round-trip exactly and strictly in
-//! `project.json`.
+//! AU-001, AU-002, and SW-004 at schemas 39, 42, 50, and 90: strip pan,
+//! labels, groups (with solo and nesting), bus assignment, aux buses, output
+//! buses, the solo mode, the monitor output, and the Fade-to-Black output
+//! selection round-trip exactly and strictly in `project.json`.
 
 use std::{
     fs,
@@ -11,10 +11,10 @@ use std::{
 };
 
 use fm_model::{
-    AudioBus, AudioGroup, AudioGroupNumber, AudioMonitorOutput, AudioSoloMode, Input,
-    InputAudioStripState, InputGainMilliDb, InputKind, InputPanBasisPoints, Output, Project,
-    ProjectSettings, Rgba8, Scene, SimulatedAudio, SimulatedInput, SimulatedVideo, SolidColor,
-    StartupPolicy,
+    AudioBus, AudioBusMask, AudioGroup, AudioGroupNumber, AudioMonitorOutput, AudioSoloMode,
+    AuxBus, AuxBusNumber, Input, InputAudioStripState, InputGainMilliDb, InputKind,
+    InputPanBasisPoints, Output, Project, ProjectSettings, Rgba8, Scene, SimulatedAudio,
+    SimulatedInput, SimulatedVideo, SolidColor, StartupPolicy,
 };
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoreError, StoredProject};
 use fm_types::{
@@ -131,6 +131,7 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
         host,
         InputAudioStripState {
             pan: InputPanBasisPoints::new(-2_500).unwrap(),
+            buses: AudioBusMask::from_token("MAC").unwrap(),
             ..InputAudioStripState::default()
         },
     ));
@@ -151,6 +152,19 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
         )
         .unwrap();
     expected.set_audio_solo_mode(AudioSoloMode::Pfl);
+    let stage = AuxBusNumber::new(2).unwrap();
+    expected
+        .set_aux_bus(
+            stage,
+            AuxBus {
+                name: "Stage".into(),
+                gain: InputGainMilliDb::new(-3_000).unwrap(),
+                muted: true,
+            },
+        )
+        .unwrap();
+    assert!(expected.set_output_aux_bus(OutputId::new(id(41)), Some(stage)));
+    assert!(!expected.set_output_aux_bus(OutputId::new(id(99)), Some(stage)));
     expected.set_fade_to_black_output(OutputId::new(id(41)), false);
     // Output 40 fades over its own 45 frames on the eased curve (schema 45).
     expected.set_fade_to_black_output_duration(OutputId::new(id(40)), Some(45));
@@ -165,6 +179,12 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
     );
     assert_eq!(loaded.project().input_audio_group(host), Some(hosts));
     assert_eq!(loaded.project().audio_solo_mode(), AudioSoloMode::Pfl);
+    assert_eq!(
+        loaded.project().output_aux_bus(OutputId::new(id(41))),
+        Some(stage)
+    );
+    assert_eq!(loaded.project().output_aux_bus(OutputId::new(id(40))), None);
+    assert_eq!(loaded.project().aux_buses().get(stage).name, "Stage");
     assert_eq!(
         loaded.project().audio_groups().get(hosts).parent,
         AudioGroupNumber::new(3)
@@ -192,15 +212,15 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
     );
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 89"));
+    assert!(text.contains("\"schema_version\": 90"));
     assert!(text.contains(
-        "{\"input\": 10, \"gain_milli_db\": 0, \"balance_basis_points\": 0, \"pan_basis_points\": -2500, \"delay_samples\": 0, \"muted\": false, \"soloed\": false, \"follow_video\": true, \"label\": \"Host \\\"mic\\\" 1\", \"group\": 2, \"dsp\": null}"
+        "{\"input\": 10, \"gain_milli_db\": 0, \"balance_basis_points\": 0, \"pan_basis_points\": -2500, \"delay_samples\": 0, \"muted\": false, \"soloed\": false, \"follow_video\": true, \"buses\": \"MAC\", \"label\": \"Host \\\"mic\\\" 1\", \"group\": 2, \"dsp\": null}"
     ), "{text}");
-    assert!(
-        text.contains("\"follow_video\": true, \"label\": \"\", \"group\": null, \"dsp\": null}")
-    );
     assert!(text.contains(
-        "\"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Hosts\", \"gain_milli_db\": -6000, \"muted\": true, \"soloed\": true, \"parent\": 3},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"audio_solo_mode\": \"pfl\",\n    \"audio_monitor_output\": {\"device\": null, \"gain_milli_db\": 0, \"muted\": false},\n    \"master_audio_dsp\": null,\n    \"fade_to_black_excluded_outputs\": [41],\n    \"fade_to_black_output_durations\": [{\"output\": 40, \"duration_frames\": 45}],\n    \"fade_to_black_curve\": \"ease\",\n    \"display_outputs\": [],\n    \"live_lan\": {\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null},\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null}\n  },"
+        "\"follow_video\": true, \"buses\": \"M\", \"label\": \"\", \"group\": null, \"dsp\": null}"
+    ));
+    assert!(text.contains(
+        "\"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Hosts\", \"gain_milli_db\": -6000, \"muted\": true, \"soloed\": true, \"parent\": 3},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"aux_buses\": [\n      {\"name\": \"Bus A\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Stage\", \"gain_milli_db\": -3000, \"muted\": true},\n      {\"name\": \"Bus C\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Bus D\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Bus E\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Bus F\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Bus G\", \"gain_milli_db\": 0, \"muted\": false}\n    ],\n    \"output_aux_buses\": [{\"output\": 41, \"bus\": \"B\"}],\n    \"audio_solo_mode\": \"pfl\",\n    \"audio_monitor_output\": {\"device\": null, \"gain_milli_db\": 0, \"muted\": false},\n    \"master_audio_dsp\": null,\n    \"fade_to_black_excluded_outputs\": [41],\n    \"fade_to_black_output_durations\": [{\"output\": 40, \"duration_frames\": 45}],\n    \"fade_to_black_curve\": \"ease\",\n    \"display_outputs\": [],\n    \"live_lan\": {\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null},\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null}\n  },"
     ), "{text}");
 
     for (from, to) in [
@@ -208,6 +228,28 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
         ("\"group\": 2,", "\"group\": 5,"),
         ("\"group\": 2,", "\"group\": \"2\","),
         ("\"pan_basis_points\": -2500", "\"pan_basis_points\": 10001"),
+        ("\"buses\": \"MAC\"", "\"buses\": \"CAM\""),
+        ("\"buses\": \"MAC\"", "\"buses\": \"\""),
+        ("\"buses\": \"MAC\"", "\"buses\": 1"),
+        ("\"buses\": \"MAC\", ", ""),
+        ("\"bus\": \"B\"", "\"bus\": \"H\""),
+        ("\"bus\": \"B\"", "\"bus\": \"BC\""),
+        (
+            "{\"output\": 41, \"bus\": \"B\"}",
+            "{\"output\": 41, \"bus\": \"B\"}, {\"output\": 41, \"bus\": \"C\"}",
+        ),
+        (
+            ",\n      {\"name\": \"Bus G\", \"gain_milli_db\": 0, \"muted\": false}",
+            "",
+        ),
+        (
+            "{\"name\": \"Bus C\", \"gain_milli_db\": 0,",
+            "{\"name\": \"Bus C\", \"gain_milli_db\": 24001,",
+        ),
+        (
+            "\n    \"output_aux_buses\": [{\"output\": 41, \"bus\": \"B\"}],",
+            "",
+        ),
         (
             "{\"name\": \"Group 4\", \"gain_milli_db\": 0,",
             "{\"name\": \"Group 4\", \"gain_milli_db\": 24001,",
@@ -307,6 +349,8 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
         ("\"duration_frames\": 45}", "\"duration_frames\": 0}"),
         ("\"duration_frames\": 45}", "\"duration_frames\": 3601}"),
         ("{\"output\": 40,", "{\"output\": 99,"),
+        ("\"name\": \"Stage\"", "\"name\": \" \""),
+        ("{\"output\": 41, \"bus\"", "{\"output\": 99, \"bus\""),
         // Group 3 inside group 2 inside group 3.
         (
             "{\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}",

@@ -574,6 +574,7 @@ mod tests {
         InputId::new(NonZeroU128::new(value).unwrap())
     }
 
+    #[allow(clippy::too_many_lines)] // one field per replicated view member
     fn view(locks: &EditLocks, history: EditHistoryStatus) -> fm_ui_model::ClientView {
         let project = fm_types::ProjectId::new(NonZeroU128::new(1).unwrap());
         let mut snapshot = fm_protocol::SnapshotMessage {
@@ -613,6 +614,7 @@ mod tests {
                     soloed: false,
                     follow_video: true,
                     delay_samples: 0,
+                    buses: fm_types::audio_bus::AudioBusMask::MASTER,
                 })
                 .to_vec(),
             desired_program: fm_protocol::WireInputId::from_domain(input(1)),

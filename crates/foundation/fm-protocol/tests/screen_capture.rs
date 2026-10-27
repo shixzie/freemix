@@ -529,6 +529,7 @@ fn snapshot(screen_capture_inputs: Vec<ScreenCaptureEntry>) -> WireMessage {
                 soloed: false,
                 follow_video: true,
                 delay_samples: 0,
+                buses: fm_types::audio_bus::AudioBusMask::MASTER,
             })
             .into(),
         desired_program: input(1),

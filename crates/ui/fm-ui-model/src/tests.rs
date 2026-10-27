@@ -57,6 +57,7 @@ fn input_audio_strips() -> Vec<InputAudioStripStatus> {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
+            buses: fm_types::audio_bus::AudioBusMask::MASTER,
         })
         .collect()
 }
@@ -102,10 +103,12 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
             OutputStatus {
                 output: output(1),
                 name: "Main".into(),
+                aux_bus: None,
             },
             OutputStatus {
                 output: output(2),
                 name: "Aux".into(),
+                aux_bus: None,
             },
         ],
         input_audio_strips: input_audio_strips(),

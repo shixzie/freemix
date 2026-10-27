@@ -402,6 +402,7 @@ impl<'a> OperatorSurface<'a> {
                     soloed: strip.soloed,
                     follow_video: strip.follow_video,
                     delay_samples: strip.delay_samples,
+                    buses: strip.buses,
                 }
             }
         })
