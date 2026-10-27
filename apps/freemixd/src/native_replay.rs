@@ -35,15 +35,13 @@
 //! before its strip, fader, and the mix, as stereo (a mono source on both
 //! channels); a source without audio records silence. A Replay input
 //! playing forward at 100% plays each shown frame's recorded audio through
-//! its own strip; slow motion and a paused or cued player are silent, as
-//! is a run's first segment: ffmpeg's fragmented MP4 muxer shifts every
-//! stream 80 ms for the B-frame video but leaves the AAC priming packet at
-//! 0, so the segment's audio opens with a 2816-sample hole the adapter's
-//! continuity check refuses (the shift itself keeps sound and picture in
-//! sync; dropping it, `make_non_negative`, would put the sound 59 ms early).
-//! Every segment's pictures start that 80 ms after its sound, so a frame's
-//! audio is read from the segment's first video frame on, not from its
-//! first sample.
+//! its own strip; slow motion and a paused or cued player are silent.
+//! Every segment's pictures start 80 ms after its sound (the encoder's
+//! B-frame delay), so a frame's audio is read from the segment's first
+//! video frame on, not from its first sample. A run's first segment opens
+//! with the AAC priming packet at 0 ahead of a 2816-sample hole (ffmpeg's
+//! fragmented MP4 muxer shifts every stream for the B-frame video but not
+//! that packet); the adapter skips it and decodes from the second packet.
 //!
 //! Limitations: the recorded picture is each source's newest decoded
 //! picture when the frame is realized (for a media file that can be a few
@@ -1448,11 +1446,24 @@ mod tests {
             (samples.iter().map(|value| value * value).sum::<f32>() / samples.len() as f32).sqrt();
         // A half-scale sine has an RMS of about 0.35; AAC keeps it close.
         assert!((0.3..0.4).contains(&rms), "recorded audio RMS {rms}");
-        // The Replay input's decoder reads one frame of it back. (A run's
-        // first segment opens with the encoder's start offset, which the
-        // adapter refuses to place: it replays silent.)
+        // The Replay input's decoder reads one frame of it back, the run's
+        // first segment too: it opens with the encoder's priming packet
+        // ahead of a gap, which the adapter skips, and its first decoded
+        // block starts with its first picture.
         let mut decoder = SegmentDecoder::new(format);
-        assert_eq!(decoder.audio(&segment(1), 10), None);
+        let first = decoder
+            .audio(&segment(1), 10)
+            .expect("the first segment's audio");
+        assert_eq!(first[0].len(), 1_920);
+        assert!(first[0].iter().any(|sample| sample.abs() > 0.3));
+        assert_eq!(
+            decoder
+                .audio
+                .as_ref()
+                .and_then(|(_, audio)| audio.as_ref())
+                .map(|audio| audio.1),
+            Some(0)
+        );
         let planes = decoder.audio(&segment(2), 10).expect("recorded audio");
         // The segment's pictures start two 25 fps frames (the encoder's
         // B-frame delay) after its sound, so frame 0's audio is read 3840

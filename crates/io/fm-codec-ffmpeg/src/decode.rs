@@ -429,18 +429,24 @@ impl Adapter {
             });
         }
         let requested_count = usize::try_from(count_u32).map_err(|_| Error::InvalidConfig)?;
-        self.prepare_audio_window(
-            source,
-            stream,
-            AudioWindowRequest {
-                start: 0,
-                count: requested_count,
-                requirement,
-                input_start_microseconds: None,
-                max_samples: self.limits().max_audio_samples,
-                max_decoded_bytes: self.limits().max_total_decoded_bytes,
-            },
-        )
+        let window = |start| AudioWindowRequest {
+            start,
+            count: requested_count,
+            requirement,
+            input_start_microseconds: None,
+            max_samples: self.limits().max_audio_samples,
+            max_decoded_bytes: self.limits().max_total_decoded_bytes,
+        };
+        match self.prepare_audio_window(source, stream.clone(), window(0)) {
+            // A first packet that does not run into the second (the encoder
+            // priming packet a fragmented MP4 muxer leaves ahead of its
+            // B-frame shift) is skipped: the stream decodes from its second
+            // packet, whose timestamp the blocks carry.
+            Err(Error::InvalidTimeline) => self
+                .prepare_audio_window(source, stream, window(1))
+                .map_err(|_| Error::InvalidTimeline),
+            prepared => prepared,
+        }
     }
 
     fn prepare_audio_window(
@@ -493,7 +499,11 @@ impl Adapter {
                 .checked_add(samples)
                 .ok_or(Error::InvalidTimeline)?;
             validate_audio_span(record, samples, sample_rate, time_base)?;
-            if let Some(next) = metadata.records.get(index + 1) {
+            // Continuity is checked from the window's first packet on; the
+            // packets before it only place it on the sample grid.
+            if index >= start
+                && let Some(next) = metadata.records.get(index + 1)
+            {
                 validate_audio_continuity(record, next, samples, sample_rate, time_base)?;
             }
         }

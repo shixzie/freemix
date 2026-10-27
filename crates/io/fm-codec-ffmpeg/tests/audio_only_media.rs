@@ -322,3 +322,64 @@ fn common_audio_formats_play_as_audio_only_media() {
         }
     }
 }
+
+/// A fragmented MP4 like the recorder writes opens its AAC stream with the
+/// encoder priming packet at 0, ahead of the 80 ms its B-frame video shifts
+/// every other packet: the decode skips that packet and starts at the
+/// second, whose timestamp its first block carries.
+#[test]
+fn a_leading_priming_packet_ahead_of_a_gap_is_skipped() {
+    let _guard = guard();
+    let Some(adapter) = require_ffmpeg() else {
+        return;
+    };
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("fragmented.mp4");
+    generate(
+        &[
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=s=128x72:r=25:d=2",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:sample_rate=48000:d=2",
+            "-map",
+            "0:v",
+            "-map",
+            "1:a",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-g",
+            "25",
+            "-c:a",
+            "aac",
+            "-movflags",
+            "+empty_moov+default_base_moof+frag_keyframe",
+            "-f",
+            "mp4",
+        ],
+        &path,
+    );
+    let decoded = adapter
+        .decode_local_up_to(
+            &path,
+            fm_codec_ffmpeg::DecodeRequest {
+                clock_domain: ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+                video: None,
+                audio: Some(fm_codec_ffmpeg::SequenceRequest {
+                    selector: fm_codec_ffmpeg::StreamSelector::Best,
+                    count: core::num::NonZeroU32::new(8).unwrap(),
+                }),
+            },
+        )
+        .expect("the stream decodes from its second packet");
+    assert_eq!(decoded.audio.len(), 8);
+    let first = decoded.audio[0].timing().original_timestamp();
+    // The second packet sits at the video's 80 ms shift, not at 1024.
+    assert_eq!(first.timestamp().ticks(), 3_840);
+    assert!(decoded.audio.iter().all(|block| peak(block) > 0.05));
+}
