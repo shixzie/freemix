@@ -654,7 +654,9 @@ mod tests {
 
     /// The example at the top of this module, without its `//! ` prefixes.
     fn module_example() -> String {
-        let source = include_str!("cue.rs");
+        // A checkout with CRLF line endings (Windows `autocrlf`) must find
+        // the same fences.
+        let source = include_str!("cue.rs").replace("\r\n", "\n");
         let start = source.find("//! ```text\n").expect("the example opens") + 12;
         let end = start
             + source[start..]

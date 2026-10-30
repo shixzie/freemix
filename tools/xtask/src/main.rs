@@ -1694,11 +1694,14 @@ mod tests {
     fn rejects_generic_named_integration() {
         assert_invalid(
             |ledger| {
+                // Whichever row the ledger currently names as an exact
+                // integration; the named set changes as integrations are
+                // dropped or added.
                 let feature = ledger
                     .features
                     .iter_mut()
-                    .find(|feature| feature.id == "IN-029")
-                    .unwrap();
+                    .find(|feature| NAMED_INTEGRATIONS.contains(&feature.id.as_str()))
+                    .expect("the ledger has a named integration");
                 feature.substitution_policy = GENERIC_EQUIVALENT.to_owned();
             },
             "cannot use a generic substitute",
@@ -1795,6 +1798,13 @@ mod tests {
     fn rejects_invalid_waiver_for_unfinished_implementation() {
         assert_invalid(
             |ledger| {
+                // Only a blocked feature reaches the category check.
+                ledger
+                    .features
+                    .iter_mut()
+                    .find(|feature| feature.id == "IN-002")
+                    .unwrap()
+                    .status = "blocked".to_owned();
                 ledger.waivers.push(Waiver {
                     id: "waiver-in-002".to_owned(),
                     feature: "IN-002".to_owned(),
