@@ -177,6 +177,26 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
             *current = incoming;
             true
         }
+        // An aux bus fader drag sends the latest level of that bus, never
+        // a backlog (AU-002, Protocol 2.120).
+        (
+            current @ StudioIntent::AudioMixer(_),
+            StudioIntent::AudioMixer(
+                next @ fm_protocol::AudioMixerOperation::SetAuxBusLevel { bus, .. },
+            ),
+        ) => {
+            let same = matches!(
+                current,
+                StudioIntent::AudioMixer(fm_protocol::AudioMixerOperation::SetAuxBusLevel {
+                    bus: current_bus,
+                    ..
+                }) if *current_bus == bus
+            );
+            if same {
+                *current = StudioIntent::AudioMixer(next);
+            }
+            same
+        }
         // A strip DSP drag sends the latest chain of one target, never a
         // backlog (AU-005); the queued set keeps its place in the drag, so a
         // drag's first set still opens its undo step.
