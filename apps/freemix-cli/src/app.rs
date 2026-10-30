@@ -6812,7 +6812,7 @@ Usage:
   freemix-cli remote-display-inventory <127.0.0.1:port>
   freemix-cli remote-replay <127.0.0.1:port>
   freemix-cli remote-replay-set <127.0.0.1:port> [replay-set options]
-  freemix-cli remote-replay-do <127.0.0.1:port> <mark-in|mark-out|capture [--name <name>]|last <5|10|20>|rename <event> <name>|delete <event>|cue <input> <event> [--angle <input>]|angle <input> <angle>|play <input> [25|50|75|100]|pause <input>|cue-in <input>|step <input> <frames>> [--key <key>]
+  freemix-cli remote-replay-do <127.0.0.1:port> <mark-in|mark-out|capture [--name <name>]|last <5|10|20>|rename <event> <name>|delete <event>|cue <input> <event> [--angle <input>]|angle <input> <angle>|play <input> [25|50|75|100]|pause <input>|cue-in <input>|step <input> <frames>|playlist <input> [<event>[/<angle>][@<speed>] ...]|playlist-next <input>|playlist-prev <input>> [--key <key>]
       Prints the daemon's replay recording, events, and Replay inputs, edits
       what it records, or sends one live replay command: mark in or out,
       capture the marks or the last 5, 10, or 20 seconds, rename or delete an
