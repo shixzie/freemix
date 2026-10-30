@@ -6036,7 +6036,8 @@ fn replay_playlist_entry(value: &str) -> Result<fm_protocol::ReplayPlaylistEntry
 /// `mark-in`, `mark-out`, `capture [--name NAME]`, `last 5|10|20`,
 /// `rename EVENT NAME`, `delete EVENT`, `cue INPUT EVENT [--angle INPUT]`,
 /// `angle INPUT ANGLE`, `play INPUT [25|50|75|100]`, `pause INPUT`,
-/// `cue-in INPUT`, `step INPUT FRAMES`, `playlist INPUT [ENTRY ...]`,
+/// `cue-in INPUT`, `step INPUT FRAMES`, `link INPUT [LINKED]`,
+/// `playlist INPUT [ENTRY ...]`,
 /// `playlist-next INPUT`, and `playlist-prev INPUT`, each with an optional
 /// `--key`. A playlist `ENTRY` is `EVENT[/ANGLE][@SPEED]` (no entries
 /// clears the playlist).
@@ -6123,6 +6124,14 @@ fn parse_remote_replay_do(
         ("step", [input, frames]) => ReplayOperation::Step {
             input: replay_input(input)?,
             frames: replay_step(frames)?,
+        },
+        ("link", [input]) => ReplayOperation::Link {
+            input: replay_input(input)?,
+            linked: None,
+        },
+        ("link", [input, linked]) => ReplayOperation::Link {
+            input: replay_input(input)?,
+            linked: Some(replay_input(linked)?),
         },
         ("playlist", [input, entries @ ..]) => ReplayOperation::PlaylistSet {
             input: replay_input(input)?,
@@ -11624,6 +11633,29 @@ mod tests {
         );
         for frames in ["0", "601", "-601", "x"] {
             assert!(remote(&["step", "7", frames]).is_err(), "{frames}");
+        }
+        // Protocol 2.124: A/B linking, with an optional partner (absent
+        // unlinks).
+        assert_eq!(
+            remote(&["link", "7", "8"]),
+            Ok(ReplayOperation::Link {
+                input: input(7),
+                linked: Some(input(8)),
+            })
+        );
+        assert_eq!(
+            remote(&["link", "7"]),
+            Ok(ReplayOperation::Link {
+                input: input(7),
+                linked: None,
+            })
+        );
+        for words in [
+            &["link", "7", "x"][..],
+            &["link", "7", "0"][..],
+            &["link"][..],
+        ] {
+            assert!(remote(words).is_err(), "{words:?}");
         }
         // Playlists (Protocol 2.119): `EVENT[/ANGLE][@SPEED]` entries.
         assert_eq!(

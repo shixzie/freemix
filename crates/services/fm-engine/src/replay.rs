@@ -133,6 +133,12 @@ pub enum EngineReplayOperation {
     /// Moves a cued Replay input `frames` source frames (back when
     /// negative), paused, within its event (jog).
     Step { input: InputId, frames: i32 },
+    /// Links Replay input `input` to `linked` for A/B playback, or clears
+    /// its link with `linked: None` (Protocol 2.124).
+    Link {
+        input: InputId,
+        linked: Option<InputId>,
+    },
     /// Replaces Replay input `input`'s playlist (Protocol 2.119); an empty
     /// list clears it.
     PlaylistSet {
@@ -173,6 +179,7 @@ impl EngineReplayOperation {
             | Self::Pause { input }
             | Self::CueIn { input }
             | Self::Step { input, .. }
+            | Self::Link { input, .. }
             | Self::PlaylistSet { input, .. }
             | Self::PlaylistNext { input }
             | Self::PlaylistPrev { input }
@@ -236,6 +243,8 @@ pub struct EngineReplayPlayerStatus {
     pub playlist: Vec<EngineReplayPlaylistEntry>,
     /// The playlist entry the player is on, while it is on one.
     pub playlist_index: Option<u32>,
+    /// The Replay input this player plays in step with, if any (2.124).
+    pub linked: Option<InputId>,
 }
 
 /// The replay runtime as clients see it.
@@ -292,6 +301,8 @@ struct Player {
     playlist: Vec<EngineReplayPlaylistEntry>,
     /// The entry the player is on, while it is on one.
     playlist_index: Option<usize>,
+    /// The Replay input this player plays in step with (Protocol 2.124).
+    linked: Option<InputId>,
 }
 
 impl Player {
@@ -309,29 +320,19 @@ impl Player {
         self.position = 0;
     }
 
-    /// Moves on to the first playlist entry after the current one whose
-    /// event still exists, playing it from its first frame; `false` when
-    /// the playlist has no such entry left.
-    fn advance_playlist(&mut self, events: &BTreeMap<u32, Event>) -> bool {
-        let Some(index) = self.playlist_index else {
-            return false;
-        };
-        let next = self
-            .playlist
+    /// The first playlist entry after the current one whose event still
+    /// exists.
+    fn next_playlist_entry(
+        &self,
+        events: &BTreeMap<u32, Event>,
+    ) -> Option<(usize, EngineReplayPlaylistEntry)> {
+        let index = self.playlist_index?;
+        self.playlist
             .iter()
             .enumerate()
             .skip(index + 1)
             .find(|(_, entry)| events.contains_key(&entry.event))
-            .map(|(next, entry)| (next, *entry));
-        let Some((next, entry)) = next else {
-            return false;
-        };
-        let Some(event) = events.get(&entry.event) else {
-            return false;
-        };
-        self.cue_entry(next, entry, event);
-        self.playing = true;
-        true
+            .map(|(next, entry)| (next, *entry))
     }
 
     /// Cues the playlist entry before (`forward` false) or after the
@@ -723,6 +724,7 @@ impl ReplayRuntime {
         for player in self.players.values_mut() {
             *player = Player {
                 speed: player.speed,
+                linked: player.linked,
                 ..Player::default()
             };
         }
@@ -1134,19 +1136,35 @@ impl ReplayRuntime {
                 event,
                 angle,
             } => {
-                if let Some(stored) = self.store.event_frames.get(event) {
-                    let angle = angle
-                        .filter(|angle| stored.angles.contains(angle))
-                        .or_else(|| stored.angles.first().copied());
-                    let player = self.players.entry(*input).or_default();
-                    player.event = Some(*event);
-                    player.angle = angle;
-                    player.playing = false;
-                    player.position = 0;
-                    player.playlist_index = player
-                        .playlist
-                        .iter()
-                        .position(|entry| entry.event == *event);
+                if let Some(stored_angles) = self
+                    .store
+                    .event_frames
+                    .get(event)
+                    .map(|stored| stored.angles.clone())
+                {
+                    for target in self.ganged(*input) {
+                        let player = self.players.entry(target).or_default();
+                        player.event = Some(*event);
+                        // The cue's angle applies to the named input; a
+                        // linked partner keeps its own angle when the event
+                        // holds it, so A and B show different angles.
+                        player.angle = if target == *input {
+                            angle
+                                .filter(|angle| stored_angles.contains(angle))
+                                .or_else(|| stored_angles.first().copied())
+                        } else {
+                            player
+                                .angle
+                                .filter(|angle| stored_angles.contains(angle))
+                                .or_else(|| stored_angles.first().copied())
+                        };
+                        player.playing = false;
+                        player.position = 0;
+                        player.playlist_index = player
+                            .playlist
+                            .iter()
+                            .position(|entry| entry.event == *event);
+                    }
                     self.touch();
                 }
             }
@@ -1161,27 +1179,38 @@ impl ReplayRuntime {
                 }
             }
             EngineReplayOperation::Play { input, speed } => {
-                let player = self.players.entry(*input).or_default();
-                player.speed = *speed;
-                if player.event.is_some() {
-                    player.playing = true;
+                for target in self.ganged(*input) {
+                    let player = self.players.entry(target).or_default();
+                    player.speed = *speed;
+                    if player.event.is_some() {
+                        player.playing = true;
+                    }
                 }
                 self.touch();
             }
             EngineReplayOperation::Pause { input } => {
-                if let Some(player) = self.players.get_mut(input) {
-                    player.playing = false;
-                    self.generation = self.generation.wrapping_add(1);
+                for target in self.ganged(*input) {
+                    if let Some(player) = self.players.get_mut(&target) {
+                        player.playing = false;
+                    }
                 }
+                self.generation = self.generation.wrapping_add(1);
             }
             EngineReplayOperation::CueIn { input } => {
-                if let Some(player) = self.players.get_mut(input) {
-                    player.playing = false;
-                    player.position = 0;
-                    self.generation = self.generation.wrapping_add(1);
+                for target in self.ganged(*input) {
+                    if let Some(player) = self.players.get_mut(&target) {
+                        player.playing = false;
+                        player.position = 0;
+                    }
+                }
+                self.generation = self.generation.wrapping_add(1);
+            }
+            EngineReplayOperation::Step { input, frames } => {
+                for target in self.ganged(*input) {
+                    self.jog(target, *frames);
                 }
             }
-            EngineReplayOperation::Step { input, frames } => self.jog(*input, *frames),
+            EngineReplayOperation::Link { input, linked } => self.link(*input, *linked),
             EngineReplayOperation::PlaylistSet { input, entries } => {
                 let player = self.players.entry(*input).or_default();
                 player.playlist.clone_from(entries);
@@ -1258,6 +1287,74 @@ impl ReplayRuntime {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    /// `input` and the Replay input it plays in step with (A/B), when it is
+    /// linked.
+    fn ganged(&self, input: InputId) -> Vec<InputId> {
+        match self.players.get(&input).and_then(|player| player.linked) {
+            Some(partner) if partner != input && self.players.contains_key(&partner) => {
+                vec![input, partner]
+            }
+            _ => vec![input],
+        }
+    }
+
+    /// Links `input` to `linked` for A/B playback, or clears the link with
+    /// `linked: None` (Protocol 2.124). Linking cues the partner on the
+    /// named player's event at its position, speed, and playing state while
+    /// keeping the partner's angle when the event holds it; any previous
+    /// partner on either side is unlinked.
+    fn link(&mut self, input: InputId, linked: Option<InputId>) {
+        if let Some(previous) = self.players.get(&input).and_then(|player| player.linked)
+            && let Some(player) = self.players.get_mut(&previous)
+            && player.linked == Some(input)
+        {
+            player.linked = None;
+        }
+        let Some(linked) = linked else {
+            self.players.entry(input).or_default().linked = None;
+            self.touch();
+            return;
+        };
+        if let Some(previous) = self.players.get(&linked).and_then(|player| player.linked)
+            && previous != input
+            && let Some(player) = self.players.get_mut(&previous)
+            && player.linked == Some(linked)
+        {
+            player.linked = None;
+        }
+        let source = self.players.get(&input).cloned().unwrap_or_default();
+        if let Some(event) = source.event
+            && let Some(angles) = self
+                .store
+                .event_frames
+                .get(&event)
+                .map(|stored| stored.angles.clone())
+        {
+            let target = self.players.entry(linked).or_default();
+            target.event = Some(event);
+            target.angle = target
+                .angle
+                .filter(|angle| angles.contains(angle))
+                .or_else(|| source.angle.filter(|angle| angles.contains(angle)))
+                .or_else(|| angles.first().copied());
+            target.position = source.position;
+            target.speed = source.speed;
+            target.playing = source.playing;
+            target.playlist_index = target
+                .playlist
+                .iter()
+                .position(|entry| entry.event == event);
+        }
+        self.players.entry(input).or_default().linked = Some(linked);
+        self.players.entry(linked).or_default().linked = Some(input);
+        for id in [input, linked] {
+            if let Some(player) = self.players.get_mut(&id) {
+                player.ended_on_air = false;
+            }
+        }
+        self.touch();
+    }
+
     /// Where frame `frame` of source `input` was recorded.
     fn locate(&self, input: InputId, frame: u64) -> Option<EngineReplayLocation> {
         let at = self.at(frame);
@@ -1289,6 +1386,14 @@ impl ReplayRuntime {
         let inputs: BTreeSet<InputId> = show.replay_inputs().collect();
         if self.players.keys().any(|input| !inputs.contains(input)) {
             self.players.retain(|input, _| inputs.contains(input));
+            for player in self.players.values_mut() {
+                if player
+                    .linked
+                    .is_some_and(|linked| !inputs.contains(&linked))
+                {
+                    player.linked = None;
+                }
+            }
             self.touch();
         }
         let program = show.desired_switcher().program();
@@ -1297,6 +1402,7 @@ impl ReplayRuntime {
         }
         let mut frames = Vec::with_capacity(inputs.len());
         let mut changed = false;
+        let mut ended = Vec::new();
         for input in inputs {
             if input != program
                 && let Some(player) = self.players.get_mut(&input)
@@ -1330,23 +1436,103 @@ impl ReplayRuntime {
                 let next = player.position + player.speed.quarter_frames();
                 let stored = self.players.entry(input).or_default();
                 if next / 4 >= length {
-                    // The playlist's next entry (Protocol 2.119) takes
-                    // over instead of stopping the player.
-                    if !stored.advance_playlist(&self.store.event_frames) {
-                        stored.position = (length - 1) * 4;
-                        stored.playing = false;
-                        stored.ended_on_air = input == program;
-                    }
+                    // The playlist's next entry (Protocol 2.119) takes over
+                    // below; a linked pair moves on only together.
+                    stored.position = (length - 1) * 4;
+                    stored.playing = false;
+                    ended.push(input);
                     changed = true;
                 } else {
                     stored.position = next;
                 }
             }
         }
+        changed |= self.settle_ended_players(ended, program);
         if changed {
             self.touch();
         }
         frames
+    }
+
+    /// Applies a playlist's next entry, or a stop, to every player that
+    /// reached its event's end this frame. Linked players move on only when
+    /// both have a next entry, so A/B stays in step; `true` when anything
+    /// changed.
+    fn settle_ended_players(&mut self, ended: Vec<InputId>, program: InputId) -> bool {
+        let mut changed = false;
+        // A player that reached its event's end either moves on to its
+        // playlist's next entry or stops. Linked players (Protocol 2.124)
+        // only move on when both have a next entry, so A/B stays in step.
+        let mut handled = BTreeSet::new();
+        for input in ended {
+            if handled.contains(&input) {
+                continue;
+            }
+            let partner = self
+                .players
+                .get(&input)
+                .and_then(|player| player.linked)
+                .filter(|partner| !handled.contains(partner));
+            if let Some(partner) = partner {
+                handled.insert(input);
+                handled.insert(partner);
+                let both_advance = {
+                    let events = &self.store.event_frames;
+                    [input, partner].iter().all(|id| {
+                        self.players
+                            .get(id)
+                            .and_then(|player| player.next_playlist_entry(events))
+                            .is_some()
+                    })
+                };
+                if both_advance {
+                    for id in [input, partner] {
+                        let events = &self.store.event_frames;
+                        let next = self
+                            .players
+                            .get(&id)
+                            .and_then(|player| player.next_playlist_entry(events));
+                        if let Some((index, entry)) = next
+                            && let Some(event) = events.get(&entry.event)
+                        {
+                            let player = self.players.get_mut(&id).expect("the player was checked");
+                            player.cue_entry(index, entry, event);
+                            player.playing = true;
+                        }
+                    }
+                } else {
+                    for id in [input, partner] {
+                        if let Some(player) = self.players.get_mut(&id) {
+                            player.playing = false;
+                            player.ended_on_air = id == program;
+                        }
+                    }
+                }
+                changed = true;
+                continue;
+            }
+            handled.insert(input);
+            let events = &self.store.event_frames;
+            let next = self
+                .players
+                .get(&input)
+                .and_then(|player| player.next_playlist_entry(events));
+            if let Some((index, entry)) = next
+                && let Some(event) = events.get(&entry.event)
+            {
+                let player = self
+                    .players
+                    .get_mut(&input)
+                    .expect("the player was checked");
+                player.cue_entry(index, entry, event);
+                player.playing = true;
+            } else if let Some(player) = self.players.get_mut(&input) {
+                player.playing = false;
+                player.ended_on_air = input == program;
+            }
+            changed = true;
+        }
+        changed
     }
 
     /// Takes the files retention or a restart dropped.
@@ -1906,6 +2092,7 @@ impl ReplayRuntime {
                     playlist_index: player
                         .playlist_index
                         .and_then(|index| u32::try_from(index).ok()),
+                    linked: player.linked,
                 }
             })
             .collect();
@@ -1962,6 +2149,27 @@ fn check_player(state: &ShowState, input: InputId) -> Result<(), Rejection> {
             "input",
             "not_replay_input",
             format!("input {input} is not a Replay input"),
+        ));
+    }
+    Ok(())
+}
+
+fn check_linked(state: &ShowState, linked: InputId) -> Result<(), Rejection> {
+    if !state.inputs().contains(&linked) {
+        return Err(invalid(
+            "linked",
+            "unknown_input",
+            format!("input {linked} is not part of this show"),
+        ));
+    }
+    if !matches!(
+        state.input_source(linked),
+        Some(fm_model::InputSourceSpec::Replay)
+    ) {
+        return Err(invalid(
+            "linked",
+            "not_replay_input",
+            format!("input {linked} is not a Replay input"),
         ));
     }
     Ok(())
@@ -2040,6 +2248,20 @@ pub(crate) fn accept(
             RejectionCode::Conflict,
             "replay_return is issued by the server's auto return",
         )),
+        EngineReplayOperation::Link { input, linked } => {
+            check_player(state, *input)?;
+            if let Some(linked) = linked {
+                check_linked(state, *linked)?;
+                if *linked == *input {
+                    return Err(invalid(
+                        "linked",
+                        "self_link",
+                        "a Replay input cannot link to itself".to_owned(),
+                    ));
+                }
+            }
+            Ok(())
+        }
         EngineReplayOperation::PlaylistSet { input, entries } => {
             check_player(state, *input)?;
             if entries.len() > fm_types::replay::MAX_REPLAY_PLAYLIST_ENTRIES {

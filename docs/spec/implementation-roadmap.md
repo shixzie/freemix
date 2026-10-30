@@ -150,9 +150,12 @@ highest-value remaining items, ranked:
     (slow motion stays silent). Each Replay input now carries a playlist
     of up to sixteen events with their own angle and speed (Protocol 2.119),
     played back to back into the same player, in Studio, the CLI, and on the
-    wire. Remaining: the recorder takes a source's last decoded
-    picture rather than a genlocked one, segment files from a previous run
-    are removed rather than reloaded, and A/B linking, shuttle (a player
+    wire. Two Replay inputs can now be linked for A/B playback (Protocol
+    2.124): cueing, playing, pausing, cue-in, and stepping one moves both at
+    the same instant while each keeps its own angle, and their playlists
+    advance only together. Remaining: the recorder takes a source's last
+    decoded picture rather than a genlocked one, segment files from a
+    previous run are removed rather than reloaded, and shuttle (a player
     now jogs frame by frame, Protocol 2.114, and a finished replay returns
     Program to the live source, Protocol 2.116),
     transitions, multiview, controller and
@@ -5687,9 +5690,11 @@ events, each with its own angle and speed (Protocol 2.119): a playing
 player that reaches the end of its event moves on to the next listed entry
 that still exists, keeping Program on the replay until the last entry
 ends, and Studio's Replay panel and `remote-replay-do playlist`,
-`playlist-next`, and `playlist-prev` edit and step it; but there is no A/B
-linking, shuttle, replay transition, multiview, controller, or disk-health
-wiring; and nothing is certified. `OR-012`, `OR-013`, and `OR-014` remain planned.
+`playlist-next`, and `playlist-prev` edit and step it. Two Replay inputs can
+be linked for A/B playback (Protocol 2.124), sharing cue, play, pause,
+cue-in, and step while keeping their own angles. There is no shuttle,
+replay transition, multiview, controller, or disk-health wiring, and
+nothing is certified. `OR-012`, `OR-013`, and `OR-014` remain planned.
 
 
 Exit: Sports Show scenario passes on certified storage/hardware.

@@ -10448,6 +10448,23 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReplayTakeHover,
         t("Cortar esta entrada de repetición a Programa"),
     ),
+    (Msg::ReplayLink, t("VINCULAR")),
+    (
+        Msg::ReplayLinkHover,
+        t(
+            "Cargar, reproducir, pausar y avanzar esta entrada de repetición junto con la otra entrada de repetición",
+        ),
+    ),
+    (Msg::ReplayUnlink, t("DESVINCULAR")),
+    (
+        Msg::ReplayUnlinkHover,
+        t("Dejar de reproducir esta entrada de repetición al mismo tiempo que la otra"),
+    ),
+    (Msg::ReplayLinkedTo, t("Vinculada a {name}")),
+    (
+        Msg::ReplayLinkReasonNoPartner,
+        t("no hay otra entrada de repetición a la que vincular"),
+    ),
     (Msg::ReplayPlaylist, t("Lista de repetición")),
     (
         Msg::ReplayPlaylistCount,

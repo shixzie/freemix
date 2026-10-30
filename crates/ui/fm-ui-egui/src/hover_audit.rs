@@ -2636,6 +2636,7 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
                     },
                 ],
                 playlist_index: Some(0),
+                linked: Some(wire(5)),
             },
             ReplayPlayerStatus {
                 input: wire(5),
@@ -2646,6 +2647,7 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
                 frame: None,
                 playlist: Vec::new(),
                 playlist_index: None,
+                linked: Some(wire(4)),
             },
         ],
     }

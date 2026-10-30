@@ -952,6 +952,47 @@ fn draw_player(
             intents.extend(take(input));
         }
     });
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let partner = status
+            .players
+            .iter()
+            .find(|candidate| candidate.input != player.input);
+        let linked = player.linked.is_some();
+        let (label, hover) = if linked {
+            (Msg::ReplayUnlink, Msg::ReplayUnlinkHover)
+        } else {
+            (Msg::ReplayLink, Msg::ReplayLinkHover)
+        };
+        let reason = block.unwrap_or(if partner.is_some() {
+            ""
+        } else {
+            Msg::ReplayLinkReasonNoPartner.en()
+        });
+        if ui
+            .add_enabled(
+                block.is_none() && partner.is_some(),
+                key_button(l.text(label), linked.then_some(PREVIEW), 64.0),
+            )
+            .hint(l.text(hover), reason)
+            .clicked()
+        {
+            intents.push(StudioIntent::Replay(ReplayOperation::Link {
+                input: player.input,
+                linked: if linked {
+                    None
+                } else {
+                    partner.map(|partner| partner.input)
+                },
+            }));
+        }
+        if let Some(linked) = player.linked {
+            let name = name_of(state, l, linked.to_domain());
+            ui.label(caption(
+                l.format(Msg::ReplayLinkedTo, &[("name", Arg::Str(&name))]),
+            ));
+        }
+    });
     draw_playlist(ui, l, state, status, player, block, intents);
 }
 

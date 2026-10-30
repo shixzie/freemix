@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.123 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.124 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4566,6 +4566,23 @@ Protocol 2.123 defers reel exports until their media is finalized (OR-013).
   that names media retention already dropped is still refused
   (`clips`/`coverage_gap`).
 - 2.122 is refused.
+
+Protocol 2.124 links two Replay inputs for A/B playback (OR-014).
+
+- `replay_link` (`input`, `linked`) links two distinct Replay inputs; an
+  empty `linked` unlinks. Linking cues the partner on the named player's
+  event at the same position, speed, and playing state, keeping the
+  partner's angle when the event holds it, and clears any previous partner
+  on either side. The link is symmetric.
+- Play, pause, cue, cue-in, and step on either linked player move both; angle
+  and playlist edits stay per player. A linked player that reaches its
+  event's end moves both to their playlist's next entries only when both
+  have one, and otherwise both stop together, so A/B never drifts.
+- Each `players` entry of `replay_status` ends with a ninth field: the Replay
+  input the player is linked to (empty when none).
+- Links are runtime state, like players; nothing is persisted, and a
+  recording restart keeps them.
+- 2.123 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

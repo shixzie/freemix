@@ -968,3 +968,344 @@ fn playlist_next_and_prev_cue_entries_and_clear_keeps_the_player() {
     assert_eq!(now.playlist_index, None);
     assert_eq!(now.event, Some(1));
 }
+
+/// Protocol 2.124: A/B linking cues both players on one event at the same
+/// position while each keeps its own angle, and play, pause, cue-in, and
+/// step on either move both until they are unlinked.
+#[test]
+#[allow(clippy::too_many_lines)] // the link, both angles, and every transport
+fn linked_players_share_transport_but_keep_their_angles() {
+    let player = |engine: &Engine, value: u128| {
+        engine
+            .replay_status()
+            .players
+            .into_iter()
+            .find(|player| player.input == input(value))
+            .unwrap_or_else(|| panic!("no player {value}"))
+    };
+    let mut engine = engine();
+    add_player(&mut engine, 9);
+    add_player(&mut engine, 10);
+    replay(
+        &mut engine,
+        "configure",
+        EngineReplayOperation::Configure(Box::new(settings(&[1, 2], 600))),
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 12 * FPS);
+    replay(
+        &mut engine,
+        "last",
+        EngineReplayOperation::CaptureLast { seconds: 5 },
+    );
+    settle(&mut engine);
+    replay(
+        &mut engine,
+        "cue-a",
+        EngineReplayOperation::Cue {
+            input: input(9),
+            event: 1,
+            angle: Some(input(2)),
+        },
+    );
+    replay(
+        &mut engine,
+        "link",
+        EngineReplayOperation::Link {
+            input: input(9),
+            linked: Some(input(10)),
+        },
+    );
+    settle(&mut engine);
+    let a = player(&engine, 9);
+    let b = player(&engine, 10);
+    assert_eq!(a.linked, Some(input(10)));
+    assert_eq!(b.linked, Some(input(9)));
+    // B is cued on A's event, position, and angle; each can switch its own
+    // angle afterwards.
+    assert_eq!(a.event, Some(1));
+    assert_eq!(b.event, Some(1));
+    assert_eq!(a.angle, Some(input(2)));
+    assert_eq!(b.angle, Some(input(2)));
+    assert_eq!(a.frame, b.frame);
+    assert!(!a.playing && !b.playing);
+
+    // Each player switches angle independently.
+    replay(
+        &mut engine,
+        "angle-a",
+        EngineReplayOperation::Angle {
+            input: input(9),
+            angle: input(1),
+        },
+    );
+    replay(
+        &mut engine,
+        "angle-b",
+        EngineReplayOperation::Angle {
+            input: input(10),
+            angle: input(2),
+        },
+    );
+    settle(&mut engine);
+    assert_eq!(player(&engine, 9).angle, Some(input(1)));
+    assert_eq!(player(&engine, 10).angle, Some(input(2)));
+
+    // Play on B starts both at the same speed and position.
+    replay(
+        &mut engine,
+        "play-b",
+        EngineReplayOperation::Play {
+            input: input(10),
+            speed: ReplaySpeed::Half,
+        },
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 2 * FPS);
+    let a = player(&engine, 9);
+    let b = player(&engine, 10);
+    assert!(a.playing && b.playing);
+    assert_eq!(a.speed, ReplaySpeed::Half);
+    assert_eq!(b.speed, ReplaySpeed::Half);
+    assert_eq!(a.frame, b.frame, "A and B stay on the same instant");
+
+    // Pause on A pauses both; a step on A moves both by the same frames.
+    let before = a.frame.unwrap();
+    replay(
+        &mut engine,
+        "pause-a",
+        EngineReplayOperation::Pause { input: input(9) },
+    );
+    settle(&mut engine);
+    assert!(!player(&engine, 9).playing);
+    assert!(!player(&engine, 10).playing);
+    replay(
+        &mut engine,
+        "step-a",
+        EngineReplayOperation::Step {
+            input: input(9),
+            frames: 3,
+        },
+    );
+    settle(&mut engine);
+    assert_eq!(player(&engine, 9).frame, Some(before + 3));
+    assert_eq!(player(&engine, 10).frame, Some(before + 3));
+
+    // Cue-in on B returns both to the event's first frame.
+    replay(
+        &mut engine,
+        "cue-in-b",
+        EngineReplayOperation::CueIn { input: input(10) },
+    );
+    settle(&mut engine);
+    let first = engine.replay_status().events[0].in_frame;
+    assert_eq!(player(&engine, 9).frame, Some(first));
+    assert_eq!(player(&engine, 10).frame, Some(first));
+
+    // Unlinking from either side clears both; play no longer propagates.
+    replay(
+        &mut engine,
+        "unlink",
+        EngineReplayOperation::Link {
+            input: input(10),
+            linked: None,
+        },
+    );
+    settle(&mut engine);
+    assert_eq!(player(&engine, 9).linked, None);
+    assert_eq!(player(&engine, 10).linked, None);
+    replay(
+        &mut engine,
+        "play-a",
+        EngineReplayOperation::Play {
+            input: input(9),
+            speed: ReplaySpeed::Full,
+        },
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 3);
+    assert!(player(&engine, 9).playing);
+    assert!(!player(&engine, 10).playing);
+    assert_ne!(player(&engine, 9).frame, player(&engine, 10).frame);
+}
+
+/// Protocol 2.124: a link names two distinct Replay inputs.
+#[test]
+fn a_link_needs_two_distinct_replay_inputs() {
+    let mut engine = engine();
+    add_player(&mut engine, 9);
+    let link = |engine: &mut Engine, key: &str, linked: Option<u128>| {
+        execute(
+            engine,
+            key,
+            EngineCommand::Replay(EngineReplayOperation::Link {
+                input: input(9),
+                linked: linked.map(input),
+            }),
+        )
+    };
+    // A camera is not a Replay input.
+    let outcome = link(&mut engine, "camera", Some(1));
+    assert_eq!(rejection(&outcome).code, RejectionCode::InvalidCommand);
+    assert_eq!(rejection(&outcome).fields[0].field, "linked");
+    assert_eq!(rejection(&outcome).fields[0].code, "not_replay_input");
+    // A player cannot link to itself.
+    let outcome = link(&mut engine, "self", Some(9));
+    assert_eq!(rejection(&outcome).code, RejectionCode::InvalidCommand);
+    assert_eq!(rejection(&outcome).fields[0].code, "self_link");
+    // An unknown input is refused.
+    let outcome = link(&mut engine, "unknown", Some(99));
+    assert_eq!(rejection(&outcome).code, RejectionCode::InvalidCommand);
+    assert_eq!(rejection(&outcome).fields[0].code, "unknown_input");
+    // Unlinking needs only the player.
+    accept(
+        &mut engine,
+        "unlink",
+        EngineCommand::Replay(EngineReplayOperation::Link {
+            input: input(9),
+            linked: None,
+        }),
+    );
+    settle(&mut engine);
+    assert_eq!(engine.replay_status().players[0].linked, None);
+}
+
+/// Protocol 2.124: linked players leave an event together. Both advance to
+/// their own playlist's next entry only when both have one; otherwise both
+/// stop instead of drifting apart.
+#[test]
+#[allow(clippy::too_many_lines)] // two captures, two playlists, two ends
+fn linked_players_leave_an_event_only_together() {
+    let player = |engine: &Engine, value: u128| {
+        engine
+            .replay_status()
+            .players
+            .into_iter()
+            .find(|player| player.input == input(value))
+            .unwrap_or_else(|| panic!("no player {value}"))
+    };
+    let entry = |event: u32| EngineReplayPlaylistEntry {
+        event,
+        angle: None,
+        speed: ReplaySpeed::Full,
+    };
+    let mut engine = engine();
+    add_player(&mut engine, 9);
+    add_player(&mut engine, 10);
+    replay(
+        &mut engine,
+        "configure",
+        EngineReplayOperation::Configure(Box::new(settings(&[1, 2], 600))),
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 12 * FPS);
+    replay(
+        &mut engine,
+        "last-1",
+        EngineReplayOperation::CaptureLast { seconds: 5 },
+    );
+    settle(&mut engine);
+    ticks(&mut engine, FPS);
+    replay(
+        &mut engine,
+        "last-2",
+        EngineReplayOperation::CaptureLast { seconds: 5 },
+    );
+    settle(&mut engine);
+    for input_value in [9, 10] {
+        replay(
+            &mut engine,
+            &format!("playlist-{input_value}"),
+            EngineReplayOperation::PlaylistSet {
+                input: input(input_value),
+                entries: vec![entry(1), entry(2)],
+            },
+        );
+    }
+    replay(
+        &mut engine,
+        "cue",
+        EngineReplayOperation::Cue {
+            input: input(9),
+            event: 1,
+            angle: Some(input(1)),
+        },
+    );
+    replay(
+        &mut engine,
+        "angle-b",
+        EngineReplayOperation::Angle {
+            input: input(10),
+            angle: input(2),
+        },
+    );
+    replay(
+        &mut engine,
+        "link",
+        EngineReplayOperation::Link {
+            input: input(9),
+            linked: Some(input(10)),
+        },
+    );
+    replay(
+        &mut engine,
+        "play",
+        EngineReplayOperation::Play {
+            input: input(9),
+            speed: ReplaySpeed::Full,
+        },
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 5 * FPS + 1);
+    let a = player(&engine, 9);
+    let b = player(&engine, 10);
+    assert_eq!(a.event, Some(2), "A moved to its next entry");
+    assert_eq!(b.event, Some(2), "B moved to its next entry");
+    assert_eq!(a.playlist_index, Some(1));
+    assert_eq!(b.playlist_index, Some(1));
+    assert!(a.playing && b.playing);
+    assert_eq!(a.frame, b.frame);
+
+    // B loses its next entry: at the next end both stop, still on the same
+    // event and frame, rather than A moving on alone.
+    replay(
+        &mut engine,
+        "shrink-b",
+        EngineReplayOperation::PlaylistSet {
+            input: input(10),
+            entries: vec![entry(1)],
+        },
+    );
+    replay(
+        &mut engine,
+        "pause",
+        EngineReplayOperation::Pause { input: input(9) },
+    );
+    replay(
+        &mut engine,
+        "cue-again",
+        EngineReplayOperation::Cue {
+            input: input(9),
+            event: 1,
+            angle: Some(input(1)),
+        },
+    );
+    replay(
+        &mut engine,
+        "play-again",
+        EngineReplayOperation::Play {
+            input: input(10),
+            speed: ReplaySpeed::Full,
+        },
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 5 * FPS + 1);
+    let a = player(&engine, 9);
+    let b = player(&engine, 10);
+    assert_eq!(a.event, Some(1));
+    assert_eq!(b.event, Some(1));
+    assert!(!a.playing && !b.playing);
+    assert_eq!(a.frame, b.frame);
+    assert_eq!(a.playlist_index, Some(0));
+    assert_eq!(b.playlist_index, Some(0));
+}

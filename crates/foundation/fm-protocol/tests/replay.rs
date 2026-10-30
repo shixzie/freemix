@@ -151,6 +151,20 @@ fn operations() -> Vec<(ReplayOperation, &'static str)> {
             "replay_step\tinput=9\tframes=-12",
         ),
         (
+            ReplayOperation::Link {
+                input: wire(9),
+                linked: Some(wire(10)),
+            },
+            "replay_link\tinput=9\tlinked=10",
+        ),
+        (
+            ReplayOperation::Link {
+                input: wire(9),
+                linked: None,
+            },
+            "replay_link\tinput=9\tlinked=",
+        ),
+        (
             ReplayOperation::PlaylistSet {
                 input: wire(9),
                 entries: vec![
@@ -265,6 +279,10 @@ fn commands_are_strict() {
         "replay_playlist_set\tinput=9\tentries=03%2F%2F100",
         "replay_playlist_set\tinput=9\tentries=3%2F%2F100%2F4",
         "replay_playlist_set\tinput=9\tentries=1%2F%2F100%7Cx",
+        "replay_link\tinput=9",
+        "replay_link\tlinked=10",
+        "replay_link\tinput=9\tlinked=0",
+        "replay_link\tinput=9\tlinked=x",
         "replay_playlist_next\tinput=x",
         "replay_playlist_prev",
         "replay_return\tinput=9",
@@ -391,6 +409,7 @@ fn status(request_id: Option<&str>) -> ReplayStatusMessage {
                     },
                 ],
                 playlist_index: Some(1),
+                linked: Some(wire(10)),
             },
             ReplayPlayerStatus {
                 input: wire(10),
@@ -401,6 +420,7 @@ fn status(request_id: Option<&str>) -> ReplayStatusMessage {
                 frame: None,
                 playlist: Vec::new(),
                 playlist_index: None,
+                linked: Some(wire(9)),
             },
         ],
     }
@@ -420,8 +440,8 @@ fn status_and_its_request_have_an_exact_wire_form() {
     );
     assert!(
         line.contains(
-            "\tplayers=9%3A1%3A2%3A25%3A1%3A2510%3A1%3A3%2F2%2F100%7C4%2F%2F50%3B\
-             10%3A%3A%3A100%3A0%3A%3A%3A\n"
+            "\tplayers=9%3A1%3A2%3A25%3A1%3A2510%3A1%3A3%2F2%2F100%7C4%2F%2F50%3A10%3B\
+             10%3A%3A%3A100%3A0%3A%3A%3A%3A9\n"
         ),
         "{line}"
     );
