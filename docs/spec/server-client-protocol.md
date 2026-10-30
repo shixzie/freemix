@@ -4649,6 +4649,9 @@ Protocol 2.128 adds audio plugin chains (AU-006).
   a plugin with no installed processor is refused
   (`plugins`/`unsupported_plugin`). A trim or soft-clip state is one
   little-endian `i32` in millidB.
+- `freemix-cli remote-audio-plugin-chain <address> <input>
+  [<plugin>[:<bypass 0|1>][:<latency>[:<state-hex>]] ...]` sends the chain;
+  no slots clears it.
 - 2.127 is refused.
 
 Command results are ordered before any event bearing the same accepted revision

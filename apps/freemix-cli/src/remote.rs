@@ -424,6 +424,27 @@ pub(crate) fn replay_multiview(
     }
 }
 
+/// Replaces input strip `input`'s ordered audio plugin chain (AU-006); no
+/// slots clears it.
+pub(crate) fn audio_plugin_chain(
+    address: SocketAddr,
+    input: fm_protocol::WireInputId,
+    slots: Vec<fm_protocol::PluginChainSlot>,
+) -> RemoteResult<()> {
+    let count = slots.len();
+    execute(
+        address,
+        CommandPayload::AudioMixer(fm_protocol::AudioMixerOperation::SetPluginChain {
+            target: fm_protocol::AudioDspTarget::Input(input),
+            slots,
+        }),
+        None,
+        None,
+    )?;
+    println!("AudioPluginChain(input={input}, slots={count})");
+    Ok(())
+}
+
 /// Prints the daemon's replay recording, events, and Replay inputs (OR-012,
 /// Protocol 2.106).
 pub fn replay(address: SocketAddr) -> RemoteResult<()> {

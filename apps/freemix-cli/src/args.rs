@@ -723,6 +723,12 @@ pub enum Command {
         width: u16,
         height: u16,
     },
+    /// Replaces one input strip's audio plugin chain (AU-006).
+    RemoteAudioPluginChain {
+        address: SocketAddr,
+        input: fm_protocol::WireInputId,
+        slots: Vec<fm_protocol::PluginChainSlot>,
+    },
     /// Live-sets one layer's chroma key on a daemon from a saved picture
     /// of its input (SW-008), as one `scene_layer_key_set` edit.
     RemoteSceneLayerAutoKey {
@@ -2197,6 +2203,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "scene-layer-auto-key" => parse_scene_layer_auto_key(arguments),
         "remote-scene-layer-auto-key" => parse_remote_scene_layer_auto_key(arguments),
         "remote-replay-multiview" => parse_remote_replay_multiview(arguments),
+        "remote-audio-plugin-chain" => parse_remote_audio_plugin_chain(arguments),
         "remote-scene-layer-effects" => parse_remote_scene_layer_effects(arguments),
         "input-remove" => parse_input_remove(arguments),
         "input-duplicate" => parse_input_duplicate(arguments),
@@ -5329,6 +5336,103 @@ fn parse_scene_layer_auto_key(
         picture,
         point,
     })
+}
+
+/// `remote-audio-plugin-chain <address> <input> [<plugin>[:<bypass 0|1>]
+/// [:<latency>[:<state-hex>]] ...]` (AU-006): replaces one strip's ordered
+/// plugin chain; no slots clears it. `state-hex` is the slot's opaque state.
+fn parse_remote_audio_plugin_chain(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let input = replay_input(&required(&mut arguments, "input")?)?;
+    let mut slots = Vec::new();
+    let mut plugins = std::collections::BTreeSet::new();
+    for entry in arguments {
+        let fields: Vec<&str> = entry.split(':').collect();
+        let plugin = fields[0];
+        let rest = &fields[1..];
+        if !fm_protocol::PluginChainSlot::plugin_id_is_valid(plugin) {
+            return Err(ArgsError::InvalidChoice {
+                field: "plugin",
+                value: plugin.to_owned(),
+            });
+        }
+        if !plugins.insert(plugin.to_owned()) {
+            return Err(ArgsError::InvalidChoice {
+                field: "plugin",
+                value: plugin.to_owned(),
+            });
+        }
+        let bypassed = match rest.first().copied().unwrap_or("0") {
+            "0" => false,
+            "1" => true,
+            value => {
+                return Err(ArgsError::InvalidChoice {
+                    field: "bypass",
+                    value: value.to_owned(),
+                });
+            }
+        };
+        let latency_frames = match rest.get(1).copied().unwrap_or("0") {
+            "" => 0,
+            value => number(value, "latency")?,
+        };
+        if latency_frames > fm_protocol::MAX_PLUGIN_LATENCY_FRAMES {
+            return Err(ArgsError::OutOfRange {
+                field: "latency",
+                minimum: 0,
+                maximum: u16::try_from(fm_protocol::MAX_PLUGIN_LATENCY_FRAMES).unwrap_or(u16::MAX),
+                value: u16::try_from(latency_frames).unwrap_or(u16::MAX),
+            });
+        }
+        let state = match rest.get(2).copied().unwrap_or("") {
+            "" => Vec::new(),
+            hex => parse_hex(hex)?,
+        };
+        if state.len() > fm_protocol::MAX_PLUGIN_STATE_BYTES {
+            return Err(ArgsError::InvalidChoice {
+                field: "state",
+                value: format!("{} bytes", state.len()),
+            });
+        }
+        slots.push(fm_protocol::PluginChainSlot {
+            plugin: plugin.to_owned(),
+            bypassed,
+            latency_frames,
+            state,
+        });
+    }
+    if slots.len() > fm_protocol::MAX_PROTOCOL_PLUGIN_SLOTS {
+        return Err(ArgsError::InvalidChoice {
+            field: "plugins",
+            value: format!("{} slots", slots.len()),
+        });
+    }
+    Ok(Command::RemoteAudioPluginChain {
+        address,
+        input,
+        slots,
+    })
+}
+
+/// `state-hex`: an even number of hexadecimal digits.
+fn parse_hex(value: &str) -> Result<Vec<u8>, ArgsError> {
+    if !value.len().is_multiple_of(2) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(ArgsError::InvalidChoice {
+            field: "state",
+            value: value.to_owned(),
+        });
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&value[index..index + 2], 16).map_err(|_| ArgsError::InvalidChoice {
+                field: "state",
+                value: value.to_owned(),
+            })
+        })
+        .collect()
 }
 
 /// `remote-replay-multiview <address> <input> --output <file.png>
@@ -11554,6 +11658,65 @@ mod tests {
             .is_err()
         );
         assert!(parse(strings(&["remote-input-remove", "127.0.0.1:9123"])).is_err());
+    }
+
+    /// AU-006: a plugin chain parses into typed slots, and bad plugin ids,
+    /// duplicates, state hex, and bounds are refused.
+    #[test]
+    fn audio_plugin_chain_commands_parse_into_typed_slots() {
+        use fm_protocol::{MAX_PLUGIN_LATENCY_FRAMES, PluginChainSlot};
+        let input = |value: u128| {
+            fm_protocol::WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
+        };
+        let parse_chain = |slots: &[&str]| {
+            let mut words = vec!["remote-audio-plugin-chain", "127.0.0.1:9123", "11"];
+            words.extend_from_slice(slots);
+            parse(strings(&words))
+        };
+        assert_eq!(
+            parse_chain(&[
+                "freemix.reference.trim:0:0:20d1ffff",
+                "freemix.reference.polarity:1:2",
+            ]),
+            Ok(Command::RemoteAudioPluginChain {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                input: input(11),
+                slots: vec![
+                    PluginChainSlot {
+                        plugin: "freemix.reference.trim".to_owned(),
+                        bypassed: false,
+                        latency_frames: 0,
+                        state: vec![0x20, 0xd1, 0xff, 0xff],
+                    },
+                    PluginChainSlot {
+                        plugin: "freemix.reference.polarity".to_owned(),
+                        bypassed: true,
+                        latency_frames: 2,
+                        state: Vec::new(),
+                    },
+                ],
+            })
+        );
+        assert_eq!(
+            parse_chain(&[]),
+            Ok(Command::RemoteAudioPluginChain {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                input: input(11),
+                slots: Vec::new(),
+            })
+        );
+        for slots in [
+            &["bad/id"][..],
+            &["freemix.reference.trim:2"][..],
+            &["freemix.reference.trim:0:0:xyz"][..],
+            &["freemix.reference.trim:0:0:abc"][..],
+            &["freemix.reference.trim", "freemix.reference.trim"][..],
+            &["a", "b", "c", "d", "e", "f", "g", "h", "i"][..],
+        ] {
+            assert!(parse_chain(slots).is_err(), "{slots:?}");
+        }
+        let too_late = format!("freemix.reference.trim:0:{}", MAX_PLUGIN_LATENCY_FRAMES + 1);
+        assert!(parse_chain(&[&too_late]).is_err());
     }
 
     /// OR-012: replay settings edits and live replay operations parse
