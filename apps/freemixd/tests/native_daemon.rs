@@ -761,7 +761,9 @@ fn native_stinger_preflight_failure_rolls_back_and_keeps_show_cursor_live() {
     let before_bytes = fs::read(&manifest_path).unwrap();
     let before = ProjectStore::new(&project_path).unwrap().load().unwrap();
 
-    let Some(daemon) = require_native(NativeDaemonProcess::start(&project_path, true)) else {
+    // A second client reconnects after the first leaves, so the daemon must
+    // outlive its first session: `--once` would exit with it.
+    let Some(mut daemon) = require_native(NativeDaemonProcess::start(&project_path, false)) else {
         return;
     };
     let mut client = StudioClient::connect(daemon.address);
@@ -822,6 +824,7 @@ fn native_stinger_preflight_failure_rolls_back_and_keeps_show_cursor_live() {
     assert!(cut.scheduled_frame > 0);
     drop(resumed);
 
+    daemon.signal_terminate();
     let output = daemon.wait();
     assert!(
         output.status.success(),
