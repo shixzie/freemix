@@ -24,6 +24,13 @@
 //! gone, accepts exactly what the live show did. They are realized on their
 //! target frame.
 //!
+//! A Replay input may carry a playlist (Protocol 2.119): an ordered list of
+//! events with an optional angle and a speed. A playing player that reaches
+//! the end of its event moves on to the next listed entry that still
+//! exists, from that event's first frame and at that entry's speed; only a
+//! playlist with nothing left stops the player (and returns Program when
+//! auto return is set).
+//!
 //! The recording is either *synthetic* (the simulated engine records every
 //! source itself into two-second segments whose files never exist, so
 //! retention and capture are exercised without media) or *external* (a
@@ -73,6 +80,17 @@ pub const SYNTHETIC_REPLAY_FRAME_BYTES: u64 = 4_096;
 /// daemon chose none.
 pub const DEFAULT_REPLAY_ROOT: &str = "replay";
 
+/// One entry in a Replay input's playlist (Protocol 2.119).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct EngineReplayPlaylistEntry {
+    /// The event to play.
+    pub event: u32,
+    /// The angle to play; `None` plays the event's preferred one.
+    pub angle: Option<InputId>,
+    /// The speed the entry plays at.
+    pub speed: ReplaySpeed,
+}
+
 /// One replay command (OR-012).
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum EngineReplayOperation {
@@ -112,9 +130,21 @@ pub enum EngineReplayOperation {
     Pause { input: InputId },
     /// Jumps Replay input `input` back to its event's first frame, paused.
     CueIn { input: InputId },
-    /// Moves Replay input `input` `frames` source frames (back when
-    /// negative), paused, clamped to its event (jog).
+    /// Moves a cued Replay input `frames` source frames (back when
+    /// negative), paused, within its event (jog).
     Step { input: InputId, frames: i32 },
+    /// Replaces Replay input `input`'s playlist (Protocol 2.119); an empty
+    /// list clears it.
+    PlaylistSet {
+        input: InputId,
+        entries: Vec<EngineReplayPlaylistEntry>,
+    },
+    /// Cues the next playlist entry that still exists, at its first frame,
+    /// keeping the player playing or paused as it was.
+    PlaylistNext { input: InputId },
+    /// Cues the previous playlist entry that still exists, at its first
+    /// frame, keeping the player playing or paused as it was.
+    PlaylistPrev { input: InputId },
     /// Program went back from Replay input `input`, which played its event
     /// to the end on air, to `to` (auto return). Only the cue clock's
     /// advance issues it ([`REPLAY_RETURN_LIST`]); a client's is refused.
@@ -143,6 +173,9 @@ impl EngineReplayOperation {
             | Self::Pause { input }
             | Self::CueIn { input }
             | Self::Step { input, .. }
+            | Self::PlaylistSet { input, .. }
+            | Self::PlaylistNext { input }
+            | Self::PlaylistPrev { input }
             | Self::Return { input, .. } => Some(*input),
             _ => None,
         }
@@ -199,6 +232,10 @@ pub struct EngineReplayPlayerStatus {
     pub playing: bool,
     /// The source frame shown, if cued.
     pub frame: Option<u64>,
+    /// The player's playlist, in order (Protocol 2.119).
+    pub playlist: Vec<EngineReplayPlaylistEntry>,
+    /// The playlist entry the player is on, while it is on one.
+    pub playlist_index: Option<u32>,
 }
 
 /// The replay runtime as clients see it.
@@ -251,6 +288,89 @@ struct Player {
     /// The player played its event to the end while on Program, and
     /// Program has not left it since (auto return).
     ended_on_air: bool,
+    /// The playlist entries, in order (Protocol 2.119).
+    playlist: Vec<EngineReplayPlaylistEntry>,
+    /// The entry the player is on, while it is on one.
+    playlist_index: Option<usize>,
+}
+
+impl Player {
+    /// Cues `entry`, the playlist's `index`th, on its first frame: its
+    /// angle when that event holds it, else the event's preferred one, at
+    /// the entry's speed.
+    fn cue_entry(&mut self, index: usize, entry: EngineReplayPlaylistEntry, event: &Event) {
+        self.playlist_index = Some(index);
+        self.event = Some(entry.event);
+        self.angle = entry
+            .angle
+            .filter(|angle| event.angles.contains(angle))
+            .or_else(|| event.angles.first().copied());
+        self.speed = entry.speed;
+        self.position = 0;
+    }
+
+    /// Moves on to the first playlist entry after the current one whose
+    /// event still exists, playing it from its first frame; `false` when
+    /// the playlist has no such entry left.
+    fn advance_playlist(&mut self, events: &BTreeMap<u32, Event>) -> bool {
+        let Some(index) = self.playlist_index else {
+            return false;
+        };
+        let next = self
+            .playlist
+            .iter()
+            .enumerate()
+            .skip(index + 1)
+            .find(|(_, entry)| events.contains_key(&entry.event))
+            .map(|(next, entry)| (next, *entry));
+        let Some((next, entry)) = next else {
+            return false;
+        };
+        let Some(event) = events.get(&entry.event) else {
+            return false;
+        };
+        self.cue_entry(next, entry, event);
+        self.playing = true;
+        true
+    }
+
+    /// Cues the playlist entry before (`forward` false) or after the
+    /// current one, skipping entries whose event is gone; the player keeps
+    /// playing or paused as it was.
+    fn move_playlist(&mut self, events: &BTreeMap<u32, Event>, forward: bool) {
+        if self.playlist.is_empty() {
+            return;
+        }
+        let last = self.playlist.len() - 1;
+        let mut cursor = match self.playlist_index {
+            Some(index) if forward => index + 1,
+            Some(0) => return,
+            Some(index) => index - 1,
+            None if forward => 0,
+            None => last,
+        };
+        if cursor > last {
+            return;
+        }
+        loop {
+            let entry = self.playlist[cursor];
+            if let Some(event) = events.get(&entry.event) {
+                self.cue_entry(cursor, entry, event);
+                return;
+            }
+            if forward {
+                if cursor == last {
+                    return;
+                }
+                cursor += 1;
+            } else {
+                if cursor == 0 {
+                    return;
+                }
+                cursor -= 1;
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1016,6 +1136,10 @@ impl ReplayRuntime {
                     player.angle = angle;
                     player.playing = false;
                     player.position = 0;
+                    player.playlist_index = player
+                        .playlist
+                        .iter()
+                        .position(|entry| entry.event == *event);
                     self.touch();
                 }
             }
@@ -1051,6 +1175,31 @@ impl ReplayRuntime {
                 }
             }
             EngineReplayOperation::Step { input, frames } => self.jog(*input, *frames),
+            EngineReplayOperation::PlaylistSet { input, entries } => {
+                let player = self.players.entry(*input).or_default();
+                player.playlist.clone_from(entries);
+                player.playlist_index = player.event.and_then(|event| {
+                    player
+                        .playlist
+                        .iter()
+                        .position(|entry| entry.event == event)
+                });
+                self.touch();
+            }
+            EngineReplayOperation::PlaylistNext { input } => {
+                let events = &self.store.event_frames;
+                if let Some(player) = self.players.get_mut(input) {
+                    player.move_playlist(events, true);
+                }
+                self.generation = self.generation.wrapping_add(1);
+            }
+            EngineReplayOperation::PlaylistPrev { input } => {
+                let events = &self.store.event_frames;
+                if let Some(player) = self.players.get_mut(input) {
+                    player.move_playlist(events, false);
+                }
+                self.generation = self.generation.wrapping_add(1);
+            }
         }
     }
 
@@ -1060,7 +1209,9 @@ impl ReplayRuntime {
         if let EngineReplayOperation::Cue { input, .. }
         | EngineReplayOperation::Play { input, .. }
         | EngineReplayOperation::CueIn { input }
-        | EngineReplayOperation::Step { input, .. } = operation
+        | EngineReplayOperation::Step { input, .. }
+        | EngineReplayOperation::PlaylistNext { input }
+        | EngineReplayOperation::PlaylistPrev { input } = operation
             && let Some(player) = self.players.get_mut(input)
         {
             player.ended_on_air = false;
@@ -1137,7 +1288,7 @@ impl ReplayRuntime {
             self.live_program = Some(program);
         }
         let mut frames = Vec::with_capacity(inputs.len());
-        let mut finished = false;
+        let mut changed = false;
         for input in inputs {
             if input != program
                 && let Some(player) = self.players.get_mut(&input)
@@ -1171,16 +1322,20 @@ impl ReplayRuntime {
                 let next = player.position + player.speed.quarter_frames();
                 let stored = self.players.entry(input).or_default();
                 if next / 4 >= length {
-                    stored.position = (length - 1) * 4;
-                    stored.playing = false;
-                    stored.ended_on_air = input == program;
-                    finished = true;
+                    // The playlist's next entry (Protocol 2.119) takes
+                    // over instead of stopping the player.
+                    if !stored.advance_playlist(&self.store.event_frames) {
+                        stored.position = (length - 1) * 4;
+                        stored.playing = false;
+                        stored.ended_on_air = input == program;
+                    }
+                    changed = true;
                 } else {
                     stored.position = next;
                 }
             }
         }
-        if finished {
+        if changed {
             self.touch();
         }
         frames
@@ -1642,6 +1797,10 @@ impl ReplayRuntime {
                     speed: player.speed,
                     playing: player.playing,
                     frame,
+                    playlist: player.playlist.clone(),
+                    playlist_index: player
+                        .playlist_index
+                        .and_then(|index| u32::try_from(index).ok()),
                 }
             })
             .collect();
@@ -1774,6 +1933,27 @@ pub(crate) fn accept(
             RejectionCode::Conflict,
             "replay_return is issued by the server's auto return",
         )),
+        EngineReplayOperation::PlaylistSet { input, entries } => {
+            check_player(state, *input)?;
+            if entries.len() > fm_types::replay::MAX_REPLAY_PLAYLIST_ENTRIES {
+                return Err(invalid(
+                    "entries",
+                    "too_many_entries",
+                    format!(
+                        "a replay playlist holds at most {} entries",
+                        fm_types::replay::MAX_REPLAY_PLAYLIST_ENTRIES
+                    ),
+                ));
+            }
+            for entry in entries {
+                if let Some(angle) = entry.angle {
+                    check_angle(state, angle)?;
+                }
+            }
+            Ok(())
+        }
+        EngineReplayOperation::PlaylistNext { input }
+        | EngineReplayOperation::PlaylistPrev { input } => check_player(state, *input),
         EngineReplayOperation::Step { input, frames } => {
             check_player(state, *input)?;
             if fm_types::replay::replay_step_is_valid(*frames) {

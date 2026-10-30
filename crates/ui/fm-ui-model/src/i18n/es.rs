@@ -10395,6 +10395,64 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReplayTakeHover,
         t("Cortar esta entrada de repetición a Programa"),
     ),
+    (Msg::ReplayPlaylist, t("Lista de repetición")),
+    (
+        Msg::ReplayPlaylistCount,
+        plural("{count} entrada", "{count} entradas"),
+    ),
+    (
+        Msg::ReplayPlaylistEmpty,
+        t(
+            "No hay entradas en la lista: AÑADIR CARGA añade el evento que reproduce esta entrada de repetición",
+        ),
+    ),
+    (Msg::ReplayPlaylistAdd, t("AÑADIR CARGA")),
+    (
+        Msg::ReplayPlaylistAddHover,
+        t("Añadir al final de esta lista el evento cargado, su ángulo y su velocidad"),
+    ),
+    (
+        Msg::ReplayPlaylistReasonNoEvent,
+        t("no hay nada cargado que añadir"),
+    ),
+    (
+        Msg::ReplayPlaylistReasonFull,
+        t("esta lista admite 16 entradas"),
+    ),
+    (Msg::ReplayPlaylistClear, t("VACIAR LISTA")),
+    (
+        Msg::ReplayPlaylistClearHover,
+        t("Vaciar esta lista; la entrada cargada se queda donde está"),
+    ),
+    (Msg::ReplayPlaylistReasonEmpty, t("la lista está vacía")),
+    (Msg::ReplayPlaylistNext, t("SIGUIENTE ENTRADA")),
+    (
+        Msg::ReplayPlaylistNextHover,
+        t("Cargar la siguiente entrada de la lista que aún exista, en su primer fotograma"),
+    ),
+    (Msg::ReplayPlaylistPrev, t("ENTRADA ANTERIOR")),
+    (
+        Msg::ReplayPlaylistPrevHover,
+        t("Cargar la entrada anterior de la lista que aún exista, en su primer fotograma"),
+    ),
+    (
+        Msg::ReplayPlaylistEntryHover,
+        t(
+            "Entrada {position} de {count}: {name} ({angle}, {percent} %); el reproductor pasa a ella cuando termina su evento",
+        ),
+    ),
+    (
+        Msg::ReplayPlaylistCurrentHover,
+        t("Esta es la entrada en la que está el reproductor"),
+    ),
+    (
+        Msg::ReplayPlaylistRemoveHover,
+        t("Quitar esta entrada de la lista de repetición"),
+    ),
+    (
+        Msg::ReplayPlaylistMissingEvent,
+        t("el evento {event} ya no existe"),
+    ),
     (Msg::ReelSection, t("Reels destacados")),
     (
         Msg::ReelNoReels,

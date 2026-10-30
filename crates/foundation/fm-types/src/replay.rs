@@ -34,6 +34,8 @@ pub const REPLAY_LAST_SECONDS: [u8; 3] = [5, 10, 20];
 /// Most frames one replay step (jog) moves a player, either way (ten
 /// seconds at 60 frames per second).
 pub const MAX_REPLAY_STEP_FRAMES: u32 = 600;
+/// Most entries one Replay input's playlist holds.
+pub const MAX_REPLAY_PLAYLIST_ENTRIES: usize = 16;
 
 /// Whether `frames` is a usable replay step: nonzero and at most
 /// [`MAX_REPLAY_STEP_FRAMES`] either way.

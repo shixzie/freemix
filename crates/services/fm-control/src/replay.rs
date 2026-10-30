@@ -1,11 +1,13 @@
 //! Instant replay between the engine and the wire (OR-012).
 
 use fm_engine::{
-    EngineCommand, EngineEvent, EngineReplayFeed, EngineReplayOperation, EngineReplayStatus,
+    EngineCommand, EngineEvent, EngineReplayFeed, EngineReplayOperation, EngineReplayPlaylistEntry,
+    EngineReplayStatus,
 };
 use fm_protocol::{
     CommandPayload, EventPayload, ReplayEventStatus, ReplayFeed, ReplayOperation,
-    ReplayPlayerStatus, ReplaySourceStatus, ReplayStatusMessage, ServerIdentity, WireInputId,
+    ReplayPlayerStatus, ReplayPlaylistEntry, ReplaySourceStatus, ReplayStatusMessage,
+    ServerIdentity, WireInputId,
 };
 
 /// The engine operation of a wire replay command.
@@ -53,6 +55,23 @@ pub(super) fn engine_operation(operation: &ReplayOperation) -> EngineReplayOpera
         ReplayOperation::Step { input, frames } => EngineReplayOperation::Step {
             input: input.to_domain(),
             frames: *frames,
+        },
+        ReplayOperation::PlaylistSet { input, entries } => EngineReplayOperation::PlaylistSet {
+            input: input.to_domain(),
+            entries: entries
+                .iter()
+                .map(|entry| EngineReplayPlaylistEntry {
+                    event: entry.event,
+                    angle: entry.angle.map(WireInputId::to_domain),
+                    speed: entry.speed,
+                })
+                .collect(),
+        },
+        ReplayOperation::PlaylistNext { input } => EngineReplayOperation::PlaylistNext {
+            input: input.to_domain(),
+        },
+        ReplayOperation::PlaylistPrev { input } => EngineReplayOperation::PlaylistPrev {
+            input: input.to_domain(),
         },
         ReplayOperation::Return { input, to } => EngineReplayOperation::Return {
             input: input.to_domain(),
@@ -106,6 +125,23 @@ pub(super) fn wire_operation(operation: &EngineReplayOperation) -> ReplayOperati
         EngineReplayOperation::Step { input, frames } => ReplayOperation::Step {
             input: WireInputId::from_domain(*input),
             frames: *frames,
+        },
+        EngineReplayOperation::PlaylistSet { input, entries } => ReplayOperation::PlaylistSet {
+            input: WireInputId::from_domain(*input),
+            entries: entries
+                .iter()
+                .map(|entry| ReplayPlaylistEntry {
+                    event: entry.event,
+                    angle: entry.angle.map(WireInputId::from_domain),
+                    speed: entry.speed,
+                })
+                .collect(),
+        },
+        EngineReplayOperation::PlaylistNext { input } => ReplayOperation::PlaylistNext {
+            input: WireInputId::from_domain(*input),
+        },
+        EngineReplayOperation::PlaylistPrev { input } => ReplayOperation::PlaylistPrev {
+            input: WireInputId::from_domain(*input),
         },
         EngineReplayOperation::Return { input, to } => ReplayOperation::Return {
             input: WireInputId::from_domain(*input),
@@ -190,6 +226,16 @@ pub(super) fn status_message(
                 speed: player.speed,
                 playing: player.playing,
                 frame: player.frame,
+                playlist: player
+                    .playlist
+                    .into_iter()
+                    .map(|entry| ReplayPlaylistEntry {
+                        event: entry.event,
+                        angle: entry.angle.map(WireInputId::from_domain),
+                        speed: entry.speed,
+                    })
+                    .collect(),
+                playlist_index: player.playlist_index,
             })
             .collect(),
     }

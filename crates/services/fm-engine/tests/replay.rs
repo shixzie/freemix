@@ -11,7 +11,7 @@ use fm_clock::ClockDomainId;
 use fm_command::{CommandEnvelope, IdempotencyKey, RefusalReason, Rejection, RejectionCode};
 use fm_engine::{
     Engine, EngineCommand, EngineCommandKind, EngineCommandOutcome, EngineEvent, EngineInputSource,
-    EngineReplayFeed, EngineReplayOperation, FrameResult, ShowState,
+    EngineReplayFeed, EngineReplayOperation, EngineReplayPlaylistEntry, FrameResult, ShowState,
 };
 use fm_types::replay::{ReplaySettings, ReplaySpeed};
 use fm_types::{FrameRate, InputId};
@@ -740,4 +740,230 @@ fn a_finished_replay_on_program_returns_to_the_live_source() {
     ticks(&mut engine, 2);
     assert_eq!(engine.cue_advance_frame(), None);
     assert_eq!(program(&engine), input(9));
+}
+
+/// Protocol 2.119: a Replay input's playlist plays its events back to
+/// back, and Program returns to the live source only after the last one.
+#[test]
+#[allow(clippy::too_many_lines)] // two captures, the take, and the return
+fn a_playlist_plays_its_events_back_to_back_and_returns_after_the_last() {
+    let program = |engine: &Engine| engine.show().desired_switcher().program();
+    let mut engine = engine();
+    add_player(&mut engine, 9);
+    let mut settings = settings(&[1, 2], 600);
+    settings.auto_return = Some(0);
+    replay(
+        &mut engine,
+        "configure",
+        EngineReplayOperation::Configure(Box::new(settings)),
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 12 * FPS);
+    replay(
+        &mut engine,
+        "last-1",
+        EngineReplayOperation::CaptureLast { seconds: 5 },
+    );
+    ticks(&mut engine, FPS);
+    replay(
+        &mut engine,
+        "last-2",
+        EngineReplayOperation::CaptureLast { seconds: 5 },
+    );
+    settle(&mut engine);
+    let events = engine.replay_status().events;
+    assert_eq!(events.len(), 2);
+    let entry = |event: u32, angle: Option<u128>, speed| EngineReplayPlaylistEntry {
+        event,
+        angle: angle.map(input),
+        speed,
+    };
+    replay(
+        &mut engine,
+        "playlist",
+        EngineReplayOperation::PlaylistSet {
+            input: input(9),
+            entries: vec![
+                entry(1, Some(2), ReplaySpeed::Full),
+                entry(2, None, ReplaySpeed::Half),
+            ],
+        },
+    );
+    settle(&mut engine);
+    let status = engine.replay_status();
+    assert_eq!(status.players[0].playlist.len(), 2);
+    assert_eq!(status.players[0].playlist_index, None);
+
+    // Cueing a listed event puts the player on its entry.
+    replay(
+        &mut engine,
+        "cue",
+        EngineReplayOperation::Cue {
+            input: input(9),
+            event: 1,
+            angle: None,
+        },
+    );
+    settle(&mut engine);
+    let status = engine.replay_status();
+    assert_eq!(status.players[0].playlist_index, Some(0));
+    // A cue names its own angle (or the event's preferred one); the
+    // entry's angle applies when the playlist moves on to it.
+    assert_eq!(status.players[0].angle, Some(input(1)));
+
+    accept(
+        &mut engine,
+        "preview",
+        EngineCommand::SelectPreview(input(9)),
+    );
+    accept(&mut engine, "take", EngineCommand::Cut);
+    settle(&mut engine);
+    assert_eq!(program(&engine), input(9));
+    replay(
+        &mut engine,
+        "play",
+        EngineReplayOperation::Play {
+            input: input(9),
+            speed: ReplaySpeed::Full,
+        },
+    );
+    settle(&mut engine);
+    // The first event ends and the second starts on the same player, at
+    // its entry's angle and speed; Program stays on the replay.
+    ticks(&mut engine, 5 * FPS);
+    assert_eq!(engine.cue_advance_frame(), None, "the playlist goes on");
+    let status = engine.replay_status();
+    let player = &status.players[0];
+    assert_eq!(player.event, Some(2));
+    assert_eq!(player.playlist_index, Some(1));
+    assert_eq!(player.angle, Some(input(1)));
+    assert_eq!(player.speed, ReplaySpeed::Half);
+    assert!(player.playing);
+    assert_eq!(program(&engine), input(9));
+    // The last event ends: the player stops and Program returns.
+    ticks(&mut engine, 10 * FPS);
+    assert!(!engine.replay_status().players[0].playing);
+    let (list, frame) = engine.cue_advance_frame().expect("a return is due");
+    assert_eq!(list, fm_engine::REPLAY_RETURN_LIST);
+    accept(
+        &mut engine,
+        "return",
+        EngineCommand::CueAdvance { list, frame },
+    );
+    settle(&mut engine);
+    assert_eq!(program(&engine), input(1));
+}
+
+/// Protocol 2.119: NEXT and PREV cue the neighbouring playlist entries a
+/// player still has, and CLEAR empties the playlist without moving it.
+#[test]
+fn playlist_next_and_prev_cue_entries_and_clear_keeps_the_player() {
+    let mut engine = engine();
+    add_player(&mut engine, 9);
+    replay(
+        &mut engine,
+        "configure",
+        EngineReplayOperation::Configure(Box::new(settings(&[1, 2], 600))),
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 12 * FPS);
+    replay(
+        &mut engine,
+        "last-1",
+        EngineReplayOperation::CaptureLast { seconds: 5 },
+    );
+    ticks(&mut engine, FPS);
+    replay(
+        &mut engine,
+        "last-2",
+        EngineReplayOperation::CaptureLast { seconds: 5 },
+    );
+    settle(&mut engine);
+    let entry = |event: u32, speed| EngineReplayPlaylistEntry {
+        event,
+        angle: None,
+        speed,
+    };
+    replay(
+        &mut engine,
+        "playlist",
+        EngineReplayOperation::PlaylistSet {
+            input: input(9),
+            entries: vec![entry(1, ReplaySpeed::Full), entry(2, ReplaySpeed::Quarter)],
+        },
+    );
+    settle(&mut engine);
+    let player = |engine: &Engine| engine.replay_status().players[0].clone();
+
+    // Nothing cued: NEXT starts at the first entry, PREV at the last.
+    replay(
+        &mut engine,
+        "next",
+        EngineReplayOperation::PlaylistNext { input: input(9) },
+    );
+    settle(&mut engine);
+    let now = player(&engine);
+    assert_eq!(now.event, Some(1));
+    assert_eq!(now.playlist_index, Some(0));
+    assert!(!now.playing);
+    let first = engine
+        .replay_status()
+        .events
+        .iter()
+        .find(|event| event.id == 1)
+        .expect("event 1")
+        .in_frame;
+    assert_eq!(now.frame, Some(first));
+
+    replay(
+        &mut engine,
+        "next-2",
+        EngineReplayOperation::PlaylistNext { input: input(9) },
+    );
+    settle(&mut engine);
+    let now = player(&engine);
+    assert_eq!(now.event, Some(2));
+    assert_eq!(now.playlist_index, Some(1));
+    assert_eq!(now.speed, ReplaySpeed::Quarter);
+    // The last entry's NEXT changes nothing.
+    replay(
+        &mut engine,
+        "next-3",
+        EngineReplayOperation::PlaylistNext { input: input(9) },
+    );
+    settle(&mut engine);
+    assert_eq!(player(&engine).event, Some(2));
+    replay(
+        &mut engine,
+        "prev",
+        EngineReplayOperation::PlaylistPrev { input: input(9) },
+    );
+    settle(&mut engine);
+    let now = player(&engine);
+    assert_eq!(now.event, Some(1));
+    assert_eq!(now.playlist_index, Some(0));
+    assert_eq!(now.speed, ReplaySpeed::Full);
+    // And the first entry's PREV changes nothing either.
+    replay(
+        &mut engine,
+        "prev-2",
+        EngineReplayOperation::PlaylistPrev { input: input(9) },
+    );
+    settle(&mut engine);
+    assert_eq!(player(&engine).event, Some(1));
+
+    // CLEAR leaves the cued event and its position alone.
+    replay(
+        &mut engine,
+        "clear",
+        EngineReplayOperation::PlaylistSet {
+            input: input(9),
+            entries: Vec::new(),
+        },
+    );
+    settle(&mut engine);
+    let now = player(&engine);
+    assert!(now.playlist.is_empty());
+    assert_eq!(now.playlist_index, None);
+    assert_eq!(now.event, Some(1));
 }

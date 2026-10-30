@@ -147,12 +147,15 @@ highest-value remaining items, ranked:
     remote `replay` and `replay-set` plus `remote-replay-do`, with argument
     validation for sources, retention, and the storage root. Segments now
     record each source's own audio, which a Replay input plays at 100%
-    (slow motion stays silent). Remaining: the recorder takes a source's last decoded
+    (slow motion stays silent). Each Replay input now carries a playlist
+    of up to sixteen events with their own angle and speed (Protocol 2.119),
+    played back to back into the same player, in Studio, the CLI, and on the
+    wire. Remaining: the recorder takes a source's last decoded
     picture rather than a genlocked one, segment files from a previous run
     are removed rather than reloaded, and A/B linking, shuttle (a player
     now jogs frame by frame, Protocol 2.114, and a finished replay returns
     Program to the live source, Protocol 2.116),
-    transitions, playlists, multiview, controller and
+    transitions, multiview, controller and
     disk-health wiring, and certification are absent (see the Phase 7
     boundary).
 11. **Highlight reels, end to end (`OR-013`).** The show persists up to eight
@@ -5672,9 +5675,14 @@ step`), and with auto return on a Replay input that plays its event to the
 end on Program hands Program back to the last live source with a cut or a
 mix (Protocol 2.116, schema 88; the daemon's cue clock issues it on a
 reserved list, and the native test hears the return on the wire), but
-there is no A/B linking, shuttle, replay transition,
-playlist, multiview, controller, or disk-health wiring; and
-nothing is certified. `OR-012`, `OR-013`, and `OR-014` remain planned.
+each Replay input carries a playlist of up to sixteen
+events, each with its own angle and speed (Protocol 2.119): a playing
+player that reaches the end of its event moves on to the next listed entry
+that still exists, keeping Program on the replay until the last entry
+ends, and Studio's Replay panel and `remote-replay-do playlist`,
+`playlist-next`, and `playlist-prev` edit and step it; but there is no A/B
+linking, shuttle, replay transition, multiview, controller, or disk-health
+wiring; and nothing is certified. `OR-012`, `OR-013`, and `OR-014` remain planned.
 
 
 Exit: Sports Show scenario passes on certified storage/hardware.

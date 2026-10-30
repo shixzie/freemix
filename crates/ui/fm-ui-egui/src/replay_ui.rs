@@ -16,7 +16,10 @@
 //!   place), a CUE key per Replay input, and Delete.
 //! - **Replay inputs**: each player's cued event and shown frame, its angle,
 //!   the 25 / 50 / 75 / 100 % play keys, PAUSE, CUE IN (back to the first
-//!   frame), and TAKE (cut the Replay input to Program).
+//!   frame), and TAKE (cut the Replay input to Program), with the player's
+//!   playlist under its transport (Protocol 2.119): up to sixteen events,
+//!   each with its angle and speed, that a playing player moves on to in
+//!   turn, and ADD CUED, NEXT, PREV, and CLEAR keys.
 //! - **Highlight reels** (OR-013): the reels, the selected reel's clips
 //!   (angle, trims, speed, order), and the export jobs with their progress,
 //!   Cancel, and Forget keys.
@@ -27,11 +30,12 @@
 use egui::{Checkbox, ComboBox, DragValue, Id, RichText, TextEdit, Ui};
 use fm_protocol::{
     MAX_REEL_CLIPS, MAX_REEL_DISSOLVE_FRAMES, MAX_REEL_EXPORTS, MAX_REEL_MUSIC_PERCENT,
-    MAX_REEL_TRIM_FRAMES, MAX_REELS, MAX_REPLAY_AUTO_RETURN_FRAMES, MAX_REPLAY_RECORD_SOURCES,
-    MAX_REPLAY_RETENTION_SECONDS, MIN_REPLAY_RETENTION_SECONDS, REPLAY_LAST_SECONDS, ReelClip,
-    ReelExportState, ReelExportStatus, ReelMusic, ReelOperation, ReelSpec, ReelStatus,
-    ReplayEventStatus, ReplayOperation, ReplayPlayerStatus, ReplaySettings, ReplaySpeed,
-    ReplayStatusMessage, reel_export_path_is_valid, reel_name_is_valid, replay_event_name_is_valid,
+    MAX_REEL_TRIM_FRAMES, MAX_REELS, MAX_REPLAY_AUTO_RETURN_FRAMES, MAX_REPLAY_PLAYLIST_ENTRIES,
+    MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS, MIN_REPLAY_RETENTION_SECONDS,
+    REPLAY_LAST_SECONDS, ReelClip, ReelExportState, ReelExportStatus, ReelMusic, ReelOperation,
+    ReelSpec, ReelStatus, ReplayEventStatus, ReplayOperation, ReplayPlayerStatus,
+    ReplayPlaylistEntry, ReplaySettings, ReplaySpeed, ReplayStatusMessage,
+    reel_export_path_is_valid, reel_name_is_valid, replay_event_name_is_valid,
 };
 use fm_types::{FrameRate, InputId};
 
@@ -41,7 +45,10 @@ use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::monitors::input_name;
 use crate::playlist::{key_button, timecode};
-use crate::theme::{AMBER, PREVIEW, PROGRAM, Tone, caption, card, empty_state, mono, status_chip};
+use crate::theme::{
+    AMBER, PREVIEW, PROGRAM, Tone, add_icon_button, caption, card, empty_state, mono,
+    section_label, small_button, status_chip,
+};
 use crate::{StudioConnectionStatus, StudioIntent, StudioUiState};
 
 const SPEEDS: [ReplaySpeed; 4] = [
@@ -940,6 +947,170 @@ fn draw_player(
             intents.extend(take(input));
         }
     });
+    draw_playlist(ui, l, state, status, player, block, intents);
+}
+
+/// The playlist under one Replay input's transport (Protocol 2.119): its
+/// entries in order with the current one lit, and ADD CUED, NEXT, PREV, and
+/// CLEAR keys.
+fn draw_playlist(
+    ui: &mut Ui,
+    l: Locale,
+    state: &StudioUiState,
+    status: &ReplayStatusMessage,
+    player: &ReplayPlayerStatus,
+    block: Option<&'static str>,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let empty = player.playlist.is_empty();
+    let full = player.playlist.len() >= MAX_REPLAY_PLAYLIST_ENTRIES;
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(section_label(l.text(Msg::ReplayPlaylist)));
+        ui.label(caption(l.format(
+            Msg::ReplayPlaylistCount,
+            &[(
+                "count",
+                Arg::Count(u64::try_from(player.playlist.len()).unwrap_or(u64::MAX)),
+            )],
+        )));
+        // ADD CUED appends the event this player plays, at its angle and
+        // speed.
+        let add_reason = block.unwrap_or(if player.event.is_none() {
+            Msg::ReplayPlaylistReasonNoEvent.en()
+        } else {
+            Msg::ReplayPlaylistReasonFull.en()
+        });
+        if ui
+            .add_enabled(
+                block.is_none() && player.event.is_some() && !full,
+                small_button(l.text(Msg::ReplayPlaylistAdd)),
+            )
+            .hint(l.text(Msg::ReplayPlaylistAddHover), add_reason)
+            .clicked()
+            && let Some(event) = player.event
+        {
+            let mut entries = player.playlist.clone();
+            entries.push(ReplayPlaylistEntry {
+                event,
+                angle: player.angle,
+                speed: player.speed,
+            });
+            intents.push(StudioIntent::Replay(ReplayOperation::PlaylistSet {
+                input: player.input,
+                entries,
+            }));
+        }
+        let empty_reason = block.unwrap_or(Msg::ReplayPlaylistReasonEmpty.en());
+        for (operation, label, hover) in [
+            (
+                ReplayOperation::PlaylistPrev {
+                    input: player.input,
+                },
+                Msg::ReplayPlaylistPrev,
+                Msg::ReplayPlaylistPrevHover,
+            ),
+            (
+                ReplayOperation::PlaylistNext {
+                    input: player.input,
+                },
+                Msg::ReplayPlaylistNext,
+                Msg::ReplayPlaylistNextHover,
+            ),
+            (
+                ReplayOperation::PlaylistSet {
+                    input: player.input,
+                    entries: Vec::new(),
+                },
+                Msg::ReplayPlaylistClear,
+                Msg::ReplayPlaylistClearHover,
+            ),
+        ] {
+            if ui
+                .add_enabled(block.is_none() && !empty, small_button(l.text(label)))
+                .hint(l.text(hover), empty_reason)
+                .clicked()
+            {
+                intents.push(StudioIntent::Replay(operation));
+            }
+        }
+    });
+    if empty {
+        ui.label(caption(l.text(Msg::ReplayPlaylistEmpty)));
+    }
+    let count = player.playlist.len();
+    for (index, entry) in player.playlist.iter().enumerate() {
+        let event = status.events.iter().find(|event| event.id == entry.event);
+        let name = event.map_or_else(
+            || {
+                l.format(
+                    Msg::ReplayPlaylistMissingEvent,
+                    &[("event", Arg::Plain(u64::from(entry.event)))],
+                )
+            },
+            |event| event.name.clone(),
+        );
+        let angle = entry
+            .angle
+            .or_else(|| event.and_then(|event| event.angles.first().copied()))
+            .map_or_else(
+                || "—".to_owned(),
+                |angle| name_of(state, l, angle.to_domain()),
+            );
+        let current = player.playlist_index == u32::try_from(index).ok();
+        let hover = l.format(
+            Msg::ReplayPlaylistEntryHover,
+            &[
+                (
+                    "position",
+                    Arg::Plain(u64::try_from(index + 1).unwrap_or(u64::MAX)),
+                ),
+                (
+                    "count",
+                    Arg::Plain(u64::try_from(count).unwrap_or(u64::MAX)),
+                ),
+                ("name", Arg::Str(&name)),
+                ("angle", Arg::Str(&angle)),
+                ("percent", Arg::Plain(u64::from(entry.speed.percent()))),
+            ],
+        );
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let label = format!("{}. {name}", index + 1);
+            let text = if current {
+                RichText::new(label).color(AMBER)
+            } else {
+                RichText::new(label)
+            };
+            let hover = if current {
+                format!("{}\n{}", l.text(Msg::ReplayPlaylistCurrentHover), hover)
+            } else {
+                hover
+            };
+            ui.label(text).on_hover_text(hover);
+            ui.label(caption(format!(
+                "{angle} · {}",
+                l.percent(i64::from(entry.speed.percent()))
+            )));
+            let remove = add_icon_button(
+                ui,
+                block.is_none(),
+                key_button("", None, 24.0),
+                crate::theme::KeyIcon::Remove,
+                l.text(Msg::ReplayPlaylistRemoveHover),
+            )
+            .hint(l.text(Msg::ReplayPlaylistRemoveHover), block.unwrap_or(""));
+            if remove.clicked() {
+                let mut entries = player.playlist.clone();
+                entries.remove(index);
+                intents.push(StudioIntent::Replay(ReplayOperation::PlaylistSet {
+                    input: player.input,
+                    entries,
+                }));
+            }
+        });
+    }
 }
 
 /// The REELS section: the reel list, the selected reel's clips, and the

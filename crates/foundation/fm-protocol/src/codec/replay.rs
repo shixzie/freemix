@@ -3,9 +3,10 @@
 use fm_types::replay::ReplaySourceCheck;
 
 use crate::{
-    CodecError, MAX_REPLAY_EVENTS, MAX_REPLAY_INPUTS, MAX_REPLAY_RECORD_SOURCES, ReplayEventStatus,
-    ReplayFeed, ReplayOperation, ReplayPlayerStatus, ReplaySettings, ReplaySourceStatus,
-    ReplaySpeed, ReplayStatusMessage, WireInputId, replay_event_name_is_valid,
+    CodecError, MAX_REPLAY_EVENTS, MAX_REPLAY_INPUTS, MAX_REPLAY_PLAYLIST_ENTRIES,
+    MAX_REPLAY_RECORD_SOURCES, ReplayEventStatus, ReplayFeed, ReplayOperation, ReplayPlayerStatus,
+    ReplayPlaylistEntry, ReplaySettings, ReplaySourceStatus, ReplaySpeed, ReplayStatusMessage,
+    WireInputId, replay_event_name_is_valid,
 };
 
 use super::media::{FieldSource, Push};
@@ -70,6 +71,48 @@ fn parse_speed(field: &'static str, value: &str) -> Result<ReplaySpeed, CodecErr
         .ok()
         .and_then(ReplaySpeed::from_percent)
         .ok_or_else(|| invalid(field, value))
+}
+
+/// Encodes a playlist as `event/angle/speed` entries joined by `|`.
+fn encode_playlist(entries: &[ReplayPlaylistEntry]) -> Result<String, CodecError> {
+    if entries.len() > MAX_REPLAY_PLAYLIST_ENTRIES {
+        return Err(CodecError::TooManyItems("entries"));
+    }
+    Ok(entries
+        .iter()
+        .map(|entry| {
+            format!(
+                "{}/{}/{}",
+                entry.event,
+                optional_text(entry.angle),
+                entry.speed.percent()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|"))
+}
+
+fn decode_playlist(value: &str) -> Result<Vec<ReplayPlaylistEntry>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let entries: Vec<&str> = value.split('|').collect();
+    if entries.len() > MAX_REPLAY_PLAYLIST_ENTRIES {
+        return Err(CodecError::TooManyItems("entries"));
+    }
+    entries
+        .into_iter()
+        .map(|entry| {
+            let [event, angle, speed] = entry.split('/').collect::<Vec<_>>()[..] else {
+                return Err(invalid("entries", entry));
+            };
+            Ok(ReplayPlaylistEntry {
+                event: parse_number("entries", event)?,
+                angle: parse_optional(angle, |value| parse_input("entries", value))?,
+                speed: parse_speed("entries", speed)?,
+            })
+        })
+        .collect()
 }
 
 fn encode_sources(sources: &[fm_types::InputId]) -> String {
@@ -182,6 +225,13 @@ pub(super) fn encode_operation(
             push("input", input.to_string())?;
             push("frames", frames.to_string())
         }
+        ReplayOperation::PlaylistSet { input, entries } => {
+            push("input", input.to_string())?;
+            push("entries", encode_playlist(entries)?)
+        }
+        ReplayOperation::PlaylistNext { input } | ReplayOperation::PlaylistPrev { input } => {
+            push("input", input.to_string())
+        }
         ReplayOperation::Return { input, to } => {
             push("input", input.to_string())?;
             push("to", to.to_string())
@@ -252,6 +302,16 @@ pub(super) fn decode_operation(
                 .ok_or_else(|| invalid("frames", value))?;
             ReplayOperation::Step { input, frames }
         }
+        "replay_playlist_set" => ReplayOperation::PlaylistSet {
+            input: input(fields)?,
+            entries: decode_playlist(&fields.required("entries")?)?,
+        },
+        "replay_playlist_next" => ReplayOperation::PlaylistNext {
+            input: input(fields)?,
+        },
+        "replay_playlist_prev" => ReplayOperation::PlaylistPrev {
+            input: input(fields)?,
+        },
         "replay_return" => ReplayOperation::Return {
             input: input(fields)?,
             to: parse_input("to", &fields.required("to")?)?,
@@ -381,21 +441,23 @@ fn encode_players(players: &[ReplayPlayerStatus]) -> Result<String, CodecError> 
     if players.len() > MAX_REPLAY_INPUTS {
         return Err(CodecError::TooManyItems("players"));
     }
-    Ok(players
+    players
         .iter()
         .map(|player| {
-            format!(
-                "{}:{}:{}:{}:{}:{}",
+            Ok(format!(
+                "{}:{}:{}:{}:{}:{}:{}:{}",
                 player.input,
                 optional_text(player.event),
                 optional_text(player.angle),
                 player.speed.percent(),
                 u8::from(player.playing),
-                optional_text(player.frame)
-            )
+                optional_text(player.frame),
+                optional_text(player.playlist_index),
+                encode_playlist(&player.playlist)?
+            ))
         })
-        .collect::<Vec<_>>()
-        .join(";"))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|entries| entries.join(";"))
 }
 
 fn decode_players(value: &str) -> Result<Vec<ReplayPlayerStatus>, CodecError> {
@@ -409,11 +471,18 @@ fn decode_players(value: &str) -> Result<Vec<ReplayPlayerStatus>, CodecError> {
     entries
         .into_iter()
         .map(|entry| {
-            let [input, event, angle, speed, playing, frame] =
+            let [input, event, angle, speed, playing, frame, index, playlist] =
                 entry.split(':').collect::<Vec<_>>()[..]
             else {
                 return Err(invalid("players", entry));
             };
+            let playlist = decode_playlist(playlist)?;
+            let index: Option<u32> = parse_optional(index, |value| parse_number("players", value))?;
+            if index
+                .is_some_and(|index| usize::try_from(index).map_or(true, |i| i >= playlist.len()))
+            {
+                return Err(invalid("players", entry));
+            }
             Ok(ReplayPlayerStatus {
                 input: parse_input("players", input)?,
                 event: parse_optional(event, |value| parse_number("players", value))?,
@@ -421,6 +490,8 @@ fn decode_players(value: &str) -> Result<Vec<ReplayPlayerStatus>, CodecError> {
                 speed: parse_speed("players", speed)?,
                 playing: parse_flag("players", playing)?,
                 frame: parse_optional(frame, |value| parse_number("players", value))?,
+                playlist,
+                playlist_index: index,
             })
         })
         .collect()

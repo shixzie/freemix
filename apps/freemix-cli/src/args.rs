@@ -5998,11 +5998,48 @@ fn replay_step(value: &str) -> Result<i32, ArgsError> {
         })
 }
 
+/// One replay playlist entry (Protocol 2.119): `EVENT[/ANGLE][@SPEED]`,
+/// the speed 25 through 100 percent (100 when absent).
+fn replay_playlist_entry(value: &str) -> Result<fm_protocol::ReplayPlaylistEntry, ArgsError> {
+    use fm_protocol::{ReplayPlaylistEntry, ReplaySpeed};
+    let (head, speed) = match value.rsplit_once('@') {
+        Some((head, percent)) => (
+            head,
+            Some(
+                ReplaySpeed::from_percent(number(percent, "speed")?).ok_or_else(|| {
+                    ArgsError::InvalidChoice {
+                        field: "speed",
+                        value: percent.to_owned(),
+                    }
+                })?,
+            ),
+        ),
+        None => (value, None),
+    };
+    let (event, angle) = match head.split_once('/') {
+        Some((event, angle)) => (
+            event,
+            (!angle.is_empty())
+                .then(|| replay_input(angle))
+                .transpose()?,
+        ),
+        None => (head, None),
+    };
+    Ok(ReplayPlaylistEntry {
+        event: number(event, "event")?,
+        angle,
+        speed: speed.unwrap_or(ReplaySpeed::Full),
+    })
+}
+
 /// `remote-replay-do <address> <operation> ...` (OR-012):
 /// `mark-in`, `mark-out`, `capture [--name NAME]`, `last 5|10|20`,
 /// `rename EVENT NAME`, `delete EVENT`, `cue INPUT EVENT [--angle INPUT]`,
-/// `angle INPUT ANGLE`, `play INPUT [25|50|75|100]`, `pause INPUT`, and
-/// `cue-in INPUT`, each with an optional `--key`.
+/// `angle INPUT ANGLE`, `play INPUT [25|50|75|100]`, `pause INPUT`,
+/// `cue-in INPUT`, `step INPUT FRAMES`, `playlist INPUT [ENTRY ...]`,
+/// `playlist-next INPUT`, and `playlist-prev INPUT`, each with an optional
+/// `--key`. A playlist `ENTRY` is `EVENT[/ANGLE][@SPEED]` (no entries
+/// clears the playlist).
 fn parse_remote_replay_do(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<Command, ArgsError> {
@@ -6085,6 +6122,19 @@ fn parse_remote_replay_do(
         ("step", [input, frames]) => ReplayOperation::Step {
             input: replay_input(input)?,
             frames: replay_step(frames)?,
+        },
+        ("playlist", [input, entries @ ..]) => ReplayOperation::PlaylistSet {
+            input: replay_input(input)?,
+            entries: entries
+                .iter()
+                .map(|entry| replay_playlist_entry(entry))
+                .collect::<Result<Vec<_>, _>>()?,
+        },
+        ("playlist-next", [input]) => ReplayOperation::PlaylistNext {
+            input: replay_input(input)?,
+        },
+        ("playlist-prev", [input]) => ReplayOperation::PlaylistPrev {
+            input: replay_input(input)?,
         },
         _ => return Err(wrong()),
     };
@@ -11574,6 +11624,49 @@ mod tests {
         for frames in ["0", "601", "-601", "x"] {
             assert!(remote(&["step", "7", frames]).is_err(), "{frames}");
         }
+        // Playlists (Protocol 2.119): `EVENT[/ANGLE][@SPEED]` entries.
+        assert_eq!(
+            remote(&["playlist", "7", "3", "4/2@50", "5/@25"]),
+            Ok(ReplayOperation::PlaylistSet {
+                input: input(7),
+                entries: vec![
+                    fm_protocol::ReplayPlaylistEntry {
+                        event: 3,
+                        angle: None,
+                        speed: ReplaySpeed::Full,
+                    },
+                    fm_protocol::ReplayPlaylistEntry {
+                        event: 4,
+                        angle: Some(input(2)),
+                        speed: ReplaySpeed::Half,
+                    },
+                    fm_protocol::ReplayPlaylistEntry {
+                        event: 5,
+                        angle: None,
+                        speed: ReplaySpeed::Quarter,
+                    },
+                ],
+            })
+        );
+        assert_eq!(
+            remote(&["playlist", "7"]),
+            Ok(ReplayOperation::PlaylistSet {
+                input: input(7),
+                entries: Vec::new(),
+            })
+        );
+        assert_eq!(
+            remote(&["playlist-next", "7"]),
+            Ok(ReplayOperation::PlaylistNext { input: input(7) })
+        );
+        assert_eq!(
+            remote(&["playlist-prev", "7"]),
+            Ok(ReplayOperation::PlaylistPrev { input: input(7) })
+        );
+        for entry in ["x", "3/1/2", "3@60", "3@0"] {
+            assert!(remote(&["playlist", "7", entry]).is_err(), "{entry}");
+        }
+        assert!(remote(&["playlist-next"]).is_err());
         assert!(remote(&["last", "7"]).is_err());
         assert!(remote(&["play", "7", "60"]).is_err());
         assert!(remote(&["mark-in", "--name", "x"]).is_err());

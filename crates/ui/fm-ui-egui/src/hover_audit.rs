@@ -2622,6 +2622,19 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
                 speed: ReplaySpeed::Half,
                 playing: true,
                 frame: Some(2_600),
+                playlist: vec![
+                    fm_protocol::ReplayPlaylistEntry {
+                        event: 1,
+                        angle: Some(wire(2)),
+                        speed: ReplaySpeed::Half,
+                    },
+                    fm_protocol::ReplayPlaylistEntry {
+                        event: 2,
+                        angle: None,
+                        speed: ReplaySpeed::Full,
+                    },
+                ],
+                playlist_index: Some(0),
             },
             ReplayPlayerStatus {
                 input: wire(5),
@@ -2630,6 +2643,8 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
                 speed: ReplaySpeed::Full,
                 playing: false,
                 frame: None,
+                playlist: Vec::new(),
+                playlist_index: None,
             },
         ],
     }
@@ -5536,7 +5551,7 @@ pub fn check_timeline(language: Language) {
         failures.push_str(&report(language, &findings));
     }
     for action in TimelineAction::ALL {
-        let hint = format!("[{}]", action.shortcut(locale));
+        let hint = format!("[{}]", locale.keys(action.shortcut(locale)));
         if !controls
             .iter()
             .filter_map(|control| control.tooltip.as_deref())
@@ -5569,7 +5584,7 @@ pub fn check_color_panel(language: Language) {
         .filter_map(|action| action.shortcut(locale))
         .chain([COMPARE_SHORTCUT]);
     for key in hints {
-        let hint = format!("[{key}]");
+        let hint = format!("[{}]", locale.keys(key));
         if !controls
             .iter()
             .filter_map(|control| control.tooltip.as_deref())

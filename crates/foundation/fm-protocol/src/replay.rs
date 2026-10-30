@@ -22,7 +22,20 @@
 //! | [`ReplayOperation::Pause`] | `replay_pause` | `input` | transition |
 //! | [`ReplayOperation::CueIn`] | `replay_cue_in` | `input` | transition |
 //! | [`ReplayOperation::Step`] | `replay_step` | `input`, `frames` (a canonical signed decimal, nonzero, at most 600 either way) | transition |
+//! | [`ReplayOperation::PlaylistSet`] | `replay_playlist_set` | `input`, `entries` (`event/angle/speed` entries joined by `\|`, empty clears it; at most 16) | transition |
+//! | [`ReplayOperation::PlaylistNext`] | `replay_playlist_next` | `input` | transition |
+//! | [`ReplayOperation::PlaylistPrev`] | `replay_playlist_prev` | `input` | transition |
 //! | [`ReplayOperation::Return`] | `replay_return` | `input`, `to` | announced only: the server's auto return; a client's is refused |
+//!
+//! A Replay input may carry a playlist: an ordered list of up to
+//! [`MAX_REPLAY_PLAYLIST_ENTRIES`] events, each with an optional angle
+//! (absent plays the event's preferred one) and a speed. A playing player
+//! that reaches the end of its event moves on to the next listed event that
+//! still exists, playing at that entry's speed, and only a playlist with
+//! nothing left stops the player (and returns Program when auto return is
+//! set); `replay_playlist_next` and `replay_playlist_prev` cue the next or
+//! previous listed event at its first frame, keeping the player playing or
+//! paused as it was.
 //!
 //! Only `replay_configure` is padlocked and undoable. Every accepted
 //! operation is announced by the durable `event=replay_changed` carrying
@@ -40,11 +53,22 @@ use crate::{ServerIdentity, WireInputId};
 
 pub use fm_types::replay::{
     DEFAULT_REPLAY_RETENTION_SECONDS, MAX_REPLAY_AUTO_RETURN_FRAMES, MAX_REPLAY_EVENT_NAME_BYTES,
-    MAX_REPLAY_EVENTS, MAX_REPLAY_INPUTS, MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS,
-    MAX_REPLAY_STEP_FRAMES, MAX_REPLAY_STORAGE_ROOT_BYTES, MIN_REPLAY_RETENTION_SECONDS,
-    REPLAY_LAST_SECONDS, ReplaySettings, ReplaySettingsError, ReplaySpeed,
-    replay_event_name_is_valid, replay_step_is_valid, replay_storage_root_is_valid,
+    MAX_REPLAY_EVENTS, MAX_REPLAY_INPUTS, MAX_REPLAY_PLAYLIST_ENTRIES, MAX_REPLAY_RECORD_SOURCES,
+    MAX_REPLAY_RETENTION_SECONDS, MAX_REPLAY_STEP_FRAMES, MAX_REPLAY_STORAGE_ROOT_BYTES,
+    MIN_REPLAY_RETENTION_SECONDS, REPLAY_LAST_SECONDS, ReplaySettings, ReplaySettingsError,
+    ReplaySpeed, replay_event_name_is_valid, replay_step_is_valid, replay_storage_root_is_valid,
 };
+
+/// One entry in a Replay input's playlist (Protocol 2.119).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ReplayPlaylistEntry {
+    /// The event to play.
+    pub event: u32,
+    /// The angle to play; `None` plays the event's preferred one.
+    pub angle: Option<WireInputId>,
+    /// The speed the entry plays at.
+    pub speed: ReplaySpeed,
+}
 
 /// One replay command.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -86,6 +110,18 @@ pub enum ReplayOperation {
     /// Moves a cued Replay input `frames` source frames (back when
     /// negative), paused, within its event (Protocol 2.114, jog).
     Step { input: WireInputId, frames: i32 },
+    /// Replaces Replay input `input`'s playlist (Protocol 2.119); an empty
+    /// list clears it.
+    PlaylistSet {
+        input: WireInputId,
+        entries: Vec<ReplayPlaylistEntry>,
+    },
+    /// Cues the next playlist entry that still exists, at its first frame,
+    /// keeping the player playing or paused as it was.
+    PlaylistNext { input: WireInputId },
+    /// Cues the previous playlist entry that still exists, at its first
+    /// frame, keeping the player playing or paused as it was.
+    PlaylistPrev { input: WireInputId },
     /// Program went back from Replay input `input`, which played its event
     /// to the end on air, to `to` (Protocol 2.116 auto return). Only the
     /// server issues it.
@@ -94,7 +130,7 @@ pub enum ReplayOperation {
 
 impl ReplayOperation {
     /// Every payload token, in table order.
-    pub const TOKENS: [&'static str; 14] = [
+    pub const TOKENS: [&'static str; 17] = [
         "replay_configure",
         "replay_mark_in",
         "replay_mark_out",
@@ -108,6 +144,9 @@ impl ReplayOperation {
         "replay_pause",
         "replay_cue_in",
         "replay_step",
+        "replay_playlist_set",
+        "replay_playlist_next",
+        "replay_playlist_prev",
         "replay_return",
     ];
 
@@ -128,6 +167,9 @@ impl ReplayOperation {
             Self::Pause { .. } => "replay_pause",
             Self::CueIn { .. } => "replay_cue_in",
             Self::Step { .. } => "replay_step",
+            Self::PlaylistSet { .. } => "replay_playlist_set",
+            Self::PlaylistNext { .. } => "replay_playlist_next",
+            Self::PlaylistPrev { .. } => "replay_playlist_prev",
             Self::Return { .. } => "replay_return",
         }
     }
@@ -197,7 +239,7 @@ pub struct ReplayEventStatus {
 }
 
 /// One Replay input's player.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplayPlayerStatus {
     pub input: WireInputId,
     pub event: Option<u32>,
@@ -206,6 +248,10 @@ pub struct ReplayPlayerStatus {
     pub playing: bool,
     /// The source frame shown, while cued.
     pub frame: Option<u64>,
+    /// The player's playlist, in order (Protocol 2.119).
+    pub playlist: Vec<ReplayPlaylistEntry>,
+    /// The playlist entry the player is on, while it is on one.
+    pub playlist_index: Option<u32>,
 }
 
 /// Lossy, latest-wins replay status (OR-012).
@@ -220,8 +266,11 @@ pub struct ReplayPlayerStatus {
 ///   `first` and `last` empty while nothing is retained;
 /// * `events`: `<id>:<in>:<out>:<complete 0|1>:<angles '/'-joined>:<name>`,
 ///   the name percent-escaped;
-/// * `players`: `<input>:<event>:<angle>:<speed>:<playing 0|1>:<frame>`,
-///   `event`, `angle`, and `frame` empty while nothing is cued.
+/// * `players`: `<input>:<event>:<angle>:<speed>:<playing 0|1>:<frame>:<playlist index>:<playlist>`,
+///   `event`, `angle`, and `frame` empty while nothing is cued, the index
+///   empty while the player is on no playlist entry, and the playlist a
+///   `|`-joined list of `<event>/<angle>/<speed>` entries (the angle empty
+///   for the event's preferred one).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplayStatusMessage {
     pub server: ServerIdentity,

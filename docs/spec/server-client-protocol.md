@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.118 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.119 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4489,6 +4489,28 @@ Protocol 2.118 adds Master plus seven aux buses A–G to the live mix
   `--buses`, and `audio-aux-name`, `audio-aux-level`, and
   `audio-output-aux` (with `remote-` forms) edit the buses.
 - 2.117 is refused.
+
+Protocol 2.119 adds Replay input playlists (OR-012).
+
+- `replay_playlist_set` (`input`, `entries`) replaces a Replay input's
+  playlist: 0 to 16 `<event>/<angle>/<speed>` entries joined by `|`, the
+  angle empty for the event's preferred one and the speed 25, 50, 75, or
+  100 percent; no entries clears it. `replay_playlist_next` and
+  `replay_playlist_prev` (`input`) cue the next or previous listed entry
+  that still exists, at its first frame, keeping the player playing or
+  paused as it was. All three are transitions, announced by
+  `replay_changed` like every other live replay operation.
+- A playing player that reaches the end of its event moves on to the next
+  listed entry that still exists, from that event's first frame and at that
+  entry's speed; only a playlist with nothing left stops the player, and
+  the auto return then runs as before. `replay_cue` puts a player on the
+  playlist entry of the event it cues, when the playlist lists one.
+- Each `players` entry of `replay_status` ends with two fields: the entry
+  the player is on (empty while it is on none) and the playlist, a
+  `|`-joined list of `<event>/<angle>/<speed>` entries.
+- Playlists are runtime state, like events and players; nothing is
+  persisted.
+- 2.118 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
