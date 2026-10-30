@@ -203,15 +203,25 @@ impl Drop for CapturedChild {
         }
         // A test that fails while its child is still captured shows the
         // child's own account; nothing here may panic during unwinding.
-        if thread::panicking()
-            && let Some(stderr) = self.stderr.take()
-            && let Ok(Ok(drained)) = stderr.recv_timeout(Duration::from_secs(5))
-        {
+        if !thread::panicking() {
+            return;
+        }
+        for (name, receiver) in [
+            ("stdout", self.stdout.take()),
+            ("stderr", self.stderr.take()),
+        ] {
+            let Some(receiver) = receiver else {
+                continue;
+            };
+            let Ok(Ok(drained)) = receiver.recv_timeout(Duration::from_secs(5)) else {
+                eprintln!("--- captured child {name}: not drained ---");
+                continue;
+            };
             let text = String::from_utf8_lossy(&drained.bytes);
             let lines = text.lines().collect::<Vec<_>>();
             let tail = &lines[lines.len().saturating_sub(80)..];
             eprintln!(
-                "--- captured child stderr, last {} of {} lines ---\n{}\n--- end ---",
+                "--- captured child {name}, last {} of {} lines ---\n{}\n--- end ---",
                 tail.len(),
                 lines.len(),
                 tail.join("\n")
