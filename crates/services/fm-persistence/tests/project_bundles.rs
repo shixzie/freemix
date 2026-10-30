@@ -300,9 +300,36 @@ fn portable_bundle_copies_a_folder_slideshows_pictures() {
     );
 }
 
+/// Whether `directory` can hold the source fixture of
+/// [`portable_bundle_rewrites_keys_that_clash_or_are_illegal_elsewhere`]:
+/// two keys that differ only by case, and a key ending in a dot or a space.
+/// A case-insensitive filesystem (APFS, NTFS) folds `Media/` and `media` into
+/// one entry before the exporter under test ever runs, and Windows strips a
+/// trailing dot or space from a name it creates.
+fn holds_clashing_and_illegal_keys(directory: &Path) -> bool {
+    let upper = directory.join("probe-A");
+    let lower = directory.join("probe-a");
+    fs::write(&upper, b"upper").unwrap();
+    let case_sensitive = !lower.exists();
+    let _ = fs::remove_file(&upper);
+    let trailing = directory.join("probe. ");
+    let keeps_trailing = fs::write(&trailing, b"trailing").is_ok()
+        && fs::read_dir(directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name() == "probe. ");
+    let _ = fs::remove_file(&trailing);
+    let _ = fs::remove_file(directory.join("probe."));
+    case_sensitive && keeps_trailing
+}
+
 #[test]
 fn portable_bundle_rewrites_keys_that_clash_or_are_illegal_elsewhere() {
     let temp = TestDirectory::new("portable-keys");
+    if !holds_clashing_and_illegal_keys(&temp.0) {
+        eprintln!("skipping: this filesystem cannot hold the clashing source fixture");
+        return;
+    }
     let source = temp.store("show.freemix");
     let project = stored(media_project(
         1,
