@@ -174,6 +174,12 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         WireMessage::ScenePreviewFrame(message) => {
             encode_preview_frame(&mut record, "scene_preview_frame", message)?;
         }
+        WireMessage::ReplayPreviewRequest(message) => {
+            encode_replay_preview_request(&mut record, message)?;
+        }
+        WireMessage::ReplayPreviewFrame(message) => {
+            encode_preview_frame(&mut record, "replay_preview_frame", message)?;
+        }
         WireMessage::AnimationPresetState(message) => {
             encode_animation_preset_state(&mut record, message)?;
         }
@@ -1371,6 +1377,20 @@ fn encode_preview_head(
     record.field("frame", frame)?;
     record.field("width", width)?;
     record.field("height", height)
+}
+
+fn encode_replay_preview_request(
+    record: &mut Record,
+    message: &crate::ReplayPreviewRequest,
+) -> Result<(), CodecError> {
+    validate_request_id(&message.request_id)?;
+    validate_preview_size(message.width, message.height)?;
+    record.kind("replay_preview_request");
+    record.field("protocol", message.protocol)?;
+    record.field_str("request_id", &message.request_id)?;
+    record.field("input", message.input)?;
+    record.field("width", message.width)?;
+    record.field("height", message.height)
 }
 
 fn encode_title_preview_request(

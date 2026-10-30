@@ -1399,6 +1399,26 @@ pub struct ScenePreviewRequest {
 /// `scene_preview_frame`, `animation_revision` being the scene's.
 pub type ScenePreviewFrameMessage = TitlePreviewFrameMessage;
 
+/// A read-only request to render Replay input `input`'s four-angle view at
+/// its current player position (OR-014): up to four recorded angles of its
+/// cued event, each decoded from its segment file and composed as a 2x2
+/// grid at `width` x `height` (at most 640x360). Like a scene preview it is
+/// not a command, needs `EditProject`, shares the session's preview rate,
+/// and is served to raw TCP sessions only.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReplayPreviewRequest {
+    pub protocol: crate::ProtocolVersion,
+    pub request_id: String,
+    pub input: WireInputId,
+    pub width: u16,
+    pub height: u16,
+}
+
+/// One part of the answer to a [`ReplayPreviewRequest`] (OR-014): exactly a
+/// [`TitlePreviewFrameMessage`]'s fields under the record kind
+/// `replay_preview_frame`, `animation_revision` being 0 and `draft` false.
+pub type ReplayPreviewFrameMessage = TitlePreviewFrameMessage;
+
 /// One fully assembled and decoded scene preview: a [`TitlePreviewImage`]
 /// whose `input` is the Scene input.
 pub type ScenePreviewImage = TitlePreviewImage;
@@ -3447,6 +3467,10 @@ pub enum WireMessage {
     TitlePreviewFrame(TitlePreviewFrameMessage),
     ScenePreviewRequest(ScenePreviewRequest),
     ScenePreviewFrame(ScenePreviewFrameMessage),
+    /// Asks for a Replay input's four-angle view (OR-014).
+    ReplayPreviewRequest(ReplayPreviewRequest),
+    /// Answers a [`ReplayPreviewRequest`] (OR-014).
+    ReplayPreviewFrame(ReplayPreviewFrameMessage),
     AnimationPresetState(AnimationPresetStateMessage),
     /// One input strip's DSP chain after a snapshot (Protocol 2.75).
     AudioStripDspState(crate::AudioStripDspStateMessage),

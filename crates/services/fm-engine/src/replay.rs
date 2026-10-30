@@ -295,6 +295,29 @@ pub const REPLAY_STORAGE_WARNING_SECONDS: u64 = 600;
 /// Seconds of storage left that reads as critical.
 pub const REPLAY_STORAGE_CRITICAL_SECONDS: u64 = 120;
 
+/// One angle tile of a Replay input's multiview at its current position
+/// (OR-014).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EngineReplayTile {
+    /// The recorded angle.
+    pub angle: InputId,
+    /// The engine frame the tile shows.
+    pub source_frame: u64,
+    /// Where that frame is, once a closed segment holds it.
+    pub location: Option<EngineReplayLocation>,
+}
+
+/// The four-angle view of one Replay input (OR-014): its cued event, the
+/// engine frame shown, and one tile per angle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EngineReplayMultiview {
+    pub input: InputId,
+    pub event: u32,
+    pub source_frame: u64,
+    /// Up to four angles, in the event's source order.
+    pub tiles: Vec<EngineReplayTile>,
+}
+
 /// Where a recorded frame lives on disk.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineReplayLocation {
@@ -2083,6 +2106,34 @@ impl ReplayRuntime {
             .filter_map(|(job, meta)| self.export_status(*job, meta))
             .collect();
         EngineReelStatus { reels, exports }
+    }
+
+    /// The four-angle view of Replay input `input` at its player's current
+    /// position, or `None` when nothing is cued on it (OR-014).
+    pub(crate) fn multiview(&self, input: InputId) -> Option<EngineReplayMultiview> {
+        let player = self.players.get(&input)?;
+        let event = player
+            .event
+            .and_then(|id| self.store.event_frames.get(&id).map(|stored| (id, stored)))?;
+        let (id, stored) = event;
+        let source_frame =
+            (stored.in_frame + player.position / 4).min(stored.out_frame.saturating_sub(1));
+        let tiles = stored
+            .angles
+            .iter()
+            .take(4)
+            .map(|angle| EngineReplayTile {
+                angle: *angle,
+                source_frame,
+                location: self.locate(*angle, source_frame),
+            })
+            .collect();
+        Some(EngineReplayMultiview {
+            input,
+            event: id,
+            source_frame,
+            tiles,
+        })
     }
 
     /// The compiled output length of reel `reel`.

@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.125 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.126 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4599,6 +4599,22 @@ Protocol 2.125 reports replay storage health (OR-014).
   an OK / LOW / CRITICAL / FULL lamp; `freemix-cli` prints a `ReplayStorage`
   line.
 - The project schema is unchanged, and 2.124 is refused.
+
+Protocol 2.126 adds exact Replay multiview snapshots (OR-014).
+
+- `replay_preview_request` (`request_id`, `input`, `width`, `height`) asks
+  for one Replay input's four-angle view at its player's current position:
+  up to four angles of its cued event, each decoded from its exact segment
+  frame and composed as a 2x2 grid. It is not a command, needs `EditProject`,
+  shares the session's preview rate, and is served to raw TCP sessions only,
+  like a scene preview. Width and height are 1..=640 and 1..=360.
+- The answer is `replay_preview_frame` parts with exactly a
+  `title_preview_frame`'s fields, `animation_revision` 0 and `draft` false.
+  A Replay input with nothing cued is refused `not_cued`; a live-edge angle
+  with no closed segment yet stays black.
+- `freemix-cli remote-replay-multiview <address> <input> --output <file.png>
+  [--width <n>] [--height <n>]` assembles the parts and writes the PNG.
+- 2.125 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

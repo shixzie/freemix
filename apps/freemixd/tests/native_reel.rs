@@ -33,9 +33,10 @@ use fm_persistence::{
 };
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
-    HandshakeRequest, HeartbeatMessage, ReelExportState, ReelOperation, ReelSpec,
-    ReelStatusMessage, ReelStatusRequest, ReplayOperation, ReplaySettings, ReplayStatusMessage,
-    Role, ServerIdentity, WireMessage, decode_line, encode_line,
+    HandshakeRequest, HeartbeatMessage, LiveInputSource, ReelExportState, ReelOperation, ReelSpec,
+    ReelStatusMessage, ReelStatusRequest, ReplayOperation, ReplayPreviewRequest, ReplaySettings,
+    ReplayStatusMessage, Role, ServerIdentity, TitlePreviewAssembler, WireInputId, WireMessage,
+    decode_line, encode_line,
 };
 use fm_types::{
     AudioFormat, BusId, ChannelLayout, ColorMetadata, FrameRate, InputId, OutputId, PixelFormat,
@@ -49,6 +50,7 @@ const CAMERA: u128 = 1;
 const PREVIEW: u128 = 2;
 const REEL: u64 = 1;
 const JOB: u64 = 1;
+const REPLAY_INPUT: u128 = 3;
 /// Commands sent by every session of the tests.
 static COMMANDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -651,6 +653,7 @@ fn assert_no_reel_failures(daemon: &NativeDaemon) {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // the recording, the preview, and the export
 fn native_daemon_exports_a_reel_with_the_exact_frame_count() {
     if !tools_available() {
         eprintln!("native reel integration skipped: FFmpeg tools unavailable");
@@ -688,6 +691,64 @@ fn native_daemon_exports_a_reel_with_the_exact_frame_count() {
         .iter()
         .find(|event| event.id != first_event.id)
         .expect("the second event");
+
+    // Protocol 2.126: the native daemon decodes both recorded angles and
+    // composes them into a four-angle grid; only two angles exist here, so
+    // the bottom row stays black.
+    client.command(CommandPayload::AddInput {
+        input: WireInputId::from_domain(input(REPLAY_INPUT)),
+        name: "Replay".into(),
+        source: LiveInputSource::Replay,
+    });
+    let replay = WireInputId::from_domain(input(REPLAY_INPUT));
+    client.replay(ReplayOperation::Cue {
+        input: replay,
+        event: first_event.id,
+        angle: Some(WireInputId::from_domain(input(CAMERA))),
+    });
+    client.status("the replay cue", |status| {
+        status
+            .players
+            .iter()
+            .any(|player| player.input == replay && player.event == Some(first_event.id))
+    });
+    let request_id = "replay-multiview-1".to_owned();
+    client.send(&WireMessage::ReplayPreviewRequest(ReplayPreviewRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: request_id.clone(),
+        input: replay,
+        width: 320,
+        height: 180,
+    }));
+    let mut assembler = TitlePreviewAssembler::new();
+    let image = client.wait_for("the replay multiview", |message| match message {
+        Some(WireMessage::ReplayPreviewFrame(part)) if part.request_id == request_id => {
+            assembler.push(&part).ok().flatten()
+        }
+        Some(WireMessage::Error(error)) if error.request_id.as_deref() == Some(&request_id) => {
+            panic!("the replay multiview was refused: {:?}", error.error)
+        }
+        _ => None,
+    });
+    assert_eq!((image.width, image.height), (320, 180));
+    let pixel = |x: u32, y: u32| {
+        let at = (usize::try_from(y * 320 + x).unwrap()) * 4;
+        [
+            image.rgba[at],
+            image.rgba[at + 1],
+            image.rgba[at + 2],
+            image.rgba[at + 3],
+        ]
+    };
+    let red = pixel(80, 45);
+    let blue = pixel(240, 45);
+    let empty = pixel(80, 135);
+    assert!(red[0] > 100 && red[0] > red[2], "red tile: {red:?}");
+    assert!(blue[2] > 100 && blue[2] > blue[0], "blue tile: {blue:?}");
+    assert!(
+        empty[0] < 16 && empty[1] < 16 && empty[2] < 16,
+        "empty tile: {empty:?}"
+    );
     assert_eq!(first_event.out_frame - first_event.in_frame, 125);
     assert_eq!(second_event.out_frame - second_event.in_frame, 125);
     let expected = (first_event.out_frame - first_event.in_frame)

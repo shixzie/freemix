@@ -389,6 +389,7 @@ impl<J, R> Drop for LatestWorker<J, R> {
 pub(crate) enum PreviewWork {
     Title(Box<PreviewJob>),
     Scene(Box<crate::scene_preview::ScenePreviewJob>),
+    Replay(Box<crate::replay_preview::ReplayPreviewJob>),
 }
 
 /// Which preview record kind an answer's parts are sent as.
@@ -398,6 +399,8 @@ pub(crate) enum PreviewKind {
     Title,
     /// `scene_preview_frame`.
     Scene,
+    /// `replay_preview_frame`.
+    Replay,
 }
 
 /// The answer to the newest preview of one peer: its request id, kind, and
@@ -419,6 +422,7 @@ pub(crate) type TitlePreviewWorker = LatestWorker<PreviewWork, PreviewAnswer>;
 /// Returns the operating system error when the thread cannot start.
 pub(crate) fn spawn_preview_worker(
     assets: Arc<TitleAssets>,
+    replay_format: Option<crate::replay_preview::PreviewVideoFormat>,
 ) -> std::io::Result<TitlePreviewWorker> {
     LatestWorker::spawn(
         "freemixd-title-preview",
@@ -432,6 +436,11 @@ pub(crate) fn spawn_preview_worker(
                 parts: job.render(),
                 request_id: job.request_id,
                 kind: PreviewKind::Scene,
+            },
+            PreviewWork::Replay(job) => PreviewAnswer {
+                parts: job.render(replay_format),
+                request_id: job.request_id,
+                kind: PreviewKind::Replay,
             },
         },
     )

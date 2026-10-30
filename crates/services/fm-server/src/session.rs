@@ -4,7 +4,7 @@ use fm_auth::{AuthorizationDenial, CommandClass, Policy, Principal};
 use fm_control::RequiredClasses;
 use fm_protocol::{
     CommandMessage, DiagnosticsRequest, EngineIdentity, EventCursor, ProtocolVersion,
-    ScenePreviewRequest, TitlePreviewRequest,
+    ReplayPreviewRequest, ScenePreviewRequest, TitlePreviewRequest,
 };
 
 use crate::{RateLimit, SessionLimits};
@@ -433,6 +433,22 @@ impl Session {
     pub fn admit_scene_preview(
         &mut self,
         request: &ScenePreviewRequest,
+        encoded_bytes: usize,
+        now_ms: u64,
+    ) -> Result<(), SessionError> {
+        self.admit_preview(request.protocol, encoded_bytes, now_ms)
+    }
+
+    /// Admits a replay multiview snapshot request (OR-014), exactly like
+    /// [`Self::admit_scene_preview`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the authorization, protocol, size, rate, or connection
+    /// refusal of [`Self::admit_preview`].
+    pub fn admit_replay_preview(
+        &mut self,
+        request: &ReplayPreviewRequest,
         encoded_bytes: usize,
         now_ms: u64,
     ) -> Result<(), SessionError> {

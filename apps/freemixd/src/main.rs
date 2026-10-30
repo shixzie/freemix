@@ -167,6 +167,7 @@ mod program_surface;
 mod recorder_status;
 #[cfg(feature = "native-media")]
 mod recording_session;
+mod replay_preview;
 mod scene_preview;
 mod scene_render;
 mod screen_capture_targets;

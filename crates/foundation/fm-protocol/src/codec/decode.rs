@@ -183,6 +183,12 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         "scene_preview_frame" => {
             WireMessage::ScenePreviewFrame(decode_title_preview_frame(&mut fields)?)
         }
+        "replay_preview_request" => {
+            WireMessage::ReplayPreviewRequest(decode_replay_preview_request(&mut fields)?)
+        }
+        "replay_preview_frame" => {
+            WireMessage::ReplayPreviewFrame(decode_title_preview_frame(&mut fields)?)
+        }
         "animation_preset_state" => {
             WireMessage::AnimationPresetState(decode_animation_preset_state(&mut fields)?)
         }
@@ -1405,6 +1411,29 @@ fn decode_preview_head(fields: &mut Fields) -> Result<PreviewHead, CodecError> {
         request_id,
         input,
         sample,
+        width,
+        height,
+    })
+}
+
+fn decode_replay_preview_request(
+    fields: &mut Fields,
+) -> Result<crate::ReplayPreviewRequest, CodecError> {
+    let protocol = fields.required("protocol")?;
+    let protocol = parse_version(&protocol).ok_or(CodecError::InvalidField {
+        field: "protocol",
+        value: protocol,
+    })?;
+    let request_id = fields.required("request_id")?;
+    validate_request_id(&request_id)?;
+    let input = fields.canonical_input("input")?;
+    let width = decode_preview_dimension(fields, "width")?;
+    let height = decode_preview_dimension(fields, "height")?;
+    validate_preview_size(width, height)?;
+    Ok(crate::ReplayPreviewRequest {
+        protocol,
+        request_id,
+        input,
         width,
         height,
     })

@@ -3306,6 +3306,13 @@ impl Engine {
         self.replay.take_pruned()
     }
 
+    /// The four-angle view of Replay input `input` at its current position,
+    /// or `None` when nothing is cued on it (OR-014).
+    #[must_use]
+    pub fn replay_multiview(&self, input: InputId) -> Option<crate::EngineReplayMultiview> {
+        self.replay.multiview(input)
+    }
+
     /// The replay recording, events, and players as clients see them
     /// (OR-012).
     #[must_use]

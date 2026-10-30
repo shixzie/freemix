@@ -1870,6 +1870,8 @@ impl TcpSession {
             | WireMessage::InputThumbnailSubscription(_)
             | WireMessage::TitlePreviewRequest(_)
             | WireMessage::ScenePreviewRequest(_)
+            | WireMessage::ReplayPreviewRequest(_)
+            | WireMessage::ReplayPreviewFrame(_)
             | WireMessage::Snapshot(_)
             | WireMessage::HandshakeRequest(_)
             | WireMessage::HandshakeResponse(_)

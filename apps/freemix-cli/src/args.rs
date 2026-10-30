@@ -714,6 +714,15 @@ pub enum Command {
         picture: Option<PathBuf>,
         point: Option<(u32, u32)>,
     },
+    /// Renders a Replay input's four-angle view at its current position as
+    /// a PNG (OR-014).
+    RemoteReplayMultiview {
+        address: SocketAddr,
+        input: fm_protocol::WireInputId,
+        output: PathBuf,
+        width: u16,
+        height: u16,
+    },
     /// Live-sets one layer's chroma key on a daemon from a saved picture
     /// of its input (SW-008), as one `scene_layer_key_set` edit.
     RemoteSceneLayerAutoKey {
@@ -2187,6 +2196,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "remote-scene-layer-key" => parse_remote_scene_layer_key(arguments),
         "scene-layer-auto-key" => parse_scene_layer_auto_key(arguments),
         "remote-scene-layer-auto-key" => parse_remote_scene_layer_auto_key(arguments),
+        "remote-replay-multiview" => parse_remote_replay_multiview(arguments),
         "remote-scene-layer-effects" => parse_remote_scene_layer_effects(arguments),
         "input-remove" => parse_input_remove(arguments),
         "input-duplicate" => parse_input_duplicate(arguments),
@@ -5319,6 +5329,52 @@ fn parse_scene_layer_auto_key(
         picture,
         point,
     })
+}
+
+/// `remote-replay-multiview <address> <input> --output <file.png>
+/// [--width <16..=640>] [--height <16..=360>]` (OR-014): the Replay input's
+/// cued event, up to four angles, decoded and composed as a 2x2 grid.
+fn parse_remote_replay_multiview(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let input = replay_input(&required(&mut arguments, "input")?)?;
+    let mut output = None;
+    let mut width = 320_u16;
+    let mut height = 180_u16;
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--output" => output = Some(PathBuf::from(required(&mut arguments, "output file")?)),
+            "--width" => {
+                width = preview_dimension(&required(&mut arguments, "width")?, "width", 640)?;
+            }
+            "--height" => {
+                height = preview_dimension(&required(&mut arguments, "height")?, "height", 360)?;
+            }
+            other => return Err(ArgsError::UnknownOption(other.to_owned())),
+        }
+    }
+    Ok(Command::RemoteReplayMultiview {
+        address,
+        input,
+        output: output.ok_or(ArgsError::MissingValue("--output <file.png>"))?,
+        width,
+        height,
+    })
+}
+
+fn preview_dimension(value: &str, field: &'static str, maximum: u16) -> Result<u16, ArgsError> {
+    let dimension: u16 = number(value, field)?;
+    if (16..=maximum).contains(&dimension) {
+        Ok(dimension)
+    } else {
+        Err(ArgsError::OutOfRange {
+            field,
+            minimum: 16,
+            maximum,
+            value: dimension,
+        })
+    }
 }
 
 /// `remote-scene-layer-auto-key <address> <scene> <layer-id> [--picture
@@ -11703,6 +11759,50 @@ mod tests {
         assert!(remote(&["last", "7"]).is_err());
         assert!(remote(&["play", "7", "60"]).is_err());
         assert!(remote(&["mark-in", "--name", "x"]).is_err());
+
+        // Protocol 2.126: a Replay multiview snapshot writes a PNG.
+        let multiview = |words: &[&str]| {
+            let mut all = vec!["remote-replay-multiview", "127.0.0.1:9123"];
+            all.extend_from_slice(words);
+            parse(strings(&all))
+        };
+        assert_eq!(
+            multiview(&[
+                "7",
+                "--output",
+                "/tmp/quad.png",
+                "--width",
+                "160",
+                "--height",
+                "90"
+            ]),
+            Ok(Command::RemoteReplayMultiview {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                input: input(7),
+                output: std::path::PathBuf::from("/tmp/quad.png"),
+                width: 160,
+                height: 90,
+            })
+        );
+        assert_eq!(
+            multiview(&["7", "--output", "/tmp/quad.png"]),
+            Ok(Command::RemoteReplayMultiview {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                input: input(7),
+                output: std::path::PathBuf::from("/tmp/quad.png"),
+                width: 320,
+                height: 180,
+            })
+        );
+        for words in [
+            &["7"][..],
+            &["7", "--output"][..],
+            &["7", "--output", "x", "--width", "0"][..],
+            &["7", "--output", "x", "--height", "361"][..],
+            &["7", "--output", "x", "--other", "1"][..],
+        ] {
+            assert!(multiview(words).is_err(), "{words:?}");
+        }
     }
 
     /// OR-013 / Protocol 2.107: reel commands parse into typed specs and

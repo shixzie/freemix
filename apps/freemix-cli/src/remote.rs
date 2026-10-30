@@ -357,6 +357,73 @@ pub(crate) fn scene_layer_key_source(
     }
 }
 
+/// Renders Replay input `input`'s four-angle view at its current position
+/// and writes it to `output` as a PNG (OR-014): the daemon decodes up to
+/// four recorded angles of the cued event and composes a 2x2 grid.
+pub(crate) fn replay_multiview(
+    address: SocketAddr,
+    input: fm_types::InputId,
+    output: &std::path::Path,
+    width: u16,
+    height: u16,
+) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Graphics)?;
+    let request_id = format!("cli-replay-multiview-{}", unique_client_id()?);
+    remote.write(&WireMessage::ReplayPreviewRequest(
+        fm_protocol::ReplayPreviewRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id: request_id.clone(),
+            input: fm_protocol::WireInputId::from_domain(input),
+            width,
+            height,
+        },
+    ))?;
+    let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
+    let mut assembler = fm_protocol::TitlePreviewAssembler::new();
+    loop {
+        match remote.read_until(deadline)? {
+            WireMessage::ReplayPreviewFrame(part) if part.request_id == request_id => {
+                let image = assembler.push(&part).map_err(|error| {
+                    RemoteFailure(format!("the replay multiview is malformed: {error}"))
+                })?;
+                if let Some(image) = image {
+                    let frame = fm_video::ImageFrame::new(
+                        u32::from(image.width),
+                        u32::from(image.height),
+                        usize::from(image.width) * 4,
+                        image.rgba.to_vec(),
+                    )
+                    .map_err(|error| {
+                        RemoteFailure(format!("the replay multiview is malformed: {error}"))
+                    })?;
+                    let png = fm_video::encode_png_rgba8(&frame).map_err(|error| {
+                        RemoteFailure(format!(
+                            "the replay multiview could not be encoded: {error}"
+                        ))
+                    })?;
+                    std::fs::write(output, &png)?;
+                    println!(
+                        "ReplayMultiview(input={}, width={}, height={}, file={}, bytes={})",
+                        input,
+                        image.width,
+                        image.height,
+                        output.display(),
+                        png.len(),
+                    );
+                    return Ok(());
+                }
+            }
+            WireMessage::Error(error) if error.request_id.as_deref() == Some(&request_id) => {
+                return Err(protocol_error(&error.error).into());
+            }
+            message @ (WireMessage::Event(_) | WireMessage::RuntimeEvent(_)) => {
+                remote.client.intake(message)?;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Prints the daemon's replay recording, events, and Replay inputs (OR-012,
 /// Protocol 2.106).
 pub fn replay(address: SocketAddr) -> RemoteResult<()> {

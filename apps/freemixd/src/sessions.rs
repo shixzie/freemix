@@ -634,6 +634,7 @@ impl Peer {
                 .map(match answer.kind {
                     crate::title_preview::PreviewKind::Title => WireMessage::TitlePreviewFrame,
                     crate::title_preview::PreviewKind::Scene => WireMessage::ScenePreviewFrame,
+                    crate::title_preview::PreviewKind::Replay => WireMessage::ReplayPreviewFrame,
                 })
                 .collect(),
             Err(error) => vec![WireMessage::Error(ErrorMessage {
@@ -772,9 +773,20 @@ pub(super) fn run(
     // Where the next pass starts dispatching, so no peer is always last.
     let mut dispatch_cursor = 0_usize;
     let mut once_peer = None;
-    // Exact title previews render off this loop, as simulated monitor
-    // frames do.
-    let title_previews = crate::title_preview::spawn_preview_worker(Arc::clone(titles))?;
+    // Exact title, scene, and replay previews render off this loop, as
+    // simulated monitor frames do. A native daemon decodes replay segments
+    // at the project's picture size; a simulated daemon has none.
+    let replay_format = native.is_some().then(|| {
+        let settings = durable.project().settings();
+        crate::replay_preview::PreviewVideoFormat {
+            width: settings.video.dimensions.width(),
+            height: settings.video.dimensions.height(),
+            rate: settings.video.frame_rate,
+            clock_domain: fm_frame::ClockDomainId::new(core::num::NonZeroU128::MIN),
+        }
+    });
+    let title_previews =
+        crate::title_preview::spawn_preview_worker(Arc::clone(titles), replay_format)?;
     // System audio devices are listed off this loop too (Protocol 2.68).
     let system_audio_devices = crate::system_audio_devices::SystemAudioDevices::spawn(
         crate::system_audio_devices::enumerator(native.is_some()),
@@ -1997,6 +2009,7 @@ impl From<QueueRefusal> for DispatchError {
 enum PreviewRequest {
     Title(fm_protocol::TitlePreviewRequest),
     Scene(fm_protocol::ScenePreviewRequest),
+    Replay(fm_protocol::ReplayPreviewRequest),
 }
 
 impl PreviewRequest {
@@ -2004,6 +2017,7 @@ impl PreviewRequest {
         match self {
             Self::Title(request) => &request.request_id,
             Self::Scene(request) => &request.request_id,
+            Self::Replay(request) => &request.request_id,
         }
     }
 
@@ -2012,6 +2026,7 @@ impl PreviewRequest {
         match self {
             Self::Title(request) => WireMessage::TitlePreviewRequest(request.clone()),
             Self::Scene(request) => WireMessage::ScenePreviewRequest(request.clone()),
+            Self::Replay(request) => WireMessage::ReplayPreviewRequest(request.clone()),
         }
     }
 }
@@ -2380,7 +2395,8 @@ impl Runtime<'_> {
                 Ok(())
             }
             message @ (WireMessage::TitlePreviewRequest(_)
-            | WireMessage::ScenePreviewRequest(_)) => {
+            | WireMessage::ScenePreviewRequest(_)
+            | WireMessage::ReplayPreviewRequest(_)) => {
                 self.exact_preview(peer, message, durable, native.as_deref())
             }
             // The presenter's last inventory (OR-011); a daemon without one
@@ -2771,13 +2787,19 @@ impl Runtime<'_> {
         let request = &match message {
             WireMessage::TitlePreviewRequest(request) => PreviewRequest::Title(request),
             WireMessage::ScenePreviewRequest(request) => PreviewRequest::Scene(request),
+            WireMessage::ReplayPreviewRequest(request) => PreviewRequest::Replay(request),
             _ => return Ok(()),
         };
         let request_id = request.request_id().to_owned();
         // A Web page may ask for small title previews through its status
         // feed (Protocol 2.90); scene previews stay raw-only.
         let web = peer.transport.is_web();
-        if web && (matches!(request, PreviewRequest::Scene(_)) || peer.web_feed.is_none()) {
+        if web
+            && (matches!(
+                request,
+                PreviewRequest::Scene(_) | PreviewRequest::Replay(_)
+            ) || peer.web_feed.is_none())
+        {
             peer.reply(WireMessage::Error(ErrorMessage {
                 request_id: Some(request_id),
                 current_revision: None,
@@ -2800,6 +2822,9 @@ impl Runtime<'_> {
             PreviewRequest::Scene(request) => {
                 session.admit_scene_preview(request, encoded_bytes, now)
             }
+            PreviewRequest::Replay(request) => {
+                session.admit_replay_preview(request, encoded_bytes, now)
+            }
         };
         let server = peer
             .identity
@@ -2818,6 +2843,10 @@ impl Runtime<'_> {
                         web,
                     )
                     .map(|job| crate::title_preview::PreviewWork::Title(Box::new(job))),
+                    PreviewRequest::Replay(request) => {
+                        crate::replay_preview::prepare_replay_preview(&control, server, request)
+                            .map(|job| crate::title_preview::PreviewWork::Replay(Box::new(job)))
+                    }
                     PreviewRequest::Scene(request) => crate::scene_preview::prepare_scene_preview(
                         &control,
                         durable.project(),

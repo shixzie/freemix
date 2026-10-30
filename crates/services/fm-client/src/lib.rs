@@ -746,6 +746,8 @@ impl Client {
             | WireMessage::TitlePreviewFrame(_)
             | WireMessage::ScenePreviewRequest(_)
             | WireMessage::ScenePreviewFrame(_)
+            | WireMessage::ReplayPreviewRequest(_)
+            | WireMessage::ReplayPreviewFrame(_)
             | WireMessage::Error(_) => Err(ClientError::UnexpectedMessage),
         }
     }
