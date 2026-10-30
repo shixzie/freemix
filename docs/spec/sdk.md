@@ -31,6 +31,14 @@ and removes it from `active_plugins`. Insert, move, remove, bypass, latency,
 and snapshot edits are typed and bounded, and a snapshot from another plugin
 is refused.
 
+The in-tree reference processors are `freemix.reference.trim` (a fader whose
+snapshot is a little-endian `i32` in millidB), `freemix.reference.polarity`,
+and `freemix.reference.softclip` (a cubic knee whose snapshot is its
+threshold in millidB). `ReferenceRack` builds one chain's processors, reports
+its latency, and processes planar blocks; the native daemon runs input-strip
+racks before the mixer and the Master rack inside it after the Master DSP
+chain, before clipping and the Master meter.
+
 VST3, AU, and LV2 are not part of the contract and no VST3 license or host is
 required. The plugin ABI is the supported extension surface; a future adapter
 may host another format out of tree without changing the portable crates.
