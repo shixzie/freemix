@@ -357,9 +357,9 @@ pub(crate) fn scene_layer_key_source(
     }
 }
 
-/// Renders Replay input `input`'s four-angle view at its current position
-/// and writes it to `output` as a PNG (OR-014): the daemon decodes up to
-/// four recorded angles of the cued event and composes a 2x2 grid.
+/// Renders Replay input `input`'s multiview at its current position and
+/// writes it to `output` as a PNG (OR-014): the daemon decodes up to eight
+/// recorded angles of the cued event and composes an adaptive grid.
 pub(crate) fn replay_multiview(
     address: SocketAddr,
     input: fm_types::InputId,

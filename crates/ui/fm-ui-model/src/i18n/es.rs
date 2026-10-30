@@ -10332,7 +10332,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::ReplaySourceHover,
         t(
-            "Grabar esta entrada para repetición (hasta cuatro; la primera marcada es el ángulo preferido). Cambiar lo que se graba reinicia la grabación y descarta todos los eventos",
+            "Grabar esta entrada para repetición (hasta ocho; la primera marcada es el ángulo preferido). Cambiar lo que se graba reinicia la grabación y descarta todos los eventos",
         ),
     ),
     (Msg::ReplayRetention, t("Guardar")),
@@ -10353,7 +10353,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReplayReasonNotRecording,
         t("no se graba ninguna entrada para repetición"),
     ),
-    (Msg::ReplayReasonFull, t("ya se graban cuatro entradas")),
+    (Msg::ReplayReasonFull, t("ya se graban ocho entradas")),
     (
         Msg::ReplayReasonNothingCued,
         t("no hay ningún evento cargado en esta entrada de repetición"),
@@ -10451,9 +10451,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::ReplayQuad, t("CUÁDRUPLE")),
     (
         Msg::ReplayQuadHover,
-        t(
-            "Decodificar los cuatro primeros ángulos del evento cargado y mostrarlos en una cuadrícula 2x2",
-        ),
+        t("Decodificar los ángulos del evento cargado y mostrar hasta ocho en una cuadrícula"),
     ),
     (
         Msg::ReplayQuadReasonTcp,
@@ -10465,7 +10463,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::ReplayMultiviewHover,
         t(
-            "Los ángulos del evento cargado, decodificados de sus archivos de segmento y compuestos en una cuadrícula 2x2",
+            "Los ángulos del evento cargado, decodificados de sus archivos de segmento y compuestos en una cuadrícula adaptativa",
         ),
     ),
     (

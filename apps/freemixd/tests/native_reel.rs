@@ -692,9 +692,8 @@ fn native_daemon_exports_a_reel_with_the_exact_frame_count() {
         .find(|event| event.id != first_event.id)
         .expect("the second event");
 
-    // Protocol 2.126: the native daemon decodes both recorded angles and
-    // composes them into a four-angle grid; only two angles exist here, so
-    // the bottom row stays black.
+    // Protocol 2.126/2.127: the native daemon decodes both recorded angles
+    // and composes them into the adaptive grid; two angles make two halves.
     client.command(CommandPayload::AddInput {
         input: WireInputId::from_domain(input(REPLAY_INPUT)),
         name: "Replay".into(),
@@ -742,12 +741,17 @@ fn native_daemon_exports_a_reel_with_the_exact_frame_count() {
     };
     let red = pixel(80, 45);
     let blue = pixel(240, 45);
-    let empty = pixel(80, 135);
+    let red_bottom = pixel(80, 135);
+    let blue_bottom = pixel(240, 135);
     assert!(red[0] > 100 && red[0] > red[2], "red tile: {red:?}");
     assert!(blue[2] > 100 && blue[2] > blue[0], "blue tile: {blue:?}");
     assert!(
-        empty[0] < 16 && empty[1] < 16 && empty[2] < 16,
-        "empty tile: {empty:?}"
+        red_bottom[0] > 100 && red_bottom[0] > red_bottom[2],
+        "red tile fills its half: {red_bottom:?}"
+    );
+    assert!(
+        blue_bottom[2] > 100 && blue_bottom[2] > blue_bottom[0],
+        "blue tile fills its half: {blue_bottom:?}"
     );
     assert_eq!(first_event.out_frame - first_event.in_frame, 125);
     assert_eq!(second_event.out_frame - second_event.in_frame, 125);

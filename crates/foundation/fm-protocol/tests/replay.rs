@@ -255,7 +255,7 @@ fn commands_are_strict() {
         "replay_event_rename\tevent_id=1\tname=",
         "replay_event_rename\tevent_id=1\tname=%09",
         "replay_configure\tsources=1%2C1\tretention_seconds=600",
-        "replay_configure\tsources=1%2C2%2C3%2C4%2C5\tretention_seconds=600",
+        "replay_configure\tsources=1%2C2%2C3%2C4%2C5%2C6%2C7%2C8%2C9\tretention_seconds=600",
         "replay_configure\tsources=1\tretention_seconds=9",
         "replay_configure\tsources=1\tretention_seconds=600\tstorage_root=relative",
         "replay_configure\tsources=1",

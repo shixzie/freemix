@@ -714,8 +714,8 @@ pub enum Command {
         picture: Option<PathBuf>,
         point: Option<(u32, u32)>,
     },
-    /// Renders a Replay input's four-angle view at its current position as
-    /// a PNG (OR-014).
+    /// Renders a Replay input's multiview at its current position as a PNG
+    /// (OR-014).
     RemoteReplayMultiview {
         address: SocketAddr,
         input: fm_protocol::WireInputId,
@@ -5333,7 +5333,7 @@ fn parse_scene_layer_auto_key(
 
 /// `remote-replay-multiview <address> <input> --output <file.png>
 /// [--width <16..=640>] [--height <16..=360>]` (OR-014): the Replay input's
-/// cued event, up to four angles, decoded and composed as a 2x2 grid.
+/// cued event, up to eight angles, decoded and composed in an adaptive grid.
 fn parse_remote_replay_multiview(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<Command, ArgsError> {
@@ -11620,7 +11620,7 @@ mod tests {
             ))
         );
         assert_eq!(
-            set(&["--sources", "1,2,3,4,5"]),
+            set(&["--sources", "1,2,3,4,5,6,7,8,9"]),
             Err(ArgsError::InvalidReplay(
                 fm_protocol::ReplaySettingsError::TooManySources
             ))

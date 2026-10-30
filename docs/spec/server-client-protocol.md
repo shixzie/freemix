@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.126 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.127 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4603,9 +4603,9 @@ Protocol 2.125 reports replay storage health (OR-014).
 Protocol 2.126 adds exact Replay multiview snapshots (OR-014).
 
 - `replay_preview_request` (`request_id`, `input`, `width`, `height`) asks
-  for one Replay input's four-angle view at its player's current position:
-  up to four angles of its cued event, each decoded from its exact segment
-  frame and composed as a 2x2 grid. It is not a command, needs `EditProject`,
+  for one Replay input's multiview at its player's current position: up to
+  four angles of its cued event, each decoded from its exact segment frame
+  and composed as a 2x2 grid (Protocol 2.127 raises this to eight). It is not a command, needs `EditProject`,
   shares the session's preview rate, and is served to raw TCP sessions only,
   like a scene preview. Width and height are 1..=640 and 1..=360.
 - The answer is `replay_preview_frame` parts with exactly a
@@ -4617,6 +4617,18 @@ Protocol 2.126 adds exact Replay multiview snapshots (OR-014).
   <address> <input> --output <file.png> [--width <n>] [--height <n>]`
   assembles the parts and writes the PNG.
 - 2.125 is refused.
+
+Protocol 2.127 extends Replay multiviews to all recorded angles (OR-014).
+The request and frame shapes are unchanged.
+
+- `replay_configure` accepts up to eight recorded inputs (was four); the
+  project schema is unchanged and existing projects stay valid.
+- `replay_preview_request` composes up to eight angles of the cued event:
+  one angle fills the canvas, two to four make a 2x2 quad, and five to eight
+  make a four-column grid (eight angles are 4x2).
+- Studio's QUAD key and `remote-replay-multiview` show the same adaptive
+  grid; a live-edge angle still stays black.
+- 2.126 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

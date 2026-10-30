@@ -5,7 +5,7 @@
 //! `reel_status` record ([`StudioUiState::reels`] and
 //! [`StudioUiState::reel_exports`]). From top to bottom:
 //!
-//! - **Recording**: which inputs are recorded for replay (up to four, in
+//! - **Recording**: which inputs are recorded for replay (up to eight, in
 //!   angle order) and how many seconds each keeps, with every source's
 //!   retained segments; changing either is an undoable project edit that
 //!   starts the recording over.

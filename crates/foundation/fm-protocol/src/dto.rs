@@ -1399,8 +1399,8 @@ pub struct ScenePreviewRequest {
 /// `scene_preview_frame`, `animation_revision` being the scene's.
 pub type ScenePreviewFrameMessage = TitlePreviewFrameMessage;
 
-/// A read-only request to render Replay input `input`'s four-angle view at
-/// its current player position (OR-014): up to four recorded angles of its
+/// A read-only request to render Replay input `input`'s multiview at its
+/// current player position (OR-014): up to eight recorded angles of its
 /// cued event, each decoded from its segment file and composed as a 2x2
 /// grid at `width` x `height` (at most 640x360). Like a scene preview it is
 /// not a command, needs `EditProject`, shares the session's preview rate,
@@ -3472,7 +3472,7 @@ pub enum WireMessage {
     TitlePreviewFrame(TitlePreviewFrameMessage),
     ScenePreviewRequest(ScenePreviewRequest),
     ScenePreviewFrame(ScenePreviewFrameMessage),
-    /// Asks for a Replay input's four-angle view (OR-014).
+    /// Asks for a Replay input's multiview (OR-014).
     ReplayPreviewRequest(ReplayPreviewRequest),
     /// Answers a [`ReplayPreviewRequest`] (OR-014).
     ReplayPreviewFrame(ReplayPreviewFrameMessage),

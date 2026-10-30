@@ -53,10 +53,11 @@ use fm_command::{FieldIssue, Rejection, RejectionCode};
 use fm_frame::{ClockDomainId, NormalizedTimestamp, SequenceNumber};
 use fm_playback::FrameIndex;
 use fm_replay::{
-    CameraId, CameraSource, CompiledReel, EventDatabase, EventId, MAX_RECORD_EXPORT_JOBS,
-    MAX_SEGMENTS_PER_EXPORT, ProtectionReference, RecordExportError, RecordExportQueue,
-    RecordExportState, ReplayError, ReplayEvent, RollingSegmentCatalog, SegmentId, SegmentMetadata,
-    SegmentState, SourceCatalog, SourceTimeline, StorageRoot, StorageRootId, TimelineRange,
+    CameraId, CameraSource, CompiledReel, EventDatabase, EventId, MAX_MULTIVIEW_ANGLES,
+    MAX_RECORD_EXPORT_JOBS, MAX_SEGMENTS_PER_EXPORT, ProtectionReference, RecordExportError,
+    RecordExportQueue, RecordExportState, ReplayError, ReplayEvent, RollingSegmentCatalog,
+    SegmentId, SegmentMetadata, SegmentState, SourceCatalog, SourceTimeline, StorageRoot,
+    StorageRootId, TimelineRange,
 };
 use fm_types::{
     ChannelLayout, FrameRate, InputId,
@@ -314,7 +315,7 @@ pub struct EngineReplayMultiview {
     pub input: InputId,
     pub event: u32,
     pub source_frame: u64,
-    /// Up to four angles, in the event's source order.
+    /// Up to [`MAX_MULTIVIEW_ANGLES`] angles, in the event's source order.
     pub tiles: Vec<EngineReplayTile>,
 }
 
@@ -2108,8 +2109,8 @@ impl ReplayRuntime {
         EngineReelStatus { reels, exports }
     }
 
-    /// The four-angle view of Replay input `input` at its player's current
-    /// position, or `None` when nothing is cued on it (OR-014).
+    /// The up-to-eight-angle view of Replay input `input` at its player's
+    /// current position, or `None` when nothing is cued on it (OR-014).
     pub(crate) fn multiview(&self, input: InputId) -> Option<EngineReplayMultiview> {
         let player = self.players.get(&input)?;
         let event = player
@@ -2121,7 +2122,7 @@ impl ReplayRuntime {
         let tiles = stored
             .angles
             .iter()
-            .take(4)
+            .take(MAX_MULTIVIEW_ANGLES)
             .map(|angle| EngineReplayTile {
                 angle: *angle,
                 source_frame,

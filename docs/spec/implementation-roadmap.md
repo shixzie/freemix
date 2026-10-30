@@ -141,7 +141,7 @@ highest-value remaining items, ranked:
 10. **Instant replay, end to end (`OR-012`).** The show persists replay
     settings (Protocol 2.106, schema 82), the engine owns marks, Capture and
     Last 5/10/20 events, and up to two Replay players, the native daemon
-    records up to four inputs into rolling segment files and plays an event's
+    records up to eight inputs into rolling segment files and plays an event's
     angle back through a Replay input, Studio creates Replay inputs and
     edits recording in a dockable Replay panel, and the CLI has local and
     remote `replay` and `replay-set` plus `remote-replay-do`, with argument
@@ -159,9 +159,9 @@ highest-value remaining items, ranked:
     now jogs frame by frame, Protocol 2.114, and a finished replay returns
     Program to the live source, Protocol 2.116),
     transitions and controller wiring, and certification are absent; Studio's
-    Replay panel and the CLI render a four-angle grid (Protocol 2.126), but the
-    eight-angle plus A/B multiview is not wired; storage health reaches Studio
-    and the CLI (Protocol 2.125),
+    Replay panel and the CLI record up to eight inputs and render their angles
+    in an adaptive grid (Protocol 2.127); the A/B channel tiles of the full
+    multiview are not wired; storage health reaches Studio and the CLI (Protocol 2.125),
     without SMART queries or `fm-record` low-space integration (see the
     Phase 7 boundary).
 11. **Highlight reels, end to end (`OR-013`).** The show persists up to eight
@@ -5593,9 +5593,9 @@ atomically to decks and marks. A disk-health monitor converts configured
 bitrates into per-camera and per-root byte rates and predicts remaining
 recording time with warning, critical, and full levels that worsen
 immediately and recover only past a hysteresis margin. Remaining gaps: Studio's
-Replay panel and the CLI render a four-angle grid (Protocol 2.126, decoded and
-composed by the native daemon), but the eight-angle plus A/B multiview is not
-wired; controller bindings have no real device
+Replay panel and the CLI render up to eight recorded angles in an adaptive
+grid (Protocol 2.127, decoded and composed by the native daemon), but the A/B
+channel tiles of the full multiview are not wired; controller bindings have no real device
 input, persistence, or jog acceleration; the native daemon now samples
 its replay root's free space and reports the predicted recording time at the
 observed write rate (Protocol 2.125, shown in Studio and the CLI), but there
@@ -5653,7 +5653,7 @@ forward only; and nothing is certified.
 `OR-013` remains planned.
 
 Current end-to-end slice for items 1, 3, and 4: the show persists replay
-settings (up to four recorded inputs in angle order, a retention of 10 seconds
+settings (up to eight recorded inputs in angle order, a retention of 10 seconds
 to one hour, and an optional storage root; Protocol 2.106, schema 82). The
 engine owns a deterministic replay runtime: marks, Capture and Last 5/10/20
 build events (at most 64) over every recorded angle, events can be renamed and

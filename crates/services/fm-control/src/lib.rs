@@ -1538,8 +1538,8 @@ impl<A: AuthorizationHook> ControlService<A> {
         replay::status_message(self.engine.replay_status(), server, sequence, request_id)
     }
 
-    /// The four-angle view of Replay input `input` at its current position,
-    /// or `None` when nothing is cued on it (OR-014).
+    /// The up-to-eight-angle view of Replay input `input` at its current
+    /// position, or `None` when nothing is cued on it (OR-014).
     #[must_use]
     pub fn replay_multiview(&self, input: InputId) -> Option<fm_engine::EngineReplayMultiview> {
         self.engine.replay_multiview(input)

@@ -508,7 +508,8 @@ pub enum StudioIntent {
     /// [`StudioUiState::title_preview`], a refusal in
     /// [`StudioUiState::title_preview_failed`].
     ScenePreview(ScenePreviewRequest),
-    /// Asks for a Replay input's four-angle view (Protocol 2.126). Not a
+    /// Asks for a Replay input's multiview (Protocol 2.126, eight angles in
+    /// 2.127). Not a
     /// command: the answer arrives in [`StudioUiState::replay_preview`] or
     /// [`StudioUiState::replay_preview_failed`].
     ReplayPreview(ReplayPreviewRequest),

@@ -14,7 +14,7 @@ use std::fmt;
 use crate::InputId;
 
 /// Most inputs one project records for replay.
-pub const MAX_REPLAY_RECORD_SOURCES: usize = 4;
+pub const MAX_REPLAY_RECORD_SOURCES: usize = 8;
 /// Shortest retention window, in seconds.
 pub const MIN_REPLAY_RETENTION_SECONDS: u32 = 10;
 /// Longest retention window, in seconds (one hour).
@@ -280,7 +280,7 @@ mod tests {
     #[test]
     fn settings_are_checked_against_the_inputs() {
         let known = |id: InputId| match id.get().get() {
-            1..=5 => ReplaySourceCheck::Recordable,
+            1..=8 => ReplaySourceCheck::Recordable,
             9 => ReplaySourceCheck::Unrecordable,
             _ => ReplaySourceCheck::Unknown,
         };
@@ -289,7 +289,7 @@ mod tests {
             ..ReplaySettings::default()
         };
         assert_eq!(settings.check(known), Ok(()));
-        settings.sources = (1..=5).map(input).collect();
+        settings.sources = (1..=9).map(input).collect();
         assert_eq!(
             settings.check(known),
             Err(ReplaySettingsError::TooManySources)
@@ -304,10 +304,10 @@ mod tests {
             settings.check(known),
             Err(ReplaySettingsError::UnrecordableSource(input(9)))
         );
-        settings.sources = vec![input(7)];
+        settings.sources = vec![input(10)];
         assert_eq!(
             settings.check(known),
-            Err(ReplaySettingsError::UnknownSource(input(7)))
+            Err(ReplaySettingsError::UnknownSource(input(10)))
         );
         settings.sources.clear();
         settings.retention_seconds = MIN_REPLAY_RETENTION_SECONDS - 1;

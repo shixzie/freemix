@@ -1356,3 +1356,54 @@ fn storage_free_space_predicts_the_recording_time_left() {
     engine.set_replay_storage_free(None);
     assert!(engine.replay_status().storage.is_none());
 }
+
+/// Protocol 2.127: a multiview covers every recorded angle, up to eight.
+#[test]
+fn a_multiview_lists_all_eight_recorded_angles() {
+    let show = ShowState::new(
+        "eight",
+        (1..=8)
+            .map(|value| (input(value), format!("Camera {value}")))
+            .collect(),
+        input(1),
+        input(2),
+    )
+    .unwrap();
+    let mut engine = Engine::new(
+        show,
+        FrameRate::new(25, 1).unwrap(),
+        ClockDomainId::new(NonZeroU128::new(201).unwrap()),
+    );
+    add_player(&mut engine, 9);
+    replay(
+        &mut engine,
+        "configure",
+        EngineReplayOperation::Configure(Box::new(settings(&[1, 2, 3, 4, 5, 6, 7, 8], 600))),
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 12 * FPS);
+    replay(
+        &mut engine,
+        "last",
+        EngineReplayOperation::CaptureLast { seconds: 5 },
+    );
+    settle(&mut engine);
+    replay(
+        &mut engine,
+        "cue",
+        EngineReplayOperation::Cue {
+            input: input(9),
+            event: 1,
+            angle: None,
+        },
+    );
+    settle(&mut engine);
+    let multiview = engine.replay_multiview(input(9)).expect("a cued player");
+    assert_eq!(multiview.event, 1);
+    assert_eq!(multiview.tiles.len(), 8);
+    for (index, tile) in multiview.tiles.iter().enumerate() {
+        assert_eq!(tile.angle, input(u128::try_from(index + 1).unwrap()));
+        assert_eq!(tile.source_frame, multiview.source_frame);
+        assert!(tile.location.is_some(), "angle {} has media", tile.angle);
+    }
+}
