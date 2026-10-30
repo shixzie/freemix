@@ -4889,6 +4889,10 @@ mod tests {
         }
     }
 
+    // `hls://` destinations are `/`-rooted paths, which a Windows temp
+    // directory (`D:\...`) can never spell; the refusal is checked where the
+    // directory can be named.
+    #[cfg(not(windows))]
     #[test]
     fn start_refuses_a_ladder_variant_directory_occupied_by_a_file() {
         let root = tempfile::tempdir().unwrap();
