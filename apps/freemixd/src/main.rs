@@ -15163,6 +15163,11 @@ fn execute_native_stinger_mutation(
         }));
     }
     let submission = second_prepared.commit()?;
+    // The preflight's ticks projected the next frame between realizations;
+    // the command just committed realizes on it, so that projection is
+    // stale (as it is after any other command, which invalidates before it
+    // executes).
+    native.invalidate_projection();
     native.stage_stinger_mutation(mutation);
     let runtime_events = match native.wait_and_tick(control, server, process_shutdown)? {
         Some(events) => events,

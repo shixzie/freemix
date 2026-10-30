@@ -1206,10 +1206,12 @@ fn media_import_dedupes_identical_files_and_never_overwrites() {
         store.import_media_file(&temp.path("absent.mov")),
         Err(BundleError::Io(_))
     ));
-    assert_eq!(
-        tree(&store.assets_root()),
-        ["_CON.mov", "clip-2.mov", "clip.mov", "what_.mov"]
-    );
+    let expected: &[&str] = if foreign_names {
+        &["_CON.mov", "clip-2.mov", "clip.mov", "what_.mov"]
+    } else {
+        &["clip-2.mov", "clip.mov"]
+    };
+    assert_eq!(tree(&store.assets_root()), expected);
 }
 
 #[cfg(target_os = "linux")]
