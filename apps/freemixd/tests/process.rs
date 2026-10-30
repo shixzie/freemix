@@ -2508,7 +2508,7 @@ fn display_output_slots_without_a_presenter_wait_and_survive_restart() {
 fn a_daemon_whose_presenter_cannot_open_serves_with_slots_waiting() {
     let directory = TestDirectory::new("presenter-fallback");
     let project_path = directory.project_path();
-    create_two_output_project_from(&project_path, canonical_project_with_silent_inputs());
+    create_two_output_project_from(&project_path, canonical_project_for_native());
     let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_freemixd"))
         .arg("serve")
         .arg(&project_path)
@@ -5572,18 +5572,32 @@ fn canonical_project_at(width: u32, height: u32) -> Project {
     canonical_project_with_audio(width, height, false)
 }
 
-/// The canonical project with every simulated input silent, which is what
-/// a native daemon accepts (native mode has no simulated sine audio).
-fn canonical_project_with_silent_inputs() -> Project {
+/// The canonical project as a native daemon accepts it: every simulated
+/// input silent (native mode has no simulated sine audio) and the show's
+/// audio in planar F32 at 48 kHz.
+fn canonical_project_for_native() -> Project {
     canonical_project_with_audio(1_280, 720, true)
 }
 
-fn canonical_project_with_audio(width: u32, height: u32, silent: bool) -> Project {
+fn canonical_project_with_audio(width: u32, height: u32, native: bool) -> Project {
     let sine = |frequency_hz| {
-        if silent {
+        if native {
             SimulatedAudio::Silence
         } else {
             SimulatedAudio::Sine { frequency_hz }
+        }
+    };
+    let audio = if native {
+        AudioFormat {
+            sample_rate: SampleRate::new(48_000).unwrap(),
+            sample_format: SampleFormat::F32,
+            channels: ChannelLayout::stereo(),
+        }
+    } else {
+        AudioFormat {
+            sample_rate: SampleRate::new(44_100).unwrap(),
+            sample_format: SampleFormat::I24,
+            channels: ChannelLayout::stereo(),
         }
     };
     let frame_rate = FrameRate::new(25, 1).unwrap();
@@ -5599,11 +5613,7 @@ fn canonical_project_with_audio(width: u32, height: u32, silent: bool) -> Projec
                 scan: ScanMode::Progressive,
                 color: ColorMetadata::default(),
             },
-            audio: AudioFormat {
-                sample_rate: SampleRate::new(44_100).unwrap(),
-                sample_format: SampleFormat::I24,
-                channels: ChannelLayout::stereo(),
-            },
+            audio,
         },
     )
     .with_restart_policy(RestartPolicy::Always)
