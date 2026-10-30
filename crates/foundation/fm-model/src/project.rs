@@ -933,7 +933,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(90);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(91);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -986,6 +986,8 @@ pub struct Project {
     audio_solo_mode: crate::AudioSoloMode,
     audio_monitor_output: crate::AudioMonitorOutput,
     master_audio_dsp: fm_types::strip_dsp::StripDsp,
+    /// The Master bus audio plugin chain (AU-006, schema 91).
+    master_audio_plugins: fm_types::audio_plugins::PluginChainState,
     fade_to_black_excluded_outputs: BTreeSet<OutputId>,
     fade_to_black_output_durations: BTreeMap<OutputId, u32>,
     fade_to_black_curve: fm_types::FadeToBlackCurve,
@@ -1042,6 +1044,7 @@ impl Project {
             audio_solo_mode: crate::AudioSoloMode::InPlace,
             audio_monitor_output: crate::AudioMonitorOutput::default(),
             master_audio_dsp: fm_types::strip_dsp::StripDsp::DEFAULT,
+            master_audio_plugins: fm_types::audio_plugins::PluginChainState::new(),
             fade_to_black_excluded_outputs: BTreeSet::new(),
             fade_to_black_output_durations: BTreeMap::new(),
             fade_to_black_curve: fm_types::FadeToBlackCurve::Linear,
@@ -1212,6 +1215,60 @@ impl Project {
     ) -> Result<(), SetAudioMixerError> {
         dsp.validate().map_err(SetAudioMixerError::Dsp)?;
         self.master_audio_dsp = dsp;
+        Ok(())
+    }
+
+    /// `input`'s audio plugin chain (AU-006, schema 91), or `None` when the
+    /// input is not part of this project.
+    #[must_use]
+    pub fn input_audio_plugins(
+        &self,
+        input: InputId,
+    ) -> Option<&fm_types::audio_plugins::PluginChainState> {
+        self.input_audio_strips
+            .iter()
+            .find(|strip| strip.input == input)
+            .map(|strip| &strip.plugins)
+    }
+
+    /// Replaces `input`'s audio plugin chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetAudioMixerError::UnknownInput`] or
+    /// [`SetAudioMixerError::Plugins`]; nothing changes on error.
+    pub fn set_input_audio_plugins(
+        &mut self,
+        input: InputId,
+        chain: fm_types::audio_plugins::PluginChainState,
+    ) -> Result<(), SetAudioMixerError> {
+        chain.validate().map_err(SetAudioMixerError::Plugins)?;
+        let strip = self
+            .input_audio_strips
+            .iter_mut()
+            .find(|strip| strip.input == input)
+            .ok_or(SetAudioMixerError::UnknownInput(input))?;
+        strip.plugins = chain;
+        Ok(())
+    }
+
+    /// The Master bus audio plugin chain (AU-006, schema 91).
+    #[must_use]
+    pub const fn master_audio_plugins(&self) -> &fm_types::audio_plugins::PluginChainState {
+        &self.master_audio_plugins
+    }
+
+    /// Replaces the Master bus audio plugin chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetAudioMixerError::Plugins`]; nothing changes on error.
+    pub fn set_master_audio_plugins(
+        &mut self,
+        chain: fm_types::audio_plugins::PluginChainState,
+    ) -> Result<(), SetAudioMixerError> {
+        chain.validate().map_err(SetAudioMixerError::Plugins)?;
+        self.master_audio_plugins = chain;
         Ok(())
     }
 
@@ -2066,6 +2123,7 @@ impl Project {
             label: String::new(),
             group: None,
             dsp: fm_types::strip_dsp::StripDsp::DEFAULT,
+            plugins: fm_types::audio_plugins::PluginChainState::new(),
         });
         self.inputs.push(input);
     }
@@ -4654,6 +4712,8 @@ pub struct InputAudioStrip {
     pub group: Option<crate::AudioGroupNumber>,
     /// The strip's DSP chain (schema 65, AU-005).
     pub dsp: fm_types::strip_dsp::StripDsp,
+    /// The strip's audio plugin chain (schema 91, AU-006).
+    pub plugins: fm_types::audio_plugins::PluginChainState,
 }
 
 /// Why a mixer label, group, or group name edit is refused.
@@ -4667,6 +4727,8 @@ pub enum SetAudioMixerError {
     MonitorDevice(crate::AudioMonitorDeviceError),
     /// A strip DSP chain value is out of range (AU-005).
     Dsp(fm_types::strip_dsp::StripDspError),
+    /// An audio plugin chain value is out of range (AU-006).
+    Plugins(fm_types::audio_plugins::PluginChainStateError),
 }
 
 impl std::fmt::Display for SetAudioMixerError {
@@ -4679,6 +4741,7 @@ impl std::fmt::Display for SetAudioMixerError {
             }
             Self::MonitorDevice(error) => error.fmt(formatter),
             Self::Dsp(error) => error.fmt(formatter),
+            Self::Plugins(error) => error.fmt(formatter),
         }
     }
 }

@@ -1,6 +1,7 @@
 mod alert_rules;
 mod animation_preset;
 mod audio_mixer;
+mod audio_plugins;
 mod capture;
 mod cue;
 mod decoder;

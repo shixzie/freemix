@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.129 / schema 90 (2026-10-30,
+(2026-10-19); items refreshed through protocol 2.129 / schema 91 (2026-10-30,
 at `8497393`). Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -205,9 +205,11 @@ there come before any new breadth below.
     ordered chain of up to eight bypassable, latency-reporting plugins, the
     native daemon renders the `freemix.reference.*` processors on input
     strips and Master (Protocol 2.128), the CLI sends a chain, and Studio's
-    FX window reads and edits it (Protocol 2.129). Remaining: scanning,
-    parameters beyond the reference trim, persistence of the chain,
-    crash quarantine in the render path, and a real sandboxed plugin in the
+    FX window reads and edits it (Protocol 2.129). A chain is now a
+    padlocked, undoable project edit persisted at schema 91 for every strip
+    and Master, so it survives a save, a restart, and a journal replay.
+    Remaining: scanning, parameters beyond the reference trim, crash
+    quarantine in the render path, and a real sandboxed plugin in the
     chain (see the Phase 8 boundary).
 15. **MIDI and controller surfaces (`RC-005`).** Studio reads ALSA raw MIDI
     ports on Linux and binds notes and controls to console actions with
@@ -5867,8 +5869,10 @@ per-slot latency and its effective sum, per-plugin state snapshots), and the
 native daemon renders a chain's `freemix.reference.*` processors on input
 strips and the summed Master bus (Protocol 2.128), the CLI sends a chain,
 and Studio's FX window reads the open target's chain (Protocol 2.129) and
-edits its PLUGINS section. There is no VST3 host; scanning, parameters for
-plugins beyond the reference trim, persistence, crash quarantine in the render
+edits its PLUGINS section. Chains are padlocked, undoable project edits
+persisted at schema 91 on every strip and on Master, so a show carries them
+through a save, a restart, and a journal replay. There is no VST3 host; scanning, parameters for
+plugins beyond the reference trim, crash quarantine in the render
 path, and plugging a real sandboxed plugin into the chain remain. Vendor capture and output adapters keep their SDKs out of the
 portable workspace and implement the in-tree `fm-io-api` contracts.
 

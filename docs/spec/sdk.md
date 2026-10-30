@@ -30,7 +30,9 @@ reporting up to 60,000 frames of latency, and each holding its plugin's last
 engine can delay parallel paths to match; bypassing a slot drops its latency
 and removes it from `active_plugins`. Insert, move, remove, bypass, latency,
 and snapshot edits are typed and bounded, and a snapshot from another plugin
-is refused.
+is refused. A chain is project state: setting one is padlocked and undoable,
+and the show persists every strip's and Master's chain at schema 91, so the
+chain survives a save, a restart, and a journal replay.
 
 The in-tree reference processors are `freemix.reference.trim` (a fader whose
 snapshot is a little-endian `i32` in millidB), `freemix.reference.polarity`,

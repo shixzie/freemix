@@ -184,8 +184,8 @@ pub enum EngineAudioMixerEdit {
     SetMonitorDevice { device: Option<String> },
     /// Moves the monitor output level or mute. A live operation.
     SetMonitorLevel { state: EngineAudioGroupState },
-    /// Replaces a strip's or the Master bus's plugin chain (AU-006). A live
-    /// operation: chains are runtime state and are not undone or persisted.
+    /// Replaces a strip's or the Master bus's plugin chain (AU-006). A
+    /// project edit, persisted and undone like a DSP chain.
     SetPluginChain {
         target: StripDspTarget,
         /// Boxed: a chain is larger than every other command's payload.
@@ -255,7 +255,6 @@ impl EngineAudioMixerEdit {
                 | Self::SetMonitorLevel { .. }
                 | Self::ResetLoudness { .. }
                 | Self::SetAuxBusLevel { .. }
-                | Self::SetPluginChain { .. }
         )
     }
 
@@ -725,6 +724,21 @@ pub(crate) fn inverse(
                     })
             }
         },
+        EngineAudioMixerEdit::SetPluginChain { target, .. } => match *target {
+            StripDspTarget::Master => Some(EngineAudioMixerEdit::SetPluginChain {
+                target: *target,
+                chain: Box::new(state.master_audio_plugins().clone()),
+            }),
+            StripDspTarget::Input(input) => {
+                state
+                    .inputs()
+                    .contains(&input)
+                    .then(|| EngineAudioMixerEdit::SetPluginChain {
+                        target: *target,
+                        chain: Box::new(state.input_audio_plugins(input).clone()),
+                    })
+            }
+        },
         EngineAudioMixerEdit::RenameAuxBus { bus, .. } => {
             Some(EngineAudioMixerEdit::RenameAuxBus {
                 bus: *bus,
@@ -743,7 +757,6 @@ pub(crate) fn inverse(
         | EngineAudioMixerEdit::SetGroupSolo { .. }
         | EngineAudioMixerEdit::SetMonitorLevel { .. }
         | EngineAudioMixerEdit::ResetLoudness { .. }
-        | EngineAudioMixerEdit::SetAuxBusLevel { .. }
-        | EngineAudioMixerEdit::SetPluginChain { .. } => None,
+        | EngineAudioMixerEdit::SetAuxBusLevel { .. } => None,
     }
 }

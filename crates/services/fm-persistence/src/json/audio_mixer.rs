@@ -121,6 +121,8 @@ pub(crate) fn write_audio_mixer(output: &mut String, project: &fm_model::Project
     .expect("writing to a string cannot fail");
     output.push_str(",\n    \"master_audio_dsp\": ");
     super::strip_dsp::write_strip_dsp(output, project.master_audio_dsp());
+    output.push_str(",\n    \"master_audio_plugins\": ");
+    super::audio_plugins::write_plugin_chain(output, project.master_audio_plugins());
     output.push_str(",\n    \"fade_to_black_excluded_outputs\": [");
     for (index, id) in project.fade_to_black_excluded_outputs().iter().enumerate() {
         if index != 0 {

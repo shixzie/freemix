@@ -13026,6 +13026,98 @@ fn restore_stinger(
     Ok(())
 }
 
+/// The engine's plugin chain for a persisted one (AU-006, schema 91).
+fn engine_plugin_chain(
+    state: &fm_types::audio_plugins::PluginChainState,
+) -> AppResult<fm_plugin_host_api::PluginChain> {
+    let limits = fm_plugin_host_api::ProtocolLimits::default();
+    let mut chain = fm_plugin_host_api::PluginChain::new();
+    for slot in state.slots() {
+        let plugin = fm_plugin_host_api::PluginId::new(slot.plugin());
+        let mut engine_slot = fm_plugin_host_api::PluginSlot::new(plugin.clone());
+        engine_slot.set_bypassed(slot.is_bypassed());
+        engine_slot
+            .set_latency(slot.latency_frames())
+            .map_err(|error| AppFailure(format!("project plugin chain is invalid: {error}")))?;
+        if !slot.state().is_empty() {
+            let snapshot = fm_plugin_host_api::StateSnapshot::new(
+                plugin,
+                fm_plugin_host_api::StateVersion::new(0),
+                slot.state().to_vec(),
+                &limits,
+            )
+            .map_err(|error| AppFailure(format!("project plugin state is invalid: {error}")))?;
+            engine_slot
+                .store_snapshot(snapshot)
+                .map_err(|error| AppFailure(format!("project plugin state is invalid: {error}")))?;
+        }
+        chain
+            .push(engine_slot)
+            .map_err(|error| AppFailure(format!("project plugin chain is invalid: {error}")))?;
+    }
+    Ok(chain)
+}
+
+/// The persisted form of the engine's plugin chain (AU-006, schema 91).
+fn model_plugin_chain(
+    chain: &fm_plugin_host_api::PluginChain,
+) -> AppResult<fm_types::audio_plugins::PluginChainState> {
+    let mut state = fm_types::audio_plugins::PluginChainState::new();
+    for slot in chain.slots() {
+        let mut model = fm_types::audio_plugins::PluginSlotState::new(slot.plugin().as_str());
+        model.set_bypassed(slot.is_bypassed());
+        model
+            .set_latency(slot.latency_frames())
+            .map_err(|error| AppFailure(format!("plugin chain is invalid: {error}")))?;
+        if let Some(snapshot) = slot.snapshot() {
+            model
+                .set_state(snapshot.data().to_vec())
+                .map_err(|error| AppFailure(format!("plugin chain is invalid: {error}")))?;
+        }
+        state
+            .push(model)
+            .map_err(|error| AppFailure(format!("plugin chain is invalid: {error}")))?;
+    }
+    Ok(state)
+}
+
+#[cfg(test)]
+mod audio_plugin_chain_tests {
+    use super::{engine_plugin_chain, model_plugin_chain};
+    use fm_types::audio_plugins::{PluginChainState, PluginSlotState};
+
+    #[test]
+    fn persisted_and_engine_plugin_chains_round_trip() {
+        let mut trim = PluginSlotState::new("freemix.reference.trim");
+        trim.set_bypassed(true);
+        trim.set_latency(7).unwrap();
+        trim.set_state([1_u8, 2, 3]).unwrap();
+        let mut polarity = PluginSlotState::new("freemix.reference.polarity");
+        polarity.set_state([9_u8]).unwrap();
+        let persisted = PluginChainState::from_slots(vec![trim, polarity]).expect("a valid chain");
+        let engine = engine_plugin_chain(&persisted).expect("valid persisted chain");
+        assert_eq!(engine.len(), 2);
+        assert!(engine.slots()[0].is_bypassed());
+        assert_eq!(engine.slots()[0].latency_frames(), 7);
+        assert_eq!(
+            engine.slots()[0]
+                .snapshot()
+                .map(fm_plugin_host_api::StateSnapshot::data),
+            Some([1_u8, 2, 3].as_slice())
+        );
+        assert_eq!(
+            model_plugin_chain(&engine).expect("valid engine chain"),
+            persisted
+        );
+        let empty = PluginChainState::new();
+        assert!(engine_plugin_chain(&empty).unwrap().is_empty());
+        assert_eq!(
+            model_plugin_chain(&fm_plugin_host_api::PluginChain::new()).unwrap(),
+            empty
+        );
+    }
+}
+
 fn restore_input_audio_strips(show: &mut ShowState, project: &fm_model::Project) -> AppResult<()> {
     for strip in project.input_audio_strips() {
         show.set_input_audio_strip(
@@ -13044,8 +13136,10 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &fm_model::Project)
         show.set_input_audio_label(strip.input, strip.label.clone())?;
         show.set_input_audio_group(strip.input, strip.group)?;
         show.set_input_audio_dsp(strip.input, strip.dsp)?;
+        show.set_input_audio_plugins(strip.input, engine_plugin_chain(&strip.plugins)?);
     }
     show.set_master_audio_dsp(*project.master_audio_dsp());
+    show.set_master_audio_plugins(engine_plugin_chain(project.master_audio_plugins())?);
     for (group, value) in project.audio_groups().iter() {
         show.set_audio_group(
             group,
@@ -13158,6 +13252,7 @@ fn sync_project_display_outputs(
 
 /// Folds the show's strip labels, groups, and Fade-to-Black output
 /// selection (AU-001, SW-004) into the stored project.
+#[allow(clippy::too_many_lines)]
 fn sync_project_audio_mixer(project: &mut fm_model::Project, show: &ShowState) -> AppResult<()> {
     for &input in show.inputs() {
         let label = show.input_audio_label(input);
@@ -13182,10 +13277,24 @@ fn sync_project_audio_mixer(project: &mut fm_model::Project, show: &ShowState) -
                     "project cannot take input {input}'s strip DSP: {error}"
                 ))
             })?;
+        project
+            .set_input_audio_plugins(input, model_plugin_chain(show.input_audio_plugins(input))?)
+            .map_err(|error| {
+                AppFailure(format!(
+                    "project cannot take input {input}'s plugin chain: {error}"
+                ))
+            })?;
     }
     project
         .set_master_audio_dsp(*show.master_audio_dsp())
         .map_err(|error| AppFailure(format!("project cannot take the Master DSP: {error}")))?;
+    project
+        .set_master_audio_plugins(model_plugin_chain(show.master_audio_plugins())?)
+        .map_err(|error| {
+            AppFailure(format!(
+                "project cannot take the Master plugin chain: {error}"
+            ))
+        })?;
     // Parents are cleared first so an old parent never closes a transient
     // cycle with a new one.
     for nested in [false, true] {

@@ -515,7 +515,7 @@ impl StripDsp {
         bytes.extend_from_slice(&self.limiter.release_us.to_be_bytes());
         bytes.extend_from_slice(&self.delay.delay_us.to_be_bytes());
         debug_assert_eq!(bytes.len(), PACKED_BYTES);
-        base64url_encode(&bytes)
+        crate::base64url::encode(&bytes)
     }
 
     /// Parses [`Self::code`] strictly: exact length, canonical base64url,
@@ -529,7 +529,7 @@ impl StripDsp {
         if code.len() != STRIP_DSP_CODE_LEN {
             return Err(invalid);
         }
-        let bytes = base64url_decode(code).ok_or(invalid)?;
+        let bytes = crate::base64url::decode(code).ok_or(invalid)?;
         if bytes.len() != PACKED_BYTES {
             return Err(invalid);
         }
@@ -645,43 +645,6 @@ impl Reader<'_> {
     fn i32(&mut self) -> i32 {
         i32::from_be_bytes(self.take())
     }
-}
-
-const BASE64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-fn base64url_encode(data: &[u8]) -> String {
-    let mut output = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let value = chunk
-            .iter()
-            .enumerate()
-            .fold(0_u32, |value, (index, byte)| {
-                value | u32::from(*byte) << (16 - 8 * index)
-            });
-        for index in 0..=chunk.len() {
-            let sextet = (value >> (18 - 6 * index)) & 0x3f;
-            output.push(char::from(BASE64URL[sextet as usize]));
-        }
-    }
-    output
-}
-
-fn base64url_decode(text: &str) -> Option<Vec<u8>> {
-    let mut output = Vec::with_capacity(text.len() * 3 / 4);
-    for chunk in text.as_bytes().chunks(4) {
-        if chunk.len() == 1 {
-            return None;
-        }
-        let mut value = 0_u32;
-        for (index, byte) in chunk.iter().enumerate() {
-            let sextet = BASE64URL.iter().position(|candidate| candidate == byte)?;
-            value |= u32::try_from(sextet).ok()? << (18 - 6 * index);
-        }
-        for index in 0..chunk.len() - 1 {
-            output.push(u8::try_from((value >> (16 - 8 * index)) & 0xff).ok()?);
-        }
-    }
-    Some(output)
 }
 
 /// An out-of-range or malformed chain field.

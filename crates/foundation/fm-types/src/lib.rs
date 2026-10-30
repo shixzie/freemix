@@ -4,6 +4,8 @@ pub mod alert_rules;
 mod audio;
 pub mod audio_bus;
 pub mod audio_output;
+pub mod audio_plugins;
+mod base64url;
 pub mod capture;
 mod color;
 pub mod display;

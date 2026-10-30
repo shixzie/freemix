@@ -4664,7 +4664,10 @@ Protocol 2.129 reads an audio plugin chain (AU-006).
 - Studio's FX window requests the open target's status when it opens and
   after each edit, and edits its PLUGINS section with add, remove, reorder,
   bypass, and trim-level keys. `freemix-cli` sends chains as before.
-- The project schema is unchanged; 2.128 is refused.
+- The project schema becomes 91: every strip in `input_audio_strips` and the
+  project carry their plugin chain (`plugins` / `master_audio_plugins`,
+  `null` when empty), so a chain is persisted, undone, and restored like a
+  DSP chain; 2.128 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

@@ -212,15 +212,15 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
     );
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 90"));
+    assert!(text.contains("\"schema_version\": 91"));
     assert!(text.contains(
-        "{\"input\": 10, \"gain_milli_db\": 0, \"balance_basis_points\": 0, \"pan_basis_points\": -2500, \"delay_samples\": 0, \"muted\": false, \"soloed\": false, \"follow_video\": true, \"buses\": \"MAC\", \"label\": \"Host \\\"mic\\\" 1\", \"group\": 2, \"dsp\": null}"
+        "{\"input\": 10, \"gain_milli_db\": 0, \"balance_basis_points\": 0, \"pan_basis_points\": -2500, \"delay_samples\": 0, \"muted\": false, \"soloed\": false, \"follow_video\": true, \"buses\": \"MAC\", \"label\": \"Host \\\"mic\\\" 1\", \"group\": 2, \"dsp\": null, \"plugins\": null}"
     ), "{text}");
     assert!(text.contains(
-        "\"follow_video\": true, \"buses\": \"M\", \"label\": \"\", \"group\": null, \"dsp\": null}"
+        "\"follow_video\": true, \"buses\": \"M\", \"label\": \"\", \"group\": null, \"dsp\": null, \"plugins\": null}"
     ));
     assert!(text.contains(
-        "\"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Hosts\", \"gain_milli_db\": -6000, \"muted\": true, \"soloed\": true, \"parent\": 3},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"aux_buses\": [\n      {\"name\": \"Bus A\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Stage\", \"gain_milli_db\": -3000, \"muted\": true},\n      {\"name\": \"Bus C\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Bus D\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Bus E\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Bus F\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Bus G\", \"gain_milli_db\": 0, \"muted\": false}\n    ],\n    \"output_aux_buses\": [{\"output\": 41, \"bus\": \"B\"}],\n    \"audio_solo_mode\": \"pfl\",\n    \"audio_monitor_output\": {\"device\": null, \"gain_milli_db\": 0, \"muted\": false},\n    \"master_audio_dsp\": null,\n    \"fade_to_black_excluded_outputs\": [41],\n    \"fade_to_black_output_durations\": [{\"output\": 40, \"duration_frames\": 45}],\n    \"fade_to_black_curve\": \"ease\",\n    \"display_outputs\": [],\n    \"live_lan\": {\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null},\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null}\n  },"
+        "\"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Hosts\", \"gain_milli_db\": -6000, \"muted\": true, \"soloed\": true, \"parent\": 3},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"aux_buses\": [\n      {\"name\": \"Bus A\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Stage\", \"gain_milli_db\": -3000, \"muted\": true},\n      {\"name\": \"Bus C\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Bus D\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Bus E\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Bus F\", \"gain_milli_db\": 0, \"muted\": false},\n      {\"name\": \"Bus G\", \"gain_milli_db\": 0, \"muted\": false}\n    ],\n    \"output_aux_buses\": [{\"output\": 41, \"bus\": \"B\"}],\n    \"audio_solo_mode\": \"pfl\",\n    \"audio_monitor_output\": {\"device\": null, \"gain_milli_db\": 0, \"muted\": false},\n    \"master_audio_dsp\": null,\n    \"master_audio_plugins\": null,\n    \"fade_to_black_excluded_outputs\": [41],\n    \"fade_to_black_output_durations\": [{\"output\": 40, \"duration_frames\": 45}],\n    \"fade_to_black_curve\": \"ease\",\n    \"display_outputs\": [],\n    \"live_lan\": {\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null},\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null}\n  },"
     ), "{text}");
 
     for (from, to) in [
@@ -388,7 +388,7 @@ fn the_monitor_output_round_trips_exactly_and_strictly() {
     let encoded = "\"audio_monitor_output\": {\"device\": \"hw:CARD=Headset,DEV=0\", \"gain_milli_db\": -6000, \"muted\": true}";
     assert!(
         text.contains(&format!(
-            "\"audio_solo_mode\": \"sip\",\n    {encoded},\n    \"master_audio_dsp\": null,\n    \"fade_to_black_excluded_outputs\""
+            "\"audio_solo_mode\": \"sip\",\n    {encoded},\n    \"master_audio_dsp\": null,\n    \"master_audio_plugins\": null,\n    \"fade_to_black_excluded_outputs\""
         )),
         "{text}"
     );
@@ -507,7 +507,10 @@ fn strip_and_master_dsp_round_trip_exactly_and_strictly() {
         ),
         "{text}"
     );
-    assert!(text.contains("\"group\": null, \"dsp\": null}"), "{text}");
+    assert!(
+        text.contains("\"group\": null, \"dsp\": null, \"plugins\": null}"),
+        "{text}"
+    );
 
     let default_chain = "\"master_audio_dsp\": {\"bypass\": false, \"delay\": {\"enabled\": false, \"delay_us\": 0}, \"invert_polarity\": false, \"high_pass\": {\"enabled\": false, \"frequency_hz\": 80}, \"eq\": {\"enabled\": false, \"bands\": [{\"enabled\": true, \"kind\": \"low_shelf\", \"frequency_hz\": 100, \"gain_milli_db\": 0, \"q_milli\": 707}, {\"enabled\": true, \"kind\": \"peak\", \"frequency_hz\": 250, \"gain_milli_db\": 0, \"q_milli\": 1000}, {\"enabled\": true, \"kind\": \"peak\", \"frequency_hz\": 1000, \"gain_milli_db\": 0, \"q_milli\": 1000}, {\"enabled\": true, \"kind\": \"peak\", \"frequency_hz\": 4000, \"gain_milli_db\": 0, \"q_milli\": 1000}, {\"enabled\": true, \"kind\": \"high_shelf\", \"frequency_hz\": 10000, \"gain_milli_db\": 0, \"q_milli\": 707}]}, \"gate\": {\"enabled\": false, \"threshold_milli_db\": -50000, \"range_milli_db\": 40000, \"attack_us\": 1000, \"hold_us\": 50000, \"release_us\": 200000}, \"expander\": {\"enabled\": false, \"threshold_milli_db\": -40000, \"ratio_milli\": 2000, \"attack_us\": 1000, \"release_us\": 100000, \"range_milli_db\": 20000}, \"compressor\": {\"enabled\": false, \"threshold_milli_db\": -18000, \"ratio_milli\": 3000, \"attack_us\": 10000, \"release_us\": 150000, \"knee_milli_db\": 6000, \"makeup_milli_db\": 0}, \"limiter\": {\"enabled\": false, \"ceiling_milli_db\": -1000, \"release_us\": 50000}}";
     let master_start = text.find("\"master_audio_dsp\": {").unwrap();
@@ -536,6 +539,99 @@ fn strip_and_master_dsp_round_trip_exactly_and_strictly() {
         ),
         // The default chain is written only as null.
         (master.as_str(), default_chain),
+    ] {
+        let invalid = text.replacen(from, to, 1);
+        assert_ne!(invalid, text, "{from}");
+        fs::write(directory.path("show.freemix/project.json"), &invalid).unwrap();
+        assert!(store.load().is_err(), "{from} -> {to} loaded");
+    }
+}
+
+#[test]
+fn plugin_chains_round_trip_exactly_and_strictly() {
+    use fm_types::audio_plugins::{PluginChainState, PluginSlotState};
+
+    let directory = TestDirectory::new("audio-plugins");
+    let store = ProjectStore::new(directory.path("show.freemix")).unwrap();
+    let host = InputId::new(id(10));
+    let mut trim = PluginSlotState::new("freemix.reference.trim");
+    trim.set_bypassed(true);
+    trim.set_latency(12).unwrap();
+    trim.set_state([0_u8, 255, 1, 2]).unwrap();
+    let mut expected = project();
+    expected
+        .set_input_audio_plugins(host, PluginChainState::from_slots(vec![trim]).unwrap())
+        .unwrap();
+    expected
+        .set_master_audio_plugins(
+            PluginChainState::from_slots(vec![PluginSlotState::new("freemix.reference.gain")])
+                .unwrap(),
+        )
+        .unwrap();
+    // A duplicate identifier and an unknown strip are refused by the model.
+    assert!(
+        PluginChainState::from_slots(vec![
+            PluginSlotState::new("freemix.reference.trim"),
+            PluginSlotState::new("freemix.reference.trim"),
+        ])
+        .is_err()
+    );
+    assert!(
+        expected
+            .set_input_audio_plugins(
+                InputId::new(id(99)),
+                PluginChainState::from_slots(vec![PluginSlotState::new("x")]).unwrap(),
+            )
+            .is_err()
+    );
+    store.save(&stored(expected.clone())).unwrap();
+    let loaded = store.load().unwrap();
+    assert_eq!(loaded.project(), &expected);
+
+    let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
+    assert!(
+        text.contains(
+            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg\"}]"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "\"master_audio_plugins\": [{\"plugin\": \"freemix.reference.gain\", \"bypassed\": false, \"latency_frames\": 0, \"state\": \"\"}]"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("\"plugins\": null}"), "{text}");
+
+    let plugins = "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg\"}]";
+    let master = "\"master_audio_plugins\": [{\"plugin\": \"freemix.reference.gain\", \"bypassed\": false, \"latency_frames\": 0, \"state\": \"\"}]";
+    for (from, to) in [
+        (plugins, "\"plugins\": []"),
+        (
+            plugins,
+            "\"plugins\": [{\"plugin\": \"bad plugin\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg\"}]",
+        ),
+        (
+            plugins,
+            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 60001, \"state\": \"AP8BAg\"}]",
+        ),
+        (
+            plugins,
+            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg=\"}]",
+        ),
+        (
+            plugins,
+            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg\", \"extra\": 1}]",
+        ),
+        (
+            plugins,
+            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12}]",
+        ),
+        (master, "\"master_audio_plugins\": []"),
+        (
+            master,
+            "\"master_audio_plugins\": [{\"plugin\": \"freemix.reference.gain\", \"bypassed\": false, \"latency_frames\": 0, \"state\": \"\", \"extra\": 1}]",
+        ),
     ] {
         let invalid = text.replacen(from, to, 1);
         assert_ne!(invalid, text, "{from}");
