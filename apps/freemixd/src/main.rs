@@ -3387,10 +3387,11 @@ fn pinned_rendition_variants(
 /// backoff, primary/backup failover) is not owned here at all: every target
 /// routes through the daemon's shared [`OutputSet`], and this struct owns only
 /// the transport that the set drives.
-/// One stream destination's transport: the FFmpeg encoder for RTMP, RTMPS,
+/// One stream destination's transport: the `FFmpeg` encoder for RTMP, RTMPS,
 /// SRT, and HLS, or the in-tree OMT sender for `omt://`. The shared output
 /// state machine, raw-pair packing, and retry policy stay identical.
 #[cfg(feature = "native-media")]
+#[allow(clippy::large_enum_variant)] // one transport per destination, never a collection
 enum ProgramStreamSink {
     Ffmpeg(FfmpegRtmpSink),
     Omt(OmtTransportSink),
@@ -29002,6 +29003,7 @@ mod tests {
 
     #[cfg(feature = "native-media")]
     #[test]
+    #[allow(clippy::too_many_lines)] // one case per protocol convention
     fn split_destination_url_round_trips_every_protocol_convention() {
         // (authored URL, protocol, host, port, endpoint path, key tail). The
         // key is restated here because the split result deliberately cannot

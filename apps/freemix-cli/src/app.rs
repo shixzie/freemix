@@ -6839,7 +6839,7 @@ Usage:
   freemix-cli remote-stream-retry <127.0.0.1:port> <running-stream-id> [--key <key>] [--expect <revision>]
   freemix-cli remote-stream-start-all <127.0.0.1:port> [--key <key>] [--expect <revision>]
   freemix-cli remote-stream-stop-all <127.0.0.1:port> [--key <key>] [--expect <revision>]
-  freemix-cli remote-stream-set <127.0.0.1:port> <nonzero-stream-id> [--name <name>] [--protocol rtmp|rtmps|srt|hls] [--endpoint <host/app|host:port|/abs/dir or full URL>] [--backup-endpoint <endpoint> | --clear-backup-endpoint] [--output <id>] [--bitrate-kbps <1000..=100000>] [--startup stopped|reconcile] [--reconnect <initial_ms>:<max_ms>:<attempts|none>] [--stream-key <key> | --clear-stream-key] [--srt-latency-ms <20..=8000>] [--srt-passphrase <passphrase> | --clear-srt-passphrase] [--key <key>] [--expect <revision>]
+  freemix-cli remote-stream-set <127.0.0.1:port> <nonzero-stream-id> [--name <name>] [--protocol rtmp|rtmps|srt|hls|omt] [--endpoint <host/app|host:port|/abs/dir or full URL>] [--backup-endpoint <endpoint> | --clear-backup-endpoint] [--output <id>] [--bitrate-kbps <1000..=100000>] [--startup stopped|reconcile] [--reconnect <initial_ms>:<max_ms>:<attempts|none>] [--stream-key <key> | --clear-stream-key] [--srt-latency-ms <20..=8000>] [--srt-passphrase <passphrase> | --clear-srt-passphrase] [--key <key>] [--expect <revision>]
       Adds or reconfigures a destination of a stopped stream. A new one needs
       --name, --protocol (or a full endpoint URL), --endpoint and --output;
       for an existing one every omitted option keeps the daemon's value and

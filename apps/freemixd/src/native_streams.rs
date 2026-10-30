@@ -157,7 +157,7 @@ impl OmtStreamReceiver {
                         self.error = None;
                     }
                 }
-                Ok(Some(OmtFrame::Metadata(_))) | Ok(None) => {}
+                Ok(Some(OmtFrame::Metadata(_)) | None) => {}
                 Err(error) => {
                     self.error = Some(error.to_string());
                     if matches!(error, OmtError::Closed | OmtError::Io(_)) {
@@ -282,7 +282,7 @@ impl NativeNetworkStreams {
                     stream.config.redacted_url()
                 );
                 stream.receiver = None;
-                stream.start_error = Some(error.to_string());
+                stream.start_error = Some(error.clone());
             }
         }
     }
@@ -608,7 +608,8 @@ fn rgba_picture(frame: &fm_io_omt::VideoFrame, dimensions: (u32, u32)) -> Option
     Some(rgba)
 }
 
-/// BT.601 or BT.709 limited-range Y'CbCr to full-range RGBA.
+/// BT.601 or BT.709 limited-range YUV to full-range RGBA.
+#[allow(clippy::many_single_char_names)] // the standard Y'CbCr notation
 fn yuv_to_rgba(y: u8, u: u8, v: u8, bt601: bool) -> [u8; 4] {
     let c = f32::from(y) - 16.0;
     let d = f32::from(u) - 128.0;
@@ -618,6 +619,7 @@ fn yuv_to_rgba(y: u8, u: u8, v: u8, bt601: bool) -> [u8; 4] {
     } else {
         (1.793, -0.213, -0.533, 2.112)
     };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0..=255
     let clamp = |value: f32| value.clamp(0.0, 255.0).round() as u8;
     [
         clamp(1.164 * c + rv * e),
@@ -776,8 +778,8 @@ mod tests {
         assert_eq!(video.payload().format(), PixelFormat::Rgba8);
         assert_eq!(video.payload().plane(0).unwrap().bytes()[..4], [3, 2, 1, 4]);
         let audio = pulled.audio.expect("the audio");
-        assert_eq!(audio.planes()[0][0], 0.5);
-        assert_eq!(audio.planes()[1][0], -0.5);
+        assert!((audio.planes()[0][0] - 0.5).abs() < f32::EPSILON);
+        assert!((audio.planes()[1][0] + 0.5).abs() < f32::EPSILON);
         sender.stop();
     }
 
