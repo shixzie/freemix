@@ -479,6 +479,16 @@ fn apply_plugin_chain(
             ));
         }
     }
+    // Validate the saved state now, so a chain the media plane cannot build
+    // is refused at the command instead of faulting a later frame.
+    if fm_plugin_host_api::ReferenceRack::new(chain, 48_000.0).is_err() {
+        return Err(rejection(
+            RejectionCode::InvalidCommand,
+            "plugins",
+            "invalid_state",
+            "a plugin slot holds invalid saved state".to_owned(),
+        ));
+    }
     match target {
         StripDspTarget::Master => {
             state.set_master_audio_plugins(chain.clone());

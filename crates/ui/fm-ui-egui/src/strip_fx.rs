@@ -600,7 +600,11 @@ fn draw_plugins(
                     .clicked()
                 {
                     let mut slots = status.slots.clone();
-                    slots[index].state = millidb.saturating_sub(1_000).to_le_bytes().to_vec();
+                    slots[index].state = millidb
+                        .saturating_sub(1_000)
+                        .max(-96_000)
+                        .to_le_bytes()
+                        .to_vec();
                     send_plugin_chain(target, slots, intents);
                 }
                 ui.label(RichText::new(format!("{db:+.1} dB")).monospace())

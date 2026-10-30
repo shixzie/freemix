@@ -151,6 +151,22 @@ fn closing_a_chain_or_naming_an_unknown_strip_is_refused() {
     assert_eq!(rejection.fields[0].field, "plugins");
     assert_eq!(rejection.fields[0].code, "unsupported_plugin");
 
+    let mut invalid = PluginChain::new();
+    invalid.push(trim(24_001)).unwrap();
+    let outcome = execute(
+        &mut engine,
+        "state",
+        command(StripDspTarget::Input(input(1)), invalid),
+    );
+    let rejection = outcome
+        .receipt
+        .rejected()
+        .expect("refused")
+        .rejection
+        .clone();
+    assert_eq!(rejection.fields[0].field, "plugins");
+    assert_eq!(rejection.fields[0].code, "invalid_state");
+
     let outcome = execute(
         &mut engine,
         "unknown",
