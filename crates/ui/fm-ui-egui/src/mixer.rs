@@ -3100,6 +3100,206 @@ fn draw_meter_scale(ui: &mut Ui, layout: StripLayout) {
     }
 }
 
+/// The Aux buses window (AU-002): each bus's name, fader, and mute, and the
+/// bus each project output hears.
+pub(crate) fn draw_bus_mixer_window(
+    open: &mut bool,
+    context: &egui::Context,
+    state: &StudioUiState,
+    intents: &mut Vec<StudioIntent>,
+) {
+    if !*open {
+        return;
+    }
+    let l = l10n::locale(context);
+    let close = crate::menu::help_modal(
+        context,
+        "studio-bus-mixer",
+        l.text(Msg::BusMixerTitle),
+        520.0,
+        |ui| draw_bus_mixer_contents(ui, state, intents),
+    );
+    if close {
+        *open = false;
+    }
+}
+
+#[allow(clippy::too_many_lines)] // one row per bus, then the outputs
+fn draw_bus_mixer_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
+    let l = l10n::locale(ui.ctx());
+    let Some(view) = &state.view else {
+        crate::theme::empty_state(
+            ui,
+            l.text(Msg::NoAudioState),
+            l.text(Msg::NoAudioStateDetail),
+        );
+        return;
+    };
+    let ready = state.connection_status.controls_enabled() && state.view.is_some();
+    let audio_enabled = ready && state.can_control_audio;
+    let edit_enabled = ready && state.can_edit_project;
+    let audio_reason = unavailable_reason(state, Capability::Audio);
+    let edit_reason = unavailable_reason(state, Capability::EditProject);
+    ui.label(caption(l.text(Msg::BusMixerNote)));
+    ui.add_space(6.0);
+    for (number, bus) in fm_types::audio_bus::AuxBusNumber::ALL
+        .into_iter()
+        .zip(&view.audio_mixer.aux_buses)
+    {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(
+                RichText::new(number.letter().to_string())
+                    .strong()
+                    .color(accent_color()),
+            );
+            if let Some(name) = label_entry(
+                ui,
+                ("aux-bus-name", number.index()),
+                &bus.name,
+                edit_enabled,
+                (&bus.name, l.text(Msg::BusMixerNameHover), edit_reason),
+            ) {
+                intents.push(StudioIntent::AudioMixer(
+                    fm_protocol::AudioMixerOperation::RenameAuxBus { bus: number, name },
+                ));
+            }
+            let mut gain_millidb = bus.gain_millidb;
+            let mut muted = bus.muted;
+            let changed = ui
+                .add_enabled(
+                    audio_enabled,
+                    DragValue::new(&mut gain_millidb)
+                        .range(-96_000..=24_000)
+                        .speed(100.0)
+                        .custom_formatter(|value, _| {
+                            #[allow(clippy::cast_possible_truncation)] // bounded range
+                            format_gain(l, value as i32)
+                        })
+                        .custom_parser(|text| parse_gain(l, text)),
+                )
+                .hint(l.text(Msg::BusMixerFaderHover), audio_reason)
+                .changed();
+            let muted_changed = led_key(
+                ui,
+                audio_enabled,
+                &mut muted,
+                l.text(Msg::AuxBusMuteKey),
+                PROGRAM,
+                52.0,
+            )
+            .hint(l.text(Msg::BusMixerMuteHover), audio_reason)
+            .changed();
+            if changed || muted_changed {
+                intents.push(StudioIntent::AudioMixer(
+                    fm_protocol::AudioMixerOperation::SetAuxBusLevel {
+                        bus: number,
+                        gain_millidb,
+                        muted,
+                    },
+                ));
+            }
+            let channels = state.audio_meters.as_ref().and_then(|meters| {
+                meters
+                    .aux
+                    .iter()
+                    .find(|aux| aux.bus == number)
+                    .map(|aux| aux.channels.as_slice())
+            });
+            bus_meter(ui, channels, 56.0, 14.0);
+        });
+    }
+    ui.add_space(8.0);
+    ui.label(section_label(l.text(Msg::BusMixerOutputs)));
+    if view.outputs.is_empty() {
+        ui.label(caption(l.text(Msg::BusMixerNoOutputs)));
+    }
+    for output in &view.outputs {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(&output.name);
+            let mut chosen = output.aux_bus;
+            let selected = match chosen {
+                None => l.text(Msg::BusMixerMaster).to_owned(),
+                Some(bus) => l.format(
+                    Msg::BusMixerBus,
+                    &[("bus", Arg::Str(&bus.letter().to_string()))],
+                ),
+            };
+            ui.add_enabled_ui(edit_enabled, |ui| {
+                egui::ComboBox::from_id_salt(("bus-mixer-output", output.output))
+                    .selected_text(selected)
+                    .width(140.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut chosen, None, l.text(Msg::BusMixerMaster));
+                        for bus in fm_types::audio_bus::AuxBusNumber::ALL {
+                            ui.selectable_value(
+                                &mut chosen,
+                                Some(bus),
+                                l.format(
+                                    Msg::BusMixerBus,
+                                    &[("bus", Arg::Str(&bus.letter().to_string()))],
+                                ),
+                            );
+                        }
+                    });
+            })
+            .response
+            .hint(l.text(Msg::BusMixerOutputHover), edit_reason);
+            if chosen != output.aux_bus {
+                intents.push(StudioIntent::AudioMixer(
+                    fm_protocol::AudioMixerOperation::SetOutputBus {
+                        output: fm_protocol::WireOutputId::from_domain(output.output),
+                        bus: chosen,
+                    },
+                ));
+            }
+        });
+    }
+}
+
+/// A compact two-bar meter for one aux bus, from its `audio_meters` record
+/// (Protocol 2.120, AU-002): a bar per channel on a -60 dBFS to 0 dBFS
+/// scale, with the peak in dBFS on hover.
+fn bus_meter(
+    ui: &mut Ui,
+    channels: Option<&[fm_protocol::AudioMeterChannel]>,
+    width: f32,
+    height: f32,
+) {
+    let l = l10n::locale(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(2), graphite_color());
+    let Some(channels) = channels else {
+        response.on_hover_text(l.text(Msg::BusMixerNoMeterHover));
+        return;
+    };
+    let level = |channel: &fm_protocol::AudioMeterChannel| {
+        #[allow(clippy::cast_precision_loss)] // a bounded millionth count
+        let amplitude = channel.peak_millionths as f32 / 1_000_000.0;
+        let db = 20.0 * amplitude.max(1e-6).log10();
+        (db, ((db + 60.0) / 60.0).clamp(0.0, 1.0))
+    };
+    let bar_width = (rect.width() - 3.0) / 2.0;
+    let mut readout = Vec::new();
+    for (index, channel) in channels.iter().take(2).enumerate() {
+        let (db, fraction) = level(channel);
+        #[allow(clippy::cast_precision_loss)] // at most two bars
+        let x = rect.left() + index as f32 * (bar_width + 3.0);
+        let bar = Rect::from_min_size(pos2(x, rect.top()), Vec2::new(bar_width, rect.height()));
+        let fill = Rect::from_min_size(
+            pos2(bar.left(), bar.bottom() - bar.height() * fraction),
+            Vec2::new(bar.width(), bar.height() * fraction),
+        );
+        ui.painter()
+            .rect_filled(fill, CornerRadius::same(1), PROGRAM.gamma_multiply(0.85));
+        readout.push(format!("{} dB", l.decimal(f64::from(db), 1)));
+    }
+    let readout = readout.join(" · ");
+    response.on_hover_text(format!("{}\n{}", readout, l.text(Msg::BusMixerMeterHover)));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3483,204 +3683,4 @@ mod tests {
         assert!(meter_width(2, 10.0) > meter_width(2, 5.0));
         assert!((meter_width(2, 5.0) - 22.0).abs() < f32::EPSILON);
     }
-}
-
-/// The Aux buses window (AU-002): each bus's name, fader, and mute, and the
-/// bus each project output hears.
-pub(crate) fn draw_bus_mixer_window(
-    open: &mut bool,
-    context: &egui::Context,
-    state: &StudioUiState,
-    intents: &mut Vec<StudioIntent>,
-) {
-    if !*open {
-        return;
-    }
-    let l = l10n::locale(context);
-    let close = crate::menu::help_modal(
-        context,
-        "studio-bus-mixer",
-        l.text(Msg::BusMixerTitle),
-        520.0,
-        |ui| draw_bus_mixer_contents(ui, state, intents),
-    );
-    if close {
-        *open = false;
-    }
-}
-
-#[allow(clippy::too_many_lines)] // one row per bus, then the outputs
-fn draw_bus_mixer_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
-    let l = l10n::locale(ui.ctx());
-    let Some(view) = &state.view else {
-        crate::theme::empty_state(
-            ui,
-            l.text(Msg::NoAudioState),
-            l.text(Msg::NoAudioStateDetail),
-        );
-        return;
-    };
-    let ready = state.connection_status.controls_enabled() && state.view.is_some();
-    let audio_enabled = ready && state.can_control_audio;
-    let edit_enabled = ready && state.can_edit_project;
-    let audio_reason = unavailable_reason(state, Capability::Audio);
-    let edit_reason = unavailable_reason(state, Capability::EditProject);
-    ui.label(caption(l.text(Msg::BusMixerNote)));
-    ui.add_space(6.0);
-    for (number, bus) in fm_types::audio_bus::AuxBusNumber::ALL
-        .into_iter()
-        .zip(&view.audio_mixer.aux_buses)
-    {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            ui.label(
-                RichText::new(number.letter().to_string())
-                    .strong()
-                    .color(accent_color()),
-            );
-            if let Some(name) = label_entry(
-                ui,
-                ("aux-bus-name", number.index()),
-                &bus.name,
-                edit_enabled,
-                (&bus.name, l.text(Msg::BusMixerNameHover), edit_reason),
-            ) {
-                intents.push(StudioIntent::AudioMixer(
-                    fm_protocol::AudioMixerOperation::RenameAuxBus { bus: number, name },
-                ));
-            }
-            let mut gain_millidb = bus.gain_millidb;
-            let mut muted = bus.muted;
-            let changed = ui
-                .add_enabled(
-                    audio_enabled,
-                    DragValue::new(&mut gain_millidb)
-                        .range(-96_000..=24_000)
-                        .speed(100.0)
-                        .custom_formatter(|value, _| {
-                            #[allow(clippy::cast_possible_truncation)] // bounded range
-                            format_gain(l, value as i32)
-                        })
-                        .custom_parser(|text| parse_gain(l, text)),
-                )
-                .hint(l.text(Msg::BusMixerFaderHover), audio_reason)
-                .changed();
-            let muted_changed = led_key(
-                ui,
-                audio_enabled,
-                &mut muted,
-                l.text(Msg::AuxBusMuteKey),
-                PROGRAM,
-                52.0,
-            )
-            .hint(l.text(Msg::BusMixerMuteHover), audio_reason)
-            .changed();
-            if changed || muted_changed {
-                intents.push(StudioIntent::AudioMixer(
-                    fm_protocol::AudioMixerOperation::SetAuxBusLevel {
-                        bus: number,
-                        gain_millidb,
-                        muted,
-                    },
-                ));
-            }
-            let channels = state.audio_meters.as_ref().and_then(|meters| {
-                meters
-                    .aux
-                    .iter()
-                    .find(|aux| aux.bus == number)
-                    .map(|aux| aux.channels.as_slice())
-            });
-            bus_meter(ui, channels, 56.0, 14.0);
-        });
-    }
-    ui.add_space(8.0);
-    ui.label(section_label(l.text(Msg::BusMixerOutputs)));
-    if view.outputs.is_empty() {
-        ui.label(caption(l.text(Msg::BusMixerNoOutputs)));
-    }
-    for output in &view.outputs {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            ui.label(&output.name);
-            let mut chosen = output.aux_bus;
-            let selected = match chosen {
-                None => l.text(Msg::BusMixerMaster).to_owned(),
-                Some(bus) => l.format(
-                    Msg::BusMixerBus,
-                    &[("bus", Arg::Str(&bus.letter().to_string()))],
-                ),
-            };
-            ui.add_enabled_ui(edit_enabled, |ui| {
-                egui::ComboBox::from_id_salt(("bus-mixer-output", output.output))
-                    .selected_text(selected)
-                    .width(140.0)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut chosen, None, l.text(Msg::BusMixerMaster));
-                        for bus in fm_types::audio_bus::AuxBusNumber::ALL {
-                            ui.selectable_value(
-                                &mut chosen,
-                                Some(bus),
-                                l.format(
-                                    Msg::BusMixerBus,
-                                    &[("bus", Arg::Str(&bus.letter().to_string()))],
-                                ),
-                            );
-                        }
-                    });
-            })
-            .response
-            .hint(l.text(Msg::BusMixerOutputHover), edit_reason);
-            if chosen != output.aux_bus {
-                intents.push(StudioIntent::AudioMixer(
-                    fm_protocol::AudioMixerOperation::SetOutputBus {
-                        output: fm_protocol::WireOutputId::from_domain(output.output),
-                        bus: chosen,
-                    },
-                ));
-            }
-        });
-    }
-}
-
-/// A compact two-bar meter for one aux bus, from its `audio_meters` record
-/// (Protocol 2.120, AU-002): a bar per channel on a -60 dBFS to 0 dBFS
-/// scale, with the peak in dBFS on hover.
-fn bus_meter(
-    ui: &mut Ui,
-    channels: Option<&[fm_protocol::AudioMeterChannel]>,
-    width: f32,
-    height: f32,
-) {
-    let l = l10n::locale(ui.ctx());
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(2), graphite_color());
-    let Some(channels) = channels else {
-        response.on_hover_text(l.text(Msg::BusMixerNoMeterHover));
-        return;
-    };
-    let level = |channel: &fm_protocol::AudioMeterChannel| {
-        #[allow(clippy::cast_precision_loss)] // a bounded millionth count
-        let amplitude = channel.peak_millionths as f32 / 1_000_000.0;
-        let db = 20.0 * amplitude.max(1e-6).log10();
-        (db, ((db + 60.0) / 60.0).clamp(0.0, 1.0))
-    };
-    let bar_width = (rect.width() - 3.0) / 2.0;
-    let mut readout = Vec::new();
-    for (index, channel) in channels.iter().take(2).enumerate() {
-        let (db, fraction) = level(channel);
-        #[allow(clippy::cast_precision_loss)] // at most two bars
-        let x = rect.left() + index as f32 * (bar_width + 3.0);
-        let bar = Rect::from_min_size(pos2(x, rect.top()), Vec2::new(bar_width, rect.height()));
-        let fill = Rect::from_min_size(
-            pos2(bar.left(), bar.bottom() - bar.height() * fraction),
-            Vec2::new(bar.width(), bar.height() * fraction),
-        );
-        ui.painter()
-            .rect_filled(fill, CornerRadius::same(1), PROGRAM.gamma_multiply(0.85));
-        readout.push(format!("{} dB", l.decimal(f64::from(db), 1)));
-    }
-    let readout = readout.join(" · ");
-    response.on_hover_text(format!("{}\n{}", readout, l.text(Msg::BusMixerMeterHover)));
 }

@@ -857,6 +857,7 @@ fn a_playlist_plays_its_events_back_to_back_and_returns_after_the_last() {
 /// Protocol 2.119: NEXT and PREV cue the neighbouring playlist entries a
 /// player still has, and CLEAR empties the playlist without moving it.
 #[test]
+#[allow(clippy::too_many_lines)] // two captured events and every step
 fn playlist_next_and_prev_cue_entries_and_clear_keeps_the_player() {
     let mut engine = engine();
     add_player(&mut engine, 9);

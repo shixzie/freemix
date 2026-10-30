@@ -6040,6 +6040,7 @@ fn replay_playlist_entry(value: &str) -> Result<fm_protocol::ReplayPlaylistEntry
 /// `playlist-next INPUT`, and `playlist-prev INPUT`, each with an optional
 /// `--key`. A playlist `ENTRY` is `EVENT[/ANGLE][@SPEED]` (no entries
 /// clears the playlist).
+#[allow(clippy::too_many_lines)] // one arm per replay operation
 fn parse_remote_replay_do(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<Command, ArgsError> {

@@ -61,6 +61,7 @@ fn refused(line: &str) {
     assert!(decode_line(line).is_err(), "accepted {line:?}");
 }
 
+#[allow(clippy::too_many_lines)] // one entry per operation
 fn operations() -> Vec<(ReplayOperation, &'static str)> {
     vec![
         (

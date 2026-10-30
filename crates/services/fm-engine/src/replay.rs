@@ -1072,6 +1072,7 @@ impl ReplayRuntime {
     }
 
     /// Realizes one accepted operation on frame `frame`.
+    #[allow(clippy::too_many_lines)] // one arm per replay operation
     pub(crate) fn realize(
         &mut self,
         show: &ShowState,
@@ -1928,7 +1929,9 @@ pub(crate) fn accept(
         }
         EngineReplayOperation::Play { input, .. }
         | EngineReplayOperation::Pause { input }
-        | EngineReplayOperation::CueIn { input } => check_player(state, *input),
+        | EngineReplayOperation::CueIn { input }
+        | EngineReplayOperation::PlaylistNext { input }
+        | EngineReplayOperation::PlaylistPrev { input } => check_player(state, *input),
         EngineReplayOperation::Return { .. } => Err(Rejection::new(
             RejectionCode::Conflict,
             "replay_return is issued by the server's auto return",
@@ -1952,8 +1955,6 @@ pub(crate) fn accept(
             }
             Ok(())
         }
-        EngineReplayOperation::PlaylistNext { input }
-        | EngineReplayOperation::PlaylistPrev { input } => check_player(state, *input),
         EngineReplayOperation::Step { input, frames } => {
             check_player(state, *input)?;
             if fm_types::replay::replay_step_is_valid(*frames) {
