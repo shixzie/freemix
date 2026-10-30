@@ -554,6 +554,7 @@ mod tests {
             start,
         ));
         state.audio_meters = Some(AudioMetersMessage {
+            aux: Vec::new(),
             server: server(),
             sequence: 9,
             frame: 0,

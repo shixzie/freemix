@@ -2252,6 +2252,7 @@ fn meters() -> AudioMetersMessage {
         rms_millionths: peak / 2,
     };
     AudioMetersMessage {
+        aux: Vec::new(),
         server: ServerIdentity {
             engine_id: "e".into(),
             project_id: "1".into(),

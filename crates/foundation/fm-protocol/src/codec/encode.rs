@@ -3562,7 +3562,37 @@ fn encode_audio_meters(
     record.field_string(
         "loudness",
         super::audio_mixer::encode_loudness(&message.loudness)?,
-    )
+    )?;
+    record.field_string("aux", encode_aux_meters(&message.aux, channels)?)
+}
+
+/// The `audio_meters` `aux` field: `<bus>~<channels>` entries in ascending
+/// bus order joined by `;`, each with Master's channel count.
+fn encode_aux_meters(aux: &[crate::AuxBusMeters], channels: usize) -> Result<String, CodecError> {
+    if aux.len() > fm_types::audio_bus::AUX_BUS_COUNT {
+        return Err(CodecError::TooManyItems("aux"));
+    }
+    let mut previous = None;
+    aux.iter()
+        .map(|bus| {
+            let invalid = || CodecError::InvalidField {
+                field: "aux",
+                value: bus.bus.letter().to_string(),
+            };
+            if bus.channels.len() != channels
+                || previous.is_some_and(|previous| bus.bus.index() <= previous)
+            {
+                return Err(invalid());
+            }
+            previous = Some(bus.bus.index());
+            Ok(format!(
+                "{}~{}",
+                bus.bus.letter(),
+                encode_meter_channels(&bus.channels, "aux")?
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|entries| entries.join(";"))
 }
 
 fn encode_meter_channels(

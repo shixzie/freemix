@@ -3899,6 +3899,7 @@ mod tests {
 
     fn meters_message() -> AudioMetersMessage {
         AudioMetersMessage {
+            aux: Vec::new(),
             server: identity(),
             sequence: 7,
             frame: 9,

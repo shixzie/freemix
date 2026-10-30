@@ -3227,6 +3227,9 @@ pub struct NativeAudioMeters<'a> {
     /// BS.1770 loudness and true peak (AU-005): the Master (`None`) first,
     /// then every strip, ascending.
     pub loudness: &'a [(Option<InputId>, LoudnessReading)],
+    /// Every aux bus's meters, bus A first, each in Master channel order
+    /// (Protocol 2.120, AU-002).
+    pub aux: &'a [ChannelMeter],
 }
 
 struct StagedAudioPadding {
@@ -4235,6 +4238,7 @@ impl NativeMasterRuntime {
             sample_rate: self.format.sample_rate.hertz(),
             dynamics: &self.scratch.dynamics,
             loudness: &self.scratch.loudness,
+            aux: &self.scratch.aux_meters,
         })
     }
 

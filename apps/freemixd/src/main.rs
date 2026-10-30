@@ -8663,6 +8663,7 @@ pub(crate) struct AudioMeterView<'a> {
     monitor_solo: bool,
     dynamics: &'a [(Option<InputId>, fm_audio::DspDynamicsReading)],
     loudness: &'a [(Option<InputId>, fm_audio::LoudnessReading)],
+    aux: &'a [fm_audio::ChannelMeter],
 }
 
 #[cfg(feature = "native-media")]
@@ -8680,6 +8681,7 @@ impl<'a, 'b: 'a> From<&'a NativeAudioMeters<'b>> for AudioMeterView<'a> {
             monitor_solo: meters.monitor_solo,
             dynamics: meters.dynamics,
             loudness: meters.loudness,
+            aux: meters.aux,
         }
     }
 }
@@ -8698,6 +8700,7 @@ impl<'a, 'b: 'a> From<&'a fm_sim::SimulatedAudioMeters<'b>> for AudioMeterView<'
             monitor_solo: meters.monitor_solo,
             dynamics: meters.dynamics,
             loudness: meters.loudness,
+            aux: &[],
         }
     }
 }
@@ -8750,6 +8753,19 @@ pub(crate) fn audio_meters_message(
                 expander_millidb: reading.expander_db.map(reduction_millidb),
                 compressor_millidb: reading.compressor_db.map(reduction_millidb),
                 limiter_millidb: reading.limiter_db.map(reduction_millidb),
+            })
+            .collect(),
+        aux: meters
+            .aux
+            .chunks_exact(meters.channels)
+            .enumerate()
+            .filter_map(|(index, channels)| {
+                Some(fm_protocol::AuxBusMeters {
+                    bus: fm_types::audio_bus::AuxBusNumber::new(
+                        u8::try_from(index.checked_add(1)?).ok()?,
+                    )?,
+                    channels: channels.iter().copied().map(protocol_audio_meter).collect(),
+                })
             })
             .collect(),
         loudness: meters

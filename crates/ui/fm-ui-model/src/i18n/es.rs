@@ -3815,6 +3815,14 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::BusMixerMaster, t("Mezcla Master")),
     (Msg::BusMixerBus, t("Bus {bus}")),
     (Msg::BusMixerNoOutputs, t("Este proyecto no tiene salidas.")),
+    (
+        Msg::BusMixerMeterHover,
+        t("El nivel de salida del bus, en dBFS; 0 es el máximo"),
+    ),
+    (
+        Msg::BusMixerNoMeterHover,
+        t("Este servidor no mide los buses auxiliares"),
+    ),
     (Msg::MixerDetailsKey, t("GAN · BAL · RET")),
     (Msg::DetailsKey, t("DETALLES")),
     (

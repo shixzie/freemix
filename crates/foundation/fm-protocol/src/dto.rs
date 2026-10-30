@@ -3187,6 +3187,17 @@ pub struct AudioMetersMessage {
     /// BS.1770 loudness and true peak of every metered bus with a value,
     /// Master first and then ascending by input (AU-005).
     pub loudness: Vec<crate::AudioLoudnessMeter>,
+    /// The aux buses' meters, bus A first (Protocol 2.120, AU-002); empty
+    /// when the sender does not render the aux buses.
+    pub aux: Vec<AuxBusMeters>,
+}
+
+/// The meters of one aux bus (Protocol 2.120, AU-002).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuxBusMeters {
+    pub bus: fm_types::audio_bus::AuxBusNumber,
+    /// One channel in Master channel order.
+    pub channels: Vec<AudioMeterChannel>,
 }
 
 /// Latest health of one local HLS output: playlist depth and free space.

@@ -1572,6 +1572,8 @@ messages! {
     BusMixerMaster => t("Master mix"),
     BusMixerBus => t("Bus {bus}"),
     BusMixerNoOutputs => t("This project has no outputs."),
+    BusMixerMeterHover => t("The bus's output level, in dBFS; 0 is full scale"),
+    BusMixerNoMeterHover => t("This server does not meter aux buses"),
     MixerDetailsKey => t("GAIN · BAL · DLY"),
     DetailsKey => t("DETAILS"),
     DisclosureShowMixer => t("Show the typed gain, balance, and delay entries on every strip"),

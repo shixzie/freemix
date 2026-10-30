@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.119 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.120 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4511,6 +4511,19 @@ Protocol 2.119 adds Replay input playlists (OR-012).
 - Playlists are runtime state, like events and players; nothing is
   persisted.
 - 2.118 is refused.
+
+Protocol 2.120 meters the aux buses (AU-002). The project schema is
+unchanged.
+
+- `audio_meters` appends a required `aux`: empty when the sender does not
+  render the aux buses, else `<bus>~<channels>` entries in ascending bus
+  order joined by `;` (`A` through `G`), each with Master's channel count
+  and the same `<peak>:<rms>` channel form as `master`. Native `freemixd`
+  sends all seven buses; the simulated daemon renders no aux buses and
+  sends an empty field. Web peers receive the same field.
+- Studio's BUSES window shows each bus's two-bar level meter (a -60 to
+  0 dBFS scale, the peaks in dBFS on hover) beside its fader.
+- 2.119 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

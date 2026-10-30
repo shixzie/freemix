@@ -235,6 +235,26 @@ fn protocol_2_20_heartbeat_acknowledgement_codec_is_exact() {
 #[allow(clippy::too_many_lines)]
 fn audio_meter_codec_is_bounded_and_exact() {
     let message = WireMessage::AudioMeters(AudioMetersMessage {
+        // Aux buses A and C (2.120, AU-002), bus A first.
+        aux: vec![
+            fm_protocol::AuxBusMeters {
+                bus: fm_types::audio_bus::AuxBusNumber::from_letter('A').unwrap(),
+                channels: vec![
+                    AudioMeterChannel {
+                        peak_millionths: 500_000,
+                        rms_millionths: 250_000,
+                    },
+                    AudioMeterChannel {
+                        peak_millionths: 500_000,
+                        rms_millionths: 250_000,
+                    },
+                ],
+            },
+            fm_protocol::AuxBusMeters {
+                bus: fm_types::audio_bus::AuxBusNumber::from_letter('C').unwrap(),
+                channels: vec![AudioMeterChannel::default(); 2],
+            },
+        ],
         server: server_identity(),
         sequence: 9,
         frame: 42,
@@ -323,7 +343,7 @@ fn audio_meter_codec_is_bounded_and_exact() {
     let encoded = encode_line(&message).unwrap();
     assert_eq!(
         encoded,
-        "audio_meters\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=9\tframe=42\tstart_sample=80000\tend_sample=81920\tmaster=4000000%3A500000%2C250000%3A125000\tinputs=3%7E500000%3A250000%2C0%3A0\tmonitor=solo%7Eplaying%7E500000%3A250000%2C500000%3A250000\tdynamics=master%7E-%7E2000%7E3500%7E120%2C3%7E40000%7E-%7E-%7E-\tloudness=master%7E-23000%7E-22500%7E-23100%7E-1500%7E-1000%7E6200%2C3%7E-30000%7E-%7E-%7E-12000%7E-12000%7E-\n"
+        "audio_meters\tengine_id=engine-a\tproject_id=project-9\tstate_epoch=7\tlog_id=log-a\tsequence=9\tframe=42\tstart_sample=80000\tend_sample=81920\tmaster=4000000%3A500000%2C250000%3A125000\tinputs=3%7E500000%3A250000%2C0%3A0\tmonitor=solo%7Eplaying%7E500000%3A250000%2C500000%3A250000\tdynamics=master%7E-%7E2000%7E3500%7E120%2C3%7E40000%7E-%7E-%7E-\tloudness=master%7E-23000%7E-22500%7E-23100%7E-1500%7E-1000%7E6200%2C3%7E-30000%7E-%7E-%7E-12000%7E-12000%7E-\taux=A%7E500000%3A250000%2C500000%3A250000%3BC%7E0%3A0%2C0%3A0\n"
     );
     assert_eq!(decode_line(&encoded).unwrap(), message);
 
@@ -382,8 +402,8 @@ fn audio_meter_codec_is_bounded_and_exact() {
         ("3%7E-30000%7E", "3%7E-030000%7E"),
         ("3%7E-30000%7E", "3%7E-100001%7E"),
         ("master%7E-23000", "master%7E30001"),
-        ("%7E-12000%7E-12000%7E-\n", "%7E-12000%7E-\n"),
-        ("%7E-12000%7E-12000%7E-\n", "%7E-12000%7E-12000\n"),
+        ("%7E-12000%7E-12000%7E-\taux=", "%7E-12000%7E-\taux="),
+        ("%7E-12000%7E-12000%7E-\taux=", "%7E-12000%7E-12000\taux="),
         ("%7E-1000%7E6200%2C", "%7E-1000%2C"),
         ("%7E-1000%7E6200%2C", "%7E-1000%7E-1%2C"),
         ("%7E-1000%7E6200%2C", "%7E-1000%7E80001%2C"),
@@ -394,6 +414,19 @@ fn audio_meter_codec_is_bounded_and_exact() {
             "\tmonitor=solo%7Eplaying%7E500000%3A250000%2C500000%3A250000",
             "",
         ),
+        // Aux buses are ascending, each with Master's channel count and a
+        // known letter.
+        (
+            "aux=A%7E500000%3A250000%2C500000%3A250000%3BC%7E0%3A0%2C0%3A0",
+            "aux=C%7E0%3A0%2C0%3A0%3BA%7E500000%3A250000%2C500000%3A250000",
+        ),
+        ("aux=A%7E", "aux=H%7E"),
+        (
+            "aux=A%7E500000%3A250000%2C500000%3A250000",
+            "aux=A%7E500000%3A250000",
+        ),
+        ("aux=A%7E500000%3A250000", "aux=A%7E250000%3A500000"),
+        ("\taux=A%7E", "\tzux=A%7E"),
     ] {
         assert!(decode_line(&encoded.replace(from, to)).is_err(), "{to}");
     }
@@ -447,6 +480,7 @@ fn every_message_variant_round_trips() {
             data: vec![0xfb, 0xff, 0x00],
         }),
         WireMessage::AudioMeters(AudioMetersMessage {
+            aux: Vec::new(),
             server: server_identity(),
             sequence: 1,
             frame: 1,
@@ -2928,7 +2962,7 @@ fn edit_history_and_padlock_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.118\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.120\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2937,7 +2971,7 @@ fn edit_history_and_padlock_commands_are_exact() {
 
 #[test]
 fn edit_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.118\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.120\tid=a\tidempotency_key=k";
     for (tail, expected) in [
         (
             "\tpayload=undo\texpected_edit=0",
@@ -3262,7 +3296,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.118\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.120\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -3272,7 +3306,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn input_catalogue_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.118\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.120\tid=a\tidempotency_key=k";
     let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
         field,
         value: value.to_owned(),
@@ -3460,7 +3494,7 @@ mod titles {
         WireTitleFieldId,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.118\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.120\tid=a\tidempotency_key=k";
 
     fn field(value: u128) -> WireTitleFieldId {
         WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
@@ -3508,7 +3542,7 @@ mod titles {
 
     #[test]
     fn protocol_2_24_title_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 118));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 120));
         let cases = [
             (
                 CommandPayload::SetTitleFields {
@@ -3562,7 +3596,7 @@ mod titles {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.118\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.120\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -4426,7 +4460,7 @@ mod playlists {
         PlaylistRunState, PlaylistStart, PlaylistStateMessage, PlaylistTransitionKind,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.118\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.120\tid=a\tidempotency_key=k";
     const EVENT: &str = "event\tengine_id=engine-a\tstate_epoch=7\tlog_id=log-a\trevision=1842";
     const HISTORY: &str = "\tundo_depth=0\tredo_depth=0\n";
 
@@ -4466,7 +4500,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_25_playlist_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 118));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 120));
         let cases = [
             (
                 CommandPayload::SetPlaylist {
@@ -4538,7 +4572,7 @@ mod playlists {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.118\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.120\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -4837,7 +4871,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_26_playlist_state_is_exact_and_strict() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 118));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 120));
         let message = playlist_state(
             sample_entries(),
             PlaylistRunState::Playing {

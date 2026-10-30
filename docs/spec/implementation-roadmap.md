@@ -2350,14 +2350,17 @@ hear an aux bus instead of Master, so its recordings, streams, and LiveLAN
 take that bus with the output's own Fade-to-Black trajectory. The daemon
 renders the buses beside Master every frame and a native test proves an
 output on bus B hears an aux-only strip while Program stays silent.
-Studio's BUSES window edits every bus's name, fader, and mute and
-which bus each project output hears, with English and Spanish help; the
-CLI does the same from the shell. Remaining gaps: aux buses are not
-metered on the wire; sends are unity post-fader only through the show
-(per-send level and pre-fader taps exist in the mixer); `BusMatrix` bus
-processing, mix-minus feeds, and device or network destinations are not
-wired; the legacy project audio bus graph and each output's
-`audio_source` are unchanged. `AU-002` remains planned.
+Studio's BUSES window edits every bus's name, fader, and mute,
+shows its level meter, and chooses which bus each project output hears,
+with English and Spanish help; the CLI does the same from the shell. The
+native daemon meters all seven buses on the wire (Protocol 2.120): each
+lossy `audio_meters` record carries every bus's channels, and the
+simulated daemon reports none. Remaining gaps: sends are unity
+post-fader only through the show (per-send level and pre-fader taps exist
+in the mixer); `BusMatrix` bus processing, mix-minus feeds, and device or
+network destinations are not wired; the legacy project audio bus graph
+and each output's `audio_source` are unchanged. `AU-002` remains
+planned.
 
 Current implementation boundary for multichannel audio (`AU-003`): `fm-audio`
 provides a 1–16 channel layout catalog (1.0, 2.0, 2.1, 5.1, 7.1, and 16

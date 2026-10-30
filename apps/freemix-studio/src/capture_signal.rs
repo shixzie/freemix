@@ -170,6 +170,7 @@ pub fn inject(state: &mut StudioUiState) {
         dynamics_meters.extend(dynamics(AudioDspTarget::Master, &dsp, master_rms));
     }
     state.audio_meters = Some(AudioMetersMessage {
+        aux: Vec::new(),
         server: ServerIdentity {
             engine_id: CAPTURE_ENGINE.to_owned(),
             project_id: "capture".to_owned(),

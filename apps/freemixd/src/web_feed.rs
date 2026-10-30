@@ -221,6 +221,8 @@ pub(crate) fn web_meters(meters: &AudioMetersMessage) -> AudioMetersMessage {
         .filter(|meter| meter.target != AudioDspTarget::Master)
         .take(WEB_LOUDNESS_INPUTS);
     AudioMetersMessage {
+        // The aux bus meters ride along (2.120); the pages do not show them.
+        aux: meters.aux.clone(),
         server: meters.server.clone(),
         sequence: meters.sequence,
         frame: meters.frame,
@@ -272,6 +274,7 @@ mod tests {
         let mut all = vec![loudness(AudioDspTarget::Master)];
         all.extend((1..=40).map(|value| loudness(strip(value))));
         let meters = AudioMetersMessage {
+            aux: Vec::new(),
             server: ServerIdentity {
                 engine_id: "engine".to_owned(),
                 project_id: "project".to_owned(),
@@ -318,6 +321,7 @@ mod tests {
             limiter_millidb: None,
         };
         let record = |dynamics: Vec<AudioDynamicsMeter>| AudioMetersMessage {
+            aux: Vec::new(),
             server: ServerIdentity {
                 engine_id: "engine".to_owned(),
                 project_id: "project".to_owned(),

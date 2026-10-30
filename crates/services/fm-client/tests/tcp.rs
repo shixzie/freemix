@@ -222,6 +222,7 @@ fn runtime_event(revision: u64) -> RuntimeEventMessage {
 
 fn audio_meters(sequence: u64) -> AudioMetersMessage {
     AudioMetersMessage {
+        aux: Vec::new(),
         server: server(),
         sequence,
         frame: sequence,

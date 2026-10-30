@@ -3850,7 +3850,9 @@ fn decode_audio_meters(fields: &mut Fields) -> Result<AudioMetersMessage, CodecE
             .collect::<Result<Vec<_>, _>>()?
     };
     let monitor = decode_monitor_meters(&fields.required("monitor")?, master.len())?;
+    let aux = decode_aux_meters(&fields.required("aux")?, master.len())?;
     Ok(AudioMetersMessage {
+        aux,
         server,
         sequence,
         frame,
@@ -3862,6 +3864,48 @@ fn decode_audio_meters(fields: &mut Fields) -> Result<AudioMetersMessage, CodecE
         dynamics: super::audio_mixer::decode_dynamics(&fields.required("dynamics")?)?,
         loudness: super::audio_mixer::decode_loudness(&fields.required("loudness")?)?,
     })
+}
+
+/// The `audio_meters` `aux` field: empty, or `<bus>~<channels>` entries in
+/// ascending bus order joined by `;`, each with Master's channel count.
+fn decode_aux_meters(
+    value: &str,
+    master_channels: usize,
+) -> Result<Vec<crate::AuxBusMeters>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let entries: Vec<&str> = value.split(';').collect();
+    if entries.len() > fm_types::audio_bus::AUX_BUS_COUNT {
+        return Err(CodecError::TooManyItems("aux"));
+    }
+    let mut previous: Option<fm_types::audio_bus::AuxBusNumber> = None;
+    entries
+        .into_iter()
+        .map(|entry| {
+            let invalid = || CodecError::InvalidField {
+                field: "aux",
+                value: entry.to_owned(),
+            };
+            let (bus, meters) = entry.split_once('~').ok_or_else(invalid)?;
+            let bus = match bus.chars().next() {
+                Some(letter) if bus.len() == 1 => {
+                    fm_types::audio_bus::AuxBusNumber::from_letter(letter)
+                }
+                _ => None,
+            }
+            .ok_or_else(invalid)?;
+            if previous.is_some_and(|previous| bus.index() <= previous.index()) {
+                return Err(invalid());
+            }
+            previous = Some(bus);
+            let channels = decode_meter_channels(meters, "aux")?;
+            if channels.len() != master_channels {
+                return Err(invalid());
+            }
+            Ok(crate::AuxBusMeters { bus, channels })
+        })
+        .collect()
 }
 
 /// The `audio_meters` `monitor` field: `-`, or

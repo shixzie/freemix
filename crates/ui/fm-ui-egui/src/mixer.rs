@@ -3583,6 +3583,14 @@ fn draw_bus_mixer_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
                     },
                 ));
             }
+            let channels = state.audio_meters.as_ref().and_then(|meters| {
+                meters
+                    .aux
+                    .iter()
+                    .find(|aux| aux.bus == number)
+                    .map(|aux| aux.channels.as_slice())
+            });
+            bus_meter(ui, channels, 56.0, 14.0);
         });
     }
     ui.add_space(8.0);
@@ -3632,4 +3640,46 @@ fn draw_bus_mixer_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
             }
         });
     }
+}
+
+/// A compact two-bar meter for one aux bus, from its `audio_meters` record
+/// (Protocol 2.120, AU-002): a bar per channel on a -60 dBFS to 0 dBFS
+/// scale, with the peak in dBFS on hover.
+fn bus_meter(
+    ui: &mut Ui,
+    channels: Option<&[fm_protocol::AudioMeterChannel]>,
+    width: f32,
+    height: f32,
+) {
+    let l = l10n::locale(ui.ctx());
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(2), graphite_color());
+    let Some(channels) = channels else {
+        response.on_hover_text(l.text(Msg::BusMixerNoMeterHover));
+        return;
+    };
+    let level = |channel: &fm_protocol::AudioMeterChannel| {
+        #[allow(clippy::cast_precision_loss)] // a bounded millionth count
+        let amplitude = channel.peak_millionths as f32 / 1_000_000.0;
+        let db = 20.0 * amplitude.max(1e-6).log10();
+        (db, ((db + 60.0) / 60.0).clamp(0.0, 1.0))
+    };
+    let bar_width = (rect.width() - 3.0) / 2.0;
+    let mut readout = Vec::new();
+    for (index, channel) in channels.iter().take(2).enumerate() {
+        let (db, fraction) = level(channel);
+        #[allow(clippy::cast_precision_loss)] // at most two bars
+        let x = rect.left() + index as f32 * (bar_width + 3.0);
+        let bar = Rect::from_min_size(pos2(x, rect.top()), Vec2::new(bar_width, rect.height()));
+        let fill = Rect::from_min_size(
+            pos2(bar.left(), bar.bottom() - bar.height() * fraction),
+            Vec2::new(bar.width(), bar.height() * fraction),
+        );
+        ui.painter()
+            .rect_filled(fill, CornerRadius::same(1), PROGRAM.gamma_multiply(0.85));
+        readout.push(format!("{} dB", l.decimal(f64::from(db), 1)));
+    }
+    let readout = readout.join(" · ");
+    response.on_hover_text(format!("{}\n{}", readout, l.text(Msg::BusMixerMeterHover)));
 }

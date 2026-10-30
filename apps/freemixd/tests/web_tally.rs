@@ -2457,6 +2457,7 @@ fn operator_page_shows_strip_fx_gain_reduction_from_the_meter_feed() {
         limiter_millidb: limiter,
     };
     let record = AudioMetersMessage {
+        aux: Vec::new(),
         server: ServerIdentity {
             engine_id: "engine".to_owned(),
             project_id: "project".to_owned(),
@@ -4822,6 +4823,7 @@ fn operator_page_reads_strip_meters_like_the_rust_codec() {
         channels,
     };
     let record = AudioMetersMessage {
+        aux: Vec::new(),
         server: ServerIdentity {
             engine_id: "engine".to_owned(),
             project_id: "project".to_owned(),

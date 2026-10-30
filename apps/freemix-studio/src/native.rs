@@ -3689,6 +3689,7 @@ mod tests {
                     panic!("expected heartbeat");
                 };
                 if !self.send_unless_closed(&WireMessage::AudioMeters(AudioMetersMessage {
+                    aux: Vec::new(),
                     server: heartbeat.server.clone(),
                     sequence: heartbeat.sequence,
                     frame: 1,
