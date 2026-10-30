@@ -3112,16 +3112,18 @@ pub(crate) fn draw_bus_mixer_window(
         return;
     }
     let l = l10n::locale(context);
-    let close = crate::menu::help_modal(
-        context,
-        "studio-bus-mixer",
-        l.text(Msg::BusMixerTitle),
-        520.0,
-        |ui| draw_bus_mixer_contents(ui, state, intents),
-    );
-    if close {
-        *open = false;
-    }
+    // A floating, non-modal window: the operator keeps the console and the
+    // Program monitor in reach while riding a bus fader.
+    egui::Window::new(l.text(Msg::BusMixerTitle))
+        .id(egui::Id::new("studio-bus-mixer"))
+        .open(open)
+        .collapsible(false)
+        .resizable(false)
+        .default_width(520.0)
+        .show(context, |ui| {
+            ui.set_width(520.0);
+            draw_bus_mixer_contents(ui, state, intents);
+        });
 }
 
 #[allow(clippy::too_many_lines)] // one row per bus, then the outputs
