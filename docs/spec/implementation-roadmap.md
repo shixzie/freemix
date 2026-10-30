@@ -5743,8 +5743,10 @@ same raw Program pair after converting it to BGRA and planar audio
 (Protocol 2.122); no discovery catalogue entry is wired yet; VMX-compressed
 frames, corrupt-frame recovery, and hardware certification remain. FreeMix's plugin
 SDK is `fm-plugin-api` with the `fm-plugin-host` sandbox (manifest,
-versioned ABI, capability grants, state snapshots, quarantine); there is no
-VST3 host. Vendor capture and output adapters keep their SDKs out of the
+versioned ABI, capability grants, state snapshots, quarantine); the host API
+now also models an ordered plugin chain (up to eight unique plugins, bypass,
+per-slot latency and its effective sum, per-plugin state snapshots); there is
+no VST3 host, and no daemon renders through the chain yet. Vendor capture and output adapters keep their SDKs out of the
 portable workspace and implement the in-tree `fm-io-api` contracts.
 
 Exit: each adapter ships only with a platform-specific conformance report.

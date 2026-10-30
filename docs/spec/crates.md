@@ -130,7 +130,7 @@ GStreamer types remain private to that adapter.
 | `fm-guest` | Guest lobby/session state, mix-minus plans, chat, permissions |
 | `fm-presentations` | Slide/document import and presentation navigation |
 | `fm-virtual-set` | Virtual-set scene model, talent/key bindings, camera/zoom presets |
-| `fm-plugin-host-api` | Engine-side plugin lifecycle protocol |
+| `fm-plugin-host-api` | Engine-side plugin lifecycle protocol, the ordered plugin chain, bypass, latency, and per-plugin state snapshots |
 
 These crates express behavior through `fm-command` and graph descriptions. They
 do not own devices.

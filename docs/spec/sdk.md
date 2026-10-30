@@ -22,6 +22,15 @@ revisions, and durable events; it never links a plugin into its address space.
 A failed or quarantined plugin is reported and restarted without taking the
 show down.
 
+A plugin chain (`PluginChain`, `PluginSlot`) is the ordered processing path of
+one audio or video bus: up to eight unique plugins, each bypassable, each
+reporting up to 60,000 frames of latency, and each holding its plugin's last
+`StateSnapshot`. `effective_latency_frames` sums the active slots so the
+engine can delay parallel paths to match; bypassing a slot drops its latency
+and removes it from `active_plugins`. Insert, move, remove, bypass, latency,
+and snapshot edits are typed and bounded, and a snapshot from another plugin
+is refused.
+
 VST3, AU, and LV2 are not part of the contract and no VST3 license or host is
 required. The plugin ABI is the supported extension surface; a future adapter
 may host another format out of tree without changing the portable crates.

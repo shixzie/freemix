@@ -4,10 +4,14 @@
 //! Loading a plugin here means advancing the engine-side lifecycle; process and
 //! runtime management belong to a host implementation.
 
+mod chain;
 mod exchange;
 mod host;
 mod types;
 
+pub use chain::{
+    MAX_PLUGIN_CHAIN_SLOTS, MAX_PLUGIN_LATENCY_FRAMES, PluginChain, PluginChainError, PluginSlot,
+};
 pub use exchange::{
     DataBatch, DataMessage, EventBatch, EventMessage, ExchangeError, HeartbeatMessage,
     MutationIntent, PluginToEngine, ProtocolLimits,
