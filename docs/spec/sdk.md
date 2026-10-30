@@ -55,10 +55,11 @@ fully open, royalty-free, and in-tree.
   `OMTSettings Quality`, `OMTInfo`, and `OMTTally` strings, including the
   historical `Program=="false"` spelling the protocol keeps for compatibility.
 - **Discovery:** `_omt._tcp` names of the form
-  `HOSTNAME (Source Name)._omt._tcp.local`, `OMTAddress` register/removal
-  records, and a discovery server that replaces reported addresses with the
-  observed client address, repeats every registration to every client, and
-  sends removals on deregistration or disconnect.
+  `HOSTNAME (Source Name)._omt._tcp.local` advertised over DNS-SD
+  (`OmtAdvertiser` and `browse`), `OMTAddress` register/removal records, and
+  a discovery server that replaces reported addresses with the observed
+  client address, repeats every registration to every client, and sends
+  removals on deregistration or disconnect.
 - **Sender:** one TCP listener, a session per receiver, subscription gating,
   receiver-requested one-eighth preview frames, the combined tally from every
   receiver, the strongest suggested quality, and sender information.
@@ -72,9 +73,8 @@ combined tally, quality, preview selection, discovery registration/removal, and
 malformed frames.
 
 Not yet wired: `fm-io-api` source/sink adapters and a daemon input/output, the
-VMX-compressed codec, DNS-SD multicast advertisement, corrupt-frame recovery
-statistics, and hardware certification. The roadmap tracks them under
-`IN-018`/`IN-019`.
+VMX-compressed codec, corrupt-frame recovery statistics, and hardware
+certification. The roadmap tracks them under `IN-018`/`IN-019`.
 
 ## 4. Versioning and change policy
 

@@ -24,6 +24,7 @@
 #![allow(clippy::missing_panics_doc)]
 
 mod discovery;
+mod dns_sd;
 mod frame;
 mod metadata;
 mod receiver;
@@ -36,6 +37,7 @@ pub use discovery::{
     DISCOVERY_PORT, DiscoveryClient, DiscoveryError, DiscoveryRegistry, DiscoveryServer,
     OMT_SERVICE_TYPE, OmtAddress, SOURCE_PORT_END, SOURCE_PORT_START,
 };
+pub use dns_sd::{OMT_DNS_SD_SERVICE, OmtAdvertiser, browse, service_info};
 pub use frame::{
     AUDIO_EXTENDED_HEADER_BYTES, AudioFrame, ColorSpace, FRAME_HEADER_BYTES, Frame, FrameKind,
     MAX_FRAME_BYTES, MAX_METADATA_BYTES, MetadataFrame, OMT_VERSION, VIDEO_EXTENDED_HEADER_BYTES,

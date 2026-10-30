@@ -1755,6 +1755,9 @@ dependencies = [
 [[package]]
 name = "fm-io-omt"
 version = "0.1.0"
+dependencies = [
+ "mdns-sd",
+]
 
 [[package]]
 name = "fm-io-pipewire"

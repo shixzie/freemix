@@ -204,6 +204,8 @@ pub enum DiscoveryError {
     Io(String),
     /// A peer sent a frame that is not an OMT metadata record.
     Protocol(&'static str),
+    /// The DNS-SD library refused a name or record.
+    Mdns(String),
     /// The peer closed its connection.
     Closed,
 }
@@ -213,6 +215,7 @@ impl core::fmt::Display for DiscoveryError {
         match self {
             Self::Io(reason) => write!(formatter, "OMT discovery transport error: {reason}"),
             Self::Protocol(reason) => write!(formatter, "invalid OMT discovery record: {reason}"),
+            Self::Mdns(reason) => write!(formatter, "DNS-SD refused the OMT record: {reason}"),
             Self::Closed => formatter.write_str("the OMT discovery peer closed"),
         }
     }
@@ -382,9 +385,12 @@ fn serve_client(
                 };
                 broadcast(peers, &record);
             }
-            Err(DiscoveryError::Closed | DiscoveryError::Io(_) | DiscoveryError::Protocol(_)) => {
-                break;
-            }
+            Err(
+                DiscoveryError::Closed
+                | DiscoveryError::Io(_)
+                | DiscoveryError::Protocol(_)
+                | DiscoveryError::Mdns(_),
+            ) => break,
         }
     }
     let removals = registry.lock().expect("registry lock").remove_client(id);

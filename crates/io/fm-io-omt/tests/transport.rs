@@ -255,6 +255,22 @@ fn control_metadata_is_exact() {
 }
 
 #[test]
+fn dns_sd_names_the_source() {
+    let info = fm_io_omt::service_info(
+        "studio",
+        "Camera 1",
+        6500,
+        &[IpAddr::V4(Ipv4Addr::LOCALHOST)],
+    )
+    .unwrap();
+    assert_eq!(info.get_fullname(), "studio (Camera 1)._omt._tcp.local.");
+    assert_eq!(info.get_hostname(), "studio.local.");
+    assert_eq!(info.get_port(), 6500);
+    assert_eq!(fm_io_omt::OMT_DNS_SD_SERVICE, "_omt._tcp.local.");
+    assert!(fm_io_omt::service_info("bad\nname", "x", 6500, &[]).is_err());
+}
+
+#[test]
 fn discovery_registry_uses_the_observed_address() {
     let mut registry = DiscoveryRegistry::default();
     let registered = registry.register(
