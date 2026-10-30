@@ -117,6 +117,10 @@ impl ReplayPreviewJob {
                     (cell_width, cell_height),
                     &frame,
                 ),
+                // A live-edge angle has no closed segment yet: it stays
+                // black. A missing decode or a simulated daemon gets a
+                // tinted cell so the grid stays legible.
+                None if format.is_some() && tile.location.is_none() => {}
                 None => tint_cell(
                     &mut pixels,
                     (width, height),
