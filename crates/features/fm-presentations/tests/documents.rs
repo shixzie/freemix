@@ -293,7 +293,10 @@ cp {pdf} "$outdir/presentation.pdf""#,
         assert_eq!(error.state(), DocumentState::Failed);
     }
 
-    /// Whether process `pid` still runs (not gone, not a zombie).
+    /// Whether process `pid` still runs (not gone, not a zombie). Reads
+    /// `/proc`, so it and the helpers built on it are Linux-only, like
+    /// the tests that use them.
+    #[cfg(target_os = "linux")]
     fn running(pid: &str) -> bool {
         std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
             stat.rsplit(") ")
@@ -305,6 +308,7 @@ cp {pdf} "$outdir/presentation.pdf""#,
     /// A converter that leaves `sleep` running in the background (as
     /// `oosplash` leaves `soffice.bin`) and records its pid; `then` runs
     /// after it.
+    #[cfg(target_os = "linux")]
     fn converter_with_a_helper(directory: &Path, then: &str) -> (OfficeConverter, PathBuf) {
         let pid_file = directory.join("helper.pid");
         let program = fake_soffice(
@@ -317,6 +321,7 @@ cp {pdf} "$outdir/presentation.pdf""#,
         (OfficeConverter::with_program(program), pid_file)
     }
 
+    #[cfg(target_os = "linux")]
     fn assert_helper_stopped(pid_file: &Path) {
         let pid = std::fs::read_to_string(pid_file).unwrap();
         let pid = pid.trim();
