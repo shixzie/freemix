@@ -2579,7 +2579,22 @@ impl Runtime<'_> {
                     .control
                     .borrow()
                     .audio_plugin_status(self.authority, &request);
-                peer.reply(WireMessage::AudioPluginStatus(Box::new(status)))?;
+                let message = WireMessage::AudioPluginStatus(Box::new(status));
+                if encode_line(&message).is_ok() {
+                    peer.reply(message)?;
+                } else {
+                    peer.reply(WireMessage::Error(ErrorMessage {
+                        request_id: Some(request.request_id),
+                        current_revision: None,
+                        error: StructuredError {
+                            code: "status_too_large".into(),
+                            message: "the plugin chain is too long for one status line; shorten its saved state"
+                                .into(),
+                            fields: Vec::new(),
+                            retryable: false,
+                        },
+                    }))?;
+                }
                 Ok(())
             }
             // The highlight reel status (OR-013), to any session that may
