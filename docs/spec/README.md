@@ -23,7 +23,9 @@ surface documented in [feature-parity.md](feature-parity.md). It does not mean
 copying vMix source code, branding, proprietary templates, undocumented
 behavior, or third-party SDKs without permission. FreeMix ships its own
 license-free SDKs for media transport (`fm-io-omt`), device I/O
-(`fm-io-api`), and plugins (`fm-plugin-api`); see [sdk.md](sdk.md).
+(`fm-io-api`), and plugins (`fm-plugin-api`); see [sdk.md](sdk.md). Vendor
+SDKs such as NDI and DeckLink are optional adapters loaded at run time, never
+build requirements.
 
 ## 2. Product contract
 
@@ -100,7 +102,8 @@ server. Crashing or restarting the UI must not stop an on-air production.
 4. [Rust workspace and crates](crates.md) — crate ownership, dependency rules,
    feature flags, and compilation strategy.
 5. [SDKs](sdk.md) — FreeMix's own plugin, device I/O, and OMT transport SDKs,
-   and why no vendor SDK or license is required.
+   why no vendor SDK or license is required, and how optional vendor adapters
+   load at run time.
 6. [Media pipeline](media-pipeline.md) — ingest, synchronization, audio/video
    graphs, backpressure, replay, recording, and output.
 7. [GPU and rendering](gpu-and-rendering.md) — surfaces, color, compositing,

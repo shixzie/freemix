@@ -4,7 +4,8 @@
 
 FreeMix ships its own versioned SDKs instead of depending on licensed
 vendor SDKs. The portable workspace builds, tests, and runs their reference
-paths without any third-party SDK, header, or runtime library.
+paths without any third-party SDK, header, or runtime library. Optional vendor
+adapters (section 2) open their vendor's runtime only at run time.
 
 ## 1. Plugin SDK
 
@@ -50,12 +51,16 @@ implements: discovery, formats, clocks, health, hot-plug, source/sink
 factories, and bounded error reporting. Platform crates implement it directly
 (`fm-io-linux`, `fm-io-macos`, `fm-io-network`, `fm-io-srt`, `fm-io-webrtc`).
 
-Vendor hardware adapters (Blackmagic, AJA, Bluefish444, and similar) are
-optional and outside the portable workspace: they implement the same
-`fm-io-api` contracts in their own crate and runner, and keep vendor headers
-and runtime dependencies out of the core crates. The capability matrix records
-which adapter paths are built and certified; a missing vendor adapter never
-prevents a build.
+Vendor adapters (NDI, Blackmagic, AJA, Bluefish444, and similar) are
+optional: each implements the same `fm-io-api` contracts in its own crate.
+An adapter may live in this workspace when it opens the vendor's shared
+library at run time
+([platform-portability.md](platform-portability.md) section 4), so the
+build needs no vendor SDK and a missing runtime reports the capability
+unsupported; otherwise it lives out of tree in its own runner. Either way
+vendor types and runtime dependencies stay out of the core crates. The
+capability matrix records which adapter paths are built and certified; a
+missing vendor adapter or runtime never prevents a build.
 
 ## 3. OMT transport
 
@@ -111,5 +116,6 @@ certification. The roadmap tracks them under `IN-018`/`IN-019`.
   every consumer updates together.
 - SDK records are bounded and validated at every boundary; unknown or oversized
   input is refused with a typed status, never truncated silently.
-- Vendor SDKs may implement these contracts out of tree but never leak headers,
-  symbol tables, or runtime dependencies into portable crates.
+- Vendor adapters implement these contracts in-tree (runtime-loaded) or out of
+  tree, but never leak vendor types, headers, or link-time runtime
+  dependencies into portable crates.

@@ -104,14 +104,17 @@ They are target-specific leaves; portable crates never depend on them.
 | `fm-io-macos` | AVFoundation, CoreAudio, ScreenCaptureKit, virtual devices |
 | `fm-io-pipewire` | libpipewire loaded at run time: the narrow audited `unsafe` boundary reading a shared PipeWire video stream, and its SPA pods |
 | `fm-io-linux` | PipeWire, V4L2, ALSA/JACK, Wayland/X11 capture, virtual devices |
+| `fm-io-ndi` | NDI send/receive, discovery, and tally through the NDI runtime loaded at run time |
 | `fm-io-decklink` | Blackmagic capture/output and key/fill |
 | `fm-io-aja` | AJA capture/output and key/fill |
 | `fm-io-bluefish` | Bluefish444 capture/output |
 
-Vendor crates are optional and implement FreeMix's own `fm-io-api` contracts;
-their vendor SDKs stay out of this workspace, and a missing vendor SDK never
-prevents the portable build. FreeMix needs no licensed AV-over-IP, plugin, or
-capture SDK: OMT is implemented in-tree (`fm-io-omt`), plugins use
+Vendor crates are optional and implement FreeMix's own `fm-io-api` contracts.
+They load their vendor runtime at run time, with `unsafe` confined to audited
+modules as in `fm-io-pipewire`, so no vendor SDK is needed to build and a
+missing vendor runtime never prevents the portable build. Only composition
+roots depend on them, behind a feature. FreeMix needs no licensed AV-over-IP,
+plugin, or capture SDK for any core workflow: OMT is implemented in-tree (`fm-io-omt`), plugins use
 `fm-plugin-api`, and device adapters implement `fm-io-api`. A single adapter
 may use GStreamer internally if it is the best supported platform route, but
 GStreamer types remain private to that adapter.
