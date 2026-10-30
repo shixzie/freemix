@@ -617,17 +617,6 @@ pub(crate) fn draw_mixer(
         ui.ctx().request_repaint_after(METER_REPAINT_INTERVAL);
     }
     crate::theme::panel_header(ui, |ui| {
-        if state.view.is_some()
-            && ui
-                .add(small_button(l.text(Msg::BusMixerKey)))
-                .hint(
-                    l.text(Msg::BusMixerKeyHover),
-                    Msg::ReasonNotSynchronized.en(),
-                )
-                .clicked()
-        {
-            *bus_mixer = true;
-        }
         if state.view.is_some() {
             crate::theme::disclosure(
                 ui,
@@ -693,6 +682,19 @@ pub(crate) fn draw_mixer(
                     l.text(Msg::MeterLegendHover)
                 ));
             }
+        }
+        // Added last: the header lays out from the right, so the BUSES key
+        // sits at the left edge and never takes the meter legend's room.
+        if state.view.is_some()
+            && ui
+                .add(small_button(l.text(Msg::BusMixerKey)))
+                .hint(
+                    l.text(Msg::BusMixerKeyHover),
+                    Msg::ReasonNotSynchronized.en(),
+                )
+                .clicked()
+        {
+            *bus_mixer = true;
         }
     });
     if reset_all {
