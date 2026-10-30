@@ -215,9 +215,10 @@ pub(super) fn encode_operation(
             push("input", input.to_string())?;
             push("speed", speed.percent().to_string())
         }
-        ReplayOperation::Pause { input } | ReplayOperation::CueIn { input } => {
-            push("input", input.to_string())
-        }
+        ReplayOperation::Pause { input }
+        | ReplayOperation::CueIn { input }
+        | ReplayOperation::PlaylistNext { input }
+        | ReplayOperation::PlaylistPrev { input } => push("input", input.to_string()),
         ReplayOperation::Step { input, frames } => {
             if !crate::replay_step_is_valid(*frames) {
                 return Err(invalid("frames", frames.to_string()));
@@ -228,9 +229,6 @@ pub(super) fn encode_operation(
         ReplayOperation::PlaylistSet { input, entries } => {
             push("input", input.to_string())?;
             push("entries", encode_playlist(entries)?)
-        }
-        ReplayOperation::PlaylistNext { input } | ReplayOperation::PlaylistPrev { input } => {
-            push("input", input.to_string())
         }
         ReplayOperation::Return { input, to } => {
             push("input", input.to_string())?;

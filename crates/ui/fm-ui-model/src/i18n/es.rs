@@ -10493,6 +10493,26 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReplayPlaylistMissingEvent,
         t("el evento {event} ya no existe"),
     ),
+    (
+        Msg::ReplayPlaylistUpHover,
+        t("Mover esta entrada antes en la lista"),
+    ),
+    (
+        Msg::ReplayPlaylistDownHover,
+        t("Mover esta entrada después en la lista"),
+    ),
+    (
+        Msg::ReplayPlaylistSpeedHover,
+        t("La velocidad a la que reproduce esta entrada"),
+    ),
+    (
+        Msg::ReplayPlaylistReasonFirst,
+        t("la entrada ya es la primera"),
+    ),
+    (
+        Msg::ReplayPlaylistReasonLast,
+        t("la entrada ya es la última"),
+    ),
     (Msg::ReelSection, t("Reels destacados")),
     (
         Msg::ReelNoReels,

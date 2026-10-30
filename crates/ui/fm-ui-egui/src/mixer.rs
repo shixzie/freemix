@@ -3509,6 +3509,7 @@ pub(crate) fn draw_bus_mixer_window(
     }
 }
 
+#[allow(clippy::too_many_lines)] // one row per bus, then the outputs
 fn draw_bus_mixer_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
     let l = l10n::locale(ui.ctx());
     let Some(view) = &state.view else {

@@ -953,6 +953,7 @@ fn draw_player(
 /// The playlist under one Replay input's transport (Protocol 2.119): its
 /// entries in order with the current one lit, and ADD CUED, NEXT, PREV, and
 /// CLEAR keys.
+#[allow(clippy::too_many_lines)] // the entry row and its keys, in one place
 fn draw_playlist(
     ui: &mut Ui,
     l: Locale,
@@ -962,6 +963,7 @@ fn draw_playlist(
     block: Option<&'static str>,
     intents: &mut Vec<StudioIntent>,
 ) {
+    let input = player.input;
     let empty = player.playlist.is_empty();
     let full = player.playlist.len() >= MAX_REPLAY_PLAYLIST_ENTRIES;
     ui.add_space(4.0);
@@ -1077,6 +1079,41 @@ fn draw_playlist(
         );
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
+            // Reordering keys, then the entry, its angle, its speed, and
+            // the remove key.
+            for (icon, enabled, hover, reason, target) in [
+                (
+                    crate::theme::KeyIcon::Up,
+                    index > 0,
+                    Msg::ReplayPlaylistUpHover,
+                    Msg::ReplayPlaylistReasonFirst.en(),
+                    index.wrapping_sub(1),
+                ),
+                (
+                    crate::theme::KeyIcon::Down,
+                    index + 1 < count,
+                    Msg::ReplayPlaylistDownHover,
+                    Msg::ReplayPlaylistReasonLast.en(),
+                    index + 1,
+                ),
+            ] {
+                let response = add_icon_button(
+                    ui,
+                    block.is_none() && enabled,
+                    key_button("", None, 20.0),
+                    icon,
+                    l.text(hover),
+                )
+                .hint(l.text(hover), block.unwrap_or(reason));
+                if response.clicked() && target < count {
+                    let mut entries = player.playlist.clone();
+                    entries.swap(index, target);
+                    intents.push(StudioIntent::Replay(ReplayOperation::PlaylistSet {
+                        input: player.input,
+                        entries,
+                    }));
+                }
+            }
             let label = format!("{}. {name}", index + 1);
             let text = if current {
                 RichText::new(label).color(AMBER)
@@ -1089,10 +1126,36 @@ fn draw_playlist(
                 hover
             };
             ui.label(text).on_hover_text(hover);
-            ui.label(caption(format!(
-                "{angle} · {}",
-                l.percent(i64::from(entry.speed.percent()))
-            )));
+            ui.label(caption(angle))
+                .on_hover_text(l.text(Msg::ReplayAngleHover));
+            ComboBox::from_id_salt(("studio-replay-playlist-speed", input, index))
+                .selected_text(l.percent(i64::from(entry.speed.percent())))
+                .width(56.0)
+                .show_ui(ui, |ui| {
+                    for speed in SPEEDS {
+                        if ui
+                            .add_enabled(
+                                block.is_none(),
+                                egui::Button::selectable(
+                                    speed == entry.speed,
+                                    l.percent(i64::from(speed.percent())),
+                                ),
+                            )
+                            .hint(l.text(Msg::ReplayPlaylistSpeedHover), block.unwrap_or(""))
+                            .clicked()
+                            && speed != entry.speed
+                        {
+                            let mut entries = player.playlist.clone();
+                            entries[index].speed = speed;
+                            intents.push(StudioIntent::Replay(ReplayOperation::PlaylistSet {
+                                input: player.input,
+                                entries,
+                            }));
+                        }
+                    }
+                })
+                .response
+                .hint(l.text(Msg::ReplayPlaylistSpeedHover), block.unwrap_or(""));
             let remove = add_icon_button(
                 ui,
                 block.is_none(),

@@ -5445,6 +5445,11 @@ impl NativeMasterRuntime {
                         )?;
                 }
             }
+            // A frame without a project renders no aux buses, so their
+            // meters must not keep the last project frame's levels.
+            for meter in &mut self.scratch.aux_meters {
+                *meter = ChannelMeter::default();
+            }
         }
         for &(input, render_plan) in &self.scratch.plans {
             self.sources
