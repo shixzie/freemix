@@ -1158,8 +1158,13 @@ fn media_import_dedupes_identical_files_and_never_overwrites() {
     let store = temp.store("show.freemix");
     write(&temp.path("a/clip.mov"), b"first");
     write(&temp.path("b/clip.mov"), b"second");
-    write(&temp.path("c/CON.mov"), b"device");
-    write(&temp.path("d/what?.mov"), b"query");
+    // A device name and a `?` cannot be file names on Windows, so these
+    // source files exist only elsewhere (the import renames them anyway).
+    let foreign_names = cfg!(unix);
+    if foreign_names {
+        write(&temp.path("c/CON.mov"), b"device");
+        write(&temp.path("d/what?.mov"), b"query");
+    }
 
     let first = store.import_media_file(&temp.path("a/clip.mov")).unwrap();
     assert_eq!(first.asset_uri, "asset://clip.mov");
@@ -1169,20 +1174,22 @@ fn media_import_dedupes_identical_files_and_never_overwrites() {
     assert_eq!(again.disposition, AssetDisposition::Reused);
     let second = store.import_media_file(&temp.path("b/clip.mov")).unwrap();
     assert_eq!(second.asset_uri, "asset://clip-2.mov");
-    assert_eq!(
-        store
-            .import_media_file(&temp.path("c/CON.mov"))
-            .unwrap()
-            .asset_uri,
-        "asset://_CON.mov"
-    );
-    assert_eq!(
-        store
-            .import_media_file(&temp.path("d/what?.mov"))
-            .unwrap()
-            .asset_uri,
-        "asset://what_.mov"
-    );
+    if foreign_names {
+        assert_eq!(
+            store
+                .import_media_file(&temp.path("c/CON.mov"))
+                .unwrap()
+                .asset_uri,
+            "asset://_CON.mov"
+        );
+        assert_eq!(
+            store
+                .import_media_file(&temp.path("d/what?.mov"))
+                .unwrap()
+                .asset_uri,
+            "asset://what_.mov"
+        );
+    }
     assert_eq!(
         fs::read(store.resolve_asset_uri("asset://clip.mov").unwrap()).unwrap(),
         b"first"

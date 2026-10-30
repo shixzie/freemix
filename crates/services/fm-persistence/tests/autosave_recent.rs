@@ -383,9 +383,11 @@ fn recent_projects_document_is_strict() {
         fs::write(&file, document).unwrap();
         RecentProjects::load(&file, 10)
     };
+    // An entry's path must be absolute, which on Windows needs a drive.
+    let drive = if cfg!(windows) { "C:" } else { "" };
     let entry = |extra: &str| {
         format!(
-            r#"{{"contract":"freemix.recent-projects","entries":[{{"path":"/a/show.freemix","name":"A","opened_at_unix_ms":1{extra}}}]}}"#
+            r#"{{"contract":"freemix.recent-projects","entries":[{{"path":"{drive}/a/show.freemix","name":"A","opened_at_unix_ms":1{extra}}}]}}"#
         )
     };
 
@@ -393,7 +395,7 @@ fn recent_projects_document_is_strict() {
     assert_eq!(
         list.entries(),
         [RecentProject {
-            path: PathBuf::from("/a/show.freemix"),
+            path: PathBuf::from(format!("{drive}/a/show.freemix")),
             name: "A".into(),
             opened_at_unix_ms: 1,
         }]
@@ -421,9 +423,9 @@ fn recent_projects_document_is_strict() {
         Err(RecentProjectsError::Shape(_))
     ));
     assert!(matches!(
-        load(
-            r#"{"contract":"freemix.recent-projects","entries":[{"path":"/a.freemix","name":"A","opened_at_unix_ms":1},{"path":"/a.freemix","name":"B","opened_at_unix_ms":2}]}"#
-        ),
+        load(&format!(
+            r#"{{"contract":"freemix.recent-projects","entries":[{{"path":"{drive}/a.freemix","name":"A","opened_at_unix_ms":1}},{{"path":"{drive}/a.freemix","name":"B","opened_at_unix_ms":2}}]}}"#
+        )),
         Err(RecentProjectsError::DuplicatePath(_))
     ));
     // A UTF-8 path must use `path`, never `path_hex`.
