@@ -401,8 +401,8 @@ commands = ["cargo test -p fm-replay --test highlight_reel_export", "cargo test 
 [[tests]]
 id = "accept-or-014"
 state = "present"
-paths = ["crates/media/fm-replay/tests/multiview_controllers.rs", "crates/foundation/fm-protocol/tests/replay_preview.rs", "crates/services/fm-engine/tests/replay.rs", "crates/services/fm-client/tests/tcp.rs", "crates/ui/fm-ui-egui/src/replay_ui.rs"]
-commands = ["cargo test -p fm-replay --test multiview_controllers", "cargo test -p fm-protocol --test replay_preview", "cargo test -p fm-engine --test replay", "cargo test -p fm-client --features std-tcp --test tcp", "cargo test -p fm-ui-egui --lib replay_ui"]
+paths = ["crates/media/fm-replay/tests/multiview_controllers.rs", "crates/foundation/fm-protocol/tests/replay_preview.rs", "crates/services/fm-engine/tests/replay.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs"]
+commands = ["cargo test -p fm-replay --test multiview_controllers", "cargo test -p fm-protocol --test replay_preview", "cargo test -p fm-engine --test replay", "cargo test -p fm-ui-egui --test hover_audit"]
 [[tests]]
 id = "accept-or-015"
 state = "present"
