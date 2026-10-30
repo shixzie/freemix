@@ -340,6 +340,7 @@ Build disposable prototypes, not production abstractions.
 6. Validate FFmpeg/GStreamer redistribution and codec patent posture. No
    licensed AV-over-IP, plugin, capture, or output SDK is required: OMT,
    the plugin ABI, and the device I/O contracts are in-tree and license-free.
+   Vendor adapters (NDI, DeckLink, AJA) are optional and runtime-loaded.
 7. Acquire representative GPU, capture, audio, controller, and storage hardware.
 8. Freeze the vMix 29 feature-parity ledger and tag every row with acceptance
    owner and applicable platform.
@@ -5824,15 +5825,18 @@ Parallel adapters, each with its own certification:
    key/fill, reference.
 3. Bluefish444 and prioritized capture families through the same SDK.
 4. OMT send/receive, alpha, tally/metadata, direct record where possible.
-   FreeMix implements OMT 1.0 itself (`fm-io-omt`); no NDI license is used.
-5. Virtual camera/audio devices with signing/install/uninstall.
-6. Genlock/PTP and timecode workflows.
-7. Interlaced output and advanced deinterlace.
-8. 10-bit HDR ingest, compose, scopes, record, stream, display.
-9. FreeMix plugin host through the in-tree plugin ABI; no VST3 license or host.
-10. UHD Profile B certification and multi-GPU policy if benchmarks justify it.
+   FreeMix implements OMT 1.0 itself (`fm-io-omt`), which stays the default
+   AV-over-IP path.
+5. NDI send/receive, discovery, and tally as an optional runtime-loaded
+   vendor adapter (`fm-io-ndi`) that opens the NDI runtime when present.
+6. Virtual camera/audio devices with signing/install/uninstall.
+7. Genlock/PTP and timecode workflows.
+8. Interlaced output and advanced deinterlace.
+9. 10-bit HDR ingest, compose, scopes, record, stream, display.
+10. FreeMix plugin host through the in-tree plugin ABI; no VST3 license or host.
+11. UHD Profile B certification and multi-GPU policy if benchmarks justify it.
 
-Current implementation boundary for items 1-4 and 9: `fm-io-omt` is
+Current implementation boundary for items 1-5 and 10: `fm-io-omt` is
 FreeMix's own OMT 1.0 implementation, written from the published protocol.
 It provides the 16-byte frame header, video and audio extended headers, the
 raw `UYVY`, `YUY2`, `BGRA`, `NV12`, `YV12`, `UYVA`, `P216`, and `PA16`

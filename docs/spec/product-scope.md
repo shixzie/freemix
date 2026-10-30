@@ -170,16 +170,30 @@ third-party service integration remains incomplete until an authorized adapter
 ships. Open standards cover AV-over-IP (OMT), streaming (RTMP/RTMPS/SRT),
 browser guests (WebRTC), plugins (FreeMix's plugin ABI), and capture/output
 (FreeMix's I/O contracts), so no vendor SDK or license is needed for those
-rows.
+rows. Vendor protocols such as NDI may be added beside them as optional
+runtime-loaded adapters (section 9); they never replace the open path.
 
 ## 9. Legal and licensing constraints
 
 - FFmpeg configuration and redistribution must be reviewed per shipped codec,
   platform, and distribution model.
-- Third-party hardware and service integrations may use their own SDKs out of
-  tree; vendor headers and runtime dependencies never enter portable crates.
-  FreeMix's own OMT transport, plugin ABI, and I/O contracts are in-tree and
-  license-free, so no NDI, VST3, or AV-over-IP license is required.
+- Third-party hardware, AV-over-IP, and service integrations (NDI, Blackmagic
+  DeckLink, AJA, and similar) may live in-tree as optional runtime-loaded
+  vendor adapters ([platform-portability.md](platform-portability.md)
+  section 4): the vendor's shared library is opened at run time, so no vendor
+  SDK, header package, or runtime is needed to build, test, or run the
+  portable workspace, and a machine without the runtime reports the
+  capability unsupported. An adapter whose SDK cannot be loaded this way, or
+  whose license forbids it, stays out of tree. Vendor types never cross an
+  adapter's public API.
+- A vendor adapter ships only after its license, trademark, and
+  redistribution terms are reviewed, and carries the required attribution
+  (for NDI: a link to ndi.video where NDI is used and the "NDI® is a
+  registered trademark of Vizrt NDI AB" notice). Bundled vendor runtimes go
+  in the application's own directory and in the third-party notice/SBOM.
+- FreeMix's own OMT transport, plugin ABI, and I/O contracts are in-tree and
+  license-free and remain the default, so no NDI, VST3, or AV-over-IP license
+  is required for any core workflow.
 - H.264, HEVC, AAC, MPEG-2, and other patent-encumbered formats require a
   distribution and territory assessment.
 - Product branding, templates, media, and UI must be original.

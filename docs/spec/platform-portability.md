@@ -56,21 +56,31 @@ matching rules. Silent substitution is forbidden for on-air devices.
 
 ## 4. Vendor and proprietary integrations
 
-Each vendor adapter is a separate optional crate and distributable component.
-It owns:
+Each vendor adapter (NDI, Blackmagic DeckLink, AJA, Bluefish444, and similar)
+is a separate optional crate and distributable component. It may live in this
+workspace when it loads the vendor's shared library at run time (as
+`fm-io-pipewire` loads `libpipewire`): building, testing, and running the
+portable workspace then needs no vendor SDK, header package, or runtime on any
+OS, and a machine without the runtime reports the capability unsupported. An
+adapter whose SDK can only be linked at build time, or whose license forbids
+in-tree code, stays out of tree. It owns:
 
 - SDK/header discovery;
 - version compatibility;
-- native library loading;
+- native library loading at run time, never build-time linking;
 - license notice and installer feature;
 - capability translation;
-- unsafe FFI and callback lifecycle;
+- unsafe FFI and callback lifecycle, confined to audited modules: the crate
+  sets `unsafe_code = "deny"`, allows it only in its `sys` and adapter
+  modules, and documents every `unsafe` block with a `SAFETY` comment;
+- a public API of FreeMix (`fm-io-api`) types only, never vendor types;
 - simulator or recorded fixture for CI.
 
-Vendor hardware and named service integrations ship only after legal and
-redistribution approval, outside the portable workspace. The in-tree OMT
-transport, FreeMix plugin ABI, and I/O contracts need no vendor SDK or license
-and keep the same dependency direction.
+Vendor hardware, AV-over-IP, and named service integrations ship only after
+legal, trademark, and redistribution approval, and only composition roots
+depend on them, behind a cargo feature. The in-tree OMT transport, FreeMix
+plugin ABI, and I/O contracts need no vendor SDK or license, remain the
+default, and keep the same dependency direction.
 
 Archived vMix surfaces such as SWF/Flash, WPF/XAML titles, DirectShow-only devices,
 Windows Media output, and VB.NET scripts are isolated import plugins, not
@@ -105,9 +115,11 @@ and virtual-device permissions vary by OS. The engine:
 
 - CI cross-checks workspace metadata on all targets; release builds run on their
   native OS.
-- Vendor-SDK adapters build only in their own runners; the portable workspace,
-  the in-tree OMT transport, the plugin SDK, and the reference device paths
-  build everywhere with no vendor SDK.
+- Runtime-loaded vendor adapters build everywhere with no vendor SDK, like the
+  rest of the portable workspace; tests that need the real runtime or hardware
+  skip without it unless a `FM_REQUIRE_<VENDOR>=1` switch is set, and run in
+  an optional job or runner that installs it. Out-of-tree adapters build only
+  in their own runners.
 - Installers bundle exact redistributable native libraries and generate a
   third-party notice/SBOM.
 - Artifacts are code-signed; macOS is notarized; update manifests are signed.
