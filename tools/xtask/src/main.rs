@@ -29,6 +29,13 @@ const STATUS_ORDER: [&str; 7] = [
     "removed",
 ];
 const PRIORITY_ORDER: [&str; 4] = ["P0", "P1", "P2", "P3"];
+/// A row whose implemented surface is a deterministic model with no device,
+/// socket, process, or browser adapter.
+const FEATURE_KIND_MODEL: &str = "model";
+/// A row with at least one real integration to a device, socket, process, or
+/// browser.
+const FEATURE_KIND_ADAPTER: &str = "adapter";
+const FEATURE_KINDS: [&str; 2] = [FEATURE_KIND_MODEL, FEATURE_KIND_ADAPTER];
 
 #[derive(Clone, Debug)]
 struct Registry {
@@ -58,6 +65,7 @@ struct Waiver {
 #[derive(Clone, Debug)]
 struct Feature {
     id: String,
+    kind: String,
     priority: String,
     phase: u8,
     owner: String,
@@ -200,6 +208,12 @@ fn render_capability_matrix(ledger: &Ledger) -> String {
     );
     output.push_str("No capability profile is certified. This matrix reports ledger status and\n");
     output.push_str("local acceptance-test evidence only.\n");
+    output.push_str(
+        "\nKind `model` marks a feature whose implemented surface is a deterministic\n\
+         model with no device, socket, process, or browser adapter; its acceptance test\n\
+         covers contracts only, so the row is not a usable feature. Kind `adapter` marks\n\
+         a feature with at least one real integration.\n",
+    );
     for profile in &ledger.registry.profiles {
         let features: Vec<_> = ledger
             .features
@@ -213,13 +227,14 @@ fn render_capability_matrix(ledger: &Ledger) -> String {
             .collect();
         let _ = write!(output, "\n## {profile}\n\n");
         output.push_str(&summary_line(&features));
-        output.push_str("\n\n| ID | Pri | Phase | Status | Owner | Acceptance |\n");
-        output.push_str("|---|---|---|---|---|---|\n");
+        output.push_str("\n\n| ID | Kind | Pri | Phase | Status | Owner | Acceptance |\n");
+        output.push_str("|---|---|---|---|---|---|---|\n");
         for feature in &features {
             let _ = writeln!(
                 output,
-                "| {} | {} | {} | {} | {} | {} |",
+                "| {} | {} | {} | {} | {} | {} | {} |",
                 feature.id,
+                feature.kind,
                 feature.priority,
                 feature.phase,
                 feature.status,
@@ -543,6 +558,7 @@ fn build_feature(
     let context = format!("feature record {record_number}");
     let feature = Feature {
         id: remove_string(&mut values, "id", &context)?,
+        kind: remove_string(&mut values, "kind", &context)?,
         priority: remove_string(&mut values, "priority", &context)?,
         phase: remove_integer(&mut values, "phase", &context)?,
         owner: remove_string(&mut values, "owner", &context)?,
@@ -963,6 +979,14 @@ fn validate_feature(
         return Err(format!(
             "{} has invalid status {}",
             feature.id, feature.status
+        ));
+    }
+    if !FEATURE_KINDS.contains(&feature.kind.as_str()) {
+        return Err(format!(
+            "{} has invalid kind {}; expected one of {}",
+            feature.id,
+            feature.kind,
+            FEATURE_KINDS.join(", ")
         ));
     }
     if feature.status == "verified" {
@@ -1531,6 +1555,7 @@ mod tests {
     ) -> Feature {
         Feature {
             id: id.to_owned(),
+            kind: FEATURE_KIND_ADAPTER.to_owned(),
             priority: priority.to_owned(),
             phase,
             owner: "team".to_owned(),
@@ -1602,12 +1627,44 @@ mod tests {
             workstreams = ["media"]
             [[features]]
             id = "IN-001"
+            kind = "adapter"
         "#;
         assert!(
             parse_ledger(source)
                 .unwrap_err()
                 .contains("missing priority")
         );
+    }
+
+    #[test]
+    fn rejects_unknown_feature_kind() {
+        assert_invalid(
+            |ledger| {
+                ledger
+                    .features
+                    .iter_mut()
+                    .find(|feature| feature.id == "RC-008")
+                    .unwrap()
+                    .kind = "device".to_owned();
+            },
+            "RC-008 has invalid kind device; expected one of model, adapter",
+        );
+    }
+
+    #[test]
+    fn matrix_prints_feature_kind_and_model_note() {
+        let mut ledger = sample_ledger();
+        ledger
+            .features
+            .iter_mut()
+            .find(|feature| feature.id == "IN-003")
+            .unwrap()
+            .kind = FEATURE_KIND_MODEL.to_owned();
+        let rendered = render_capability_matrix(&ledger);
+        assert!(rendered.contains("| IN-003 | model | P2 | 3 | implemented |"));
+        assert!(rendered.contains("| IN-001 | adapter | P0 | 1 | planned |"));
+        assert!(rendered.contains("Kind `model` marks a feature"));
+        assert!(rendered.contains("so the row is not a usable feature"));
     }
 
     #[test]
@@ -1945,8 +2002,8 @@ mod tests {
         let rendered = render_capability_matrix(&sample_ledger());
         let empty = section(&rendered, "empty");
         assert!(empty.contains("Total: 0 features. Status: none. Priority: none."));
-        assert!(empty.contains("| ID | Pri | Phase | Status | Owner | Acceptance |"));
-        assert!(empty.contains("|---|---|---|---|---|---|"));
+        assert!(empty.contains("| ID | Kind | Pri | Phase | Status | Owner | Acceptance |"));
+        assert!(empty.contains("|---|---|---|---|---|---|---|"));
         let rows: Vec<_> = empty
             .lines()
             .filter(|line| line.starts_with("| ") && !line.starts_with("| ID |"))

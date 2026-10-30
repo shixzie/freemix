@@ -2,9 +2,10 @@
 
 ## Toolchain And Checks
 
-- CI pins Rust 1.97.0; the workspace uses edition 2024 and has no `rust-toolchain` file.
+- `rust-toolchain.toml` pins Rust 1.97.0 for local builds and CI; the workspace uses edition 2024.
 - A bare root Cargo command covers only the curated `default-members`. Use `-p <package>` while iterating and `--workspace` for repository-wide verification.
-- Match CI with `cargo fmt --all --check`, `cargo check --workspace --all-targets --all-features`, `cargo test --workspace --all-targets --all-features`, and `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+- Match CI with `cargo fmt --all --check`, `cargo check --workspace --all-targets --all-features`, `cargo test --workspace --all-targets --all-features`, and `cargo clippy --workspace --all-targets --all-features -- -D warnings`. Pull requests run these on Linux only; macOS and Windows run on merge, nightly, and manual dispatch.
+- Long-running tests run in the scheduled `soak` job: `cargo test -p freemixd --test native_soak --all-features -- --ignored` and the process target.
 - Run policy gates with `cargo run -p xtask -- parity check`, `cargo run -p xtask -- deps check`, and `cargo run -p xtask -- matrix check`; `cargo run -p xtask -- matrix write` regenerates the capability matrix after ledger changes.
 - Focus an integration target with `cargo test -p <package> --test <target>`; append `<test-name> -- --exact` for one named test. Acceptance commands are recorded in `parity.toml`.
 

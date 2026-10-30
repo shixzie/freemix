@@ -4930,8 +4930,8 @@ Generate supported clients from the transport schema, then wrap them with
 handwritten domain-friendly APIs:
 
 - Rust client for studio, CLI, plugins, and integrators;
-- TypeScript client for browser integrations even though the shipped web app is
-  Rust/Wasm;
+- TypeScript client for browser integrations; the shipped web surface is four
+  self-contained HTML pages served by `freemixd`, not a Wasm application;
 - small C ABI for hardware controllers;
 - OpenAPI and message-schema documentation.
 

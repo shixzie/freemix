@@ -271,12 +271,13 @@ per week of work; items 1 and 2 land before any new feature breadth.
    `expect_used` as warnings for `freemixd` only and convert the realizer's
    sites first into typed errors routed through `output_failure`; a panic
    on the pass loop ends the show.
-4. **Tier the CI matrix and cache builds.** CI runs the all-features
-   workspace tests on three OSes with no build cache, a toolchain pinned
-   only in the workflow, 51 process-spawning daemon tests, and 40 s
-   timeouts. Add a Rust build cache and a `rust-toolchain.toml`, run the
-   Linux workspace job per pull request and the macOS and Windows jobs on
-   merge or nightly, and label soak and process tests to run on a schedule.
+4. ~~**Tier the CI matrix and cache builds.**~~ Landed: `rust-toolchain.toml`
+   pins 1.97.0 for local builds and CI, `Swatinem/rust-cache` caches each OS
+   target, pull requests run the Linux workspace job only, and macOS and
+   Windows run on merge, nightly, and manual dispatch. A scheduled `soak` job
+   installs FFmpeg and Vulkan, runs the ignored `native_soak` diagnostic, and
+   runs the process target; no per-test label mechanism was needed because the
+   soak test is already `#[ignore]` and the process target is a separate file.
 5. **Spike one zero-copy or hardware encode path.** Every native output is
    composed on wgpu, read back to a `CpuVideoFrame`, and piped as rawvideo
    to an FFmpeg child; there is no shared-texture encode and no hardware
@@ -284,19 +285,21 @@ per week of work; items 1 and 2 land before any new feature breadth.
    (VideoToolbox through `fm-io-macos`, or VA-API on Linux) and measure
    1080p60 with two outputs before and after; the CPU path stays the
    portable fallback.
-6. **Mark model-only crates and rows.** `fm-io-srt`, `fm-io-webrtc`,
-   `fm-browser-input`, `fm-guest`, `fm-social`, `fm-vmix-compat`, and
-   `fm-ptz` open no socket, embed no browser, and drive no device by their
-   own module docs. Add a `kind = "model" | "adapter"` field to each
-   `parity.toml` feature so the generated matrix and the site's features
-   page stop reading a `present` test as a usable feature.
-7. **Record the runtime decisions the spec still contradicts.** `docs/spec`
-   describes Tokio for the service runtime, a Rust/Wasm web client, an
-   `fm-ui-widgets` crate, and native `fm-gpu-dx12`/`metal`/`vulkan` crates;
-   the code is synchronous with std threads, the web surface is four served
-   HTML pages, and the only wgpu backend is the portable one. One pass over
-   `README.md`, `crates.md`, `architecture.md`, and
-   `server-client-protocol.md` records those as decisions.
+6. ~~**Mark model-only crates and rows.**~~ Landed: every `parity.toml`
+   feature carries `kind = "model" | "adapter"`, `xtask` validates it, and the
+   generated matrix prints a Kind column plus a legend. Eight rows are `model`
+   today because their implemented surface is one of the contract-only crates
+   (`fm-browser-input` IN-013; `fm-ptz` IN-028; `fm-guest`/`fm-io-webrtc`
+   IN-029, RC-001, RC-002, RC-003; `fm-vmix-compat` RC-009; `fm-social`
+   GX-010); the rest carry `adapter`. `crates.md` names the same crates as
+   contract-only. The repository has no separate site features page, so the
+   generated capability matrix is the published surface.
+7. ~~**Record the runtime decisions the spec still contradicts.**~~ Landed:
+   `README.md`, `architecture.md` §7.1, `crates.md`, and
+   `server-client-protocol.md` now record the synchronous `std`-thread
+   runtime (no Tokio), the four served HTML pages (no Rust/Wasm client), the
+   absence of `fm-ui-widgets`, and the single portable wgpu backend (no
+   `fm-gpu-dx12`/`metal`/`vulkan` crates).
 8. **Generate the hand-written codec pairs.** Each new field touches the
    model, the protocol DTO, the persistence encoder and decoder, and their
    tests. Keep the no-serde policy (it is paying off in build time and

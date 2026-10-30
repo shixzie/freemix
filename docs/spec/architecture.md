@@ -43,8 +43,9 @@ flowchart TB
     Telemetry --> Clients
 ```
 
-The control plane may allocate, perform storage I/O, and use Tokio. The media
-plane uses preallocated pools, bounded queues, dedicated threads, and immutable
+The control plane may allocate and perform storage I/O. It runs on synchronous
+`std` threads with bounded polling, never on an async executor. The media plane
+uses preallocated pools, bounded queues, dedicated threads, and immutable
 plans. The two planes communicate through lock-free or short-held,
 non-real-time-owned structures. The UI never calls a device SDK directly.
 
@@ -186,11 +187,32 @@ error and correction rate are visible.
 - Capture callbacks perform minimal ownership transfer into bounded queues.
 - Decode and encode use workload-class worker pools, not the general async pool.
 - Mux, recorder, replay index, and disk flush have bounded dedicated workers.
-- Tokio runs API, discovery, persistence coordination, telemetry fan-out, and
-  non-real-time network control.
+- Control, discovery, persistence coordination, telemetry fan-out, and
+  non-real-time network control run on synchronous `std` threads with bounded
+  polling and deadlines. There is no Tokio (or any other async executor) in
+  the workspace.
 
 No hot-path component may create an unbounded task, channel, frame queue, or
 cache. Each overflow policy is declared in the graph plan and counted.
+
+### 7.1 Runtime decisions recorded during implementation
+
+The following spec-era proposals were replaced by simpler decisions. They are
+recorded here so the rest of the specification does not read as a promise:
+
+- **No async runtime.** Every service is synchronous: control sessions, the
+  WebSocket gateway, HTTP, LAN discovery, and persistence use `std` threads
+  and bounded polling. `cargo tree` contains no Tokio.
+- **No Rust/Wasm web client.** `freemixd` serves four self-contained HTML pages
+  (`/operator`, `/tally`, `/titles`, and the live-LAN page) with inline
+  JavaScript over its WebSocket control transport. There is no `wasm32`
+  target, no SPA build, and no WebRTC preview in the shipped web surface.
+- **No `fm-ui-widgets` crate.** Shared view state lives in `fm-ui-model`;
+  `fm-ui-egui` owns the immediate-mode presentation.
+- **One portable wgpu backend.** There are no `fm-gpu-dx12`, `fm-gpu-metal`,
+  or `fm-gpu-vulkan` crates. Platform interop is limited to the portable
+  `wgpu` backend plus the optional display-surface presenter; hardware encode
+  and zero-copy paths remain future work (see the roadmap's structural list).
 
 ## 8. Failure boundaries
 
