@@ -5723,9 +5723,11 @@ one-eighth preview frame, combines every receiver's tally, and reports the
 strongest suggested quality; a loopback test covers two receivers, gated
 video/audio, combined tally, quality, and preview, and `OmtSink` implements
 `fm-io-api`'s `MediaSink` with format advertisement, lifecycle, BGRA, YUV
-4:2:2 and NV12 conversion, and planar audio. No daemon input or output is
-wired to it yet; the source adapter, VMX-compressed frames, corrupt-frame
-recovery, and hardware certification remain. FreeMix's plugin
+4:2:2 and NV12 conversion, and planar audio, and `OmtSource` implements
+`fm-io-api`'s `MediaSource` with subscription, tally and quality control, and
+the inverse conversion with 100 ns timing. No daemon input or output is wired
+to them yet; VMX-compressed frames, corrupt-frame recovery, and hardware
+certification remain. FreeMix's plugin
 SDK is `fm-plugin-api` with the `fm-plugin-host` sandbox (manifest,
 versioned ABI, capability grants, state snapshots, quarantine); there is no
 VST3 host. Vendor capture and output adapters keep their SDKs out of the
