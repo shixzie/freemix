@@ -334,7 +334,10 @@ mod tests {
                 endpoint: BACKUP_ENDPOINT,
                 host: "127.0.0.1".to_owned(),
                 port: closed_port,
-                timeout: TEST_TIMEOUT,
+                // Shorter than the collector's whole budget
+                // (`NETWORK_PREFLIGHT_TIMEOUT`): a probe that times out
+                // exactly then would be reported unresolved instead.
+                timeout: TEST_TIMEOUT / 2,
             },
         ]);
 
