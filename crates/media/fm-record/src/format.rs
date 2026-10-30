@@ -916,6 +916,12 @@ pub(crate) fn sync_directory_io(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
 }
 
+/// `FlushFileBuffers` needs a handle with `GENERIC_WRITE`, so the directory
+/// is opened for writing (backup semantics let a directory handle be opened
+/// at all). Where the volume or the caller's rights still refuse the flush,
+/// the entry is left to NTFS's own metadata journal rather than failing the
+/// recording: the file itself was already synced, and a refused directory
+/// flush is not data loss.
 #[cfg(windows)]
 pub(crate) fn sync_directory_io(path: &Path) -> io::Result<()> {
     use std::os::windows::fs::OpenOptionsExt;
@@ -925,12 +931,26 @@ pub(crate) fn sync_directory_io(path: &Path) -> io::Result<()> {
     const FILE_SHARE_DELETE: u32 = 0x0000_0004;
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 
-    OpenOptions::new()
+    let flushed = OpenOptions::new()
         .read(true)
+        .write(true)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
-        .open(path)?
-        .sync_all()
+        .open(path)
+        .and_then(|directory| directory.sync_all());
+    match flushed {
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied
+                    | io::ErrorKind::Unsupported
+                    | io::ErrorKind::InvalidInput
+            ) =>
+        {
+            Ok(())
+        }
+        result => result,
+    }
 }
 
 #[cfg(not(any(unix, windows)))]

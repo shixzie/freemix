@@ -32,11 +32,14 @@ use fm_model::{
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
 use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
-    EventPayload, HandshakeRequest, MAX_MEDIA_LIST_TRANSITION_FRAMES, MediaEvent,
-    MediaListItemLength, MediaListItemSpec, MediaListNavigation, MediaListOperation,
-    MediaListOptionsSpec, MediaListStateMessage, MediaListStatus, MediaListTransitionKind,
-    MediaListTransitionSpec, MediaOperation, Role, RuntimeLifecycleEvent, SnapshotMessage,
-    WireInputId, WireMessage, decode_line, encode_line,
+    EventPayload, HandshakeRequest, MediaListItemLength, MediaListItemSpec, MediaListNavigation,
+    MediaListOperation, MediaListOptionsSpec, MediaListStateMessage, MediaListStatus,
+    MediaOperation, Role, RuntimeLifecycleEvent, SnapshotMessage, WireInputId, WireMessage,
+    decode_line, encode_line,
+};
+#[cfg(unix)]
+use fm_protocol::{
+    MAX_MEDIA_LIST_TRANSITION_FRAMES, MediaEvent, MediaListTransitionKind, MediaListTransitionSpec,
 };
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, InputId, PixelFormat, ProjectId,

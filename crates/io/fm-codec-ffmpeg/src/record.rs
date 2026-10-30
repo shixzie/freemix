@@ -2767,7 +2767,7 @@ fn terminate_shared_without_monitor(child: &Arc<Mutex<Child>>, timeout: Duration
     CleanupStatus::Unconfirmed
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 fn terminate_unshared(mut child: Child, timeout: Duration) -> CleanupStatus {
     let _ = child.kill();
     let deadline = Instant::now() + timeout;
@@ -5009,6 +5009,10 @@ mod tests {
         drop(receiver);
     }
 
+    // Windows loopback TCP grows its buffers to take the whole 16 MiB frame
+    // at once, so the write never blocks and there is no timeout to observe;
+    // the bounded-return guarantee is checked where back-pressure exists.
+    #[cfg(not(windows))]
     #[test]
     fn blocked_writer_and_fallback_reap_return_boundedly() {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();

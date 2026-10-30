@@ -251,6 +251,10 @@ mod tests {
             .unwrap();
         assert!(made.success());
         let reader = MidiReader::start(directory.clone(), egui::Context::default());
+        // The writer keeps the port open until the listing was seen: a port
+        // is listed while it is read, and closing it right after the write
+        // ends its reader before the scanner lists it.
+        let (release, released) = mpsc::channel::<()>();
         let writer = thread::spawn({
             let port = port.clone();
             move || {
@@ -259,6 +263,7 @@ mod tests {
                 // then controller 7 = 127 on channel 2.
                 fifo.write_all(&[0x90, 60, 100, 62, 0, 0xB1, 7, 127])
                     .unwrap();
+                let _ = released.recv();
             }
         });
         let mut events = Vec::new();
@@ -279,6 +284,7 @@ mod tests {
                 break;
             }
         }
+        drop(release);
         writer.join().unwrap();
         let input = |kind, channel, number, value| {
             MidiEvent::Input(MidiInput {

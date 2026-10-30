@@ -36,8 +36,8 @@ use fm_ui_model::strip_dsp::{DRAG_SEND_INTERVAL, StripDspBinding, response_db};
 use crate::gating::{Capability, Hint, unavailable_reason};
 use crate::l10n::{self, Arg, Locale, Msg};
 use crate::theme::{
-    AMBER, MONITOR_BLACK, PROGRAM, accent_color, border_color, muted_color, small_button,
-    text_color, text_dim_color,
+    AMBER, KeyIcon, MONITOR_BLACK, PROGRAM, accent_color, add_icon_button, border_color,
+    muted_color, small_button, text_color, text_dim_color,
 };
 use crate::{StudioIntent, StudioShell, StudioUiState};
 
@@ -625,19 +625,31 @@ fn draw_plugins(
                 )))
                 .on_hover_text(l.text(Msg::FxPluginLatencyHover));
             }
-            if ui
-                .add_enabled(enabled && index > 0, small_button("↑"))
-                .hint(l.text(Msg::FxPluginUpHover), reason)
-                .clicked()
+            // The console fonts have no `↑`/`↓`: the keys paint their
+            // triangles like every other list's move keys.
+            if add_icon_button(
+                ui,
+                enabled && index > 0,
+                small_button(""),
+                KeyIcon::Up,
+                l.text(Msg::FxPluginUpHover),
+            )
+            .hint(l.text(Msg::FxPluginUpHover), reason)
+            .clicked()
             {
                 let mut slots = status.slots.clone();
                 slots.swap(index, index - 1);
                 send_plugin_chain(target, slots, intents);
             }
-            if ui
-                .add_enabled(enabled && index + 1 < status.slots.len(), small_button("↓"))
-                .hint(l.text(Msg::FxPluginDownHover), reason)
-                .clicked()
+            if add_icon_button(
+                ui,
+                enabled && index + 1 < status.slots.len(),
+                small_button(""),
+                KeyIcon::Down,
+                l.text(Msg::FxPluginDownHover),
+            )
+            .hint(l.text(Msg::FxPluginDownHover), reason)
+            .clicked()
             {
                 let mut slots = status.slots.clone();
                 slots.swap(index, index + 1);

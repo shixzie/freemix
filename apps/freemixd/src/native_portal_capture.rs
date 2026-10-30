@@ -870,6 +870,9 @@ mod tests {
         settle(&mut sources, input(1), |state| {
             state == ScreenCaptureState::Denied
         });
+        // The share may have been denied after this pass followed it; the
+        // next pass stops the reader of a share that is not live.
+        sources.statuses(Instant::now());
         assert!(
             sources.sources[&input(1)].sound.is_none(),
             "the system audio reader stopped"

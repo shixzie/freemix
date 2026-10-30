@@ -231,16 +231,21 @@ mod tests {
         );
     }
 
+    /// Whether `probe` is what a closed loopback port reports: refused,
+    /// or on Windows also timed out, where loopback retransmits the SYN
+    /// for longer than the probe waits before refusing it.
+    fn is_closed_port_probe(probe: NetworkProbe) -> bool {
+        probe == NetworkProbe::Refused || (cfg!(windows) && probe == NetworkProbe::TimedOut)
+    }
+
     #[test]
     fn probe_tcp_reports_a_closed_port_as_refused() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = loopback_port(&listener);
         drop(listener);
 
-        assert_eq!(
-            probe_tcp("127.0.0.1", port, TEST_TIMEOUT),
-            NetworkProbe::Refused
-        );
+        let probe = probe_tcp("127.0.0.1", port, TEST_TIMEOUT);
+        assert!(is_closed_port_probe(probe), "{probe:?}");
     }
 
     #[test]
@@ -329,24 +334,24 @@ mod tests {
                 endpoint: BACKUP_ENDPOINT,
                 host: "127.0.0.1".to_owned(),
                 port: closed_port,
-                timeout: TEST_TIMEOUT,
+                // Shorter than the collector's whole budget
+                // (`NETWORK_PREFLIGHT_TIMEOUT`): a probe that times out
+                // exactly then would be reported unresolved instead.
+                timeout: TEST_TIMEOUT / 2,
             },
         ]);
 
+        assert_eq!(results.len(), 2, "{results:?}");
         assert_eq!(
-            results,
-            vec![
-                EndpointProbe {
-                    target: 3,
-                    endpoint: PRIMARY_ENDPOINT,
-                    probe: NetworkProbe::Reachable,
-                },
-                EndpointProbe {
-                    target: 3,
-                    endpoint: BACKUP_ENDPOINT,
-                    probe: NetworkProbe::Refused,
-                },
-            ]
+            results[0],
+            EndpointProbe {
+                target: 3,
+                endpoint: PRIMARY_ENDPOINT,
+                probe: NetworkProbe::Reachable,
+            }
         );
+        assert_eq!(results[1].target, 3);
+        assert_eq!(results[1].endpoint, BACKUP_ENDPOINT);
+        assert!(is_closed_port_probe(results[1].probe), "{results:?}");
     }
 }

@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [master]
 
 permissions:
   contents: read
@@ -20,6 +20,7 @@ jobs:
 
   workspace:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
@@ -29,7 +30,7 @@ jobs:
         with:
           components: clippy
       - run: cargo check --workspace --all-targets --all-features
-      - run: cargo test --workspace --all-targets --all-features
+      - run: cargo test --workspace --all-targets --all-features --no-fail-fast
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   policy:

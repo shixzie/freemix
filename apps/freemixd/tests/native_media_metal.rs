@@ -785,7 +785,9 @@ fn native_metal_renders_scenes_before_exact_fade_and_wipe() {
     });
     let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default())
         .expect("compile scene routes");
-    assert_eq!(plan.peak_rgba16f_targets(), 6);
+    // Three scenes in the closure, one in-flight slot, the output's previous
+    // and new textures, and one composition target in flight.
+    assert_eq!(plan.peak_rgba16f_targets(), 7);
     let red = native_leaf_rgba16f(&runtime, playback.registry(), red_leaf);
     let blue = native_leaf_rgba16f(&runtime, playback.registry(), blue_leaf);
     let half = |value| f16::from_f32(value * 0.5).to_f32();
@@ -952,7 +954,9 @@ fn native_metal_project_frames_use_one_completed_in_flight_slot_without_readback
         animation: fm_model::SceneAnimation::default(),
     });
     let plan = NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
-    assert_eq!(plan.peak_rgba16f_targets(), 4);
+    // One scene, one in-flight slot, the output's previous and new textures,
+    // and one composition target in flight.
+    assert_eq!(plan.peak_rgba16f_targets(), 5);
 
     let mut latest_program = None;
     for frame_number in 0..FRAMES {

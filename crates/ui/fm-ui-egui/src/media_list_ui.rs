@@ -1021,11 +1021,14 @@ mod tests {
             .iter()
             .map(|item| (item.id, item.uri.as_str(), item.title.as_deref()))
             .collect();
+        // A relative playlist entry joins the playlist's directory with the
+        // platform's separator.
+        let opener = Path::new("/shows").join("clips/opener.mov");
         assert_eq!(
             summary,
             [
                 (5, "/media/a.mp4", None),
-                (7, "/shows/clips/opener.mov", Some("Opener")),
+                (7, opener.to_str().unwrap(), Some("Opener")),
                 (8, "/abs/bed.wav", None),
             ]
         );

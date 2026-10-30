@@ -1,5 +1,6 @@
 //! The OMT transport sink: raw pairs become an OMT source a receiver sees.
 
+use std::net::{Ipv4Addr, SocketAddr};
 use std::num::{NonZeroU16, NonZeroU32};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -49,8 +50,10 @@ fn a_raw_pair_reaches_an_omt_receiver() {
     )
     .unwrap();
     sink.connect(&destination, &endpoint).unwrap();
-    let address = sink.sender().unwrap().local_addr();
-    let mut receiver = Receiver::connect(address).unwrap();
+    // The sender listens on the wildcard address, which Windows refuses as
+    // a connection target; the receiver dials loopback on its port.
+    let port = sink.sender().unwrap().local_addr().port();
+    let mut receiver = Receiver::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).unwrap();
     receiver.subscribe(true, true, false).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while sink

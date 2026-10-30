@@ -303,13 +303,18 @@ fn every_manual_kind_round_trips_and_a_stinger_keeps_its_clip_length() {
             continue;
         }
         // A Stinger needs its clip, a mix has none, and slots are 1-8.
-        for (from, to) in [
+        for (case, (from, to)) in [
             ("\"clip_frames\": 24", "\"clip_frames\": 0"),
             ("\"kind\": \"stinger_2\"", "\"kind\": \"stinger_9\""),
             ("\"kind\": \"stinger_2\"", "\"kind\": \"wipe\""),
             ("\"kind\": \"stinger_2\"", "\"kind\": \"cut\""),
-        ] {
-            let root = temp.project_path(&format!("malformed-{from}-{to}"));
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            // The edits hold quotes and colons, which a Windows file name
+            // cannot.
+            let root = temp.project_path(&format!("malformed-{index}-{case}"));
             write_manifest(&root, &encoded.replacen(from, to, 1));
             assert!(
                 ProjectStore::new(root).unwrap().load().is_err(),

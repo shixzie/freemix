@@ -360,8 +360,13 @@ fn sender_gates_frames_and_combines_tally_quality_and_preview() {
     assert_eq!(sender.send_video(&full, None).unwrap(), 0);
     first.subscribe(true, true, true).unwrap();
     second.subscribe(false, false, true).unwrap();
+    // Subscriptions arrive over the wire: wait for both receivers' metadata
+    // subscriptions too, so the metadata count below is not a race.
     wait_until("the video subscriber", || {
         sender.subscribers(FrameKind::Video) == 1
+    });
+    wait_until("both metadata subscribers", || {
+        sender.subscribers(FrameKind::Metadata) == 2
     });
     assert_eq!(sender.send_video(&full, None).unwrap(), 1);
     let Frame::Video(received) = receive_kind(&mut first, FrameKind::Video) else {

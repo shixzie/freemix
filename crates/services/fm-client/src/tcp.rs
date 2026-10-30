@@ -2624,10 +2624,10 @@ fn nonzero_interval(interval: Duration) -> Duration {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(windows))]
+    use std::{io::Read, sync::mpsc};
     use std::{
-        io::Read,
         net::{TcpListener, TcpStream},
-        sync::mpsc,
         thread,
     };
 
@@ -2660,6 +2660,12 @@ mod tests {
         server.join().unwrap();
     }
 
+    // Both large-frame tests need loopback back-pressure: a peer that does
+    // not read must make a 16 or 64 MiB write block. Windows loopback TCP
+    // accepts frames that large outright (the whole write returns at once,
+    // so there is no blocked write to cancel and no partial write to
+    // resume), so they run where the premise holds.
+    #[cfg(not(windows))]
     #[test]
     fn blocked_write_observes_cancellation_within_one_poll() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2685,6 +2691,7 @@ mod tests {
         server.join().unwrap();
     }
 
+    #[cfg(not(windows))]
     #[test]
     fn timed_writes_resume_without_repeating_partial_bytes() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

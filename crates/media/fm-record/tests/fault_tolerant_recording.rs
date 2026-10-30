@@ -1371,10 +1371,12 @@ fn a_live_session_locks_its_name_against_a_second_session_and_recovery() {
     let wav = RecordingSession::start(wav, FileStorage::new(UnknownSpace)).unwrap();
     drop((other, wav));
 
-    // The session "crashes": dropping it releases and removes its locks.
+    // The session "crashes": dropping it releases its locks and, on Unix,
+    // removes their files (Windows keeps the file; a released lock on it is
+    // taken again).
     drop(opened);
     drop(first);
-    assert!(!primary.join(&lock_file).exists());
+    assert!(cfg!(windows) || !primary.join(&lock_file).exists());
     // A lock held on the fallback alone, by another handle, still refuses.
     let held = File::create(fallback.join(&lock_file)).unwrap();
     held.try_lock().unwrap();
@@ -1392,7 +1394,7 @@ fn a_live_session_locks_its_name_against_a_second_session_and_recovery() {
     // gone again.
     let recovery = recover_session(&config).unwrap();
     assert_eq!(recovery.previous_state(), Some(SessionState::Recording));
-    assert!(!primary.join(&lock_file).exists());
+    assert!(cfg!(windows) || !primary.join(&lock_file).exists());
 }
 
 #[test]

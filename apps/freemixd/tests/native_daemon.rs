@@ -201,6 +201,32 @@ impl Drop for CapturedChild {
                 thread::sleep(Duration::from_millis(5));
             }
         }
+        // A test that fails while its child is still captured shows the
+        // child's own account; nothing here may panic during unwinding.
+        if !thread::panicking() {
+            return;
+        }
+        for (name, receiver) in [
+            ("stdout", self.stdout.take()),
+            ("stderr", self.stderr.take()),
+        ] {
+            let Some(receiver) = receiver else {
+                continue;
+            };
+            let Ok(Ok(drained)) = receiver.recv_timeout(Duration::from_secs(5)) else {
+                eprintln!("--- captured child {name}: not drained ---");
+                continue;
+            };
+            let text = String::from_utf8_lossy(&drained.bytes);
+            let lines = text.lines().collect::<Vec<_>>();
+            let tail = &lines[lines.len().saturating_sub(80)..];
+            eprintln!(
+                "--- captured child {name}, last {} of {} lines ---\n{}\n--- end ---",
+                tail.len(),
+                lines.len(),
+                tail.join("\n")
+            );
+        }
     }
 }
 
@@ -443,13 +469,23 @@ fn native_daemon_hot_configures_fires_replaces_removes_and_restarts_stinger() {
     save_generator_project(&project_path);
     let before = ProjectStore::new(&project_path).unwrap().load().unwrap();
 
-    let Some(daemon) = require_native(NativeDaemonProcess::start(&project_path, true)) else {
+    // A viewer connects beside the operator after each fire, so the daemon
+    // runs without `--once` and is terminated once the operator is done.
+    let Some(mut daemon) = require_native(NativeDaemonProcess::start(&project_path, false)) else {
         return;
     };
     let mut client = StudioClient::connect(daemon.address);
     let initial = client.handshake();
     assert_eq!(initial.revision, 0);
-    assert_eq!(initial.revision, 0);
+    assert_eq!(
+        StudioClient::live_routing(daemon.address),
+        (
+            Some(input(1)),
+            Some(input(1)),
+            Some(input(2)),
+            Some(input(2)),
+        )
+    );
     let configured = client.command(
         "native-configure-stinger",
         "native-configure-stinger-key",
@@ -481,14 +517,8 @@ fn native_daemon_hot_configures_fires_replaces_removes_and_restarts_stinger() {
         },
     );
     assert_eq!(fired.revision, 2);
-    let after_first_fire = ProjectStore::new(&project_path).unwrap().load().unwrap();
     assert_eq!(
-        (
-            after_first_fire.runtime_routing().desired_program_id,
-            after_first_fire.runtime_routing().realized_program_id,
-            after_first_fire.runtime_routing().desired_preview_id,
-            after_first_fire.runtime_routing().realized_preview_id,
-        ),
+        StudioClient::live_routing(daemon.address),
         (
             Some(input(2)),
             Some(input(2)),
@@ -531,14 +561,8 @@ fn native_daemon_hot_configures_fires_replaces_removes_and_restarts_stinger() {
         },
     );
     assert_eq!(fired_replacement.revision, 4);
-    let after_replacement_fire = ProjectStore::new(&project_path).unwrap().load().unwrap();
     assert_eq!(
-        (
-            after_replacement_fire.runtime_routing().desired_program_id,
-            after_replacement_fire.runtime_routing().realized_program_id,
-            after_replacement_fire.runtime_routing().desired_preview_id,
-            after_replacement_fire.runtime_routing().realized_preview_id,
-        ),
+        StudioClient::live_routing(daemon.address),
         (
             Some(input(1)),
             Some(input(1)),
@@ -557,17 +581,21 @@ fn native_daemon_hot_configures_fires_replaces_removes_and_restarts_stinger() {
     assert_eq!(removed.stingers, Some(Vec::new()));
 
     drop(client);
+    daemon.signal_terminate();
     let output = daemon.wait();
     assert!(
         output.status.success(),
         "native daemon failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    // Shutdown checkpoints the journal into the manifest: the two fires
+    // swapped Program and Preview and swapped them back.
     let after = ProjectStore::new(&project_path).unwrap().load().unwrap();
     assert_eq!(after.position().revision, 5);
     assert_eq!(after.idempotency_receipts().len(), 5);
     assert_eq!(after.project().stingers(), []);
     assert_eq!(after.project(), before.project());
+    assert_eq!(after.runtime_routing(), before.runtime_routing());
 
     let Some(restarted) = require_native(NativeDaemonProcess::start(&project_path, true)) else {
         return;
@@ -735,7 +763,9 @@ fn native_stinger_preflight_failure_rolls_back_and_keeps_show_cursor_live() {
     let before_bytes = fs::read(&manifest_path).unwrap();
     let before = ProjectStore::new(&project_path).unwrap().load().unwrap();
 
-    let Some(daemon) = require_native(NativeDaemonProcess::start(&project_path, true)) else {
+    // A second client reconnects after the first leaves, so the daemon must
+    // outlive its first session: `--once` would exit with it.
+    let Some(mut daemon) = require_native(NativeDaemonProcess::start(&project_path, false)) else {
         return;
     };
     let mut client = StudioClient::connect(daemon.address);
@@ -796,6 +826,7 @@ fn native_stinger_preflight_failure_rolls_back_and_keeps_show_cursor_live() {
     assert!(cut.scheduled_frame > 0);
     drop(resumed);
 
+    daemon.signal_terminate();
     let output = daemon.wait();
     assert!(
         output.status.success(),
@@ -4104,6 +4135,42 @@ struct StudioClient {
 
 #[cfg(target_os = "macos")]
 impl StudioClient {
+    /// The daemon's live switcher routing (desired Program, realized
+    /// Program, desired Preview, realized Preview), as a viewer that
+    /// connects beside the operator sees it in its snapshot. The manifest
+    /// on disk says this only after a checkpoint (the journal holds the
+    /// commands in between), so a test reads the daemon, not the file.
+    fn live_routing(
+        address: SocketAddr,
+    ) -> (
+        Option<InputId>,
+        Option<InputId>,
+        Option<InputId>,
+        Option<InputId>,
+    ) {
+        let mut viewer = Self::connect(address);
+        viewer.send(&WireMessage::HandshakeRequest(HandshakeRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            build: "native-daemon-process-test".into(),
+            client_type: ClientType::Studio,
+            desired_role: Role::Viewer,
+            resume_cursor: None,
+        }));
+        let snapshot = viewer.receive_until("viewer snapshot", |message| {
+            if let WireMessage::Snapshot(snapshot) = message {
+                Some(snapshot.clone())
+            } else {
+                None
+            }
+        });
+        (
+            Some(snapshot.desired_program.to_domain()),
+            Some(snapshot.realized_program.to_domain()),
+            Some(snapshot.desired_preview.to_domain()),
+            Some(snapshot.realized_preview.to_domain()),
+        )
+    }
+
     fn connect(address: SocketAddr) -> Self {
         let stream = connect_bounded(address);
         stream.set_nodelay(true).unwrap();

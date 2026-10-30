@@ -112,6 +112,9 @@ fn preflight_available(available: u64) -> Result<u64, DiskPreflightError> {
 /// fails, or [`DiskPreflightError::BelowMinimum`] when it succeeds with too
 /// little space. Neither variant renders the path.
 fn preflight_existing_path(path: &Path) -> Result<u64, DiskPreflightError> {
+    // Windows answers a free-space query for a missing path with its
+    // volume's figure; the path has to exist to be measured.
+    std::fs::metadata(path).map_err(|error| DiskPreflightError::Unavailable(error.kind()))?;
     let available =
         available_bytes(path).map_err(|error| DiskPreflightError::Unavailable(error.kind()))?;
     preflight_available(available)

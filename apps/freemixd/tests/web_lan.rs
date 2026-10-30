@@ -181,13 +181,35 @@ impl Daemon {
 
     /// [`Self::start`] with `extra` daemon options.
     fn start_with(directory: &Path, project: &Path, run: &str, extra: &[&str]) -> Self {
+        Self::try_start_with(directory, project, run, extra)
+            .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    /// [`Self::start_with`], reporting a daemon that exits before it is
+    /// ready instead of panicking, so a test can skip where the daemon
+    /// cannot run at all.
+    fn try_start_with(
+        directory: &Path,
+        project: &Path,
+        run: &str,
+        extra: &[&str],
+    ) -> Result<Self, String> {
         let mut options = vec!["--web-tls"];
         options.extend(extra);
-        Self::launch(directory, project, run, &options)
+        Self::try_launch(directory, project, run, &options)
     }
 
     /// A gateway on every interface with `options` choosing its TLS.
     fn launch(directory: &Path, project: &Path, run: &str, extra: &[&str]) -> Self {
+        Self::try_launch(directory, project, run, extra).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    fn try_launch(
+        directory: &Path,
+        project: &Path,
+        run: &str,
+        extra: &[&str],
+    ) -> Result<Self, String> {
         let stdout_path = directory.join(format!("{run}.stdout"));
         let stderr_path = directory.join(format!("{run}.stderr"));
         let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_freemixd"))
@@ -210,10 +232,10 @@ impl Daemon {
                 break lines;
             }
             if let Ok(Some(status)) = child.try_wait() {
-                panic!(
+                return Err(format!(
                     "daemon exited early ({status}): {}",
                     fs::read_to_string(&stderr_path).unwrap_or_default()
-                );
+                ));
             }
             assert!(Instant::now() < deadline, "daemon never became ready");
             std::thread::sleep(Duration::from_millis(20));
@@ -233,7 +255,7 @@ impl Daemon {
         assert!(fm_protocol::valid_web_fingerprint(&fingerprint));
         let web = SocketAddr::from(([127, 0, 0, 1], bound.port()));
         web_tls::pin(web, &fingerprint);
-        Self {
+        Ok(Self {
             child,
             control,
             web,
@@ -241,7 +263,7 @@ impl Daemon {
             fingerprint,
             stdout_path,
             stderr_path,
-        }
+        })
     }
 
     /// Everything the daemon printed so far.
@@ -710,7 +732,9 @@ fn a_phone_pairs_over_tls_within_its_role_until_revoked() {
 /// it serves the web gateway with the same settings, pairing, and roles as
 /// the headless daemon. Without a window system the daemon falls back to
 /// headless serving, which must serve the gateway all the same; with
-/// `FM_REQUIRE_DISPLAY_SURFACE=1` the presenter must open.
+/// `FM_REQUIRE_DISPLAY_SURFACE=1` the presenter must open. Native media
+/// needs a GPU adapter even headless, so without one (a bare CI runner)
+/// the test is skipped, unless `FM_REQUIRE_NATIVE_MEDIA=1`.
 #[cfg(feature = "display-surface")]
 #[test]
 fn the_windowed_program_daemon_serves_the_gateway() {
@@ -718,12 +742,23 @@ fn the_windowed_program_daemon_serves_the_gateway() {
     let directory = TestDirectory::new("windowed");
     let project = directory.0.join("show.freemix");
     create_project(&project);
-    let daemon = Daemon::start_with(
+    let daemon = match Daemon::try_start_with(
         &directory.0,
         &project,
         "windowed",
         &["--native-media", "--display-presenter-if-available"],
-    );
+    ) {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            assert!(
+                std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1")
+                    && std::env::var("FM_REQUIRE_DISPLAY_SURFACE").as_deref() != Ok("1"),
+                "a native daemon is required: {error}"
+            );
+            eprintln!("windowed program daemon test skipped: {error}");
+            return;
+        }
+    };
     let mut console = Console::connect(daemon.control, Role::Admin);
     console.send(&WireMessage::DisplayInventoryRequest(
         DisplayInventoryRequest {
