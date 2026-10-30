@@ -2569,6 +2569,19 @@ impl Runtime<'_> {
                 peer.reply(WireMessage::ReplayStatus(Box::new(status)))?;
                 Ok(())
             }
+            // One audio chain's plugin slots (2.129, AU-006), to any session
+            // that may view status.
+            WireMessage::AudioPluginStatusRequest(request) => {
+                if self.refuse_request(peer, &request.request_id, Session::admit_view_status)? {
+                    return Ok(());
+                }
+                let status = self
+                    .control
+                    .borrow()
+                    .audio_plugin_status(self.authority, &request);
+                peer.reply(WireMessage::AudioPluginStatus(Box::new(status)))?;
+                Ok(())
+            }
             // The highlight reel status (OR-013), to any session that may
             // view status.
             WireMessage::ReelStatusRequest(request) => {

@@ -3306,6 +3306,12 @@ impl Engine {
         self.replay.take_pruned()
     }
 
+    /// Moves whenever any audio plugin chain changed (AU-006).
+    #[must_use]
+    pub const fn audio_plugin_generation(&self) -> u64 {
+        self.commands.state().audio_plugin_generation()
+    }
+
     /// The up-to-eight-angle view of Replay input `input` at its current
     /// position, or `None` when nothing is cued on it (OR-014).
     #[must_use]

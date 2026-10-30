@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.128 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.129 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4652,6 +4652,19 @@ Protocol 2.128 adds audio plugin chains (AU-006).
   [<plugin>[:<bypass 0|1>][:<latency>[:<state-hex>]] ...]` sends the chain;
   no slots clears it.
 - 2.127 is refused.
+
+Protocol 2.129 reads an audio plugin chain (AU-006).
+
+- `audio_plugin_status_request` (`request_id`, `target`) asks for one
+  target's current chain; `target` is `master` or an input. The answer is
+  `audio_plugin_status` with the server identity, the same `request_id`,
+  `target`, `available` (the daemon's installed plugin identifiers,
+  comma-separated), and `plugins` in the same slot encoding as
+  `audio_plugin_chain`. It needs view-status authority.
+- Studio's FX window requests the open target's status when it opens and
+  after each edit, and edits its PLUGINS section with add, remove, reorder,
+  bypass, and trim-level keys. `freemix-cli` sends chains as before.
+- The project schema is unchanged; 2.128 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

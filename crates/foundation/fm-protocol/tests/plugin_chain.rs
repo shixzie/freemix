@@ -92,7 +92,7 @@ fn plugin_chains_round_trip_exactly() {
     assert_eq!(
         line,
         format!(
-            "command\tprotocol=2.128\tid=a\tidempotency_key=k\tpayload=audio_plugin_chain\t\
+            "command\tprotocol=2.129\tid=a\tidempotency_key=k\tpayload=audio_plugin_chain\t\
              target=7\tplugins=freemix.reference.trim%3A0%3A0%3A{state}%2C\
              freemix.reference.polarity%3A1%3A2%3A\n"
         )
@@ -118,7 +118,7 @@ fn plugin_chains_round_trip_exactly() {
 
 #[test]
 fn malformed_plugin_chains_are_refused() {
-    let prefix = "command\tprotocol=2.128\tid=a\tidempotency_key=k\tpayload=audio_plugin_chain";
+    let prefix = "command\tprotocol=2.129\tid=a\tidempotency_key=k\tpayload=audio_plugin_chain";
     let good = format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:0:");
     assert!(decode_line(&format!("{good}\n")).is_ok());
     for fields in [
@@ -160,7 +160,63 @@ fn malformed_plugin_chains_are_refused() {
     assert!(!PluginChainSlot::plugin_id_is_valid(""));
     assert!(!PluginChainSlot::plugin_id_is_valid("a:b"));
     assert_eq!(
-        ProtocolVersion::new(2, 128),
+        ProtocolVersion::new(2, 129),
         fm_protocol::CURRENT_PROTOCOL_VERSION
     );
+}
+
+#[test]
+fn plugin_status_requests_and_answers_round_trip() {
+    let request = WireMessage::AudioPluginStatusRequest(fm_protocol::AudioPluginStatusRequest {
+        request_id: "plugin-status-7".to_owned(),
+        target: AudioDspTarget::Input(input(7)),
+    });
+    let line = round_trip(&request);
+    assert_eq!(
+        line,
+        "audio_plugin_status_request\trequest_id=plugin-status-7\ttarget=7\n"
+    );
+
+    let status = WireMessage::AudioPluginStatus(Box::new(fm_protocol::AudioPluginStatusMessage {
+        server: fm_protocol::ServerIdentity {
+            engine_id: "e".into(),
+            project_id: "p".into(),
+            state_epoch: 1,
+            log_id: "l".into(),
+        },
+        request_id: "plugin-status-7".to_owned(),
+        target: AudioDspTarget::Input(input(7)),
+        available: vec![
+            "freemix.reference.trim".to_owned(),
+            "freemix.reference.polarity".to_owned(),
+        ],
+        slots: vec![trim(-12_000)],
+    }));
+    let line = round_trip(&status);
+    let state = base64url(&(-12_000_i32).to_le_bytes());
+    assert_eq!(
+        line,
+        format!(
+            "audio_plugin_status\tengine_id=e\tproject_id=p\tstate_epoch=1\tlog_id=l\t\
+             request_id=plugin-status-7\ttarget=7\t\
+             available=freemix.reference.trim%2Cfreemix.reference.polarity\t\
+             plugins=freemix.reference.trim%3A0%3A0%3A{state}\n"
+        )
+    );
+
+    for fields in [
+        "audio_plugin_status_request\trequest_id=p",
+        "audio_plugin_status_request\trequest_id=p\ttarget=0",
+        "audio_plugin_status\tengine_id=e\tproject_id=p\tstate_epoch=1\tlog_id=l\t\
+         request_id=p\ttarget=7\tavailable=bad/id\tplugins=",
+        "audio_plugin_status\tengine_id=e\tproject_id=p\tstate_epoch=1\tlog_id=l\t\
+         request_id=p\ttarget=7\tavailable=a%2Ca\tplugins=",
+        "audio_plugin_status\tengine_id=e\tproject_id=p\tstate_epoch=1\tlog_id=l\t\
+         request_id=p\ttarget=7\tavailable=a\tplugins=bad/id:0:0:",
+    ] {
+        assert!(
+            decode_line(&format!("{fields}\n")).is_err(),
+            "accepted {fields}"
+        );
+    }
 }

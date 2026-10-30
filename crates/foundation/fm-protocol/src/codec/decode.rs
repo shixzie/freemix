@@ -231,6 +231,24 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
             }
             WireMessage::ReplayStatus(Box::new(message))
         }
+        "audio_plugin_status_request" => {
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::AudioPluginStatusRequest(super::audio_plugins::decode_request(
+                request_id,
+                &mut fields,
+            )?)
+        }
+        "audio_plugin_status" => {
+            let server = decode_server_identity(&mut fields)?;
+            let request_id = fields.required("request_id")?;
+            validate_request_id(&request_id)?;
+            WireMessage::AudioPluginStatus(Box::new(super::audio_plugins::decode_status(
+                server,
+                request_id,
+                &mut fields,
+            )?))
+        }
         "replay_status_request" => {
             let request_id = fields.required("request_id")?;
             validate_request_id(&request_id)?;

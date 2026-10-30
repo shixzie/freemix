@@ -29,10 +29,10 @@ use fm_model::{
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
 use fm_protocol::{
     AudioDspTarget, AudioDynamicsMeter, AudioMetersMessage, AudioMixerOperation,
-    CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
-    HandshakeRequest, HeartbeatMessage, ImportItemSpec, InputLifecycleOperation, MediaOperation,
-    MonitorFrameAssembler, MonitorTap, PluginChainSlot, Role, ServerIdentity, SnapshotMessage,
-    WireInputId, WireMessage, decode_line, encode_line,
+    AudioPluginStatusRequest, CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload,
+    CommandResult, HandshakeRequest, HeartbeatMessage, ImportItemSpec, InputLifecycleOperation,
+    MediaOperation, MonitorFrameAssembler, MonitorTap, PluginChainSlot, Role, ServerIdentity,
+    SnapshotMessage, WireInputId, WireMessage, decode_line, encode_line,
 };
 use fm_types::strip_dsp::{EqBandKind, StripDsp};
 use fm_types::{
@@ -797,6 +797,31 @@ fn native_daemon_renders_a_strip_plugin_chain() {
         "{flat} -> {}",
         master_peak(&trimmed)
     );
+
+    // 2.129: the daemon answers a status request with the target's slots and
+    // the installed plugin identifiers.
+    client.send(&WireMessage::AudioPluginStatusRequest(
+        AudioPluginStatusRequest {
+            request_id: "plugin-status-11".into(),
+            target: AudioDspTarget::Input(wire(11)),
+        },
+    ));
+    let status = client.wait_for("the plugin status", |message| match message {
+        WireMessage::AudioPluginStatus(status) if status.request_id == "plugin-status-11" => {
+            Some(*status)
+        }
+        _ => None,
+    });
+    assert_eq!(status.target, AudioDspTarget::Input(wire(11)));
+    assert!(
+        status
+            .available
+            .iter()
+            .any(|plugin| plugin == "freemix.reference.trim")
+    );
+    assert_eq!(status.slots.len(), 1);
+    assert_eq!(status.slots[0].plugin, "freemix.reference.trim");
+    assert_eq!(status.slots[0].state, (-12_000_i32).to_le_bytes());
 
     // Bypassing the slot skips the processor, so the flat tone returns.
     client.accept(CommandPayload::AudioMixer(

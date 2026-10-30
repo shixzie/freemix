@@ -15,7 +15,7 @@
 //! into one undo step, and the window shows the draft until the authority
 //! reports it.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use egui::{
     Align2, Color32, CornerRadius, DragValue, FontFamily, FontId, Rect, RichText, Sense, Stroke,
@@ -73,11 +73,15 @@ const PRESETS: [StripDspPreset; 5] = [
     StripDspPreset::Master,
 ];
 
-/// The FX window's local state: the chain it edits and the copied chain.
+/// The FX window's local state: the chain it edits, the copied chain, and
+/// when its plugin status was last asked for.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct StripFxPanel {
     binding: Option<StripDspBinding>,
     clipboard: Option<StripDsp>,
+    /// The target and time of the last plugin status request, so a repaint
+    /// does not flood the server.
+    plugin_status: Option<(StripDspTarget, Instant)>,
 }
 
 impl StripFxPanel {
@@ -97,6 +101,30 @@ impl StripFxPanel {
     #[must_use]
     pub(crate) fn target(&self) -> Option<StripDspTarget> {
         self.binding.as_ref().map(StripDspBinding::target)
+    }
+
+    /// Asks for `target`'s plugin status when the panel opens or after an
+    /// edit; a two-second throttle refreshes an open panel without flooding
+    /// the server.
+    pub(crate) fn request_plugin_status(
+        &mut self,
+        target: StripDspTarget,
+        intents: &mut Vec<StudioIntent>,
+    ) {
+        let now = Instant::now();
+        let due = self.plugin_status.is_none_or(|(sent_target, sent_at)| {
+            sent_target != target || now.duration_since(sent_at) >= Duration::from_secs(2)
+        });
+        if !due {
+            return;
+        }
+        self.plugin_status = Some((target, now));
+        intents.push(StudioIntent::AudioPluginStatus(
+            fm_protocol::AudioPluginStatusRequest {
+                request_id: plugin_status_request_id(target),
+                target: fm_ui_model::strip_dsp::wire_target(target),
+            },
+        ));
     }
 
     /// Copies `chain` for a later paste.
@@ -187,6 +215,7 @@ struct HeaderOutcome {
 
 impl StudioShell {
     /// Draws the FX window while one chain is open, and sends its edits.
+    #[allow(clippy::too_many_lines)] // one window's header, plugins, curve, and stages
     pub(crate) fn draw_strip_fx_window(
         &mut self,
         context: &egui::Context,
@@ -214,6 +243,7 @@ impl StudioShell {
             Msg::FxWindowTitle,
             &[("strip", Arg::Str(&target_name(l, state, target)))],
         );
+        self.strip_fx.request_plugin_status(target, intents);
         let gr = reductions(state, target);
         let loudness = crate::mixer::loudness_for(state, target);
         let clipboard = self.strip_fx.clipboard;
@@ -258,6 +288,8 @@ impl StudioShell {
                             .max_height(body_height)
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
+                                draw_plugins(ui, state, target, (enabled, reason), intents);
+                                ui.separator();
                                 draw_curve(ui, &mut chain, (enabled, reason));
                                 ui.add_space(6.0);
                                 draw_bands(ui, &mut chain, (enabled, reason));
@@ -418,6 +450,215 @@ fn whole_hz(frequency_hz: f64, (low, high): (u32, u32)) -> u32 {
 
 /// The EQ response display with its draggable band and high-pass points.
 #[allow(clippy::too_many_lines)] // one painter pass and its handles
+/// The request id a target's plugin status answer carries.
+fn plugin_status_request_id(target: StripDspTarget) -> String {
+    match target {
+        StripDspTarget::Master => "plugin-status-master".to_owned(),
+        StripDspTarget::Input(input) => format!("plugin-status-{input}"),
+    }
+}
+
+/// The saved trim level in a reference slot, when the slot is a trim.
+fn trim_millidb(slot: &fm_protocol::PluginChainSlot) -> Option<i32> {
+    if slot.plugin != fm_plugin_host_api_ids::TRIM {
+        return None;
+    }
+    match slot.state.as_slice() {
+        [] => Some(0),
+        [a, b, c, d] => Some(i32::from_le_bytes([*a, *b, *c, *d])),
+        _ => None,
+    }
+}
+
+fn send_plugin_chain(
+    target: StripDspTarget,
+    slots: Vec<fm_protocol::PluginChainSlot>,
+    intents: &mut Vec<StudioIntent>,
+) {
+    intents.push(StudioIntent::AudioMixer(
+        fm_protocol::AudioMixerOperation::SetPluginChain {
+            target: fm_ui_model::strip_dsp::wire_target(target),
+            slots,
+        },
+    ));
+    intents.push(StudioIntent::AudioPluginStatus(
+        fm_protocol::AudioPluginStatusRequest {
+            request_id: plugin_status_request_id(target),
+            target: fm_ui_model::strip_dsp::wire_target(target),
+        },
+    ));
+}
+
+/// The reference plugin identifiers the wire reports, without the shared
+/// `freemix.reference.` prefix where there is one.
+fn short_plugin(plugin: &str) -> &str {
+    plugin.strip_prefix("freemix.reference.").unwrap_or(plugin)
+}
+
+/// The PLUGINS section: the target's ordered reference slots, bypass,
+/// trim level, reorder, remove, and add (2.129, AU-006).
+#[allow(clippy::too_many_lines)] // one row per reference slot
+fn draw_plugins(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    target: StripDspTarget,
+    (enabled, reason): (bool, &str),
+    intents: &mut Vec<StudioIntent>,
+) {
+    let l = l10n::locale(ui.ctx());
+    ui.horizontal(|ui| {
+        ui.label(crate::theme::section_label(l.text(Msg::FxPlugins)))
+            .on_hover_text(l.text(Msg::FxPluginsHover));
+        let Some(status) = state
+            .audio_plugin_status
+            .as_ref()
+            .filter(|status| status.target == fm_ui_model::strip_dsp::wire_target(target))
+        else {
+            ui.label(crate::theme::caption(l.text(Msg::FxPluginUnavailable)));
+            return;
+        };
+        let full = status.slots.len() >= fm_protocol::MAX_PROTOCOL_PLUGIN_SLOTS;
+        let missing: Vec<&str> = status
+            .available
+            .iter()
+            .map(String::as_str)
+            .filter(|plugin| !status.slots.iter().any(|slot| slot.plugin == *plugin))
+            .collect();
+        ui.add_enabled_ui(enabled && !full && !missing.is_empty(), |ui| {
+            egui::ComboBox::from_id_salt("strip-fx-plugin-add")
+                .selected_text(l.text(Msg::FxPluginAdd))
+                .width(120.0)
+                .show_ui(ui, |ui| {
+                    for plugin in &missing {
+                        if ui
+                            .selectable_label(false, short_plugin(plugin))
+                            .on_hover_text(
+                                l.format(Msg::FxPluginAddHover, &[("plugin", Arg::Str(plugin))]),
+                            )
+                            .clicked()
+                        {
+                            let mut slots = status.slots.clone();
+                            slots.push(fm_protocol::PluginChainSlot {
+                                plugin: (*plugin).to_owned(),
+                                bypassed: false,
+                                latency_frames: 0,
+                                state: Vec::new(),
+                            });
+                            send_plugin_chain(target, slots, intents);
+                        }
+                    }
+                })
+                .response
+                .hint(
+                    l.text(Msg::FxPluginAdd),
+                    if enabled {
+                        if full {
+                            Msg::FxPluginReasonFull.en()
+                        } else if missing.is_empty() {
+                            Msg::FxPluginReasonAdded.en()
+                        } else {
+                            reason
+                        }
+                    } else {
+                        reason
+                    },
+                );
+        });
+    });
+    let Some(status) = state
+        .audio_plugin_status
+        .as_ref()
+        .filter(|status| status.target == fm_ui_model::strip_dsp::wire_target(target))
+    else {
+        return;
+    };
+    if status.slots.is_empty() {
+        ui.label(crate::theme::caption(l.text(Msg::FxPluginEmpty)));
+        return;
+    }
+    for (index, slot) in status.slots.iter().enumerate() {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(RichText::new(short_plugin(&slot.plugin)).monospace())
+                .on_hover_text(slot.plugin.as_str());
+            let mut bypassed = slot.bypassed;
+            if ui
+                .add_enabled(enabled, egui::Checkbox::without_text(&mut bypassed))
+                .hint(l.text(Msg::FxPluginBypassHover), reason)
+                .changed()
+            {
+                let mut slots = status.slots.clone();
+                slots[index].bypassed = bypassed;
+                send_plugin_chain(target, slots, intents);
+            }
+            if let Some(millidb) = trim_millidb(slot) {
+                #[allow(clippy::cast_precision_loss)] // display only
+                let db = millidb as f32 / 1_000.0;
+                if ui
+                    .add_enabled(enabled, small_button(l.text(Msg::FxPluginTrimDown)))
+                    .hint(l.text(Msg::FxPluginTrimDownHover), reason)
+                    .clicked()
+                {
+                    let mut slots = status.slots.clone();
+                    slots[index].state = millidb.saturating_sub(1_000).to_le_bytes().to_vec();
+                    send_plugin_chain(target, slots, intents);
+                }
+                ui.label(RichText::new(format!("{db:+.1} dB")).monospace())
+                    .on_hover_text(l.text(Msg::FxPluginTrimHover));
+                if ui
+                    .add_enabled(enabled, small_button(l.text(Msg::FxPluginTrimUp)))
+                    .hint(l.text(Msg::FxPluginTrimUpHover), reason)
+                    .clicked()
+                {
+                    let mut slots = status.slots.clone();
+                    slots[index].state = (millidb + 1_000).min(24_000).to_le_bytes().to_vec();
+                    send_plugin_chain(target, slots, intents);
+                }
+            } else if slot.latency_frames > 0 {
+                ui.label(crate::theme::caption(l.format(
+                    Msg::FxPluginLatency,
+                    &[("frames", Arg::Count(u64::from(slot.latency_frames)))],
+                )))
+                .on_hover_text(l.text(Msg::FxPluginLatencyHover));
+            }
+            if ui
+                .add_enabled(enabled && index > 0, small_button("↑"))
+                .hint(l.text(Msg::FxPluginUpHover), reason)
+                .clicked()
+            {
+                let mut slots = status.slots.clone();
+                slots.swap(index, index - 1);
+                send_plugin_chain(target, slots, intents);
+            }
+            if ui
+                .add_enabled(enabled && index + 1 < status.slots.len(), small_button("↓"))
+                .hint(l.text(Msg::FxPluginDownHover), reason)
+                .clicked()
+            {
+                let mut slots = status.slots.clone();
+                slots.swap(index, index + 1);
+                send_plugin_chain(target, slots, intents);
+            }
+            if ui
+                .add_enabled(enabled, small_button(l.text(Msg::FxPluginRemove)))
+                .hint(l.text(Msg::FxPluginRemoveHover), reason)
+                .clicked()
+            {
+                let mut slots = status.slots.clone();
+                slots.remove(index);
+                send_plugin_chain(target, slots, intents);
+            }
+        });
+    }
+}
+
+/// The reference identifiers the UI offers, mirrored from the protocol's
+/// wire names (the daemon reports the authoritative list beside the chain).
+mod fm_plugin_host_api_ids {
+    pub(super) const TRIM: &str = "freemix.reference.trim";
+}
+
+#[allow(clippy::too_many_lines)] // one curve, its bands, and its keys
 fn draw_curve(ui: &mut Ui, chain: &mut StripDsp, (enabled, reason): (bool, &str)) {
     let l = l10n::locale(ui.ctx());
     let (rect, _) = ui.allocate_exact_size(
@@ -1294,6 +1535,48 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn the_plugin_section_reads_saved_state_and_sends_the_chain() {
+        let state = crate::hover_audit::bank_fixture();
+        let context = egui::Context::default();
+        let mut shell = StudioShell::default();
+        let target = StripDspTarget::Input(input(1));
+        shell.strip_fx.open(target);
+        // The first frame asks for the target's chain; the second is inside
+        // the throttle and does not repeat it.
+        let first = frame(&context, &mut shell, &state, Vec::new());
+        assert_eq!(
+            first
+                .iter()
+                .filter(|intent| matches!(intent, StudioIntent::AudioPluginStatus(_)))
+                .count(),
+            1
+        );
+        let second = frame(&context, &mut shell, &state, Vec::new());
+        assert!(
+            !second
+                .iter()
+                .any(|intent| matches!(intent, StudioIntent::AudioPluginStatus(_)))
+        );
+
+        let status = state.audio_plugin_status.as_ref().unwrap();
+        assert_eq!(trim_millidb(&status.slots[0]), Some(-12_000));
+        assert_eq!(trim_millidb(&status.slots[1]), None);
+        assert_eq!(short_plugin("freemix.reference.trim"), "trim");
+        assert_eq!(short_plugin("vendor.plugin"), "vendor.plugin");
+
+        let mut intents = Vec::new();
+        send_plugin_chain(target, status.slots.clone(), &mut intents);
+        assert!(matches!(
+            intents[0],
+            StudioIntent::AudioMixer(fm_protocol::AudioMixerOperation::SetPluginChain {
+                target: fm_protocol::AudioDspTarget::Input(_),
+                ..
+            })
+        ));
+        assert!(matches!(intents[1], StudioIntent::AudioPluginStatus(_)));
     }
 
     #[test]

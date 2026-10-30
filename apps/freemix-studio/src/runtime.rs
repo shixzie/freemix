@@ -4,8 +4,8 @@ use fm_client::{
     Client, ConnectionState, ReconnectBackoff, SessionEvent, TcpSession, TcpSessionError,
 };
 use fm_protocol::{
-    CommandMessage, CommandPayload, HeartbeatMessage, ReplayPreviewRequest, ScenePreviewRequest,
-    TitlePreviewRequest,
+    AudioPluginStatusRequest, CommandMessage, CommandPayload, HeartbeatMessage,
+    ReplayPreviewRequest, ScenePreviewRequest, TitlePreviewRequest,
 };
 use fm_ui_egui::{DisplayOutputAnswer, TitleAnimationRefusal, TitleUpdate};
 
@@ -234,6 +234,14 @@ impl StudioRuntime {
             && self.session.send_scene_preview(request).is_ok();
         if !sent {
             self.preview_failed = Some(request_id);
+        }
+    }
+
+    /// Sends one audio plugin status request (2.129, AU-006). The answer is
+    /// read from [`TcpSession::latest_audio_plugin_status`].
+    pub(crate) fn request_audio_plugin_status(&mut self, request: AudioPluginStatusRequest) {
+        if self.transport == ControlTransport::Tcp && self.session.is_connected() {
+            let _ = self.session.request_audio_plugin_status(request);
         }
     }
 

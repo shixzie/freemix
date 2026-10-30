@@ -386,6 +386,12 @@ pub enum SessionEvent {
     /// The highlight reels and their export jobs (OR-013); the latest is
     /// retained in [`TcpSession::latest_reel_status`].
     ReelStatus(Box<fm_protocol::ReelStatusMessage>),
+    /// One target's plugin chain and the daemon's installed plugins (2.129,
+    /// AU-006); the latest is retained in
+    /// [`TcpSession::latest_audio_plugin_status`].
+    AudioPluginStatus {
+        status: Box<fm_protocol::AudioPluginStatusMessage>,
+    },
     /// Every running live source's drift loop (Protocol 2.76); the latest
     /// is retained in [`TcpSession::latest_source_sync_status`].
     SourceSyncStatus {
@@ -569,6 +575,8 @@ pub struct TcpSession {
     latest_replay_status: Option<Box<fm_protocol::ReplayStatusMessage>>,
     /// The latest `reel_status` (OR-013).
     latest_reel_status: Option<Box<fm_protocol::ReelStatusMessage>>,
+    /// The latest `audio_plugin_status` (2.129, AU-006).
+    latest_audio_plugin_status: Option<Box<fm_protocol::AudioPluginStatusMessage>>,
     /// The latest `title_phases` (Protocol 2.90).
     latest_title_phases: Option<fm_protocol::TitlePhasesMessage>,
     last_source_sync_sequence: Option<u64>,
@@ -723,6 +731,7 @@ impl TcpSession {
             latest_recorder_status: None,
             latest_replay_status: None,
             latest_reel_status: None,
+            latest_audio_plugin_status: None,
             latest_title_phases: None,
             last_source_sync_sequence: None,
             latest_source_sync_status: None,
@@ -799,6 +808,12 @@ impl TcpSession {
     #[must_use]
     pub fn latest_reel_status(&self) -> Option<&fm_protocol::ReelStatusMessage> {
         self.latest_reel_status.as_deref()
+    }
+
+    /// The latest audio plugin status (2.129, AU-006).
+    #[must_use]
+    pub fn latest_audio_plugin_status(&self) -> Option<&fm_protocol::AudioPluginStatusMessage> {
+        self.latest_audio_plugin_status.as_deref()
     }
 
     /// Asks for the replay status (OR-012); the answer arrives as
@@ -952,6 +967,24 @@ impl TcpSession {
             return Err(TcpSessionError::NotConnected);
         }
         self.send_wire_wait(&WireMessage::ReplayPreviewRequest(request), None)?;
+        self.flush_wire_wait(None)
+    }
+
+    /// Asks for one audio chain's slots (2.129, AU-006). The answer arrives
+    /// as [`SessionEvent::AudioPluginStatus`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected or when encoding or writing the
+    /// request fails.
+    pub fn request_audio_plugin_status(
+        &mut self,
+        request: fm_protocol::AudioPluginStatusRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        self.send_wire_wait(&WireMessage::AudioPluginStatusRequest(request), None)?;
         self.flush_wire_wait(None)
     }
 
@@ -1697,6 +1730,9 @@ impl TcpSession {
                     WireMessage::ReplayStatus(status) => {
                         self.latest_replay_status = Some(status);
                     }
+                    WireMessage::AudioPluginStatus(status) => {
+                        self.latest_audio_plugin_status = Some(status);
+                    }
                     WireMessage::ReelStatus(status) => {
                         self.latest_reel_status = Some(status);
                     }
@@ -1813,6 +1849,10 @@ impl TcpSession {
             WireMessage::ReplayStatus(status) => {
                 self.latest_replay_status = Some(status.clone());
                 Ok(SessionEvent::ReplayStatus { status })
+            }
+            WireMessage::AudioPluginStatus(status) => {
+                self.latest_audio_plugin_status = Some(status.clone());
+                Ok(SessionEvent::AudioPluginStatus { status })
             }
             WireMessage::ReelStatus(status) => {
                 self.latest_reel_status = Some(status.clone());
@@ -1933,6 +1973,7 @@ impl TcpSession {
             | WireMessage::ScreenCaptureTargetsRequest(_)
             | WireMessage::ScreenCapturePickRequest(_)
             | WireMessage::ReplayStatusRequest(_)
+            | WireMessage::AudioPluginStatusRequest(_)
             | WireMessage::ReelStatusRequest(_)
             | WireMessage::HealthAlertRequest(_) => {
                 self.transition_disconnect();

@@ -226,6 +226,23 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
                 record.field_string(name, value)
             })?;
         }
+        WireMessage::AudioPluginStatusRequest(message) => {
+            record.kind("audio_plugin_status_request");
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+            super::audio_plugins::encode_request(message, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
+        WireMessage::AudioPluginStatus(message) => {
+            record.kind("audio_plugin_status");
+            encode_server_identity(&mut record, &message.server)?;
+            validate_request_id(&message.request_id)?;
+            record.field_str("request_id", &message.request_id)?;
+            super::audio_plugins::encode_status(message, &mut |name, value| {
+                record.field_string(name, value)
+            })?;
+        }
         WireMessage::ReplayStatusRequest(message) => {
             record.kind("replay_status_request");
             validate_request_id(&message.request_id)?;

@@ -119,6 +119,7 @@ fn try_enqueue(
 }
 
 #[allow(clippy::too_many_lines)] // one arm per coalescible intent
+#[allow(clippy::match_same_arms)] // previews and plugin status have separate latest-wins groups
 fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> bool {
     match (tail, incoming) {
         (
@@ -249,6 +250,15 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
             incoming @ (StudioIntent::TitlePreview(_)
             | StudioIntent::ScenePreview(_)
             | StudioIntent::ReplayPreview(_)),
+        ) => {
+            *current = incoming;
+            true
+        }
+        // A plugin status request is latest-wins on its own: it never
+        // replaces a queued preview.
+        (
+            current @ StudioIntent::AudioPluginStatus(_),
+            incoming @ StudioIntent::AudioPluginStatus(_),
         ) => {
             *current = incoming;
             true
@@ -1343,6 +1353,7 @@ fn run_worker(
                 request @ (StudioIntent::TitlePreview(_)
                 | StudioIntent::ScenePreview(_)
                 | StudioIntent::ReplayPreview(_)
+                | StudioIntent::AudioPluginStatus(_)
                 | StudioIntent::RequestDisplayInventory
                 | StudioIntent::RequestCaptureDevices
                 | StudioIntent::RequestSystemAudioDevices
@@ -1393,6 +1404,7 @@ fn run_worker(
                     | SessionEvent::WebAccess { .. }
                     | SessionEvent::SlideshowSlides { .. }
                     | SessionEvent::PagedPage { .. }
+                    | SessionEvent::AudioPluginStatus { .. }
                     | SessionEvent::ScreenCaptureTargets { .. },
                 )) => true,
                 // Lossy monitor parts publish only once a frame completes.
@@ -1450,6 +1462,7 @@ fn run_worker(
                 request @ (StudioIntent::TitlePreview(_)
                 | StudioIntent::ScenePreview(_)
                 | StudioIntent::ReplayPreview(_)
+                | StudioIntent::AudioPluginStatus(_)
                 | StudioIntent::RequestDisplayInventory
                 | StudioIntent::RequestCaptureDevices
                 | StudioIntent::RequestSystemAudioDevices
@@ -1506,6 +1519,7 @@ fn run_worker(
 /// A display inventory request (Protocol 2.42) goes out the same way; its
 /// reply updates the replicated inventory, and one that cannot be sent is
 /// dropped (the dialog's Refresh asks again).
+#[allow(clippy::too_many_lines)] // one arm per on-demand request
 fn handle_preview_request(
     runtime: &mut StudioRuntime,
     request: StudioIntent,
@@ -1594,6 +1608,13 @@ fn handle_preview_request(
         }
         return true;
     }
+    // One audio target's plugin chain (2.129, AU-006) is read on demand.
+    if let StudioIntent::AudioPluginStatus(request) = request {
+        if !recovery.active() {
+            runtime.request_audio_plugin_status(request);
+        }
+        return true;
+    }
     // A new pick of a screen capture input's target (IN-011, Protocol
     // 2.85) is not repeated after a reconnect: the operator asks again.
     if let StudioIntent::PickScreenCapture { input } = request {
@@ -1646,6 +1667,7 @@ fn handle_worker_intent(
         request @ (StudioIntent::TitlePreview(_)
         | StudioIntent::ScenePreview(_)
         | StudioIntent::ReplayPreview(_)
+        | StudioIntent::AudioPluginStatus(_)
         | StudioIntent::RequestDisplayInventory
         | StudioIntent::RequestCaptureDevices
         | StudioIntent::RequestSystemAudioDevices
@@ -1958,6 +1980,7 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::StreamStatus { .. }
                         | SessionEvent::RecorderStatus { .. }
                         | SessionEvent::ReplayStatus { .. }
+                        | SessionEvent::AudioPluginStatus { .. }
                         | SessionEvent::ReelStatus { .. }
                         | SessionEvent::TitlePhases { .. }
                         | SessionEvent::SourceSyncStatus { .. }
@@ -2517,6 +2540,7 @@ fn receive_command_event(
                 | SessionEvent::StreamStatus { .. }
                 | SessionEvent::RecorderStatus { .. }
                 | SessionEvent::ReplayStatus { .. }
+                | SessionEvent::AudioPluginStatus { .. }
                 | SessionEvent::ReelStatus { .. }
                 | SessionEvent::TitlePhases { .. }
                 | SessionEvent::SourceSyncStatus { .. }
@@ -3037,7 +3061,8 @@ fn intent_payload(
         StudioIntent::SceneLayer(edit) => CommandPayload::SceneLayer(edit),
         StudioIntent::TitlePreview(_)
         | StudioIntent::ScenePreview(_)
-        | StudioIntent::ReplayPreview(_) => {
+        | StudioIntent::ReplayPreview(_)
+        | StudioIntent::AudioPluginStatus(_) => {
             return Err("An exact preview request is not a command".to_owned());
         }
         StudioIntent::RequestDisplayInventory => {
@@ -3482,6 +3507,7 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
         .preview_failure()
         .filter(|request| request.starts_with("replay-preview"))
         .map(str::to_owned);
+    state.audio_plugin_status = runtime.session().latest_audio_plugin_status().cloned();
     state.title_animation_refusal = runtime.animation_refusal().cloned();
     state
         .display_output_answers
@@ -8678,6 +8704,40 @@ mod tests {
             request_sender.send(WorkerRequest::Shutdown).unwrap();
             worker.join().unwrap();
             server.join().unwrap();
+        }
+
+        #[test]
+        fn a_plugin_status_request_never_replaces_a_queued_preview() {
+            let mut pending = PendingIntents::new();
+            let preview = fm_protocol::ScenePreviewRequest {
+                protocol: fm_protocol::CURRENT_PROTOCOL_VERSION,
+                request_id: "anim-preview-1".to_owned(),
+                input: title_input(),
+                sample: fm_protocol::TitlePreviewSample::Hold,
+                width: 64,
+                height: 36,
+                clip: None,
+            };
+            pending
+                .push(StudioIntent::ScenePreview(preview.clone()))
+                .unwrap();
+            let status = |id: &str| {
+                StudioIntent::AudioPluginStatus(fm_protocol::AudioPluginStatusRequest {
+                    request_id: id.to_owned(),
+                    target: fm_protocol::AudioDspTarget::Input(title_input()),
+                })
+            };
+            pending.push(status("plugin-status-1")).unwrap();
+            pending.push(status("plugin-status-2")).unwrap();
+            let queued: Vec<_> = pending.intents.iter().cloned().collect();
+            assert_eq!(
+                queued,
+                vec![
+                    StudioIntent::ScenePreview(preview),
+                    status("plugin-status-2"),
+                ]
+            );
+            assert!(intent_payload(status("x"), None).is_err());
         }
 
         #[test]

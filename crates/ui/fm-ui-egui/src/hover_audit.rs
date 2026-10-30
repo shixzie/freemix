@@ -2478,6 +2478,35 @@ fn ready_over(model: &ClientModel, operator: bool) -> StudioUiState {
     state.source_sync = Some(source_sync());
     state.health = Some(Box::new(daemon_health()));
     state.replay = Some(Box::new(replay_status()));
+    state.audio_plugin_status = Some(fm_protocol::AudioPluginStatusMessage {
+        server: fm_protocol::ServerIdentity {
+            engine_id: "audit".into(),
+            project_id: "audit".into(),
+            state_epoch: 1,
+            log_id: "audit".into(),
+        },
+        request_id: "plugin-status-1".into(),
+        target: fm_protocol::AudioDspTarget::Input(wire(1)),
+        available: vec![
+            "freemix.reference.trim".into(),
+            "freemix.reference.polarity".into(),
+            "freemix.reference.softclip".into(),
+        ],
+        slots: vec![
+            fm_protocol::PluginChainSlot {
+                plugin: "freemix.reference.trim".into(),
+                bypassed: false,
+                latency_frames: 0,
+                state: (-12_000_i32).to_le_bytes().to_vec(),
+            },
+            fm_protocol::PluginChainSlot {
+                plugin: "freemix.reference.polarity".into(),
+                bypassed: true,
+                latency_frames: 2,
+                state: Vec::new(),
+            },
+        ],
+    });
     state.title_previews = true;
     state.replay_preview = Some(fm_protocol::TitlePreviewImage {
         request_id: "replay-preview-4-1-2500".into(),

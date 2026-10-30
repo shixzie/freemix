@@ -3476,6 +3476,10 @@ pub enum WireMessage {
     ReplayPreviewRequest(ReplayPreviewRequest),
     /// Answers a [`ReplayPreviewRequest`] (OR-014).
     ReplayPreviewFrame(ReplayPreviewFrameMessage),
+    /// Asks for one audio chain's slots (2.129, AU-006).
+    AudioPluginStatusRequest(crate::AudioPluginStatusRequest),
+    /// Answers an [`AudioPluginStatusRequest`] (2.129, AU-006).
+    AudioPluginStatus(Box<crate::AudioPluginStatusMessage>),
     AnimationPresetState(AnimationPresetStateMessage),
     /// One input strip's DSP chain after a snapshot (Protocol 2.75).
     AudioStripDspState(crate::AudioStripDspStateMessage),

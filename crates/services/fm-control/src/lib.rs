@@ -1545,6 +1545,23 @@ impl<A: AuthorizationHook> ControlService<A> {
         self.engine.replay_multiview(input)
     }
 
+    /// One audio target's plugin chain and the daemon's installed plugins
+    /// (2.129, AU-006).
+    #[must_use]
+    pub fn audio_plugin_status(
+        &self,
+        authority: &fm_protocol::ServerIdentity,
+        request: &fm_protocol::AudioPluginStatusRequest,
+    ) -> fm_protocol::AudioPluginStatusMessage {
+        audio_mixer::plugin_status(&self.engine, authority, request)
+    }
+
+    /// Moves whenever any audio plugin chain changed (AU-006).
+    #[must_use]
+    pub const fn audio_plugin_generation(&self) -> u64 {
+        self.engine.audio_plugin_generation()
+    }
+
     /// A counter that moves whenever the reel status may have changed
     /// (OR-013).
     #[must_use]

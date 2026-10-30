@@ -55,6 +55,10 @@
 //!
 //! | [`AudioMixerOperation::ResetLoudness`] | `audio_loudness_reset` | `target` (`master` or an input) | live operation |
 //!
+//! Since 2.129 a client can read one target's chain and the installed plugin
+//! list with `audio_plugin_status_request`; the `audio_plugin_status` answer
+//! carries exactly the target, available identifiers, and slots.
+//!
 //! Since 2.128 a strip or the Master bus can carry an ordered plugin chain
 //! (AU-006, [`PluginChainSlot`]): one `plugins` field of
 //! `<plugin>:<bypassed 0\|1>:<latency frames>:<state base64url>` slots
@@ -498,9 +502,27 @@ impl PluginChainSlot {
     }
 }
 
+/// A request for one chain's current slots (2.129, AU-006).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AudioPluginStatusRequest {
+    pub request_id: String,
+    pub target: AudioDspTarget,
+}
+
+/// One chain's current slots, answered to an
+/// [`AudioPluginStatusRequest`] (2.129, AU-006), and the plugin identifiers
+/// this daemon can install.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AudioPluginStatusMessage {
+    pub server: crate::ServerIdentity,
+    pub request_id: String,
+    pub target: AudioDspTarget,
+    pub available: Vec<String>,
+    pub slots: Vec<PluginChainSlot>,
+}
+
 /// One mixer label, group, or group-level operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
-
 pub enum AudioMixerOperation {
     /// Labels `input`'s strip; empty clears the label.
     SetLabel { input: WireInputId, label: String },

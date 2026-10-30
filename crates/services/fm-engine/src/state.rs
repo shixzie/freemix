@@ -249,6 +249,8 @@ pub struct ShowState {
     master_audio_dsp: fm_types::strip_dsp::StripDsp,
     /// The Master bus plugin chain (AU-006), runtime state.
     master_audio_plugins: fm_plugin_host_api::PluginChain,
+    /// Moves whenever any plugin chain changes (AU-006).
+    audio_plugin_generation: u64,
     /// The strip groups, group 1 first (AU-001).
     audio_groups: [crate::EngineAudioGroup; fm_model::AUDIO_GROUP_COUNT],
     /// The aux buses, bus A first (AU-002).
@@ -359,6 +361,7 @@ impl ShowState {
             input_audio_dsp: BTreeMap::new(),
             input_audio_plugins: BTreeMap::new(),
             master_audio_plugins: fm_plugin_host_api::PluginChain::new(),
+            audio_plugin_generation: 0,
             master_audio_dsp: fm_types::strip_dsp::StripDsp::DEFAULT,
             audio_groups: fm_model::AudioGroupNumber::ALL.map(crate::EngineAudioGroup::default_for),
             aux_buses: fm_model::AuxBusNumber::ALL.map(crate::EngineAuxBus::default_for),
@@ -735,7 +738,9 @@ impl ShowState {
         self.input_audio_labels.remove(&input);
         self.input_audio_groups.remove(&input);
         self.input_audio_dsp.remove(&input);
-        self.input_audio_plugins.remove(&input);
+        if self.input_audio_plugins.remove(&input).is_some() {
+            self.audio_plugin_generation = self.audio_plugin_generation.wrapping_add(1);
+        }
         Ok(())
     }
 
@@ -865,6 +870,7 @@ impl ShowState {
         } else {
             self.input_audio_plugins.insert(input, chain);
         }
+        self.audio_plugin_generation = self.audio_plugin_generation.wrapping_add(1);
     }
 
     /// The Master bus plugin chain (AU-006).
@@ -876,6 +882,13 @@ impl ShowState {
     /// Replaces the Master bus plugin chain (AU-006).
     pub fn set_master_audio_plugins(&mut self, chain: fm_plugin_host_api::PluginChain) {
         self.master_audio_plugins = chain;
+        self.audio_plugin_generation = self.audio_plugin_generation.wrapping_add(1);
+    }
+
+    /// Moves whenever any plugin chain changed (AU-006).
+    #[must_use]
+    pub const fn audio_plugin_generation(&self) -> u64 {
+        self.audio_plugin_generation
     }
 
     /// The Master bus DSP chain (AU-005).

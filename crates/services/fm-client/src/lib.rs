@@ -734,6 +734,8 @@ impl Client {
             | WireMessage::RecorderStatus(_)
             | WireMessage::ReplayStatus(_)
             | WireMessage::ReelStatus(_)
+            | WireMessage::AudioPluginStatus(_)
+            | WireMessage::AudioPluginStatusRequest(_)
             | WireMessage::SourceSyncStatus(_)
             | WireMessage::HealthStatus(_)
             | WireMessage::MonitorFrame(_)

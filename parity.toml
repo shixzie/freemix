@@ -313,8 +313,8 @@ commands = ["cargo test -p fm-audio --test dsp", "cargo test -p fm-audio --test 
 [[tests]]
 id = "accept-au-006"
 state = "present"
-paths = ["crates/features/fm-plugin-host-api/tests/chain.rs", "crates/features/fm-plugin-host-api/tests/reference.rs", "crates/foundation/fm-protocol/tests/plugin_chain.rs", "crates/services/fm-engine/tests/plugin_chain.rs", "crates/media/fm-audio/tests/master_plugins.rs", "apps/freemixd/tests/native_strip_dsp.rs"]
-commands = ["cargo test -p fm-plugin-host-api --test chain", "cargo test -p fm-plugin-host-api --test reference", "cargo test -p fm-protocol --test plugin_chain", "cargo test -p fm-engine --test plugin_chain", "cargo test -p fm-audio --test master_plugins", "cargo test -p freemixd --test native_strip_dsp"]
+paths = ["crates/features/fm-plugin-host-api/tests/chain.rs", "crates/features/fm-plugin-host-api/tests/reference.rs", "crates/foundation/fm-protocol/tests/plugin_chain.rs", "crates/services/fm-engine/tests/plugin_chain.rs", "crates/media/fm-audio/tests/master_plugins.rs", "crates/ui/fm-ui-egui/src/strip_fx.rs", "crates/ui/fm-ui-egui/tests/hover_audit.rs", "apps/freemixd/tests/native_strip_dsp.rs"]
+commands = ["cargo test -p fm-plugin-host-api --test chain", "cargo test -p fm-plugin-host-api --test reference", "cargo test -p fm-protocol --test plugin_chain", "cargo test -p fm-engine --test plugin_chain", "cargo test -p fm-audio --test master_plugins", "cargo test -p fm-ui-egui --test hover_audit", "cargo test -p freemixd --test native_strip_dsp"]
 [[tests]]
 id = "accept-au-007"
 state = "present"

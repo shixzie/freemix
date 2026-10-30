@@ -2596,3 +2596,55 @@ fn item_thumbnails_are_kept_per_item_of_a_known_list() {
     assert!(session.latest_item_thumbnails().is_empty());
     server_thread.join().unwrap();
 }
+
+/// AU-006, Protocol 2.129: a plugin status request goes out exactly and its
+/// answer is retained.
+#[test]
+fn audio_plugin_status_requests_round_trip() {
+    use fm_protocol::{
+        AudioDspTarget, AudioPluginStatusMessage, AudioPluginStatusRequest, PluginChainSlot,
+    };
+
+    let request = AudioPluginStatusRequest {
+        request_id: "plugin-status-7".into(),
+        target: AudioDspTarget::Input(input(7)),
+    };
+    let status = AudioPluginStatusMessage {
+        server: server(),
+        request_id: request.request_id.clone(),
+        target: request.target,
+        available: vec!["freemix.reference.trim".into()],
+        slots: vec![PluginChainSlot {
+            plugin: "freemix.reference.trim".into(),
+            bypassed: true,
+            latency_frames: 3,
+            state: (-12_000_i32).to_le_bytes().to_vec(),
+        }],
+    };
+
+    let (release_tx, release_rx) = mpsc::channel();
+    let expected_request = request.clone();
+    let expected_status = status.clone();
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        assert_eq!(
+            peer.receive(),
+            WireMessage::AudioPluginStatusRequest(expected_request)
+        );
+        release_rx.recv().unwrap();
+        peer.send(&WireMessage::AudioPluginStatus(Box::new(expected_status)));
+    });
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    session.request_audio_plugin_status(request).unwrap();
+    release_tx.send(()).unwrap();
+    assert_eq!(
+        session.receive().unwrap(),
+        SessionEvent::AudioPluginStatus {
+            status: Box::new(status.clone())
+        }
+    );
+    assert_eq!(session.latest_audio_plugin_status(), Some(&status));
+    server_thread.join().unwrap();
+}

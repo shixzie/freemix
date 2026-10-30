@@ -2,6 +2,7 @@ mod alert_rules;
 mod animation;
 mod audio_mixer;
 mod audio_output;
+mod audio_plugins;
 mod capture;
 mod cue;
 mod decode;

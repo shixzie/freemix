@@ -921,7 +921,7 @@ pub(super) fn encode_operation(
 
 /// Encodes a plugin chain as `<plugin>:<bypass>:<latency>:<state>` slots
 /// joined by `,` (2.128).
-fn encode_plugin_slots(slots: &[crate::PluginChainSlot]) -> Result<String, CodecError> {
+pub(super) fn encode_plugin_slots(slots: &[crate::PluginChainSlot]) -> Result<String, CodecError> {
     if slots.len() > crate::MAX_PROTOCOL_PLUGIN_SLOTS {
         return Err(invalid("plugins", format!("{} slots", slots.len())));
     }
@@ -952,7 +952,7 @@ fn encode_plugin_slots(slots: &[crate::PluginChainSlot]) -> Result<String, Codec
 }
 
 /// Decodes a plugin chain (2.128).
-fn decode_plugin_slots(value: &str) -> Result<Vec<crate::PluginChainSlot>, CodecError> {
+pub(super) fn decode_plugin_slots(value: &str) -> Result<Vec<crate::PluginChainSlot>, CodecError> {
     if value.is_empty() {
         return Ok(Vec::new());
     }

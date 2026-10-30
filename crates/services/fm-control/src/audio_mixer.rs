@@ -14,8 +14,8 @@ use fm_plugin_host_api::{
 use fm_protocol::AuxBusStatus;
 use fm_protocol::{
     AudioDspTarget, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioMonitorStatus,
-    AudioStripDspStateMessage, CommandPayload, EventPayload, InputAudioLabel, PluginChainSlot,
-    WireInputId, WireOutputId,
+    AudioPluginStatusMessage, AudioPluginStatusRequest, AudioStripDspStateMessage, CommandPayload,
+    EventPayload, InputAudioLabel, PluginChainSlot, ServerIdentity, WireInputId, WireOutputId,
 };
 use fm_types::strip_dsp::StripDspTarget;
 
@@ -53,6 +53,30 @@ pub(super) fn strip_dsp_states(engine: &Engine) -> Vec<AudioStripDspStateMessage
             chain: *chain,
         })
         .collect()
+}
+
+/// One target's chain and the installed plugins, answering a status request
+/// (2.129, AU-006).
+pub(super) fn plugin_status(
+    engine: &Engine,
+    authority: &ServerIdentity,
+    request: &AudioPluginStatusRequest,
+) -> AudioPluginStatusMessage {
+    let target = dsp_target(request.target);
+    let chain = match target {
+        StripDspTarget::Master => engine.show().master_audio_plugins(),
+        StripDspTarget::Input(input) => engine.show().input_audio_plugins(input),
+    };
+    AudioPluginStatusMessage {
+        server: authority.clone(),
+        request_id: request.request_id.clone(),
+        target: request.target,
+        available: fm_plugin_host_api::REFERENCE_PLUGINS
+            .iter()
+            .map(|plugin| (*plugin).to_owned())
+            .collect(),
+        slots: wire_plugin_chain(chain),
+    }
 }
 
 /// The engine chain for wire slots the codec already bounded.

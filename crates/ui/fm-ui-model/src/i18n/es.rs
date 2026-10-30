@@ -9806,6 +9806,64 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::FxResetHover,
         t("Desactiva todas las etapas y restaura los ajustes predeterminados"),
     ),
+    (Msg::FxPlugins, t("Complementos")),
+    (
+        Msg::FxPluginsHover,
+        t(
+            "La cadena ordenada de complementos de referencia del canal: orden de proceso, puenteo, latencia y estado guardado",
+        ),
+    ),
+    (
+        Msg::FxPluginUnavailable,
+        t("el estado de complementos aún no se informa"),
+    ),
+    (Msg::FxPluginAdd, t("Añadir complemento")),
+    (
+        Msg::FxPluginAddHover,
+        t("Añadir {plugin} al final de la cadena"),
+    ),
+    (
+        Msg::FxPluginReasonFull,
+        t("la cadena admite ocho complementos"),
+    ),
+    (
+        Msg::FxPluginReasonAdded,
+        t("todos los complementos instalados ya están en la cadena"),
+    ),
+    (
+        Msg::FxPluginEmpty,
+        t("Sin complementos: el canal se oye sin procesar"),
+    ),
+    (
+        Msg::FxPluginBypassHover,
+        t("Puentea este complemento: se conservan sus ajustes y su lugar en la cadena"),
+    ),
+    (Msg::FxPluginTrimDown, t("-1")),
+    (Msg::FxPluginTrimDownHover, t("Bajar este ajuste 1 dB")),
+    (Msg::FxPluginTrimUp, t("+1")),
+    (Msg::FxPluginTrimUpHover, t("Subir este ajuste 1 dB")),
+    (
+        Msg::FxPluginTrimHover,
+        t("La ganancia guardada del ajuste en dB"),
+    ),
+    (Msg::FxPluginLatency, t("{frames} fotogramas")),
+    (
+        Msg::FxPluginLatencyHover,
+        t("La latencia que declara este complemento para compensar rutas paralelas"),
+    ),
+    (
+        Msg::FxPluginUpHover,
+        t("Procesar este complemento un lugar antes"),
+    ),
+    (
+        Msg::FxPluginDownHover,
+        t("Procesar este complemento un lugar después"),
+    ),
+    (Msg::FxPluginRemove, t("Quitar complemento")),
+    (
+        Msg::FxPluginRemoveHover,
+        t("Quitar este complemento de la cadena; el orden de los demás se conserva"),
+    ),
     (
         Msg::FxReasonNothingCopied,
         t("aún no se ha copiado ninguna cadena"),

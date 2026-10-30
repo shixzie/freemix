@@ -19,11 +19,11 @@
 
 use egui::{CentralPanel, Event, Frame, Key, Margin, Modifiers, Panel, Stroke, Ui, Vec2};
 use fm_protocol::{
-    AudioMetersMessage, CommandPayload, LiveInputSource, ManualTransitionKind,
-    ManualTransitionPosition, MonitorImage, RecorderRealizedState, RecorderStatusSample,
-    ReplayPreviewRequest, ScenePreviewRequest, StreamStatusMessage, TitlePreviewImage,
-    TitlePreviewRequest, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId,
-    WireStreamTargetId,
+    AudioMetersMessage, AudioPluginStatusRequest, CommandPayload, LiveInputSource,
+    ManualTransitionKind, ManualTransitionPosition, MonitorImage, RecorderRealizedState,
+    RecorderStatusSample, ReplayPreviewRequest, ScenePreviewRequest, StreamStatusMessage,
+    TitlePreviewImage, TitlePreviewRequest, WireOverlayChannelId, WireRecorderSlot,
+    WireStingerSlotId, WireStreamTargetId,
 };
 use fm_protocol::{
     AutoTransitionKind, MediaOperation, OverlayTransitionKind, TransitionFavoriteStatus,
@@ -513,6 +513,10 @@ pub enum StudioIntent {
     /// command: the answer arrives in [`StudioUiState::replay_preview`] or
     /// [`StudioUiState::replay_preview_failed`].
     ReplayPreview(ReplayPreviewRequest),
+    /// Asks for one audio target's plugin chain (Protocol 2.129, AU-006).
+    /// Not a command: the answer arrives in
+    /// [`StudioUiState::audio_plugin_status`].
+    AudioPluginStatus(AudioPluginStatusRequest),
 }
 
 impl StudioIntent {
@@ -740,6 +744,8 @@ pub struct StudioUiState {
     pub title_preview_failed: Option<String>,
     /// The latest assembled Replay multiview of this session (OR-014).
     pub replay_preview: Option<TitlePreviewImage>,
+    /// The latest audio plugin status of this session (2.129, AU-006).
+    pub audio_plugin_status: Option<fm_protocol::AudioPluginStatusMessage>,
     /// The `request_id` of the latest refused or lost Replay multiview.
     pub replay_preview_failed: Option<String>,
 }
@@ -802,6 +808,7 @@ impl StudioUiState {
             title_preview_failed: None,
             replay_preview: None,
             replay_preview_failed: None,
+            audio_plugin_status: None,
         }
     }
 
