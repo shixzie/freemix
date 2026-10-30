@@ -2624,10 +2624,10 @@ fn nonzero_interval(interval: Duration) -> Duration {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(windows))]
+    use std::{io::Read, sync::mpsc};
     use std::{
-        io::Read,
         net::{TcpListener, TcpStream},
-        sync::mpsc,
         thread,
     };
 
