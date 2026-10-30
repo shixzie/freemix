@@ -99,8 +99,7 @@ They are target-specific leaves; portable crates never depend on them.
 | `fm-browser-input` | Isolated browser process, interactive surface/audio, custom CSS, navigation policy |
 | `fm-io-srt` | SRT caller/listener/rendezvous and statistics |
 | `fm-io-webrtc` | Guests, remote preview, return media, ICE/TURN, data channels |
-| `fm-io-ndi` | Licensed NDI discovery/send/receive/metadata/tally |
-| `fm-io-omt` | OMT send/receive and direct-record capability |
+| `fm-io-omt` | FreeMix's own OMT 1.0: frame codecs, discovery server/client, subscribe/preview/tally/quality, sender and receiver |
 | `fm-io-windows` | Media Foundation, WASAPI, screen/window capture, virtual devices |
 | `fm-io-macos` | AVFoundation, CoreAudio, ScreenCaptureKit, virtual devices |
 | `fm-io-pipewire` | libpipewire loaded at run time: the narrow audited `unsafe` boundary reading a shared PipeWire video stream, and its SPA pods |
@@ -109,10 +108,13 @@ They are target-specific leaves; portable crates never depend on them.
 | `fm-io-aja` | AJA capture/output and key/fill |
 | `fm-io-bluefish` | Bluefish444 capture/output |
 
-Vendor crates are optional and must build only when their SDK is discovered
-explicitly. Missing SDKs do not prevent the portable workspace from building.
-A single adapter may use GStreamer internally if it is the best supported
-platform route, but GStreamer types remain private to that adapter.
+Vendor crates are optional and implement FreeMix's own `fm-io-api` contracts;
+their vendor SDKs stay out of this workspace, and a missing vendor SDK never
+prevents the portable build. FreeMix needs no licensed AV-over-IP, plugin, or
+capture SDK: OMT is implemented in-tree (`fm-io-omt`), plugins use
+`fm-plugin-api`, and device adapters implement `fm-io-api`. A single adapter
+may use GStreamer internally if it is the best supported platform route, but
+GStreamer types remain private to that adapter.
 
 ## 6. Product feature crates
 

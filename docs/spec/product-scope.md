@@ -165,18 +165,21 @@ Each feature has:
 - a status in the compatibility ledger.
 
 Equivalent behavior is acceptable when the original integration is proprietary.
-For example, a general standards-based remote guest workflow does not by itself
-satisfy a named Zoom integration; that row remains incomplete until an
-authorized Zoom adapter ships. The same rule applies to NDI, OMT, VST3, capture
-card SDKs, and virtual camera drivers.
+A standards-based remote guest workflow satisfies the meeting row; a named
+third-party service integration remains incomplete until an authorized adapter
+ships. Open standards cover AV-over-IP (OMT), streaming (RTMP/RTMPS/SRT),
+browser guests (WebRTC), plugins (FreeMix's plugin ABI), and capture/output
+(FreeMix's I/O contracts), so no vendor SDK or license is needed for those
+rows.
 
 ## 9. Legal and licensing constraints
 
 - FFmpeg configuration and redistribution must be reviewed per shipped codec,
   platform, and distribution model.
-- NDI, Zoom, VST3, AJA, Blackmagic Design, Bluefish444, and similar integrations
-  require separate SDK/license review and cannot leak vendor headers or runtime
-  dependencies into portable crates.
+- Third-party hardware and service integrations may use their own SDKs out of
+  tree; vendor headers and runtime dependencies never enter portable crates.
+  FreeMix's own OMT transport, plugin ABI, and I/O contracts are in-tree and
+  license-free, so no NDI, VST3, or AV-over-IP license is required.
 - H.264, HEVC, AAC, MPEG-2, and other patent-encumbered formats require a
   distribution and territory assessment.
 - Product branding, templates, media, and UI must be original.

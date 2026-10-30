@@ -527,8 +527,8 @@ owner = "platform-professional-hardware"
 dependencies = ["IN-001"]
 capability_profiles = ["windows-tier1", "macos-tier1", "linux-tier1", "vendor-certified"]
 tests = ["accept-in-002"]
-status = "blocked"
-substitution_policy = "exact-authorized-integration-required"
+status = "planned"
+substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-003"
@@ -703,8 +703,8 @@ owner = "platform-professional-hardware"
 dependencies = ["IN-001"]
 capability_profiles = ["windows-tier1", "macos-tier1", "linux-tier1", "vendor-certified"]
 tests = ["accept-in-018"]
-status = "blocked"
-substitution_policy = "exact-authorized-integration-required"
+status = "planned"
+substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-019"
@@ -824,8 +824,8 @@ owner = "replay-guests"
 dependencies = ["RC-001"]
 capability_profiles = ["windows-tier1", "macos-tier1", "linux-tier1", "vendor-certified"]
 tests = ["accept-in-029"]
-status = "blocked"
-substitution_policy = "exact-authorized-integration-required"
+status = "planned"
+substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "IN-030"
@@ -1154,8 +1154,8 @@ owner = "graphics-data-automation-plugins"
 dependencies = ["GX-004"]
 capability_profiles = ["windows-tier1", "macos-tier1", "linux-tier1", "browser-control", "vendor-certified"]
 tests = ["accept-gx-010"]
-status = "blocked"
-substitution_policy = "exact-authorized-integration-required"
+status = "planned"
+substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "GX-011"
@@ -1231,8 +1231,8 @@ owner = "audio-dsp"
 dependencies = ["AU-005"]
 capability_profiles = ["windows-tier1", "macos-tier1", "linux-tier1", "vendor-certified"]
 tests = ["accept-au-006"]
-status = "blocked"
-substitution_policy = "exact-authorized-integration-required"
+status = "planned"
+substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "AU-007"
@@ -1374,8 +1374,8 @@ owner = "platform-professional-hardware"
 dependencies = ["SW-012"]
 capability_profiles = ["windows-tier1", "macos-tier1", "linux-tier1", "vendor-certified"]
 tests = ["accept-or-008"]
-status = "blocked"
-substitution_policy = "exact-authorized-integration-required"
+status = "planned"
+substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "OR-009"
@@ -1385,8 +1385,8 @@ owner = "codecs-network-recording"
 dependencies = ["SW-012", "IN-017"]
 capability_profiles = ["windows-tier1", "macos-tier1", "linux-tier1", "vendor-certified"]
 tests = ["accept-or-009"]
-status = "blocked"
-substitution_policy = "exact-authorized-integration-required"
+status = "planned"
+substitution_policy = "equivalent-behavior-allowed"
 
 [[features]]
 id = "OR-010"

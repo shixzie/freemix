@@ -67,9 +67,10 @@ It owns:
 - unsafe FFI and callback lifecycle;
 - simulator or recorded fixture for CI.
 
-NDI, Zoom, VST3, AJA, Blackmagic, Bluefish444, and similar integrations ship
-only after legal and redistribution approval. OMT remains an adapter even when
-its implementation is open source, preserving the same dependency direction.
+Vendor hardware and named service integrations ship only after legal and
+redistribution approval, outside the portable workspace. The in-tree OMT
+transport, FreeMix plugin ABI, and I/O contracts need no vendor SDK or license
+and keep the same dependency direction.
 
 Archived vMix surfaces such as SWF/Flash, WPF/XAML titles, DirectShow-only devices,
 Windows Media output, and VB.NET scripts are isolated import plugins, not
@@ -104,7 +105,9 @@ and virtual-device permissions vary by OS. The engine:
 
 - CI cross-checks workspace metadata on all targets; release builds run on their
   native OS.
-- SDK-backed crates build only in licensed runners.
+- Vendor-SDK adapters build only in their own runners; the portable workspace,
+  the in-tree OMT transport, the plugin SDK, and the reference device paths
+  build everywhere with no vendor SDK.
 - Installers bundle exact redistributable native libraries and generate a
   third-party notice/SBOM.
 - Artifacts are code-signed; macOS is notarized; update manifests are signed.

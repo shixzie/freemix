@@ -6,12 +6,12 @@ local acceptance-test evidence only.
 
 ## windows-tier1
 
-Total: 106 features. Status: planned=99, blocked=7. Priority: P0=24, P1=73, P2=9.
+Total: 106 features. Status: planned=106. Priority: P0=24, P1=73, P2=9.
 
 | ID | Pri | Phase | Status | Owner | Acceptance |
 |---|---|---|---|---|---|
 | IN-001 | P0 | 3 | planned | platform-professional-hardware | accept-in-001 (present) |
-| IN-002 | P1 | 8 | blocked | platform-professional-hardware | accept-in-002 (planned) |
+| IN-002 | P1 | 8 | planned | platform-professional-hardware | accept-in-002 (planned) |
 | IN-003 | P0 | 2 | planned | codecs-network-recording | accept-in-003 (present) |
 | IN-004 | P1 | 8 | planned | codecs-network-recording | accept-in-004 (planned) |
 | IN-005 | P1 | 3 | planned | audio-dsp | accept-in-005 (present) |
@@ -27,7 +27,7 @@ Total: 106 features. Status: planned=99, blocked=7. Priority: P0=24, P1=73, P2=9
 | IN-015 | P0 | 4 | planned | codecs-network-recording | accept-in-015 (present) |
 | IN-016 | P1 | 4 | planned | codecs-network-recording | accept-in-016 (present) |
 | IN-017 | P1 | 4 | planned | codecs-network-recording | accept-in-017 (present) |
-| IN-018 | P1 | 8 | blocked | platform-professional-hardware | accept-in-018 (planned) |
+| IN-018 | P1 | 8 | planned | platform-professional-hardware | accept-in-018 (planned) |
 | IN-019 | P1 | 8 | planned | codecs-network-recording | accept-in-019 (planned) |
 | IN-020 | P0 | 3 | planned | gpu-compositor-color | accept-in-020 (present) |
 | IN-021 | P1 | 9 | planned | gpu-compositor-color | accept-in-021 (present) |
@@ -38,7 +38,7 @@ Total: 106 features. Status: planned=99, blocked=7. Priority: P0=24, P1=73, P2=9
 | IN-026 | P0 | 2 | planned | engine-control-persistence-security | accept-in-026 (present) |
 | IN-027 | P1 | 5 | planned | graphics-data-automation-plugins | accept-in-027 (present) |
 | IN-028 | P1 | 5 | planned | platform-professional-hardware | accept-in-028 (present) |
-| IN-029 | P2 | 6 | blocked | replay-guests | accept-in-029 (planned) |
+| IN-029 | P2 | 6 | planned | replay-guests | accept-in-029 (planned) |
 | IN-030 | P2 | 9 | planned | platform-professional-hardware | accept-in-030 (planned) |
 | SW-001 | P0 | 2 | planned | gpu-compositor-color | accept-sw-001 (present) |
 | SW-002 | P0 | 3 | planned | gpu-compositor-color | accept-sw-002 (present) |
@@ -68,14 +68,14 @@ Total: 106 features. Status: planned=99, blocked=7. Priority: P0=24, P1=73, P2=9
 | GX-007 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-007 (present) |
 | GX-008 | P2 | 9 | planned | graphics-data-automation-plugins | accept-gx-008 (planned) |
 | GX-009 | P1 | 8 | planned | platform-professional-hardware | accept-gx-009 (planned) |
-| GX-010 | P2 | 9 | blocked | graphics-data-automation-plugins | accept-gx-010 (present) |
+| GX-010 | P2 | 9 | planned | graphics-data-automation-plugins | accept-gx-010 (present) |
 | GX-011 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-011 (present) |
 | AU-001 | P0 | 3 | planned | audio-dsp | accept-au-001 (present) |
 | AU-002 | P0 | 3 | planned | audio-dsp | accept-au-002 (present) |
 | AU-003 | P0 | 3 | planned | audio-dsp | accept-au-003 (present) |
 | AU-004 | P0 | 3 | planned | media-core-clocks | accept-au-004 (present) |
 | AU-005 | P0 | 3 | planned | audio-dsp | accept-au-005 (present) |
-| AU-006 | P1 | 8 | blocked | audio-dsp | accept-au-006 (planned) |
+| AU-006 | P1 | 8 | planned | audio-dsp | accept-au-006 (planned) |
 | AU-007 | P1 | 3 | planned | audio-dsp | accept-au-007 (present) |
 | AU-008 | P1 | 3 | planned | audio-dsp | accept-au-008 (present) |
 | AU-009 | P1 | 5 | planned | audio-dsp | accept-au-009 (present) |
@@ -88,8 +88,8 @@ Total: 106 features. Status: planned=99, blocked=7. Priority: P0=24, P1=73, P2=9
 | OR-005 | P1 | 4 | planned | codecs-network-recording | accept-or-005 (present) |
 | OR-006 | P1 | 4 | planned | codecs-network-recording | accept-or-006 (present) |
 | OR-007 | P1 | 4 | planned | codecs-network-recording | accept-or-007 (present) |
-| OR-008 | P1 | 8 | blocked | platform-professional-hardware | accept-or-008 (planned) |
-| OR-009 | P1 | 8 | blocked | codecs-network-recording | accept-or-009 (planned) |
+| OR-008 | P1 | 8 | planned | platform-professional-hardware | accept-or-008 (planned) |
+| OR-009 | P1 | 8 | planned | codecs-network-recording | accept-or-009 (planned) |
 | OR-010 | P1 | 8 | planned | platform-professional-hardware | accept-or-010 (planned) |
 | OR-011 | P0 | 2 | planned | platform-professional-hardware | accept-or-011 (present) |
 | OR-012 | P1 | 7 | planned | replay-guests | accept-or-012 (present) |
@@ -119,12 +119,12 @@ Total: 106 features. Status: planned=99, blocked=7. Priority: P0=24, P1=73, P2=9
 
 ## macos-tier1
 
-Total: 104 features. Status: planned=97, blocked=7. Priority: P0=24, P1=73, P2=7.
+Total: 104 features. Status: planned=104. Priority: P0=24, P1=73, P2=7.
 
 | ID | Pri | Phase | Status | Owner | Acceptance |
 |---|---|---|---|---|---|
 | IN-001 | P0 | 3 | planned | platform-professional-hardware | accept-in-001 (present) |
-| IN-002 | P1 | 8 | blocked | platform-professional-hardware | accept-in-002 (planned) |
+| IN-002 | P1 | 8 | planned | platform-professional-hardware | accept-in-002 (planned) |
 | IN-003 | P0 | 2 | planned | codecs-network-recording | accept-in-003 (present) |
 | IN-004 | P1 | 8 | planned | codecs-network-recording | accept-in-004 (planned) |
 | IN-005 | P1 | 3 | planned | audio-dsp | accept-in-005 (present) |
@@ -139,7 +139,7 @@ Total: 104 features. Status: planned=97, blocked=7. Priority: P0=24, P1=73, P2=7
 | IN-015 | P0 | 4 | planned | codecs-network-recording | accept-in-015 (present) |
 | IN-016 | P1 | 4 | planned | codecs-network-recording | accept-in-016 (present) |
 | IN-017 | P1 | 4 | planned | codecs-network-recording | accept-in-017 (present) |
-| IN-018 | P1 | 8 | blocked | platform-professional-hardware | accept-in-018 (planned) |
+| IN-018 | P1 | 8 | planned | platform-professional-hardware | accept-in-018 (planned) |
 | IN-019 | P1 | 8 | planned | codecs-network-recording | accept-in-019 (planned) |
 | IN-020 | P0 | 3 | planned | gpu-compositor-color | accept-in-020 (present) |
 | IN-021 | P1 | 9 | planned | gpu-compositor-color | accept-in-021 (present) |
@@ -150,7 +150,7 @@ Total: 104 features. Status: planned=97, blocked=7. Priority: P0=24, P1=73, P2=7
 | IN-026 | P0 | 2 | planned | engine-control-persistence-security | accept-in-026 (present) |
 | IN-027 | P1 | 5 | planned | graphics-data-automation-plugins | accept-in-027 (present) |
 | IN-028 | P1 | 5 | planned | platform-professional-hardware | accept-in-028 (present) |
-| IN-029 | P2 | 6 | blocked | replay-guests | accept-in-029 (planned) |
+| IN-029 | P2 | 6 | planned | replay-guests | accept-in-029 (planned) |
 | SW-001 | P0 | 2 | planned | gpu-compositor-color | accept-sw-001 (present) |
 | SW-002 | P0 | 3 | planned | gpu-compositor-color | accept-sw-002 (present) |
 | SW-003 | P1 | 3 | planned | gpu-compositor-color | accept-sw-003 (present) |
@@ -179,14 +179,14 @@ Total: 104 features. Status: planned=97, blocked=7. Priority: P0=24, P1=73, P2=7
 | GX-007 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-007 (present) |
 | GX-008 | P2 | 9 | planned | graphics-data-automation-plugins | accept-gx-008 (planned) |
 | GX-009 | P1 | 8 | planned | platform-professional-hardware | accept-gx-009 (planned) |
-| GX-010 | P2 | 9 | blocked | graphics-data-automation-plugins | accept-gx-010 (present) |
+| GX-010 | P2 | 9 | planned | graphics-data-automation-plugins | accept-gx-010 (present) |
 | GX-011 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-011 (present) |
 | AU-001 | P0 | 3 | planned | audio-dsp | accept-au-001 (present) |
 | AU-002 | P0 | 3 | planned | audio-dsp | accept-au-002 (present) |
 | AU-003 | P0 | 3 | planned | audio-dsp | accept-au-003 (present) |
 | AU-004 | P0 | 3 | planned | media-core-clocks | accept-au-004 (present) |
 | AU-005 | P0 | 3 | planned | audio-dsp | accept-au-005 (present) |
-| AU-006 | P1 | 8 | blocked | audio-dsp | accept-au-006 (planned) |
+| AU-006 | P1 | 8 | planned | audio-dsp | accept-au-006 (planned) |
 | AU-007 | P1 | 3 | planned | audio-dsp | accept-au-007 (present) |
 | AU-008 | P1 | 3 | planned | audio-dsp | accept-au-008 (present) |
 | AU-009 | P1 | 5 | planned | audio-dsp | accept-au-009 (present) |
@@ -199,8 +199,8 @@ Total: 104 features. Status: planned=97, blocked=7. Priority: P0=24, P1=73, P2=7
 | OR-005 | P1 | 4 | planned | codecs-network-recording | accept-or-005 (present) |
 | OR-006 | P1 | 4 | planned | codecs-network-recording | accept-or-006 (present) |
 | OR-007 | P1 | 4 | planned | codecs-network-recording | accept-or-007 (present) |
-| OR-008 | P1 | 8 | blocked | platform-professional-hardware | accept-or-008 (planned) |
-| OR-009 | P1 | 8 | blocked | codecs-network-recording | accept-or-009 (planned) |
+| OR-008 | P1 | 8 | planned | platform-professional-hardware | accept-or-008 (planned) |
+| OR-009 | P1 | 8 | planned | codecs-network-recording | accept-or-009 (planned) |
 | OR-010 | P1 | 8 | planned | platform-professional-hardware | accept-or-010 (planned) |
 | OR-011 | P0 | 2 | planned | platform-professional-hardware | accept-or-011 (present) |
 | OR-012 | P1 | 7 | planned | replay-guests | accept-or-012 (present) |
@@ -230,12 +230,12 @@ Total: 104 features. Status: planned=97, blocked=7. Priority: P0=24, P1=73, P2=7
 
 ## linux-tier1
 
-Total: 104 features. Status: planned=97, blocked=7. Priority: P0=24, P1=73, P2=7.
+Total: 104 features. Status: planned=104. Priority: P0=24, P1=73, P2=7.
 
 | ID | Pri | Phase | Status | Owner | Acceptance |
 |---|---|---|---|---|---|
 | IN-001 | P0 | 3 | planned | platform-professional-hardware | accept-in-001 (present) |
-| IN-002 | P1 | 8 | blocked | platform-professional-hardware | accept-in-002 (planned) |
+| IN-002 | P1 | 8 | planned | platform-professional-hardware | accept-in-002 (planned) |
 | IN-003 | P0 | 2 | planned | codecs-network-recording | accept-in-003 (present) |
 | IN-004 | P1 | 8 | planned | codecs-network-recording | accept-in-004 (planned) |
 | IN-005 | P1 | 3 | planned | audio-dsp | accept-in-005 (present) |
@@ -250,7 +250,7 @@ Total: 104 features. Status: planned=97, blocked=7. Priority: P0=24, P1=73, P2=7
 | IN-015 | P0 | 4 | planned | codecs-network-recording | accept-in-015 (present) |
 | IN-016 | P1 | 4 | planned | codecs-network-recording | accept-in-016 (present) |
 | IN-017 | P1 | 4 | planned | codecs-network-recording | accept-in-017 (present) |
-| IN-018 | P1 | 8 | blocked | platform-professional-hardware | accept-in-018 (planned) |
+| IN-018 | P1 | 8 | planned | platform-professional-hardware | accept-in-018 (planned) |
 | IN-019 | P1 | 8 | planned | codecs-network-recording | accept-in-019 (planned) |
 | IN-020 | P0 | 3 | planned | gpu-compositor-color | accept-in-020 (present) |
 | IN-021 | P1 | 9 | planned | gpu-compositor-color | accept-in-021 (present) |
@@ -261,7 +261,7 @@ Total: 104 features. Status: planned=97, blocked=7. Priority: P0=24, P1=73, P2=7
 | IN-026 | P0 | 2 | planned | engine-control-persistence-security | accept-in-026 (present) |
 | IN-027 | P1 | 5 | planned | graphics-data-automation-plugins | accept-in-027 (present) |
 | IN-028 | P1 | 5 | planned | platform-professional-hardware | accept-in-028 (present) |
-| IN-029 | P2 | 6 | blocked | replay-guests | accept-in-029 (planned) |
+| IN-029 | P2 | 6 | planned | replay-guests | accept-in-029 (planned) |
 | SW-001 | P0 | 2 | planned | gpu-compositor-color | accept-sw-001 (present) |
 | SW-002 | P0 | 3 | planned | gpu-compositor-color | accept-sw-002 (present) |
 | SW-003 | P1 | 3 | planned | gpu-compositor-color | accept-sw-003 (present) |
@@ -290,14 +290,14 @@ Total: 104 features. Status: planned=97, blocked=7. Priority: P0=24, P1=73, P2=7
 | GX-007 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-007 (present) |
 | GX-008 | P2 | 9 | planned | graphics-data-automation-plugins | accept-gx-008 (planned) |
 | GX-009 | P1 | 8 | planned | platform-professional-hardware | accept-gx-009 (planned) |
-| GX-010 | P2 | 9 | blocked | graphics-data-automation-plugins | accept-gx-010 (present) |
+| GX-010 | P2 | 9 | planned | graphics-data-automation-plugins | accept-gx-010 (present) |
 | GX-011 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-011 (present) |
 | AU-001 | P0 | 3 | planned | audio-dsp | accept-au-001 (present) |
 | AU-002 | P0 | 3 | planned | audio-dsp | accept-au-002 (present) |
 | AU-003 | P0 | 3 | planned | audio-dsp | accept-au-003 (present) |
 | AU-004 | P0 | 3 | planned | media-core-clocks | accept-au-004 (present) |
 | AU-005 | P0 | 3 | planned | audio-dsp | accept-au-005 (present) |
-| AU-006 | P1 | 8 | blocked | audio-dsp | accept-au-006 (planned) |
+| AU-006 | P1 | 8 | planned | audio-dsp | accept-au-006 (planned) |
 | AU-007 | P1 | 3 | planned | audio-dsp | accept-au-007 (present) |
 | AU-008 | P1 | 3 | planned | audio-dsp | accept-au-008 (present) |
 | AU-009 | P1 | 5 | planned | audio-dsp | accept-au-009 (present) |
@@ -310,8 +310,8 @@ Total: 104 features. Status: planned=97, blocked=7. Priority: P0=24, P1=73, P2=7
 | OR-005 | P1 | 4 | planned | codecs-network-recording | accept-or-005 (present) |
 | OR-006 | P1 | 4 | planned | codecs-network-recording | accept-or-006 (present) |
 | OR-007 | P1 | 4 | planned | codecs-network-recording | accept-or-007 (present) |
-| OR-008 | P1 | 8 | blocked | platform-professional-hardware | accept-or-008 (planned) |
-| OR-009 | P1 | 8 | blocked | codecs-network-recording | accept-or-009 (planned) |
+| OR-008 | P1 | 8 | planned | platform-professional-hardware | accept-or-008 (planned) |
+| OR-009 | P1 | 8 | planned | codecs-network-recording | accept-or-009 (planned) |
 | OR-010 | P1 | 8 | planned | platform-professional-hardware | accept-or-010 (planned) |
 | OR-011 | P0 | 2 | planned | platform-professional-hardware | accept-or-011 (present) |
 | OR-012 | P1 | 7 | planned | replay-guests | accept-or-012 (present) |
@@ -341,13 +341,13 @@ Total: 104 features. Status: planned=97, blocked=7. Priority: P0=24, P1=73, P2=7
 
 ## browser-control
 
-Total: 11 features. Status: planned=10, blocked=1. Priority: P0=1, P1=8, P2=2.
+Total: 11 features. Status: planned=11. Priority: P0=1, P1=8, P2=2.
 
 | ID | Pri | Phase | Status | Owner | Acceptance |
 |---|---|---|---|---|---|
 | GX-006 | P1 | 5 | planned | studio-web-ux | accept-gx-006 (present) |
 | GX-007 | P1 | 5 | planned | graphics-data-automation-plugins | accept-gx-007 (present) |
-| GX-010 | P2 | 9 | blocked | graphics-data-automation-plugins | accept-gx-010 (present) |
+| GX-010 | P2 | 9 | planned | graphics-data-automation-plugins | accept-gx-010 (present) |
 | OR-017 | P1 | 4 | planned | studio-web-ux | accept-or-017 (present) |
 | RC-001 | P1 | 6 | planned | replay-guests | accept-rc-001 (present) |
 | RC-002 | P1 | 6 | planned | replay-guests | accept-rc-002 (present) |
@@ -413,19 +413,19 @@ Total: 4 features. Status: planned=4. Priority: P1=4.
 
 ## vendor-certified
 
-Total: 12 features. Status: planned=5, blocked=7. Priority: P1=9, P2=3.
+Total: 12 features. Status: planned=12. Priority: P1=9, P2=3.
 
 | ID | Pri | Phase | Status | Owner | Acceptance |
 |---|---|---|---|---|---|
-| IN-002 | P1 | 8 | blocked | platform-professional-hardware | accept-in-002 (planned) |
-| IN-018 | P1 | 8 | blocked | platform-professional-hardware | accept-in-018 (planned) |
+| IN-002 | P1 | 8 | planned | platform-professional-hardware | accept-in-002 (planned) |
+| IN-018 | P1 | 8 | planned | platform-professional-hardware | accept-in-018 (planned) |
 | IN-019 | P1 | 8 | planned | codecs-network-recording | accept-in-019 (planned) |
 | IN-028 | P1 | 5 | planned | platform-professional-hardware | accept-in-028 (present) |
-| IN-029 | P2 | 6 | blocked | replay-guests | accept-in-029 (planned) |
+| IN-029 | P2 | 6 | planned | replay-guests | accept-in-029 (planned) |
 | GX-009 | P1 | 8 | planned | platform-professional-hardware | accept-gx-009 (planned) |
-| GX-010 | P2 | 9 | blocked | graphics-data-automation-plugins | accept-gx-010 (present) |
-| AU-006 | P1 | 8 | blocked | audio-dsp | accept-au-006 (planned) |
-| OR-008 | P1 | 8 | blocked | platform-professional-hardware | accept-or-008 (planned) |
-| OR-009 | P1 | 8 | blocked | codecs-network-recording | accept-or-009 (planned) |
+| GX-010 | P2 | 9 | planned | graphics-data-automation-plugins | accept-gx-010 (present) |
+| AU-006 | P1 | 8 | planned | audio-dsp | accept-au-006 (planned) |
+| OR-008 | P1 | 8 | planned | platform-professional-hardware | accept-or-008 (planned) |
+| OR-009 | P1 | 8 | planned | codecs-network-recording | accept-or-009 (planned) |
 | OR-010 | P1 | 8 | planned | platform-professional-hardware | accept-or-010 (planned) |
 | OR-016 | P2 | 8 | planned | codecs-network-recording | accept-or-016 (planned) |

@@ -13,14 +13,17 @@ control surfaces, and extension APIs. A production can run entirely on one
 workstation or be controlled remotely without changing its state model.
 
 All first-party application, service, domain, UI, and adapter code is written in
-Rust. External codec, browser, driver, and vendor SDK libraries may be used
-through narrow FFI/process boundaries where reimplementing them would be unsafe,
-legally impossible, or counterproductive.
+Rust. External codec, browser, and driver libraries may be used through narrow
+FFI/process boundaries where reimplementing them would be unsafe or
+counterproductive. Vendor capture, output, AV-over-IP, and plugin SDKs are not
+required: FreeMix's own SDKs and OMT implementation cover those surfaces.
 
 “All vMix features” means functional coverage of the vMix 29 public feature
 surface documented in [feature-parity.md](feature-parity.md). It does not mean
 copying vMix source code, branding, proprietary templates, undocumented
-behavior, or licensed SDKs without permission.
+behavior, or third-party SDKs without permission. FreeMix ships its own
+license-free SDKs for media transport (`fm-io-omt`), device I/O
+(`fm-io-api`), and plugins (`fm-plugin-api`); see [sdk.md](sdk.md).
 
 ## 2. Product contract
 
@@ -96,25 +99,27 @@ server. Crashing or restarting the UI must not stop an on-air production.
    scheduling, and failure boundaries.
 4. [Rust workspace and crates](crates.md) — crate ownership, dependency rules,
    feature flags, and compilation strategy.
-5. [Media pipeline](media-pipeline.md) — ingest, synchronization, audio/video
+5. [SDKs](sdk.md) — FreeMix's own plugin, device I/O, and OMT transport SDKs,
+   and why no vendor SDK or license is required.
+6. [Media pipeline](media-pipeline.md) — ingest, synchronization, audio/video
    graphs, backpressure, replay, recording, and output.
-6. [GPU and rendering](gpu-and-rendering.md) — surfaces, color, compositing,
+7. [GPU and rendering](gpu-and-rendering.md) — surfaces, color, compositing,
    effects, zero-copy paths, and capability tiers.
-7. [Server/client protocol](server-client-protocol.md) — API semantics,
+8. [Server/client protocol](server-client-protocol.md) — API semantics,
    discovery, authentication, commands, events, previews, and compatibility.
-8. [UI and operator workflows](ui-ux.md) — immediate-mode UI boundaries and
+9. [UI and operator workflows](ui-ux.md) — immediate-mode UI boundaries and
    step-by-step production workflows.
-9. [Platform portability](platform-portability.md) — OS and hardware adapters,
-   packaging, and capability reporting.
-10. [Security and reliability](security-reliability.md) — threat boundaries,
+10. [Platform portability](platform-portability.md) — OS and hardware adapters,
+    packaging, and capability reporting.
+11. [Security and reliability](security-reliability.md) — threat boundaries,
     secrets, recovery, isolation, and on-air safety.
-11. [Testing and performance](testing-and-performance.md) — quality gates,
+12. [Testing and performance](testing-and-performance.md) — quality gates,
     fixtures, benchmarks, latency budgets, and soak tests.
-12. [Implementation roadmap](implementation-roadmap.md) — vertical slices,
+13. [Implementation roadmap](implementation-roadmap.md) — vertical slices,
     phase exit criteria, dependencies, and team guidance.
-13. [Sources and constraints](sources.md) — feature baseline and relevant
+14. [Sources and constraints](sources.md) — feature baseline and relevant
     technical references.
-14. [Capability matrix](capability-matrix.md) — generated per-profile ledger
+15. [Capability matrix](capability-matrix.md) — generated per-profile ledger
     status and acceptance-test evidence.
 
 ## 6. Definition of done

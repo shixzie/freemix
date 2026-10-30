@@ -93,7 +93,7 @@ highest-value remaining items, ranked:
    picture of the input up to 640x360 that Studio asks the server for
    (Protocol 2.97), which the CLI's remote auto key now asks for too
    (keeping the layer's matte refinement unless given new options). What
-   remains: key/fill is not tied to paired SDI/NDI fill and key inputs,
+   remains: key/fill is not tied to paired SDI/OMT fill and key inputs,
    and mattes are not animatable (they feather since Protocol 2.115,
    exactly alike on the GPU and the CPU reference).
 7. **Source clock drift on real devices and other OSes (`AU-004`).** Every
@@ -222,7 +222,9 @@ Build disposable prototypes, not production abstractions.
 3. Prototype 48 kHz capture/mix/output on all three OSes.
 4. Record and stream one hardware-encoded rendition with recoverable container.
 5. Prototype engine/studio process separation and local shared preview.
-6. Validate FFmpeg/GStreamer/vendor SDK redistribution and codec patent posture.
+6. Validate FFmpeg/GStreamer redistribution and codec patent posture. No
+   licensed AV-over-IP, plugin, capture, or output SDK is required: OMT,
+   the plugin ABI, and the device I/O contracts are in-tree and license-free.
 7. Acquire representative GPU, capture, audio, controller, and storage hardware.
 8. Freeze the vMix 29 feature-parity ledger and tag every row with acceptance
    owner and applicable platform.
@@ -2703,7 +2705,7 @@ options it keeps the layer's clip, choke, edge softness, light wrap, and
 matte (`freemix-cli` e2e test against a fake daemon, checked by hand against
 a simulated `freemixd`). Remaining gaps: the `fm-compositor` border/region
 auto key remains a separate CPU
-reference; key/fill is not tied to paired SDI or NDI fill and key inputs,
+reference; key/fill is not tied to paired SDI or OMT fill and key inputs,
 and a Scene cannot be a key input; garbage mattes feather up to 64 pixels
 to each side (Protocol 2.115, schema 87: an 81-point integer grid per
 pixel, clamped to the layer, so the native compositor matches the CPU
@@ -5028,8 +5030,8 @@ payloads and control messages with a wrapping sequencer, and maps joystick and
 mouse input to axis speeds through deadzones and response curves. Remaining
 gaps: no serial or UDP transport, retransmit, timeout, or reply correlation,
 no camera adapter or hardware validation, presets are not yet switchable
-virtual inputs with thumbnails, no HID or UI binding, and no ONVIF, Panasonic,
-NDI, or digital PTZ. `IN-028` remains planned.
+virtual inputs with thumbnails, no HID or UI binding, and no ONVIF, Panasonic, or
+digital PTZ. `IN-028` remains planned.
 
 Current implementation boundary for item 10: `fm-telestrator` provides a
 sequenced, bounded collaborative board with normalized strokes, per-author and
@@ -5520,7 +5522,7 @@ health, and chat review are checked against role permissions before any state
 changes. Remaining gaps: no audio engine, WebRTC adapter, daemon, or protocol
 consumes these plans; clean return beds are an engine contract only; there is
 no per-guest return level, echo or latency measurement, authentication,
-persistence, audit, signaling, encryption, bandwidth adaptation, or NDI
+persistence, audit, signaling, encryption, bandwidth adaptation, or OMT
 exposure. `RC-001`, `RC-002`, and `RC-003` remain planned.
 
 Current implementation boundary for items 2 and 6: `fm-io-webrtc` provides a
@@ -5540,7 +5542,7 @@ channels are rejected, header extensions such as transport-wide-cc are
 dropped, and H.264 matching ignores levels. `RC-001` remains planned.
 
 Exit: Remote Show scenario passes; named proprietary rows remain explicitly
-pending until licensed adapters pass.
+pending until certified adapters pass.
 
 ## 9. Phase 7 — replay and sports (14–20 weeks)
 
@@ -5695,16 +5697,37 @@ Exit: Sports Show scenario passes on certified storage/hardware.
 
 Parallel adapters, each with its own certification:
 
-1. Blackmagic capture/output, embedded audio, key/fill, reference.
-2. AJA capture/output, embedded audio, key/fill, reference.
-3. Bluefish444 and prioritized capture families.
-4. NDI and OMT send/receive, alpha, tally/metadata, direct record where possible.
+1. Blackmagic capture/output through the FreeMix capture/output SDK, embedded
+   audio, key/fill, reference.
+2. AJA capture/output through the FreeMix capture/output SDK, embedded audio,
+   key/fill, reference.
+3. Bluefish444 and prioritized capture families through the same SDK.
+4. OMT send/receive, alpha, tally/metadata, direct record where possible.
+   FreeMix implements OMT 1.0 itself (`fm-io-omt`); no NDI license is used.
 5. Virtual camera/audio devices with signing/install/uninstall.
 6. Genlock/PTP and timecode workflows.
 7. Interlaced output and advanced deinterlace.
 8. 10-bit HDR ingest, compose, scopes, record, stream, display.
-9. VST3 host and optional AU/LV2 compatibility.
+9. FreeMix plugin host through the in-tree plugin ABI; no VST3 license or host.
 10. UHD Profile B certification and multi-GPU policy if benchmarks justify it.
+
+Current implementation boundary for items 1-4 and 9: `fm-io-omt` is
+FreeMix's own OMT 1.0 implementation, written from the published protocol.
+It provides the 16-byte frame header, video and audio extended headers, the
+raw `UYVY`, `YUY2`, `BGRA`, `NV12`, `YV12`, `UYVA`, `P216`, and `PA16`
+codecs with alpha and preview flags, planar `FPA1` audio, per-frame
+metadata, the exact subscribe/preview/tally/quality/info commands, the
+`_omt._tcp` names, and the discovery server and client registry. A sender
+fans frames out only to subscribed receivers, chooses a receiver's
+one-eighth preview frame, combines every receiver's tally, and reports the
+strongest suggested quality; a loopback test covers two receivers, gated
+video/audio, combined tally, quality, and preview. Nothing is wired into
+`fm-io-api` or a daemon yet; VMX-compressed frames, DNS-SD advertisement,
+corrupt-frame recovery, and hardware certification remain. FreeMix's plugin
+SDK is `fm-plugin-api` with the `fm-plugin-host` sandbox (manifest,
+versioned ABI, capability grants, state snapshots, quarantine); there is no
+VST3 host. Vendor capture and output adapters keep their SDKs out of the
+portable workspace and implement the in-tree `fm-io-api` contracts.
 
 Exit: each adapter ships only with a platform-specific conformance report.
 

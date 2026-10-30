@@ -13,7 +13,7 @@ behavior.
 | ID | Pri | Capability | Acceptance |
 |---|---:|---|---|
 | IN-001 | P0 | Local camera/capture inputs at SD, HD, UHD; common progressive and interlaced frame rates | Enumerate, hot-plug, configure format, acquire A/V, detect signal loss, and recover without changing input ID |
-| IN-002 | P1 | Vendor capture adapters: Blackmagic, AJA, Magewell-class UVC, Bluefish444 where SDK permits | Adapter capability tests cover embedded audio, timecode, genlock status, and supported pixel formats |
+| IN-002 | P1 | Vendor capture adapters through the FreeMix capture SDK: Blackmagic, AJA, Magewell-class UVC, Bluefish444 | Adapters implement the versioned FreeMix capture SDK; capability tests cover embedded audio, timecode, genlock status, and supported pixel formats; the portable workspace builds without any vendor SDK |
 | IN-003 | P0 | Video files and growing files | Seek, pause, resume, loop, trim, speed change, end triggers, audio track selection, and frame-accurate position |
 | IN-004 | P1 | Common containers/codecs: MP4, MOV, MKV, MXF, MPEG-TS, AVI and licensed H.264/H.265/AAC/ProRes/DNx/MPEG variants | Golden files decode with timestamp, color, channel, rotation, and interlace metadata preserved |
 | IN-005 | P1 | Audio files and multichannel audio-only devices | WAV/FLAC/MP3/AAC-class playback plus device channel selection and mapping |
@@ -29,7 +29,7 @@ behavior.
 | IN-015 | P0 | IP stream input | RTSP/RTP/UDP/TCP/HTTP MPEG-TS and common HLS/HTTP inputs reconnect with bounded jitter buffering |
 | IN-016 | P1 | RTMP input | Receive supported RTMP A/V and reconnect with status |
 | IN-017 | P1 | SRT caller/listener/rendezvous | Both input and output modes support caller/listener/rendezvous, passphrases up to 256-bit, stream ID, latency, statistics, reconnect, H.264/HEVC up to UHD when capable, MPEG-TS/AAC-LC, and up to eight audio channels/split stereo pairs |
-| IN-018 | P1 | NDI send/receive and discovery, including alpha where licensed | Discover, connect, low-bandwidth preview, metadata/tally, alpha, and isolated loss recovery |
+| IN-018 | P1 | Open media transport (OMT) send/receive and discovery | Discover, connect, low-bandwidth preview, metadata/tally, alpha, and isolated loss recovery |
 | IN-019 | P1 | OMT send/receive | Open OMT adapter supports discovery, preview plus low/medium/high quality, alpha/audio, UHD, 120fps+ when capable, corrupt-data fault tolerance, send/receive, and direct replay/ISO record without re-encode when compatible |
 | IN-020 | P0 | Scene/layer input | One background plus at least ten positioned foreground layers, each crop/transform/key/effect capable |
 | IN-021 | P1 | Virtual set | Camera source, keyed talent, animated/zoomable set layers, reflection/shadow hooks, and presets |
@@ -40,7 +40,7 @@ behavior.
 | IN-026 | P0 | Input lifecycle | Add, duplicate, reorder, categorize, color-label, rename, pause, close, offline, replace source, and batch import |
 | IN-027 | P1 | Per-input triggers | Ordered delayed actions on Transition In/Out, Overlay In/Out, Completion, Countdown Completed/Time/Remaining, Playback Time/Remaining, Call Connected/Disconnected, Zoom active-speaker/while-in-output/self, and Replay Events Completed |
 | IN-028 | P1 | PTZ cameras | Network-controlled/UVC PTZ supports pan/tilt/zoom/focus/speed, presets as virtual inputs, joystick/mouse/shortcut operation; serial-only and additional ONVIF breadth are FreeMix extensions |
-| IN-029 | P2 | Named Zoom meeting integration | Authorized SDK adapter joins Meetings/Events/Sessions, searches and assigns multiple participants, exposes camera/share/audio, switches camera/share, provides chat/manager/return feed, and emits active-speaker triggers |
+| IN-029 | P2 | Open meeting guests | A browser guest, RTMP/SRT pull, and SIP gateway join without a vendor SDK and expose camera/share/audio, participant selection, chat, and active-speaker triggers |
 | IN-030 | P2 | Archived-format inputs | Windows-only plugin may import documented Flash/SWF/FLV and WPF/XAML-era assets; unsupported active content receives a safe conversion report |
 
 ## 2. Switching, composition, and video processing
@@ -80,7 +80,7 @@ behavior.
 | GX-007 | P1 | Telestrator | Low-latency program/input preview, simultaneous multi-device drawing, pen/line/arrow/shape/text, custom images, laser pointer, colors, undo/clear, transparent routed layer, and ten production shortcut buttons |
 | GX-008 | P2 | Import pipeline | Layered PSD and documented graphic formats map to editable layers where legal/technically possible |
 | GX-009 | P1 | Key/fill graphics output | Synchronized key and fill through supported hardware/network outputs |
-| GX-010 | P2 | Social moderation companion | Authorized Facebook page comments, Twitch, YouTube Live chat, Bluesky, IRC, and Zoom chat adapters aggregate into a browser approval queue with title mapping, profile media/photos, rotation, and auto-update |
+| GX-010 | P2 | Social moderation companion | Twitch, YouTube Live chat, Bluesky, IRC, and public Facebook page comments aggregate into a browser approval queue with title mapping, profile media/photos, rotation, and auto-update through each platform's public API |
 | GX-011 | P1 | Keyframe animation editor | Visual timeline for any title element or scene layer: keyframe position, scale, rotation, opacity, crop, and color; easing presets plus a curve editor; interpolated in-betweens; retiming a clip or whole animation scales its keyframes proportionally; scrubbed live preview; reusable In/Out animation presets |
 
 ## 4. Audio
@@ -92,7 +92,7 @@ behavior.
 | AU-003 | P0 | Multichannel audio | Preserve channel count/layout, map matrix, stereo pairs/mono, downmix, embedded/de-embedded audio |
 | AU-004 | P0 | Sample-rate conversion and sync | Stable 48 kHz engine clock by default, drift compensation, discontinuity handling, and per-source sync telemetry |
 | AU-005 | P0 | Native DSP | Parametric EQ, high-pass, compressor/limiter, gate/expander, polarity, delay, and loudness/peak metering |
-| AU-006 | P1 | VST3 plugins where licensed | Scan, validate, order, bypass, save state, compensate latency, expose editor, and quarantine crashes |
+| AU-006 | P1 | FreeMix plugins through the in-tree plugin SDK | Scan, validate, order, bypass, save state, compensate latency, expose editor, and quarantine crashes through the versioned FreeMix plugin ABI; no VST3 license or host is required |
 | AU-007 | P1 | Audio follow/auto-mixing | Configurable AFV and microphone automix with weight/priority and gain-sharing telemetry |
 | AU-008 | P1 | Monitoring and talkback | PFL/solo bus, dim, selectable device, guest/camera talkback routes, and no accidental program injection |
 | AU-009 | P1 | Fader/controller feedback | High-rate coalesced control and activator feedback without zipper noise |
@@ -110,8 +110,8 @@ behavior.
 | OR-005 | P1 | Streaming destinations | RTMP/RTMPS and SRT output, service profiles, custom server/key, reconnect, backup URL, and per-destination health |
 | OR-006 | P1 | Five simultaneous destinations and independent control | Start/stop/retry each destination independently or as a group without affecting recording |
 | OR-007 | P1 | Multi-bitrate/ABR | Single-key and multi-key ladders, per-rendition output/audio/quality, and explicit compatibility rule with five-destination mode |
-| OR-008 | P1 | Four physical external outputs | Outputs 1–4 route independently to certified AJA/Blackmagic/Bluefish-class devices with embedded audio, reference/genlock, and key/fill where supported |
-| OR-009 | P1 | NDI/OMT/SRT outputs | Four independently routed outputs with discovery, alpha where available, and audio mapping; NDI/OMT can also publish every Camera/Call and audio input plus audio-only buses |
+| OR-008 | P1 | Four physical external outputs through the FreeMix output SDK | Outputs 1–4 route independently to certified adapters implementing the FreeMix output SDK, with embedded audio, reference/genlock, and key/fill where supported |
+| OR-009 | P1 | OMT/SRT outputs | Four independently routed outputs with discovery, alpha where available, and audio mapping; OMT can also publish every Camera/Call and audio input plus audio-only buses |
 | OR-010 | P1 | Four virtual camera outputs and virtual audio | Four independently routed virtual video outputs plus audio-device publishing through signed Windows/macOS components and Linux PipeWire/V4L2-compatible paths |
 | OR-011 | P0 | Two fullscreen/display outputs | Two independent borderless outputs on chosen displays with source, mode, scaling, HDR state, cursor suppression, and hot-plug recovery |
 | OR-012 | P1 | Instant replay, up to eight cameras | Continuous synchronized capture up to 4K/240fps when capable, four-channel audio, per-camera storage roots, last 5/10/20 and In/Out marks, independent/linked A/B channels, angle switching, speed/jog/shuttle |
@@ -125,7 +125,7 @@ behavior.
 
 | ID | Pri | Capability | Acceptance |
 |---|---:|---|---|
-| RC-001 | P1 | Up to eight encrypted browser guests | Host-a-call/connect-to-call, invite/password, direct/low-latency modes, camera/mic selection, dynamic bandwidth, return up to 1080p/4 Mbps, reconnect, lobby, remove, stats, and automatic NDI exposure |
+| RC-001 | P1 | Up to eight encrypted browser guests | Host-a-call/connect-to-call, invite/password, direct/low-latency modes, camera/mic selection, dynamic bandwidth, return up to 1080p/4 Mbps, reconnect, lobby, remove, stats, and automatic OMT exposure |
 | RC-002 | P1 | Guest audio/return/talkback | Full-duplex audio, automatic mix-minus, independently selectable Outputs 1–4 and Master/Headphones/A–G return audio, talkback, mute, gain, latency, and echo status |
 | RC-003 | P1 | Guest manager and chat | Producer lobby, display names, device health, private/group messages, and permissioned controls |
 | RC-004 | P0 | Keyboard and mouse shortcuts | Global/local scopes, chords, dynamic input/value targets, templates, conflict detection, and import/export |

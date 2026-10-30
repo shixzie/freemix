@@ -39,6 +39,7 @@ members = [
     "crates/io/fm-io-macos",
     "crates/io/fm-io-pipewire",
     "crates/io/fm-io-network",
+    "crates/io/fm-io-omt",
     "crates/io/fm-io-srt",
     "crates/io/fm-io-webrtc",
     "crates/io/fm-browser-input",
