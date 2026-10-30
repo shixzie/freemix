@@ -7484,8 +7484,10 @@ impl NativeDaemon {
                     fm_engine::EngineAudioMixerUpdate::StripDsp { target, chain } => project_plan
                         .set_audio_dsp(target, chain)
                         .map_err(NativeRealizationError::Audio)?,
-                    // The meter restarted above; the plan holds no meters.
-                    fm_engine::EngineAudioMixerUpdate::LoudnessReset { .. } => {}
+                    // The runtime applied the chain to its plugin racks; the
+                    // meter restarted above and the plan holds no meters.
+                    fm_engine::EngineAudioMixerUpdate::PluginChain { .. }
+                    | fm_engine::EngineAudioMixerUpdate::LoudnessReset { .. } => {}
                 }
             }
             if project_plan.output_ids().is_empty() {

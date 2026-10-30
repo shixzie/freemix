@@ -75,7 +75,7 @@ Total: 106 features. Status: planned=106. Priority: P0=24, P1=73, P2=9.
 | AU-003 | P0 | 3 | planned | audio-dsp | accept-au-003 (present) |
 | AU-004 | P0 | 3 | planned | media-core-clocks | accept-au-004 (present) |
 | AU-005 | P0 | 3 | planned | audio-dsp | accept-au-005 (present) |
-| AU-006 | P1 | 8 | planned | audio-dsp | accept-au-006 (planned) |
+| AU-006 | P1 | 8 | planned | audio-dsp | accept-au-006 (present) |
 | AU-007 | P1 | 3 | planned | audio-dsp | accept-au-007 (present) |
 | AU-008 | P1 | 3 | planned | audio-dsp | accept-au-008 (present) |
 | AU-009 | P1 | 5 | planned | audio-dsp | accept-au-009 (present) |
@@ -186,7 +186,7 @@ Total: 104 features. Status: planned=104. Priority: P0=24, P1=73, P2=7.
 | AU-003 | P0 | 3 | planned | audio-dsp | accept-au-003 (present) |
 | AU-004 | P0 | 3 | planned | media-core-clocks | accept-au-004 (present) |
 | AU-005 | P0 | 3 | planned | audio-dsp | accept-au-005 (present) |
-| AU-006 | P1 | 8 | planned | audio-dsp | accept-au-006 (planned) |
+| AU-006 | P1 | 8 | planned | audio-dsp | accept-au-006 (present) |
 | AU-007 | P1 | 3 | planned | audio-dsp | accept-au-007 (present) |
 | AU-008 | P1 | 3 | planned | audio-dsp | accept-au-008 (present) |
 | AU-009 | P1 | 5 | planned | audio-dsp | accept-au-009 (present) |
@@ -297,7 +297,7 @@ Total: 104 features. Status: planned=104. Priority: P0=24, P1=73, P2=7.
 | AU-003 | P0 | 3 | planned | audio-dsp | accept-au-003 (present) |
 | AU-004 | P0 | 3 | planned | media-core-clocks | accept-au-004 (present) |
 | AU-005 | P0 | 3 | planned | audio-dsp | accept-au-005 (present) |
-| AU-006 | P1 | 8 | planned | audio-dsp | accept-au-006 (planned) |
+| AU-006 | P1 | 8 | planned | audio-dsp | accept-au-006 (present) |
 | AU-007 | P1 | 3 | planned | audio-dsp | accept-au-007 (present) |
 | AU-008 | P1 | 3 | planned | audio-dsp | accept-au-008 (present) |
 | AU-009 | P1 | 5 | planned | audio-dsp | accept-au-009 (present) |
@@ -424,7 +424,7 @@ Total: 12 features. Status: planned=12. Priority: P1=9, P2=3.
 | IN-029 | P2 | 6 | planned | replay-guests | accept-in-029 (planned) |
 | GX-009 | P1 | 8 | planned | platform-professional-hardware | accept-gx-009 (planned) |
 | GX-010 | P2 | 9 | planned | graphics-data-automation-plugins | accept-gx-010 (present) |
-| AU-006 | P1 | 8 | planned | audio-dsp | accept-au-006 (planned) |
+| AU-006 | P1 | 8 | planned | audio-dsp | accept-au-006 (present) |
 | OR-008 | P1 | 8 | planned | platform-professional-hardware | accept-or-008 (planned) |
 | OR-009 | P1 | 8 | planned | codecs-network-recording | accept-or-009 (planned) |
 | OR-010 | P1 | 8 | planned | platform-professional-hardware | accept-or-010 (planned) |

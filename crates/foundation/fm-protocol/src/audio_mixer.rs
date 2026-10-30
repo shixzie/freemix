@@ -55,6 +55,15 @@
 //!
 //! | [`AudioMixerOperation::ResetLoudness`] | `audio_loudness_reset` | `target` (`master` or an input) | live operation |
 //!
+//! Since 2.128 a strip or the Master bus can carry an ordered plugin chain
+//! (AU-006, [`PluginChainSlot`]): one `plugins` field of
+//! `<plugin>:<bypassed 0\|1>:<latency frames>:<state base64url>` slots
+//! separated by `,`, empty to clear. A chain is runtime state: it is
+//! accepted live, is not persisted, and is announced by the ordinary
+//! `audio_mixer_changed` event. The native daemon renders the built-in
+//! `freemix.reference.*` processors; a plugin without an installed processor
+//! is refused (`plugins`/`unsupported_plugin`).
+//!
 //! The reset changes no show state: it is journaled like every accepted
 //! command and realized by the media plane on its frame, so a replay
 //! accepts it exactly as the live show did.
@@ -397,7 +406,8 @@ impl AudioMixerStatus {
             // output status; a loudness reset changes no status (2.92).
             AudioMixerOperation::SetGroup { .. }
             | AudioMixerOperation::ResetLoudness { .. }
-            | AudioMixerOperation::SetOutputBus { .. } => {}
+            | AudioMixerOperation::SetOutputBus { .. }
+            | AudioMixerOperation::SetPluginChain { .. } => {}
             AudioMixerOperation::RenameGroup { group, name } => {
                 if audio_group_is_valid(*group) {
                     self.groups[usize::from(*group) - 1].name.clone_from(name);
@@ -456,8 +466,41 @@ impl AudioMixerStatus {
     }
 }
 
+/// Most plugin slots one chain carries (2.128).
+pub const MAX_PROTOCOL_PLUGIN_SLOTS: usize = 8;
+/// Longest plugin identifier, in bytes (2.128).
+pub const MAX_PLUGIN_ID_BYTES: usize = 128;
+/// Largest per-slot latency a chain reports, in frames (2.128).
+pub const MAX_PLUGIN_LATENCY_FRAMES: u32 = 60_000;
+/// Largest opaque plugin state one slot carries, in bytes (2.128).
+pub const MAX_PLUGIN_STATE_BYTES: usize = 64 * 1024;
+
+/// One plugin's place in a chain, on the wire (2.128, AU-006).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PluginChainSlot {
+    /// Stable plugin identifier, `[A-Za-z0-9._-]` only.
+    pub plugin: String,
+    pub bypassed: bool,
+    pub latency_frames: u32,
+    /// Opaque plugin state, empty when it has none.
+    pub state: Vec<u8>,
+}
+
+impl PluginChainSlot {
+    /// Whether `plugin` is a usable wire plugin identifier.
+    #[must_use]
+    pub fn plugin_id_is_valid(plugin: &str) -> bool {
+        !plugin.is_empty()
+            && plugin.len() <= MAX_PLUGIN_ID_BYTES
+            && plugin
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    }
+}
+
 /// One mixer label, group, or group-level operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
+
 pub enum AudioMixerOperation {
     /// Labels `input`'s strip; empty clears the label.
     SetLabel { input: WireInputId, label: String },
@@ -509,6 +552,12 @@ pub enum AudioMixerOperation {
         output: WireOutputId,
         bus: Option<AuxBusNumber>,
     },
+    /// Replaces a strip's or the Master's plugin chain (2.128, AU-006). A
+    /// live operation: chains are runtime state.
+    SetPluginChain {
+        target: AudioDspTarget,
+        slots: Vec<PluginChainSlot>,
+    },
 }
 
 impl AudioMixerOperation {
@@ -530,6 +579,7 @@ impl AudioMixerOperation {
             Self::RenameAuxBus { .. } => "audio_aux_bus_name",
             Self::SetAuxBusLevel { .. } => "audio_aux_bus_level",
             Self::SetOutputBus { .. } => "audio_output_bus",
+            Self::SetPluginChain { .. } => "audio_plugin_chain",
         }
     }
 
@@ -540,6 +590,7 @@ impl AudioMixerOperation {
             self,
             Self::SetGroupLevel { .. }
                 | Self::SetGroupSolo { .. }
+                | Self::SetPluginChain { .. }
                 | Self::SetMonitorLevel { .. }
                 | Self::ResetLoudness { .. }
                 | Self::SetAuxBusLevel { .. }

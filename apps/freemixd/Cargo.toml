@@ -50,6 +50,7 @@ fm-scheduler = { path = "../../crates/media/fm-scheduler", optional = true }
 fm-sim = { path = "../../crates/media/fm-sim" }
 fm-model = { path = "../../crates/foundation/fm-model" }
 fm-persistence = { path = "../../crates/services/fm-persistence" }
+fm-plugin-host-api = { path = "../../crates/features/fm-plugin-host-api" }
 fm-presentations = { path = "../../crates/features/fm-presentations" }
 fm-record = { path = "../../crates/media/fm-record", optional = true }
 fm-replay = { path = "../../crates/media/fm-replay", optional = true }

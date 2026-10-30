@@ -26,6 +26,9 @@ use crate::{
 /// inputs or audio strips stays encodable.
 pub const MAX_SHOW_INPUTS: usize = 256;
 
+/// The chain of every strip without one, so callers can borrow a chain.
+static EMPTY_PLUGIN_CHAIN: fm_plugin_host_api::PluginChain = fm_plugin_host_api::PluginChain::new();
+
 /// The source an input is added with while the show is live.
 ///
 /// The generators are exactly the sources the simulated daemon renders: a
@@ -240,8 +243,12 @@ pub struct ShowState {
     input_audio_groups: BTreeMap<InputId, fm_model::AudioGroupNumber>,
     /// Every strip whose DSP chain differs from the default (AU-005).
     input_audio_dsp: BTreeMap<InputId, fm_types::strip_dsp::StripDsp>,
+    /// Every strip's non-empty plugin chain (AU-006), runtime state.
+    input_audio_plugins: BTreeMap<InputId, fm_plugin_host_api::PluginChain>,
     /// The Master bus DSP chain (AU-005).
     master_audio_dsp: fm_types::strip_dsp::StripDsp,
+    /// The Master bus plugin chain (AU-006), runtime state.
+    master_audio_plugins: fm_plugin_host_api::PluginChain,
     /// The strip groups, group 1 first (AU-001).
     audio_groups: [crate::EngineAudioGroup; fm_model::AUDIO_GROUP_COUNT],
     /// The aux buses, bus A first (AU-002).
@@ -350,6 +357,8 @@ impl ShowState {
             input_audio_labels: BTreeMap::new(),
             input_audio_groups: BTreeMap::new(),
             input_audio_dsp: BTreeMap::new(),
+            input_audio_plugins: BTreeMap::new(),
+            master_audio_plugins: fm_plugin_host_api::PluginChain::new(),
             master_audio_dsp: fm_types::strip_dsp::StripDsp::DEFAULT,
             audio_groups: fm_model::AudioGroupNumber::ALL.map(crate::EngineAudioGroup::default_for),
             aux_buses: fm_model::AuxBusNumber::ALL.map(crate::EngineAuxBus::default_for),
@@ -726,6 +735,7 @@ impl ShowState {
         self.input_audio_labels.remove(&input);
         self.input_audio_groups.remove(&input);
         self.input_audio_dsp.remove(&input);
+        self.input_audio_plugins.remove(&input);
         Ok(())
     }
 
@@ -821,10 +831,51 @@ impl ShowState {
         chain.validate().map_err(ShowError::InvalidStripDsp)?;
         if chain.is_default() {
             self.input_audio_dsp.remove(&input);
+            self.input_audio_plugins.remove(&input);
         } else {
             self.input_audio_dsp.insert(input, chain);
         }
         Ok(())
+    }
+
+    /// `input`'s plugin chain (AU-006); empty for a strip without one.
+    #[must_use]
+    pub fn input_audio_plugins(&self, input: InputId) -> &fm_plugin_host_api::PluginChain {
+        self.input_audio_plugins
+            .get(&input)
+            .unwrap_or(&EMPTY_PLUGIN_CHAIN)
+    }
+
+    /// Every strip's non-empty plugin chain (AU-006), ascending.
+    #[must_use]
+    pub const fn input_audio_plugin_chains(
+        &self,
+    ) -> &BTreeMap<InputId, fm_plugin_host_api::PluginChain> {
+        &self.input_audio_plugins
+    }
+
+    /// Replaces `input`'s plugin chain (AU-006); an empty chain is removed.
+    pub fn set_input_audio_plugins(
+        &mut self,
+        input: InputId,
+        chain: fm_plugin_host_api::PluginChain,
+    ) {
+        if chain.is_empty() {
+            self.input_audio_plugins.remove(&input);
+        } else {
+            self.input_audio_plugins.insert(input, chain);
+        }
+    }
+
+    /// The Master bus plugin chain (AU-006).
+    #[must_use]
+    pub const fn master_audio_plugins(&self) -> &fm_plugin_host_api::PluginChain {
+        &self.master_audio_plugins
+    }
+
+    /// Replaces the Master bus plugin chain (AU-006).
+    pub fn set_master_audio_plugins(&mut self, chain: fm_plugin_host_api::PluginChain) {
+        self.master_audio_plugins = chain;
     }
 
     /// The Master bus DSP chain (AU-005).

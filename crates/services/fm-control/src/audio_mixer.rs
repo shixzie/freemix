@@ -8,11 +8,14 @@ use fm_engine::{
     Engine, EngineAudioGroupState, EngineAudioMixerEdit, EngineCommand, EngineEvent, ShowState,
 };
 use fm_model::{AudioGroupNumber, AudioSoloMode};
+use fm_plugin_host_api::{
+    PluginChain, PluginId, PluginSlot, ProtocolLimits, StateSnapshot, StateVersion,
+};
 use fm_protocol::AuxBusStatus;
 use fm_protocol::{
     AudioDspTarget, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioMonitorStatus,
-    AudioStripDspStateMessage, CommandPayload, EventPayload, InputAudioLabel, WireInputId,
-    WireOutputId,
+    AudioStripDspStateMessage, CommandPayload, EventPayload, InputAudioLabel, PluginChainSlot,
+    WireInputId, WireOutputId,
 };
 use fm_types::strip_dsp::StripDspTarget;
 
@@ -48,6 +51,48 @@ pub(super) fn strip_dsp_states(engine: &Engine) -> Vec<AudioStripDspStateMessage
             revision,
             input: WireInputId::from_domain(*input),
             chain: *chain,
+        })
+        .collect()
+}
+
+/// The engine chain for wire slots the codec already bounded.
+fn engine_plugin_chain(slots: &[PluginChainSlot]) -> PluginChain {
+    let limits = ProtocolLimits::default();
+    let mut chain = PluginChain::new();
+    for slot in slots {
+        let plugin = PluginId::new(slot.plugin.clone());
+        let mut engine_slot = PluginSlot::new(plugin.clone());
+        engine_slot.set_bypassed(slot.bypassed);
+        engine_slot
+            .set_latency(slot.latency_frames)
+            .expect("the codec bounds a slot's latency");
+        if !slot.state.is_empty() {
+            let snapshot =
+                StateSnapshot::new(plugin, StateVersion::new(0), slot.state.clone(), &limits)
+                    .expect("the codec bounds a slot's state");
+            engine_slot
+                .store_snapshot(snapshot)
+                .expect("the snapshot names the slot's plugin");
+        }
+        chain
+            .push(engine_slot)
+            .expect("the codec bounds a chain's slots and identifiers");
+    }
+    chain
+}
+
+/// The wire slots of one engine chain.
+fn wire_plugin_chain(chain: &PluginChain) -> Vec<PluginChainSlot> {
+    chain
+        .slots()
+        .iter()
+        .map(|slot| PluginChainSlot {
+            plugin: slot.plugin().as_str().to_owned(),
+            bypassed: slot.is_bypassed(),
+            latency_frames: slot.latency_frames(),
+            state: slot
+                .snapshot()
+                .map_or_else(Vec::new, |snapshot| snapshot.data().to_vec()),
         })
         .collect()
 }
@@ -162,6 +207,12 @@ pub(super) fn engine_command(operation: &AudioMixerOperation) -> EngineCommand {
                 bus: *bus,
             }
         }
+        AudioMixerOperation::SetPluginChain { target, slots } => {
+            EngineAudioMixerEdit::SetPluginChain {
+                target: dsp_target(*target),
+                chain: Box::new(engine_plugin_chain(slots)),
+            }
+        }
     })
 }
 
@@ -209,6 +260,12 @@ pub(super) fn wire_operation(edit: &EngineAudioMixerEdit) -> AudioMixerOperation
             gain_millidb: state.gain_millidb,
             muted: state.muted,
         },
+        EngineAudioMixerEdit::SetPluginChain { target, chain } => {
+            AudioMixerOperation::SetPluginChain {
+                target: wire_dsp_target(*target),
+                slots: wire_plugin_chain(chain),
+            }
+        }
         EngineAudioMixerEdit::SetStripDsp {
             target,
             chain,

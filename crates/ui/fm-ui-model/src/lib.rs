@@ -5948,6 +5948,19 @@ fn validate_audio_mixer_change(
             .outputs
             .iter()
             .any(|candidate| candidate.output == output.to_domain()),
+        fm_protocol::AudioMixerOperation::SetPluginChain { target, slots } => {
+            let target_known = match target {
+                fm_protocol::AudioDspTarget::Master => true,
+                fm_protocol::AudioDspTarget::Input(input) => known(input),
+            };
+            let mut ids = std::collections::BTreeSet::new();
+            target_known
+                && slots.len() <= fm_protocol::MAX_PROTOCOL_PLUGIN_SLOTS
+                && slots.iter().all(|slot| {
+                    fm_protocol::PluginChainSlot::plugin_id_is_valid(&slot.plugin)
+                        && ids.insert(slot.plugin.as_str())
+                })
+        }
     };
     if valid {
         Ok(())

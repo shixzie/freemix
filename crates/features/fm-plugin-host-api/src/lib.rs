@@ -7,6 +7,7 @@
 mod chain;
 mod exchange;
 mod host;
+mod reference;
 mod types;
 
 pub use chain::{
@@ -23,6 +24,11 @@ pub use fm_command::{
 pub use fm_plugin_api as plugin_api;
 pub use host::{
     HostError, PluginCommand, PluginCommandResult, PluginEvent, PluginHost, PluginRecord,
+};
+pub use reference::{
+    MAX_REFERENCE_CLIP_MILLIDB, MAX_REFERENCE_TRIM_MILLIDB, MIN_REFERENCE_CLIP_MILLIDB,
+    MIN_REFERENCE_TRIM_MILLIDB, REFERENCE_PLUGINS, REFERENCE_POLARITY, REFERENCE_SOFTCLIP,
+    REFERENCE_TRIM, ReferenceError, ReferenceRack, is_reference_plugin, state_bytes,
 };
 pub use types::{
     ApiVersion, CapabilityDecision, CapabilityId, CrashReport, PluginId, PluginManifest,

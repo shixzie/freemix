@@ -12,6 +12,7 @@ fm-clock = { path = "../../media/fm-clock" }
 fm-command = { path = "../../foundation/fm-command" }
 fm-engine = { path = "../fm-engine" }
 fm-model = { path = "../../foundation/fm-model" }
+fm-plugin-host-api = { path = "../../features/fm-plugin-host-api" }
 fm-protocol = { path = "../../foundation/fm-protocol" }
 fm-script = { path = "../../foundation/fm-script" }
 fm-switcher = { path = "../../features/fm-switcher" }

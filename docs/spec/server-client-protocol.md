@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.127 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.128 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4629,6 +4629,27 @@ The request and frame shapes are unchanged.
 - Studio's QUAD key and `remote-replay-multiview` show the same adaptive
   grid; a live-edge angle still stays black.
 - 2.126 is refused.
+
+Protocol 2.128 adds audio plugin chains (AU-006).
+
+- `audio_plugin_chain` (`target` = an input, `plugins`) replaces one strip's
+  ordered plugin chain. `plugins` is a
+  comma-separated list of up to eight unique
+  `<plugin>:<bypassed 0|1>:<latency frames>:<state base64url>` slots; empty
+  clears the chain. A plugin identifier is 1..=128 bytes of
+  `[A-Za-z0-9._-]`, a slot reports at most 60000 frames of latency, and its
+  state is at most 64 KiB.
+- The operation is a live operation, announced by the ordinary
+  `audio_mixer_changed` event. Chains are runtime state: the project schema
+  is unchanged and chains are not persisted or carried in the snapshot.
+- The native daemon renders the built-in `freemix.reference.trim`,
+  `freemix.reference.polarity`, and `freemix.reference.softclip` processors
+  on input strips; the Master target is refused (`target`/
+  `unsupported_target`) until the mixer has a Master plugin stage;
+  a plugin with no installed processor is refused
+  (`plugins`/`unsupported_plugin`). A trim or soft-clip state is one
+  little-endian `i32` in millidB.
+- 2.127 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

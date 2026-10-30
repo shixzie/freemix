@@ -5148,6 +5148,32 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
                 },
             }
         }
+        fm_engine::EngineAudioMixerEdit::SetPluginChain { target, chain } => {
+            fm_protocol::AudioMixerOperation::SetPluginChain {
+                target: match target {
+                    fm_types::strip_dsp::StripDspTarget::Master => {
+                        fm_protocol::AudioDspTarget::Master
+                    }
+                    fm_types::strip_dsp::StripDspTarget::Input(input) => {
+                        fm_protocol::AudioDspTarget::Input(fm_protocol::WireInputId::from_domain(
+                            input,
+                        ))
+                    }
+                },
+                slots: chain
+                    .slots()
+                    .iter()
+                    .map(|slot| fm_protocol::PluginChainSlot {
+                        plugin: slot.plugin().as_str().to_owned(),
+                        bypassed: slot.is_bypassed(),
+                        latency_frames: slot.latency_frames(),
+                        state: slot
+                            .snapshot()
+                            .map_or_else(Vec::new, |snapshot| snapshot.data().to_vec()),
+                    })
+                    .collect(),
+            }
+        }
     })
 }
 

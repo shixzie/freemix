@@ -13,6 +13,7 @@ fm-frame = { path = "../../media/fm-frame" }
 fm-grade = { path = "../../foundation/fm-grade" }
 fm-model = { path = "../../foundation/fm-model" }
 fm-playback = { path = "../../media/fm-playback" }
+fm-plugin-host-api = { path = "../../features/fm-plugin-host-api" }
 fm-record = { path = "../../media/fm-record" }
 fm-replay = { path = "../../media/fm-replay" }
 fm-scheduler = { path = "../../media/fm-scheduler" }

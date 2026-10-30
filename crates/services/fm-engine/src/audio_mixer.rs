@@ -184,6 +184,13 @@ pub enum EngineAudioMixerEdit {
     SetMonitorDevice { device: Option<String> },
     /// Moves the monitor output level or mute. A live operation.
     SetMonitorLevel { state: EngineAudioGroupState },
+    /// Replaces a strip's or the Master bus's plugin chain (AU-006). A live
+    /// operation: chains are runtime state and are not undone or persisted.
+    SetPluginChain {
+        target: StripDspTarget,
+        /// Boxed: a chain is larger than every other command's payload.
+        chain: Box<fm_plugin_host_api::PluginChain>,
+    },
     /// Replaces a strip's or the Master bus's DSP chain (AU-005). A project
     /// edit; `gesture` folds a knob drag into one undo step.
     SetStripDsp {
@@ -248,6 +255,7 @@ impl EngineAudioMixerEdit {
                 | Self::SetMonitorLevel { .. }
                 | Self::ResetLoudness { .. }
                 | Self::SetAuxBusLevel { .. }
+                | Self::SetPluginChain { .. }
         )
     }
 
@@ -260,8 +268,16 @@ impl EngineAudioMixerEdit {
             | Self::SetStripDsp {
                 target: StripDspTarget::Input(input),
                 ..
+            }
+            | Self::SetPluginChain {
+                target: StripDspTarget::Input(input),
+                ..
             } => Some(*input),
             Self::SetStripDsp {
+                target: StripDspTarget::Master,
+                ..
+            }
+            | Self::SetPluginChain {
                 target: StripDspTarget::Master,
                 ..
             }
@@ -316,6 +332,11 @@ pub enum EngineAudioMixerUpdate {
     MonitorDevice(Option<String>),
     /// The monitor output level or mute moved.
     MonitorLevel(EngineAudioGroupState),
+    /// A strip's or the Master bus's plugin chain changed (AU-006).
+    PluginChain {
+        target: StripDspTarget,
+        chain: Box<fm_plugin_host_api::PluginChain>,
+    },
     /// A strip's or the Master bus's DSP chain changed (AU-005).
     StripDsp {
         target: StripDspTarget,
@@ -365,6 +386,10 @@ impl EngineAudioMixerUpdate {
             EngineAudioMixerEdit::SetStripDsp { target, chain, .. } => Some(Self::StripDsp {
                 target: *target,
                 chain: **chain,
+            }),
+            EngineAudioMixerEdit::SetPluginChain { target, chain } => Some(Self::PluginChain {
+                target: *target,
+                chain: chain.clone(),
             }),
             EngineAudioMixerEdit::ResetLoudness { target } => {
                 Some(Self::LoudnessReset { target: *target })
@@ -437,10 +462,47 @@ fn unknown_input(input: InputId) -> Rejection {
 ///
 /// # Errors
 ///
+/// Replaces one plugin chain: only installed processors and input strips are
+/// accepted (AU-006).
+fn apply_plugin_chain(
+    state: &mut ShowState,
+    target: StripDspTarget,
+    chain: &fm_plugin_host_api::PluginChain,
+) -> Result<(), Rejection> {
+    for slot in chain.slots() {
+        if !fm_plugin_host_api::is_reference_plugin(slot.plugin()) {
+            return Err(rejection(
+                RejectionCode::InvalidCommand,
+                "plugins",
+                "unsupported_plugin",
+                format!("plugin {} has no installed processor", slot.plugin()),
+            ));
+        }
+    }
+    match target {
+        // The Master chain awaits a mixer stage; a strip chain is rendered
+        // before the mixer, which is wired.
+        StripDspTarget::Master => Err(rejection(
+            RejectionCode::InvalidCommand,
+            "target",
+            "unsupported_target",
+            "the Master plugin chain is not wired yet".to_owned(),
+        )),
+        StripDspTarget::Input(input) => {
+            loudness_target(state, StripDspTarget::Input(input))?;
+            state.set_input_audio_plugins(input, chain.clone());
+            Ok(())
+        }
+    }
+}
+
 /// Returns a rejection for an unknown input, an unusable label or name, or
 /// an out-of-range group level. The show is unchanged on error.
 pub(crate) fn apply(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Result<(), Rejection> {
     match edit {
+        EngineAudioMixerEdit::SetPluginChain { target, chain } => {
+            apply_plugin_chain(state, *target, chain)
+        }
         EngineAudioMixerEdit::SetLabel { input, label } => {
             fm_model::validate_audio_strip_label(label)
                 .map_err(|error| label_rejection("label", error))?;
@@ -675,6 +737,7 @@ pub(crate) fn inverse(
         | EngineAudioMixerEdit::SetGroupSolo { .. }
         | EngineAudioMixerEdit::SetMonitorLevel { .. }
         | EngineAudioMixerEdit::ResetLoudness { .. }
-        | EngineAudioMixerEdit::SetAuxBusLevel { .. } => None,
+        | EngineAudioMixerEdit::SetAuxBusLevel { .. }
+        | EngineAudioMixerEdit::SetPluginChain { .. } => None,
     }
 }

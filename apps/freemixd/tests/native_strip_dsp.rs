@@ -31,8 +31,8 @@ use fm_protocol::{
     AudioDspTarget, AudioDynamicsMeter, AudioMetersMessage, AudioMixerOperation,
     CURRENT_PROTOCOL_VERSION, ClientType, CommandMessage, CommandPayload, CommandResult,
     HandshakeRequest, HeartbeatMessage, ImportItemSpec, InputLifecycleOperation, MediaOperation,
-    MonitorFrameAssembler, MonitorTap, Role, ServerIdentity, SnapshotMessage, WireInputId,
-    WireMessage, decode_line, encode_line,
+    MonitorFrameAssembler, MonitorTap, PluginChainSlot, Role, ServerIdentity, SnapshotMessage,
+    WireInputId, WireMessage, decode_line, encode_line,
 };
 use fm_types::strip_dsp::{EqBandKind, StripDsp};
 use fm_types::{
@@ -72,20 +72,27 @@ fn tools_available() -> bool {
 
 /// A 30 s, 25 fps, 320x180 red clip with a steady 440 Hz tone (peak 1/8).
 fn generate_clip(path: &Path) {
+    generate_clip_seconds(path, 30);
+}
+
+/// A `seconds`-long, 25 fps, 320x180 red clip with a steady 440 Hz tone.
+fn generate_clip_seconds(path: &Path, seconds: u32) {
     let status = Command::new("ffmpeg")
         .args(["-nostdin", "-hide_banner", "-loglevel", "error"])
         .args([
             "-f",
             "lavfi",
             "-i",
-            "color=c=red:s=320x180:r=25:d=30,\
-             setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv",
+            &format!(
+                "color=c=red:s=320x180:r=25:d={seconds},\
+                 setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
+            ),
         ])
         .args([
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=440:sample_rate=48000:d=30",
+            &format!("sine=frequency=440:sample_rate=48000:d={seconds}"),
         ])
         .args(["-c:v", "mpeg2video", "-g", "12", "-q:v", "2"])
         .args(["-pix_fmt", "yuv420p"])
@@ -700,4 +707,134 @@ fn a_loudness_reset_restarts_one_bus_measurement_on_a_running_daemon() {
             .and_then(|meter| meter.max_true_peak_millidbtp)
             .is_some_and(|peak| peak < high - 9_000)
     });
+}
+
+/// The unpadded base64url of `data`.
+fn base64url(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut encoded = String::new();
+    for chunk in data.chunks(3) {
+        let value = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        let characters = match chunk.len() {
+            1 => 2,
+            2 => 3,
+            _ => 4,
+        };
+        for index in 0..characters {
+            let shift = 18 - index * 6;
+            encoded.push(ALPHABET[((value >> shift) & 0x3f) as usize] as char);
+        }
+    }
+    encoded
+}
+
+/// AU-006, Protocol 2.128: a native daemon renders a reference trim plugin
+/// on one strip, and bypassing the slot restores the untouched tone.
+#[test]
+fn native_daemon_renders_a_strip_plugin_chain() {
+    if !tools_available() {
+        eprintln!("native plugin chain integration skipped: FFmpeg tools unavailable");
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let clip = directory.path().join("clip.mkv");
+    generate_clip_seconds(&clip, 90);
+    let project_path = directory.path().join("native-plugin-chain.freemix");
+    save_project(&project_path);
+    let daemon = match start_native(&project_path) {
+        Ok(daemon) => daemon,
+        Err(error) => {
+            assert!(
+                std::env::var("FM_REQUIRE_NATIVE_MEDIA").as_deref() != Ok("1"),
+                "FM_REQUIRE_NATIVE_MEDIA=1: {error}"
+            );
+            eprintln!("native plugin chain integration skipped: {error}");
+            return;
+        }
+    };
+    let (mut client, _snapshot) = Client::connect(daemon.address);
+    client.accept(CommandPayload::InputLifecycle(
+        InputLifecycleOperation::Import {
+            items: vec![ImportItemSpec {
+                input: wire(11),
+                name: Some("Clip".into()),
+                uri: clip.to_str().unwrap().to_owned(),
+            }],
+        },
+    ));
+    client.accept(CommandPayload::SelectPreview { input: wire(11) });
+    client.accept(CommandPayload::Cut);
+    client.shows_red_program();
+    client.accept(CommandPayload::Media {
+        input: wire(11),
+        operation: MediaOperation::Play,
+    });
+    let flat =
+        master_peak(&client.settled("the tone on Master", 5, |meters| master_peak(meters) > LOUD));
+
+    // -12 dB through the reference trim on the strip: Master drops to about
+    // a quarter of the flat peak.
+    let trim = PluginChainSlot {
+        plugin: "freemix.reference.trim".to_owned(),
+        bypassed: false,
+        latency_frames: 0,
+        state: (-12_000_i32).to_le_bytes().to_vec(),
+    };
+    client.accept(CommandPayload::AudioMixer(
+        AudioMixerOperation::SetPluginChain {
+            target: AudioDspTarget::Input(wire(11)),
+            slots: vec![trim.clone()],
+        },
+    ));
+    let trimmed = client.settled("the trimmed tone", 5, |meters| {
+        f64::from(master_peak(meters)) < f64::from(flat) * 0.4
+    });
+    assert!(
+        f64::from(master_peak(&trimmed)) > f64::from(flat) * 0.15,
+        "{flat} -> {}",
+        master_peak(&trimmed)
+    );
+
+    // Bypassing the slot skips the processor, so the flat tone returns.
+    client.accept(CommandPayload::AudioMixer(
+        AudioMixerOperation::SetPluginChain {
+            target: AudioDspTarget::Input(wire(11)),
+            slots: vec![PluginChainSlot {
+                bypassed: true,
+                ..trim
+            }],
+        },
+    ));
+    client.settled("the bypassed tone", 5, |meters| {
+        f64::from(master_peak(meters)) > f64::from(flat) * 0.8
+    });
+
+    // A plugin with no installed processor is refused rather than silently
+    // dropping audio, and the chain on the strip is unchanged.
+    let refused = client.submit(CommandPayload::AudioMixer(
+        AudioMixerOperation::SetPluginChain {
+            target: AudioDspTarget::Input(wire(11)),
+            slots: vec![PluginChainSlot {
+                plugin: "vendor.vst3".to_owned(),
+                bypassed: false,
+                latency_frames: 0,
+                state: Vec::new(),
+            }],
+        },
+    ));
+    match refused {
+        CommandResult::Rejected { fields, .. } => {
+            assert_eq!(fields[0].field, "plugins");
+            assert_eq!(fields[0].code, "unsupported_plugin");
+        }
+        accepted @ CommandResult::Accepted { .. } => {
+            panic!("vendor plugin accepted: {accepted:?}")
+        }
+    }
+
+    // Silence the unused helper so the base64url stays covered by the wire
+    // test in fm-protocol (the real daemon decodes the escaped field).
+    assert_eq!(base64url(&(-12_000_i32).to_le_bytes()), "INH__w");
 }

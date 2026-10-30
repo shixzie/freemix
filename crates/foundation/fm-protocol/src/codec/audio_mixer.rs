@@ -912,7 +912,90 @@ pub(super) fn encode_operation(
                 bus.map_or_else(|| "-".to_owned(), |bus| bus.letter().to_string()),
             )
         }
+        AudioMixerOperation::SetPluginChain { target, slots } => {
+            push("target", encode_target(*target))?;
+            push("plugins", encode_plugin_slots(slots)?)
+        }
     }
+}
+
+/// Encodes a plugin chain as `<plugin>:<bypass>:<latency>:<state>` slots
+/// joined by `,` (2.128).
+fn encode_plugin_slots(slots: &[crate::PluginChainSlot]) -> Result<String, CodecError> {
+    if slots.len() > crate::MAX_PROTOCOL_PLUGIN_SLOTS {
+        return Err(invalid("plugins", format!("{} slots", slots.len())));
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    let mut encoded = Vec::with_capacity(slots.len());
+    for slot in slots {
+        if !crate::PluginChainSlot::plugin_id_is_valid(&slot.plugin) {
+            return Err(invalid("plugins", slot.plugin.clone()));
+        }
+        if !ids.insert(&slot.plugin) {
+            return Err(invalid("plugins", slot.plugin.clone()));
+        }
+        if slot.latency_frames > crate::MAX_PLUGIN_LATENCY_FRAMES {
+            return Err(invalid("plugins", slot.latency_frames.to_string()));
+        }
+        if slot.state.len() > crate::MAX_PLUGIN_STATE_BYTES {
+            return Err(invalid("plugins", slot.state.len().to_string()));
+        }
+        encoded.push(format!(
+            "{}:{}:{}:{}",
+            slot.plugin,
+            u8::from(slot.bypassed),
+            slot.latency_frames,
+            crate::monitor_image::base64url_encode(&slot.state)
+        ));
+    }
+    Ok(encoded.join(","))
+}
+
+/// Decodes a plugin chain (2.128).
+fn decode_plugin_slots(value: &str) -> Result<Vec<crate::PluginChainSlot>, CodecError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let entries: Vec<&str> = value.split(',').collect();
+    if entries.len() > crate::MAX_PROTOCOL_PLUGIN_SLOTS {
+        return Err(invalid("plugins", value.to_owned()));
+    }
+    let mut ids = std::collections::BTreeSet::new();
+    let mut slots = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let fields: Vec<&str> = entry.split(':').collect();
+        let [plugin, bypassed, latency, state] = fields[..] else {
+            return Err(invalid("plugins", entry.to_owned()));
+        };
+        if !crate::PluginChainSlot::plugin_id_is_valid(plugin) || !ids.insert(plugin) {
+            return Err(invalid("plugins", entry.to_owned()));
+        }
+        let bypassed = match bypassed {
+            "0" => false,
+            "1" => true,
+            _ => return Err(invalid("plugins", entry.to_owned())),
+        };
+        let latency_frames: u32 = latency
+            .parse()
+            .map_err(|_| invalid("plugins", entry.to_owned()))?;
+        if latency_frames > crate::MAX_PLUGIN_LATENCY_FRAMES
+            || latency != latency_frames.to_string()
+        {
+            return Err(invalid("plugins", entry.to_owned()));
+        }
+        let state = crate::monitor_image::base64url_decode(state)
+            .ok_or_else(|| invalid("plugins", entry.to_owned()))?;
+        if state.len() > crate::MAX_PLUGIN_STATE_BYTES {
+            return Err(invalid("plugins", entry.to_owned()));
+        }
+        slots.push(crate::PluginChainSlot {
+            plugin: plugin.to_owned(),
+            bypassed,
+            latency_frames,
+            state,
+        });
+    }
+    Ok(slots)
 }
 
 /// Decodes an operation named by `payload`, or `None` for another payload.
@@ -993,6 +1076,10 @@ pub(super) fn decode_operation(
             bus: parse_bus("bus", &fields.required("bus")?)?,
             gain_millidb: parse_gain("gain_millidb", &fields.required("gain_millidb")?)?,
             muted: parse_flag("muted", &fields.required("muted")?)?,
+        },
+        "audio_plugin_chain" => AudioMixerOperation::SetPluginChain {
+            target: decode_target("target", &fields.required("target")?)?,
+            slots: decode_plugin_slots(&fields.required("plugins")?)?,
         },
         "audio_output_bus" => {
             let value = fields.required("output")?;
