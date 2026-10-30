@@ -1512,6 +1512,7 @@ impl StudioShell {
                     state,
                     &mut self.meters,
                     (frame.dt_ms, &mut self.layout.show_mixer_details, &mut fx),
+                    &mut self.bus_mixer_open,
                     intents,
                 );
                 if let Some(target) = fx {

@@ -1807,6 +1807,8 @@ pub struct StudioShell {
     /// The console key profiles and the one the console answers (RC-004).
     key_profiles: ConsoleKeyProfiles,
     key_profiles_window: key_profiles_ui::KeyProfilesWindow,
+    /// The Aux buses window (AU-002) is open.
+    bus_mixer_open: bool,
     /// The MIDI controllers the host reads (RC-005), by name.
     midi_devices: Vec<String>,
     /// The panel the operator last clicked, which scoped project shortcut
@@ -2315,6 +2317,7 @@ impl StudioShell {
         self.draw_help_windows(ui.ctx(), state);
         self.draw_preferences_window(ui.ctx());
         self.draw_key_profiles_window(ui.ctx());
+        mixer::draw_bus_mixer_window(&mut self.bus_mixer_open, ui.ctx(), state, &mut intents);
         self.draw_display_outputs_dialog(ui.ctx(), state, &mut intents);
         self.draw_live_lan_window(ui.ctx(), state, &mut intents);
         self.draw_web_access_window(ui.ctx(), state, &mut intents);
@@ -2491,6 +2494,7 @@ impl Default for StudioShell {
             shortcut_keys: ShortcutKeyOverrides::default(),
             key_profiles: ConsoleKeyProfiles::default(),
             key_profiles_window: key_profiles_ui::KeyProfilesWindow::default(),
+            bus_mixer_open: false,
             midi_devices: Vec::new(),
             focused_panel: None,
             focused_window: None,

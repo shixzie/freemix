@@ -3783,6 +3783,38 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Mostrar la posición exacta de la T-bar, Completar, Cancelar y la tarjeta de estado aunque no haya una transición manual activa",
         ),
     ),
+    (Msg::BusMixerKey, t("BUSES")),
+    (
+        Msg::BusMixerKeyHover,
+        t(
+            "Abrir el mezclador de buses auxiliares: nombres, faders, silencios y qué bus oye cada salida",
+        ),
+    ),
+    (Msg::BusMixerTitle, t("Buses auxiliares")),
+    (
+        Msg::BusMixerNote,
+        t(
+            "Cada tira alimenta Master y los buses auxiliares que tenga asignados. Una salida oye Master o un bus.",
+        ),
+    ),
+    (
+        Msg::BusMixerNameHover,
+        t("El nombre del bus: escribe otro y haz clic fuera para renombrarlo"),
+    ),
+    (Msg::BusMixerFaderHover, t("El nivel de salida del bus")),
+    (Msg::AuxBusMuteKey, t("SILENCIAR")),
+    (
+        Msg::BusMixerMuteHover,
+        t("Silenciar o reactivar este bus en su salida"),
+    ),
+    (Msg::BusMixerOutputs, t("Salidas")),
+    (
+        Msg::BusMixerOutputHover,
+        t("El bus que oyen las grabaciones, emisiones y LiveLAN de esta salida"),
+    ),
+    (Msg::BusMixerMaster, t("Mezcla Master")),
+    (Msg::BusMixerBus, t("Bus {bus}")),
+    (Msg::BusMixerNoOutputs, t("Este proyecto no tiene salidas.")),
     (Msg::MixerDetailsKey, t("GAN · BAL · RET")),
     (Msg::DetailsKey, t("DETALLES")),
     (

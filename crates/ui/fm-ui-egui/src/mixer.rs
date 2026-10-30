@@ -41,8 +41,8 @@ use crate::meter_ballistics::{
 use crate::monitors::label_for_input;
 use crate::theme::{
     AMBER, MONITOR_BLACK, PREVIEW, PROGRAM, accent_color, border_color, border_strong_color,
-    graphite_color, muted_color, raised_color, tally_color, text_color, text_dim_color,
-    widget_color, widget_hover_color,
+    caption, graphite_color, muted_color, raised_color, section_label, small_button, tally_color,
+    text_color, text_dim_color, widget_color, widget_hover_color,
 };
 use crate::{
     InputAudioStripUpdate, StudioConnectionStatus, StudioIntent, StudioUiState, TallyState,
@@ -597,6 +597,7 @@ pub(crate) fn draw_mixer(
     state: &StudioUiState,
     ballistics: &mut MeterBallistics,
     (dt_ms, details, fx): (u32, &mut bool, &mut Option<StripDspTarget>),
+    bus_mixer: &mut bool,
     intents: &mut Vec<StudioIntent>,
 ) {
     // The strips share the whole panel; hidden entries give their height
@@ -616,6 +617,17 @@ pub(crate) fn draw_mixer(
         ui.ctx().request_repaint_after(METER_REPAINT_INTERVAL);
     }
     crate::theme::panel_header(ui, |ui| {
+        if state.view.is_some()
+            && ui
+                .add(small_button(l.text(Msg::BusMixerKey)))
+                .hint(
+                    l.text(Msg::BusMixerKeyHover),
+                    Msg::ReasonNotSynchronized.en(),
+                )
+                .clicked()
+        {
+            *bus_mixer = true;
+        }
         if state.view.is_some() {
             crate::theme::disclosure(
                 ui,
@@ -3470,5 +3482,154 @@ mod tests {
         // The meter well grows with its bars.
         assert!(meter_width(2, 10.0) > meter_width(2, 5.0));
         assert!((meter_width(2, 5.0) - 22.0).abs() < f32::EPSILON);
+    }
+}
+
+/// The Aux buses window (AU-002): each bus's name, fader, and mute, and the
+/// bus each project output hears.
+pub(crate) fn draw_bus_mixer_window(
+    open: &mut bool,
+    context: &egui::Context,
+    state: &StudioUiState,
+    intents: &mut Vec<StudioIntent>,
+) {
+    if !*open {
+        return;
+    }
+    let l = l10n::locale(context);
+    let close = crate::menu::help_modal(
+        context,
+        "studio-bus-mixer",
+        l.text(Msg::BusMixerTitle),
+        520.0,
+        |ui| draw_bus_mixer_contents(ui, state, intents),
+    );
+    if close {
+        *open = false;
+    }
+}
+
+fn draw_bus_mixer_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
+    let l = l10n::locale(ui.ctx());
+    let Some(view) = &state.view else {
+        crate::theme::empty_state(
+            ui,
+            l.text(Msg::NoAudioState),
+            l.text(Msg::NoAudioStateDetail),
+        );
+        return;
+    };
+    let ready = state.connection_status.controls_enabled() && state.view.is_some();
+    let audio_enabled = ready && state.can_control_audio;
+    let edit_enabled = ready && state.can_edit_project;
+    let audio_reason = unavailable_reason(state, Capability::Audio);
+    let edit_reason = unavailable_reason(state, Capability::EditProject);
+    ui.label(caption(l.text(Msg::BusMixerNote)));
+    ui.add_space(6.0);
+    for (number, bus) in fm_types::audio_bus::AuxBusNumber::ALL
+        .into_iter()
+        .zip(&view.audio_mixer.aux_buses)
+    {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(
+                RichText::new(number.letter().to_string())
+                    .strong()
+                    .color(accent_color()),
+            );
+            if let Some(name) = label_entry(
+                ui,
+                ("aux-bus-name", number.index()),
+                &bus.name,
+                edit_enabled,
+                (&bus.name, l.text(Msg::BusMixerNameHover), edit_reason),
+            ) {
+                intents.push(StudioIntent::AudioMixer(
+                    fm_protocol::AudioMixerOperation::RenameAuxBus { bus: number, name },
+                ));
+            }
+            let mut gain_millidb = bus.gain_millidb;
+            let mut muted = bus.muted;
+            let changed = ui
+                .add_enabled(
+                    audio_enabled,
+                    DragValue::new(&mut gain_millidb)
+                        .range(-96_000..=24_000)
+                        .speed(100.0)
+                        .custom_formatter(|value, _| {
+                            #[allow(clippy::cast_possible_truncation)] // bounded range
+                            format_gain(l, value as i32)
+                        })
+                        .custom_parser(|text| parse_gain(l, text)),
+                )
+                .hint(l.text(Msg::BusMixerFaderHover), audio_reason)
+                .changed();
+            let muted_changed = led_key(
+                ui,
+                audio_enabled,
+                &mut muted,
+                l.text(Msg::AuxBusMuteKey),
+                PROGRAM,
+                52.0,
+            )
+            .hint(l.text(Msg::BusMixerMuteHover), audio_reason)
+            .changed();
+            if changed || muted_changed {
+                intents.push(StudioIntent::AudioMixer(
+                    fm_protocol::AudioMixerOperation::SetAuxBusLevel {
+                        bus: number,
+                        gain_millidb,
+                        muted,
+                    },
+                ));
+            }
+        });
+    }
+    ui.add_space(8.0);
+    ui.label(section_label(l.text(Msg::BusMixerOutputs)));
+    if view.outputs.is_empty() {
+        ui.label(caption(l.text(Msg::BusMixerNoOutputs)));
+    }
+    for output in &view.outputs {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            ui.label(&output.name);
+            let mut chosen = output.aux_bus;
+            let selected = match chosen {
+                None => l.text(Msg::BusMixerMaster).to_owned(),
+                Some(bus) => l.format(
+                    Msg::BusMixerBus,
+                    &[("bus", Arg::Str(&bus.letter().to_string()))],
+                ),
+            };
+            ui.add_enabled_ui(edit_enabled, |ui| {
+                egui::ComboBox::from_id_salt(("bus-mixer-output", output.output))
+                    .selected_text(selected)
+                    .width(140.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut chosen, None, l.text(Msg::BusMixerMaster));
+                        for bus in fm_types::audio_bus::AuxBusNumber::ALL {
+                            ui.selectable_value(
+                                &mut chosen,
+                                Some(bus),
+                                l.format(
+                                    Msg::BusMixerBus,
+                                    &[("bus", Arg::Str(&bus.letter().to_string()))],
+                                ),
+                            );
+                        }
+                    });
+            })
+            .response
+            .hint(l.text(Msg::BusMixerOutputHover), edit_reason);
+            if chosen != output.aux_bus {
+                intents.push(StudioIntent::AudioMixer(
+                    fm_protocol::AudioMixerOperation::SetOutputBus {
+                        output: fm_protocol::WireOutputId::from_domain(output.output),
+                        bus: chosen,
+                    },
+                ));
+            }
+        });
     }
 }
