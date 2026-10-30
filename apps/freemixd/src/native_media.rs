@@ -3466,6 +3466,20 @@ pub struct NativeStingerAudioRuntime {
     playback: Option<NativeStingerAudioPlayback>,
 }
 
+/// The Master bus plugin stage for [`MasterMixer`] (AU-006).
+#[derive(Clone, Debug)]
+struct NativeMasterPluginStage(ReferenceRack);
+
+impl fm_audio::MasterPluginStage for NativeMasterPluginStage {
+    fn process(&mut self, planes: &mut [Vec<f32>], samples: usize) {
+        self.0.process(planes, samples);
+    }
+
+    fn clone_stage(&self) -> Box<dyn fm_audio::MasterPluginStage> {
+        Box::new(self.clone())
+    }
+}
+
 /// Independent bounded CPU audio playback and Master mixing runtime.
 ///
 /// It is intentionally separate from [`NativeSourceRegistry`]. Decoder work is
@@ -3492,8 +3506,6 @@ pub struct NativeMasterRuntime {
     /// Every strip's prepared plugin chain (AU-006); a strip without one is
     /// absent.
     plugin_racks: BTreeMap<InputId, ReferenceRack>,
-    /// The Master bus plugin chain (AU-006).
-    master_plugin_rack: Option<ReferenceRack>,
     /// The last rendered block before Fade to Black, kept only while Fade
     /// to Black is fading and some output is excluded from it (SW-004).
     live_audio: Option<AudioBlock>,
@@ -3899,7 +3911,6 @@ impl NativeMasterRuntime {
             audio_telemetry,
             stinger_audio: None,
             plugin_racks: BTreeMap::new(),
-            master_plugin_rack: None,
             collect_output: true,
             failed: false,
             live_audio: None,
@@ -4389,14 +4400,17 @@ impl NativeMasterRuntime {
         let rate = self.format.sample_rate.hertz() as f32;
         match target {
             fm_types::strip_dsp::StripDspTarget::Master => {
-                self.master_plugin_rack = if chain.is_empty() {
+                let stage = if chain.is_empty() {
                     None
                 } else {
-                    Some(
+                    Some(Box::new(NativeMasterPluginStage(
                         ReferenceRack::new(chain, rate)
                             .map_err(NativeMasterError::PluginReference)?,
-                    )
+                    ))
+                        as Box<dyn fm_audio::MasterPluginStage>)
                 };
+                self.mixer.set_master_plugins(stage.clone());
+                self.pending_mixer.set_master_plugins(stage);
             }
             fm_types::strip_dsp::StripDspTarget::Input(input) => {
                 if !self.sources.contains_key(&input) {
@@ -5519,11 +5533,6 @@ impl NativeMasterRuntime {
             for meter in &mut self.scratch.aux_meters {
                 *meter = ChannelMeter::default();
             }
-        }
-        // The Master plugin chain hears the summed Program bus before the
-        // per-output fades and the Master loudness meter (AU-006).
-        if let Some(rack) = &mut self.master_plugin_rack {
-            rack.process(&mut self.scratch.mix, samples);
         }
         for &(input, render_plan) in &self.scratch.plans {
             self.sources
@@ -10215,7 +10224,6 @@ mod tests {
             audio_telemetry: NativeAudioTelemetry::default(),
             stinger_audio: None,
             plugin_racks: BTreeMap::new(),
-            master_plugin_rack: None,
             collect_output: true,
             failed: false,
         }
@@ -10265,7 +10273,6 @@ mod tests {
             audio_telemetry: NativeAudioTelemetry::default(),
             stinger_audio: None,
             plugin_racks: BTreeMap::new(),
-            master_plugin_rack: None,
             collect_output: true,
             failed: false,
         }

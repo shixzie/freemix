@@ -1497,8 +1497,27 @@ impl ChannelMeterAccumulator {
     }
 }
 
+/// One plugin stage on the summed Master bus (AU-006).
+///
+/// The engine's media plane supplies this from its plugin host; the mixer
+/// runs it after the Master DSP chain, before clipping and the Master meter,
+/// so the meter reads what Program carries. Implementations must process
+/// `samples` of every plane without allocating.
+pub trait MasterPluginStage: fmt::Debug + Send {
+    fn process(&mut self, planes: &mut [Vec<f32>], samples: usize);
+    fn clone_stage(&self) -> Box<dyn MasterPluginStage>;
+    /// Copies the other stage's processor state when both are installed.
+    /// The default is for stateless stages.
+    fn copy_state_from(&mut self, _other: &dyn MasterPluginStage) {}
+}
+
+impl Clone for Box<dyn MasterPluginStage> {
+    fn clone(&self) -> Self {
+        self.clone_stage()
+    }
+}
+
 /// Deterministic planar float mixer with one Master bus.
-#[derive(Clone, Debug)]
 pub struct MasterMixer {
     format: AudioFormat,
     inputs: BTreeMap<InputId, InputStrip>,
@@ -1508,6 +1527,8 @@ pub struct MasterMixer {
     retained_delay_bytes: usize,
     /// The Master bus DSP chain (AU-005), after the strips are summed.
     master_dsp: Option<Box<LiveStripDsp>>,
+    /// The Master bus plugin stage (AU-006), after the Master DSP chain.
+    master_plugins: Option<Box<dyn MasterPluginStage>>,
     /// The Master chain as a render found it, restored when the render is
     /// rejected; present exactly when `master_dsp` is.
     master_checkpoint: Option<Box<LiveStripDsp>>,
@@ -1515,6 +1536,43 @@ pub struct MasterMixer {
     dsp_block_capacity: usize,
     /// The fader and mute of aux buses A–G (AU-002), in bus order.
     aux: [GroupStrip; AUX_BUS_COUNT],
+}
+
+impl Clone for MasterMixer {
+    fn clone(&self) -> Self {
+        Self {
+            format: self.format.clone(),
+            inputs: self.inputs.clone(),
+            groups: self.groups,
+            solo_mode: self.solo_mode,
+            clipping_policy: self.clipping_policy,
+            retained_delay_bytes: self.retained_delay_bytes,
+            master_dsp: self.master_dsp.clone(),
+            master_plugins: self.master_plugins.clone(),
+            master_checkpoint: self.master_checkpoint.clone(),
+            dsp_block_capacity: self.dsp_block_capacity,
+            aux: self.aux,
+        }
+    }
+}
+
+impl fmt::Debug for MasterMixer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MasterMixer")
+            .field("format", &self.format)
+            .field("inputs", &self.inputs)
+            .field("groups", &self.groups)
+            .field("solo_mode", &self.solo_mode)
+            .field("clipping_policy", &self.clipping_policy)
+            .field("retained_delay_bytes", &self.retained_delay_bytes)
+            .field("master_dsp", &self.master_dsp)
+            .field("master_plugins", &self.master_plugins)
+            .field("master_checkpoint", &self.master_checkpoint)
+            .field("dsp_block_capacity", &self.dsp_block_capacity)
+            .field("aux", &self.aux)
+            .finish()
+    }
 }
 
 impl MasterMixer {
@@ -1535,6 +1593,7 @@ impl MasterMixer {
             clipping_policy: ClippingPolicy::default(),
             retained_delay_bytes: 0,
             master_dsp: None,
+            master_plugins: None,
             master_checkpoint: None,
             dsp_block_capacity: DEFAULT_DSP_BLOCK_CAPACITY,
             aux: [GroupStrip::unity(); AUX_BUS_COUNT],
@@ -1639,6 +1698,17 @@ impl MasterMixer {
                 Ok(())
             }
         }
+    }
+
+    /// Replaces the Master bus plugin stage (AU-006); `None` removes it.
+    pub fn set_master_plugins(&mut self, stage: Option<Box<dyn MasterPluginStage>>) {
+        self.master_plugins = stage;
+    }
+
+    /// Whether a Master bus plugin stage is installed.
+    #[must_use]
+    pub fn has_master_plugins(&self) -> bool {
+        self.master_plugins.is_some()
     }
 
     /// The gain reduction `id`'s strip DSP applied during the last render.
@@ -2139,6 +2209,14 @@ impl MasterMixer {
         if let (Some(own), Some(other)) = (&mut self.master_dsp, &other.master_dsp) {
             own.copy_state_from(other)
                 .map_err(|_| AudioError::FormatMismatch)?;
+        }
+        // A plugin stage's processor state is part of the render cursor, not
+        // the configured mixer: the pending mixer starts each frame from the
+        // committed stage, without allocating when both hold one.
+        match (&mut self.master_plugins, &other.master_plugins) {
+            (Some(own), Some(other)) => own.copy_state_from(other.as_ref()),
+            (None, None) => {}
+            _ => self.master_plugins.clone_from(&other.master_plugins),
         }
         self.groups = other.groups;
         self.aux = other.aux;
@@ -2755,6 +2833,10 @@ impl MasterMixer {
         {
             validate_finite_sample_prefix(output, samples)?;
             live.process(samples, &mut InPlacePlanes(output));
+        }
+        if let Some(stage) = &mut self.master_plugins {
+            validate_finite_sample_prefix(output, samples)?;
+            stage.process(output, samples);
         }
         if self.clipping_policy == ClippingPolicy::Clamp {
             for plane in output.iter_mut() {

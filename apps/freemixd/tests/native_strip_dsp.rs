@@ -733,6 +733,7 @@ fn base64url(data: &[u8]) -> String {
 /// AU-006, Protocol 2.128: a native daemon renders a reference trim plugin
 /// on one strip, and bypassing the slot restores the untouched tone.
 #[test]
+#[allow(clippy::too_many_lines)] // the strip, Master, and refusal legs
 fn native_daemon_renders_a_strip_plugin_chain() {
     if !tools_available() {
         eprintln!("native plugin chain integration skipped: FFmpeg tools unavailable");
@@ -808,6 +809,32 @@ fn native_daemon_renders_a_strip_plugin_chain() {
         },
     ));
     client.settled("the bypassed tone", 5, |meters| {
+        f64::from(master_peak(meters)) > f64::from(flat) * 0.8
+    });
+
+    // The Master bus renders a chain after the summed strips: a -12 dB trim
+    // attenuates the Program bus and the Master meter reads it.
+    client.accept(CommandPayload::AudioMixer(
+        AudioMixerOperation::SetPluginChain {
+            target: AudioDspTarget::Master,
+            slots: vec![PluginChainSlot {
+                plugin: "freemix.reference.trim".to_owned(),
+                bypassed: false,
+                latency_frames: 0,
+                state: (-12_000_i32).to_le_bytes().to_vec(),
+            }],
+        },
+    ));
+    client.settled("the trimmed Master", 5, |meters| {
+        f64::from(master_peak(meters)) < f64::from(flat) * 0.4
+    });
+    client.accept(CommandPayload::AudioMixer(
+        AudioMixerOperation::SetPluginChain {
+            target: AudioDspTarget::Master,
+            slots: Vec::new(),
+        },
+    ));
+    client.settled("the cleared Master chain", 5, |meters| {
         f64::from(master_peak(meters)) > f64::from(flat) * 0.8
     });
 

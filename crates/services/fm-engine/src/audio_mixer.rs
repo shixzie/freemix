@@ -462,8 +462,8 @@ fn unknown_input(input: InputId) -> Rejection {
 ///
 /// # Errors
 ///
-/// Replaces one plugin chain: only installed processors and input strips are
-/// accepted (AU-006).
+/// Replaces one plugin chain: only installed processors are accepted
+/// (AU-006).
 fn apply_plugin_chain(
     state: &mut ShowState,
     target: StripDspTarget,
@@ -480,14 +480,10 @@ fn apply_plugin_chain(
         }
     }
     match target {
-        // The Master chain awaits a mixer stage; a strip chain is rendered
-        // before the mixer, which is wired.
-        StripDspTarget::Master => Err(rejection(
-            RejectionCode::InvalidCommand,
-            "target",
-            "unsupported_target",
-            "the Master plugin chain is not wired yet".to_owned(),
-        )),
+        StripDspTarget::Master => {
+            state.set_master_audio_plugins(chain.clone());
+            Ok(())
+        }
         StripDspTarget::Input(input) => {
             loudness_target(state, StripDspTarget::Input(input))?;
             state.set_input_audio_plugins(input, chain.clone());

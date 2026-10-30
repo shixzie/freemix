@@ -119,20 +119,14 @@ fn a_plugin_chain_is_live_and_reaches_the_frame() {
         }]
     );
 
-    // The Master target is reserved until a mixer stage renders it.
-    let outcome = execute(
+    // The Master bus takes a chain too; it renders after the summed strips.
+    let master = chain();
+    accept(
         &mut engine,
         "master",
-        command(StripDspTarget::Master, PluginChain::new()),
+        command(StripDspTarget::Master, master.clone()),
     );
-    let rejection = outcome
-        .receipt
-        .rejected()
-        .expect("refused")
-        .rejection
-        .clone();
-    assert_eq!(rejection.fields[0].field, "target");
-    assert_eq!(rejection.fields[0].code, "unsupported_target");
+    assert_eq!(engine.show().master_audio_plugins(), &master);
 }
 
 #[test]

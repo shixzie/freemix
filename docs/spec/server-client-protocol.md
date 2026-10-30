@@ -4632,8 +4632,8 @@ The request and frame shapes are unchanged.
 
 Protocol 2.128 adds audio plugin chains (AU-006).
 
-- `audio_plugin_chain` (`target` = an input, `plugins`) replaces one strip's
-  ordered plugin chain. `plugins` is a
+- `audio_plugin_chain` (`target` = `master` or an input, `plugins`) replaces
+  one strip's or the Master bus's ordered plugin chain. `plugins` is a
   comma-separated list of up to eight unique
   `<plugin>:<bypassed 0|1>:<latency frames>:<state base64url>` slots; empty
   clears the chain. A plugin identifier is 1..=128 bytes of
@@ -4644,9 +4644,8 @@ Protocol 2.128 adds audio plugin chains (AU-006).
   is unchanged and chains are not persisted or carried in the snapshot.
 - The native daemon renders the built-in `freemix.reference.trim`,
   `freemix.reference.polarity`, and `freemix.reference.softclip` processors
-  on input strips; the Master target is refused (`target`/
-  `unsupported_target`) until the mixer has a Master plugin stage;
-  a plugin with no installed processor is refused
+  on input strips before the mixer and on the summed Master bus after its
+  DSP chain; a plugin with no installed processor is refused
   (`plugins`/`unsupported_plugin`). A trim or soft-clip state is one
   little-endian `i32` in millidB.
 - `freemix-cli remote-audio-plugin-chain <address> <input>
