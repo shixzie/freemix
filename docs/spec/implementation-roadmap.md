@@ -5,9 +5,13 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.118 / schema 90 (2026-10-27).
-Every parity row is still `planned` (or `blocked`); these are the
-highest-value remaining items, ranked:
+(2026-10-19); items refreshed through protocol 2.129 / schema 90 (2026-10-30,
+at `8497393`). Every parity row is still `planned` (or `blocked`); these are
+the highest-value remaining feature items, ranked. The structural work the
+2026-10-30 architecture review found (the daemon's size and its one-thread
+frame loop) is ranked separately in [Structural work before more
+breadth](#structural-work-before-more-breadth), and the first two items
+there come before any new breadth below.
 
 1. **Web gateway on the LAN: trust and reach (`RC-007`, `RC-014`, `RC-008`).**
    `freemixd serve` serves the pages over TLS on LAN addresses with
@@ -180,6 +184,37 @@ highest-value remaining items, ranked:
     start once the recorder closes it (Protocol 2.123), holding their media
     against retention meanwhile; a recording restart fails them with a
     reason. Remaining: nothing is certified (see the Phase 7 boundary).
+12. **OMT on the network, end to end (Phase 8 items 1-4).** `fm-io-omt` is
+    FreeMix's own OMT 1.0 implementation: the native daemon reads an
+    `omt://` network stream input (Protocol 2.121) and a stream destination
+    with `stream_protocol=omt` publishes the Program pair (Protocol 2.122),
+    with `_omt._tcp` DNS-SD advertisement and browsing. Remaining: no
+    discovery catalogue entry is wired into the input catalogue, no
+    VMX-compressed frames, no corrupt-frame recovery, no alpha or tally
+    round trip proven against another OMT implementation, and no hardware
+    certification (see the Phase 8 boundary).
+13. **Aux buses through the show (`AU-002`).** Master plus aux buses A-G
+    are live (Protocol 2.118, schema 90), metered on the wire (Protocol
+    2.120), edited in Studio's BUSES window and the CLI, and a project
+    output can hear a bus instead of Master. Remaining: sends are unity
+    post-fader only through the show (per-send level and pre-fader taps
+    exist in `fm-audio`), `BusMatrix` bus processing, mix-minus feeds, and
+    device or network destinations are not wired, and the legacy project
+    audio bus graph is unchanged (see the Phase 3 `AU-002` boundary).
+14. **Audio plugin chains (`AU-006`).** `fm-plugin-host-api` models an
+    ordered chain of up to eight bypassable, latency-reporting plugins, the
+    native daemon renders the `freemix.reference.*` processors on input
+    strips and Master (Protocol 2.128), the CLI sends a chain, and Studio's
+    FX window reads and edits it (Protocol 2.129). Remaining: scanning,
+    parameters beyond the reference trim, persistence of the chain,
+    crash quarantine in the render path, and a real sandboxed plugin in the
+    chain (see the Phase 8 boundary).
+15. **MIDI and controller surfaces (`RC-005`).** Studio reads ALSA raw MIDI
+    ports on Linux and binds notes and controls to console actions with
+    `fm-automation`'s parser and control map, with LED and motor-fader
+    feedback through the router. Remaining: no MIDI on macOS or Windows,
+    no binding reaches `freemixd` or the project, no HID or X-keys input,
+    and no NRPN/RPN, MIDI 2.0, or GPIO (see the Phase 5 boundary).
 
 Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
 since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
@@ -200,6 +235,78 @@ CLI, and the Web operator page, which shows the daemon's health too
 switches it off (Protocol 2.112, schema 85). Native daemons now group commit the
 commands queued at a command turn (see Native group commit below), but the
 group's disk sync still runs in front of its frame.
+
+## Structural work before more breadth
+
+Found by the 2026-10-30 architecture review of `8497393` (907k lines of Rust,
+73 crates, 5,978 tests). The authority model, the layered crate map that
+`xtask deps check` enforces, and the deterministic simulated engine are the
+parts to keep; the risk is concentrated in `freemixd`. Ranked by risk removed
+per week of work; items 1 and 2 land before any new feature breadth.
+
+1. **Realize native frames on a dedicated media thread.** `sessions.rs`'s
+   pass loop polls every peer, device worker, and clock, then calls
+   `tick_if_due` on the same thread, with the control service held in an
+   `Rc<RefCell<_>>`. A slow peer write, a group commit's disk sync (noted
+   under Native group commit above), a thumbnail pass, or a TLS handshake
+   on that loop delays the next frame deadline, and product contract item 9
+   (audio continuity when a client disconnects) depends on the loop never
+   stalling. Split `NativeDaemon` into a realizer thread that owns the
+   pacer, GPU context, and audio mixer, fed by a bounded channel of
+   immutable per-frame plans (`NativeProjectPlan` already exists for this),
+   returning `FrameResult`s, meters, and status records. The control loop
+   stays the only thread that ticks `fm-control`. Start by measuring with
+   the existing `pacing_trace` so the win is shown, not assumed. The
+   spec's "dedicated media threads" decision then holds for compose,
+   readback, and mix, not only for decoders, cameras, and recorder pipes.
+2. **Break `freemixd` into library crates.** `apps/freemixd/src` is 157k
+   lines, `main.rs` 30k and `native_media.rs` 16k, with 1,178
+   `unwrap`/`expect`/`panic` sites in `main.rs` alone; any daemon change
+   rebuilds the whole daemon. Extract `fm-daemon-sessions` (pass loop,
+   peers, web gateway), `fm-daemon-native` (native runtime),
+   `fm-daemon-journal` (recovery and checkpoints), and an arguments crate,
+   as mechanical moves with no behaviour change, verified by the 43 daemon
+   test targets. Target: no file over 5k lines, `main.rs` under 1k.
+3. **Burn down panics on the frame path.** Add `clippy::unwrap_used` and
+   `expect_used` as warnings for `freemixd` only and convert the realizer's
+   sites first into typed errors routed through `output_failure`; a panic
+   on the pass loop ends the show.
+4. **Tier the CI matrix and cache builds.** CI runs the all-features
+   workspace tests on three OSes with no build cache, a toolchain pinned
+   only in the workflow, 51 process-spawning daemon tests, and 40 s
+   timeouts. Add a Rust build cache and a `rust-toolchain.toml`, run the
+   Linux workspace job per pull request and the macOS and Windows jobs on
+   merge or nightly, and label soak and process tests to run on a schedule.
+5. **Spike one zero-copy or hardware encode path.** Every native output is
+   composed on wgpu, read back to a `CpuVideoFrame`, and piped as rawvideo
+   to an FFmpeg child; there is no shared-texture encode and no hardware
+   encoder, so Phase 0 item 1 was never proved. Spike one platform
+   (VideoToolbox through `fm-io-macos`, or VA-API on Linux) and measure
+   1080p60 with two outputs before and after; the CPU path stays the
+   portable fallback.
+6. **Mark model-only crates and rows.** `fm-io-srt`, `fm-io-webrtc`,
+   `fm-browser-input`, `fm-guest`, `fm-social`, `fm-vmix-compat`, and
+   `fm-ptz` open no socket, embed no browser, and drive no device by their
+   own module docs. Add a `kind = "model" | "adapter"` field to each
+   `parity.toml` feature so the generated matrix and the site's features
+   page stop reading a `present` test as a usable feature.
+7. **Record the runtime decisions the spec still contradicts.** `docs/spec`
+   describes Tokio for the service runtime, a Rust/Wasm web client, an
+   `fm-ui-widgets` crate, and native `fm-gpu-dx12`/`metal`/`vulkan` crates;
+   the code is synchronous with std threads, the web surface is four served
+   HTML pages, and the only wgpu backend is the portable one. One pass over
+   `README.md`, `crates.md`, `architecture.md`, and
+   `server-client-protocol.md` records those as decisions.
+8. **Generate the hand-written codec pairs.** Each new field touches the
+   model, the protocol DTO, the persistence encoder and decoder, and their
+   tests. Keep the no-serde policy (it is paying off in build time and
+   dependency surface) and add an `xtask codegen` that emits the
+   persistence encoder/decoder pairs from the model, with the existing
+   tests as the oracle.
+
+Version compatibility (a migrating project schema and a protocol
+compatibility window) stays outside this development roadmap, as section 1
+states; Phase 9 item 8 is where it is decided before the first release.
 
 ## 1. Program expectations
 
@@ -5770,6 +5877,12 @@ Exit: each adapter ships only with a platform-specific conformance report.
 5. Exercise every universal acceptance scenario on each applicable Tier-1 OS.
 6. Run 72-hour release soak and disaster-recovery drills.
 7. External security, broadcast-operator, and hardware conformance review.
+8. Decide and implement the version compatibility policy section 1 defers:
+   a project schema the release reads from at least one schema back with a
+   `freemix-cli` upgrade command, a protocol window a released Studio and
+   daemon negotiate on `ServerHello`, and fixtures per released schema from
+   that release on. Until then every `.freemix` project and every client
+   is tied to one build.
 
 Current implementation boundary for item 2: `fm-vmix-compat` translates a
 bounded set of HTTP functions and now frames the persistent TCP API:
