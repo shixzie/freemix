@@ -1,0 +1,3 @@
+# Text files check out with LF everywhere: tests and embedded pages read
+# source files by their exact bytes, and a CRLF checkout changed them.
+* text=auto eol=lf

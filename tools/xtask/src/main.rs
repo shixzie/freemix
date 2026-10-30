@@ -754,10 +754,11 @@ fn validate_tests<'a>(
                 && !test.paths.iter().any(|path| root.join(path) == target)
             {
                 let relative = target.strip_prefix(root).unwrap_or(&target);
+                // The ledger writes paths with `/` on every platform.
+                let relative = relative.to_string_lossy().replace('\\', "/");
                 return Err(format!(
-                    "{} is verified but command `{command}` resolves to {}, which is not declared in its paths",
+                    "{} is verified but command `{command}` resolves to {relative}, which is not declared in its paths",
                     test.id,
-                    relative.display()
                 ));
             }
         }

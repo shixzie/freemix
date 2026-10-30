@@ -96,6 +96,12 @@ pub const REQUEST_DEADLINE: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Time allowed to send one response, head and body.
 const RESPONSE_DEADLINE: Duration = Duration::from_secs(15);
+/// How long a finished connection waits for the peer's own close after
+/// the response: a request refused without being read whole (`408`,
+/// `413`, `431`) leaves unread bytes, and closing over them resets the
+/// connection, which a Windows peer answers by discarding the response it
+/// had not yet read.
+const LINGER_DEADLINE: Duration = Duration::from_secs(1);
 const ACCEPT_POLL: Duration = Duration::from_millis(10);
 const COPY_CHUNK_BYTES: usize = 16 * 1024;
 const PLAYLIST_LEAF: &str = "index.m3u8";
@@ -619,7 +625,26 @@ fn serve_connection(mut stream: TcpStream, peer: IpAddr, shared: &Shared) {
             let _ = write_simple(&mut stream, status, "", deadline);
         }
     }
+    let _ = stream.shutdown(Shutdown::Write);
+    drain_until_closed(&mut stream, Instant::now() + LINGER_DEADLINE);
     let _ = stream.shutdown(Shutdown::Both);
+}
+
+/// Reads and discards whatever the peer still sends until it closes its
+/// side, gives up, or `deadline` passes, so the socket closes with no
+/// unread bytes (see [`LINGER_DEADLINE`]).
+fn drain_until_closed(stream: &mut TcpStream, deadline: Instant) {
+    let mut sink = [0_u8; 1024];
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() || stream.set_read_timeout(Some(remaining)).is_err() {
+            return;
+        }
+        match stream.read(&mut sink) {
+            Ok(0) | Err(_) => return,
+            Ok(_) => {}
+        }
+    }
 }
 
 /// Reads one bounded read before `deadline`: the request is refused with

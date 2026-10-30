@@ -328,9 +328,14 @@ mod tests {
             explicit.resolved_state_dir(|_| None).unwrap(),
             std::path::PathBuf::from("/srv/fm")
         );
-        let home = |name: &str| (name == "HOME").then(|| "/home/op".to_owned());
-        let resolved = WebSettings::default().resolved_state_dir(home).unwrap();
+        let (variable, base) = if cfg!(windows) {
+            ("LOCALAPPDATA", r"C:\Users\op\AppData\Local")
+        } else {
+            ("HOME", "/home/op")
+        };
+        let env = |name: &str| (name == variable).then(|| base.to_owned());
+        let resolved = WebSettings::default().resolved_state_dir(env).unwrap();
         assert!(resolved.ends_with("web"), "{}", resolved.display());
-        assert!(resolved.starts_with("/home/op"), "{}", resolved.display());
+        assert!(resolved.starts_with(base), "{}", resolved.display());
     }
 }
