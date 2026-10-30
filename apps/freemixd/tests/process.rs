@@ -1747,7 +1747,10 @@ fn next_event_payload(client: &mut Client) -> fm_protocol::EventPayload {
 }
 
 fn create_two_output_project(path: &Path) {
-    let mut project = canonical_project();
+    create_two_output_project_from(path, canonical_project());
+}
+
+fn create_two_output_project_from(path: &Path, mut project: Project) {
     project.add_output(Output {
         id: output_id(2),
         name: "Confidence output".into(),
@@ -2497,12 +2500,15 @@ fn display_output_slots_without_a_presenter_wait_and_survive_restart() {
 /// OR-011: Studio supervises its daemon with
 /// `--display-presenter-if-available`. Without a window system (or in a
 /// build without display surfaces) that daemon still serves, and its slots
-/// wait with `no-presenter` instead of the daemon failing to start.
+/// wait with `no-presenter` instead of the daemon failing to start. The
+/// presenter always runs native media, so the project's inputs are silent;
+/// on a machine whose window system does open the presenter (a logged-in
+/// macOS session) the fallback is not exercised and the test says so.
 #[test]
 fn a_daemon_whose_presenter_cannot_open_serves_with_slots_waiting() {
     let directory = TestDirectory::new("presenter-fallback");
     let project_path = directory.project_path();
-    create_two_output_project(&project_path);
+    create_two_output_project_from(&project_path, canonical_project_with_silent_inputs());
     let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_freemixd"))
         .arg("serve")
         .arg(&project_path)
@@ -2550,24 +2556,42 @@ fn a_daemon_whose_presenter_cannot_open_serves_with_slots_waiting() {
     let mut observer = daemon.connect();
     observer.handshake_as(Role::Viewer, None);
     let snapshot = observer.receive_snapshot();
+    let states = snapshot.display_output_states;
+    drop(observer);
+
+    let mut child = daemon.child.take().unwrap();
+    assert!(terminate_child(&mut child), "daemon did not stop");
+    let stderr = child_stderr(&mut child);
+    let presenter_unavailable =
+        stderr.contains("FREEMIXD_DISPLAY_PRESENTER\tv=1\tstate=unavailable\terror=");
+    if cfg!(feature = "display-surface") && !presenter_unavailable {
+        assert!(
+            states.iter().all(|status| {
+                status.slot == one
+                    && !matches!(
+                        status.state,
+                        fm_protocol::WireDisplayOutputState::Waiting(
+                            fm_protocol::WaitReason::NoPresenter
+                        )
+                    )
+            }),
+            "a daemon with a presenter never waits for one: {states:?}"
+        );
+        eprintln!("presenter fallback skipped: the presenter opened on this window system");
+        return;
+    }
+    assert!(
+        !presenter_unavailable || cfg!(feature = "display-surface"),
+        "{stderr}"
+    );
     assert_eq!(
-        snapshot.display_output_states,
+        states,
         vec![fm_protocol::DisplayOutputStatus {
             slot: one,
             state: fm_protocol::WireDisplayOutputState::Waiting(
                 fm_protocol::WaitReason::NoPresenter
             ),
         }]
-    );
-    drop(observer);
-
-    let mut child = daemon.child.take().unwrap();
-    assert!(terminate_child(&mut child), "daemon did not stop");
-    let stderr = child_stderr(&mut child);
-    assert_eq!(
-        stderr.contains("FREEMIXD_DISPLAY_PRESENTER\tv=1\tstate=unavailable\terror="),
-        cfg!(feature = "display-surface"),
-        "{stderr}"
     );
 }
 
@@ -5545,6 +5569,23 @@ fn canonical_project() -> Project {
 }
 
 fn canonical_project_at(width: u32, height: u32) -> Project {
+    canonical_project_with_audio(width, height, false)
+}
+
+/// The canonical project with every simulated input silent, which is what
+/// a native daemon accepts (native mode has no simulated sine audio).
+fn canonical_project_with_silent_inputs() -> Project {
+    canonical_project_with_audio(1_280, 720, true)
+}
+
+fn canonical_project_with_audio(width: u32, height: u32, silent: bool) -> Project {
+    let sine = |frequency_hz| {
+        if silent {
+            SimulatedAudio::Silence
+        } else {
+            SimulatedAudio::Sine { frequency_hz }
+        }
+    };
     let frame_rate = FrameRate::new(25, 1).unwrap();
     let mut project = Project::new(
         project_id(),
@@ -5573,12 +5614,12 @@ fn canonical_project_at(width: u32, height: u32) -> Project {
     for (index, input) in [
         SimulatedInput::new(
             SimulatedVideo::Solid(SolidColor::new(12, 34, 56, 255)),
-            SimulatedAudio::Sine { frequency_hz: 997 },
+            sine(997),
         ),
         SimulatedInput::new(SimulatedVideo::Bars, SimulatedAudio::Silence),
         SimulatedInput::new(
             SimulatedVideo::Solid(SolidColor::new(210, 90, 30, 255)),
-            SimulatedAudio::Sine { frequency_hz: 440 },
+            sine(440),
         ),
     ]
     .into_iter()
