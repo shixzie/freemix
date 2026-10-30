@@ -415,12 +415,21 @@ fn receive(socket: &mut Browser) -> WireMessage {
     }
 }
 
-/// The next durable event, skipping the runtime realizations around it.
+/// The next durable event, skipping the runtime realizations and lossy
+/// telemetry around it.
 fn next_event(socket: &mut Browser) -> EventMessage {
     loop {
         match receive(socket) {
             WireMessage::Event(event) => return event,
-            WireMessage::RuntimeEvent(_) => {}
+            WireMessage::RuntimeEvent(_)
+            | WireMessage::HealthStatus(_)
+            | WireMessage::AudioMeters(_)
+            | WireMessage::MonitorFrame(_)
+            | WireMessage::TitlePhases(_)
+            | WireMessage::RecorderStatus(_)
+            | WireMessage::SourceSyncStatus(_)
+            | WireMessage::StreamStatus(_)
+            | WireMessage::ReplayStatus(_) => {}
             other => panic!("expected a durable event, got {other:?}"),
         }
     }
