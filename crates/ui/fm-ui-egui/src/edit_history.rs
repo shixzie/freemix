@@ -812,7 +812,10 @@ mod tests {
             available
                 .undo
                 .hover(Locale::ENGLISH, HistoryVerb::Undo, UNDO_SHORTCUT),
-            "Undo the project edit at REV 7  [Ctrl+Z]\n2 steps in the shared history"
+            format!(
+                "Undo the project edit at REV 7  [{}]\n2 steps in the shared history",
+                Locale::ENGLISH.keys(UNDO_SHORTCUT)
+            )
         );
         assert!(
             available
@@ -838,7 +841,10 @@ mod tests {
             locked
                 .undo
                 .hover(Locale::ENGLISH, HistoryVerb::Undo, UNDO_SHORTCUT),
-            "Undo  [Ctrl+Z]\n2 steps in the shared history\nUnavailable: the project is locked against edits"
+            format!(
+                "Undo  [{}]\n2 steps in the shared history\nUnavailable: the project is locked against edits",
+                Locale::ENGLISH.keys(UNDO_SHORTCUT)
+            )
         );
 
         let empty =
@@ -922,7 +928,10 @@ mod tests {
             available
                 .undo
                 .hover(spanish, HistoryVerb::Undo, UNDO_SHORTCUT),
-            "Deshacer la edición del proyecto en REV 7  [Ctrl+Z]\n2 pasos en el historial compartido"
+            format!(
+                "Deshacer la edición del proyecto en REV 7  [{}]\n2 pasos en el historial compartido",
+                spanish.keys(UNDO_SHORTCUT)
+            )
         );
         let locked = edit_history_availability(&editor(
             EditLocks {

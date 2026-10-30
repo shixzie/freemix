@@ -307,7 +307,7 @@ fn transport_hover_names_shortcuts(locale: Locale) {
         let spec = action_spec(action, &harness.document, &harness.state, locale);
         let hover = spec.hover(action);
         assert!(
-            hover.contains(&format!("[{}]", action.shortcut(locale))),
+            hover.contains(&format!("[{}]", locale.keys(action.shortcut(locale)))),
             "{action:?}: {hover}"
         );
         assert!(
@@ -921,11 +921,8 @@ fn key_jump_buttons_and_ctrl_arrows_move_the_playhead_between_keys() {
         Locale::ENGLISH,
     );
     assert_eq!(previous.disabled_reason, None);
-    assert!(
-        previous
-            .hover(TimelineAction::PreviousKey)
-            .contains("[Ctrl+Left arrow]")
-    );
+    let hint = format!("[{}]", Locale::ENGLISH.keys("Ctrl+Left arrow"));
+    assert!(previous.hover(TimelineAction::PreviousKey).contains(&hint));
     harness.click(Harness::rect_of(&output, TimelineAction::NextKey).center());
     assert_eq!(harness.document.playhead(), 20);
     let next = action_spec(

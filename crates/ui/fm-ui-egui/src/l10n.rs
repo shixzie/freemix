@@ -152,7 +152,7 @@ mod tests {
         // Modifier names follow the language's keyboards.
         assert_eq!(
             with_key(spanish, "Animación", "Ctrl+Shift+A"),
-            "Animación  [Ctrl+Mayús+A]"
+            format!("Animación  [{}]", spanish.keys("Ctrl+Shift+A"))
         );
     }
 

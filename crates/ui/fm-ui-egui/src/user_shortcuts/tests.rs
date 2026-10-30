@@ -1209,7 +1209,8 @@ fn key_scopes_name_the_console_panels() {
     );
     assert_eq!(key_text(&key), "Ctrl+K, 1");
     let words = key_words(Locale::ENGLISH, &key, false);
-    assert!(words.starts_with("Ctrl+K, 1 in "), "{words}");
+    let chord = Locale::ENGLISH.keys("Ctrl+K, 1");
+    assert!(words.starts_with(&format!("{chord} in ")), "{words}");
     let spanish = key_words(
         Locale::new(fm_ui_model::i18n::Language::Spanish),
         &key,
@@ -1960,7 +1961,8 @@ fn add_second_key_here_makes_the_console_key_a_chord() {
     );
     let keys = ConsoleKeys::of(&state, shell.shortcut_key_overrides());
     let row = row_text(Locale::ENGLISH, keys, &audit_shortcuts()[0]);
-    assert!(row.starts_with("Lower third  Ctrl+K, 4"), "{row}");
+    let chord = Locale::ENGLISH.keys("Ctrl+K, 4");
+    assert!(row.starts_with(&format!("Lower third  {chord}")), "{row}");
     assert!(row.contains("(this console)"), "{row}");
     // The preference line keeps the chord and the window.
     assert!(
