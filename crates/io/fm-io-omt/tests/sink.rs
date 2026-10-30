@@ -1,5 +1,6 @@
 //! The `fm-io-api` OMT output sink: format, lifecycle, and conversion.
 
+use std::net::{Ipv4Addr, SocketAddr};
 use std::num::{NonZeroU128, NonZeroUsize};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -115,8 +116,10 @@ fn the_sink_publishes_video_and_audio_to_a_receiver() {
     let format = sink.format().clone();
     sink.open(options(format.clone())).unwrap();
     sink.start().unwrap();
-    let address = sink.local_addr().unwrap();
-    let mut receiver = Receiver::connect(address).unwrap();
+    // The sink listens on the wildcard address, which Windows refuses as a
+    // connection target; the receiver dials loopback on its port.
+    let port = sink.local_addr().unwrap().port();
+    let mut receiver = Receiver::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).unwrap();
     receiver.subscribe(true, true, false).unwrap();
     wait_for("the video subscription", || {
         sink.subscribers(FrameKind::Video) == 1
