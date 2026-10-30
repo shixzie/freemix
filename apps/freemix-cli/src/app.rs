@@ -14,9 +14,9 @@ use fm_command::{
     RejectedReceipt, Rejection, RejectionCode, Revision, RuntimeGeneration, StateEpoch,
 };
 use fm_engine::{
-    Engine, EngineAcceptance, EngineCommand, EngineFadeToBlackState, EngineInputAudioStripState,
-    EngineManualTransitionKind, EngineManualTransitionPosition, EngineRestoreState,
-    EngineStreamControl, ShowState,
+    Engine, EngineAcceptance, EngineAudioMixerEdit, EngineCommand, EngineFadeToBlackState,
+    EngineInputAudioStripState, EngineManualTransitionKind, EngineManualTransitionPosition,
+    EngineRestoreState, EngineStreamControl, ShowState,
 };
 use fm_model::{
     AudioBus, CropRect, Input, InputAudioStripState, InputBalanceBasisPoints, InputDelaySamples,
@@ -53,8 +53,8 @@ use crate::{
     args::{
         AudioMixerArgs, Command, ManualTransitionKind, OverlayBorder as CliOverlayBorder,
         OverlayPosition as CliOverlayPosition, OverlayTransition as CliOverlayTransition,
-        StingerAudioPolicy as CliStingerAudioPolicy, StingerFallback as CliStingerFallback,
-        StreamSpec, TBarAction,
+        PluginChainTarget, StingerAudioPolicy as CliStingerAudioPolicy,
+        StingerFallback as CliStingerFallback, StreamSpec, TBarAction,
     },
     project_bundle, remote, scene_animation, title_animation,
 };
@@ -909,6 +909,29 @@ pub fn run(command: Command) -> AppResult<()> {
             None,
             None,
         )?,
+        Command::AudioPluginChain {
+            path,
+            target,
+            slots,
+        } => {
+            let chain = local_plugin_chain(&slots)?;
+            let target = match target {
+                PluginChainTarget::Master => fm_types::strip_dsp::StripDspTarget::Master,
+                PluginChainTarget::Input(input) => {
+                    fm_types::strip_dsp::StripDspTarget::Input(input_id(input)?)
+                }
+            };
+            mutate(
+                &path,
+                EngineCommand::AudioMixer(EngineAudioMixerEdit::SetPluginChain {
+                    target,
+                    chain: Box::new(chain),
+                }),
+                1,
+                None,
+                None,
+            )?;
+        }
         Command::Rename {
             path,
             input,
@@ -4903,6 +4926,86 @@ fn document_page_count(store: &ProjectStore, asset_uri: &str) -> Option<u32> {
         .map(|info| info.page_count)
 }
 
+/// The persisted form of the engine's plugin chain (AU-006, schema 91).
+fn model_plugin_chain(
+    chain: &fm_plugin_host_api::PluginChain,
+) -> AppResult<fm_types::audio_plugins::PluginChainState> {
+    let mut state = fm_types::audio_plugins::PluginChainState::new();
+    for slot in chain.slots() {
+        let mut model = fm_types::audio_plugins::PluginSlotState::new(slot.plugin().as_str());
+        model.set_bypassed(slot.is_bypassed());
+        model
+            .set_latency(slot.latency_frames())
+            .map_err(|error| AppFailure(format!("plugin chain: {error}")))?;
+        if let Some(snapshot) = slot.snapshot() {
+            model
+                .set_state(snapshot.data().to_vec())
+                .map_err(|error| AppFailure(format!("plugin chain: {error}")))?;
+        }
+        state
+            .push(model)
+            .map_err(|error| AppFailure(format!("plugin chain: {error}")))?;
+    }
+    Ok(state)
+}
+
+/// The engine plugin chain for a persisted one (AU-006, schema 91).
+fn engine_plugin_chain(
+    state: &fm_types::audio_plugins::PluginChainState,
+) -> AppResult<fm_plugin_host_api::PluginChain> {
+    let limits = fm_plugin_host_api::ProtocolLimits::default();
+    let mut chain = fm_plugin_host_api::PluginChain::new();
+    for slot in state.slots() {
+        let plugin = fm_plugin_host_api::PluginId::new(slot.plugin());
+        let mut engine_slot = fm_plugin_host_api::PluginSlot::new(plugin.clone());
+        engine_slot.set_bypassed(slot.is_bypassed());
+        engine_slot
+            .set_latency(slot.latency_frames())
+            .map_err(|error| {
+                AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin()))
+            })?;
+        if !slot.state().is_empty() {
+            let snapshot = fm_plugin_host_api::StateSnapshot::new(
+                plugin,
+                fm_plugin_host_api::StateVersion::new(0),
+                slot.state().to_vec(),
+                &limits,
+            )
+            .map_err(|error| {
+                AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin()))
+            })?;
+            engine_slot.store_snapshot(snapshot).map_err(|error| {
+                AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin()))
+            })?;
+        }
+        chain.push(engine_slot).map_err(|error| {
+            AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin()))
+        })?;
+    }
+    Ok(chain)
+}
+
+/// The engine plugin chain for typed CLI slots (AU-006).
+fn local_plugin_chain(
+    slots: &[fm_protocol::PluginChainSlot],
+) -> AppResult<fm_plugin_host_api::PluginChain> {
+    let mut state = fm_types::audio_plugins::PluginChainState::new();
+    for slot in slots {
+        let mut model = fm_types::audio_plugins::PluginSlotState::new(slot.plugin.as_str());
+        model.set_bypassed(slot.bypassed);
+        model.set_latency(slot.latency_frames).map_err(|error| {
+            AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin))
+        })?;
+        model.set_state(slot.state.clone()).map_err(|error| {
+            AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin))
+        })?;
+        state.push(model).map_err(|error| {
+            AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin))
+        })?;
+    }
+    engine_plugin_chain(&state)
+}
+
 fn engine_audio_strip_state(
     gain_millidb: i32,
     balance_basis_points: i32,
@@ -5200,8 +5303,10 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppRes
         show.set_input_audio_label(strip.input, strip.label.clone())?;
         show.set_input_audio_group(strip.input, strip.group)?;
         show.set_input_audio_dsp(strip.input, strip.dsp)?;
+        show.set_input_audio_plugins(strip.input, engine_plugin_chain(&strip.plugins)?);
     }
     show.set_master_audio_dsp(*project.master_audio_dsp());
+    show.set_master_audio_plugins(engine_plugin_chain(project.master_audio_plugins())?);
     for (group, value) in project.audio_groups().iter() {
         show.set_audio_group(
             group,
@@ -5321,10 +5426,16 @@ fn sync_audio_mixer(project: &mut Project, show: &ShowState) -> AppResult<()> {
         project
             .set_input_audio_dsp(input, show.input_audio_dsp(input))
             .map_err(|error| AppFailure(format!("input {input} strip DSP: {error}")))?;
+        project
+            .set_input_audio_plugins(input, model_plugin_chain(show.input_audio_plugins(input))?)
+            .map_err(|error| AppFailure(format!("input {input} plugin chain: {error}")))?;
     }
     project
         .set_master_audio_dsp(*show.master_audio_dsp())
         .map_err(|error| AppFailure(format!("Master DSP: {error}")))?;
+    project
+        .set_master_audio_plugins(model_plugin_chain(show.master_audio_plugins())?)
+        .map_err(|error| AppFailure(format!("Master plugin chain: {error}")))?;
     // Parents are cleared first so an old parent never closes a transient
     // cycle with a new one.
     for nested in [false, true] {
@@ -6649,6 +6760,7 @@ Usage:
   freemix-cli audio-monitor-device <show.freemix> <alsa-device|none> [--key <key>] [--expect <revision>]
   freemix-cli audio-monitor-level <show.freemix> <gain-millidb> <muted:on|off> [--key <key>] [--expect <revision>]
   freemix-cli audio-strip-dsp <show.freemix> <input|master> <flat|voice|podcast|music|master|chain-code> [--key <key>] [--expect <revision>]
+  freemix-cli audio-plugin-chain <show.freemix> <input|master> [<plugin>[:<bypass 0|1>][:<latency>[:<state-hex>]] ...]
   freemix-cli audio-loudness-reset <show.freemix> <input|master> [--key <key>] [--expect <revision>]
   freemix-cli rename <show.freemix> <input> <name> [--key <key>] [--expect <revision>]
   freemix-cli input-reorder <show.freemix> <input> [<input>...] [--key <key>] [--expect <revision>]

@@ -16991,3 +16991,80 @@ fn remote_scene_layer_auto_key_is_one_live_key_edit() {
     );
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn local_plugin_chain_persists_for_a_strip_and_master() {
+    let context = ContractContext::new();
+    assert_success(&invoke(&["new", context.project_path()]));
+    let input = InputId::new(NonZeroU128::new(2).unwrap());
+    assert_success(&invoke(&[
+        "audio-plugin-chain",
+        context.project_path(),
+        "2",
+        "freemix.reference.trim:1:7:20d1ffff",
+        "freemix.reference.polarity",
+    ]));
+    let store = ProjectStore::new(&context.project).unwrap();
+    let stored = store.load().unwrap();
+    let chain = stored.project().input_audio_plugins(input).unwrap();
+    assert_eq!(chain.len(), 2);
+    assert_eq!(chain.slots()[0].plugin(), "freemix.reference.trim");
+    assert!(chain.slots()[0].is_bypassed());
+    assert_eq!(chain.slots()[0].latency_frames(), 7);
+    assert_eq!(chain.slots()[0].state(), [0x20, 0xd1, 0xff, 0xff]);
+    assert_eq!(chain.slots()[1].plugin(), "freemix.reference.polarity");
+
+    assert_success(&invoke(&[
+        "audio-plugin-chain",
+        context.project_path(),
+        "master",
+        "freemix.reference.softclip",
+    ]));
+    let stored = store.load().unwrap();
+    let master = stored.project().master_audio_plugins();
+    assert_eq!(master.len(), 1);
+    assert_eq!(master.slots()[0].plugin(), "freemix.reference.softclip");
+
+    let text = fs::read_to_string(context.project.join("project.json")).unwrap();
+    assert!(
+        text.contains("\"plugins\": [{\"plugin\": \"freemix.reference.trim\""),
+        "{text}"
+    );
+    assert!(
+        text.contains("\"master_audio_plugins\": [{\"plugin\": \"freemix.reference.softclip\""),
+        "{text}"
+    );
+    assert!(text.contains("\"schema_version\": 91"), "{text}");
+
+    // No slots clears the chain; an unknown input changes nothing.
+    assert_success(&invoke(&[
+        "audio-plugin-chain",
+        context.project_path(),
+        "2",
+    ]));
+    let stored = store.load().unwrap();
+    assert!(
+        stored
+            .project()
+            .input_audio_plugins(input)
+            .unwrap()
+            .is_empty()
+    );
+    let failed = invoke(&[
+        "audio-plugin-chain",
+        context.project_path(),
+        "99",
+        "freemix.reference.trim",
+    ]);
+    assert_failure_contains(&failed, "input 99 is not part of this show");
+    // The refusal changes no chain; the rejected receipt is still journaled.
+    let stored = store.load().unwrap();
+    assert!(
+        stored
+            .project()
+            .input_audio_plugins(input)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(stored.project().master_audio_plugins(), master);
+}

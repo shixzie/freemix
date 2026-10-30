@@ -204,8 +204,9 @@ there come before any new breadth below.
 14. **Audio plugin chains (`AU-006`).** `fm-plugin-host-api` models an
     ordered chain of up to eight bypassable, latency-reporting plugins, the
     native daemon renders the `freemix.reference.*` processors on input
-    strips and Master (Protocol 2.128), the CLI sends a chain, and Studio's
-    FX window reads and edits it (Protocol 2.129). A chain is now a
+    strips and Master (Protocol 2.128), the CLI sends a chain and edits a
+    project's persisted chain offline, and Studio's FX window reads and
+    edits it (Protocol 2.129). A chain is now a
     padlocked, undoable project edit persisted at schema 91 for every strip
     and Master, so it survives a save, a restart, and a journal replay.
     Remaining: scanning, parameters beyond the reference trim, crash
@@ -5867,9 +5868,10 @@ versioned ABI, capability grants, state snapshots, quarantine); the host API
 now also models an ordered plugin chain (up to eight unique plugins, bypass,
 per-slot latency and its effective sum, per-plugin state snapshots), and the
 native daemon renders a chain's `freemix.reference.*` processors on input
-strips and the summed Master bus (Protocol 2.128), the CLI sends a chain,
-and Studio's FX window reads the open target's chain (Protocol 2.129) and
-edits its PLUGINS section. Chains are padlocked, undoable project edits
+strips and the summed Master bus (Protocol 2.128), the CLI sends a chain or
+edits a project's chain offline (`audio-plugin-chain <project>
+<input|master> ...`), and Studio's FX window reads the open target's chain
+(Protocol 2.129) and edits its PLUGINS section. Chains are padlocked, undoable project edits
 persisted at schema 91 on every strip and on Master, so a show carries them
 through a save, a restart, and a journal replay. There is no VST3 host; scanning, parameters for
 plugins beyond the reference trim, crash quarantine in the render

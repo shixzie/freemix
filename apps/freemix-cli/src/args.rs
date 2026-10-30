@@ -909,6 +909,13 @@ pub enum Command {
         delay_samples: u32,
         buses: fm_model::AudioBusMask,
     },
+    /// Replaces a strip's or the Master bus's persisted plugin chain
+    /// (AU-006, schema 91); no slots clears it.
+    AudioPluginChain {
+        path: PathBuf,
+        target: PluginChainTarget,
+        slots: Vec<fm_protocol::PluginChainSlot>,
+    },
     Rename {
         path: PathBuf,
         input: u128,
@@ -2204,6 +2211,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "remote-scene-layer-auto-key" => parse_remote_scene_layer_auto_key(arguments),
         "remote-replay-multiview" => parse_remote_replay_multiview(arguments),
         "remote-audio-plugin-chain" => parse_remote_audio_plugin_chain(arguments),
+        "audio-plugin-chain" => parse_audio_plugin_chain(arguments),
         "remote-scene-layer-effects" => parse_remote_scene_layer_effects(arguments),
         "input-remove" => parse_input_remove(arguments),
         "input-duplicate" => parse_input_duplicate(arguments),
@@ -5338,6 +5346,32 @@ fn parse_scene_layer_auto_key(
     })
 }
 
+/// A persisted plugin chain's target (AU-006): Master or one input.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PluginChainTarget {
+    Master,
+    Input(u128),
+}
+
+/// `audio-plugin-chain <project.freemix> <input|master> [<plugin>[:<bypass
+/// 0|1>][:<latency>[:<state-hex>]] ...]` (AU-006, schema 91): replaces one
+/// strip's or the Master bus's persisted chain; no slots clears it.
+fn parse_audio_plugin_chain(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let target = match required(&mut arguments, "target")?.as_str() {
+        "master" => PluginChainTarget::Master,
+        value => PluginChainTarget::Input(number(value, "input")?),
+    };
+    let slots = plugin_slots(arguments)?;
+    Ok(Command::AudioPluginChain {
+        path,
+        target,
+        slots,
+    })
+}
+
 /// `remote-audio-plugin-chain <address> <input> [<plugin>[:<bypass 0|1>]
 /// [:<latency>[:<state-hex>]] ...]` (AU-006): replaces one strip's ordered
 /// plugin chain; no slots clears it. `state-hex` is the slot's opaque state.
@@ -5346,6 +5380,18 @@ fn parse_remote_audio_plugin_chain(
 ) -> Result<Command, ArgsError> {
     let address = socket_address(&required(&mut arguments, "address")?)?;
     let input = replay_input(&required(&mut arguments, "input")?)?;
+    let slots = plugin_slots(arguments)?;
+    Ok(Command::RemoteAudioPluginChain {
+        address,
+        input,
+        slots,
+    })
+}
+
+/// The shared `[<plugin>[:<bypass>][:<latency>[:<state-hex>]] ...]` slots.
+fn plugin_slots(
+    arguments: impl Iterator<Item = String>,
+) -> Result<Vec<fm_protocol::PluginChainSlot>, ArgsError> {
     let mut slots = Vec::new();
     let mut plugins = std::collections::BTreeSet::new();
     for entry in arguments {
@@ -5409,11 +5455,7 @@ fn parse_remote_audio_plugin_chain(
             value: format!("{} slots", slots.len()),
         });
     }
-    Ok(Command::RemoteAudioPluginChain {
-        address,
-        input,
-        slots,
-    })
+    Ok(slots)
 }
 
 /// `state-hex`: an even number of hexadecimal digits.
@@ -11717,6 +11759,59 @@ mod tests {
         }
         let too_late = format!("freemix.reference.trim:0:{}", MAX_PLUGIN_LATENCY_FRAMES + 1);
         assert!(parse_chain(&[&too_late]).is_err());
+    }
+
+    /// AU-006 / schema 91: the local chain edit targets one input or Master
+    /// and shares the remote command's slot grammar.
+    #[test]
+    fn audio_plugin_chain_local_commands_parse_into_typed_slots() {
+        fn parse_local(words: &[&str]) -> Result<Command, super::ArgsError> {
+            super::parse(
+                words
+                    .iter()
+                    .map(|word| (*word).to_owned())
+                    .collect::<Vec<_>>(),
+            )
+        }
+        assert_eq!(
+            parse_local(&[
+                "audio-plugin-chain",
+                "show.freemix",
+                "master",
+                "freemix.reference.trim:1:7:20d1",
+            ]),
+            Ok(Command::AudioPluginChain {
+                path: "show.freemix".into(),
+                target: super::PluginChainTarget::Master,
+                slots: vec![fm_protocol::PluginChainSlot {
+                    plugin: "freemix.reference.trim".to_owned(),
+                    bypassed: true,
+                    latency_frames: 7,
+                    state: vec![0x20, 0xd1],
+                }],
+            })
+        );
+        assert_eq!(
+            parse_local(&["audio-plugin-chain", "show.freemix", "11"]),
+            Ok(Command::AudioPluginChain {
+                path: "show.freemix".into(),
+                target: super::PluginChainTarget::Input(11),
+                slots: Vec::new(),
+            })
+        );
+        for words in [
+            &["audio-plugin-chain", "show.freemix"][..],
+            &["audio-plugin-chain", "show.freemix", "zero"][..],
+            &["audio-plugin-chain", "show.freemix", "11", "bad/id"][..],
+            &[
+                "audio-plugin-chain",
+                "show.freemix",
+                "11",
+                "freemix.reference.trim:2",
+            ][..],
+        ] {
+            assert!(parse_local(words).is_err(), "{words:?}");
+        }
     }
 
     /// OR-012: replay settings edits and live replay operations parse

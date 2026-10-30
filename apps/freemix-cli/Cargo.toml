@@ -16,6 +16,7 @@ fm-engine = { path = "../../crates/services/fm-engine" }
 fm-grade = { path = "../../crates/foundation/fm-grade" }
 fm-model = { path = "../../crates/foundation/fm-model" }
 fm-persistence = { path = "../../crates/services/fm-persistence" }
+fm-plugin-host-api = { path = "../../crates/features/fm-plugin-host-api" }
 fm-preset-file = { path = "../../crates/foundation/fm-preset-file" }
 fm-presentations = { path = "../../crates/features/fm-presentations" }
 fm-protocol = { path = "../../crates/foundation/fm-protocol" }
