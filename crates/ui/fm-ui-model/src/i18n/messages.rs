@@ -3887,6 +3887,7 @@ messages! {
     ReelExports => t("Export jobs"),
     ReelNoExports => t("No export jobs"),
     ReelExportJob => t("Job {job}"),
+    ReelStateDeferred => t("WAITING FOR MEDIA"),
     ReelStateQueued => t("IN QUEUE"),
     ReelStateRunning => t("RUNNING"),
     ReelStateFinalizing => t("FINALIZING"),

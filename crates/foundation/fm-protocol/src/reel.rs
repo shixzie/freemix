@@ -112,6 +112,9 @@ impl ReelOperation {
 /// One export job's state.
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum ReelExportState {
+    /// Accepted, waiting for the recorder to close a segment its clips read
+    /// (2.123).
+    Deferred,
     /// Accepted, waiting for the renderer.
     #[default]
     Queued,
@@ -129,7 +132,8 @@ pub enum ReelExportState {
 
 impl ReelExportState {
     /// Every state token.
-    pub const TOKENS: [&'static str; 6] = [
+    pub const TOKENS: [&'static str; 7] = [
+        "deferred",
         "queued",
         "running",
         "finalizing",
@@ -142,6 +146,7 @@ impl ReelExportState {
     #[must_use]
     pub const fn token(self) -> &'static str {
         match self {
+            Self::Deferred => "deferred",
             Self::Queued => "queued",
             Self::Running => "running",
             Self::Finalizing => "finalizing",
@@ -155,6 +160,7 @@ impl ReelExportState {
     #[must_use]
     pub fn from_token(token: &str) -> Option<Self> {
         [
+            Self::Deferred,
             Self::Queued,
             Self::Running,
             Self::Finalizing,

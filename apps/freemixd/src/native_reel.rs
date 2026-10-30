@@ -248,7 +248,8 @@ impl NativeReel {
                 }
                 EngineReelExportState::Completed
                 | EngineReelExportState::Failed
-                | EngineReelExportState::Cancelled => {
+                | EngineReelExportState::Cancelled
+                | EngineReelExportState::Deferred => {
                     // Cancelled, failed, or finished elsewhere: drop the
                     // queue; the worker cancels its recorder and removes the
                     // part file.
@@ -260,12 +261,7 @@ impl NativeReel {
         let status = self
             .exports
             .iter()
-            .find(|export| {
-                matches!(
-                    export.state,
-                    EngineReelExportState::Queued | EngineReelExportState::Running
-                )
-            })
+            .find(|export| worker_state(export.state))
             .cloned();
         if let Some(status) = status {
             self.start(host, &status);
@@ -337,6 +333,16 @@ impl Drop for NativeReel {
             active.cancel();
         }
     }
+}
+
+/// Whether an export in `state` has finalized media and needs a worker. A
+/// deferred export (Protocol 2.123) waits for the recorder, so the daemon
+/// must not create its part file or resolve frames yet.
+const fn worker_state(state: EngineReelExportState) -> bool {
+    matches!(
+        state,
+        EngineReelExportState::Queued | EngineReelExportState::Running
+    )
 }
 
 /// The bytes an export of `frames` output frames at `format` is budgeted:
@@ -981,8 +987,9 @@ mod tests {
     use fm_frame::ClockDomainId;
     use fm_types::FrameRate;
 
-    use super::{FRAME_OVERHEAD_BYTES, ReplayFormat, export_budget, room_for};
+    use super::{FRAME_OVERHEAD_BYTES, ReplayFormat, export_budget, room_for, worker_state};
     use crate::disk::RECORDING_MINIMUM_FREE_BYTES;
+    use fm_engine::EngineReelExportState;
 
     fn format(width: u32, height: u32) -> ReplayFormat {
         ReplayFormat {
@@ -991,6 +998,17 @@ mod tests {
             rate: FrameRate::new(25, 1).unwrap(),
             clock_domain: ClockDomainId::new(NonZeroU128::MIN),
         }
+    }
+
+    /// Protocol 2.123: a deferred export waits for its media and gets no
+    /// worker or part file until the engine reports it queued.
+    #[test]
+    fn only_a_finalized_export_starts_a_worker() {
+        assert!(!worker_state(EngineReelExportState::Deferred));
+        assert!(worker_state(EngineReelExportState::Queued));
+        assert!(worker_state(EngineReelExportState::Running));
+        assert!(!worker_state(EngineReelExportState::Finalizing));
+        assert!(!worker_state(EngineReelExportState::Completed));
     }
 
     /// OR-013: an export's budget grows with its frames and picture size

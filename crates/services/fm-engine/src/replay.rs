@@ -422,19 +422,6 @@ impl ReelMedia<'_> {
         Some((path, first_stream_frame))
     }
 
-    /// Whether every angle of `event` is covered by closed segments.
-    pub(crate) fn event_complete(&self, event: &ReplayEvent) -> bool {
-        event.angles.iter().all(|angle| {
-            let coverage = self.catalog.coverage(*angle, event.timeline);
-            coverage.is_complete()
-                && coverage.segments.iter().all(|segment| {
-                    self.catalog
-                        .segment(*segment)
-                        .is_some_and(|segment| segment.state == SegmentState::Closed)
-                })
-        })
-    }
-
     /// Mirrors [`RecordExportQueue::submit`]'s media checks without taking
     /// the job: every clip is covered gap-free by finalized segments, its
     /// lead frame resolves, and it reads at most
@@ -513,6 +500,7 @@ enum ReelExportOutcome {
 struct ReelExportMeta {
     reel: u64,
     destination: String,
+    total_frames: u64,
     music: Option<fm_types::reel::ReelMusic>,
     outcome: Option<ReelExportOutcome>,
 }
@@ -539,6 +527,9 @@ pub(crate) struct ReplayRuntime {
     exports: RecordExportQueue,
     /// Every accepted export's reel, destination, and reported outcome.
     export_meta: BTreeMap<u64, ReelExportMeta>,
+    /// Exports whose media is not finalized yet: their segments are still
+    /// open, so they wait for the recorder to close them (OR-013).
+    deferred_exports: BTreeMap<u64, ReelExportPlan>,
     /// Bumped whenever anything clients see changes.
     generation: u64,
 }
@@ -594,6 +585,7 @@ impl ReplayRuntime {
             pruned: Vec::new(),
             exports: RecordExportQueue::default(),
             export_meta: BTreeMap::new(),
+            deferred_exports: BTreeMap::new(),
             generation: 0,
         };
         runtime.restart(ReplaySettings::default());
@@ -719,6 +711,15 @@ impl ReplayRuntime {
         });
         self.mark_in = None;
         self.mark_out = None;
+        for (job, _) in std::mem::take(&mut self.deferred_exports) {
+            if let Some(meta) = self.export_meta.get_mut(&job)
+                && meta.outcome.is_none()
+            {
+                meta.outcome = Some(ReelExportOutcome::Failed {
+                    reason: "the replay recording restarted".to_owned(),
+                });
+            }
+        }
         for player in self.players.values_mut() {
             *player = Player {
                 speed: player.speed,
@@ -993,6 +994,11 @@ impl ReplayRuntime {
             .filter(|job| self.export_active(**job))
             .filter_map(|job| self.exports.job(crate::reel::export_id(*job)))
             .flat_map(|job| job.reel().clips())
+            .chain(
+                self.deferred_exports
+                    .values()
+                    .flat_map(|plan| plan.compiled.clips()),
+            )
             .map(|clip| frame_of(self.frame_rate, clip.source.start))
             .min()
             .unwrap_or(u64::MAX);
@@ -1279,6 +1285,7 @@ impl ReplayRuntime {
             self.record_synthetic(frame);
         }
         self.retain(frame);
+        self.start_deferred_exports();
         let inputs: BTreeSet<InputId> = show.replay_inputs().collect();
         if self.players.keys().any(|input| !inputs.contains(input)) {
             self.players.retain(|input, _| inputs.contains(input));
@@ -1370,18 +1377,7 @@ impl ReplayRuntime {
         let spec = show.reel(reel).expect("the reel was checked");
         let compiled = crate::reel::compile(self, spec)
             .map_err(|error| crate::reel::plan_rejection(&error))?;
-        for clip in &spec.clips {
-            let complete = crate::reel::event_id(clip.event).is_some_and(|id| {
-                self.with_media(|media| {
-                    media
-                        .events
-                        .event(id)
-                        .is_some_and(|event| media.event_complete(event))
-                })
-            });
-            crate::reel::check_event_complete(clip.event, complete)?;
-        }
-        if self.exports.jobs().count() >= MAX_RECORD_EXPORT_JOBS {
+        if self.export_meta.len() >= MAX_RECORD_EXPORT_JOBS {
             return Err(Rejection::new(
                 RejectionCode::Conflict,
                 format!(
@@ -1395,8 +1391,12 @@ impl ReplayRuntime {
                 format!("the reel export queue holds at most {MAX_RECORD_EXPORT_JOBS} jobs"),
             )));
         }
-        self.with_media(|media| media.export_ready(&compiled))
-            .map_err(|error| crate::reel::export_rejection(&error))?;
+        match self.with_media(|media| media.export_ready(&compiled)) {
+            // Open segments close as the recording advances; the export
+            // starts then instead of being refused (OR-013).
+            Ok(()) | Err(RecordExportError::SegmentNotFinalized { .. }) => {}
+            Err(error) => return Err(crate::reel::export_rejection(&error)),
+        }
         Ok(ReelExportPlan {
             job,
             reel,
@@ -1410,31 +1410,74 @@ impl ReplayRuntime {
     /// retention. Returns whether it was queued; a plan accepted by
     /// [`Self::plan_export`] always is.
     pub(crate) fn submit_export(&mut self, plan: ReelExportPlan) -> bool {
-        let submitted = {
-            let Self { store, exports, .. } = self;
-            let store = Arc::make_mut(store);
-            exports
-                .submit(
-                    crate::reel::export_id(plan.job),
-                    &plan.compiled,
-                    &mut store.catalog,
-                    &store.timeline,
-                )
-                .is_ok()
-        };
-        if submitted {
-            self.export_meta.insert(
-                plan.job,
-                ReelExportMeta {
-                    reel: plan.reel,
-                    destination: plan.destination,
-                    music: plan.music,
-                    outcome: None,
-                },
-            );
-            self.touch();
+        let submitted = self.try_submit_export(&plan);
+        if submitted.is_none() {
+            return false;
         }
-        submitted
+        self.export_meta.insert(
+            plan.job,
+            ReelExportMeta {
+                reel: plan.reel,
+                destination: plan.destination.clone(),
+                total_frames: plan.compiled.total_frames(),
+                music: plan.music.clone(),
+                outcome: None,
+            },
+        );
+        if submitted == Some(false) {
+            self.deferred_exports.insert(plan.job, plan);
+        }
+        self.touch();
+        true
+    }
+
+    /// Submits `plan` to the export queue: `Some(true)` when queued,
+    /// `Some(false)` while its media is still open, and `None` when the
+    /// queue refused it for another reason.
+    fn try_submit_export(&mut self, plan: &ReelExportPlan) -> Option<bool> {
+        let Self { store, exports, .. } = self;
+        let store = Arc::make_mut(store);
+        match exports.submit(
+            crate::reel::export_id(plan.job),
+            &plan.compiled,
+            &mut store.catalog,
+            &store.timeline,
+        ) {
+            Ok(_) => Some(true),
+            Err(RecordExportError::SegmentNotFinalized { .. }) => Some(false),
+            Err(_) => None,
+        }
+    }
+
+    /// Starts every deferred export whose media is now finalized. A plan
+    /// whose media was pruned or otherwise became unusable fails its job.
+    fn start_deferred_exports(&mut self) {
+        if self.deferred_exports.is_empty() {
+            return;
+        }
+        let jobs: Vec<u64> = self.deferred_exports.keys().copied().collect();
+        for job in jobs {
+            let Some(plan) = self.deferred_exports.get(&job).cloned() else {
+                continue;
+            };
+            match self.try_submit_export(&plan) {
+                Some(true) => {
+                    self.deferred_exports.remove(&job);
+                    self.touch();
+                }
+                Some(false) => {}
+                None => {
+                    self.deferred_exports.remove(&job);
+                    if let Some(meta) = self.export_meta.get_mut(&job)
+                        && meta.outcome.is_none()
+                    {
+                        meta.outcome = Some(ReelExportOutcome::Failed {
+                            reason: "export media became unavailable".to_owned(),
+                        });
+                    }
+                }
+            }
+        }
     }
 
     /// Resolves up to `max_frames` further output frames of export `job`.
@@ -1447,7 +1490,7 @@ impl ReplayRuntime {
             .export_meta
             .get(&job)
             .ok_or(EngineReelError::UnknownExport(job))?;
-        if meta.outcome.is_some() {
+        if meta.outcome.is_some() || self.deferred_exports.contains_key(&job) {
             return Err(EngineReelError::ExportNotActive(job));
         }
         let chunk = {
@@ -1500,6 +1543,14 @@ impl ReplayRuntime {
         if meta.outcome.is_some() {
             return Err(EngineReelError::ExportNotActive(job));
         }
+        if self.deferred_exports.remove(&job).is_some() {
+            self.export_meta
+                .get_mut(&job)
+                .expect("the export was checked")
+                .outcome = Some(ReelExportOutcome::Failed { reason });
+            self.touch();
+            return Ok(());
+        }
         match self.export_state(job) {
             Some(RecordExportState::Queued | RecordExportState::Running) => {
                 let store = Arc::make_mut(&mut self.store);
@@ -1548,9 +1599,11 @@ impl ReplayRuntime {
             .export_meta
             .get(&job)
             .ok_or(EngineReelError::UnknownExport(job))?;
+        // A deferred export never entered the queue; once its outcome is
+        // recorded there is nothing left to forget there.
         let terminal = match self.export_state(job) {
-            Some(RecordExportState::Queued | RecordExportState::Running) | None => false,
-            Some(RecordExportState::Completed) => meta.outcome.is_some(),
+            None | Some(RecordExportState::Completed) => meta.outcome.is_some(),
+            Some(RecordExportState::Queued | RecordExportState::Running) => false,
             Some(RecordExportState::Failed(_) | RecordExportState::Cancelled) => true,
         };
         if terminal {
@@ -1570,6 +1623,13 @@ impl ReplayRuntime {
             .ok_or(EngineReelError::UnknownExport(job))?;
         if meta.outcome.is_some() {
             return Err(EngineReelError::ExportNotActive(job));
+        }
+        if self.deferred_exports.remove(&job).is_some() {
+            if let Some(meta) = self.export_meta.get_mut(&job) {
+                meta.outcome = Some(ReelExportOutcome::Cancelled);
+            }
+            self.touch();
+            return Ok(());
         }
         match self.export_state(job) {
             Some(RecordExportState::Queued | RecordExportState::Running) => {
@@ -1598,16 +1658,18 @@ impl ReplayRuntime {
             return Err(EngineReelError::UnknownExport(job));
         };
         let terminal = match self.export_state(job) {
-            Some(RecordExportState::Queued | RecordExportState::Running) | None => false,
-            Some(RecordExportState::Completed) => meta.outcome.is_some(),
+            None | Some(RecordExportState::Completed) => meta.outcome.is_some(),
+            Some(RecordExportState::Queued | RecordExportState::Running) => false,
             Some(RecordExportState::Failed(_) | RecordExportState::Cancelled) => true,
         };
         if !terminal {
             return Err(EngineReelError::ExportStillActive(job));
         }
-        self.exports
-            .forget(crate::reel::export_id(job))
-            .map_err(EngineReelError::Export)?;
+        if self.exports.job(crate::reel::export_id(job)).is_some() {
+            self.exports
+                .forget(crate::reel::export_id(job))
+                .map_err(EngineReelError::Export)?;
+        }
         self.export_meta.remove(&job);
         self.touch();
         Ok(())
@@ -1615,6 +1677,9 @@ impl ReplayRuntime {
 
     /// The planner's state of export `job`.
     fn export_state(&self, job: u64) -> Option<RecordExportState> {
+        if self.deferred_exports.contains_key(&job) {
+            return Some(RecordExportState::Queued);
+        }
         self.exports
             .job(crate::reel::export_id(job))
             .map(|job| job.state().clone())
@@ -1636,7 +1701,46 @@ impl ReplayRuntime {
 
     /// One export as clients see it.
     fn export_status(&self, job: u64, meta: &ReelExportMeta) -> Option<EngineReelExportStatus> {
-        let entry = self.exports.job(crate::reel::export_id(job))?;
+        if self.deferred_exports.contains_key(&job) {
+            return Some(EngineReelExportStatus {
+                job,
+                reel: meta.reel,
+                destination: meta.destination.clone(),
+                state: EngineReelExportState::Deferred,
+                completed_frames: 0,
+                total_frames: meta.total_frames,
+                bytes: None,
+                failure: None,
+                music: meta.music.clone(),
+            });
+        }
+        let Some(entry) = self.exports.job(crate::reel::export_id(job)) else {
+            // A deferred job that failed or was cancelled never entered the
+            // queue; its recorded outcome is all that is left to report.
+            let (state, bytes, failure) = match &meta.outcome {
+                Some(ReelExportOutcome::Finished { bytes }) => {
+                    (EngineReelExportState::Completed, Some(*bytes), None)
+                }
+                Some(ReelExportOutcome::Failed { reason }) => {
+                    (EngineReelExportState::Failed, None, Some(reason.clone()))
+                }
+                Some(ReelExportOutcome::Cancelled) => {
+                    (EngineReelExportState::Cancelled, None, None)
+                }
+                None => return None,
+            };
+            return Some(EngineReelExportStatus {
+                job,
+                reel: meta.reel,
+                destination: meta.destination.clone(),
+                state,
+                completed_frames: 0,
+                total_frames: meta.total_frames,
+                bytes,
+                failure,
+                music: meta.music.clone(),
+            });
+        };
         let progress = entry.progress();
         let (state, bytes, failure) = match &meta.outcome {
             Some(ReelExportOutcome::Finished { bytes }) => {

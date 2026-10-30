@@ -2746,6 +2746,16 @@ pub(crate) fn reel_status() -> fm_protocol::ReelStatusMessage {
         ],
         exports: vec![
             export_status(
+                7,
+                1,
+                "/srv/exports/goal-deferred.mp4",
+                ReelExportState::Deferred,
+                0,
+                Some(250),
+                None,
+                None,
+            ),
+            export_status(
                 1,
                 1,
                 "/srv/exports/goal-queued.mp4",
@@ -2945,7 +2955,8 @@ fn scenes(language: Language) -> Vec<Scene> {
         export_state.reel_exports.retain(|row| {
             !matches!(
                 row.state,
-                fm_protocol::ReelExportState::Queued
+                fm_protocol::ReelExportState::Deferred
+                    | fm_protocol::ReelExportState::Queued
                     | fm_protocol::ReelExportState::Running
                     | fm_protocol::ReelExportState::Finalizing
             )

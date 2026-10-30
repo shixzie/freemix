@@ -170,8 +170,10 @@ highest-value remaining items, ranked:
     real-time clip's recorded audio (crossfaded through a dissolve; slow
     motion is silent), with an optional music bed under it, ducked while
     clip audio plays and faded at the end (Protocol 2.113, schema 86).
-    Remaining: open-segment deferral is absent, and nothing is certified
-    (see the Phase 7 boundary).
+    Exports whose clips read a segment that is still open are queued and
+    start once the recorder closes it (Protocol 2.123), holding their media
+    against retention meanwhile; a recording restart fails them with a
+    reason. Remaining: nothing is certified (see the Phase 7 boundary).
 
 Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
 since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
@@ -5637,8 +5639,7 @@ with, and an unreadable bed fails it `music:open` (the native test mixes a
 mono 44.1 kHz bed under a real-time clip and a slow-motion one and hears it
 ducked, alone, and faded). Studio's reel editor sets the bed and its two
 levels, and `reel-set --music` does in the CLI. Remaining gaps: clips play
-forward only; exports needing an open segment are refused rather than
-deferred; and nothing is certified.
+forward only; and nothing is certified.
 `OR-013` remains planned.
 
 Current end-to-end slice for items 1, 3, and 4: the show persists replay

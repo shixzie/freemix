@@ -81,6 +81,9 @@ impl EngineReelOperation {
 /// The lifecycle of one reel export as clients see it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EngineReelExportState {
+    /// Accepted, waiting for the recorder to close a segment its clips
+    /// read (Protocol 2.123).
+    Deferred,
     /// Accepted, not yet resolved.
     Queued,
     /// Frames are being resolved.
@@ -567,19 +570,5 @@ pub(crate) fn check_no_active_export(active: Option<u64>) -> Result<(), Rejectio
             format!("reel export job {active} is still active"),
         )),
         None => Ok(()),
-    }
-}
-
-/// The refusal of a reel clip naming an event that is not completely
-/// recorded.
-pub(crate) fn check_event_complete(event: u32, complete: bool) -> Result<(), Rejection> {
-    if complete {
-        Ok(())
-    } else {
-        Err(conflict(
-            "event",
-            "partial_event",
-            format!("replay event {event} is not completely recorded"),
-        ))
     }
 }

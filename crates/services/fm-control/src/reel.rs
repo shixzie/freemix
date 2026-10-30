@@ -144,6 +144,7 @@ pub(super) fn status_message(
 /// The wire lifecycle of an engine export job.
 const fn export_state(state: EngineReelExportState) -> ReelExportState {
     match state {
+        EngineReelExportState::Deferred => ReelExportState::Deferred,
         EngineReelExportState::Queued => ReelExportState::Queued,
         EngineReelExportState::Running => ReelExportState::Running,
         EngineReelExportState::Finalizing => ReelExportState::Finalizing,

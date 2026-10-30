@@ -65,13 +65,17 @@ const REEL_SPEEDS: [u8; 4] = [25, 50, 75, 100];
 const fn export_is_active(state: ReelExportState) -> bool {
     matches!(
         state,
-        ReelExportState::Queued | ReelExportState::Running | ReelExportState::Finalizing
+        ReelExportState::Deferred
+            | ReelExportState::Queued
+            | ReelExportState::Running
+            | ReelExportState::Finalizing
     )
 }
 
 /// The catalog label of one export state.
 const fn export_state_msg(state: ReelExportState) -> Msg {
     match state {
+        ReelExportState::Deferred => Msg::ReelStateDeferred,
         ReelExportState::Queued => Msg::ReelStateQueued,
         ReelExportState::Running => Msg::ReelStateRunning,
         ReelExportState::Finalizing => Msg::ReelStateFinalizing,
@@ -84,9 +88,10 @@ const fn export_state_msg(state: ReelExportState) -> Msg {
 /// The lamp of one export state.
 const fn export_tone(state: ReelExportState) -> Tone {
     match state {
-        ReelExportState::Queued | ReelExportState::Running | ReelExportState::Finalizing => {
-            Tone::Pending
-        }
+        ReelExportState::Deferred
+        | ReelExportState::Queued
+        | ReelExportState::Running
+        | ReelExportState::Finalizing => Tone::Pending,
         ReelExportState::Completed => Tone::Ready,
         ReelExportState::Failed => Tone::Fault,
         ReelExportState::Cancelled => Tone::Idle,
@@ -2057,7 +2062,7 @@ mod tests {
             state.reels.iter().map(|reel| reel.id).collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
-        assert_eq!(state.reel_exports.len(), 6);
+        assert_eq!(state.reel_exports.len(), 7);
         let mut next = crate::hover_audit::reel_status();
         next.reels.clear();
         next.exports.clear();
@@ -2173,7 +2178,7 @@ mod tests {
             })
         );
         assert_eq!(export_reel(reel, 1, "relative.mp4"), None);
-        assert_eq!(next_export_job(&status.exports), Some(7));
+        assert_eq!(next_export_job(&status.exports), Some(8));
     }
 
     /// A viewer sends no reel edit, a locked project keeps its live export
@@ -2229,7 +2234,7 @@ mod tests {
         let mut state = crate::hover_audit::bank_fixture();
         state.replay = Some(Box::new(crate::hover_audit::replay_status()));
         state.set_reel_status(crate::hover_audit::reel_status());
-        assert_eq!(state.reel_exports.len(), 6);
+        assert_eq!(state.reel_exports.len(), 7);
         let context = egui::Context::default();
         let mut intents = Vec::new();
         let _ = context.run_ui(egui::RawInput::default(), |ui| {

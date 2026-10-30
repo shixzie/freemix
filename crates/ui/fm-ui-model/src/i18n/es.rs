@@ -10965,6 +10965,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::ReelExports, t("Trabajos de exportación")),
     (Msg::ReelNoExports, t("No hay trabajos de exportación")),
     (Msg::ReelExportJob, t("Trabajo {job}")),
+    (Msg::ReelStateDeferred, t("ESPERANDO MATERIAL")),
     (Msg::ReelStateQueued, t("EN COLA")),
     (Msg::ReelStateRunning, t("EN CURSO")),
     (Msg::ReelStateFinalizing, t("FINALIZANDO")),

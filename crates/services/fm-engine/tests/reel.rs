@@ -321,7 +321,8 @@ fn reel_edits_are_undoable_project_edits_refused_under_the_padlock() {
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn export_resolves_exact_frames_protects_segments_and_refuses_partial_or_existing_destinations() {
+fn export_resolves_exact_frames_protects_segments_and_defers_partial_or_refuses_existing_destinations()
+ {
     let (mut engine, mut recording) = external_engine(&[1], 10);
     recording.record(&mut engine, input(1), 5 * FPS);
     capture_last(&mut engine, "last", 5);
@@ -410,8 +411,9 @@ fn export_resolves_exact_frames_protects_segments_and_refuses_partial_or_existin
     let pruned = engine.take_replay_pruned();
     assert!(pruned.contains(&PathBuf::from("/srv/replay/one-000001.mp4")));
 
-    // A partial event is refused, not deferred: the synthetic segment that
-    // holds its last frame is still open.
+    // A partial event is deferred, not refused: the segment that holds its
+    // last frame is still open, and the export starts once that segment
+    // closes.
     let mut partial = crate::engine();
     replay(
         &mut partial,
@@ -424,17 +426,61 @@ fn export_resolves_exact_frames_protects_segments_and_refuses_partial_or_existin
     let event = partial.replay_status().events[0].clone();
     assert!(!event.complete);
     reel(&mut partial, "set", spec(1, event.id, 1));
+    export(&mut partial, "partial", 1, 1, "/srv/reels/partial.mp4");
+    let status = partial.reel_status();
+    assert_eq!(status.exports.len(), 1);
+    assert_eq!(status.exports[0].state, EngineReelExportState::Deferred);
+    assert_eq!(status.exports[0].completed_frames, 0);
+    assert_eq!(
+        status.exports[0].total_frames,
+        event.out_frame - event.in_frame
+    );
+    // A deferred job has nothing to resolve yet, and it still holds the
+    // export slot.
+    assert!(partial.reel_export_chunk(1, 16).is_err());
     let outcome = execute(
         &mut partial,
-        "partial",
+        "second",
         EngineCommand::Reel(EngineReelOperation::Export {
-            job: 1,
+            job: 2,
             reel: 1,
-            destination: "/srv/reels/partial.mp4".to_owned(),
+            destination: "/srv/reels/second.mp4".to_owned(),
         }),
     );
     assert_eq!(rejection(&outcome).code, RejectionCode::Conflict);
-    assert_eq!(rejection(&outcome).fields[0].code, "partial_event");
+    // The open segment closes as the recording advances; the job starts by
+    // itself and resolves from the first output frame.
+    let mut chunk = None;
+    for _ in 0..3 * FPS {
+        match partial.reel_export_chunk(1, 16) {
+            Ok(resolved) => {
+                chunk = Some(resolved);
+                break;
+            }
+            Err(_) => {
+                ticks(&mut partial, 1);
+            }
+        }
+    }
+    let chunk = chunk.expect("the deferred export started once its segment closed");
+    assert_eq!(chunk.frames, 0..16);
+    // Cancelling and forgetting a job that was deferred at acceptance
+    // leaves the queue empty.
+    accept(
+        &mut partial,
+        "cancel",
+        EngineCommand::Reel(EngineReelOperation::CancelExport { job: 1 }),
+    );
+    assert_eq!(
+        partial.reel_status().exports[0].state,
+        EngineReelExportState::Cancelled
+    );
+    accept(
+        &mut partial,
+        "forget",
+        EngineCommand::Reel(EngineReelOperation::ForgetExport { job: 1 }),
+    );
+    assert!(partial.reel_status().exports.is_empty());
 
     // An existing destination is refused before any media is read.
     let existing = std::env::temp_dir().join(format!(
@@ -454,6 +500,50 @@ fn export_resolves_exact_frames_protects_segments_and_refuses_partial_or_existin
     assert_eq!(rejection(&outcome).code, RejectionCode::Conflict);
     assert_eq!(rejection(&outcome).fields[0].code, "destination_exists");
     std::fs::remove_file(existing).unwrap();
+}
+
+/// OR-013: a deferred export fails, rather than waiting forever, when the
+/// recording restarts and its media is discarded; the failed job can then be
+/// forgotten even though it never entered the export queue.
+#[test]
+fn a_deferred_export_fails_when_the_recording_restarts() {
+    let mut engine = crate::engine();
+    replay(
+        &mut engine,
+        "configure",
+        EngineReplayOperation::Configure(Box::new(settings(&[1], 600))),
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 12 * FPS);
+    capture_last(&mut engine, "last", 5);
+    let event = engine.replay_status().events[0].clone();
+    assert!(!event.complete);
+    reel(&mut engine, "set", spec(1, event.id, 1));
+    export(&mut engine, "export", 1, 1, "/srv/reels/deferred.mp4");
+    assert_eq!(
+        engine.reel_status().exports[0].state,
+        EngineReelExportState::Deferred
+    );
+
+    // Recording another source restarts the recording and drops the media
+    // the deferred export reads.
+    replay(
+        &mut engine,
+        "restart",
+        EngineReplayOperation::Configure(Box::new(settings(&[1, 2], 600))),
+    );
+    settle(&mut engine);
+    let status = engine.reel_status();
+    assert_eq!(status.exports[0].state, EngineReelExportState::Failed);
+    let failure = status.exports[0].failure.as_deref().unwrap_or_default();
+    assert!(failure.contains("restarted"), "{failure}");
+
+    accept(
+        &mut engine,
+        "forget",
+        EngineCommand::Reel(EngineReelOperation::ForgetExport { job: 1 }),
+    );
+    assert!(engine.reel_status().exports.is_empty());
 }
 
 /// Schema 84: a clip with `dissolve_frames` overlaps the end of the clip

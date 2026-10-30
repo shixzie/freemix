@@ -432,6 +432,16 @@ fn status(request_id: Option<&str>) -> ReelStatusMessage {
                 bytes: None,
                 failure: Some("encoder: disk full; stopped".to_owned()),
             },
+            ReelExportStatus {
+                job: 3,
+                reel: 2,
+                destination: "/srv/reels/open.mp4".to_owned(),
+                state: ReelExportState::Deferred,
+                completed_frames: 0,
+                total_frames: Some(250),
+                bytes: None,
+                failure: None,
+            },
         ],
     }
 }
@@ -448,8 +458,8 @@ fn export_state_tokens_are_stable() {
 
 #[test]
 fn protocol_2_109_is_current() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 122));
-    assert_eq!(prefix(), "command\tprotocol=2.122\tid=a\tidempotency_key=k");
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 123));
+    assert_eq!(prefix(), "command\tprotocol=2.123\tid=a\tidempotency_key=k");
 }
 
 #[test]
@@ -473,7 +483,8 @@ fn status_and_its_request_have_an_exact_wire_form() {
             "\texports=1%3A1%3A%252Fsrv%252Freels%252Fgoals%25201.mp4%3Arunning%3A120%3A\
              1500%3A9000000%3A%3B\
              2%3A2%3AC%253A%255CReels%255Clast.mp4%3Afailed%3A30%3A300%3A%3A\
-             encoder%253A%2520disk%2520full%253B%2520stopped\n"
+             encoder%253A%2520disk%2520full%253B%2520stopped%3B\
+             3%3A2%3A%252Fsrv%252Freels%252Fopen.mp4%3Adeferred%3A0%3A250%3A%3A\n"
         ),
         "{line}"
     );
@@ -518,6 +529,7 @@ fn malformed_and_oversized_status_records_are_refused() {
         ("reels=1%3A", "reels=x%3A"),
         ("exports=1%3A", "exports=1"),
         ("%3Afailed%3A", "%3Adone%3A"),
+        ("%3Adeferred%3A", "%3Apending%3A"),
     ] {
         assert!(good.contains(from), "{from}");
         refused(&good.replacen(from, to, 1));

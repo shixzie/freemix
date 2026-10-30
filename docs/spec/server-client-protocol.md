@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.122 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.123 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4211,7 +4211,8 @@ events, and the lossy `ReelStatus` record with its `ReelStatusRequest`.
   percent-escaped; each export job is
   `<job>:<reel>:<destination>:<state>:<completed frames>:<total frames>:<bytes>:<failure>`
   with the destination and failure percent-escaped and `state` one of
-  `queued`, `running`, `finalizing`, `completed`, `failed`, or `cancelled`.
+  `deferred`, `queued`, `running`, `finalizing`, `completed`, `failed`, or
+  `cancelled`.
   `reel_status_request` (`request_id`) asks for one and echoes the
   `request_id`.
 - Durability (schema 83): `project.json` gains `reels`, each with `id`, `name`,
@@ -4552,6 +4553,19 @@ Protocol 2.122 adds Open Media Transport as a stream destination.
   rendition, and no reconnect child; the destination's authored bitrate and
   reconnect policy remain part of the shared destination configuration.
 - 2.121 is refused.
+
+Protocol 2.123 defers reel exports until their media is finalized (OR-013).
+
+- `reel_export` is accepted while a segment its clips read is still open. The
+  job reports the new state `deferred` with zero completed frames and its
+  full total until every segment it reads is closed, then reports `queued`
+  and starts resolving by itself. While deferred it still holds its media
+  against retention and holds the single active-export slot.
+- A deferred job can be cancelled (`cancelled`) and then forgotten, and a
+  recording restart that discards its media fails it with a reason. A clip
+  that names media retention already dropped is still refused
+  (`clips`/`coverage_gap`).
+- 2.122 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one
