@@ -5753,9 +5753,9 @@ per-slot latency and its effective sum, per-plugin state snapshots), and the
 native daemon renders a chain's `freemix.reference.*` processors on input
 strips and the summed Master bus (Protocol 2.128), the CLI sends a chain,
 and Studio's FX window reads the open target's chain (Protocol 2.129) and
-edits its PLUGINS section. There is no VST3 host; scanning, the
-plugin editor, crash quarantine in the render path, and plugging a real
-sandboxed plugin into the chain remain. Vendor capture and output adapters keep their SDKs out of the
+edits its PLUGINS section. There is no VST3 host; scanning, parameters for
+plugins beyond the reference trim, persistence, crash quarantine in the render
+path, and plugging a real sandboxed plugin into the chain remain. Vendor capture and output adapters keep their SDKs out of the
 portable workspace and implement the in-tree `fm-io-api` contracts.
 
 Exit: each adapter ships only with a platform-specific conformance report.
