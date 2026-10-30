@@ -1,5 +1,5 @@
-//! Configured stream destinations on the wire (Protocols 2.52 and 2.54,
-//! OR-006).
+//! Configured stream destinations on the wire (Protocols 2.52, 2.54, and
+//! 2.122, OR-006, OR-009).
 //!
 //! A destination's authored configuration travels without its stream key:
 //! [`StreamTargetEntry::has_key`] says only whether one is stored, and an
@@ -56,10 +56,12 @@ pub enum StreamTargetProtocol {
     Srt,
     /// Local HLS segments under an absolute directory; carries no key.
     Hls,
+    /// An Open Media Transport sender (`omt://host:port`); carries no key.
+    Omt,
 }
 
 impl StreamTargetProtocol {
-    pub const ALL: [Self; 4] = [Self::Rtmp, Self::Rtmps, Self::Srt, Self::Hls];
+    pub const ALL: [Self; 5] = [Self::Rtmp, Self::Rtmps, Self::Srt, Self::Hls, Self::Omt];
 
     /// The wire token, which is also the URL scheme.
     #[must_use]
@@ -69,6 +71,7 @@ impl StreamTargetProtocol {
             Self::Rtmps => "rtmps",
             Self::Srt => "srt",
             Self::Hls => "hls",
+            Self::Omt => "omt",
         }
     }
 
@@ -82,7 +85,7 @@ impl StreamTargetProtocol {
     /// Whether the protocol requires a stream key (every network protocol).
     #[must_use]
     pub const fn carries_key(self) -> bool {
-        !matches!(self, Self::Hls)
+        matches!(self, Self::Rtmp | Self::Rtmps | Self::Srt)
     }
 }
 
@@ -129,7 +132,8 @@ impl Default for StreamReconnect {
 /// One destination's authored configuration, without its stream key.
 ///
 /// `endpoint` is scheme-relative: `host[:port]/application[/path]` for
-/// RTMP/RTMPS, `host[:port]` for SRT, and an absolute directory for HLS.
+/// RTMP/RTMPS, `host[:port]` for SRT, an absolute directory for HLS, and
+/// the listening `host:port` for OMT.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct StreamTargetConfig {
     pub name: String,

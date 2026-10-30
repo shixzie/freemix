@@ -143,6 +143,9 @@ pub enum StreamProtocol {
     Rtmps,
     Srt,
     Hls,
+    /// An Open Media Transport sender (`omt://host:port`): a local listener
+    /// receivers connect to. It carries no key and no backup.
+    Omt,
 }
 
 impl StreamProtocol {
@@ -154,7 +157,14 @@ impl StreamProtocol {
             Self::Rtmps => "rtmps",
             Self::Srt => "srt",
             Self::Hls => "hls",
+            Self::Omt => "omt",
         }
+    }
+
+    /// Whether the protocol carries a per-session stream key.
+    #[must_use]
+    pub const fn carries_key(self) -> bool {
+        matches!(self, Self::Rtmp | Self::Rtmps | Self::Srt)
     }
 }
 
@@ -185,6 +195,10 @@ pub enum StreamEndpointError {
     /// The endpoint has no `/application` path, so appending the stream key
     /// would produce a URL with no redactable final segment.
     MissingApplicationPath,
+    /// An OMT endpoint names a listening port, which is required.
+    MissingPort,
+    /// An OMT endpoint's port is not a nonzero `u16`.
+    InvalidPort,
     /// An SRT endpoint carries an application path, but SRT names only a
     /// `host[:port]`; per-session identity belongs in the stream id.
     PathNotAllowed,
@@ -208,12 +222,14 @@ impl fmt::Display for StreamEndpointError {
             Self::TooLong => "stream endpoint is too long",
             Self::InvalidCharacter => "stream endpoint must be printable ASCII without whitespace",
             Self::UnsupportedScheme => {
-                "stream endpoint must use rtmp://, rtmps://, srt:// or hls://"
+                "stream endpoint must use rtmp://, rtmps://, srt://, hls:// or omt://"
             }
             Self::EmbeddedScheme => "stream endpoint must not repeat the URL scheme",
             Self::MissingHost => "stream endpoint must name a host",
             Self::EmbeddedCredentials => "stream endpoint must not embed user:password credentials",
             Self::MissingApplicationPath => "stream endpoint must include an application path",
+            Self::MissingPort => "an OMT endpoint must name a listening port",
+            Self::InvalidPort => "the OMT listening port must be 1 through 65535",
             Self::PathNotAllowed => "stream endpoint must be host[:port] only without a path",
             Self::PathNotAbsolute => "stream endpoint path must be absolute",
             Self::PathTraversal => {
@@ -304,6 +320,23 @@ impl StreamEndpoint {
                     return Err(StreamEndpointError::EmbeddedCredentials);
                 }
             }
+            StreamProtocol::Omt => {
+                if text.contains('/') {
+                    return Err(StreamEndpointError::PathNotAllowed);
+                }
+                let Some((host, port)) = text.rsplit_once(':') else {
+                    return Err(StreamEndpointError::MissingPort);
+                };
+                if host.is_empty() {
+                    return Err(StreamEndpointError::MissingHost);
+                }
+                if text.contains('@') {
+                    return Err(StreamEndpointError::EmbeddedCredentials);
+                }
+                if port.parse::<u16>().ok().is_none_or(|port| port == 0) {
+                    return Err(StreamEndpointError::InvalidPort);
+                }
+            }
             StreamProtocol::Hls => {
                 let Some(path) = text.strip_prefix('/') else {
                     return Err(StreamEndpointError::PathNotAbsolute);
@@ -344,6 +377,8 @@ impl StreamEndpoint {
             (StreamProtocol::Srt, rest)
         } else if let Some(rest) = url.strip_prefix("hls://") {
             (StreamProtocol::Hls, rest)
+        } else if let Some(rest) = url.strip_prefix("omt://") {
+            (StreamProtocol::Omt, rest)
         } else if url.is_empty() {
             return Err(StreamEndpointError::Empty);
         } else {
@@ -1058,10 +1093,10 @@ impl StreamTarget {
         if name.len() > MAX_STREAM_TARGET_NAME_BYTES {
             return Err(StreamTargetError::NameTooLong);
         }
-        if protocol == StreamProtocol::Hls && key.is_some() {
+        if !protocol.carries_key() && key.is_some() {
             return Err(StreamTargetError::UnexpectedStreamKey);
         }
-        if protocol != StreamProtocol::Hls && key.is_none() {
+        if protocol.carries_key() && key.is_none() {
             return Err(StreamTargetError::MissingStreamKey);
         }
         if protocol == StreamProtocol::Srt
@@ -1144,7 +1179,7 @@ impl StreamTarget {
         backup_endpoint: Option<StreamEndpoint>,
     ) -> Result<Self, StreamTargetError> {
         if let Some(endpoint) = &backup_endpoint {
-            if self.protocol == StreamProtocol::Hls {
+            if !self.protocol.carries_key() {
                 return Err(StreamTargetError::BackupNotAllowed);
             }
             check_endpoint_protocol(self.protocol, endpoint)?;
@@ -1417,7 +1452,9 @@ fn compose_url(protocol: StreamProtocol, endpoint: &StreamEndpoint, tail: Option
                 endpoint.as_str()
             )
         }
-        (StreamProtocol::Hls, None) => format!("{}://{}", protocol.scheme(), endpoint.as_str()),
+        (StreamProtocol::Hls | StreamProtocol::Omt, None) => {
+            format!("{}://{}", protocol.scheme(), endpoint.as_str())
+        }
         _ => unreachable!("stream protocol and stream key presence are paired at construction"),
     }
 }
@@ -1441,7 +1478,7 @@ fn url_bytes(
     let separator = match protocol {
         StreamProtocol::Rtmp | StreamProtocol::Rtmps => 1,
         StreamProtocol::Srt => "?streamid=".len(),
-        StreamProtocol::Hls => 0,
+        StreamProtocol::Hls | StreamProtocol::Omt => 0,
     };
     protocol.scheme().len()
         + "://".len()

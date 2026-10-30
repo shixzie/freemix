@@ -195,7 +195,7 @@ use fm_codec_ffmpeg::{
         CleanupStatus, EnqueueRejection, OutputFinalization, PairedFrame, RecordConfig,
         RecordFormat, Recorder, RecorderState, StopOutcome, StopReport,
     },
-    stream::{EncoderSettings, StreamDestination},
+    stream::{EncoderSettings, StreamDestination, StreamTelemetry},
 };
 #[cfg(feature = "native-media")]
 use fm_codec_image::{StillDecodeLimits, sniff_still_format};
@@ -217,11 +217,12 @@ use fm_io_api::{
 use fm_io_macos::{CameraTelemetry, CameraVideoSource, MacosCameraAdapter};
 #[cfg(feature = "native-media")]
 use fm_io_network::{
-    AbrLadder, AbrVariant, AudioRendition, ColorDescription, DestinationConfig, DestinationEnqueue,
-    DestinationId, DestinationRenditions, DestinationState, Endpoint, EnqueueStatus, FrameRate,
-    HlsLadder, HlsLadderRung, HlsPlaylistMetadata, NetworkTelemetry, OutputPacket, OutputProtocol,
-    OutputSet, PollEvent, QueueCapacity, ReconnectPolicy, RenditionId, RenditionPlan,
-    RenditionPlanner, RenditionProfile, SrtOptions, TimingProfile, VideoRendition,
+    AbrLadder, AbrVariant, AudioRendition, ColorDescription, ConnectionObservation,
+    DestinationConfig, DestinationEnqueue, DestinationId, DestinationRenditions, DestinationState,
+    Endpoint, EnqueueStatus, FrameRate, HlsLadder, HlsLadderRung, HlsPlaylistMetadata,
+    NetworkTelemetry, OmtTransportSink, OutputPacket, OutputProtocol, OutputSet, PollEvent,
+    QueueCapacity, ReconnectPolicy, RenditionId, RenditionPlan, RenditionPlanner, RenditionProfile,
+    SinkError, SinkWrite, SrtOptions, TimingProfile, TransportSink, VideoRendition,
     parse_master_m3u8,
     rtmp::{FfmpegRtmpSink, RtmpSinkConfig, StreamKey, raw_pair_packet},
 };
@@ -3386,6 +3387,67 @@ fn pinned_rendition_variants(
 /// backoff, primary/backup failover) is not owned here at all: every target
 /// routes through the daemon's shared [`OutputSet`], and this struct owns only
 /// the transport that the set drives.
+/// One stream destination's transport: the FFmpeg encoder for RTMP, RTMPS,
+/// SRT, and HLS, or the in-tree OMT sender for `omt://`. The shared output
+/// state machine, raw-pair packing, and retry policy stay identical.
+#[cfg(feature = "native-media")]
+enum ProgramStreamSink {
+    Ffmpeg(FfmpegRtmpSink),
+    Omt(OmtTransportSink),
+}
+
+#[cfg(feature = "native-media")]
+impl TransportSink for ProgramStreamSink {
+    fn connect(
+        &mut self,
+        config: &DestinationConfig,
+        endpoint: &Endpoint,
+    ) -> Result<ConnectionObservation, SinkError> {
+        match self {
+            Self::Ffmpeg(sink) => sink.connect(config, endpoint),
+            Self::Omt(sink) => sink.connect(config, endpoint),
+        }
+    }
+
+    fn write(&mut self, packet: &OutputPacket) -> Result<SinkWrite, SinkError> {
+        match self {
+            Self::Ffmpeg(sink) => sink.write(packet),
+            Self::Omt(sink) => sink.write(packet),
+        }
+    }
+
+    fn session_proven(&self) -> bool {
+        match self {
+            Self::Ffmpeg(sink) => sink.session_proven(),
+            Self::Omt(sink) => sink.session_proven(),
+        }
+    }
+
+    fn disconnect(&mut self) {
+        match self {
+            Self::Ffmpeg(sink) => sink.disconnect(),
+            Self::Omt(sink) => sink.disconnect(),
+        }
+    }
+}
+
+#[cfg(feature = "native-media")]
+impl ProgramStreamSink {
+    fn stream_telemetry(&self) -> Option<StreamTelemetry> {
+        match self {
+            Self::Ffmpeg(sink) => sink.stream_telemetry(),
+            Self::Omt(_) => None,
+        }
+    }
+
+    const fn unconfirmed_cleanups(&self) -> u64 {
+        match self {
+            Self::Ffmpeg(sink) => sink.unconfirmed_cleanups(),
+            Self::Omt(_) => 0,
+        }
+    }
+}
+
 #[cfg(feature = "native-media")]
 struct NativeProgramStream {
     target: SwitcherStreamTargetId,
@@ -3397,7 +3459,7 @@ struct NativeProgramStream {
     redacted_destination: String,
     /// The `FFmpeg` transport, whose blocking connects and stops run on a
     /// dedicated worker so the daemon loop never waits on them.
-    sink: stream_transport::BackgroundTransport<FfmpegRtmpSink>,
+    sink: stream_transport::BackgroundTransport<ProgramStreamSink>,
     ledger: StreamPairLedger,
     /// The latched failure notice for the operator's log, and what peers see
     /// of it (Protocol 2.67); both are set and cleared together.
@@ -3524,20 +3586,22 @@ fn split_target_endpoints(
     Option<Endpoint>,
 )> {
     let primary_url = target.expose_url();
-    StreamDestination::parse(&primary_url).map_err(|error| {
-        AppFailure(format!(
-            "stream target {} destination was refused before startup: {error:?}",
-            target.id()
-        ))
-    })?;
     let backup_url = target.expose_backup_url();
-    if let Some(backup) = &backup_url {
-        StreamDestination::parse(backup).map_err(|error| {
+    if target.protocol() != fm_model::StreamProtocol::Omt {
+        StreamDestination::parse(&primary_url).map_err(|error| {
             AppFailure(format!(
-                "stream target {} backup destination was refused before startup: {error:?}",
+                "stream target {} destination was refused before startup: {error:?}",
                 target.id()
             ))
         })?;
+        if let Some(backup) = &backup_url {
+            StreamDestination::parse(backup).map_err(|error| {
+                AppFailure(format!(
+                    "stream target {} backup destination was refused before startup: {error:?}",
+                    target.id()
+                ))
+            })?;
+        }
     }
     let (protocol, endpoint, stream_key) = split_destination_url(&primary_url)?;
     let backup_endpoint = backup_url
@@ -3580,6 +3644,8 @@ fn split_destination_url(url: &str) -> AppResult<(OutputProtocol, Endpoint, Opti
         (OutputProtocol::Srt, rest)
     } else if let Some(rest) = url.strip_prefix("hls://") {
         (OutputProtocol::Hls, rest)
+    } else if let Some(rest) = url.strip_prefix("omt://") {
+        (OutputProtocol::Omt, rest)
     } else {
         return unsupported();
     };
@@ -3593,6 +3659,23 @@ fn split_destination_url(url: &str) -> AppResult<(OutputProtocol, Endpoint, Opti
             ))
         })?;
         return Ok((OutputProtocol::Hls, endpoint, None));
+    }
+    if protocol == OutputProtocol::Omt {
+        let (host, port) = rest
+            .rsplit_once(':')
+            .ok_or_else(|| AppFailure("stream destination endpoint has no explicit port".into()))?;
+        if rest.contains('/') {
+            return Err(AppFailure("stream destination endpoint has a path".into()).into());
+        }
+        let port = port
+            .parse::<u16>()
+            .map_err(|_| AppFailure("stream destination endpoint port is invalid".into()))?;
+        let endpoint = Endpoint::new(host, port, "/").map_err(|error| {
+            AppFailure(format!(
+                "stream destination endpoint was refused: {error:?}"
+            ))
+        })?;
+        return Ok((OutputProtocol::Omt, endpoint, None));
     }
     let (authority, endpoint_path, key_text) = if protocol == OutputProtocol::Srt {
         match rest.split_once('?') {
@@ -3689,6 +3772,7 @@ fn redacted_destination_url(protocol: OutputProtocol, endpoint: &Endpoint, keyed
         // A local HLS destination is its absolute directory: there is no key
         // to mask, and the placeholder host and port are never rendered.
         OutputProtocol::Hls => format!("hls://{}", endpoint.path()),
+        OutputProtocol::Omt => format!("omt://{}:{}", endpoint.host(), endpoint.port()),
         // LAN outputs have no daemon streaming transport yet.
         OutputProtocol::LiveLan => String::new(),
     }
@@ -4191,7 +4275,11 @@ impl NativeProgramStream {
                 sink_config.stream_key.is_some(),
             ),
             sink: stream_transport::BackgroundTransport::new(
-                FfmpegRtmpSink::new(sink_config),
+                if split.protocol == OutputProtocol::Omt {
+                    ProgramStreamSink::Omt(OmtTransportSink::new(sink_config))
+                } else {
+                    ProgramStreamSink::Ffmpeg(FfmpegRtmpSink::new(sink_config))
+                },
                 format!("freemix-native-stream-{}", destination_id.get()),
             ),
             ledger: StreamPairLedger {
@@ -4931,7 +5019,7 @@ fn native_stream_snapshots(
             let muxed_bytes = stream
                 .sink
                 .idle_sink()
-                .and_then(FfmpegRtmpSink::stream_telemetry)
+                .and_then(ProgramStreamSink::stream_telemetry)
                 .map(|telemetry| telemetry.muxed_bytes);
             let (uptime_ms, bitrate_kbps) = stream.meter.observe(now_ms, delivering, muxed_bytes);
             StreamRuntimeSnapshot {
@@ -28357,7 +28445,7 @@ mod tests {
             destination_id,
             redacted_destination: "rtmp://primary.example.test:1935/live".to_owned(),
             sink: stream_transport::BackgroundTransport::new(
-                FfmpegRtmpSink::new(sink_config),
+                ProgramStreamSink::Ffmpeg(FfmpegRtmpSink::new(sink_config)),
                 "freemix-native-stream-test".to_owned(),
             ),
             ledger: StreamPairLedger::default(),
@@ -28952,6 +29040,14 @@ mod tests {
                 None,
             ),
             (
+                "omt://0.0.0.0:6500",
+                OutputProtocol::Omt,
+                "0.0.0.0",
+                6_500,
+                "/",
+                None,
+            ),
+            (
                 "hls:///var/lib/freemix/live",
                 OutputProtocol::Hls,
                 // A local destination has no peer: the placeholder host and
@@ -28986,16 +29082,19 @@ mod tests {
                 (OutputProtocol::Srt, Some(key)) => format!("srt://{host}:{port}?streamid={key}"),
                 (OutputProtocol::Srt, None) => format!("srt://{host}:{port}"),
                 (OutputProtocol::Hls, None) => format!("hls://{path}"),
-                (OutputProtocol::Hls, Some(_)) => {
-                    unreachable!("HLS destinations carry no stream key")
+                (OutputProtocol::Hls | OutputProtocol::Omt, Some(_)) => {
+                    unreachable!("local OMT and HLS destinations carry no stream key")
                 }
+                (OutputProtocol::Omt, None) => format!("omt://{host}:{port}"),
                 (OutputProtocol::LiveLan, _) => {
                     unreachable!("no daemon streaming transport for LAN outputs")
                 }
                 (_, None) => unreachable!("network destinations always carry a key here"),
             };
-            fm_codec_ffmpeg::stream::StreamDestination::parse(&composed)
-                .unwrap_or_else(|error| panic!("{composed:?} does not re-parse: {error:?}"));
+            if protocol != OutputProtocol::Omt {
+                fm_codec_ffmpeg::stream::StreamDestination::parse(&composed)
+                    .unwrap_or_else(|error| panic!("{composed:?} does not re-parse: {error:?}"));
+            }
         }
 
         // Shapes that cannot be represented fail compilation instead of being
@@ -29154,7 +29253,7 @@ mod tests {
         let target = |id: u128, protocol: StreamProtocol, endpoint: &str| {
             let endpoint = ModelStreamEndpoint::parse_for(protocol, endpoint).unwrap();
             let key = match protocol {
-                StreamProtocol::Hls => None,
+                StreamProtocol::Hls | StreamProtocol::Omt => None,
                 StreamProtocol::Rtmp | StreamProtocol::Rtmps | StreamProtocol::Srt => {
                     Some(ModelStreamKey::parse("live-key-0001").unwrap())
                 }
@@ -29264,7 +29363,7 @@ mod tests {
         let target = |id: u128, protocol: StreamProtocol, endpoint: &str| {
             let endpoint = ModelStreamEndpoint::parse_for(protocol, endpoint).unwrap();
             let key = match protocol {
-                StreamProtocol::Hls => None,
+                StreamProtocol::Hls | StreamProtocol::Omt => None,
                 StreamProtocol::Rtmp | StreamProtocol::Rtmps | StreamProtocol::Srt => {
                     Some(ModelStreamKey::parse("live-key-0001").unwrap())
                 }

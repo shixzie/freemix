@@ -79,10 +79,12 @@ returning data. The loopback tests cover two receivers, gated video and audio,
 combined tally, quality, preview selection, discovery registration/removal, and
 malformed frames.
 
-Not yet wired: daemon registration of the sink (an `omt://` input is
-registered through the network-stream path, Protocol 2.121), the VMX-compressed
-codec, corrupt-frame recovery statistics, and hardware certification. The
-roadmap tracks them under `IN-018`/`IN-019`.
+The daemon registers the sink as an `omt://` stream destination (Protocol
+2.122): the shared output set packs the same raw RGBA/audio pair as every
+stream and the OMT transport converts it to BGRA and planar audio for
+subscribed receivers. Not yet wired: a discovery catalogue entry, the
+VMX-compressed codec, corrupt-frame recovery statistics, and hardware
+certification. The roadmap tracks them under `IN-018`/`IN-019`.
 
 ## 4. Versioning and change policy
 

@@ -95,7 +95,7 @@ They are target-specific leaves; portable crates never depend on them.
 | `fm-io-api` | Source/sink factories, discovery, formats, clocks, health, hot-plug contracts |
 | `fm-codec-api` | Decoder, encoder, demuxer, muxer contracts and capability queries |
 | `fm-codec-ffmpeg` | FFmpeg implementation, software codecs, hardware device adapters |
-| `fm-io-network` | RTP/RTSP/RTMP, MPEG-TS, HLS/DASH, common network buffering |
+| `fm-io-network` | RTP/RTSP/RTMP, MPEG-TS, HLS/DASH, OMT stream destinations, common network buffering |
 | `fm-browser-input` | Isolated browser process, interactive surface/audio, custom CSS, navigation policy |
 | `fm-io-srt` | SRT caller/listener/rendezvous and statistics |
 | `fm-io-webrtc` | Guests, remote preview, return media, ICE/TURN, data channels |

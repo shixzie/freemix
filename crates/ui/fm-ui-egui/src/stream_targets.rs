@@ -574,6 +574,17 @@ pub(crate) fn endpoint_problem(protocol: StreamTargetProtocol, endpoint: &str) -
                 return Some(Msg::StreamErrEndpointCredentials);
             }
         }
+        StreamTargetProtocol::Omt => {
+            let Some((host, port)) = endpoint.rsplit_once(':') else {
+                return Some(Msg::StreamErrEndpointPort);
+            };
+            if host.is_empty() {
+                return Some(Msg::StreamErrEndpointHost);
+            }
+            if port.parse::<u16>().ok().is_none_or(|port| port == 0) {
+                return Some(Msg::StreamErrEndpointPort);
+            }
+        }
         StreamTargetProtocol::Hls => {
             let Some(path) = endpoint.strip_prefix('/') else {
                 return Some(Msg::StreamErrEndpointAbsolute);
@@ -1008,6 +1019,7 @@ const fn protocol_key(protocol: StreamTargetProtocol) -> (&'static str, Msg) {
         StreamTargetProtocol::Rtmps => ("RTMPS", Msg::StreamProtoRtmpsHover),
         StreamTargetProtocol::Srt => ("SRT", Msg::StreamProtoSrtHover),
         StreamTargetProtocol::Hls => ("HLS", Msg::StreamProtoHlsHover),
+        StreamTargetProtocol::Omt => ("OMT", Msg::StreamProtoOmtHover),
     }
 }
 
@@ -1019,6 +1031,7 @@ const fn endpoint_help(protocol: StreamTargetProtocol) -> (Msg, &'static str) {
         }
         StreamTargetProtocol::Srt => (Msg::StreamEndpointSrtHover, "srt.example.com:9000"),
         StreamTargetProtocol::Hls => (Msg::StreamEndpointHlsHover, "/var/www/hls/show"),
+        StreamTargetProtocol::Omt => (Msg::StreamEndpointOmtHover, "0.0.0.0:6500"),
     }
 }
 

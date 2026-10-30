@@ -10,6 +10,7 @@
 mod config;
 mod hls;
 mod impairment;
+mod omt;
 mod output;
 mod rendition;
 pub mod rtmp;
@@ -24,6 +25,7 @@ pub use hls::{
     parse_master_m3u8, parse_media_m3u8,
 };
 pub use impairment::{ImpairmentDecision, ImpairmentError, ImpairmentModel, ImpairmentTelemetry};
+pub use omt::OmtTransportSink;
 pub use output::{
     CongestionObservation, ConnectionObservation, ConnectionTarget, DestinationEnqueue,
     DestinationState, EnqueueStatus, FailureCause, FailureRecord, FailureStage, NetworkTelemetry,

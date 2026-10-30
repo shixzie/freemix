@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.121 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.122 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1690,7 +1690,7 @@ control (OR-006).
 - `payload=stream_target_set` adds or reconfigures one destination. It
   carries `target` plus these configuration fields:
   - `name`;
-  - `stream_protocol` (`rtmp`, `rtmps`, `srt`, `hls`);
+  - `stream_protocol` (`rtmp`, `rtmps`, `srt`, `hls`, or `omt`);
   - `endpoint` (scheme-relative `host[:port]/app[/path]`, `host[:port]` for
     SRT, or an absolute directory for HLS);
   - optional `backup_endpoint`;
@@ -4536,6 +4536,22 @@ Protocol 2.121 reads Open Media Transport sources as network stream inputs.
   audio) instead of ffmpeg; the simulated daemon keeps its synthetic feed.
   No network-stream field, snapshot shape, or status field changes.
 - 2.120 is refused.
+
+Protocol 2.122 adds Open Media Transport as a stream destination.
+
+- `stream_target_set` accepts `stream_protocol=omt` with endpoint `host:port`:
+  the local interface and listening port the sender binds. The destination
+  carries no stream key, no backup endpoint, no ladder, no SRT options, and
+  no TLS, like a local HLS directory. The authored URL is `omt://host:port`;
+  it is validated in the project and the daemon parses it into an OMT
+  transport instead of an ffmpeg child.
+- A native daemon registers the destination in the shared output set and
+  packs the same raw RGBA/audio pair as every stream group; the OMT
+  transport converts it to a BGRA picture and planar audio for receivers
+  that subscribe on that port. It has no encoder, no bitrate-driven
+  rendition, and no reconnect child; the destination's authored bitrate and
+  reconnect policy remain part of the shared destination configuration.
+- 2.121 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

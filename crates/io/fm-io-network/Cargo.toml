@@ -10,6 +10,7 @@ fm-codec-api = { path = "../fm-codec-api" }
 fm-codec-ffmpeg = { path = "../fm-codec-ffmpeg" }
 fm-frame = { path = "../../media/fm-frame" }
 fm-io-api = { path = "../fm-io-api" }
+fm-io-omt = { path = "../fm-io-omt" }
 
 # `RecordFormat` is supplied by the caller because building one needs
 # `fm_types::FrameRate`, which the library itself never names. The RTMP

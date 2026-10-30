@@ -8314,6 +8314,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Enviar a un receptor SRT en host:puerto (srt://)"),
     ),
     (
+        Msg::StreamProtoOmtHover,
+        t("Un emisor Open Media Transport al que se conectan los receptores de la red local"),
+    ),
+    (
         Msg::StreamProtoHlsHover,
         t("Escribir segmentos HLS y una lista de reproducción en un directorio local; sin clave"),
     ),
@@ -8328,6 +8332,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::StreamEndpointSrtHover,
         t("Host y puerto opcional, sin el esquema: srt.example.com:9000"),
+    ),
+    (
+        Msg::StreamEndpointOmtHover,
+        t("La interfaz y el puerto en los que escucha la fuente OMT: 0.0.0.0:6500"),
     ),
     (
         Msg::StreamEndpointHlsHover,
@@ -8449,6 +8457,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::StreamErrEndpointSrtPath,
         t("SRT solo admite host[:puerto], sin ruta"),
+    ),
+    (
+        Msg::StreamErrEndpointPort,
+        t("indica un puerto válido: host:puerto"),
     ),
     (
         Msg::StreamErrEndpointAbsolute,

@@ -5727,9 +5727,11 @@ video/audio, combined tally, quality, and preview, and `OmtSink` implements
 `fm-io-api`'s `MediaSource` with subscription, tally and quality control, and
 the inverse conversion with 100 ns timing. A native daemon reads an `omt://`
 network stream input through the receiver and converts BGRA, UYVY, or NV12
-pictures to program RGBA and stereo audio (Protocol 2.121); no daemon output
-or discovery catalogue entry is wired yet; VMX-compressed frames,
-corrupt-frame recovery, and hardware certification remain. FreeMix's plugin
+pictures to program RGBA and stereo audio (Protocol 2.121); a stream
+destination with `stream_protocol=omt` binds an OMT sender and publishes the
+same raw Program pair after converting it to BGRA and planar audio
+(Protocol 2.122); no discovery catalogue entry is wired yet; VMX-compressed
+frames, corrupt-frame recovery, and hardware certification remain. FreeMix's plugin
 SDK is `fm-plugin-api` with the `fm-plugin-host` sandbox (manifest,
 versioned ABI, capability grants, state snapshots, quarantine); there is no
 VST3 host. Vendor capture and output adapters keep their SDKs out of the

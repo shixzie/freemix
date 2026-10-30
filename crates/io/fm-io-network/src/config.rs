@@ -48,6 +48,9 @@ pub enum OutputProtocol {
     /// are placeholders that are never rendered, and TLS configuration, a
     /// backup endpoint, and a credential are all refused rather than ignored.
     Hls,
+    /// An Open Media Transport sender bound to a local listening port. It
+    /// has no peer, no TLS, no key, and no backup endpoint.
+    Omt,
     LiveLan,
 }
 
@@ -395,12 +398,12 @@ impl DestinationConfig {
         }
         if matches!(
             protocol,
-            OutputProtocol::Rtmp | OutputProtocol::Srt | OutputProtocol::Hls
+            OutputProtocol::Rtmp | OutputProtocol::Srt | OutputProtocol::Hls | OutputProtocol::Omt
         ) && tls.is_some()
         {
             return Err(ConfigError::TlsNotSupported);
         }
-        if protocol == OutputProtocol::Hls {
+        if matches!(protocol, OutputProtocol::Hls | OutputProtocol::Omt) {
             if backup_endpoint.is_some() {
                 return Err(ConfigError::BackupNotSupported);
             }

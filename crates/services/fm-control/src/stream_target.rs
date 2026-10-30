@@ -24,6 +24,7 @@ const fn model_protocol(protocol: StreamTargetProtocol) -> StreamProtocol {
         StreamTargetProtocol::Rtmps => StreamProtocol::Rtmps,
         StreamTargetProtocol::Srt => StreamProtocol::Srt,
         StreamTargetProtocol::Hls => StreamProtocol::Hls,
+        StreamTargetProtocol::Omt => StreamProtocol::Omt,
     }
 }
 
@@ -33,6 +34,7 @@ const fn wire_protocol(protocol: StreamProtocol) -> StreamTargetProtocol {
         StreamProtocol::Rtmps => StreamTargetProtocol::Rtmps,
         StreamProtocol::Srt => StreamTargetProtocol::Srt,
         StreamProtocol::Hls => StreamTargetProtocol::Hls,
+        StreamProtocol::Omt => StreamTargetProtocol::Omt,
     }
 }
 

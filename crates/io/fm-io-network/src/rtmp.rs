@@ -714,7 +714,7 @@ impl FfmpegRtmpSink {
             // there is no stream key to append because HLS has no failover
             // key semantics.
             OutputProtocol::Hls => format!("hls://{}", endpoint.path()),
-            other @ OutputProtocol::LiveLan => {
+            other @ (OutputProtocol::Omt | OutputProtocol::LiveLan) => {
                 return Err(SinkError::new(
                     FailureStage::Protocol,
                     None,

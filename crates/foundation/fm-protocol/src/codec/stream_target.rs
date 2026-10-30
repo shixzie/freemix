@@ -1,7 +1,7 @@
 //! Stream destination codec (Protocols 2.52 and 2.54, OR-006).
 //!
 //! * A configuration is the fields `name`, `stream_protocol` (`rtmp`, `rtmps`,
-//!   `srt`, `hls`), `endpoint`, optional `backup_endpoint`, `output`,
+//!   `srt`, `hls`, `omt`), `endpoint`, optional `backup_endpoint`, `output`,
 //!   `startup` (`stopped` or `reconcile`), `video_bitrate_kbps`,
 //!   `reconnect` (`<initial ms>:<max ms>:<attempts or none>`), and
 //!   `srt_latency_ms` (2.54), present exactly for SRT.

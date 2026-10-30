@@ -15,7 +15,7 @@ use fm_protocol::{
     StreamTargetProtocol, WireMessage, WireOutputId, WireStreamTargetId, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.121\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.122\tid=a\tidempotency_key=k";
 const KEY: &str = "live-secret-key-0001";
 
 fn target(value: u128) -> WireStreamTargetId {
@@ -78,7 +78,7 @@ fn config() -> StreamTargetConfig {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 121));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 122));
     assert_eq!(MAX_STREAM_TARGETS, 5);
     assert_eq!(
         StreamReconnect::DEFAULT,
@@ -157,6 +157,22 @@ fn destination_edits_round_trip_every_key_edit() {
     }));
     assert!(line.contains("\treconnect=250%3A2000%3Anone"), "{line}");
     assert!(line.contains("\tstartup=stopped"), "{line}");
+    // An OMT sender: a local listener with no backup and no key.
+    let omt = StreamTargetConfig {
+        protocol: StreamTargetProtocol::Omt,
+        endpoint: "0.0.0.0:6500".to_owned(),
+        backup_endpoint: None,
+        ..config()
+    };
+    let line = round_trip(&command(CommandPayload::SetStreamTarget {
+        target: target(9),
+        config: Box::new(omt),
+        stream_key: SecretEdit::Keep,
+        srt_passphrase: SecretEdit::Keep,
+        position: None,
+    }));
+    assert!(line.contains("\tstream_protocol=omt\t"), "{line}");
+    assert!(line.contains("\tendpoint=0.0.0.0%3A6500\t"), "{line}");
     assert_eq!(
         round_trip(&command(CommandPayload::RemoveStreamTarget {
             target: target(7)

@@ -1007,6 +1007,7 @@ fn parse_stream_target(value: Value) -> Result<StreamTarget, DecodeError> {
         "rtmps" => StreamProtocol::Rtmps,
         "srt" => StreamProtocol::Srt,
         "hls" => StreamProtocol::Hls,
+        "omt" => StreamProtocol::Omt,
         value => return Err(unknown_enum("stream target protocol", value)),
     };
     let endpoint = StreamEndpoint::parse_for(protocol, &object.string("endpoint")?)

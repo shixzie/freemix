@@ -3870,7 +3870,7 @@ fn stream_target(spec: &StreamSpec) -> AppResult<StreamTarget> {
         })
         .transpose()?;
     let key = match protocol {
-        StreamProtocol::Hls => None,
+        StreamProtocol::Hls | StreamProtocol::Omt => None,
         StreamProtocol::Rtmp | StreamProtocol::Rtmps | StreamProtocol::Srt => {
             let secret = spec.key.as_deref().ok_or_else(|| {
                 AppFailure("stream destination protocol requires a stream key".into())
