@@ -55,7 +55,7 @@ impl TransportSink for OmtTransportSink {
         endpoint: &Endpoint,
     ) -> Result<ConnectionObservation, SinkError> {
         let port = endpoint.port().get();
-        let sender = Sender::bind(("0.0.0.0", port)).map_err(|error| {
+        let sender = Sender::bind((endpoint.host(), port)).map_err(|error| {
             SinkError::new(FailureStage::Connect, None, error.to_string(), true)
                 .with_cause(FailureCause::IoError)
         })?;
