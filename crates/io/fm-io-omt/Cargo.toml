@@ -8,6 +8,10 @@ description = "FreeMix's own Open Media Transport (OMT 1.0) implementation"
 
 [dependencies]
 mdns-sd = { version = "0.21.6", default-features = false }
+fm-capabilities = { path = "../../foundation/fm-capabilities" }
+fm-frame = { path = "../../media/fm-frame" }
+fm-io-api = { path = "../fm-io-api" }
+fm-types = { path = "../../foundation/fm-types" }
 
 [lints]
 workspace = true

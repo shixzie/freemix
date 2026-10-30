@@ -65,6 +65,11 @@ fully open, royalty-free, and in-tree.
   receiver, the strongest suggested quality, and sender information.
 - **Receiver:** subscribe, preview, tally, quality, and frame reception with
   timeouts.
+- **Device I/O adapter:** `OmtSink` implements `fm_io_api::MediaSink`,
+  advertising one concrete `video.omt` format and converting CPU YUV 4:2:2,
+  BGRA, or NV12 frames and planar audio to the OMT frames a subscribed
+  receiver sees; lifecycle, health, and write errors follow the shared
+  `fm-io-api` contract.
 
 Every decode checks its version, frame type, lengths, extended headers, codec,
 alpha flags, channel count, active-channel mask, and null termination before
@@ -72,7 +77,7 @@ returning data. The loopback tests cover two receivers, gated video and audio,
 combined tally, quality, preview selection, discovery registration/removal, and
 malformed frames.
 
-Not yet wired: `fm-io-api` source/sink adapters and a daemon input/output, the
+Not yet wired: the `fm-io-api` source adapter and daemon input/output, the
 VMX-compressed codec, corrupt-frame recovery statistics, and hardware
 certification. The roadmap tracks them under `IN-018`/`IN-019`.
 

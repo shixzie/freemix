@@ -29,6 +29,7 @@ mod frame;
 mod metadata;
 mod receiver;
 mod sender;
+mod sink;
 mod wire;
 
 use std::fmt;
@@ -49,6 +50,7 @@ pub use metadata::{
 };
 pub use receiver::Receiver;
 pub use sender::Sender;
+pub use sink::{OmtMedia, OmtSink, OmtSinkConfig};
 
 /// Why an OMT record or connection was refused.
 #[derive(Clone, Debug, Eq, PartialEq)]

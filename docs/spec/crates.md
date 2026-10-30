@@ -99,7 +99,7 @@ They are target-specific leaves; portable crates never depend on them.
 | `fm-browser-input` | Isolated browser process, interactive surface/audio, custom CSS, navigation policy |
 | `fm-io-srt` | SRT caller/listener/rendezvous and statistics |
 | `fm-io-webrtc` | Guests, remote preview, return media, ICE/TURN, data channels |
-| `fm-io-omt` | FreeMix's own OMT 1.0: frame codecs, discovery server/client, subscribe/preview/tally/quality, sender and receiver |
+| `fm-io-omt` | FreeMix's own OMT 1.0: frame codecs, DNS-SD and discovery server/client, subscribe/preview/tally/quality, sender, receiver, and an `fm-io-api` output sink |
 | `fm-io-windows` | Media Foundation, WASAPI, screen/window capture, virtual devices |
 | `fm-io-macos` | AVFoundation, CoreAudio, ScreenCaptureKit, virtual devices |
 | `fm-io-pipewire` | libpipewire loaded at run time: the narrow audited `unsafe` boundary reading a shared PipeWire video stream, and its SPA pods |

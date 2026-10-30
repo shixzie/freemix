@@ -5717,13 +5717,15 @@ It provides the 16-byte frame header, video and audio extended headers, the
 raw `UYVY`, `YUY2`, `BGRA`, `NV12`, `YV12`, `UYVA`, `P216`, and `PA16`
 codecs with alpha and preview flags, planar `FPA1` audio, per-frame
 metadata, the exact subscribe/preview/tally/quality/info commands, the
-`_omt._tcp` names, and the discovery server and client registry. A sender
-fans frames out only to subscribed receivers, chooses a receiver's
+`_omt._tcp` DNS-SD record, and the discovery server and client registry. A
+sender fans frames out only to subscribed receivers, chooses a receiver's
 one-eighth preview frame, combines every receiver's tally, and reports the
 strongest suggested quality; a loopback test covers two receivers, gated
-video/audio, combined tally, quality, and preview. Nothing is wired into
-`fm-io-api` or a daemon yet; VMX-compressed frames, DNS-SD advertisement,
-corrupt-frame recovery, and hardware certification remain. FreeMix's plugin
+video/audio, combined tally, quality, and preview, and `OmtSink` implements
+`fm-io-api`'s `MediaSink` with format advertisement, lifecycle, BGRA, YUV
+4:2:2 and NV12 conversion, and planar audio. No daemon input or output is
+wired to it yet; the source adapter, VMX-compressed frames, corrupt-frame
+recovery, and hardware certification remain. FreeMix's plugin
 SDK is `fm-plugin-api` with the `fm-plugin-host` sandbox (manifest,
 versioned ABI, capability grants, state snapshots, quarantine); there is no
 VST3 host. Vendor capture and output adapters keep their SDKs out of the
