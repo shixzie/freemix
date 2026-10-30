@@ -2767,7 +2767,7 @@ fn terminate_shared_without_monitor(child: &Arc<Mutex<Child>>, timeout: Duration
     CleanupStatus::Unconfirmed
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 fn terminate_unshared(mut child: Child, timeout: Duration) -> CleanupStatus {
     let _ = child.kill();
     let deadline = Instant::now() + timeout;
