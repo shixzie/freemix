@@ -201,6 +201,22 @@ impl Drop for CapturedChild {
                 thread::sleep(Duration::from_millis(5));
             }
         }
+        // A test that fails while its child is still captured shows the
+        // child's own account; nothing here may panic during unwinding.
+        if thread::panicking()
+            && let Some(stderr) = self.stderr.take()
+            && let Ok(Ok(drained)) = stderr.recv_timeout(Duration::from_secs(5))
+        {
+            let text = String::from_utf8_lossy(&drained.bytes);
+            let lines = text.lines().collect::<Vec<_>>();
+            let tail = &lines[lines.len().saturating_sub(80)..];
+            eprintln!(
+                "--- captured child stderr, last {} of {} lines ---\n{}\n--- end ---",
+                tail.len(),
+                lines.len(),
+                tail.join("\n")
+            );
+        }
     }
 }
 
