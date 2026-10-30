@@ -195,7 +195,7 @@ pub use network_stream::{
     MAX_STREAM_ERROR_BYTES, MAX_STREAM_URL_BYTES, NetworkStreamConfig, NetworkStreamEntry,
     NetworkStreamError, NetworkStreamSettings, NetworkStreamState, NetworkStreamStatus,
     ReconnectPolicy, RtspTransport, SecretEdit, SrtKeyLength, StallSlate, StreamMode,
-    StreamProtocol, StreamUrl, redact_stream_url, validate_stream_url,
+    StreamProtocol, StreamUrl, omt_authority, redact_stream_url, validate_stream_url,
 };
 pub use output_failure::{OutputFailure, OutputFailureCode};
 pub use paged::{

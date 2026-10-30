@@ -79,9 +79,10 @@ returning data. The loopback tests cover two receivers, gated video and audio,
 combined tally, quality, preview selection, discovery registration/removal, and
 malformed frames.
 
-Not yet wired: daemon input/output registration of the two adapters, the
-VMX-compressed codec, corrupt-frame recovery statistics, and hardware
-certification. The roadmap tracks them under `IN-018`/`IN-019`.
+Not yet wired: daemon registration of the sink (an `omt://` input is
+registered through the network-stream path, Protocol 2.121), the VMX-compressed
+codec, corrupt-frame recovery statistics, and hardware certification. The
+roadmap tracks them under `IN-018`/`IN-019`.
 
 ## 4. Versioning and change policy
 

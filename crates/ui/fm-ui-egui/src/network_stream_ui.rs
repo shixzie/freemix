@@ -554,7 +554,9 @@ fn draw_connection(
     let srt = protocol == Some(StreamProtocol::Srt);
     let simple = matches!(
         protocol,
-        Some(StreamProtocol::Rtsp | StreamProtocol::Rtmp | StreamProtocol::Srt)
+        Some(
+            StreamProtocol::Rtsp | StreamProtocol::Rtmp | StreamProtocol::Srt | StreamProtocol::Omt
+        )
     );
     match protocol {
         Some(StreamProtocol::Rtsp) => draw_transport(ui, l, draft, at),
@@ -1017,6 +1019,7 @@ fn connection_details(l: Locale, config: &NetworkStreamConfig) -> Option<String>
                 ),
             ],
         )),
+        StreamProtocol::Omt => Some(l.text(Msg::NsDetailOmt).to_owned()),
         StreamProtocol::Srt => {
             let encryption = if config.passphrase.is_some() {
                 format!("AES-{}", u32::from(settings.key_length.bytes()) * 8)

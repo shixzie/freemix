@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.120 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.121 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -1491,7 +1491,8 @@ Protocol 2.48 completes Fade to Black and the T-bar (SW-004).
 Protocol 2.49 adds RTMP and SRT network stream inputs (IN-016, IN-017).
 
 - The URL scheme may also be `rtmp`, `rtmps` (an application path segment
-  is required), or `srt` (a port is required; the path is empty or `/`).
+  is required), `srt`, or `omt` (a port is required; the path is empty or
+  `/`; caller only, Protocol 2.121).
 - A network stream configuration adds `mode` (`caller`, `listener`, or
   `rendezvous`; RTMP takes `caller` or `listener`, `rtmps` only `caller`,
   SRT all three, other protocols only `caller`), `latency_ms` (SRT receive
@@ -4524,6 +4525,17 @@ unchanged.
 - Studio's BUSES window shows each bus's two-bar level meter (a -60 to
   0 dBFS scale, the peaks in dBFS on hover) beside its fader.
 - 2.119 is refused.
+
+Protocol 2.121 reads Open Media Transport sources as network stream inputs.
+
+- A network stream URL may name an OMT sender (`omt://host:port`). Its
+  protocol token is `omt`; it is caller-only, carries no transport hint,
+  stream key, stream ID, or passphrase, and its path is empty or `/`. The
+  URL is validated and redacted like every other stream URL. A native daemon
+  reads it with the in-tree OMT receiver (subscription, preview off, stereo
+  audio) instead of ffmpeg; the simulated daemon keeps its synthetic feed.
+  No network-stream field, snapshot shape, or status field changes.
+- 2.120 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

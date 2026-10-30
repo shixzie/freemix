@@ -487,6 +487,9 @@ pub enum NetworkInputError {
     InvalidExecutable,
     /// The receiver's threads or loopback listener could not be created.
     Resources,
+    /// The stream is not one `ffmpeg` can read (an OMT source, which the
+    /// daemon reads with `fm-io-omt` instead).
+    UnsupportedProtocol,
 }
 
 impl fmt::Display for NetworkInputError {
@@ -496,6 +499,9 @@ impl fmt::Display for NetworkInputError {
             Self::InvalidFormat => formatter.write_str("unusable network stream output format"),
             Self::InvalidExecutable => formatter.write_str("invalid ffmpeg executable"),
             Self::Resources => formatter.write_str("network stream receiver resources unavailable"),
+            Self::UnsupportedProtocol => {
+                formatter.write_str("this stream protocol is not read by ffmpeg")
+            }
         }
     }
 }
@@ -855,6 +861,9 @@ impl NetworkReceiver {
             let protocol = stream
                 .validate()
                 .map_err(NetworkInputError::InvalidStream)?;
+            if protocol == StreamProtocol::Omt {
+                return Err(NetworkInputError::UnsupportedProtocol);
+            }
             (Some(protocol), Some(stream))
         };
         if config.sample_rate == 0
@@ -1293,6 +1302,9 @@ fn protocol_arguments(
                 args.extend([format!("-{name}"), value]);
             }
         }
+        // The daemon reads OMT with `fm-io-omt`; `start` refuses it before
+        // an ffmpeg child is built.
+        StreamProtocol::Omt => {}
     }
 }
 
@@ -1414,6 +1426,7 @@ const fn protocol_whitelist(protocol: StreamProtocol) -> &'static str {
         StreamProtocol::Hls => "http,https,tcp,tls,crypto",
         StreamProtocol::Rtmp => "rtmp,rtmps,tcp,tls",
         StreamProtocol::Srt => "srt",
+        StreamProtocol::Omt => "",
     }
 }
 

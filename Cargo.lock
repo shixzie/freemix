@@ -2229,6 +2229,7 @@ dependencies = [
  "fm-io-linux",
  "fm-io-macos",
  "fm-io-network",
+ "fm-io-omt",
  "fm-model",
  "fm-observability",
  "fm-persistence",

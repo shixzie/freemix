@@ -18,6 +18,7 @@ native-media = [
     "dep:fm-io-linux",
     "dep:fm-io-macos",
     "dep:fm-io-network",
+    "dep:fm-io-omt",
     "dep:fm-record",
     "dep:fm-replay",
     "dep:fm-scheduler",
@@ -43,6 +44,7 @@ fm-gpu = { path = "../../crates/gpu/fm-gpu", optional = true }
 fm-io-api = { path = "../../crates/io/fm-io-api" }
 fm-io-linux = { path = "../../crates/io/fm-io-linux", optional = true }
 fm-io-network = { path = "../../crates/io/fm-io-network", optional = true }
+fm-io-omt = { path = "../../crates/io/fm-io-omt", optional = true }
 fm-observability = { path = "../../crates/services/fm-observability" }
 fm-scheduler = { path = "../../crates/media/fm-scheduler", optional = true }
 fm-sim = { path = "../../crates/media/fm-sim" }

@@ -32,14 +32,19 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use fm_codec_ffmpeg::network_input::{NetworkInputConfig, NetworkReceiver, Picture, PulledFrame};
+use fm_codec_ffmpeg::network_input::{
+    KeyLockout, LiveSourceTelemetry, NetworkInputConfig, NetworkReceiver, Picture, PulledFrame,
+};
 use fm_frame::{
     AlphaMode, AudioBlock, ChannelLayout, ChromaLocation, ClockDomainId, ColorMetadata,
     ColorPrimaries, CpuVideoFrame, CpuVideoPayload, CpuVideoPlane, MatrixCoefficients,
     MediaTimestamp, MediaTiming, NormalizedDuration, NormalizedTimestamp, OriginalTimestamp,
     SampleRate, SequenceNumber, SignalRange, TimeBase, TransferFunction, VideoFrameMetadata,
 };
-use fm_types::network_stream::{NetworkStreamConfig, NetworkStreamState, NetworkStreamStatus};
+use fm_io_omt::{Frame as OmtFrame, OmtError, Receiver as OmtReceiver, VideoCodec as OmtCodec};
+use fm_types::network_stream::{
+    NetworkStreamConfig, NetworkStreamState, NetworkStreamStatus, omt_authority,
+};
 use fm_types::{FrameRate, InputId, PixelFormat, VideoDimensions};
 
 use crate::native_files::{blank_picture, output_timing};
@@ -64,9 +69,129 @@ pub(crate) struct PulledStream {
     pub(crate) audio: Option<AudioBlock>,
 }
 
+/// The thing receiving one network stream: ffmpeg for the ffmpeg protocols,
+/// or the in-tree OMT receiver for `omt://`.
+enum StreamReceiver {
+    Network(NetworkReceiver),
+    Omt(OmtStreamReceiver),
+}
+
+impl StreamReceiver {
+    fn pull(&mut self) -> PulledFrame {
+        match self {
+            Self::Network(receiver) => receiver.pull(),
+            Self::Omt(receiver) => receiver.pull(),
+        }
+    }
+
+    fn status(&self) -> NetworkStreamStatus {
+        match self {
+            Self::Network(receiver) => receiver.status(),
+            Self::Omt(receiver) => receiver.status(),
+        }
+    }
+
+    fn sync_telemetry(&self) -> Option<LiveSourceTelemetry> {
+        match self {
+            Self::Network(receiver) => receiver.sync_telemetry(),
+            Self::Omt(_) => None,
+        }
+    }
+
+    fn take_key_lockouts(&self) -> Vec<KeyLockout> {
+        match self {
+            Self::Network(receiver) => receiver.take_key_lockouts(),
+            Self::Omt(_) => Vec::new(),
+        }
+    }
+}
+
+/// One `omt://` stream: the in-tree OMT receiver, its latest picture, audio,
+/// and counters.
+struct OmtStreamReceiver {
+    receiver: OmtReceiver,
+    dimensions: (u32, u32),
+    error: Option<String>,
+    source_channels: u16,
+    dropped: u64,
+    late: u64,
+    reconnects: u32,
+}
+
+impl OmtStreamReceiver {
+    fn start(config: &NetworkStreamConfig, dimensions: (u32, u32)) -> Result<Self, String> {
+        let authority = omt_authority(&config.url).ok_or("the OMT URL has no authority")?;
+        let mut receiver = OmtReceiver::connect_timeout(authority.as_str(), Duration::from_secs(2))
+            .map_err(|error| error.to_string())?;
+        receiver
+            .subscribe(true, true, false)
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            receiver,
+            dimensions,
+            error: None,
+            source_channels: 2,
+            dropped: 0,
+            late: 0,
+            reconnects: 0,
+        })
+    }
+
+    fn pull(&mut self) -> PulledFrame {
+        let mut picture = Picture::Hold;
+        let mut audio = Vec::new();
+        for _ in 0..4 {
+            match self.receiver.receive(Some(Duration::from_millis(1))) {
+                Ok(Some(OmtFrame::Video(video))) => {
+                    if let Some(rgba) = rgba_picture(&video, self.dimensions) {
+                        picture = Picture::New(rgba);
+                        self.error = None;
+                    } else {
+                        self.error = Some("an OMT picture has an unsupported format".to_owned());
+                    }
+                }
+                Ok(Some(OmtFrame::Audio(frame))) => {
+                    self.source_channels = u16::try_from(frame.channels.len()).unwrap_or(u16::MAX);
+                    if frame.channels.len() == 2 {
+                        audio = frame.channels;
+                        self.error = None;
+                    }
+                }
+                Ok(Some(OmtFrame::Metadata(_))) | Ok(None) => {}
+                Err(error) => {
+                    self.error = Some(error.to_string());
+                    if matches!(error, OmtError::Closed | OmtError::Io(_)) {
+                        self.reconnects = self.reconnects.saturating_add(1);
+                        self.late = self.late.saturating_add(1);
+                    }
+                    break;
+                }
+            }
+        }
+        PulledFrame { picture, audio }
+    }
+
+    fn status(&self) -> NetworkStreamStatus {
+        NetworkStreamStatus {
+            state: if self.error.is_some() {
+                NetworkStreamState::Stalled
+            } else {
+                NetworkStreamState::Live
+            },
+            bitrate_bps: 0,
+            buffer_ms: 0,
+            dropped_frames: self.dropped,
+            late_frames: self.late,
+            reconnects: self.reconnects,
+            source_channels: self.source_channels,
+            last_error: self.error.clone(),
+        }
+    }
+}
+
 struct Stream {
     config: NetworkStreamConfig,
-    receiver: Option<NetworkReceiver>,
+    receiver: Option<StreamReceiver>,
     /// Why the receiver could not start, if it could not.
     start_error: Option<String>,
     closed: bool,
@@ -139,7 +264,14 @@ impl NativeNetworkStreams {
         config.channels = 2;
         // A new receiver reports (and logs its URL) afresh.
         stream.reported = None;
-        match NetworkReceiver::start(config) {
+        let started = if omt_authority(&stream.config.url).is_some() {
+            OmtStreamReceiver::start(&stream.config, self.dimensions).map(StreamReceiver::Omt)
+        } else {
+            NetworkReceiver::start(config)
+                .map(StreamReceiver::Network)
+                .map_err(|error| error.to_string())
+        };
+        match started {
             Ok(receiver) => {
                 stream.receiver = Some(receiver);
                 stream.start_error = None;
@@ -234,7 +366,7 @@ impl NativeNetworkStreams {
                 }
                 continue;
             }
-            let Some(receiver) = &stream.receiver else {
+            let Some(receiver) = stream.receiver.as_mut() else {
                 continue;
             };
             let PulledFrame { picture, audio } = receiver.pull();
@@ -355,7 +487,7 @@ fn statuses(
         for lockout in stream
             .receiver
             .as_ref()
-            .map(NetworkReceiver::take_key_lockouts)
+            .map(StreamReceiver::take_key_lockouts)
             .unwrap_or_default()
         {
             eprintln!(
@@ -371,7 +503,7 @@ fn statuses(
             stream
                 .receiver
                 .as_ref()
-                .and_then(NetworkReceiver::sync_telemetry)
+                .and_then(StreamReceiver::sync_telemetry)
                 .as_ref(),
             now,
         );
@@ -424,6 +556,75 @@ fn statuses(
         due.push((input, status));
     }
     due
+}
+
+/// The RGBA picture an OMT video frame shows, when its dimensions match the
+/// program and its codec is one this adapter converts.
+fn rgba_picture(frame: &fm_io_omt::VideoFrame, dimensions: (u32, u32)) -> Option<Vec<u8>> {
+    if frame.width != dimensions.0 || frame.height != dimensions.1 {
+        return None;
+    }
+    let width = usize::try_from(frame.width).ok()?;
+    let height = usize::try_from(frame.height).ok()?;
+    let mut rgba = Vec::with_capacity(width.checked_mul(height)?.checked_mul(4)?);
+    match frame.codec {
+        OmtCodec::Bgra => {
+            if frame.data.len() != width.checked_mul(height)?.checked_mul(4)? {
+                return None;
+            }
+            for pixel in frame.data.as_chunks::<4>().0 {
+                rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+            }
+        }
+        OmtCodec::Uyvy => {
+            if frame.data.len() != width.checked_mul(height)?.checked_mul(2)? {
+                return None;
+            }
+            let bt601 = frame.color_space == fm_io_omt::ColorSpace::Bt601;
+            for pair in frame.data.as_chunks::<4>().0 {
+                let (u, y0, v, y1) = (pair[0], pair[1], pair[2], pair[3]);
+                rgba.extend_from_slice(&yuv_to_rgba(y0, u, v, bt601));
+                rgba.extend_from_slice(&yuv_to_rgba(y1, u, v, bt601));
+            }
+        }
+        OmtCodec::Nv12 => {
+            let luma = width.checked_mul(height)?;
+            if frame.data.len() != luma.checked_add(width.checked_mul(height / 2)?)? {
+                return None;
+            }
+            let (y_plane, uv_plane) = frame.data.split_at(luma);
+            let bt601 = frame.color_space == fm_io_omt::ColorSpace::Bt601;
+            for row in 0..height {
+                for column in 0..width {
+                    let y = y_plane[row * width + column];
+                    let uv = (row / 2) * width + (column / 2) * 2;
+                    let (u, v) = (uv_plane[uv], uv_plane[uv + 1]);
+                    rgba.extend_from_slice(&yuv_to_rgba(y, u, v, bt601));
+                }
+            }
+        }
+        _ => return None,
+    }
+    Some(rgba)
+}
+
+/// BT.601 or BT.709 limited-range Y'CbCr to full-range RGBA.
+fn yuv_to_rgba(y: u8, u: u8, v: u8, bt601: bool) -> [u8; 4] {
+    let c = f32::from(y) - 16.0;
+    let d = f32::from(u) - 128.0;
+    let e = f32::from(v) - 128.0;
+    let (rv, gu, gv, bu) = if bt601 {
+        (1.596, -0.392, -0.813, 2.018)
+    } else {
+        (1.793, -0.213, -0.533, 2.112)
+    };
+    let clamp = |value: f32| value.clamp(0.0, 255.0).round() as u8;
+    [
+        clamp(1.164 * c + rv * e),
+        clamp(1.164 * c + gu * d + gv * e),
+        clamp(1.164 * c + bu * d),
+        u8::MAX,
+    ]
 }
 
 fn picture_bytes(dimensions: (u32, u32)) -> usize {
@@ -525,6 +726,59 @@ mod tests {
         // Once, and never twice for one frame.
         assert!(streams.pull(2).is_empty());
         assert!(streams.pull(3).is_empty());
+    }
+
+    #[test]
+    fn an_omt_url_receives_pictures_and_audio() {
+        let sender = fm_io_omt::Sender::bind("127.0.0.1:0").unwrap();
+        let mut streams = NativeNetworkStreams::start(
+            vec![NetworkStreamInput {
+                input: input(),
+                config: NetworkStreamConfig::new(format!("omt://{}", sender.local_addr())),
+                closed: false,
+            }],
+            FrameRate::new(25, 1).unwrap(),
+            ClockDomainId::new(NonZeroU128::new(1).unwrap()),
+            (2, 2),
+            SampleRate::new(48_000).unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while (sender.subscribers(fm_io_omt::FrameKind::Video) == 0
+            || sender.subscribers(fm_io_omt::FrameKind::Audio) == 0)
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let video = fm_io_omt::VideoFrame::new(
+            fm_io_omt::VideoCodec::Bgra,
+            2,
+            2,
+            (25, 1),
+            vec![1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4],
+        )
+        .unwrap();
+        let audio = fm_io_omt::AudioFrame::new(48_000, vec![vec![0.5; 2], vec![-0.5; 2]]).unwrap();
+        sender.send_video(&video, None).unwrap();
+        sender.send_audio(&audio).unwrap();
+        let mut pulled = None;
+        for frame in 0..200 {
+            if let Some(result) = streams.pull(frame).into_iter().next()
+                && result.video.is_some()
+                && result.audio.is_some()
+            {
+                pulled = Some(result);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let pulled = pulled.expect("an OMT picture and audio");
+        let video = pulled.video.expect("the picture");
+        assert_eq!(video.payload().format(), PixelFormat::Rgba8);
+        assert_eq!(video.payload().plane(0).unwrap().bytes()[..4], [3, 2, 1, 4]);
+        let audio = pulled.audio.expect("the audio");
+        assert_eq!(audio.planes()[0][0], 0.5);
+        assert_eq!(audio.planes()[1][0], -0.5);
+        sender.stop();
     }
 
     #[test]

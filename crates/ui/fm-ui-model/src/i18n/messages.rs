@@ -1084,6 +1084,7 @@ messages! {
     NsDetailKeySet => t("set"),
     NsDetailKeyNone => t("not set"),
     NsDetailSrt => t("SRT {mode}, {latency} ms latency, {encryption}"),
+    NsDetailOmt => t("Open Media Transport source"),
     NsDetailUnencrypted => t("unencrypted"),
     NsDetailAudio => t("Source audio: {count} channels, hearing {pair}"),
     NsBadgeReconnecting => t("RECONNECTING {attempt}"),

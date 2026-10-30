@@ -2,8 +2,8 @@
 //! IN-017).
 //!
 //! A network stream input receives an RTSP, RTP, UDP, TCP, or HTTP(S)
-//! MPEG-TS stream, an HLS playlist, an RTMP(S) stream, or an SRT stream, by
-//! URL, through a bounded jitter buffer, and reconnects with bounded
+//! MPEG-TS stream, an HLS playlist, an RTMP(S) stream, an SRT stream, or an
+//! OMT source (`omt://host:port`) by URL, through a bounded jitter buffer, and reconnects with bounded
 //! exponential backoff. RTMP and SRT inputs call out or listen for a
 //! publisher (`mode`); SRT also meets in rendezvous and carries a
 //! passphrase, key length, stream ID, and latency. Any input may hear one
@@ -49,8 +49,8 @@ pub use fm_types::network_stream::{
     AudioChannels, GiveUp, ListenEndpoint, ListenTransport, MAX_NETWORK_STREAM_INPUTS,
     MAX_STREAM_ERROR_BYTES, MAX_STREAM_URL_BYTES, NetworkStreamConfig, NetworkStreamError,
     NetworkStreamSettings, NetworkStreamState, NetworkStreamStatus, ReconnectPolicy, RtspTransport,
-    SecretEdit, SrtKeyLength, StallSlate, StreamMode, StreamProtocol, StreamUrl, redact_stream_url,
-    validate_stream_url,
+    SecretEdit, SrtKeyLength, StallSlate, StreamMode, StreamProtocol, StreamUrl, omt_authority,
+    redact_stream_url, validate_stream_url,
 };
 
 use crate::WireInputId;

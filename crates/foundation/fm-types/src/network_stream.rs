@@ -108,11 +108,13 @@ pub enum StreamProtocol {
     Rtmp,
     /// `srt://` (IN-017).
     Srt,
+    /// `omt://host:port`: an Open Media Transport sender (IN-019).
+    Omt,
 }
 
 impl StreamProtocol {
     /// Every protocol, in token order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Rtsp,
         Self::Rtp,
         Self::Udp,
@@ -121,6 +123,7 @@ impl StreamProtocol {
         Self::Hls,
         Self::Rtmp,
         Self::Srt,
+        Self::Omt,
     ];
 
     #[must_use]
@@ -134,6 +137,7 @@ impl StreamProtocol {
             Self::Hls => "hls",
             Self::Rtmp => "rtmp",
             Self::Srt => "srt",
+            Self::Omt => "omt",
         }
     }
 
@@ -1020,7 +1024,17 @@ pub fn validate_stream_url(url: &str) -> Result<StreamProtocol, NetworkStreamErr
     // wrong with it is the scheme.
     if !matches!(
         scheme.as_str(),
-        "rtsp" | "rtsps" | "rtp" | "udp" | "tcp" | "http" | "https" | "rtmp" | "rtmps" | "srt"
+        "rtsp"
+            | "rtsps"
+            | "rtp"
+            | "udp"
+            | "tcp"
+            | "http"
+            | "https"
+            | "rtmp"
+            | "rtmps"
+            | "srt"
+            | "omt"
     ) {
         return Err(NetworkStreamError::UnsupportedScheme);
     }
@@ -1040,6 +1054,7 @@ pub fn validate_stream_url(url: &str) -> Result<StreamProtocol, NetworkStreamErr
         "tcp" => StreamProtocol::Tcp,
         "rtmp" | "rtmps" => StreamProtocol::Rtmp,
         "srt" => StreamProtocol::Srt,
+        "omt" => StreamProtocol::Omt,
         "http" | "https" => {
             let path = path.split(['?', '#']).next().unwrap_or_default();
             if path.to_ascii_lowercase().ends_with(".m3u8") {
@@ -1052,7 +1067,11 @@ pub fn validate_stream_url(url: &str) -> Result<StreamProtocol, NetworkStreamErr
     };
     if matches!(
         protocol,
-        StreamProtocol::Tcp | StreamProtocol::Udp | StreamProtocol::Rtp | StreamProtocol::Srt
+        StreamProtocol::Tcp
+            | StreamProtocol::Udp
+            | StreamProtocol::Rtp
+            | StreamProtocol::Srt
+            | StreamProtocol::Omt
     ) && port.is_none()
     {
         return Err(NetworkStreamError::InvalidUrl);
@@ -1061,6 +1080,7 @@ pub fn validate_stream_url(url: &str) -> Result<StreamProtocol, NetworkStreamErr
     // stream ID, latency), never query parameters that could contradict
     // them; an RTMP URL names at least its application.
     if (protocol == StreamProtocol::Srt && !path.is_empty() && path != "/")
+        || (protocol == StreamProtocol::Omt && !path.is_empty() && path != "/")
         || (protocol == StreamProtocol::Rtmp && rtmp_path_segments(url) == 0)
     {
         return Err(NetworkStreamError::InvalidUrl);
@@ -1071,6 +1091,21 @@ pub fn validate_stream_url(url: &str) -> Result<StreamProtocol, NetworkStreamErr
         return Err(NetworkStreamError::InvalidUrl);
     }
     Ok(protocol)
+}
+
+/// The `host[:port]` authority of an `omt://` URL, or `None` for any other
+/// URL. The port is required.
+#[must_use]
+pub fn omt_authority(url: &str) -> Option<String> {
+    if validate_stream_url(url).ok()? != StreamProtocol::Omt {
+        return None;
+    }
+    let (_, rest) = split_scheme(url)?;
+    let (authority, _) = split_authority(rest);
+    let host_port = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    Some(host_port.to_owned())
 }
 
 /// Splits `host[:port]` (a bracketed IPv6 host allowed), checking the port.
@@ -1360,9 +1395,36 @@ mod tests {
             ("http://host/live.ts", StreamProtocol::Http),
             ("https://cdn.example/a/index.M3U8?x=1", StreamProtocol::Hls),
             ("http://[::1]:8080/live.m3u8", StreamProtocol::Hls),
+            ("omt://192.168.1.5:6500", StreamProtocol::Omt),
+            ("OMT://studio.local:6500/", StreamProtocol::Omt),
         ] {
             assert_eq!(validate_stream_url(url), Ok(protocol), "{url}");
         }
+    }
+
+    #[test]
+    fn omt_urls_name_their_authority() {
+        assert_eq!(
+            omt_authority("omt://127.0.0.1:6500"),
+            Some("127.0.0.1:6500".to_owned())
+        );
+        assert_eq!(
+            omt_authority("omt://[::1]:6500"),
+            Some("[::1]:6500".to_owned())
+        );
+        assert_eq!(omt_authority("omt://host"), None);
+        assert_eq!(omt_authority("rtsp://host:554"), None);
+        let config = NetworkStreamConfig::new("omt://host:6500");
+        assert_eq!(config.validate(), Ok(StreamProtocol::Omt));
+        let mut listener = config.clone();
+        listener.settings.mode = StreamMode::Listener;
+        assert_eq!(
+            listener.validate(),
+            Err(NetworkStreamError::ModeUnsupported)
+        );
+        let mut passphrase = config;
+        passphrase.passphrase = Some("abcdefghijk".to_owned());
+        assert_eq!(passphrase.validate(), Err(NetworkStreamError::Passphrase));
     }
 
     #[test]
