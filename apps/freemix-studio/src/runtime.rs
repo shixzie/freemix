@@ -4,7 +4,8 @@ use fm_client::{
     Client, ConnectionState, ReconnectBackoff, SessionEvent, TcpSession, TcpSessionError,
 };
 use fm_protocol::{
-    CommandMessage, CommandPayload, HeartbeatMessage, ScenePreviewRequest, TitlePreviewRequest,
+    CommandMessage, CommandPayload, HeartbeatMessage, ReplayPreviewRequest, ScenePreviewRequest,
+    TitlePreviewRequest,
 };
 use fm_ui_egui::{DisplayOutputAnswer, TitleAnimationRefusal, TitleUpdate};
 
@@ -231,6 +232,18 @@ impl StudioRuntime {
         let sent = self.transport == ControlTransport::Tcp
             && self.session.is_connected()
             && self.session.send_scene_preview(request).is_ok();
+        if !sent {
+            self.preview_failed = Some(request_id);
+        }
+    }
+
+    /// Sends one exact Replay multiview request (OR-014), failing it for
+    /// the UI like [`Self::send_title_preview`] when it cannot go out.
+    pub(crate) fn send_replay_preview(&mut self, request: ReplayPreviewRequest) {
+        let request_id = request.request_id.clone();
+        let sent = self.transport == ControlTransport::Tcp
+            && self.session.is_connected()
+            && self.session.send_replay_preview(request).is_ok();
         if !sent {
             self.preview_failed = Some(request_id);
         }

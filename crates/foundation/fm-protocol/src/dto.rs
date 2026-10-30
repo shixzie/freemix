@@ -1419,6 +1419,11 @@ pub struct ReplayPreviewRequest {
 /// `replay_preview_frame`, `animation_revision` being 0 and `draft` false.
 pub type ReplayPreviewFrameMessage = TitlePreviewFrameMessage;
 
+/// One fully assembled and decoded Replay multiview: a
+/// [`TitlePreviewImage`] whose `input` is the Replay input and whose
+/// `animation_revision` is 0.
+pub type ReplayPreviewImage = TitlePreviewImage;
+
 /// One fully assembled and decoded scene preview: a [`TitlePreviewImage`]
 /// whose `input` is the Scene input.
 pub type ScenePreviewImage = TitlePreviewImage;

@@ -243,8 +243,12 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
         // Exact previews (title or scene) are latest-wins: a newer request
         // replaces a queued one.
         (
-            current @ (StudioIntent::TitlePreview(_) | StudioIntent::ScenePreview(_)),
-            incoming @ (StudioIntent::TitlePreview(_) | StudioIntent::ScenePreview(_)),
+            current @ (StudioIntent::TitlePreview(_)
+            | StudioIntent::ScenePreview(_)
+            | StudioIntent::ReplayPreview(_)),
+            incoming @ (StudioIntent::TitlePreview(_)
+            | StudioIntent::ScenePreview(_)
+            | StudioIntent::ReplayPreview(_)),
         ) => {
             *current = incoming;
             true
@@ -487,6 +491,7 @@ impl StudioApp {
         let preview = match &intent {
             StudioIntent::TitlePreview(request) => Some(request.request_id.clone()),
             StudioIntent::ScenePreview(request) => Some(request.request_id.clone()),
+            StudioIntent::ReplayPreview(request) => Some(request.request_id.clone()),
             _ => None,
         };
         let result = self
@@ -506,7 +511,11 @@ impl StudioApp {
             // An animation draft stays unsaved and is sent again.
             self.shell.abandon_animation_requests();
             if let Some(request_id) = preview {
-                self.shell.title_preview_unsent(&request_id);
+                if request_id.starts_with("replay-preview") {
+                    self.state.error = Some("the Replay multiview request was not sent".into());
+                } else {
+                    self.shell.title_preview_unsent(&request_id);
+                }
             }
             self.handle_enqueue_error(error);
         }
@@ -1333,6 +1342,7 @@ fn run_worker(
             Ok(WorkerRequest::Intent(
                 request @ (StudioIntent::TitlePreview(_)
                 | StudioIntent::ScenePreview(_)
+                | StudioIntent::ReplayPreview(_)
                 | StudioIntent::RequestDisplayInventory
                 | StudioIntent::RequestCaptureDevices
                 | StudioIntent::RequestSystemAudioDevices
@@ -1389,7 +1399,8 @@ fn run_worker(
                 Ok(Some(
                     SessionEvent::MonitorFrame { complete, .. }
                     | SessionEvent::TitlePreview { complete, .. }
-                    | SessionEvent::ScenePreview { complete, .. },
+                    | SessionEvent::ScenePreview { complete, .. }
+                    | SessionEvent::ReplayPreview { complete, .. },
                 )) => complete,
                 Ok(Some(SessionEvent::ServerError(error)))
                     if animation::preview_error_id(&error).is_some() =>
@@ -1438,6 +1449,7 @@ fn run_worker(
             Ok(WorkerRequest::Intent(
                 request @ (StudioIntent::TitlePreview(_)
                 | StudioIntent::ScenePreview(_)
+                | StudioIntent::ReplayPreview(_)
                 | StudioIntent::RequestDisplayInventory
                 | StudioIntent::RequestCaptureDevices
                 | StudioIntent::RequestSystemAudioDevices
@@ -1602,6 +1614,7 @@ fn handle_preview_request(
     let request_id = match &request {
         StudioIntent::TitlePreview(request) => request.request_id.clone(),
         StudioIntent::ScenePreview(request) => request.request_id.clone(),
+        StudioIntent::ReplayPreview(request) => request.request_id.clone(),
         _ => return true,
     };
     if recovery.active() {
@@ -1610,6 +1623,7 @@ fn handle_preview_request(
         match request {
             StudioIntent::TitlePreview(request) => runtime.send_title_preview(request),
             StudioIntent::ScenePreview(request) => runtime.send_scene_preview(request),
+            StudioIntent::ReplayPreview(request) => runtime.send_replay_preview(request),
             _ => {}
         }
     }
@@ -1631,6 +1645,7 @@ fn handle_worker_intent(
     let intent = match intent {
         request @ (StudioIntent::TitlePreview(_)
         | StudioIntent::ScenePreview(_)
+        | StudioIntent::ReplayPreview(_)
         | StudioIntent::RequestDisplayInventory
         | StudioIntent::RequestCaptureDevices
         | StudioIntent::RequestSystemAudioDevices
@@ -1957,7 +1972,8 @@ fn handle_heartbeat_timeout(
                         | SessionEvent::ScreenCaptureTargets { .. } => Some(true),
                         SessionEvent::MonitorFrame { complete, .. }
                         | SessionEvent::TitlePreview { complete, .. }
-                        | SessionEvent::ScenePreview { complete, .. } => Some(*complete),
+                        | SessionEvent::ScenePreview { complete, .. }
+                        | SessionEvent::ReplayPreview { complete, .. } => Some(*complete),
                         SessionEvent::ServerError(error)
                             if animation::preview_error_id(error).is_some() =>
                         {
@@ -2521,7 +2537,8 @@ fn receive_command_event(
         // counted and publish only once a frame completes.
         if let SessionEvent::MonitorFrame { complete, .. }
         | SessionEvent::TitlePreview { complete, .. }
-        | SessionEvent::ScenePreview { complete, .. } = event
+        | SessionEvent::ScenePreview { complete, .. }
+        | SessionEvent::ReplayPreview { complete, .. } = event
         {
             if complete {
                 publication.update(runtime, *deferred_rejections)?;
@@ -3018,7 +3035,9 @@ fn intent_payload(
         | StudioIntent::SceneAnimation(payload)
         | StudioIntent::AnimationPreset(payload) => payload,
         StudioIntent::SceneLayer(edit) => CommandPayload::SceneLayer(edit),
-        StudioIntent::TitlePreview(_) | StudioIntent::ScenePreview(_) => {
+        StudioIntent::TitlePreview(_)
+        | StudioIntent::ScenePreview(_)
+        | StudioIntent::ReplayPreview(_) => {
             return Err("An exact preview request is not a command".to_owned());
         }
         StudioIntent::RequestDisplayInventory => {
@@ -3451,7 +3470,18 @@ fn runtime_state(runtime: &mut StudioRuntime, error: Option<String>) -> StudioUi
             (None, None) => None,
         };
     }
-    state.title_preview_failed = runtime.preview_failure().map(str::to_owned);
+    state.title_preview_failed = runtime
+        .preview_failure()
+        .filter(|request| !request.starts_with("replay-preview"))
+        .map(str::to_owned);
+    state.replay_preview = runtime
+        .session()
+        .latest_replay_preview()
+        .map(|(image, _)| image.clone());
+    state.replay_preview_failed = runtime
+        .preview_failure()
+        .filter(|request| request.starts_with("replay-preview"))
+        .map(str::to_owned);
     state.title_animation_refusal = runtime.animation_refusal().cloned();
     state
         .display_output_answers
@@ -8692,6 +8722,20 @@ mod tests {
             let queued: Vec<_> = pending.intents.iter().cloned().collect();
             assert_eq!(queued, vec![StudioIntent::ScenePreview(scene.clone())]);
             assert!(intent_payload(StudioIntent::ScenePreview(scene), None).is_err());
+            // A Replay multiview is the same latest-wins canvas.
+            let replay = fm_protocol::ReplayPreviewRequest {
+                protocol: fm_protocol::CURRENT_PROTOCOL_VERSION,
+                request_id: "replay-preview-4".to_owned(),
+                input: title_input(),
+                width: 320,
+                height: 180,
+            };
+            pending
+                .push(StudioIntent::ReplayPreview(replay.clone()))
+                .unwrap();
+            let queued: Vec<_> = pending.intents.iter().cloned().collect();
+            assert_eq!(queued, vec![StudioIntent::ReplayPreview(replay.clone())]);
+            assert!(intent_payload(StudioIntent::ReplayPreview(replay), None).is_err());
         }
     }
 }

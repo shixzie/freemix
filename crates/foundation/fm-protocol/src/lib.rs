@@ -127,7 +127,7 @@ pub use dto::{
 pub use dto::{
     MAX_SCENE_ANIMATION_BYTES, MAX_SCENE_CANVAS_SIDE, MAX_SCENE_ENABLED_LAYERS,
     MAX_SCENE_LAYER_NAME_BYTES, MAX_SCENE_LAYOUT_BYTES, MAX_SCENE_LAYOUT_LAYERS,
-    MAX_SCENE_NAME_BYTES, ReplayPreviewFrameMessage, ReplayPreviewRequest,
+    MAX_SCENE_NAME_BYTES, ReplayPreviewFrameMessage, ReplayPreviewImage, ReplayPreviewRequest,
     SceneAnimationStateMessage, SceneLayoutStateMessage, ScenePreviewFrameMessage,
     ScenePreviewImage, ScenePreviewRequest, WireSceneClip, WireSceneId, WireSceneLayerId,
     WireSceneLayerOutline, WireSceneLayerSource, WireSceneLayout,

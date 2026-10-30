@@ -10448,6 +10448,30 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReplayTakeHover,
         t("Cortar esta entrada de repetición a Programa"),
     ),
+    (Msg::ReplayQuad, t("CUÁDRUPLE")),
+    (
+        Msg::ReplayQuadHover,
+        t(
+            "Decodificar los cuatro primeros ángulos del evento cargado y mostrarlos en una cuadrícula 2x2",
+        ),
+    ),
+    (
+        Msg::ReplayQuadReasonTcp,
+        t("las vistas cuádruples necesitan una conexión directa con el servidor"),
+    ),
+    (Msg::ReplayQuadReasonNoEvent, t("no hay nada cargado")),
+    (Msg::ReplayMultiview, t("Multivista de repetición")),
+    (Msg::ReplayMultiviewCaption, t("Multivista · {name}")),
+    (
+        Msg::ReplayMultiviewHover,
+        t(
+            "Los ángulos del evento cargado, decodificados de sus archivos de segmento y compuestos en una cuadrícula 2x2",
+        ),
+    ),
+    (
+        Msg::ReplayMultiviewFailed,
+        t("La multivista de repetición fue rechazada o se perdió ({request})"),
+    ),
     (Msg::ReplayStorage, t("Almacenamiento")),
     (
         Msg::ReplayStorageHover,

@@ -9,10 +9,10 @@ use fm_protocol::{
     DiagnosticsRequest, DiagnosticsResponse, DurableGap, ErrorMessage, EventMessage,
     HandshakeOutcome, HeartbeatAcknowledgementMessage, InputThumbnailImage, InputThumbnailMessage,
     LineDecoder, MonitorFrameAssembler, MonitorFrameMessage, MonitorImage, MonitorTap,
-    RecorderStatusMessage, RuntimeEventMessage, ScenePreviewImage, ScenePreviewRequest,
-    SourceSyncStatusMessage, StreamStatusMessage, TitlePreviewAssembler, TitlePreviewFrameMessage,
-    TitlePreviewImage, TitlePreviewRequest, WireInputId, WireMessage, decode_input_thumbnail,
-    encode_line,
+    RecorderStatusMessage, ReplayPreviewImage, ReplayPreviewRequest, RuntimeEventMessage,
+    ScenePreviewImage, ScenePreviewRequest, SourceSyncStatusMessage, StreamStatusMessage,
+    TitlePreviewAssembler, TitlePreviewFrameMessage, TitlePreviewImage, TitlePreviewRequest,
+    WireInputId, WireMessage, decode_input_thumbnail, encode_line,
 };
 
 #[cfg(feature = "std-websocket")]
@@ -467,6 +467,13 @@ pub enum SessionEvent {
         request_id: String,
         complete: bool,
     },
+    /// One valid `replay_preview_frame` part arrived for `request_id`
+    /// (OR-014). When `complete` is `true` it finished its group and the
+    /// decoded image is available from [`TcpSession::latest_replay_preview`].
+    ReplayPreview {
+        request_id: String,
+        complete: bool,
+    },
     DurableGap {
         gap: DurableGap,
     },
@@ -576,6 +583,8 @@ pub struct TcpSession {
     latest_title_preview: Option<(TitlePreviewImage, Instant)>,
     scene_preview_assembler: TitlePreviewAssembler,
     latest_scene_preview: Option<(ScenePreviewImage, Instant)>,
+    replay_preview_assembler: TitlePreviewAssembler,
+    latest_replay_preview: Option<(ReplayPreviewImage, Instant)>,
     /// The latest decoded thumbnail per input and when it arrived
     /// (Protocol 2.59), at most [`MAX_RETAINED_INPUT_THUMBNAILS`].
     latest_input_thumbnails: BTreeMap<WireInputId, (InputThumbnailImage, Instant)>,
@@ -726,6 +735,8 @@ impl TcpSession {
             latest_title_preview: None,
             scene_preview_assembler: TitlePreviewAssembler::new(),
             latest_scene_preview: None,
+            replay_preview_assembler: TitlePreviewAssembler::new(),
+            latest_replay_preview: None,
             latest_input_thumbnails: BTreeMap::new(),
             latest_item_thumbnails: BTreeMap::new(),
             input_thumbnails_subscribed: false,
@@ -894,6 +905,15 @@ impl TcpSession {
             .map(|(image, received_at)| (image, *received_at))
     }
 
+    /// The latest fully assembled and decoded Replay multiview (OR-014)
+    /// and when it completed. Cleared on disconnect.
+    #[must_use]
+    pub fn latest_replay_preview(&self) -> Option<(&ReplayPreviewImage, Instant)> {
+        self.latest_replay_preview
+            .as_ref()
+            .map(|(image, received_at)| (image, *received_at))
+    }
+
     /// Sends one exact scene preview request (Protocol 2.32). The answer
     /// arrives later as [`SessionEvent::ScenePreview`] parts, or as a
     /// [`SessionEvent::ServerError`] naming the same `request_id`. Previews
@@ -912,6 +932,26 @@ impl TcpSession {
             return Err(TcpSessionError::NotConnected);
         }
         self.send_wire_wait(&WireMessage::ScenePreviewRequest(request), None)?;
+        self.flush_wire_wait(None)
+    }
+
+    /// Sends one exact Replay multiview request (OR-014). The answer
+    /// arrives later as [`SessionEvent::ReplayPreview`] parts, or as a
+    /// [`SessionEvent::ServerError`] naming the same `request_id`. Previews
+    /// are lossy: the server may answer only the latest of several.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when not connected or when encoding or writing the
+    /// request fails.
+    pub fn send_replay_preview(
+        &mut self,
+        request: ReplayPreviewRequest,
+    ) -> Result<(), TcpSessionError> {
+        if self.connection.is_none() {
+            return Err(TcpSessionError::NotConnected);
+        }
+        self.send_wire_wait(&WireMessage::ReplayPreviewRequest(request), None)?;
         self.flush_wire_wait(None)
     }
 
@@ -1681,6 +1721,9 @@ impl TcpSession {
                     WireMessage::ScenePreviewFrame(frame) => {
                         self.validate_scene_preview(&frame)?;
                     }
+                    WireMessage::ReplayPreviewFrame(frame) => {
+                        self.validate_replay_preview(&frame)?;
+                    }
                     // A page answer is lossy; the panel asks again.
                     WireMessage::PagedPage(_) => {}
                     _ => {
@@ -1796,12 +1839,13 @@ impl TcpSession {
                     input: thumbnail.input,
                 })
             }
-            WireMessage::TitlePreviewFrame(frame) => self.preview_part(frame, false),
+            WireMessage::TitlePreviewFrame(frame) => self.preview_part(frame, PreviewKind::Title),
+            WireMessage::ReplayPreviewFrame(frame) => self.preview_part(frame, PreviewKind::Replay),
             WireMessage::PagedPage(message) => {
                 self.keep_paged_page(&message);
                 Ok(SessionEvent::PagedPage { message })
             }
-            WireMessage::ScenePreviewFrame(frame) => self.preview_part(frame, true),
+            WireMessage::ScenePreviewFrame(frame) => self.preview_part(frame, PreviewKind::Scene),
             WireMessage::DurableGap(gap) => self.durable_gap(gap),
             WireMessage::Error(error)
                 if error.error.code == "server_shutting_down" && error.error.retryable =>
@@ -1871,7 +1915,6 @@ impl TcpSession {
             | WireMessage::TitlePreviewRequest(_)
             | WireMessage::ScenePreviewRequest(_)
             | WireMessage::ReplayPreviewRequest(_)
-            | WireMessage::ReplayPreviewFrame(_)
             | WireMessage::Snapshot(_)
             | WireMessage::HandshakeRequest(_)
             | WireMessage::HandshakeResponse(_)
@@ -2127,6 +2170,8 @@ impl TcpSession {
         self.latest_title_preview = None;
         self.scene_preview_assembler.reset();
         self.latest_scene_preview = None;
+        self.replay_preview_assembler.reset();
+        self.latest_replay_preview = None;
         self.latest_input_thumbnails.clear();
         self.latest_item_thumbnails.clear();
         self.input_thumbnails_subscribed = false;
@@ -2259,9 +2304,11 @@ impl TcpSession {
             .any(MonitorFrameAssembler::is_in_progress);
         let preview_open = self.title_preview_assembler.is_in_progress();
         let scene_preview_open = self.scene_preview_assembler.is_in_progress();
+        let replay_preview_open = self.replay_preview_assembler.is_in_progress();
         if (monitor_open && !matches!(message, WireMessage::MonitorFrame(_)))
             || (preview_open && !matches!(message, WireMessage::TitlePreviewFrame(_)))
             || (scene_preview_open && !matches!(message, WireMessage::ScenePreviewFrame(_)))
+            || (replay_preview_open && !matches!(message, WireMessage::ReplayPreviewFrame(_)))
         {
             self.transition_disconnect();
             return Err(TcpSessionError::UnexpectedMessage);
@@ -2432,24 +2479,34 @@ impl TcpSession {
     }
 }
 
+/// Which exact preview record a part belongs to.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreviewKind {
+    Title,
+    Scene,
+    Replay,
+}
+
 impl TcpSession {
-    /// The event for one received `title_preview_frame` part, or with
-    /// `scene` a `scene_preview_frame` part.
+    /// The event for one received exact preview part.
     fn preview_part(
         &mut self,
         frame: TitlePreviewFrameMessage,
-        scene: bool,
+        kind: PreviewKind,
     ) -> Result<SessionEvent, TcpSessionError> {
-        Ok(if scene {
-            SessionEvent::ScenePreview {
-                complete: self.validate_scene_preview(&frame)?,
-                request_id: frame.request_id,
-            }
-        } else {
-            SessionEvent::TitlePreview {
+        Ok(match kind {
+            PreviewKind::Title => SessionEvent::TitlePreview {
                 complete: self.validate_title_preview(&frame)?,
                 request_id: frame.request_id,
-            }
+            },
+            PreviewKind::Scene => SessionEvent::ScenePreview {
+                complete: self.validate_scene_preview(&frame)?,
+                request_id: frame.request_id,
+            },
+            PreviewKind::Replay => SessionEvent::ReplayPreview {
+                complete: self.validate_replay_preview(&frame)?,
+                request_id: frame.request_id,
+            },
         })
     }
 
@@ -2472,6 +2529,34 @@ impl TcpSession {
             Ok(None) => Ok(false),
             Ok(Some(image)) => {
                 self.latest_scene_preview = Some((image, Instant::now()));
+                Ok(true)
+            }
+            Err(_) => {
+                self.transition_disconnect();
+                Err(TcpSessionError::UnexpectedMessage)
+            }
+        }
+    }
+
+    /// Validates and assembles one `replay_preview_frame` part, returning
+    /// whether it completed its group. Any violation disconnects the
+    /// session.
+    fn validate_replay_preview(
+        &mut self,
+        frame: &TitlePreviewFrameMessage,
+    ) -> Result<bool, TcpSessionError> {
+        let valid_identity = self
+            .client
+            .session()
+            .is_some_and(|session| session.server == frame.server);
+        if !valid_identity {
+            self.transition_disconnect();
+            return Err(TcpSessionError::UnexpectedMessage);
+        }
+        match self.replay_preview_assembler.push(frame) {
+            Ok(None) => Ok(false),
+            Ok(Some(image)) => {
+                self.latest_replay_preview = Some((image, Instant::now()));
                 Ok(true)
             }
             Err(_) => {

@@ -21,8 +21,9 @@ use egui::{CentralPanel, Event, Frame, Key, Margin, Modifiers, Panel, Stroke, Ui
 use fm_protocol::{
     AudioMetersMessage, CommandPayload, LiveInputSource, ManualTransitionKind,
     ManualTransitionPosition, MonitorImage, RecorderRealizedState, RecorderStatusSample,
-    ScenePreviewRequest, StreamStatusMessage, TitlePreviewImage, TitlePreviewRequest,
-    WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId, WireStreamTargetId,
+    ReplayPreviewRequest, ScenePreviewRequest, StreamStatusMessage, TitlePreviewImage,
+    TitlePreviewRequest, WireOverlayChannelId, WireRecorderSlot, WireStingerSlotId,
+    WireStreamTargetId,
 };
 use fm_protocol::{
     AutoTransitionKind, MediaOperation, OverlayTransitionKind, TransitionFavoriteStatus,
@@ -507,6 +508,10 @@ pub enum StudioIntent {
     /// [`StudioUiState::title_preview`], a refusal in
     /// [`StudioUiState::title_preview_failed`].
     ScenePreview(ScenePreviewRequest),
+    /// Asks for a Replay input's four-angle view (Protocol 2.126). Not a
+    /// command: the answer arrives in [`StudioUiState::replay_preview`] or
+    /// [`StudioUiState::replay_preview_failed`].
+    ReplayPreview(ReplayPreviewRequest),
 }
 
 impl StudioIntent {
@@ -732,6 +737,10 @@ pub struct StudioUiState {
     pub title_preview: Option<TitlePreviewImage>,
     /// The `request_id` of the latest refused or lost exact title preview.
     pub title_preview_failed: Option<String>,
+    /// The latest assembled Replay multiview of this session (OR-014).
+    pub replay_preview: Option<TitlePreviewImage>,
+    /// The `request_id` of the latest refused or lost Replay multiview.
+    pub replay_preview_failed: Option<String>,
 }
 
 impl StudioUiState {
@@ -790,6 +799,8 @@ impl StudioUiState {
             title_previews: false,
             title_preview: None,
             title_preview_failed: None,
+            replay_preview: None,
+            replay_preview_failed: None,
         }
     }
 

@@ -2478,6 +2478,18 @@ fn ready_over(model: &ClientModel, operator: bool) -> StudioUiState {
     state.source_sync = Some(source_sync());
     state.health = Some(Box::new(daemon_health()));
     state.replay = Some(Box::new(replay_status()));
+    state.title_previews = true;
+    state.replay_preview = Some(fm_protocol::TitlePreviewImage {
+        request_id: "replay-preview-4-1-2500".into(),
+        input: wire(4),
+        animation_revision: 0,
+        draft: false,
+        width: 2,
+        height: 2,
+        rgba: std::sync::Arc::from(vec![
+            255_u8, 0, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255, 0, 255, 0, 255,
+        ]),
+    });
     state.set_reel_status(reel_status());
     // GX-006: the lower third plays its In phase on air.
     state.title_phases = Some(fm_protocol::TitlePhasesMessage {

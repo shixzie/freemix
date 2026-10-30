@@ -29,13 +29,14 @@
 
 use egui::{Checkbox, ComboBox, DragValue, Id, RichText, TextEdit, Ui};
 use fm_protocol::{
-    MAX_REEL_CLIPS, MAX_REEL_DISSOLVE_FRAMES, MAX_REEL_EXPORTS, MAX_REEL_MUSIC_PERCENT,
-    MAX_REEL_TRIM_FRAMES, MAX_REELS, MAX_REPLAY_AUTO_RETURN_FRAMES, MAX_REPLAY_PLAYLIST_ENTRIES,
-    MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS, MIN_REPLAY_RETENTION_SECONDS,
-    REPLAY_LAST_SECONDS, ReelClip, ReelExportState, ReelExportStatus, ReelMusic, ReelOperation,
-    ReelSpec, ReelStatus, ReplayEventStatus, ReplayOperation, ReplayPlayerStatus,
-    ReplayPlaylistEntry, ReplaySettings, ReplaySpeed, ReplayStatusMessage, ReplayStorageLevel,
-    ReplayStorageStatus, reel_export_path_is_valid, reel_name_is_valid, replay_event_name_is_valid,
+    CURRENT_PROTOCOL_VERSION, MAX_REEL_CLIPS, MAX_REEL_DISSOLVE_FRAMES, MAX_REEL_EXPORTS,
+    MAX_REEL_MUSIC_PERCENT, MAX_REEL_TRIM_FRAMES, MAX_REELS, MAX_REPLAY_AUTO_RETURN_FRAMES,
+    MAX_REPLAY_PLAYLIST_ENTRIES, MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS,
+    MIN_REPLAY_RETENTION_SECONDS, REPLAY_LAST_SECONDS, ReelClip, ReelExportState, ReelExportStatus,
+    ReelMusic, ReelOperation, ReelSpec, ReelStatus, ReplayEventStatus, ReplayOperation,
+    ReplayPlayerStatus, ReplayPlaylistEntry, ReplayPreviewRequest, ReplaySettings, ReplaySpeed,
+    ReplayStatusMessage, ReplayStorageLevel, ReplayStorageStatus, reel_export_path_is_valid,
+    reel_name_is_valid, replay_event_name_is_valid,
 };
 use fm_types::{FrameRate, InputId};
 
@@ -412,6 +413,66 @@ fn name_of(state: &StudioUiState, l: Locale, input: InputId) -> String {
     )
 }
 
+thread_local! {
+    /// The uploaded 2x2 Replay multiview, by request id, so a repaint does
+    /// not upload the same picture again.
+    static REPLAY_MULTIVIEW_TEXTURE: core::cell::RefCell<Option<(String, egui::TextureHandle)>> =
+        const { core::cell::RefCell::new(None) };
+}
+
+/// The latest Replay multiview image, when one has arrived or failed.
+fn draw_replay_multiview(ui: &mut Ui, l: Locale, state: &StudioUiState) {
+    if let Some(request_id) = &state.replay_preview_failed {
+        ui.label(caption(l.format(
+            Msg::ReplayMultiviewFailed,
+            &[("request", Arg::Str(request_id))],
+        )));
+        return;
+    }
+    let Some(image) = &state.replay_preview else {
+        return;
+    };
+    let texture = REPLAY_MULTIVIEW_TEXTURE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        let outdated = cache.as_ref().is_none_or(|(id, _)| id != &image.request_id);
+        if outdated {
+            #[allow(clippy::cast_possible_truncation)] // previews are at most 640x360
+            let size = [u32::from(image.width), u32::from(image.height)];
+            let color =
+                egui::ColorImage::from_rgba_unmultiplied(size.map(|v| v as usize), &image.rgba);
+            *cache = Some((
+                image.request_id.clone(),
+                ui.ctx().load_texture(
+                    image.request_id.clone(),
+                    color,
+                    egui::TextureOptions::LINEAR,
+                ),
+            ));
+        }
+        cache.as_ref().map(|(_, texture)| texture.clone())
+    });
+    let Some(texture) = texture else {
+        return;
+    };
+    let name = name_of(state, l, image.input.to_domain());
+    ui.horizontal(|ui| {
+        ui.label(section_label(l.text(Msg::ReplayMultiview)));
+        ui.label(caption(l.format(
+            Msg::ReplayMultiviewCaption,
+            &[("name", Arg::Str(&name))],
+        )))
+        .on_hover_text(l.text(Msg::ReplayMultiviewHover));
+    });
+    let width = ui.available_width().min(320.0);
+    let aspect = f32::from(image.height) / f32::from(image.width.max(1));
+    ui.add(
+        egui::Image::new(&texture)
+            .fit_to_exact_size(egui::vec2(width, width * aspect))
+            .sense(egui::Sense::hover()),
+    )
+    .on_hover_text(l.text(Msg::ReplayMultiviewHover));
+}
+
 /// Free space on the replay root and the recording time left at the write
 /// rate the retained segments show (Protocol 2.125, OR-014).
 fn draw_storage(ui: &mut Ui, l: Locale, storage: ReplayStorageStatus) {
@@ -468,6 +529,7 @@ pub(crate) fn draw_replay(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<
     if let Some(storage) = status.storage {
         draw_storage(ui, l, storage);
     }
+    draw_replay_multiview(ui, l, state);
     ui.add_space(2.0);
     if status.players.iter().any(|player| player.playing) {
         ui.ctx()
@@ -1030,6 +1092,31 @@ fn draw_player(
             ui.label(caption(
                 l.format(Msg::ReplayLinkedTo, &[("name", Arg::Str(&name))]),
             ));
+        }
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let reason = block
+            .or_else(|| (!state.title_previews).then_some(Msg::ReplayQuadReasonTcp.en()))
+            .or_else(|| event.is_none().then_some(Msg::ReplayQuadReasonNoEvent.en()));
+        if ui
+            .add_enabled(reason.is_none(), small_button(l.text(Msg::ReplayQuad)))
+            .hint(l.text(Msg::ReplayQuadHover), reason.unwrap_or_default())
+            .clicked()
+            && let Some(event) = event
+        {
+            intents.push(StudioIntent::ReplayPreview(ReplayPreviewRequest {
+                protocol: CURRENT_PROTOCOL_VERSION,
+                request_id: format!(
+                    "replay-preview-{}-{}-{}",
+                    input,
+                    event.id,
+                    player.frame.unwrap_or(0)
+                ),
+                input: player.input,
+                width: 320,
+                height: 180,
+            }));
         }
     });
     draw_playlist(ui, l, state, status, player, block, intents);
@@ -2320,6 +2407,38 @@ mod tests {
         let _ = context.run_ui(egui::RawInput::default(), |ui| {
             draw_replay(ui, &state, &mut intents);
         });
+        assert_eq!(intents, Vec::new());
+    }
+
+    /// OR-014: a delivered Replay multiview draws with its caption.
+    #[test]
+    fn a_replay_multiview_draws_with_its_caption() {
+        fn painted_text(output: &egui::FullOutput) -> Vec<String> {
+            fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
+                match shape {
+                    egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+                    egui::Shape::Vec(shapes) => {
+                        for shape in shapes {
+                            collect(shape, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut out = Vec::new();
+            for clipped in &output.shapes {
+                collect(&clipped.shape, &mut out);
+            }
+            out
+        }
+        let state = crate::hover_audit::bank_fixture();
+        let context = egui::Context::default();
+        let mut intents = Vec::new();
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            draw_replay(ui, &state, &mut intents);
+        });
+        let text = painted_text(&output).join("\n");
+        assert!(text.contains("Multiview ·"), "{text}");
         assert_eq!(intents, Vec::new());
     }
 

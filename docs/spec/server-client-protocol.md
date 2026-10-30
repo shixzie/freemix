@@ -4612,8 +4612,10 @@ Protocol 2.126 adds exact Replay multiview snapshots (OR-014).
   `title_preview_frame`'s fields, `animation_revision` 0 and `draft` false.
   A Replay input with nothing cued is refused `not_cued`; a live-edge angle
   with no closed segment yet stays black.
-- `freemix-cli remote-replay-multiview <address> <input> --output <file.png>
-  [--width <n>] [--height <n>]` assembles the parts and writes the PNG.
+- Studio's Replay panel has a QUAD key on each cued Replay input and draws
+  the assembled grid under a caption; `freemix-cli remote-replay-multiview
+  <address> <input> --output <file.png> [--width <n>] [--height <n>]`
+  assembles the parts and writes the PNG.
 - 2.125 is refused.
 
 Command results are ordered before any event bearing the same accepted revision

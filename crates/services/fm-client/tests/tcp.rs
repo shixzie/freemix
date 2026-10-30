@@ -1724,6 +1724,81 @@ fn title_previews_are_requested_assembled_and_atomic() {
     server_thread.join().unwrap();
 }
 
+/// OR-014, Protocol 2.126: a Replay multiview request goes out exactly and
+/// its frame parts assemble into the decoded image.
+#[test]
+fn replay_previews_are_requested_assembled_and_atomic() {
+    use fm_protocol::{ReplayPreviewRequest, encode_qoi_rgba, title_preview_parts};
+
+    let width = 320_u16;
+    let height = 180_u16;
+    let rgba: Vec<u8> = (0..u32::from(width) * u32::from(height))
+        .flat_map(|index| {
+            let [a, b, c, d] = index.wrapping_mul(2_654_435_761).to_le_bytes();
+            [a, b, c, d | 1]
+        })
+        .collect();
+    let qoi = encode_qoi_rgba(width, height, &rgba).unwrap();
+    let parts: Vec<WireMessage> = title_preview_parts(
+        &server(),
+        "replay-preview-4",
+        input(2),
+        0,
+        false,
+        width,
+        height,
+        &qoi,
+    )
+    .into_iter()
+    .map(WireMessage::ReplayPreviewFrame)
+    .collect();
+    let request = ReplayPreviewRequest {
+        protocol: CURRENT_PROTOCOL_VERSION,
+        request_id: "replay-preview-4".into(),
+        input: input(2),
+        width,
+        height,
+    };
+
+    let (release_tx, release_rx) = mpsc::channel();
+    let expected_request = request.clone();
+    let records = parts.clone();
+    let (address, server_thread) = spawn_server(move |listener| {
+        let mut peer = Peer::accept(&listener);
+        accept_snapshot(&mut peer, 4);
+        assert_eq!(
+            peer.receive(),
+            WireMessage::ReplayPreviewRequest(expected_request)
+        );
+        release_rx.recv().unwrap();
+        peer.send_all(&records);
+    });
+    let mut session = TcpSession::new(client(4));
+    session.connect(address, CONNECT_TIMEOUT).unwrap();
+    session.send_replay_preview(request).unwrap();
+    release_tx.send(()).unwrap();
+
+    for index in 0..parts.len() {
+        let complete = index + 1 == parts.len();
+        assert_eq!(
+            session.receive().unwrap(),
+            SessionEvent::ReplayPreview {
+                request_id: "replay-preview-4".into(),
+                complete,
+            }
+        );
+        assert_eq!(session.latest_replay_preview().is_some(), complete);
+    }
+    let (image, _) = session.latest_replay_preview().unwrap();
+    assert_eq!(
+        (image.input, image.animation_revision, image.draft),
+        (input(2), 0, false)
+    );
+    assert_eq!((image.width, image.height), (width, height));
+    assert_eq!(&*image.rgba, rgba.as_slice());
+    server_thread.join().unwrap();
+}
+
 /// IN-001, Protocol 2.47: a capture devices request goes out exactly and
 /// its reply surfaces as [`SessionEvent::CaptureDevices`] and in the model.
 #[test]

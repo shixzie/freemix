@@ -158,9 +158,10 @@ highest-value remaining items, ranked:
     previous run are removed rather than reloaded, and shuttle (a player
     now jogs frame by frame, Protocol 2.114, and a finished replay returns
     Program to the live source, Protocol 2.116),
-    transitions and controller wiring, and certification are absent; the CLI
-    renders a four-angle PNG (Protocol 2.126), but Studio has no multiview
-    surface; storage health reaches Studio and the CLI (Protocol 2.125),
+    transitions and controller wiring, and certification are absent; Studio's
+    Replay panel and the CLI render a four-angle grid (Protocol 2.126), but the
+    eight-angle plus A/B multiview is not wired; storage health reaches Studio
+    and the CLI (Protocol 2.125),
     without SMART queries or `fm-record` low-space integration (see the
     Phase 7 boundary).
 11. **Highlight reels, end to end (`OR-013`).** The show persists up to eight
@@ -5591,10 +5592,10 @@ live toggle), refuse cross-profile keyboard conflicts, and apply actions
 atomically to decks and marks. A disk-health monitor converts configured
 bitrates into per-camera and per-root byte rates and predicts remaining
 recording time with warning, critical, and full levels that worsen
-immediately and recover only past a hysteresis margin. Remaining gaps: the CLI
-can render a four-angle grid to a PNG (Protocol 2.126, decoded and composed
-by the native daemon), but Studio has no multiview surface and the eight-angle
-plus A/B multiview is not wired; controller bindings have no real device
+immediately and recover only past a hysteresis margin. Remaining gaps: Studio's
+Replay panel and the CLI render a four-angle grid (Protocol 2.126, decoded and
+composed by the native daemon), but the eight-angle plus A/B multiview is not
+wired; controller bindings have no real device
 input, persistence, or jog acceleration; the native daemon now samples
 its replay root's free space and reports the predicted recording time at the
 observed write rate (Protocol 2.125, shown in Studio and the CLI), but there
