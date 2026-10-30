@@ -34,8 +34,8 @@ use fm_protocol::{
     MAX_REPLAY_RECORD_SOURCES, MAX_REPLAY_RETENTION_SECONDS, MIN_REPLAY_RETENTION_SECONDS,
     REPLAY_LAST_SECONDS, ReelClip, ReelExportState, ReelExportStatus, ReelMusic, ReelOperation,
     ReelSpec, ReelStatus, ReplayEventStatus, ReplayOperation, ReplayPlayerStatus,
-    ReplayPlaylistEntry, ReplaySettings, ReplaySpeed, ReplayStatusMessage,
-    reel_export_path_is_valid, reel_name_is_valid, replay_event_name_is_valid,
+    ReplayPlaylistEntry, ReplaySettings, ReplaySpeed, ReplayStatusMessage, ReplayStorageLevel,
+    ReplayStorageStatus, reel_export_path_is_valid, reel_name_is_valid, replay_event_name_is_valid,
 };
 use fm_types::{FrameRate, InputId};
 
@@ -412,6 +412,42 @@ fn name_of(state: &StudioUiState, l: Locale, input: InputId) -> String {
     )
 }
 
+/// Free space on the replay root and the recording time left at the write
+/// rate the retained segments show (Protocol 2.125, OR-014).
+fn draw_storage(ui: &mut Ui, l: Locale, storage: ReplayStorageStatus) {
+    let (label, tone) = match storage.level {
+        ReplayStorageLevel::Ok => (Msg::ReplayStorageOk, Tone::Ready),
+        ReplayStorageLevel::Warning => (Msg::ReplayStorageWarning, Tone::Pending),
+        ReplayStorageLevel::Critical => (Msg::ReplayStorageCritical, Tone::Fault),
+        ReplayStorageLevel::Full => (Msg::ReplayStorageFull, Tone::Fault),
+    };
+    let free = l.bytes(storage.free_bytes);
+    let detail = match (storage.level, storage.remaining_seconds) {
+        (ReplayStorageLevel::Full, _) => {
+            l.format(Msg::ReplayStorageNoSpace, &[("free", Arg::Str(&free))])
+        }
+        (_, Some(seconds)) => l.format(
+            Msg::ReplayStorageRemaining,
+            &[
+                ("free", Arg::Str(&free)),
+                (
+                    "time",
+                    Arg::Str(&l.seconds_tenths(seconds.saturating_mul(1_000))),
+                ),
+            ],
+        ),
+        (_, None) => l.format(Msg::ReplayStorageUnknown, &[("free", Arg::Str(&free))]),
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        ui.label(caption(l.text(Msg::ReplayStorage)))
+            .on_hover_text(l.text(Msg::ReplayStorageHover));
+        status_chip(ui, l.text(label), tone, 76.0);
+        ui.label(caption(detail))
+            .on_hover_text(l.text(Msg::ReplayStorageHover));
+    });
+}
+
 /// The Replay panel body.
 pub(crate) fn draw_replay(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
     let l = l10n::locale(ui.ctx());
@@ -429,6 +465,9 @@ pub(crate) fn draw_replay(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<
         )))
         .wrap(),
     );
+    if let Some(storage) = status.storage {
+        draw_storage(ui, l, storage);
+    }
     ui.add_space(2.0);
     if status.players.iter().any(|player| player.playing) {
         ui.ctx()

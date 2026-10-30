@@ -676,6 +676,12 @@ fn native_daemon_exports_a_reel_with_the_exact_frame_count() {
         operation: fm_protocol::MediaOperation::Play,
     });
     let (first, second) = two_complete_events(&mut client);
+    // Protocol 2.125: the daemon samples the replay root and predicts the
+    // recording time left from the segments it has written.
+    let storage = first.storage.expect("the daemon samples its replay root");
+    assert!(storage.free_bytes > 0);
+    assert!(storage.bytes_per_second > 0);
+    assert!(storage.remaining_seconds.is_some());
     let first_event = &first.events[0];
     let second_event = second
         .events
@@ -783,6 +789,12 @@ fn native_daemon_exports_a_dissolve_between_two_angles() {
         operation: fm_protocol::MediaOperation::Play,
     });
     let (first, second) = two_complete_events(&mut client);
+    // Protocol 2.125: the daemon samples the replay root and predicts the
+    // recording time left from the segments it has written.
+    let storage = first.storage.expect("the daemon samples its replay root");
+    assert!(storage.free_bytes > 0);
+    assert!(storage.bytes_per_second > 0);
+    assert!(storage.remaining_seconds.is_some());
     let first_event = &first.events[0];
     let second_event = second
         .events
@@ -923,6 +935,12 @@ fn native_daemon_mixes_a_ducked_music_bed_under_a_reel() {
         operation: fm_protocol::MediaOperation::Play,
     });
     let (first, second) = two_complete_events(&mut client);
+    // Protocol 2.125: the daemon samples the replay root and predicts the
+    // recording time left from the segments it has written.
+    let storage = first.storage.expect("the daemon samples its replay root");
+    assert!(storage.free_bytes > 0);
+    assert!(storage.bytes_per_second > 0);
+    assert!(storage.remaining_seconds.is_some());
     let first_event = &first.events[0];
     let second_event = second
         .events

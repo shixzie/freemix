@@ -10448,6 +10448,29 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReplayTakeHover,
         t("Cortar esta entrada de repetición a Programa"),
     ),
+    (Msg::ReplayStorage, t("Almacenamiento")),
+    (
+        Msg::ReplayStorageHover,
+        t(
+            "Espacio libre en la raíz de repetición y tiempo de grabación que queda al ritmo al que se escriben los segmentos retenidos",
+        ),
+    ),
+    (Msg::ReplayStorageOk, t("BIEN")),
+    (Msg::ReplayStorageWarning, t("BAJO")),
+    (Msg::ReplayStorageCritical, t("CRÍTICO")),
+    (Msg::ReplayStorageFull, t("SIN ESPACIO")),
+    (
+        Msg::ReplayStorageRemaining,
+        t("{free} libres · quedan unos {time}"),
+    ),
+    (
+        Msg::ReplayStorageUnknown,
+        t("{free} libres · ritmo de escritura desconocido"),
+    ),
+    (
+        Msg::ReplayStorageNoSpace,
+        t("{free} libres · la grabación se detendrá"),
+    ),
     (Msg::ReplayLink, t("VINCULAR")),
     (
         Msg::ReplayLinkHover,

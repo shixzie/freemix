@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.124 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.125 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4583,6 +4583,22 @@ Protocol 2.124 links two Replay inputs for A/B playback (OR-014).
 - Links are runtime state, like players; nothing is persisted, and a
   recording restart keeps them.
 - 2.123 is refused.
+
+Protocol 2.125 reports replay storage health (OR-014).
+
+- `replay_status` appends a required `storage`: `-` when the daemon does not
+  sample the storage root, else
+  `<free bytes>:<bytes per second>:<remaining seconds or ->:<level>`, where
+  `level` is `ok`, `warning` (under ten minutes left), `critical` (under two
+  minutes), or `full` (no free space). The write rate is the retained
+  closed segments' bytes over the recording time they cover; the remaining
+  time is the free space divided by that rate. Native `freemixd` samples its
+  replay root at most once a second in whole mebibytes; the simulated daemon
+  sends `-`.
+- Studio's Replay panel shows the free space, the predicted time left, and
+  an OK / LOW / CRITICAL / FULL lamp; `freemix-cli` prints a `ReplayStorage`
+  line.
+- The project schema is unchanged, and 2.124 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

@@ -261,7 +261,39 @@ pub struct EngineReplayStatus {
     pub mark_out: Option<u64>,
     pub events: Vec<EngineReplayEventStatus>,
     pub players: Vec<EngineReplayPlayerStatus>,
+    /// Free space and the predicted recording time at the observed write
+    /// rate, while the daemon samples the storage root (OR-014).
+    pub storage: Option<EngineReplayStorageStatus>,
 }
+
+/// How close a replay storage root is to full.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EngineReplayStorageLevel {
+    Ok,
+    /// Less than ten minutes at the observed write rate.
+    Warning,
+    /// Less than two minutes at the observed write rate.
+    Critical,
+    /// No free space, or the root cannot be sampled.
+    Full,
+}
+
+/// Free space and the observed write rate of the replay root (OR-014).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EngineReplayStorageStatus {
+    pub free_bytes: u64,
+    /// Bytes written per second by the retained recording, from its closed
+    /// segment files; zero until a segment reports its size.
+    pub bytes_per_second: u64,
+    /// Seconds of recording left at `bytes_per_second`, when it is nonzero.
+    pub remaining_seconds: Option<u64>,
+    pub level: EngineReplayStorageLevel,
+}
+
+/// Seconds of storage left that still reads as a warning.
+pub const REPLAY_STORAGE_WARNING_SECONDS: u64 = 600;
+/// Seconds of storage left that reads as critical.
+pub const REPLAY_STORAGE_CRITICAL_SECONDS: u64 = 120;
 
 /// Where a recorded frame lives on disk.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -531,6 +563,8 @@ pub(crate) struct ReplayRuntime {
     /// Exports whose media is not finalized yet: their segments are still
     /// open, so they wait for the recorder to close them (OR-013).
     deferred_exports: BTreeMap<u64, ReelExportPlan>,
+    /// Free bytes on the storage root, as the daemon last sampled it.
+    storage_free: Option<u64>,
     /// Bumped whenever anything clients see changes.
     generation: u64,
 }
@@ -587,6 +621,7 @@ impl ReplayRuntime {
             exports: RecordExportQueue::default(),
             export_meta: BTreeMap::new(),
             deferred_exports: BTreeMap::new(),
+            storage_free: None,
             generation: 0,
         };
         runtime.restart(ReplaySettings::default());
@@ -769,6 +804,62 @@ impl ReplayRuntime {
         } else {
             self.restart(settings.clone());
         }
+    }
+
+    /// Records the free bytes on the storage root, as the daemon sampled
+    /// them, and announces the change (OR-014).
+    pub(crate) fn set_storage_free(&mut self, free: Option<u64>) {
+        if self.storage_free == free {
+            return;
+        }
+        self.storage_free = free;
+        self.touch();
+    }
+
+    /// Free space and the observed write rate of the storage root, when the
+    /// daemon has sampled it.
+    fn storage_status(&self) -> Option<EngineReplayStorageStatus> {
+        let free_bytes = self.storage_free?;
+        let mut bytes = 0_u64;
+        let mut frames: BTreeMap<InputId, u64> = BTreeMap::new();
+        for (id, segment) in &self.store.segments {
+            let Some(metadata) = self.store.catalog.segment(*id) else {
+                continue;
+            };
+            if metadata.bytes == 0 {
+                continue;
+            }
+            bytes = bytes.saturating_add(metadata.bytes);
+            let entry = frames.entry(segment.input).or_default();
+            *entry = entry.saturating_add(segment.frames);
+        }
+        let longest = frames.values().copied().max().unwrap_or(0);
+        let rate = if longest == 0 {
+            0
+        } else {
+            let numerator =
+                u128::from(bytes).saturating_mul(u128::from(self.frame_rate.numerator()));
+            let denominator =
+                u128::from(longest).saturating_mul(u128::from(self.frame_rate.denominator()));
+            u64::try_from(numerator / denominator.max(1)).unwrap_or(u64::MAX)
+        };
+        let remaining_seconds = (rate > 0).then(|| free_bytes / rate);
+        let level = match remaining_seconds {
+            _ if free_bytes == 0 => EngineReplayStorageLevel::Full,
+            Some(seconds) if seconds < REPLAY_STORAGE_CRITICAL_SECONDS => {
+                EngineReplayStorageLevel::Critical
+            }
+            Some(seconds) if seconds < REPLAY_STORAGE_WARNING_SECONDS => {
+                EngineReplayStorageLevel::Warning
+            }
+            _ => EngineReplayStorageLevel::Ok,
+        };
+        Some(EngineReplayStorageStatus {
+            free_bytes,
+            bytes_per_second: rate,
+            remaining_seconds,
+            level,
+        })
     }
 
     /// Records frame `frame` of source `input` as stream frame
@@ -2107,6 +2198,7 @@ impl ReplayRuntime {
             mark_out: self.mark_out,
             events,
             players,
+            storage: self.storage_status(),
         }
     }
 }

@@ -3984,6 +3984,7 @@ mod tests {
             recorded: Vec::new(),
             events: Vec::new(),
             players: Vec::new(),
+            storage: None,
         }
     }
 

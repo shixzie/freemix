@@ -272,6 +272,54 @@ pub struct ReplayPlayerStatus {
     pub linked: Option<WireInputId>,
 }
 
+/// How close the replay storage root is to full (2.125, OR-014).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ReplayStorageLevel {
+    Ok,
+    /// Less than ten minutes of recording left.
+    Warning,
+    /// Less than two minutes of recording left.
+    Critical,
+    /// No free space, or the root cannot be sampled.
+    Full,
+}
+
+impl ReplayStorageLevel {
+    /// Every level token.
+    pub const TOKENS: [&'static str; 4] = ["ok", "warning", "critical", "full"];
+
+    /// The wire token.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Warning => "warning",
+            Self::Critical => "critical",
+            Self::Full => "full",
+        }
+    }
+
+    /// Parses [`Self::token`].
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        [Self::Ok, Self::Warning, Self::Critical, Self::Full]
+            .into_iter()
+            .find(|level| level.token() == token)
+    }
+}
+
+/// Free space and the predicted recording time of the replay root (2.125,
+/// OR-014).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReplayStorageStatus {
+    pub free_bytes: u64,
+    /// Bytes written per second by the retained recording.
+    pub bytes_per_second: u64,
+    /// Seconds of recording left at that rate, when it is nonzero.
+    pub remaining_seconds: Option<u64>,
+    pub level: ReplayStorageLevel,
+}
+
 /// Lossy, latest-wins replay status (OR-012).
 ///
 /// Fields: server identity, `sequence`, optional `request_id` (answering a
@@ -289,7 +337,10 @@ pub struct ReplayPlayerStatus {
 ///   empty while the player is on no playlist entry, the playlist a
 ///   `|`-joined list of `<event>/<angle>/<speed>` entries (the angle empty
 ///   for the event's preferred one), and `linked` the Replay input the
-///   player is linked to (empty when none).
+///   player is linked to (empty when none);
+/// * `storage`: `-` when the daemon does not sample the root, else
+///   `<free bytes>:<bytes per second>:<remaining seconds or ->:<level>`
+///   (2.125).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplayStatusMessage {
     pub server: ServerIdentity,
@@ -304,6 +355,7 @@ pub struct ReplayStatusMessage {
     pub recorded: Vec<ReplaySourceStatus>,
     pub events: Vec<ReplayEventStatus>,
     pub players: Vec<ReplayPlayerStatus>,
+    pub storage: Option<ReplayStorageStatus>,
 }
 
 /// Asks for a [`ReplayStatusMessage`] (OR-012).

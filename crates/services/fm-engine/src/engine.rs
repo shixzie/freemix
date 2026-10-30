@@ -3259,6 +3259,13 @@ impl Engine {
         self.replay.root()
     }
 
+    /// Records the free bytes on the replay storage root, as the media
+    /// plane last sampled them, or `None` when it cannot sample them
+    /// (OR-014).
+    pub fn set_replay_storage_free(&mut self, free: Option<u64>) {
+        self.replay.set_storage_free(free);
+    }
+
     /// Reports that an external replay recording recorded engine frame
     /// `frame` of source `input` as stream frame `stream_frame` (OR-012).
     /// Returns whether it was taken: the input is recorded and the frame

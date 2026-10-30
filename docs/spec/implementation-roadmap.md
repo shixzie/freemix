@@ -158,9 +158,10 @@ highest-value remaining items, ranked:
     previous run are removed rather than reloaded, and shuttle (a player
     now jogs frame by frame, Protocol 2.114, and a finished replay returns
     Program to the live source, Protocol 2.116),
-    transitions, multiview, controller and
-    disk-health wiring, and certification are absent (see the Phase 7
-    boundary).
+    transitions, multiview, and controller wiring, and certification are
+    absent; storage health now reaches Studio and the CLI (Protocol 2.125),
+    without SMART queries or `fm-record` low-space integration (see the
+    Phase 7 boundary).
 11. **Highlight reels, end to end (`OR-013`).** The show persists up to eight
     reels of up to 64 clips (Protocol 2.107, schema 83), the engine compiles
     them against captured events, protects the segments they read, and
@@ -5591,9 +5592,11 @@ bitrates into per-camera and per-root byte rates and predicts remaining
 recording time with warning, critical, and full levels that worsen
 immediately and recover only past a hysteresis margin. Remaining gaps: tiles
 are not decoded, scaled, or composited; controller bindings have no real
-device input, persistence, or jog acceleration; disk samples are caller
-supplied without OS or SMART queries or `fm-record` low-space wiring; and no
-storage profile is certified. `OR-014` remains planned.
+device input, persistence, or jog acceleration; the native daemon now samples
+its replay root's free space and reports the predicted recording time at the
+observed write rate (Protocol 2.125, shown in Studio and the CLI), but there
+are no SMART queries or `fm-record` low-space wiring; and no storage profile
+is certified. `OR-014` remains planned.
 
 Current end-to-end slice for item 7: the show persists up to eight highlight
 reels of up to 64 clips (Protocol 2.107, schema 83); each clip names a captured
@@ -5693,8 +5696,9 @@ ends, and Studio's Replay panel and `remote-replay-do playlist`,
 `playlist-next`, and `playlist-prev` edit and step it. Two Replay inputs can
 be linked for A/B playback (Protocol 2.124), sharing cue, play, pause,
 cue-in, and step while keeping their own angles. There is no shuttle,
-replay transition, multiview, controller, or disk-health wiring, and
-nothing is certified. `OR-012`, `OR-013`, and `OR-014` remain planned.
+replay transition, multiview, or controller wiring; storage health reaches
+Studio and the CLI (Protocol 2.125), but not SMART or `fm-record` low-space
+behavior, and nothing is certified. `OR-012`, `OR-013`, and `OR-014` remain planned.
 
 
 Exit: Sports Show scenario passes on certified storage/hardware.

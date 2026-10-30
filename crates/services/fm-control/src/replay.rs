@@ -2,7 +2,7 @@
 
 use fm_engine::{
     EngineCommand, EngineEvent, EngineReplayFeed, EngineReplayOperation, EngineReplayPlaylistEntry,
-    EngineReplayStatus,
+    EngineReplayStatus, EngineReplayStorageLevel,
 };
 use fm_protocol::{
     CommandPayload, EventPayload, ReplayEventStatus, ReplayFeed, ReplayOperation,
@@ -224,6 +224,19 @@ pub(super) fn status_message(
                 complete: event.complete,
             })
             .collect(),
+        storage: status
+            .storage
+            .map(|storage| fm_protocol::ReplayStorageStatus {
+                free_bytes: storage.free_bytes,
+                bytes_per_second: storage.bytes_per_second,
+                remaining_seconds: storage.remaining_seconds,
+                level: match storage.level {
+                    EngineReplayStorageLevel::Ok => fm_protocol::ReplayStorageLevel::Ok,
+                    EngineReplayStorageLevel::Warning => fm_protocol::ReplayStorageLevel::Warning,
+                    EngineReplayStorageLevel::Critical => fm_protocol::ReplayStorageLevel::Critical,
+                    EngineReplayStorageLevel::Full => fm_protocol::ReplayStorageLevel::Full,
+                },
+            }),
         players: status
             .players
             .into_iter()

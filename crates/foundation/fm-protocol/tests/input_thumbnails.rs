@@ -37,7 +37,7 @@ fn thumbnail() -> InputThumbnailMessage {
 
 #[test]
 fn the_version_is_current() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 124));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 125));
 }
 
 #[test]

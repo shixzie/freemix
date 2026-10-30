@@ -8,8 +8,8 @@ use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, EditHistoryStatus, EngineIdentity,
     EventCursor, EventMessage, EventPayload, MAX_REPLAY_PLAYLIST_ENTRIES, ReplayEventStatus,
     ReplayFeed, ReplayOperation, ReplayPlayerStatus, ReplayPlaylistEntry, ReplaySettings,
-    ReplaySourceStatus, ReplaySpeed, ReplayStatusMessage, ReplayStatusRequest, ServerIdentity,
-    WireInputId, WireMessage, decode_line, encode_line,
+    ReplaySourceStatus, ReplaySpeed, ReplayStatusMessage, ReplayStatusRequest, ReplayStorageLevel,
+    ReplayStorageStatus, ServerIdentity, WireInputId, WireMessage, decode_line, encode_line,
 };
 use fm_types::InputId;
 
@@ -423,6 +423,12 @@ fn status(request_id: Option<&str>) -> ReplayStatusMessage {
                 linked: Some(wire(9)),
             },
         ],
+        storage: Some(ReplayStorageStatus {
+            free_bytes: 7_200_000_000,
+            bytes_per_second: 24_000_000,
+            remaining_seconds: Some(300),
+            level: ReplayStorageLevel::Warning,
+        }),
     }
 }
 
@@ -441,7 +447,8 @@ fn status_and_its_request_have_an_exact_wire_form() {
     assert!(
         line.contains(
             "\tplayers=9%3A1%3A2%3A25%3A1%3A2510%3A1%3A3%2F2%2F100%7C4%2F%2F50%3A10%3B\
-             10%3A%3A%3A100%3A0%3A%3A%3A%3A9\n"
+             10%3A%3A%3A100%3A0%3A%3A%3A%3A9\t\
+             storage=7200000000%3A24000000%3A300%3Awarning\n"
         ),
         "{line}"
     );
@@ -457,6 +464,12 @@ fn status_and_its_request_have_an_exact_wire_form() {
         ..status(None)
     };
     round_trip(&WireMessage::ReplayStatus(Box::new(empty)));
+    let unknown = ReplayStatusMessage {
+        storage: None,
+        ..status(None)
+    };
+    let line = round_trip(&WireMessage::ReplayStatus(Box::new(unknown)));
+    assert!(line.contains("\tstorage=-\n"), "{line}");
     let line = round_trip(&WireMessage::ReplayStatusRequest(ReplayStatusRequest {
         request_id: "r-2".to_owned(),
     }));
@@ -471,6 +484,19 @@ fn status_and_its_request_have_an_exact_wire_form() {
         ("%2F100%7C4%2F%2F50", "%2F100%7C4%2F50"),
         ("recorded=1%3A60", "recorded=1%3A-1"),
         ("live_frame=3000", "live_frame=03000"),
+        // A storage sample has four canonical parts and a known level.
+        (
+            "storage=7200000000%3A24000000%3A300%3Awarning",
+            "storage=7200000000%3A24000000%3A300%3Aempty",
+        ),
+        (
+            "storage=7200000000%3A24000000%3A300%3Awarning",
+            "storage=7200000000%3A24000000%3A300",
+        ),
+        (
+            "storage=7200000000%3A24000000%3A300%3Awarning",
+            "storage=07200000000%3A24000000%3A300%3Awarning",
+        ),
     ] {
         assert!(good.contains(from), "{from}");
         refused(&good.replacen(from, to, 1));

@@ -449,6 +449,46 @@ fn decode_events(value: &str) -> Result<Vec<ReplayEventStatus>, CodecError> {
         .collect()
 }
 
+/// `storage`: `-`, or `<free>:<rate>:<remaining or ->:<level>`.
+fn encode_storage(storage: Option<&crate::ReplayStorageStatus>) -> String {
+    let Some(storage) = storage else {
+        return "-".to_owned();
+    };
+    format!(
+        "{}:{}:{}:{}",
+        storage.free_bytes,
+        storage.bytes_per_second,
+        storage
+            .remaining_seconds
+            .map_or_else(|| "-".to_owned(), |seconds| seconds.to_string()),
+        storage.level.token()
+    )
+}
+
+fn decode_storage(value: &str) -> Result<Option<crate::ReplayStorageStatus>, CodecError> {
+    if value == "-" {
+        return Ok(None);
+    }
+    let [free, rate, remaining, level] = value.split(':').collect::<Vec<_>>()[..] else {
+        return Err(invalid("storage", value));
+    };
+    let free_bytes = parse_number("storage", free)?;
+    let bytes_per_second = parse_number("storage", rate)?;
+    let remaining_seconds = if remaining == "-" {
+        None
+    } else {
+        Some(parse_number("storage", remaining)?)
+    };
+    let level =
+        crate::ReplayStorageLevel::from_token(level).ok_or_else(|| invalid("storage", value))?;
+    Ok(Some(crate::ReplayStorageStatus {
+        free_bytes,
+        bytes_per_second,
+        remaining_seconds,
+        level,
+    }))
+}
+
 fn encode_players(players: &[ReplayPlayerStatus]) -> Result<String, CodecError> {
     if players.len() > MAX_REPLAY_INPUTS {
         return Err(CodecError::TooManyItems("players"));
@@ -543,7 +583,8 @@ pub(super) fn encode_status(
     }
     push("recorded", encode_recorded(&message.recorded)?)?;
     push("events", encode_events(&message.events)?)?;
-    push("players", encode_players(&message.players)?)
+    push("players", encode_players(&message.players)?)?;
+    push("storage", encode_storage(message.storage.as_ref()))
 }
 
 /// Decodes `replay_status`'s fields after the server identity and
@@ -574,5 +615,6 @@ pub(super) fn decode_status(
         recorded: decode_recorded(&fields.required("recorded")?)?,
         events: decode_events(&fields.required("events")?)?,
         players: decode_players(&fields.required("players")?)?,
+        storage: decode_storage(&fields.required("storage")?)?,
     })
 }

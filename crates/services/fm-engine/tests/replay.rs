@@ -1309,3 +1309,50 @@ fn linked_players_leave_an_event_only_together() {
     assert_eq!(a.playlist_index, Some(0));
     assert_eq!(b.playlist_index, Some(0));
 }
+
+/// Protocol 2.125: the daemon's free-space sample becomes a predicted
+/// recording time at the rate the retained segments were written, with
+/// warning, critical, and full levels.
+#[test]
+fn storage_free_space_predicts_the_recording_time_left() {
+    let mut engine = engine();
+    replay(
+        &mut engine,
+        "configure",
+        EngineReplayOperation::Configure(Box::new(settings(&[1], 600))),
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 12 * FPS);
+    assert!(engine.replay_status().storage.is_none());
+
+    // Synthetic segments report 4096 bytes per recorded frame, so one
+    // second of one source is 4096 * 25 bytes.
+    let rate = fm_engine::SYNTHETIC_REPLAY_FRAME_BYTES * FPS;
+    engine.set_replay_storage_free(Some(10 * 1024 * 1024 * 1024));
+    let storage = engine.replay_status().storage.expect("a sampled root");
+    assert_eq!(storage.bytes_per_second, rate);
+    assert_eq!(
+        storage.remaining_seconds,
+        Some(10 * 1024 * 1024 * 1024 / rate)
+    );
+    assert_eq!(storage.level, fm_engine::EngineReplayStorageLevel::Ok);
+
+    // Five seconds left is critical; five minutes is a warning.
+    engine.set_replay_storage_free(Some(5 * rate));
+    assert_eq!(
+        engine.replay_status().storage.unwrap().level,
+        fm_engine::EngineReplayStorageLevel::Critical
+    );
+    engine.set_replay_storage_free(Some(300 * rate));
+    assert_eq!(
+        engine.replay_status().storage.unwrap().level,
+        fm_engine::EngineReplayStorageLevel::Warning
+    );
+    // No free space is full; no sample hides the line again.
+    engine.set_replay_storage_free(Some(0));
+    let storage = engine.replay_status().storage.unwrap();
+    assert_eq!(storage.level, fm_engine::EngineReplayStorageLevel::Full);
+    assert_eq!(storage.remaining_seconds, Some(0));
+    engine.set_replay_storage_free(None);
+    assert!(engine.replay_status().storage.is_none());
+}

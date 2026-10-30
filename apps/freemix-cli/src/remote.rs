@@ -682,6 +682,15 @@ pub(crate) fn print_replay(status: &fm_protocol::ReplayStatusMessage) {
         frame(status.mark_in),
         frame(status.mark_out),
     );
+    if let Some(storage) = status.storage {
+        println!(
+            "ReplayStorage(free_bytes={}, bytes_per_second={}, remaining_seconds={}, level={})",
+            storage.free_bytes,
+            storage.bytes_per_second,
+            frame(storage.remaining_seconds),
+            storage.level.token(),
+        );
+    }
     for source in &status.recorded {
         println!(
             "ReplaySource(input={}, segments={}, bytes={}, first_frame={}, last_frame={})",
@@ -710,7 +719,7 @@ pub(crate) fn print_replay(status: &fm_protocol::ReplayStatusMessage) {
     }
     for player in &status.players {
         println!(
-            "ReplayPlayer(input={}, event={}, angle={}, speed={}, playing={}, frame={})",
+            "ReplayPlayer(input={}, event={}, angle={}, speed={}, playing={}, frame={}, linked={})",
             player.input,
             player
                 .event
@@ -721,6 +730,9 @@ pub(crate) fn print_replay(status: &fm_protocol::ReplayStatusMessage) {
             player.speed.percent(),
             player.playing,
             frame(player.frame),
+            player
+                .linked
+                .map_or_else(|| "none".to_owned(), |linked| linked.to_string()),
         );
     }
 }

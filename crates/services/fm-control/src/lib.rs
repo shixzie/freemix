@@ -1480,6 +1480,12 @@ impl<A: AuthorizationHook> ControlService<A> {
         self.engine.replay_root()
     }
 
+    /// Records the free bytes on the replay storage root, as the media
+    /// plane samples them (OR-014).
+    pub fn set_replay_storage_free(&mut self, free: Option<u64>) {
+        self.engine.set_replay_storage_free(free);
+    }
+
     /// Reports one recorded replay frame (see [`Engine::replay_observe`]).
     pub fn replay_observe(&mut self, input: InputId, frame: u64, stream_frame: u64) -> bool {
         self.engine.replay_observe(input, frame, stream_frame)

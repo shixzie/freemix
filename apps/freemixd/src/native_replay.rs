@@ -86,6 +86,8 @@ use crate::source_wait::SourceWait;
 
 /// How long a failed run waits before the next starts.
 pub(crate) const RETRY_DELAY: Duration = Duration::from_secs(5);
+/// How often the storage root's free space is sampled, at most.
+const STORAGE_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 /// One-second fragments per segment file.
 const FRAGMENTS_PER_SEGMENT: NonZeroU32 = NonZeroU32::MIN.saturating_add(1);
 /// Frames a run's worker may fall behind before the run ends.
@@ -120,6 +122,9 @@ pub(crate) trait ReplayHost {
         bytes: u64,
     ) -> bool;
     fn take_pruned(&mut self) -> Vec<PathBuf>;
+    /// Records the free bytes on the replay storage root, or `None` when it
+    /// cannot be sampled (Protocol 2.125, OR-014).
+    fn set_storage_free(&mut self, free: Option<u64>);
 }
 
 impl ReplayHost for ControlService<Policy> {
@@ -159,6 +164,10 @@ impl ReplayHost for ControlService<Policy> {
 
     fn take_pruned(&mut self) -> Vec<PathBuf> {
         self.take_replay_pruned()
+    }
+
+    fn set_storage_free(&mut self, free: Option<u64>) {
+        self.set_replay_storage_free(free);
     }
 }
 
@@ -276,6 +285,8 @@ pub(crate) struct NativeReplay {
     sources: BTreeMap<InputId, Source>,
     players: BTreeMap<InputId, Player>,
     wait: SourceWait,
+    /// When the storage root was last sampled.
+    storage_sample: Option<Instant>,
 }
 
 impl NativeReplay {
@@ -287,6 +298,7 @@ impl NativeReplay {
             sources: BTreeMap::new(),
             players: BTreeMap::new(),
             wait: SourceWait::new(crate::native_files::MAX_MEDIA_FRAME_WAIT),
+            storage_sample: None,
         }
     }
 
@@ -320,6 +332,30 @@ impl NativeReplay {
         for path in host.take_pruned() {
             let _ = fs::remove_file(path);
         }
+        self.sample_storage(host);
+    }
+
+    /// Samples the storage root's free space at most once a second and
+    /// reports it to the engine, in whole mebibytes so the lossy status
+    /// does not churn on every write.
+    fn sample_storage(&mut self, host: &mut dyn ReplayHost) {
+        let Some((_, root)) = &self.recording else {
+            self.storage_sample = None;
+            host.set_storage_free(None);
+            return;
+        };
+        let now = Instant::now();
+        if self
+            .storage_sample
+            .is_some_and(|last| now.duration_since(last) < STORAGE_SAMPLE_INTERVAL)
+        {
+            return;
+        }
+        self.storage_sample = Some(now);
+        let free = crate::disk::existing_ancestor(root)
+            .and_then(|path| crate::disk::available_bytes(path).ok())
+            .map(|free| free / (1024 * 1024) * (1024 * 1024));
+        host.set_storage_free(free);
     }
 
     /// Records engine frame `frame`: every running source's newest picture
@@ -1189,6 +1225,10 @@ mod tests {
 
         fn take_pruned(&mut self) -> Vec<PathBuf> {
             self.take_replay_pruned()
+        }
+
+        fn set_storage_free(&mut self, free: Option<u64>) {
+            self.set_replay_storage_free(free);
         }
     }
 

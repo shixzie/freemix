@@ -2650,6 +2650,12 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
                 linked: Some(wire(4)),
             },
         ],
+        storage: Some(fm_protocol::ReplayStorageStatus {
+            free_bytes: 7_200_000_000,
+            bytes_per_second: 24_000_000,
+            remaining_seconds: Some(300),
+            level: fm_protocol::ReplayStorageLevel::Warning,
+        }),
     }
 }
 
