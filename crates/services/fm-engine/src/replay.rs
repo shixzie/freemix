@@ -1463,6 +1463,7 @@ impl ReplayRuntime {
         // A player that reached its event's end either moves on to its
         // playlist's next entry or stops. Linked players (Protocol 2.124)
         // only move on when both have a next entry, so A/B stays in step.
+        let ended_set: BTreeSet<InputId> = ended.iter().copied().collect();
         let mut handled = BTreeSet::new();
         for input in ended {
             if handled.contains(&input) {
@@ -1472,7 +1473,7 @@ impl ReplayRuntime {
                 .players
                 .get(&input)
                 .and_then(|player| player.linked)
-                .filter(|partner| !handled.contains(partner));
+                .filter(|partner| ended_set.contains(partner));
             if let Some(partner) = partner {
                 handled.insert(input);
                 handled.insert(partner);
