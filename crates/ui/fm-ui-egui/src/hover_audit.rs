@@ -408,7 +408,7 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
                 soloed: false,
                 follow_video: value != 2,
                 delay_samples: 0,
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             })
             .collect(),
         // A timed transition in flight has swapped the desired buses; the

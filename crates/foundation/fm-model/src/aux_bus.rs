@@ -1,14 +1,17 @@
 //! The project's aux buses A–G (AU-002, schema 90).
 //!
-//! - Every input strip's [`crate::InputAudioStripState::buses`] says whether
-//!   it feeds Master and each aux bus. A strip off Master still meters and
+//! - Every input strip's [`crate::InputAudioStripState::sends`] says whether
+//!   it feeds Master and each aux bus, at what level, and whether the send
+//!   taps before or after the fader. A strip off Master still meters and
 //!   still feeds its aux buses. Bus assignment is a live strip control, like
 //!   mute.
 //! - A project keeps exactly [`AUX_BUS_COUNT`] aux buses, each with a name
 //!   (a project edit) and a live fader and mute.
 //! - A project output hears Master unless it names an aux bus.
 
-pub use fm_types::audio_bus::{AUX_BUS_COUNT, AudioBusMask, AuxBusNumber};
+pub use fm_types::audio_bus::{
+    AUX_BUS_COUNT, AudioBusMask, AudioSends, AudioSendsError, AuxBusNumber, BusSendState, SendTap,
+};
 
 use crate::InputGainMilliDb;
 

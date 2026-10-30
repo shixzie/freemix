@@ -192,6 +192,12 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
                 super::audio_mixer::encode_chain("chain", &message.chain)?,
             )?;
         }
+        WireMessage::AudioStripSendState(message) => {
+            record.kind("audio_strip_send_state");
+            record.field("revision", message.revision)?;
+            record.field("input", message.input)?;
+            record.field_string("sends", message.sends.token())?;
+        }
         WireMessage::DisplayInventoryRequest(message) => {
             record.kind("display_inventory_request");
             validate_request_id(&message.request_id)?;
@@ -1697,7 +1703,7 @@ fn encode_input_audio_strip_command(
         soloed,
         follow_video,
         delay_samples,
-        buses,
+        sends,
     } = payload
     else {
         unreachable!("input audio strip encoder received another command")
@@ -1711,7 +1717,7 @@ fn encode_input_audio_strip_command(
     record.field("soloed", u8::from(*soloed))?;
     record.field("follow_video", u8::from(*follow_video))?;
     record.field("delay_samples", delay_samples)?;
-    record.field_string("buses", buses.token())
+    record.field_string("sends", sends.token())
 }
 
 fn encode_overlay_command(record: &mut Record, payload: &CommandPayload) -> Result<(), CodecError> {
@@ -2440,7 +2446,7 @@ fn encode_input_audio_strips(
             u8::from(status.follow_video),
             status.delay_samples,
             super::audio_mixer::encode_strip_group(status.group)?,
-            status.buses.token(),
+            status.sends.mask().token(),
         );
         if !(-96_000..=24_000).contains(&status.gain_millidb)
             || !(-10_000..=10_000).contains(&status.balance_basis_points)

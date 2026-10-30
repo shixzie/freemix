@@ -184,8 +184,9 @@ pub struct InputAudioStripUpdate {
     pub soloed: Option<bool>,
     pub follow_video: Option<bool>,
     pub delay_samples: Option<u32>,
-    /// Master and the aux buses the strip feeds (AU-002).
-    pub buses: Option<fm_types::audio_bus::AudioBusMask>,
+    /// Master and each aux bus the strip feeds, with its level and tap
+    /// (AU-002, Protocol 2.130).
+    pub sends: Option<fm_types::audio_bus::AudioSends>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -4181,7 +4182,7 @@ mod tests {
                     soloed: Some(true),
                     follow_video: Some(false),
                     delay_samples: Some(2_400),
-                    buses: None,
+                    sends: None,
                 },
             },
             StudioIntent::SetInputAudioStrip {
@@ -4194,7 +4195,7 @@ mod tests {
                     soloed: Some(true),
                     follow_video: Some(false),
                     delay_samples: Some(2_400),
-                    buses: None,
+                    sends: None,
                 },
             }
         );

@@ -199,7 +199,7 @@ fn audio_strip(value: u128, gain_millidb: i32, muted: bool) -> CommandPayload {
         soloed: false,
         follow_video: false,
         delay_samples: 0,
-        buses: fm_types::audio_bus::AudioBusMask::MASTER,
+        sends: fm_types::audio_bus::AudioSends::MASTER,
     }
 }
 

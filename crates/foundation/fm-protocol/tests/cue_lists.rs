@@ -22,7 +22,7 @@ use fm_protocol::{
     encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.129\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.130\tid=a\tidempotency_key=k";
 
 /// Lowercase hex of `text`'s UTF-8 bytes.
 fn hex(text: &str) -> String {
@@ -212,7 +212,7 @@ fn event(payload: EventPayload) -> WireMessage {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 129));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 130));
 }
 
 #[test]
@@ -514,7 +514,7 @@ fn script_run_event(scripts: Vec<CueScriptRun>) -> WireMessage {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         }],
         streams: Vec::new(),
         recordings: [1, 2]
@@ -643,7 +643,7 @@ fn cue_events_and_the_snapshot_record_round_trip_exactly() {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         }],
         streams: vec![StreamStatus {
             target: WireStreamTargetId::new(NonZeroU128::new(9).unwrap()),

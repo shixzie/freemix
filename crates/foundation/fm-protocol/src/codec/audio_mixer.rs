@@ -575,6 +575,13 @@ pub(super) fn encode_status(
         "audio_strip_dsp_states",
         status.strip_dsp_states.to_string(),
     )?;
+    if status.send_states > crate::MAX_AUDIO_SEND_STATES {
+        return Err(invalid(
+            "audio_strip_send_states",
+            status.send_states.to_string(),
+        ));
+    }
+    push("audio_strip_send_states", status.send_states.to_string())?;
     push("audio_aux_buses", encode_aux_buses(&status.aux_buses)?)
 }
 
@@ -592,6 +599,13 @@ pub(super) fn decode_status(fields: &mut dyn FieldSource) -> Result<AudioMixerSt
                 .and_then(|count| u16::try_from(count).ok())
                 .filter(|count| *count <= crate::MAX_AUDIO_STRIP_DSP_STATES)
                 .ok_or_else(|| invalid("audio_strip_dsp_states", value))?
+        },
+        send_states: {
+            let value = fields.required("audio_strip_send_states")?;
+            parse_canonical_u64(&value)
+                .and_then(|count| u16::try_from(count).ok())
+                .filter(|count| *count <= crate::MAX_AUDIO_SEND_STATES)
+                .ok_or_else(|| invalid("audio_strip_send_states", value))?
         },
         aux_buses: decode_aux_buses(&fields.required("audio_aux_buses")?)?,
     })

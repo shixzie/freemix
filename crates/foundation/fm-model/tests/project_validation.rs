@@ -2051,7 +2051,7 @@ fn persisted_input_gain_is_exact_and_bounded() {
             muted: false,
             soloed: false,
             follow_video: true,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         }
     );
 }

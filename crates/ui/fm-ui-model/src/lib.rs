@@ -203,8 +203,9 @@ pub struct InputAudioStripStatus {
     pub soloed: bool,
     pub follow_video: bool,
     pub delay_samples: u32,
-    /// Master and the aux buses the strip feeds (Protocol 2.118).
-    pub buses: fm_types::audio_bus::AudioBusMask,
+    /// Master and each aux bus the strip feeds, with its level and tap
+    /// (Protocol 2.130).
+    pub sends: fm_types::audio_bus::AudioSends,
 }
 
 /// Replicated desired and last-confirmed realized state of one stream target.
@@ -1318,6 +1319,12 @@ pub struct ProjectState {
     /// `audio_strip_dsp_state` records the snapshot announced that have not
     /// arrived.
     audio_strip_dsp_states_pending: u16,
+    /// `audio_strip_send_state` records the snapshot announced that have not
+    /// arrived (Protocol 2.130).
+    audio_send_states_pending: u16,
+    /// The last input whose `audio_strip_send_state` arrived, keeping the
+    /// announced order.
+    audio_send_last: Option<InputId>,
     /// The outputs Fade to Black leaves live, ascending (Protocol 2.40).
     fade_to_black_excluded_outputs: Vec<OutputId>,
     /// The outputs with their own Fade-to-Black duration (Protocol 2.48).
@@ -1494,6 +1501,13 @@ impl ProjectState {
     #[must_use]
     pub const fn audio_strip_dsps_complete(&self) -> bool {
         self.audio_strip_dsp_states_pending == 0
+    }
+
+    /// Returns whether every `audio_strip_send_state` the snapshot announced
+    /// arrived (Protocol 2.130).
+    #[must_use]
+    pub const fn audio_send_states_complete(&self) -> bool {
+        self.audio_send_states_pending == 0
     }
 
     /// Returns the outputs Fade to Black leaves live, ascending.
@@ -2422,6 +2436,10 @@ pub enum ModelError {
     /// announce, at another revision, out of order, for an unknown input, or
     /// with a default or invalid chain (Protocol 2.75).
     AudioStripDspStateMismatch,
+    /// An `audio_strip_send_state` arrived that the snapshot did not
+    /// announce, at another revision, out of order, for an unknown input, or
+    /// with the plain enable mask (Protocol 2.130).
+    AudioStripSendStateMismatch,
 }
 
 impl fmt::Display for ModelError {
@@ -2591,6 +2609,8 @@ impl fmt::Display for ModelError {
             }
             Self::AudioStripDspStateMismatch => formatter
                 .write_str("audio strip DSP state does not match the snapshot it follows"),
+            Self::AudioStripSendStateMismatch => formatter
+                .write_str("audio strip send state does not match the snapshot it follows"),
         }
     }
 }
@@ -3401,6 +3421,8 @@ impl ClientModel {
             input_categories: snapshot.input_categories,
             audio_strip_dsp: BTreeMap::new(),
             audio_strip_dsp_states_pending: snapshot.audio_mixer.strip_dsp_states,
+            audio_send_states_pending: snapshot.audio_mixer.send_states,
+            audio_send_last: None,
             audio_mixer: snapshot.audio_mixer,
             fade_to_black_excluded_outputs: snapshot.fade_to_black_excluded_outputs,
             fade_to_black_output_durations: snapshot.fade_to_black_output_durations,
@@ -3947,6 +3969,45 @@ impl ClientModel {
         }
         state.audio_strip_dsp.insert(input, message.chain);
         state.audio_strip_dsp_states_pending -= 1;
+        Ok(())
+    }
+
+    /// Applies one `audio_strip_send_state` follow-on record (Protocol
+    /// 2.130): the strip's aux send levels and taps.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ModelError::StateUnavailable`] before a snapshot and
+    /// [`ModelError::AudioStripSendStateMismatch`] when the record is at
+    /// another revision, unannounced, out of order, or for an unknown input.
+    pub fn apply_audio_strip_send_state(
+        &mut self,
+        message: fm_protocol::AudioStripSendStateMessage,
+    ) -> Result<(), ModelError> {
+        let revision = self
+            .cursor
+            .as_ref()
+            .ok_or(ModelError::StateUnavailable)?
+            .revision;
+        let state = self.state.as_mut().ok_or(ModelError::StateUnavailable)?;
+        let input = message.input.to_domain();
+        if Revision::new(message.revision) != revision
+            || state.audio_send_states_pending == 0
+            || !state.inputs.contains(&input)
+            || state.audio_send_last.is_some_and(|last| last >= input)
+            || message.sends.validate().is_err()
+            || message.sends == fm_types::audio_bus::AudioSends::from_mask(message.sends.mask())
+        {
+            return Err(ModelError::AudioStripSendStateMismatch);
+        }
+        let strip = state
+            .input_audio_strips
+            .iter_mut()
+            .find(|strip| strip.input == input)
+            .ok_or(ModelError::AudioStripSendStateMismatch)?;
+        strip.sends = message.sends;
+        state.audio_send_last = Some(input);
+        state.audio_send_states_pending -= 1;
         Ok(())
     }
 
@@ -5302,7 +5363,7 @@ fn apply_input_added(state: &mut ProjectState, input: InputId, name: String) {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         },
     );
 }
@@ -5984,7 +6045,7 @@ fn protocol_input_audio_strips(
             soloed: status.soloed,
             follow_video: status.follow_video,
             delay_samples: status.delay_samples,
-            buses: status.buses,
+            sends: status.sends,
         })
         .collect()
 }

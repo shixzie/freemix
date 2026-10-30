@@ -96,6 +96,9 @@ use crate::{WireInputId, WireOutputId};
 /// Most [`AudioStripDspStateMessage`] records one snapshot announces: one per
 /// show input.
 pub const MAX_AUDIO_STRIP_DSP_STATES: u16 = 256;
+/// Most `audio_strip_send_state` records one snapshot announces: one per
+/// strip whose sends are not the plain enable mask (2.130).
+pub const MAX_AUDIO_SEND_STATES: u16 = 256;
 
 /// The chain a DSP edit or gain-reduction meter names (2.75).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -174,6 +177,15 @@ pub struct AudioStripDspStateMessage {
     pub revision: u64,
     pub input: WireInputId,
     pub chain: StripDsp,
+}
+
+/// One input strip's send levels and taps at a snapshot's `revision`
+/// (record `audio_strip_send_state`, 2.130).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AudioStripSendStateMessage {
+    pub revision: u64,
+    pub input: WireInputId,
+    pub sends: fm_types::audio_bus::AudioSends,
 }
 
 /// How many strip groups a show has.
@@ -331,6 +343,9 @@ pub struct AudioMixerStatus {
     /// How many [`AudioStripDspStateMessage`] records follow the snapshot
     /// (2.75); not maintained by [`Self::apply`].
     pub strip_dsp_states: u16,
+    /// How many `audio_strip_send_state` records follow the snapshot, one
+    /// per strip whose sends are not the plain enable mask (2.130).
+    pub send_states: u16,
     /// The aux buses, bus A first (2.118). Each output's bus rides its
     /// [`crate::OutputStatus`].
     pub aux_buses: [AuxBusStatus; AUX_BUS_COUNT],
@@ -345,6 +360,7 @@ impl Default for AudioMixerStatus {
             monitor: AudioMonitorStatus::default(),
             master_dsp: StripDsp::DEFAULT,
             strip_dsp_states: 0,
+            send_states: 0,
             aux_buses: AuxBusNumber::ALL.map(AuxBusStatus::default_for),
         }
     }

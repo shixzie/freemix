@@ -562,7 +562,7 @@ fn write_input_audio_strips(output: &mut String, project: &fm_model::Project) {
         item_prefix(output, index, 6);
         write!(
             output,
-            "{{\"input\": {}, \"gain_milli_db\": {}, \"balance_basis_points\": {}, \"pan_basis_points\": {}, \"delay_samples\": {}, \"muted\": {}, \"soloed\": {}, \"follow_video\": {}, \"buses\": \"{}\", \"label\": \"",
+            "{{\"input\": {}, \"gain_milli_db\": {}, \"balance_basis_points\": {}, \"pan_basis_points\": {}, \"delay_samples\": {}, \"muted\": {}, \"soloed\": {}, \"follow_video\": {}, \"sends\": \"{}\", \"label\": \"",
             strip.input,
             strip.state.gain.get(),
             strip.state.balance.get(),
@@ -571,7 +571,7 @@ fn write_input_audio_strips(output: &mut String, project: &fm_model::Project) {
             strip.state.muted,
             strip.state.soloed,
             strip.state.follow_video,
-            strip.state.buses.token(),
+            strip.state.sends.token(),
         )
         .expect("writing to a string cannot fail");
         escape_string(output, &strip.label);

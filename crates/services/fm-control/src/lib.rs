@@ -2481,6 +2481,14 @@ impl<A: AuthorizationHook> ControlService<A> {
         audio_mixer::strip_dsp_states(&self.engine)
     }
 
+    /// The `audio_strip_send_state` records that complete a snapshot: one
+    /// per input whose aux sends carry a level or tap beyond the plain
+    /// enable mask, ascending (Protocol 2.130, AU-002).
+    #[must_use]
+    pub fn strip_send_states(&self) -> Vec<fm_protocol::AudioStripSendStateMessage> {
+        audio_mixer::strip_send_states(&self.engine)
+    }
+
     /// The loudness resets the engine realized since the audio plane last
     /// took them, oldest first (AU-005). The simulated plane restarts those
     /// meters before its next rendered frame.
@@ -3691,7 +3699,7 @@ fn input_audio_strip_engine_command(payload: &CommandPayload) -> EngineCommand {
         soloed,
         follow_video,
         delay_samples,
-        buses,
+        sends,
     } = payload
     else {
         unreachable!("only input audio strip commands are delegated")
@@ -3706,7 +3714,7 @@ fn input_audio_strip_engine_command(payload: &CommandPayload) -> EngineCommand {
             soloed: *soloed,
             follow_video: *follow_video,
             delay_samples: *delay_samples,
-            buses: *buses,
+            sends: *sends,
         },
     }
 }
@@ -5165,7 +5173,7 @@ fn protocol_input_audio_strips(engine: &Engine) -> Vec<InputAudioStripStatus> {
             soloed: state.soloed,
             follow_video: state.follow_video,
             delay_samples: state.delay_samples,
-            buses: state.buses,
+            sends: state.sends,
         })
         .collect()
 }

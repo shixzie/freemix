@@ -1347,7 +1347,7 @@ fn command_result_is_represented_before_its_events() {
                     soloed: false,
                     follow_video: true,
                     delay_samples: 0,
-                    buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                    sends: fm_types::audio_bus::AudioSends::MASTER,
                 })
                 .collect(),
         }
@@ -1373,7 +1373,7 @@ fn input_audio_strip_flows_through_authorization_snapshot_event_and_frame() {
                     soloed: true,
                     follow_video: false,
                     delay_samples: 2_400,
-                    buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                    sends: fm_types::audio_bus::AudioSends::MASTER,
                 },
             ),
             0,
@@ -1420,7 +1420,7 @@ fn input_audio_strip_flows_through_authorization_snapshot_event_and_frame() {
                 soloed: true,
                 follow_video: false,
                 delay_samples: 2_400,
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             }
         )]
     );

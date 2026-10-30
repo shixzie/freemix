@@ -361,7 +361,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.129";
+  const PROTOCOL = "2.130";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -1569,15 +1569,37 @@
     const end = item.markOut === null ? length.frames : Math.min(item.markOut, length.frames);
     return Math.max(0, end - item.markIn) * 1000 * length.denominator / length.numerator;
   }
-  // `input:gain:balance:pan:muted:soloed:follow_video:delay:group:buses`.
+  // A snapshot strip's sends token is the enable mask (`MAG`); an event's is
+  // the full token (`M,A@-6000p`). Both normalize to the full token here.
+  function maskToSends(mask) {
+    if (mask === "-") return "-";
+    const parts = [];
+    if (mask.includes("M")) parts.push("M");
+    for (const letter of "ABCDEFG") if (mask.includes(letter)) parts.push(letter + "@0");
+    return parts.length ? parts.join(",") : "-";
+  }
+  function sendsToMask(sends) {
+    if (sends === "-") return "-";
+    let mask = "";
+    for (const part of sends.split(",")) {
+      const name = part.split("@")[0];
+      if (name === "M") mask += "M"; else mask += name;
+    }
+    return mask || "-";
+  }
+  // `input:gain:balance:pan:muted:soloed:follow_video:delay:group:sends`.
   function parseStrips(value) {
     const strips = new Map();
     for (const item of value ? value.split(",") : []) {
       const parts = item.split(":");
       if (parts.length < 10) throw new Error("malformed audio strip");
+      const token = parts[9];
+      const sends = token === "-" || token === "M" || token.includes("@")
+        ? token : maskToSends(token);
       strips.set(parts[0], {
         gain: parts[1], balance: parts[2], pan: parts[3], muted: parts[4] === "1",
-        soloed: parts[5] === "1", follow: parts[6] === "1", delay: parts[7], buses: parts[9],
+        soloed: parts[5] === "1", follow: parts[6] === "1", delay: parts[7],
+        buses: sendsToMask(sends), sends,
       });
     }
     return strips;
@@ -2064,6 +2086,13 @@
       case "audio_strip_dsp_state":
         if (link.phase === "live") fxTakeChain(required(record, "input"), required(record, "chain"));
         return;
+      case "audio_strip_send_state": {
+        if (link.phase !== "live") return;
+        const sends = required(record, "sends");
+        const strip = show.strips.get(required(record, "input"));
+        if (strip) { strip.sends = sends; strip.buses = sendsToMask(sends); render(); }
+        return;
+      }
       case "media_list_state":
         if (link.phase === "live") {
           const list = parseMediaList(record);
@@ -3950,7 +3979,7 @@
       ["balance_basis_points", strip.balance], ["pan_basis_points", strip.pan],
       ["muted", strip.muted ? "0" : "1"], ["soloed", strip.soloed ? "1" : "0"],
       ["follow_video", strip.follow ? "1" : "0"], ["delay_samples", strip.delay],
-      ["buses", strip.buses],
+      ["sends", strip.sends || strip.buses],
     ], link.revision);
     mutesSent.set(commandId, { input: id, strip: { ...strip }, retried });
   }

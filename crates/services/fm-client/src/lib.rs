@@ -205,6 +205,9 @@ pub enum Intake {
     /// An `audio_strip_dsp_state` completed one input strip's DSP chain the
     /// snapshot announced (Protocol 2.75).
     AudioStripDspStateApplied,
+    /// An `audio_strip_send_state` completed one input strip's aux send
+    /// levels and taps the snapshot announced (Protocol 2.130).
+    AudioStripSendStateApplied,
     /// A `paged_state` completed one paged input the snapshot announced
     /// (IN-014).
     PagedStateApplied,
@@ -682,6 +685,10 @@ impl Client {
             WireMessage::AudioStripDspState(state) => {
                 self.apply_audio_strip_dsp_state(state)?;
                 Ok(Intake::AudioStripDspStateApplied)
+            }
+            WireMessage::AudioStripSendState(state) => {
+                self.apply_audio_strip_send_state(state)?;
+                Ok(Intake::AudioStripSendStateApplied)
             }
             WireMessage::PagedState(state) => {
                 self.apply_paged_state(state)?;
@@ -1639,6 +1646,65 @@ impl Client {
         Ok(())
     }
 
+    /// Completes one input strip's aux send levels and taps with its
+    /// `audio_strip_send_state` (Protocol 2.130): one of a snapshot's
+    /// follow-on records, in ascending input order after the strip DSP
+    /// records and before the paged states.
+    ///
+    /// # Errors
+    ///
+    /// A send state in any other state, at another revision, beyond the
+    /// announced count, out of order, or before the earlier follow-on
+    /// records forces a fresh-snapshot reconnect
+    /// ([`ClientError::ResyncRequired`]).
+    pub fn apply_audio_strip_send_state(
+        &mut self,
+        state: fm_protocol::AudioStripSendStateMessage,
+    ) -> Result<(), ClientError> {
+        let ConnectionState::Synchronizing {
+            mode: SyncMode::Snapshot,
+            target_revision,
+        } = self.state
+        else {
+            let expected = self
+                .model
+                .reconnect_cursor()
+                .map_or(0, |cursor| cursor.revision.get());
+            return self.require_resync(expected, state.revision);
+        };
+        let received_revision = state.revision;
+        let earlier_complete = self.model.state().is_none_or(|state| {
+            state.titles_complete()
+                && state.playlist_complete()
+                && state.grading_complete()
+                && state.title_animations_complete()
+                && state.title_layouts_complete()
+                && state.scene_animations_complete()
+                && state.scene_layouts_complete()
+                && state.animation_presets_complete()
+                && state.media_complete()
+                && state.cue_lists_complete()
+                && state.scripts_complete()
+                && state.shortcuts_complete()
+                && state.stills_complete()
+                && state.media_lists_complete()
+                && state.audio_strip_dsps_complete()
+        });
+        if self
+            .model
+            .reconnect_cursor()
+            .is_none_or(|cursor| cursor.revision.get() != target_revision)
+            || !earlier_complete
+            || self.model.apply_audio_strip_send_state(state).is_err()
+        {
+            return self.require_resync(target_revision, received_revision);
+        }
+        if self.snapshot_complete() {
+            self.finish_sync();
+        }
+        Ok(())
+    }
+
     /// Completes one paged input the snapshot announced with its
     /// `paged_state` (IN-014): the last of a snapshot's follow-on records,
     /// in ascending input order.
@@ -1681,6 +1747,7 @@ impl Client {
                 && state.stills_complete()
                 && state.media_lists_complete()
                 && state.audio_strip_dsps_complete()
+                && state.audio_send_states_complete()
         });
         if self
             .model
@@ -1723,6 +1790,7 @@ impl Client {
                 && state.stills_complete()
                 && state.media_lists_complete()
                 && state.audio_strip_dsps_complete()
+                && state.audio_send_states_complete()
                 && state.paged_complete()
         })
     }

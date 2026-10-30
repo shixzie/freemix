@@ -456,7 +456,7 @@ fn input_audio_strip_is_durable_and_realized_on_its_scheduled_frame() {
         soloed: true,
         follow_video: false,
         delay_samples: 2_400,
-        buses: fm_types::audio_bus::AudioBusMask::MASTER,
+        sends: fm_types::audio_bus::AudioSends::MASTER,
     };
     let accepted = engine
         .execute(
@@ -531,7 +531,7 @@ fn input_audio_strip_rejects_unknown_inputs_and_out_of_range_values() {
                             soloed: false,
                             follow_video: true,
                             delay_samples,
-                            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                            sends: fm_types::audio_bus::AudioSends::MASTER,
                         },
                     },
                 ),

@@ -110,8 +110,9 @@ pub struct EngineInputAudioStripState {
     pub soloed: bool,
     pub follow_video: bool,
     pub delay_samples: u32,
-    /// Master and the aux buses the strip feeds (AU-002). A live control.
-    pub buses: fm_types::audio_bus::AudioBusMask,
+    /// Master and the aux buses the strip feeds, with each aux send's level
+    /// and tap (AU-002). A live control.
+    pub sends: fm_types::audio_bus::AudioSends,
 }
 
 impl Default for EngineInputAudioStripState {
@@ -124,7 +125,7 @@ impl Default for EngineInputAudioStripState {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         }
     }
 }

@@ -14,8 +14,9 @@ use fm_plugin_host_api::{
 use fm_protocol::AuxBusStatus;
 use fm_protocol::{
     AudioDspTarget, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioMonitorStatus,
-    AudioPluginStatusMessage, AudioPluginStatusRequest, AudioStripDspStateMessage, CommandPayload,
-    EventPayload, InputAudioLabel, PluginChainSlot, ServerIdentity, WireInputId, WireOutputId,
+    AudioPluginStatusMessage, AudioPluginStatusRequest, AudioStripDspStateMessage,
+    AudioStripSendStateMessage, CommandPayload, EventPayload, InputAudioLabel, PluginChainSlot,
+    ServerIdentity, WireInputId, WireOutputId,
 };
 use fm_types::strip_dsp::StripDspTarget;
 
@@ -51,6 +52,35 @@ pub(super) fn strip_dsp_states(engine: &Engine) -> Vec<AudioStripDspStateMessage
             revision,
             input: WireInputId::from_domain(*input),
             chain: *chain,
+        })
+        .collect()
+}
+
+/// How many strips carry sends beyond the plain enable mask (2.130).
+fn strip_send_states_len(show: &ShowState) -> usize {
+    show.input_audio_strips()
+        .values()
+        .filter(|state| {
+            state.sends != fm_types::audio_bus::AudioSends::from_mask(state.sends.mask())
+        })
+        .count()
+}
+
+/// One `audio_strip_send_state` per input whose sends are not the plain
+/// enable mask, ascending (2.130, AU-002).
+pub(super) fn strip_send_states(engine: &Engine) -> Vec<AudioStripSendStateMessage> {
+    let revision = engine.revision().get();
+    engine
+        .show()
+        .input_audio_strips()
+        .iter()
+        .filter(|(_, state)| {
+            state.sends != fm_types::audio_bus::AudioSends::from_mask(state.sends.mask())
+        })
+        .map(|(&input, state)| AudioStripSendStateMessage {
+            revision,
+            input: WireInputId::from_domain(input),
+            sends: state.sends,
         })
         .collect()
 }
@@ -400,6 +430,8 @@ pub(super) fn wire_status(show: &ShowState) -> AudioMixerStatus {
         master_dsp: *show.master_audio_dsp(),
         strip_dsp_states: u16::try_from(show.input_audio_dsps().len())
             .expect("one chain per input, at most the input bound"),
+        send_states: u16::try_from(strip_send_states_len(show))
+            .expect("one send record per input, at most the input bound"),
         aux_buses: show.aux_buses().clone().map(|bus| AuxBusStatus {
             name: bus.name,
             gain_millidb: bus.state.gain_millidb,

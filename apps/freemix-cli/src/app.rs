@@ -887,13 +887,13 @@ pub fn run(command: Command) -> AppResult<()> {
             soloed,
             follow_video,
             delay_samples,
-            buses,
+            sends,
         } => mutate(
             &path,
             EngineCommand::SetInputAudioStrip {
                 input: input_id(input)?,
                 state: EngineInputAudioStripState {
-                    buses,
+                    sends,
                     ..engine_audio_strip_state(
                         gain_millidb,
                         balance_basis_points,
@@ -2018,7 +2018,7 @@ pub fn run(command: Command) -> AppResult<()> {
             soloed,
             follow_video,
             delay_samples,
-            buses,
+            sends,
             key,
             expected_revision,
         } => remote::execute(
@@ -2045,7 +2045,7 @@ pub fn run(command: Command) -> AppResult<()> {
                 delay_samples: InputDelaySamples::new(delay_samples)
                     .ok_or_else(|| AppFailure("delay samples must be in 0..=48000".into()))?
                     .get(),
-                buses,
+                sends,
             },
             key,
             expected_revision,
@@ -5031,7 +5031,7 @@ fn engine_audio_strip_state(
         delay_samples: InputDelaySamples::new(delay_samples)
             .ok_or_else(|| AppFailure("delay samples must be in 0..=48000".into()))?
             .get(),
-        buses: fm_types::audio_bus::AudioBusMask::MASTER,
+        sends: fm_types::audio_bus::AudioSends::MASTER,
     })
 }
 
@@ -5297,7 +5297,7 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppRes
                 soloed: strip.state.soloed,
                 follow_video: strip.state.follow_video,
                 delay_samples: strip.state.delay_samples.get(),
-                buses: strip.state.buses,
+                sends: strip.state.sends,
             },
         )?;
         show.set_input_audio_label(strip.input, strip.label.clone())?;
@@ -5527,7 +5527,7 @@ fn sync_input_audio_strips(project: &mut Project, show: &ShowState) -> AppResult
             follow_video: state.follow_video,
             delay_samples: InputDelaySamples::new(state.delay_samples)
                 .expect("engine input audio delay is bounded by the model contract"),
-            buses: state.buses,
+            sends: state.sends,
         };
         if !project.set_input_audio_strip(input, strip) {
             return Err(AppFailure(format!("project is missing input {input}")).into());

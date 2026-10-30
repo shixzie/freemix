@@ -3824,6 +3824,23 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::BusMixerNoMeterHover,
         t("Este servidor no mide los buses auxiliares"),
     ),
+    (Msg::BusMixerSends, t("Niveles de envío")),
+    (Msg::BusMixerSendInput, t("Tira de envío")),
+    (
+        Msg::BusMixerSendInputHover,
+        t("La tira cuyos envíos estás editando"),
+    ),
+    (
+        Msg::BusMixerSendLevelHover,
+        t("El nivel de este envío; un envío prefader ignora el fader de la tira"),
+    ),
+    (
+        Msg::BusMixerSendTapHover,
+        t("Envía antes del fader de la tira (Pre) o después (Post)"),
+    ),
+    (Msg::BusMixerPreFader, t("Pre")),
+    (Msg::BusMixerPostFader, t("Post")),
+    (Msg::BusMixerNoInputs, t("Este proyecto no tiene entradas.")),
     (Msg::MixerDetailsKey, t("GAN · BAL · RET")),
     (Msg::DetailsKey, t("DETALLES")),
     (

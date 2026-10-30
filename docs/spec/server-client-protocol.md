@@ -34,7 +34,7 @@ into control messages.
    replacement, restore, log compaction, or engine identity change forces a
    snapshot and a new cursor.
 
-The current Protocol 2.129 implementation uses bounded newline-delimited raw TCP.
+The current Protocol 2.130 implementation uses bounded newline-delimited raw TCP.
 Studio keeps one expected heartbeat sequence and waits for its matching
 acknowledgement within the bounded peer wait. EOF, timeout, wrong server
 identity, or wrong sequence enters the existing reconnect backoff. The server
@@ -4668,6 +4668,32 @@ Protocol 2.129 reads an audio plugin chain (AU-006).
   project carry their plugin chain (`plugins` / `master_audio_plugins`,
   `null` when empty), so a chain is persisted, undone, and restored like a
   DSP chain; 2.128 is refused.
+
+Protocol 2.130 adds per-send levels and pre-fader taps (AU-002, schema 92).
+
+- `input_audio_strip` commands carry a required `sends` token instead of
+  `buses`: `M` when the strip feeds Master, then one entry per enabled aux
+  bus in order, each `<letter>@<milli-dB>` with a trailing `p` for a
+  pre-fader tap (`M,A@-6000p,C@0`); `-` feeds no bus. Each snapshot strip
+  tuple and `audio_mixer_changed` tuple ends with the same token; in a
+  snapshot it carries the enable mask only, and full levels and taps follow
+  in the records below.
+- The snapshot adds `audio_strip_send_states=<count>` (0..=256) after
+  `audio_strip_dsp_states`; that many `audio_strip_send_state` records
+  (`revision`, `input`, `sends`), one per input whose aux sends carry a
+  level or tap beyond the mask, ascending by input, follow the
+  `audio_strip_dsp_state` records and precede the paged states. A record at
+  another revision, beyond the count, out of order, for an unknown input, or
+  with the plain mask forces a fresh snapshot.
+- A pre-fader send ignores the strip fader; a post-fader send hears it. Strip
+  and group mute and follow-video cut both; each aux bus keeps its own fader,
+  mute, and meters.
+- Durability (schema 92): every strip in `input_audio_strips` carries
+  `sends`; schema 91 projects are refused.
+- `freemix-cli audio-strip` / `remote-audio-strip` take `--sends <token>`; the
+  older `--buses <mask>` sets only the enabled buses, at unity post-fader.
+  Studio's BUSES window edits each selected strip's send levels and taps.
+- 2.129 is refused.
 
 Command results are ordered before any event bearing the same accepted revision
 on that connection. State events are globally ordered within one

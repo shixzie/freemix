@@ -57,7 +57,7 @@ fn input_audio_strips() -> Vec<InputAudioStripStatus> {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         })
         .collect()
 }
@@ -4480,5 +4480,88 @@ fn strip_dsp_records_complete_the_snapshot_and_events_keep_them_current() {
     assert_eq!(
         model.state().unwrap().input_audio_dsp(input(3)),
         StripDsp::DEFAULT
+    );
+}
+
+#[test]
+fn send_state_records_complete_the_snapshot_and_carry_levels_and_taps() {
+    use fm_protocol::{AudioStripSendStateMessage, WireInputId};
+    use fm_types::audio_bus::{AudioSends, AuxBusNumber, BusSendState, SendTap};
+
+    let record = |revision, value, sends| AudioStripSendStateMessage {
+        revision,
+        input: WireInputId::from_domain(input(value)),
+        sends,
+    };
+    let a = AuxBusNumber::new(1).unwrap();
+    let pre = AudioSends::MASTER.with_aux_send(
+        a,
+        BusSendState {
+            enabled: true,
+            level_millidb: -6_000,
+            tap: SendTap::PreFader,
+        },
+    );
+    let post = AudioSends::MASTER.with_master(false).with_aux_send(
+        a,
+        BusSendState {
+            enabled: true,
+            level_millidb: 300,
+            tap: SendTap::PostFader,
+        },
+    );
+    let project_id = project(10);
+    let mut model = ClientModel::new(project_id);
+    let mut installed = snapshot(project_id, 7);
+    installed.audio_mixer.send_states = 2;
+    model.install_snapshot(installed).unwrap();
+    assert!(!model.state().unwrap().audio_send_states_complete());
+    // Another revision, an unknown input, a plain mask, or an invalid level
+    // is refused.
+    let invalid = AudioSends::MASTER.with_aux_send(
+        a,
+        BusSendState {
+            enabled: true,
+            level_millidb: 24_001,
+            tap: SendTap::PostFader,
+        },
+    );
+    for refused in [
+        record(6, 2, pre),
+        record(7, 9, pre),
+        record(7, 2, AudioSends::MASTER),
+        record(7, 2, invalid),
+    ] {
+        assert_eq!(
+            model.apply_audio_strip_send_state(refused),
+            Err(ModelError::AudioStripSendStateMismatch)
+        );
+    }
+    model
+        .apply_audio_strip_send_state(record(7, 2, pre))
+        .unwrap();
+    // Records ascend by input.
+    assert_eq!(
+        model.apply_audio_strip_send_state(record(7, 1, post)),
+        Err(ModelError::AudioStripSendStateMismatch)
+    );
+    model
+        .apply_audio_strip_send_state(record(7, 3, post))
+        .unwrap();
+    let state = model.state().unwrap();
+    assert!(state.audio_send_states_complete());
+    let strip = |value: u128| {
+        state
+            .input_audio_strips()
+            .iter()
+            .find(|strip| strip.input == input(value))
+            .unwrap()
+    };
+    assert_eq!(strip(2).sends, pre);
+    assert_eq!(strip(3).sends, post);
+    // Beyond the announced count.
+    assert_eq!(
+        model.apply_audio_strip_send_state(record(7, 2, pre)),
+        Err(ModelError::AudioStripSendStateMismatch)
     );
 }

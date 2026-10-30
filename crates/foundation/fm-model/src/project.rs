@@ -933,7 +933,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(91);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(92);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -4682,8 +4682,9 @@ pub struct InputAudioStripState {
     pub muted: bool,
     pub soloed: bool,
     pub follow_video: bool,
-    /// Master and the aux buses the strip feeds (AU-002, schema 90).
-    pub buses: crate::AudioBusMask,
+    /// Master and the aux buses the strip feeds, with each send's level and
+    /// tap point (AU-002, schema 92).
+    pub sends: crate::AudioSends,
 }
 
 impl Default for InputAudioStripState {
@@ -4696,7 +4697,7 @@ impl Default for InputAudioStripState {
             muted: false,
             soloed: false,
             follow_video: true,
-            buses: crate::AudioBusMask::MASTER,
+            sends: crate::AudioSends::MASTER,
         }
     }
 }

@@ -2231,7 +2231,7 @@ fn draw_input_strip(
     let mut soloed = status.soloed;
     let mut follow_video = status.follow_video;
     let mut delay_samples = status.delay_samples;
-    let mut buses = status.buses;
+    let mut sends = status.sends;
     let mut gain_changed = false;
     let mut balance_changed = false;
     let mut mute_changed = false;
@@ -2354,7 +2354,7 @@ fn draw_input_strip(
                 *fx = Some(StripDspTarget::Input(status.input));
             }
         });
-        buses = bus_keys(ui, enabled, reason, buses, layout.inner_width());
+        sends = bus_keys(ui, enabled, reason, sends, layout.inner_width());
         loudness_box(ui, loudness.as_ref(), false, feed.stale);
         let row_height = crate::source_sync_ui::SYNC_ROW_HEIGHT - 4.0;
         match sync {
@@ -2408,7 +2408,7 @@ fn draw_input_strip(
         soloed: solo_changed.then_some(soloed),
         follow_video: follow_changed.then_some(follow_video),
         delay_samples: delay_changed.then_some(delay_samples),
-        buses: (buses != status.buses).then_some(buses),
+        sends: (sends != status.sends).then_some(sends),
     };
     if update != InputAudioStripUpdate::default() {
         intents.push(StudioIntent::SetInputAudioStrip {
@@ -2420,15 +2420,15 @@ fn draw_input_strip(
 }
 
 /// The strip's bus keys (AU-002), like a vMix strip's: `M` feeds Master and
-/// `A`–`G` feed the aux buses, four to a row. Returns the strip's buses after
-/// any click.
+/// `A`–`G` feed the aux buses, four to a row. Returns the strip's sends after
+/// any click, keeping each send's level and tap.
 fn bus_keys(
     ui: &mut Ui,
     enabled: bool,
     reason: &str,
-    mut buses: fm_types::audio_bus::AudioBusMask,
+    mut sends: fm_types::audio_bus::AudioSends,
     width: f32,
-) -> fm_types::audio_bus::AudioBusMask {
+) -> fm_types::audio_bus::AudioSends {
     let l = l10n::locale(ui.ctx());
     let aux = fm_types::audio_bus::AuxBusNumber::ALL;
     let rows: [[Option<fm_types::audio_bus::AuxBusNumber>; 4]; 2] = [
@@ -2442,12 +2442,12 @@ fn bus_keys(
             for bus in row {
                 let (mut on, label, hover) = match bus {
                     None => (
-                        buses.master(),
+                        sends.master(),
                         "M".to_owned(),
                         l.text(Msg::StripBusMasterHover).to_owned(),
                     ),
                     Some(bus) => (
-                        buses.aux(bus),
+                        sends.aux(bus).enabled,
                         bus.letter().to_string(),
                         l.format(
                             Msg::StripBusAuxHover,
@@ -2464,15 +2464,15 @@ fn bus_keys(
                     .hint(&hover, reason)
                     .changed()
                 {
-                    buses = match bus {
-                        None => buses.with_master(on),
-                        Some(bus) => buses.with_aux(bus, on),
+                    sends = match bus {
+                        None => sends.with_master(on),
+                        Some(bus) => sends.with_aux(bus, on),
                     };
                 }
             }
         });
     }
-    buses
+    sends
 }
 
 /// A latching console key with an LED bar: lit in `color` while on, an unlit
@@ -3260,6 +3260,157 @@ fn draw_bus_mixer_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
             }
         });
     }
+    draw_send_levels(ui, state, intents, audio_enabled, audio_reason);
+}
+
+/// One strip's send levels and taps (AU-002, Protocol 2.130): a picker, then
+/// Master's enable key and each aux bus's key, level, and Pre/Post tap.
+#[allow(clippy::too_many_lines)]
+fn draw_send_levels(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    intents: &mut Vec<StudioIntent>,
+    audio_enabled: bool,
+    audio_reason: &str,
+) {
+    let l = l10n::locale(ui.ctx());
+    let Some(view) = &state.view else {
+        return;
+    };
+    ui.add_space(8.0);
+    ui.label(section_label(l.text(Msg::BusMixerSends)));
+    if view.input_audio_strips.is_empty() {
+        ui.label(caption(l.text(Msg::BusMixerNoInputs)));
+        return;
+    }
+    let selection = egui::Id::new("studio-bus-mixer-send-input");
+    let selected = ui.data(|data| data.get_temp::<fm_types::InputId>(selection));
+    let mut chosen = selected
+        .filter(|input| {
+            view.input_audio_strips
+                .iter()
+                .any(|strip| strip.input == *input)
+        })
+        .or_else(|| view.input_audio_strips.first().map(|strip| strip.input));
+    let name = |input: fm_types::InputId| {
+        view.inputs
+            .iter()
+            .position(|candidate| *candidate == input)
+            .and_then(|index| view.input_names.get(index))
+            .map_or("?", String::as_str)
+    };
+    ui.horizontal(|ui| {
+        ui.label(caption(l.text(Msg::BusMixerSendInput)));
+        let text = chosen.map_or("?", name);
+        egui::ComboBox::from_id_salt("bus-mixer-send-input-combo")
+            .selected_text(text)
+            .width(180.0)
+            .show_ui(ui, |ui| {
+                for strip in &view.input_audio_strips {
+                    ui.selectable_value(&mut chosen, Some(strip.input), name(strip.input));
+                }
+            })
+            .response
+            .hint(l.text(Msg::BusMixerSendInputHover), audio_reason);
+    });
+    let Some(input) = chosen else {
+        return;
+    };
+    ui.data_mut(|data| data.insert_temp(selection, input));
+    let Some(status) = view
+        .input_audio_strips
+        .iter()
+        .find(|strip| strip.input == input)
+    else {
+        return;
+    };
+    let mut sends = status.sends;
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        let mut on = sends.master();
+        if led_key(ui, audio_enabled, &mut on, "M", PROGRAM, 24.0)
+            .hint(l.text(Msg::StripBusMasterHover), audio_reason)
+            .changed()
+        {
+            sends = sends.with_master(on);
+            changed = true;
+        }
+        ui.label(caption(l.text(Msg::BusMixerMaster)));
+    });
+    for bus in fm_types::audio_bus::AuxBusNumber::ALL {
+        let mut send = sends.aux(bus);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let mut on = send.enabled;
+            let hover = l.format(
+                Msg::StripBusAuxHover,
+                &[("bus", Arg::Str(&bus.letter().to_string()))],
+            );
+            if led_key(
+                ui,
+                audio_enabled,
+                &mut on,
+                &bus.letter().to_string(),
+                accent_color(),
+                24.0,
+            )
+            .hint(&hover, audio_reason)
+            .changed()
+            {
+                send.enabled = on;
+                changed = true;
+            }
+            let mut gain = send.level_millidb;
+            if ui
+                .add_enabled(
+                    audio_enabled,
+                    DragValue::new(&mut gain)
+                        .range(-96_000..=24_000)
+                        .speed(50.0)
+                        .custom_formatter(|value, _| {
+                            #[allow(clippy::cast_possible_truncation)] // bounded range
+                            format_gain(l, value as i32)
+                        })
+                        .custom_parser(|text| parse_gain(l, text)),
+                )
+                .hint(l.text(Msg::BusMixerSendLevelHover), audio_reason)
+                .changed()
+            {
+                send.level_millidb = gain;
+                changed = true;
+            }
+            let pre = send.tap == fm_types::audio_bus::SendTap::PreFader;
+            ui.add_enabled_ui(audio_enabled, |ui| {
+                if ui
+                    .selectable_label(pre, l.text(Msg::BusMixerPreFader))
+                    .hint(l.text(Msg::BusMixerSendTapHover), audio_reason)
+                    .clicked()
+                {
+                    send.tap = fm_types::audio_bus::SendTap::PreFader;
+                    changed = true;
+                }
+                if ui
+                    .selectable_label(!pre, l.text(Msg::BusMixerPostFader))
+                    .hint(l.text(Msg::BusMixerSendTapHover), audio_reason)
+                    .clicked()
+                {
+                    send.tap = fm_types::audio_bus::SendTap::PostFader;
+                    changed = true;
+                }
+            });
+        });
+        sends = sends.with_aux_send(bus, send);
+    }
+    if changed {
+        intents.push(StudioIntent::SetInputAudioStrip {
+            input,
+            update: InputAudioStripUpdate {
+                sends: Some(sends),
+                ..InputAudioStripUpdate::default()
+            },
+        });
+    }
 }
 
 /// A compact two-bar meter for one aux bus, from its `audio_meters` record
@@ -3354,7 +3505,7 @@ mod tests {
             soloed: false,
             follow_video: true,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         };
         let strips = [strip(1, Some(1)), strip(2, None), strip(3, Some(3))];
         // Group 2 has no strips of its own but nests group 1.

@@ -13130,7 +13130,7 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &fm_model::Project)
                 soloed: strip.state.soloed,
                 follow_video: strip.state.follow_video,
                 delay_samples: strip.state.delay_samples.get(),
-                buses: strip.state.buses,
+                sends: strip.state.sends,
             },
         )?;
         show.set_input_audio_label(strip.input, strip.label.clone())?;
@@ -13385,7 +13385,7 @@ fn model_audio_strip_state(state: EngineInputAudioStripState) -> InputAudioStrip
         follow_video: state.follow_video,
         delay_samples: InputDelaySamples::new(state.delay_samples)
             .expect("engine input audio delay is bounded by the model contract"),
-        buses: state.buses,
+        sends: state.sends,
     }
 }
 
@@ -13555,6 +13555,13 @@ fn handle_client(
                     &mut writer,
                     &mut session,
                     &WireMessage::AudioStripDspState(state),
+                )?;
+            }
+            for state in control.borrow().strip_send_states() {
+                write_session_message(
+                    &mut writer,
+                    &mut session,
+                    &WireMessage::AudioStripSendState(state),
                 )?;
             }
             for state in control.borrow().paged_states() {
@@ -23564,7 +23571,7 @@ mod tests {
                     soloed: true,
                     follow_video: false,
                     delay_samples: 1_200,
-                    buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                    sends: fm_types::audio_bus::AudioSends::MASTER,
                 },
             ),
             0,
@@ -23584,7 +23591,7 @@ mod tests {
                 soloed: true,
                 follow_video: false,
                 delay_samples: InputDelaySamples::new(1_200).unwrap(),
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             })
         );
     }
@@ -23902,7 +23909,7 @@ mod tests {
                 muted: false,
                 soloed: false,
                 follow_video: true,
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             },
         ));
         project.set_main_mix(MainMix::new(test_input_id(1), test_input_id(2)));

@@ -2569,7 +2569,7 @@ impl Runtime<'_> {
                 peer.reply(WireMessage::ReplayStatus(Box::new(status)))?;
                 Ok(())
             }
-            // One audio chain's plugin slots (2.129, AU-006), to any session
+            // One audio chain's plugin slots (2.130, AU-006), to any session
             // that may view status.
             WireMessage::AudioPluginStatusRequest(request) => {
                 if self.refuse_request(peer, &request.request_id, Session::admit_view_status)? {
@@ -3013,6 +3013,12 @@ impl Runtime<'_> {
                     .strip_dsp_states()
                     .into_iter()
                     .map(WireMessage::AudioStripDspState),
+            );
+            peer.initial_sync.extend(
+                control
+                    .strip_send_states()
+                    .into_iter()
+                    .map(WireMessage::AudioStripSendState),
             );
             peer.initial_sync.extend(
                 control

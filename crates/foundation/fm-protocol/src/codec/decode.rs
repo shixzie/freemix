@@ -199,6 +199,19 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
                 chain: super::audio_mixer::decode_chain("chain", &fields.required("chain")?)?,
             })
         }
+        "audio_strip_send_state" => {
+            let sends = fields.required("sends")?;
+            WireMessage::AudioStripSendState(crate::AudioStripSendStateMessage {
+                revision: fields.canonical_required("revision")?,
+                input: fields.canonical_input("input")?,
+                sends: fm_types::audio_bus::AudioSends::from_token(&sends).ok_or(
+                    CodecError::InvalidField {
+                        field: "sends",
+                        value: sends,
+                    },
+                )?,
+            })
+        }
         "display_inventory_request" => {
             let request_id = fields.required("request_id")?;
             validate_request_id(&request_id)?;
@@ -698,11 +711,11 @@ fn decode_command_payload(
             soloed: fields.boolean("soloed")?,
             follow_video: fields.boolean("follow_video")?,
             delay_samples: fields.parse_required("delay_samples")?,
-            buses: {
-                let value = fields.required("buses")?;
-                fm_types::audio_bus::AudioBusMask::from_token(&value).ok_or(
+            sends: {
+                let value = fields.required("sends")?;
+                fm_types::audio_bus::AudioSends::from_token(&value).ok_or(
                     CodecError::InvalidField {
-                        field: "buses",
+                        field: "sends",
                         value,
                     },
                 )?
@@ -2414,7 +2427,7 @@ fn decode_input_audio_strips(
             let follow_video = parts.next().ok_or_else(invalid)?;
             let delay_samples = parts.next().ok_or_else(invalid)?;
             let group = parts.next().ok_or_else(invalid)?;
-            let buses = parts.next().ok_or_else(invalid)?;
+            let sends = parts.next().ok_or_else(invalid)?;
             if parts.next().is_some() {
                 return Err(invalid());
             }
@@ -2440,7 +2453,9 @@ fn decode_input_audio_strips(
                     _ => return Err(invalid()),
                 },
                 delay_samples: delay_samples.parse().map_err(|_| invalid())?,
-                buses: fm_types::audio_bus::AudioBusMask::from_token(buses).ok_or_else(invalid)?,
+                sends: fm_types::audio_bus::AudioSends::from_mask(
+                    fm_types::audio_bus::AudioBusMask::from_token(sends).ok_or_else(invalid)?,
+                ),
             };
             if !(-96_000..=24_000).contains(&status.gain_millidb)
                 || !(-10_000..=10_000).contains(&status.balance_basis_points)

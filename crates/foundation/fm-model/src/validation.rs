@@ -137,6 +137,7 @@ fn validate_aux_buses(project: &Project, errors: &mut Vec<ValidationError>) {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn validate_input_audio_strips(project: &Project, errors: &mut Vec<ValidationError>) {
     for input in project.inputs() {
         let count = project
@@ -164,6 +165,13 @@ fn validate_input_audio_strips(project: &Project, errors: &mut Vec<ValidationErr
             errors.push(ValidationError {
                 entity: Some(EntityRef::Input(strip.input)),
                 field: "audio_strip.label",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
+        if strip.state.sends.validate().is_err() {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(strip.input)),
+                field: "audio_strip.sends",
                 kind: ValidationErrorKind::OutOfRange,
             });
         }

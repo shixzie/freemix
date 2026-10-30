@@ -401,10 +401,10 @@ fn parse_input_audio_strip(value: Value) -> Result<InputAudioStrip, DecodeError>
             muted: object.boolean("muted")?,
             soloed: object.boolean("soloed")?,
             follow_video: object.boolean("follow_video")?,
-            buses: {
-                let token = object.string("buses")?;
-                fm_model::AudioBusMask::from_token(&token).ok_or_else(|| {
-                    syntax("input audio strip buses must be \"-\" or M then bus letters A-G")
+            sends: {
+                let token = object.string("sends")?;
+                fm_model::AudioSends::from_token(&token).ok_or_else(|| {
+                    syntax("input audio strip sends must be \"-\" or bus@level entries in order")
                 })?
             },
         },

@@ -146,7 +146,7 @@ fn coalesce_adjacent_intent(tail: &mut StudioIntent, incoming: StudioIntent) -> 
             current_update.soloed = update.soloed.or(current_update.soloed);
             current_update.follow_video = update.follow_video.or(current_update.follow_video);
             current_update.delay_samples = update.delay_samples.or(current_update.delay_samples);
-            current_update.buses = update.buses.or(current_update.buses);
+            current_update.sends = update.sends.or(current_update.sends);
             true
         }
         // A group fader drag sends the latest level, never a backlog.
@@ -2132,7 +2132,7 @@ fn resolve_input_audio_strip(
         soloed: update.soloed.unwrap_or(strip.soloed),
         follow_video: update.follow_video.unwrap_or(strip.follow_video),
         delay_samples: update.delay_samples.unwrap_or(strip.delay_samples),
-        buses: update.buses.unwrap_or(strip.buses),
+        sends: update.sends.unwrap_or(strip.sends),
     })
 }
 
@@ -3922,7 +3922,7 @@ mod tests {
                 soloed: false,
                 follow_video: false,
                 delay_samples: 0,
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             }],
             desired_program: input,
             desired_preview: input,
@@ -4578,7 +4578,7 @@ mod tests {
                 soloed: Some(false),
                 follow_video: Some(false),
                 delay_samples: Some(0),
-                buses: None,
+                sends: None,
             },
         };
         assert_eq!(pending.intents, VecDeque::from([coalesced.clone()]));
@@ -6179,7 +6179,7 @@ mod tests {
                 soloed: false,
                 follow_video: false,
                 delay_samples: 0,
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             })
         );
         let mut input_audio_strips = confirmed.input_audio_strips.clone();
@@ -6218,7 +6218,7 @@ mod tests {
                 soloed: true,
                 follow_video: false,
                 delay_samples: 0,
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             })
         );
     }

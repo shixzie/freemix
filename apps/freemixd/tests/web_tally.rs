@@ -1453,7 +1453,7 @@ fn operator_page_commands_drive_the_show_within_the_session_role() {
     let daemon = Daemon::start(&project);
     let mute = |value: u128, muted: u8| {
         format!(
-            "payload=input_audio_strip\tinput={}\tgain_millidb=0\tbalance_basis_points=0\tpan_basis_points=0\tmuted={muted}\tsoloed=0\tfollow_video=1\tdelay_samples=0\tbuses=M",
+            "payload=input_audio_strip\tinput={}\tgain_millidb=0\tbalance_basis_points=0\tpan_basis_points=0\tmuted={muted}\tsoloed=0\tfollow_video=1\tdelay_samples=0\tsends=M",
             input(value)
         )
     };
@@ -1762,7 +1762,7 @@ fn several_web_clients_hold_their_own_sessions_at_once() {
 
     // The Audio page mutes; the Operator page sees the strip change.
     let mute = format!(
-        "payload=input_audio_strip\tinput={}\tgain_millidb=0\tbalance_basis_points=0\tpan_basis_points=0\tmuted=1\tsoloed=0\tfollow_video=1\tdelay_samples=0\tbuses=M",
+        "payload=input_audio_strip\tinput={}\tgain_millidb=0\tbalance_basis_points=0\tpan_basis_points=0\tmuted=1\tsoloed=0\tfollow_video=1\tdelay_samples=0\tsends=M",
         input(1)
     );
     let (revision, _) = page_command(&mut audio, "audio-mute", Some(13), &mute).unwrap();

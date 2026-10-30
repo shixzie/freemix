@@ -1643,8 +1643,9 @@ pub enum CommandPayload {
         soloed: bool,
         follow_video: bool,
         delay_samples: u32,
-        /// Master and the aux buses the strip feeds (Protocol 2.118).
-        buses: fm_types::audio_bus::AudioBusMask,
+        /// Master and each aux bus the strip feeds, with its level and tap
+        /// (Protocol 2.130).
+        sends: fm_types::audio_bus::AudioSends,
     },
     SelectPreview {
         input: WireInputId,
@@ -2521,8 +2522,9 @@ pub struct InputAudioStripStatus {
     pub soloed: bool,
     pub follow_video: bool,
     pub delay_samples: u32,
-    /// Master and the aux buses the strip feeds (Protocol 2.118).
-    pub buses: fm_types::audio_bus::AudioBusMask,
+    /// Master and each aux bus the strip feeds, with its level and tap
+    /// (Protocol 2.130).
+    pub sends: fm_types::audio_bus::AudioSends,
 }
 
 /// One canonical show input exposed to clients in project order.
@@ -3483,6 +3485,7 @@ pub enum WireMessage {
     AnimationPresetState(AnimationPresetStateMessage),
     /// One input strip's DSP chain after a snapshot (Protocol 2.75).
     AudioStripDspState(crate::AudioStripDspStateMessage),
+    AudioStripSendState(crate::AudioStripSendStateMessage),
     MediaState(crate::MediaStateMessage),
     /// One paged input after a snapshot (IN-014).
     PagedState(crate::PagedStateMessage),

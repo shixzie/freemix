@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.129 / schema 91 (2026-10-30,
+(2026-10-19); items refreshed through protocol 2.130 / schema 92 (2026-10-30,
 at `8497393`). Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -196,18 +196,20 @@ there come before any new breadth below.
 13. **Aux buses through the show (`AU-002`).** Master plus aux buses A-G
     are live (Protocol 2.118, schema 90), metered on the wire (Protocol
     2.120), edited in Studio's BUSES window and the CLI, and a project
-    output can hear a bus instead of Master. Remaining: sends are unity
-    post-fader only through the show (per-send level and pre-fader taps
-    exist in `fm-audio`), `BusMatrix` bus processing, mix-minus feeds, and
-    device or network destinations are not wired, and the legacy project
-    audio bus graph is unchanged (see the Phase 3 `AU-002` boundary).
+    output can hear a bus instead of Master. Every aux send now carries its
+    own level and pre- or post-fader tap through the project (schema 92),
+    the wire (Protocol 2.130), the native mixer, the CLI (`--sends`), and
+    Studio's BUSES window. Remaining: `BusMatrix` bus processing, mix-minus
+    feeds, and device or network destinations are not wired, and the legacy
+    project audio bus graph is unchanged (see the Phase 3 `AU-002`
+    boundary).
 14. **Audio plugin chains (`AU-006`).** `fm-plugin-host-api` models an
     ordered chain of up to eight bypassable, latency-reporting plugins, the
     native daemon renders the `freemix.reference.*` processors on input
     strips and Master (Protocol 2.128), the CLI sends a chain and edits a
     project's persisted chain offline, and Studio's FX window reads and
     edits it (Protocol 2.129). A chain is now a
-    padlocked, undoable project edit persisted at schema 91 for every strip
+    padlocked, undoable project edit persisted since schema 91 (now 92) for every strip
     and Master, so it survives a save, a restart, and a journal replay.
     Remaining: scanning, parameters beyond the reference trim, crash
     quarantine in the render path, and a real sandboxed plugin in the
@@ -2466,12 +2468,19 @@ pan, or transition envelope) or post-fader (exactly its Program
 contribution); strip and group mute and follow-video cut every send while
 solo never does; each bus has its own ramped fader, mute, clipping, and
 peak/RMS meters (`tests/aux_buses.rs`), and the Master allocation test
-renders every bus. The live show uses them (Protocol 2.118, schema 90):
-every strip carries Master and A–G bus assignment as a live control (vMix
-style `M`/`A`–`G` keys in Studio, `--buses` in the CLI), the project keeps
-seven named aux buses with live faders and mutes, and a project output can
-hear an aux bus instead of Master, so its recordings, streams, and LiveLAN
-take that bus with the output's own Fade-to-Black trajectory. The daemon
+renders every bus. The live show uses them (Protocol 2.118, schema 90; per-send
+level and tap since Protocol 2.130, schema 92): every strip carries Master
+and A–G bus assignment as a live control (vMix style `M`/`A`–`G` keys in
+Studio, `--buses` in the CLI), each aux send has its own milli-dB level and
+pre- or post-fader tap (`--sends M,A@-6000p` in the CLI and the BUSES
+window's Send levels section in Studio), the project keeps seven named aux
+buses with live faders and mutes, and a project output can hear an aux bus
+instead of Master, so its recordings, streams, and LiveLAN take that bus
+with the output's own Fade-to-Black trajectory. A snapshot carries each
+strip's enable mask and announces one `audio_strip_send_state` record per
+strip whose sends go beyond it, so the 64 KiB line budget holds; a native
+test proves a −6 dB pre-fader send ignores a −6 dB strip fader while the
+post-fader send hears both. The daemon
 renders the buses beside Master every frame and a native test proves an
 output on bus B hears an aux-only strip while Program stays silent.
 Studio's BUSES window edits every bus's name, fader, and mute,
@@ -2479,12 +2488,10 @@ shows its level meter, and chooses which bus each project output hears,
 with English and Spanish help; the CLI does the same from the shell. The
 native daemon meters all seven buses on the wire (Protocol 2.120): each
 lossy `audio_meters` record carries every bus's channels, and the
-simulated daemon reports none. Remaining gaps: sends are unity
-post-fader only through the show (per-send level and pre-fader taps exist
-in the mixer); `BusMatrix` bus processing, mix-minus feeds, and device or
-network destinations are not wired; the legacy project audio bus graph
-and each output's `audio_source` are unchanged. `AU-002` remains
-planned.
+simulated daemon reports none. Remaining gaps:
+`BusMatrix` bus processing, mix-minus feeds, and device or network
+destinations are not wired; the legacy project audio bus graph and each
+output's `audio_source` are unchanged. `AU-002` remains planned.
 
 Current implementation boundary for multichannel audio (`AU-003`): `fm-audio`
 provides a 1–16 channel layout catalog (1.0, 2.0, 2.1, 5.1, 7.1, and 16
@@ -5872,7 +5879,7 @@ strips and the summed Master bus (Protocol 2.128), the CLI sends a chain or
 edits a project's chain offline (`audio-plugin-chain <project>
 <input|master> ...`), and Studio's FX window reads the open target's chain
 (Protocol 2.129) and edits its PLUGINS section. Chains are padlocked, undoable project edits
-persisted at schema 91 on every strip and on Master, so a show carries them
+persisted since schema 91 (now 92) on every strip and on Master, so a show carries them
 through a save, a restart, and a journal replay. There is no VST3 host; scanning, parameters for
 plugins beyond the reference trim, crash quarantine in the render
 path, and plugging a real sandboxed plugin into the chain remain. Vendor capture and output adapters keep their SDKs out of the

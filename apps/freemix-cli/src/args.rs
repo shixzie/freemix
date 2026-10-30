@@ -907,7 +907,7 @@ pub enum Command {
         soloed: bool,
         follow_video: bool,
         delay_samples: u32,
-        buses: fm_model::AudioBusMask,
+        sends: fm_model::AudioSends,
     },
     /// Replaces a strip's or the Master bus's persisted plugin chain
     /// (AU-006, schema 91); no slots clears it.
@@ -1305,7 +1305,7 @@ pub enum Command {
         soloed: bool,
         follow_video: bool,
         delay_samples: u32,
-        buses: fm_model::AudioBusMask,
+        sends: fm_model::AudioSends,
         key: Option<String>,
         expected_revision: Option<u64>,
     },
@@ -3304,7 +3304,7 @@ fn parse_audio_strip(mut arguments: impl Iterator<Item = String>) -> Result<Comm
     let delay_samples = number(&required(&mut arguments, "delay samples")?, "delay samples")?;
     let mut arguments = arguments.peekable();
     let pan_basis_points = pan_option(&mut arguments)?;
-    let buses = buses_option(&mut arguments)?;
+    let sends = sends_option(&mut arguments)?;
     reject_extra(&mut arguments)?;
     Ok(Command::AudioStrip {
         path,
@@ -3316,7 +3316,7 @@ fn parse_audio_strip(mut arguments: impl Iterator<Item = String>) -> Result<Comm
         soloed,
         follow_video,
         delay_samples,
-        buses,
+        sends,
     })
 }
 
@@ -3350,21 +3350,35 @@ fn aux_bus(value: &str) -> Result<fm_model::AuxBusNumber, ArgsError> {
 
 /// An optional trailing `--buses <M then letters A-G, or ->` (AU-002);
 /// Master only otherwise.
-fn buses_option(
+/// `--sends <token>` sets each send's level and tap (`M,A@-6000p`); the
+/// older `--buses <token>` sets only which buses the strip feeds, at unity
+/// and post-fader. Neither leaves the new strip's sends.
+fn sends_option(
     arguments: &mut std::iter::Peekable<impl Iterator<Item = String>>,
-) -> Result<fm_model::AudioBusMask, ArgsError> {
+) -> Result<fm_model::AudioSends, ArgsError> {
     if arguments
+        .peek()
+        .is_some_and(|argument| argument == "--sends")
+    {
+        arguments.next();
+        let value = required(arguments, "sends")?;
+        fm_model::AudioSends::from_token(&value).ok_or(ArgsError::InvalidChoice {
+            field: "sends",
+            value,
+        })
+    } else if arguments
         .peek()
         .is_some_and(|argument| argument == "--buses")
     {
         arguments.next();
         let value = required(arguments, "buses")?;
-        fm_model::AudioBusMask::from_token(&value).ok_or(ArgsError::InvalidChoice {
+        let mask = fm_model::AudioBusMask::from_token(&value).ok_or(ArgsError::InvalidChoice {
             field: "buses",
             value,
-        })
+        })?;
+        Ok(fm_model::AudioSends::from_mask(mask))
     } else {
-        Ok(fm_model::AudioBusMask::MASTER)
+        Ok(fm_model::AudioSends::MASTER)
     }
 }
 
@@ -7100,7 +7114,7 @@ fn parse_remote_audio_strip(
     let delay_samples = number(&required(&mut arguments, "delay samples")?, "delay samples")?;
     let mut arguments = arguments.peekable();
     let pan_basis_points = pan_option(&mut arguments)?;
-    let buses = buses_option(&mut arguments)?;
+    let sends = sends_option(&mut arguments)?;
     let (key, expected_revision) = command_options(arguments)?;
     Ok(Command::RemoteAudioStrip {
         address,
@@ -7112,7 +7126,7 @@ fn parse_remote_audio_strip(
         soloed,
         follow_video,
         delay_samples,
-        buses,
+        sends,
         key,
         expected_revision,
     })
@@ -10555,7 +10569,7 @@ mod tests {
                 soloed: true,
                 follow_video: false,
                 delay_samples: 48_000,
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             })
         );
     }
@@ -10855,7 +10869,7 @@ mod tests {
                 delay_samples: 2_400,
                 key: Some("delay".into()),
                 expected_revision: Some(3),
-                buses: fm_types::audio_bus::AudioBusMask::MASTER,
+                sends: fm_types::audio_bus::AudioSends::MASTER,
             })
         );
     }

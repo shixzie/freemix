@@ -1021,10 +1021,19 @@ fn aux_bus_refusals_name_the_problem_and_strip_buses_are_live() {
         &fm_engine::EngineAuxBus::default_for(aux('A'))
     );
 
-    // A strip's buses ride its live strip state: off Master, onto C and G.
-    let buses = fm_model::AudioBusMask::from_token("CG").unwrap();
+    // A strip's sends ride its live strip state: off Master, onto C and G,
+    // with G at -6 dB pre-fader.
+    let sends = fm_model::AudioSends::from_mask(fm_model::AudioBusMask::from_token("CG").unwrap())
+        .with_aux_send(
+            aux('G'),
+            fm_model::BusSendState {
+                enabled: true,
+                level_millidb: -6_000,
+                tap: fm_model::SendTap::PreFader,
+            },
+        );
     let state = EngineInputAudioStripState {
-        buses,
+        sends,
         ..EngineInputAudioStripState::default()
     };
     let strip = EngineCommand::SetInputAudioStrip {

@@ -1945,6 +1945,7 @@ impl TcpSession {
             | WireMessage::StillState(_)
             | WireMessage::MediaListState(_)
             | WireMessage::AudioStripDspState(_)
+            | WireMessage::AudioStripSendState(_)
             | WireMessage::PagedState(_)) => {
                 self.intake(message)?;
                 self.transition_disconnect();

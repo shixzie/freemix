@@ -20,7 +20,7 @@ use fm_protocol::{
     encode_refusal_reason,
 };
 
-const PREFIX: &str = "command\tprotocol=2.129\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.130\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
@@ -83,7 +83,7 @@ fn spec() -> ScriptSpec {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 129));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 130));
 }
 
 #[test]
@@ -228,7 +228,7 @@ fn script_events_and_the_snapshot_record_round_trip_exactly() {
             soloed: false,
             follow_video: false,
             delay_samples: 0,
-            buses: fm_types::audio_bus::AudioBusMask::MASTER,
+            sends: fm_types::audio_bus::AudioSends::MASTER,
         }],
         streams: Vec::new(),
         recordings: vec![
