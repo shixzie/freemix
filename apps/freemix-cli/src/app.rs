@@ -1088,6 +1088,13 @@ pub fn run(command: Command) -> AppResult<()> {
         Command::ClockAdd { path, clock } => clock_add(&path, clock)?,
         Command::ClockRemove { path, name } => clock_remove(&path, &name)?,
         Command::ClockList { path } => clock_list(&path)?,
+        Command::ScoreboardCheck { path } => scoreboard_check(&path)?,
+        Command::ScoreboardImport {
+            path,
+            input,
+            document,
+        } => scoreboard_import(&path, input, &document)?,
+        Command::ScoreboardExport { path, input } => scoreboard_export(&path, input)?,
         Command::SettingsImport {
             path,
             input,
@@ -6118,6 +6125,55 @@ fn settings_export(path: &Path, output: &Path) -> AppResult<()> {
     Ok(())
 }
 
+fn scoreboard_check(path: &Path) -> AppResult<()> {
+    let text = fs::read_to_string(path)
+        .map_err(|error| AppFailure(format!("scoreboard: {error}")))?;
+    let snapshot = fm_titles::ScoreboardSnapshot::from_document(&text)
+        .map_err(|error| AppFailure(format!("scoreboard: {error}")))?;
+    println!(
+        "scoreboard: home={} ({}) {} away={} ({}) {} period={} clock_ms={} revision={} last_frame={}",
+        snapshot.home.name,
+        snapshot.home.abbreviation,
+        snapshot.home.score,
+        snapshot.away.name,
+        snapshot.away.abbreviation,
+        snapshot.away.score,
+        snapshot.period,
+        snapshot.clock.base_ms,
+        snapshot.revision,
+        snapshot.last_frame,
+    );
+    Ok(())
+}
+
+fn scoreboard_import(path: &Path, input: u128, document: &Path) -> AppResult<()> {
+    let text = fs::read_to_string(document)
+        .map_err(|error| AppFailure(format!("scoreboard import: {error}")))?;
+    let snapshot = fm_titles::ScoreboardSnapshot::from_document(&text)
+        .map_err(|error| AppFailure(format!("scoreboard import: {error}")))?;
+    let canonical = snapshot.to_document();
+    let stored = load_stored_project(path)?;
+    let mut project = stored.project().clone();
+    let input = input_id(input)?;
+    project
+        .set_scoreboard_document(input, canonical)
+        .map_err(|error| AppFailure(format!("scoreboard import: {error}")))?;
+    ProjectStore::new(path)?.save(&stored.with_project(project)?)?;
+    println!("scoreboard-import: {input}");
+    Ok(())
+}
+
+fn scoreboard_export(path: &Path, input: u128) -> AppResult<()> {
+    let stored = inspect_stored_project(path)?;
+    let input = input_id(input)?;
+    let document = stored
+        .project()
+        .scoreboard_document(input)
+        .ok_or_else(|| AppFailure(format!("input {input} has no stored scoreboard")))?;
+    print!("{document}");
+    Ok(())
+}
+
 fn clock_add(path: &Path, clock: fm_types::ProjectClock) -> AppResult<()> {
     let stored = load_stored_project(path)?;
     let mut project = stored.project().clone();
@@ -7277,6 +7333,9 @@ Usage:
   freemix-cli clock-add <show.freemix> --name <name> [--kind timer|time-of-day|media-remaining|session] [--preset HH:MM:SS] [--direction count_up|count_down] [--limit HH:MM:SS] [--overrun stop_at_target|continue] [--format <duration preset>] [--zone <POSIX zone>] [--time-format <time preset>] [--session stream|recording|replay|multicorder|external]
   freemix-cli clock-remove <show.freemix> <name>
   freemix-cli clock-list <show.freemix>
+  freemix-cli scoreboard-check <scoreboard.txt>
+  freemix-cli scoreboard-import <show.freemix> <title-input> <scoreboard.txt>
+  freemix-cli scoreboard-export <show.freemix> <title-input>
   freemix-cli title-design-check <design.fmdesign>
   freemix-cli title-apply-row <show.freemix> <input-id> <row.json> [--keep-live] [--preview]
   freemix-cli title-design-import <show.freemix> <design.fmdesign> --id <nonzero-input-id> --name <name> [--font <Family=path.ttf>]...

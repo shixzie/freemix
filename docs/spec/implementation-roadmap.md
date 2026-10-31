@@ -4158,7 +4158,9 @@ crawls are runtime overlays outside template z-order and the project schema,
 with per-item fill and logo images drawn before the text but no easing; the
 scoreboard has two teams, and its canonical versioned document now persists
 per title input in `project.json` (schema 106), strictly parsed and
-canonicalized on load, but no engine or protocol publishes it;
+canonicalized on load, and `freemix-cli scoreboard-check`, `scoreboard-import`,
+and `scoreboard-export` validate and move one, but no engine or protocol
+publishes it;
 and there are
 no feed transports, shortcut
 or control-surface wiring, or engine output. `GX-003` remains planned.

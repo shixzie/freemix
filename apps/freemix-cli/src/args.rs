@@ -1022,6 +1022,21 @@ pub enum Command {
     ClockList {
         path: PathBuf,
     },
+    /// Validates a scoreboard document file (GX-003).
+    ScoreboardCheck {
+        path: PathBuf,
+    },
+    /// Stores a canonical scoreboard document on a title input (GX-003).
+    ScoreboardImport {
+        path: PathBuf,
+        input: u128,
+        document: PathBuf,
+    },
+    /// Prints a title input's stored scoreboard document (GX-003).
+    ScoreboardExport {
+        path: PathBuf,
+        input: u128,
+    },
     /// `title-design-check <file.fmdesign>`: validate a designer document
     /// (GX-002).
     TitleDesignCheck {
@@ -2525,6 +2540,9 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "clock-add" => parse_clock_add(arguments),
         "clock-remove" => parse_clock_remove(arguments),
         "clock-list" => parse_clock_list(arguments),
+        "scoreboard-check" => parse_scoreboard_check(arguments),
+        "scoreboard-import" => parse_scoreboard_import(arguments),
+        "scoreboard-export" => parse_scoreboard_export(arguments),
         "title-design-check" => {
             let path = required_path(&mut arguments, "design path")?;
             reject_extra(&mut arguments)?;
@@ -4679,6 +4697,37 @@ fn clock_value(
             field: "clock value (HH:MM:SS or seconds)",
             value,
         })
+}
+
+fn parse_scoreboard_check(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "scoreboard document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::ScoreboardCheck { path })
+}
+
+fn parse_scoreboard_import(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let document = required_path(&mut arguments, "scoreboard document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::ScoreboardImport {
+        path,
+        input,
+        document,
+    })
+}
+
+fn parse_scoreboard_export(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::ScoreboardExport { path, input })
 }
 
 fn parse_title_input_add(
