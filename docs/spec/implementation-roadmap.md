@@ -5402,13 +5402,15 @@ pairs same-tick 14-bit MSB/LSB updates, and refuses rather than drops new
 controls when full; coalesced ticks feed the existing soft-takeover pickup.
 `FeedbackRouter` now schedules outbound feedback per tick with per-device
 budgets, round-robin fairness, per-binding minimum intervals, touch
-suppression with a forced resync on release, and acknowledged-level echo
-suppression. `fm-audio` adds a `GainSmoother` whose per-sample linear ramps
+suppression with a forced resync on release, a post-release settle hold, and
+a per-device byte-rate limit of encoded feedback bytes per second, and
+acknowledged-level echo suppression. `fm-audio` adds a `GainSmoother` whose
+per-sample linear ramps
 have a guaranteed step bound and land bit-exactly on target across block
 splits and retargets. Remaining gaps: no daemon, Studio, CLI, or real-time
 mixer wiring; cross-tick 14-bit glitches are only smoothed, not held; ramps are
-linear in gain with no fader taper; and there is no release-settle hold,
-per-device byte-rate limit, end-to-end device-to-audio test, or motor-fader
+linear in gain with no fader taper; and there is no end-to-end
+device-to-audio test or motor-fader
 hardware evidence. `AU-009` remains planned.
 
 
