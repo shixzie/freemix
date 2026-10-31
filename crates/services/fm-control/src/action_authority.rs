@@ -182,7 +182,8 @@ pub const fn verb_class(verb: Verb) -> CommandClass {
         | Verb::PagePrevious
         | Verb::PageFirst
         | Verb::PageLast
-        | Verb::PageGoto => CommandClass::Transition,
+        | Verb::PageGoto
+        | Verb::Clock => CommandClass::Transition,
     }
 }
 

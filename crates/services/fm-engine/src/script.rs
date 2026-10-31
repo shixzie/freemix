@@ -473,6 +473,23 @@ fn cue_action(state: &ShowState, action: &ScriptAction) -> Result<CueAction, Str
                 fm_script::PageOperation::Goto(page) => PagedNavigation::Goto(*page),
             },
         },
+        ScriptAction::Clock { name, operation } => CueAction::Clock {
+            name: name.clone(),
+            operation: match operation {
+                fm_script::ClockOperation::Start => fm_model::CueClockOperation::Start,
+                fm_script::ClockOperation::Pause => fm_model::CueClockOperation::Pause,
+                fm_script::ClockOperation::Reset => fm_model::CueClockOperation::Reset,
+                fm_script::ClockOperation::Set(value) => {
+                    fm_model::CueClockOperation::SetValue(*value)
+                }
+                fm_script::ClockOperation::Adjust(value) => {
+                    fm_model::CueClockOperation::Adjust(*value)
+                }
+                fm_script::ClockOperation::SetPreset(value) => {
+                    fm_model::CueClockOperation::SetPreset(*value)
+                }
+            },
+        },
     })
 }
 

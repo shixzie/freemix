@@ -5192,10 +5192,11 @@ Current implementation boundary for sandboxed scripting (`RC-011`): the
 first slice is a purpose-built language rather than a Wasm runtime (schema
 54, Protocol 2.58). `fm-script`, a dependency-free foundation crate, parses
 and interprets `FreeMix` Script: integer, boolean, and string variables,
-`if`/`elif`/`else`, `repeat`, `while`, `stop`, and 26 action verbs that map
-onto cue actions. The language has no file, network, process,
-clock, or randomness access at all; its only host interface reads the
-Program and Preview input numbers and performs one show action at a time.
+`if`/`elif`/`else`, `repeat`, `while`, `stop`, and 32 action verbs that map
+onto cue actions, including production clock control. The language has no
+file, network, process, system-clock, or randomness access at all; its only
+host interface reads the Program and Preview input numbers and performs one
+show action at a time.
 Runs are deterministic and bounded by an instruction budget (time), an
 action budget, and variable and string budgets (memory); the parser bounds
 source size, lines, block nesting, and expression nesting. A project stores
@@ -5478,7 +5479,9 @@ as one step of a cue or shortcut, is validated and persisted with the list,
 and faults the cue when the show does not define the clock or the clock's
 kind refuses the operation; Studio previews it and shows the authored step
 in the cue editor (it cannot author a new one yet, because the replicated
-state does not carry the clock names). Remaining gaps:
+state does not carry the clock names). A script's `clock NAME, OPERATION[,
+VALUE]` action performs the same operation under the same permission.
+Remaining gaps:
 there is no snapshot record or full clock UI; titles still read their own
 template clocks rather than the shared registry; a media clock can name an
 input and follows its playback
