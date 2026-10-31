@@ -1179,21 +1179,6 @@ fn add_stream_target(
         }
         None => None,
     };
-    let endpoint = StreamEndpoint::parse_for(
-        protocol,
-        setting_text(snapshot, &format!("{key}.endpoint"))?,
-    )
-    .map_err(|_| SettingsApplyError::Invalid {
-        key: format!("{key}.endpoint"),
-    })?;
-    let startup = startup_policy(snapshot, &format!("{key}.startup"))?;
-    let bitrate = bounded_u32(
-        setting_integer(snapshot, &format!("{key}.video_bitrate_kbps"))?,
-        &format!("{key}.video_bitrate_kbps"),
-    )?;
-    let output = OutputId::new(
-        setting_reference(snapshot, &format!("{key}.output"), ReferenceKind::Output)?.id,
-    );
     let stream_key = if protocol.carries_key() {
         let text = stream_keys.get(&id.get()).ok_or_else(|| {
             SettingsApplyError::Model {
@@ -1209,6 +1194,21 @@ fn add_stream_target(
     } else {
         None
     };
+    let endpoint = StreamEndpoint::parse_for(
+        protocol,
+        setting_text(snapshot, &format!("{key}.endpoint"))?,
+    )
+    .map_err(|_| SettingsApplyError::Invalid {
+        key: format!("{key}.endpoint"),
+    })?;
+    let startup = startup_policy(snapshot, &format!("{key}.startup"))?;
+    let bitrate = bounded_u32(
+        setting_integer(snapshot, &format!("{key}.video_bitrate_kbps"))?,
+        &format!("{key}.video_bitrate_kbps"),
+    )?;
+    let output = OutputId::new(
+        setting_reference(snapshot, &format!("{key}.output"), ReferenceKind::Output)?.id,
+    );
     let target = StreamTarget::new(
         StreamTargetId::new(id),
         name,
