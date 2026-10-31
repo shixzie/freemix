@@ -1225,7 +1225,7 @@ pub(crate) struct ShortcutEntry {
 
 /// The shortcuts reference shown in Help; global keys are verified against
 /// [`studio_shortcuts`] by unit test.
-pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 35] = [
+pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 43] = [
     ShortcutEntry {
         group: ShortcutGroup::Switching,
         keys: "1 – 8",
@@ -1443,6 +1443,54 @@ pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 35] = [
         action: Msg::ShortcutUiScaleReset.en(),
         key: None,
     },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: "I",
+        action: Msg::ConsoleActionReplayMarkIn.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: "O",
+        action: Msg::ConsoleActionReplayMarkOut.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: "E",
+        action: Msg::ConsoleActionReplayCapture.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: "K",
+        action: Msg::ConsoleActionReplayPlayPause.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: "Left",
+        action: Msg::ConsoleActionReplayStepBack.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: "Right",
+        action: Msg::ConsoleActionReplayStepForward.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: "J",
+        action: Msg::ConsoleActionReplayShuttleBack.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Output,
+        keys: "L",
+        action: Msg::ConsoleActionReplayShuttleForward.en(),
+        key: None,
+    },
 ];
 
 /// Whether a key press toggles the keyboard reference: `?` (any Shift
@@ -1515,6 +1563,11 @@ fn console_action_intents(
         | ConsoleAction::ReplayMarkIn
         | ConsoleAction::ReplayMarkOut
         | ConsoleAction::ReplayCapture
+        | ConsoleAction::ReplayPlayPause
+        | ConsoleAction::ReplayStepBack
+        | ConsoleAction::ReplayStepForward
+        | ConsoleAction::ReplayShuttleBack
+        | ConsoleAction::ReplayShuttleForward
             if transition_available =>
         {
             live_key(action)
@@ -1541,6 +1594,57 @@ fn live_console_intents(state: &StudioUiState, action: ConsoleAction) -> Vec<Stu
         ConsoleAction::ReplayMarkOut => replay(fm_protocol::ReplayOperation::MarkOut),
         ConsoleAction::ReplayCapture => {
             replay(fm_protocol::ReplayOperation::CaptureMarks { name: None })
+        }
+        ConsoleAction::ReplayPlayPause => replay_ui::transport_player(state).and_then(|player| {
+            let operation = if player.playing {
+                fm_protocol::ReplayOperation::Pause {
+                    input: player.input,
+                }
+            } else {
+                fm_protocol::ReplayOperation::Play {
+                    input: player.input,
+                    speed: fm_protocol::ReplaySpeed::Full,
+                }
+            };
+            replay_ui::transport_intent(state, operation)
+        }),
+        ConsoleAction::ReplayStepBack => replay_ui::transport_player(state).and_then(|player| {
+            replay_ui::transport_intent(
+                state,
+                fm_protocol::ReplayOperation::Step {
+                    input: player.input,
+                    frames: -1,
+                },
+            )
+        }),
+        ConsoleAction::ReplayStepForward => replay_ui::transport_player(state).and_then(|player| {
+            replay_ui::transport_intent(
+                state,
+                fm_protocol::ReplayOperation::Step {
+                    input: player.input,
+                    frames: 1,
+                },
+            )
+        }),
+        ConsoleAction::ReplayShuttleBack => replay_ui::transport_player(state).and_then(|player| {
+            replay_ui::transport_intent(
+                state,
+                fm_protocol::ReplayOperation::Shuttle {
+                    input: player.input,
+                    rate_milli: -2_000,
+                },
+            )
+        }),
+        ConsoleAction::ReplayShuttleForward => {
+            replay_ui::transport_player(state).and_then(|player| {
+                replay_ui::transport_intent(
+                    state,
+                    fm_protocol::ReplayOperation::Shuttle {
+                        input: player.input,
+                        rate_milli: 2_000,
+                    },
+                )
+            })
         }
         _ => None,
     }

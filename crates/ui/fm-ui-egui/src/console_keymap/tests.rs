@@ -26,7 +26,7 @@ fn tokens_round_trip_and_profiles_are_unambiguous() {
     let all = ConsoleAction::all();
     assert_eq!(
         all.len(),
-        3 * usize::from(NUMBERED_INPUTS) + 3 + 4 + 4 + 1 + 3
+        3 * usize::from(NUMBERED_INPUTS) + 3 + 4 + 4 + 1 + 8
     );
     for action in &all {
         assert_eq!(ConsoleAction::from_token(&action.token()), Some(*action));
@@ -161,7 +161,25 @@ fn reference_rows_fold_numbered_runs() {
     let l = Locale::ENGLISH;
     let freemix = ConsoleKeymap::default().reference_rows(l);
     let keys: Vec<&str> = freemix.iter().map(|(keys, _)| keys.as_str()).collect();
-    assert_eq!(keys, ["1 – 8", "C", "F", "B", "F5 – F8", "G"]);
+    assert_eq!(
+        keys,
+        [
+            "1 – 8",
+            "C",
+            "F",
+            "B",
+            "F5 – F8",
+            "G",
+            "I",
+            "O",
+            "E",
+            "K",
+            "Left",
+            "Right",
+            "J",
+            "L"
+        ]
+    );
     let vmix = BuiltinProfile::Vmix.keymap().reference_rows(l);
     let keys: Vec<&str> = vmix.iter().map(|(keys, _)| keys.as_str()).collect();
     assert_eq!(
@@ -178,7 +196,12 @@ fn reference_rows_fold_numbered_runs() {
             "G",
             "I",
             "O",
-            "E"
+            "E",
+            "K",
+            "Left",
+            "Right",
+            "J",
+            "L"
         ]
     );
     assert_eq!(

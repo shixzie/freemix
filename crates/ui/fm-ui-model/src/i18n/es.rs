@@ -10807,6 +10807,26 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Capturar el evento de repetición marcado"),
     ),
     (
+        Msg::ConsoleActionReplayPlayPause,
+        t("Reproducir/pausar repetición"),
+    ),
+    (
+        Msg::ConsoleActionReplayStepBack,
+        t("Retroceder un fotograma de repetición"),
+    ),
+    (
+        Msg::ConsoleActionReplayStepForward,
+        t("Avanzar un fotograma de repetición"),
+    ),
+    (
+        Msg::ConsoleActionReplayShuttleBack,
+        t("Repetición rápida hacia atrás"),
+    ),
+    (
+        Msg::ConsoleActionReplayShuttleForward,
+        t("Repetición rápida hacia adelante"),
+    ),
+    (
         Msg::ConsoleActionPreviewRun,
         t("Poner la entrada con ese número en Previo"),
     ),

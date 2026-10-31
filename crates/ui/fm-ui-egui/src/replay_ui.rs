@@ -306,6 +306,35 @@ fn next_export_job(exports: &[ReelExportStatus]) -> Option<u64> {
         .find(|job| exports.iter().all(|export| export.job != *job))
 }
 
+/// The Replay player a console transport key drives: the one on Preview,
+/// else the one on Program, else the first.
+pub(crate) fn transport_player(state: &StudioUiState) -> Option<&fm_protocol::ReplayPlayerStatus> {
+    let status = state.replay.as_deref()?;
+    let buses = state.view.as_ref().map(|view| view.switcher.desired);
+    let on = |bus: fm_types::InputId| {
+        status
+            .players
+            .iter()
+            .find(|player| player.input.to_domain() == bus)
+    };
+    buses
+        .and_then(|buses| on(buses.preview))
+        .or_else(|| buses.and_then(|buses| on(buses.program)))
+        .or_else(|| status.players.first())
+}
+
+/// What a console transport key sends, while replay is live and a player is
+/// available.
+pub(crate) fn transport_intent(
+    state: &StudioUiState,
+    operation: ReplayOperation,
+) -> Option<StudioIntent> {
+    transport_player(state)?;
+    live_block(state)
+        .is_none()
+        .then_some(StudioIntent::Replay(operation))
+}
+
 /// Why live replay keys (marks, captures, players) cannot be pressed.
 #[must_use]
 pub(crate) fn live_block(state: &StudioUiState) -> Option<&'static str> {

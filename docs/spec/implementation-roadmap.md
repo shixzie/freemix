@@ -162,7 +162,10 @@ there come before any new breadth below.
     event's ends, with the rate and shuttling state on the wire (Protocol
     2.131) and `remote-replay-do shuttle`; a player also jogs frame by frame
     (Protocol 2.114) and a finished replay returns Program to the live
-    source (Protocol 2.116). Remaining: the recorder takes a source's last
+    source (Protocol 2.116). Console keys now play or pause the Replay
+    player on Preview (else Program), step it a frame each way, and shuttle
+    it at 2x each way, next to the marks and capture keys. Remaining: the
+    recorder takes a source's last
     decoded picture rather than a genlocked one, segment files from a
     previous run are removed rather than reloaded,
     transitions and controller wiring, and certification are absent; Studio's
@@ -5968,10 +5971,12 @@ what the source last decoded rather than a genlocked frame, so a stalled
 source repeats its picture; segment files from a previous run are removed
 rather than reloaded; a cued player jogs any number of frames up to 600
 either way, paused (Protocol 2.114, Studio's ◀ and ▶ keys and `remote-replay-do
-step`), and with auto return on a Replay input that plays its event to the
-end on Program hands Program back to the last live source with a cut or a
-mix (Protocol 2.116, schema 88; the daemon's cue clock issues it on a
-reserved list, and the native test hears the return on the wire), but
+step`) or shuttles at a signed rate (Protocol 2.131), and with auto return
+on a Replay input that plays its event to the end on Program hands Program
+back to the last live source with a cut or a mix (Protocol 2.116, schema
+88; the daemon's cue clock issues it on a reserved list, and the native
+test hears the return on the wire); console keys play or pause the Replay
+player on Preview (else Program), step it, and shuttle it at 2x each way, but
 each Replay input carries a playlist of up to sixteen
 events, each with its own angle and speed (Protocol 2.119): a playing
 player that reaches the end of its event moves on to the next listed entry

@@ -98,6 +98,16 @@ pub enum ConsoleAction {
     ReplayMarkOut,
     /// Capture the marked range as a replay event.
     ReplayCapture,
+    /// Play the console's Replay player, or pause it while it plays.
+    ReplayPlayPause,
+    /// Step the Replay player one frame back, paused.
+    ReplayStepBack,
+    /// Step the Replay player one frame on, paused.
+    ReplayStepForward,
+    /// Shuttle the Replay player backwards at 2x.
+    ReplayShuttleBack,
+    /// Shuttle the Replay player forwards at 2x.
+    ReplayShuttleForward,
 }
 
 impl ConsoleAction {
@@ -116,6 +126,11 @@ impl ConsoleAction {
                 Self::ReplayMarkIn,
                 Self::ReplayMarkOut,
                 Self::ReplayCapture,
+                Self::ReplayPlayPause,
+                Self::ReplayStepBack,
+                Self::ReplayStepForward,
+                Self::ReplayShuttleBack,
+                Self::ReplayShuttleForward,
             ])
             .collect()
     }
@@ -136,6 +151,11 @@ impl ConsoleAction {
             Self::ReplayMarkIn => "replay_mark_in".to_owned(),
             Self::ReplayMarkOut => "replay_mark_out".to_owned(),
             Self::ReplayCapture => "replay_capture".to_owned(),
+            Self::ReplayPlayPause => "replay_play_pause".to_owned(),
+            Self::ReplayStepBack => "replay_step_back".to_owned(),
+            Self::ReplayStepForward => "replay_step_forward".to_owned(),
+            Self::ReplayShuttleBack => "replay_shuttle_back".to_owned(),
+            Self::ReplayShuttleForward => "replay_shuttle_forward".to_owned(),
         }
     }
 
@@ -158,9 +178,14 @@ impl ConsoleAction {
             | Self::Overlay(_) => crate::ShortcutGroup::Switching,
             Self::Fade | Self::FadeToBlack | Self::Favorite(_) => crate::ShortcutGroup::Transitions,
             Self::CueGo => crate::ShortcutGroup::Cues,
-            Self::ReplayMarkIn | Self::ReplayMarkOut | Self::ReplayCapture => {
-                crate::ShortcutGroup::Output
-            }
+            Self::ReplayMarkIn
+            | Self::ReplayMarkOut
+            | Self::ReplayCapture
+            | Self::ReplayPlayPause
+            | Self::ReplayStepBack
+            | Self::ReplayStepForward
+            | Self::ReplayShuttleBack
+            | Self::ReplayShuttleForward => crate::ShortcutGroup::Output,
         }
     }
 
@@ -181,6 +206,11 @@ impl ConsoleAction {
             Self::ReplayMarkIn => l.text(Msg::ConsoleActionReplayMarkIn).to_owned(),
             Self::ReplayMarkOut => l.text(Msg::ConsoleActionReplayMarkOut).to_owned(),
             Self::ReplayCapture => l.text(Msg::ConsoleActionReplayCapture).to_owned(),
+            Self::ReplayPlayPause => l.text(Msg::ConsoleActionReplayPlayPause).to_owned(),
+            Self::ReplayStepBack => l.text(Msg::ConsoleActionReplayStepBack).to_owned(),
+            Self::ReplayStepForward => l.text(Msg::ConsoleActionReplayStepForward).to_owned(),
+            Self::ReplayShuttleBack => l.text(Msg::ConsoleActionReplayShuttleBack).to_owned(),
+            Self::ReplayShuttleForward => l.text(Msg::ConsoleActionReplayShuttleForward).to_owned(),
         }
     }
 }
@@ -374,6 +404,28 @@ impl BuiltinProfile {
                     bindings.push((ConsoleAction::Favorite(n), ConsoleStroke::plain(key)));
                 }
                 bindings.push((ConsoleAction::CueGo, ConsoleStroke::plain(Key::G)));
+                bindings.extend([
+                    (ConsoleAction::ReplayMarkIn, ConsoleStroke::plain(Key::I)),
+                    (ConsoleAction::ReplayMarkOut, ConsoleStroke::plain(Key::O)),
+                    (ConsoleAction::ReplayCapture, ConsoleStroke::plain(Key::E)),
+                    (ConsoleAction::ReplayPlayPause, ConsoleStroke::plain(Key::K)),
+                    (
+                        ConsoleAction::ReplayStepBack,
+                        ConsoleStroke::plain(Key::ArrowLeft),
+                    ),
+                    (
+                        ConsoleAction::ReplayStepForward,
+                        ConsoleStroke::plain(Key::ArrowRight),
+                    ),
+                    (
+                        ConsoleAction::ReplayShuttleBack,
+                        ConsoleStroke::plain(Key::J),
+                    ),
+                    (
+                        ConsoleAction::ReplayShuttleForward,
+                        ConsoleStroke::plain(Key::L),
+                    ),
+                ]);
             }
             Self::Vmix => {
                 for n in 1..=NUMBERED_INPUTS {
@@ -392,11 +444,28 @@ impl BuiltinProfile {
                 for (n, key) in [(1, Key::F9), (2, Key::F10), (3, Key::F11), (4, Key::F12)] {
                     bindings.push((ConsoleAction::Overlay(n), ConsoleStroke::plain(key)));
                 }
+                bindings.extend([(ConsoleAction::CueGo, ConsoleStroke::plain(Key::G))]);
                 bindings.extend([
-                    (ConsoleAction::CueGo, ConsoleStroke::plain(Key::G)),
                     (ConsoleAction::ReplayMarkIn, ConsoleStroke::plain(Key::I)),
                     (ConsoleAction::ReplayMarkOut, ConsoleStroke::plain(Key::O)),
                     (ConsoleAction::ReplayCapture, ConsoleStroke::plain(Key::E)),
+                    (ConsoleAction::ReplayPlayPause, ConsoleStroke::plain(Key::K)),
+                    (
+                        ConsoleAction::ReplayStepBack,
+                        ConsoleStroke::plain(Key::ArrowLeft),
+                    ),
+                    (
+                        ConsoleAction::ReplayStepForward,
+                        ConsoleStroke::plain(Key::ArrowRight),
+                    ),
+                    (
+                        ConsoleAction::ReplayShuttleBack,
+                        ConsoleStroke::plain(Key::J),
+                    ),
+                    (
+                        ConsoleAction::ReplayShuttleForward,
+                        ConsoleStroke::plain(Key::L),
+                    ),
                 ]);
             }
         }
