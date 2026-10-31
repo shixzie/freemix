@@ -343,6 +343,22 @@ per week of work; items 1 and 2 land before any new feature breadth.
    control thread; moving them, and moving `NativeMediaRuntime` ownership,
    is the remaining stage.
 
+   **Fifth stage (landed).** Grade uploads and the Preview composite moved
+   to the video realizer. The control thread still compiles grades
+   (`GradeCache::at`) but no longer uploads them: the worker caches the
+   prepared `NativeProjectGrades` by the engine's compiled revision and sets
+   them on each job's plan, so Program and Preview share one prepared set.
+   `refresh_grades` and the control-side `prepared_grades` are gone. The
+   deferred Preview job now carries its frame, plan, and grades, is submitted
+   to the video realizer at the end of the pass, and is collected at the
+   start of the next pass before any command or ingestion
+   (`poll_deferred_preview`), so its composite and monitor tap are fully off
+   the Program deadline. The native pacing, transition, Preview-tap, display
+   (macOS), strip-DSP, replay, audio-only, media-file, and media-list suites
+   stay green; the Linux pacing gate passes. Source ingestion,
+   monitor/display/stream/recorder consumers, and single-owner
+   `NativeMediaRuntime` remain.
+
    **Split plan.** The bounded channel carries a `NativeFrameJob` (the
    engine's `FrameResult`, which is plain data, plus the plan deltas the
    media side applies) to a `NativeRealizer` thread that owns `runtime`

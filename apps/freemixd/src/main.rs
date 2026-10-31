@@ -693,13 +693,9 @@ struct NativeDaemon {
     /// and per-frame mixes.
     audio: native_audio_realizer::NativeAudioHandle,
     project_plan: NativeProjectPlan,
-    /// Compiled grades per engine revision and their GPU uploads, attached
-    /// to [`Self::project_plan`] before every render.
+    /// Compiled grades per engine revision, computed here and uploaded by
+    /// the video realizer.
     grade_cache: grading::GradeCache,
-    prepared_grades: Option<(
-        Arc<fm_engine::CompiledProjectGrades>,
-        freemixd::native_media::NativeProjectGrades,
-    )>,
     /// Source playback registries, taken by the video realizer for a compose
     /// and returned with its pictures (structural item 1). They are `None`
     /// only while a compose is in flight, which the control thread waits for.
@@ -710,6 +706,9 @@ struct NativeDaemon {
     /// A frame submitted to the audio and video realizers, waiting for the
     /// pass's peer work to finish before its consumers run.
     pending_frame: Option<PendingFrame>,
+    /// A Preview composite submitted to the video realizer, collected at the
+    /// next pass's start.
+    pending_preview_render: Option<PendingPreviewRender>,
     projected_frame: Option<FrameResult>,
     runtime: Arc<NativeMediaRuntime>,
     resolved_sources: Arc<Vec<NativeResolvedSource>>,
@@ -5193,6 +5192,13 @@ struct PendingFrame {
     events: Vec<RuntimeEventMessage>,
 }
 
+/// A Preview composite submitted to the video realizer.
+#[cfg(feature = "native-media")]
+struct PendingPreviewRender {
+    tap_frame: Option<u64>,
+    preview: InputId,
+}
+
 #[cfg(feature = "native-media")]
 #[derive(Debug)]
 enum NativeRealizationError {
@@ -5378,11 +5384,11 @@ impl NativeDaemon {
             audio,
             project_plan,
             grade_cache: grading::GradeCache::default(),
-            prepared_grades: None,
             playback: Some(playback),
             stingers: Some(stingers),
             video,
             pending_frame: None,
+            pending_preview_render: None,
             projected_frame: None,
             runtime,
             resolved_sources: Arc::new(resolved_sources),
@@ -5658,30 +5664,62 @@ impl NativeDaemon {
             .is_some_and(|host| host.shows(DisplayOutputSource::Preview))
     }
 
-    /// Composites Preview for display outputs: `frame` with the realized
-    /// Preview input cut in, without transitions, overlays, titles, or
-    /// Fade to Black, through the same compositor path Program uses. It runs
-    /// after Program reached its recorders, streams, and monitor.
-    fn render_display_preview(&mut self, frame: Option<FrameResult>, preview: InputId) {
-        let Some(frame) = frame else {
-            self.latest_preview = None;
-            return;
+    /// A Preview composite that would not finish this margin before the next
+    /// Program deadline waits for the next pass.
+    const PREVIEW_SLACK: Duration = Duration::from_millis(2);
+
+    fn service_deferred_preview(&mut self) -> AppResult<()> {
+        let Some(job) = self.pending_preview.take() else {
+            return Ok(());
         };
-        let frame = preview_frame(frame, preview);
-        match self
-            .runtime
-            .render_project_frame_result_with_stingers_blocking(
-                self.playback
-                    .as_ref()
-                    .expect("the video realizer holds the playback")
-                    .registry(),
-                self.stingers
-                    .as_ref()
-                    .expect("the video realizer holds the stingers")
-                    .registry(),
-                &self.project_plan,
-                &frame,
-            ) {
+        let Ok(deadline) = self.next_deadline() else {
+            return Ok(());
+        };
+        // A composite that would not finish a comfortable margin before the
+        // next frame waits instead; Program's deadline wins.
+        if Instant::now() + Self::PREVIEW_SLACK >= deadline || self.pending_preview_render.is_some()
+        {
+            self.pending_preview.requeue(job);
+            return Ok(());
+        }
+        let Some(playback) = self.playback.take() else {
+            self.pending_preview.requeue(job);
+            return Ok(());
+        };
+        let Some(stingers) = self.stingers.take() else {
+            self.playback = Some(playback);
+            self.pending_preview.requeue(job);
+            return Ok(());
+        };
+        self.video
+            .submit_preview(native_video_realizer::VideoRenderJob {
+                frame: preview_frame(job.frame, job.preview),
+                plan: job.plan,
+                playback,
+                stingers,
+                grades: job.grades,
+                grade_revision: job.grade_revision,
+            })
+            .map_err(|error| AppFailure(format!("Preview realizer: {error}")))?;
+        self.pending_preview_render = Some(PendingPreviewRender {
+            tap_frame: job.tap_frame,
+            preview: job.preview,
+        });
+        Ok(())
+    }
+
+    /// Collects a Preview composite submitted at the end of the last pass.
+    fn poll_deferred_preview(&mut self) -> AppResult<()> {
+        let Some(pending) = self.pending_preview_render.take() else {
+            return Ok(());
+        };
+        let outcome = self
+            .video
+            .collect_preview()
+            .map_err(|error| AppFailure(format!("Preview realizer: {error}")))?;
+        self.playback = Some(outcome.playback);
+        self.stingers = Some(outcome.stingers);
+        match outcome.result {
             Ok(texture) => {
                 self.latest_preview = Some(texture);
                 self.preview_failed = false;
@@ -5697,40 +5735,17 @@ impl NativeDaemon {
                 self.latest_preview = None;
             }
         }
-    }
-
-    /// A composite that would not finish this margin before the next Program
-    /// deadline waits for the next pass.
-    const PREVIEW_SLACK: Duration = Duration::from_millis(2);
-
-    /// Renders the deferred Preview composite when the pass has slack before
-    /// its next Program frame: the composite and its monitor tap never sit
-    /// between Program and that frame's deadline. A loop without slack keeps
-    /// the newest deferred frame for the next pass; a newer frame replaces it.
-    fn service_deferred_preview(&mut self) {
-        let Some(job) = self.pending_preview.take() else {
-            return;
-        };
-        let Ok(deadline) = self.next_deadline() else {
-            return;
-        };
-        // A composite that would not finish a comfortable margin before the
-        // next frame waits instead; Program's deadline wins.
-        if Instant::now() + Self::PREVIEW_SLACK >= deadline {
-            self.pending_preview.requeue(job);
-            return;
-        }
-        self.render_display_preview(Some(job.frame), job.preview);
-        if let Some(tap_frame) = job.tap_frame {
+        if let Some(tap_frame) = pending.tap_frame {
             self.monitor.capture(
                 MonitorTap::Preview,
                 &self.runtime,
                 self.latest_preview.as_ref(),
                 tap_frame,
-                job.preview,
+                pending.preview,
                 &mut self.telemetry,
             );
         }
+        Ok(())
     }
 
     /// Presents every display output's own source after the frame.
@@ -7514,24 +7529,13 @@ impl NativeDaemon {
 
     /// Attaches the grades of `control`'s current revision to the project
     /// plan, baking and uploading them only when they changed.
-    fn refresh_grades(&mut self, control: &ControlService<Policy>) -> AppResult<()> {
+    fn compiled_grades(
+        &mut self,
+        control: &ControlService<Policy>,
+    ) -> (Arc<fm_engine::CompiledProjectGrades>, u64) {
         let compiled = self.grade_cache.at(control);
-        let current = match &self.prepared_grades {
-            Some((cached, prepared)) if Arc::ptr_eq(cached, &compiled) => prepared.clone(),
-            _ => {
-                let revision = control.snapshot().snapshot.revision;
-                let prepared = self
-                    .runtime
-                    .prepare_project_grades_blocking(revision, &compiled)
-                    .map_err(Box::<dyn Error>::from)?;
-                self.prepared_grades = Some((compiled, prepared.clone()));
-                prepared
-            }
-        };
-        if *self.project_plan.grades() != current {
-            self.project_plan.set_grades(current);
-        }
-        Ok(())
+        let revision = control.snapshot().snapshot.revision;
+        (compiled, revision)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -7585,7 +7589,7 @@ impl NativeDaemon {
         // Accepted StreamStart commands start on this frame boundary, before
         // the frame is produced, so the first fed pair is the next real frame.
         self.start_pending_streams();
-        self.refresh_grades(control)?;
+        let (compiled_grades, grade_revision) = self.compiled_grades(control);
         self.present_slideshows(control)?;
         let shows_preview = self.display_shows_preview();
         self.project_plan
@@ -7678,6 +7682,8 @@ impl NativeDaemon {
                     stingers: stinger_slot
                         .take()
                         .expect("a compose collected its stingers before the next"),
+                    grades: Arc::clone(&compiled_grades),
+                    grade_revision,
                 })
                 .map_err(NativeRealizationError::RealizerThread)?;
             fade_to_black_excluded.clone_from(&frame.fade_to_black_excluded_outputs);
@@ -7724,13 +7730,21 @@ impl NativeDaemon {
             events,
         } = pending;
         let finish_started = Instant::now();
+        let (preview_grades, preview_grade_revision) = self.compiled_grades(control);
         let composed = self
             .video
             .collect()
             .map_err(NativeRealizationError::RealizerThread)?;
         self.playback = Some(composed.playback);
         self.stingers = Some(composed.stingers);
-        match composed.result.map_err(NativeRealizationError::Video)? {
+        match composed.result.map_err(|error| match error {
+            native_video_realizer::VideoError::Render(error) => {
+                NativeRealizationError::Video(error)
+            }
+            error @ native_video_realizer::VideoError::Grades(_) => {
+                NativeRealizationError::RealizerThread(error.to_string())
+            }
+        })? {
             native_video_realizer::NativeVideoFrame::Program(output) => {
                 self.latest_output = Some(output);
                 self.latest_project_outputs.clear();
@@ -7927,6 +7941,9 @@ impl NativeDaemon {
                         frame,
                         preview,
                         tap_frame: preview_tap_frame,
+                        plan: self.project_plan.clone(),
+                        grades: Arc::clone(&preview_grades),
+                        grade_revision: preview_grade_revision,
                     });
             }
         } else if !shows_preview {
@@ -9403,7 +9420,14 @@ impl NativeDaemon {
     fn advance_recordings(&mut self) {}
 
     #[allow(clippy::unused_self)]
-    fn service_deferred_preview(&mut self) {}
+    fn service_deferred_preview(&mut self) -> AppResult<()> {
+        Ok(())
+    }
+
+    #[allow(clippy::unused_self)]
+    fn poll_deferred_preview(&mut self) -> AppResult<()> {
+        Ok(())
+    }
 
     #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
     fn start_and_prime_configured_recorders(

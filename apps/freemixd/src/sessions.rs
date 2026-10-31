@@ -907,6 +907,16 @@ pub(super) fn run(
             return Ok(shutdown_for_reason(reason, &mut peers, control));
         }
 
+        // A Preview composite submitted at the end of the last pass is
+        // collected before this pass dispatches anything, so the playback
+        // registries are back for commands and ingestion.
+        if let Some(native) = native.as_deref_mut()
+            && let Err(error) = native.poll_deferred_preview()
+        {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
+        }
+
         if let Some(web) = web {
             loop {
                 let Ok(Some(event)) = web.try_event() else {
@@ -1656,8 +1666,11 @@ pub(super) fn run(
         }
         // Preview's composite and tap use the slack left after this pass's
         // peer work, never the slot before the next Program frame.
-        if let Some(native) = native.as_deref_mut() {
-            native.service_deferred_preview();
+        if let Some(native) = native.as_deref_mut()
+            && let Err(error) = native.service_deferred_preview()
+        {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
         }
         thread::sleep(CLIENT_READ_POLL_INTERVAL);
     }

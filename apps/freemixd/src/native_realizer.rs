@@ -16,8 +16,11 @@
 //! handoff bounded and latest-wins from the start is what lets the control
 //! loop hand frames over without ever blocking on a slow realizer.
 
-use fm_engine::FrameResult;
+use std::sync::Arc;
+
+use fm_engine::{CompiledProjectGrades, FrameResult};
 use fm_types::InputId;
+use freemixd::native_media::NativeProjectPlan;
 
 /// A Preview composite the frame deferred, with the monitor tap frame it
 /// also feeds (Protocol 2.21).
@@ -26,6 +29,10 @@ pub(crate) struct NativePreviewJob {
     pub frame: FrameResult,
     pub preview: InputId,
     pub tap_frame: Option<u64>,
+    /// The plan and grades as of the frame that deferred the composite.
+    pub plan: NativeProjectPlan,
+    pub grades: Arc<CompiledProjectGrades>,
+    pub grade_revision: u64,
 }
 
 /// One bounded latest-wins slot.
