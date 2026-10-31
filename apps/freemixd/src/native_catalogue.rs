@@ -644,6 +644,7 @@ impl NativeDaemon {
                     native_files::PrefetchRole::Previous,
                     previous_list_item(list),
                 ),
+                (native_files::PrefetchRole::First, first_list_item(list)),
             ] {
                 let Some(item) = item else {
                     continue;
@@ -787,6 +788,11 @@ pub(crate) fn previous_list_item(list: &fm_model::MediaList) -> Option<&fm_model
         return None;
     };
     list.item(id)
+}
+
+/// The item First steps to: the first of the current cycle's play order.
+pub(crate) fn first_list_item(list: &fm_model::MediaList) -> Option<&fm_model::MediaListItem> {
+    list.item(*list.play_order().first()?)
 }
 
 /// Whether the file at `path` starts like a still image (one read of its
@@ -1133,5 +1139,28 @@ mod tests {
         let last = *order.last().unwrap();
         list.active = order[0];
         assert_eq!(previous(&list), Some(last));
+    }
+
+    /// First goes to the first item of the current cycle's play order, which
+    /// is what the third standby opens.
+    #[test]
+    fn the_first_list_item_is_the_first_of_the_cycle() {
+        let items = (1..=4)
+            .map(|id| fm_model::MediaListItem::new(id, format!("asset://{id}.mkv")))
+            .collect();
+        let mut list =
+            fm_model::MediaList::new(items, fm_model::MediaListOptions::default()).unwrap();
+        let first = |list: &fm_model::MediaList| first_list_item(list).map(|item| item.id);
+        assert_eq!(first(&list), Some(1));
+        list.active = 3;
+        assert_eq!(first(&list), Some(1));
+        list.options.shuffle_seed = Some(9);
+        assert_eq!(first(&list), Some(list.play_order()[0]));
+        let mut next_cycle = list.clone();
+        next_cycle.cycle += 1;
+        assert_eq!(
+            first_list_item(&next_cycle).map(|item| item.id),
+            Some(next_cycle.play_order()[0])
+        );
     }
 }

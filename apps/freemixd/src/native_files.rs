@@ -356,11 +356,13 @@ pub(crate) struct NativeMediaFiles {
 }
 
 /// Which neighbour of a media list's active item a standby opens: the item
-/// Auto Next or Next steps to, or the one Previous steps to (IN-006).
+/// Auto Next or Next steps to, the one Previous steps to, or the first item
+/// of the play order (IN-006).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) enum PrefetchRole {
     Next,
     Previous,
+    First,
 }
 
 /// A media list's neighbouring item file, opened, indexed, and cued on its
@@ -904,6 +906,7 @@ impl NativeMediaFiles {
         let thread_name = match role {
             PrefetchRole::Next => format!("freemix-media-next-{input}"),
             PrefetchRole::Previous => format!("freemix-media-previous-{input}"),
+            PrefetchRole::First => format!("freemix-media-first-{input}"),
         };
         let spawned = thread::Builder::new().name(thread_name).spawn(move || {
             // At most MAX_CONCURRENT_PREFETCHES files open at once.
