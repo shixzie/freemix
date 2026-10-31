@@ -2555,6 +2555,10 @@ impl Engine {
     ) -> Result<EngineCommandOutcome, EngineError> {
         let key = envelope.idempotency_key.clone();
         let command_id = envelope.id.clone();
+        // A page step naming a media list is a list navigation (IN-006): a
+        // cue's `page` action and the generic page command then step a list
+        // with the list's own wrap rules.
+        let envelope = rewrite_page_navigate(envelope, self.commands.state());
         let next_frame = self.scheduler.pacer().next_frame();
         // A playlist advance is accepted ahead of its boundary and realized
         // on it; every other command targets the next frame.
@@ -6267,4 +6271,32 @@ fn switcher_rejection(error: SwitcherError) -> Rejection {
         }
         _ => rejection,
     }
+}
+
+/// Rewrites a `PageNavigate` that names a media list into the list's own
+/// navigation (IN-006), leaving every other paged input alone.
+fn rewrite_page_navigate(
+    mut envelope: CommandEnvelope<EngineCommand>,
+    state: &ShowState,
+) -> CommandEnvelope<EngineCommand> {
+    if let EngineCommand::PageNavigate { input, navigation } = envelope.command
+        && state.media_list(input).is_some()
+    {
+        let navigation = match navigation {
+            fm_types::paged::PagedNavigation::Next => crate::EngineMediaListNavigation::Next,
+            fm_types::paged::PagedNavigation::Previous => {
+                crate::EngineMediaListNavigation::Previous
+            }
+            fm_types::paged::PagedNavigation::First => crate::EngineMediaListNavigation::First,
+            fm_types::paged::PagedNavigation::Last => crate::EngineMediaListNavigation::Last,
+            fm_types::paged::PagedNavigation::Goto(position) => {
+                crate::EngineMediaListNavigation::Goto(position)
+            }
+        };
+        envelope.command = EngineCommand::MediaList(crate::EngineMediaListCommand {
+            input,
+            operation: crate::EngineMediaListOperation::Navigate(navigation),
+        });
+    }
+    envelope
 }

@@ -4864,10 +4864,11 @@ cuts. The simulated daemon runs the timing without compositing its
 synthetic pictures. Studio's list card edits the transition with hover
 help. Gaps: only the next item is prefetched, no CLI edit or vMix API
 verbs, no cross-input GO bank, and Linux-only native evidence. The generic
-`page_navigate` step and the cue `page` action do not drive a list yet: a
-list steps with its own `navigate` (same next/previous/first/last/goto
-tokens, but Next and Previous wrap under Loop where a page step clamps).
-`IN-006` stays `planned` until those land.
+`page_navigate` step and the cue `page` action drive a list too: a page step
+naming a media list is rewritten to the list's own `navigate` (same
+next/previous/first/last/goto tokens, but Next and Previous wrap under Loop
+where a document page step clamps). `IN-006` stays `planned` until the
+remaining gaps land.
 
 Current implementation boundary for item 5 playlist automation:
 `fm-automation` provides a caller-clocked playlist engine that sequences whole
