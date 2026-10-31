@@ -10605,6 +10605,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one case per mixer command
     fn monitor_output_commands_parse() {
         assert_eq!(
             parse(strings(&[
