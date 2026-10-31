@@ -745,7 +745,6 @@ impl Crawl {
                 }
                 if !self.separator.text.is_empty() {
                     let separator = item_end.saturating_add(gap);
-                    let separator_end = separator.saturating_add(u64::from(self.separator.extent));
                     let separator_offset = raw_offset(separator);
                     if separator_offset < viewport
                         && separator_offset + i128::from(self.separator.extent) > 0

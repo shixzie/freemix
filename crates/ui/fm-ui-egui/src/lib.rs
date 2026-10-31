@@ -2498,6 +2498,22 @@ impl StudioShell {
         Some(intent)
     }
 
+    /// The intent an external control's `key` sends for cue list `list` by
+    /// its id (RC-017's `/freemix/cue/list/<n>/<key>`), whether or not the
+    /// Cues panel shows it, gated exactly like the panel's keys. A GO or arm
+    /// carries this console's selected input, as the panel's does (RC-004).
+    #[must_use]
+    pub fn cue_list_key_intent(
+        &self,
+        state: &StudioUiState,
+        list: u64,
+        key: CueKey,
+    ) -> Option<StudioIntent> {
+        let mut intent = StudioIntent::Cue(self.cues.list_key_intent(state, list, key)?);
+        selection::bind(self.selected_input, core::slice::from_mut(&mut intent));
+        Some(intent)
+    }
+
     /// `?` or F1 opens the keyboard reference, and closes it again, unless
     /// a text field, another dialog, or a menu owns the keyboard. Works in
     /// every connection state, unlike the console keys.

@@ -912,6 +912,26 @@ impl CuePanel {
         )
     }
 
+    /// The intent an external binding's `key` sends for list `list` by its
+    /// id, whether or not the panel shows it (RC-017), with the panel's
+    /// "Fire in" delay for arming.
+    pub(crate) fn list_key_intent(
+        &self,
+        state: &StudioUiState,
+        list: u64,
+        key: CueKey,
+    ) -> Option<CueIntent> {
+        let project = state.project_state.as_ref()?;
+        let list = project.cue_lists().iter().find(|found| found.id == list)?;
+        key_intent(
+            state,
+            project.scripts(),
+            list,
+            self.arm_delay.as_deref().unwrap_or(DEFAULT_ARM_DELAY),
+            key,
+        )
+    }
+
     /// Shows list `list` (for tests and fixtures).
     pub(crate) fn select(&mut self, list: u64, expanded: Option<u64>) {
         self.selected = Some(list);

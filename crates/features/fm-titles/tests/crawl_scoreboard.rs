@@ -1007,6 +1007,7 @@ fn clock_formats_include_tenths() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // roster add, duplicate, remove, and external keys
 fn rosters_add_select_and_remove_players_atomically() {
     let mut board = board(GameClockConfig {
         direction: ClockDirection::CountDown,
@@ -1125,7 +1126,10 @@ fn rosters_add_select_and_remove_players_atomically() {
         actions_from_external(&[("home.roster.select", "x")]),
         Err(ScoreboardError::InvalidExternalValue { index: 0 })
     );
+}
 
+#[test]
+fn rosters_refuse_a_full_one() {
     // A full roster is refused.
     let mut full = TeamState::new("Home", "HOM");
     for number in 0..u16::try_from(MAX_ROSTER_PLAYERS).unwrap() {

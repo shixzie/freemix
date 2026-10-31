@@ -89,7 +89,7 @@
 
 use crate::{
     Alignment, AssetCatalog, Bounds, ClockSource, ClockUnresolved, Color, Composition, Crawl,
-    CrawlMode, Element, ElementId, ElementKind, ElementPlacement, FieldId, FieldValue, FontFace,
+    Element, ElementId, ElementKind, ElementPlacement, FieldId, FieldValue, FontFace,
     HorizontalAlignment, ImageFilter, ImageFit, MissingFont, ResolvedClip, TickerSpec, TitleScene,
     VerticalAlignment,
     animation::{AnimSample, ElementAnimation},

@@ -713,6 +713,25 @@ impl StudioApp {
                     self.enqueue_osc_fire(intent, selected);
                     continue;
                 }
+                // A list-addressed cue key (RC-017) names its list by 1-based
+                // project order, whether or not the Cues panel shows it.
+                OscAction::CueList(key, number, selected) => {
+                    let list = usize::try_from(number.get())
+                        .ok()
+                        .and_then(|number| number.checked_sub(1))
+                        .and_then(|index| {
+                            self.state
+                                .project_state
+                                .as_ref()
+                                .and_then(|project| project.cue_lists().get(index))
+                                .map(|list| list.id)
+                        });
+                    let intent = list
+                        .and_then(|list| self.shell.cue_list_key_intent(&self.state, list, key));
+                    self.enqueue_osc_fire(intent, selected);
+                    continue;
+                    continue;
+                }
                 // A project shortcut fires under its key's gates (RC-004);
                 // one this session cannot fire is announced.
                 OscAction::User(name, selected, value) => {

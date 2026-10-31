@@ -143,7 +143,7 @@ impl ScoreboardPreset {
             Self::Basketball => ScoreboardRules {
                 max_score: 199,
                 max_period: 4,
-                shot_clock_ms: Some(24_000),
+                shot_clock_ms: Some(DEFAULT_SHOT_CLOCK_MS),
             },
             Self::AmericanFootball => ScoreboardRules {
                 max_score: 199,
@@ -894,48 +894,13 @@ impl Scoreboard {
                 self.team_mut(*side).player.clone_from(player);
             }
             ScoreboardAction::AddRosterPlayer { side, player } => {
-                check_text(&player.name)?;
-                let team = self.team_mut(*side);
-                if team.roster.len() >= MAX_ROSTER_PLAYERS {
-                    return Err(ScoreboardError::RosterFull {
-                        side: *side,
-                        maximum: MAX_ROSTER_PLAYERS,
-                    });
-                }
-                if duplicate_roster_player(&team.roster, player) {
-                    return Err(ScoreboardError::DuplicateRosterPlayer {
-                        side: *side,
-                        player: player.display(),
-                    });
-                }
-                team.roster.push(player.clone());
+                self.add_roster_player(*side, player)?;
             }
             ScoreboardAction::RemoveRosterPlayer { side, index } => {
-                let team = self.team_mut(*side);
-                if *index >= team.roster.len() {
-                    return Err(ScoreboardError::RosterIndexOutOfRange {
-                        side: *side,
-                        index: *index,
-                        len: team.roster.len(),
-                    });
-                }
-                let removed = team.roster.remove(*index);
-                if team.player.as_ref() == Some(&removed) {
-                    team.player = None;
-                }
+                self.remove_roster_player(*side, *index)?;
             }
             ScoreboardAction::SelectRosterPlayer { side, index } => {
-                let team = self.team_mut(*side);
-                team.player = match index {
-                    None => None,
-                    Some(index) => Some(team.roster.get(*index).cloned().ok_or(
-                        ScoreboardError::RosterIndexOutOfRange {
-                            side: *side,
-                            index: *index,
-                            len: team.roster.len(),
-                        },
-                    )?),
-                };
+                self.select_roster_player(*side, *index)?;
             }
             ScoreboardAction::AdjustPeriod { delta } => {
                 let wanted = i64::from(self.period) + i64::from(*delta);
@@ -966,6 +931,68 @@ impl Scoreboard {
 
     fn shot_clock_mut(&mut self) -> Result<&mut GameClock, ScoreboardError> {
         self.shot_clock.as_mut().ok_or(ScoreboardError::NoShotClock)
+    }
+
+    fn add_roster_player(
+        &mut self,
+        side: TeamSide,
+        player: &Player,
+    ) -> Result<(), ScoreboardError> {
+        check_text(&player.name)?;
+        let team = self.team_mut(side);
+        if team.roster.len() >= MAX_ROSTER_PLAYERS {
+            return Err(ScoreboardError::RosterFull {
+                side,
+                maximum: MAX_ROSTER_PLAYERS,
+            });
+        }
+        if duplicate_roster_player(&team.roster, player) {
+            return Err(ScoreboardError::DuplicateRosterPlayer {
+                side,
+                player: player.display(),
+            });
+        }
+        team.roster.push(player.clone());
+        Ok(())
+    }
+
+    fn remove_roster_player(
+        &mut self,
+        side: TeamSide,
+        index: usize,
+    ) -> Result<(), ScoreboardError> {
+        let team = self.team_mut(side);
+        if index >= team.roster.len() {
+            return Err(ScoreboardError::RosterIndexOutOfRange {
+                side,
+                index,
+                len: team.roster.len(),
+            });
+        }
+        let removed = team.roster.remove(index);
+        if team.player.as_ref() == Some(&removed) {
+            team.player = None;
+        }
+        Ok(())
+    }
+
+    fn select_roster_player(
+        &mut self,
+        side: TeamSide,
+        index: Option<usize>,
+    ) -> Result<(), ScoreboardError> {
+        let team = self.team_mut(side);
+        team.player = match index {
+            None => None,
+            Some(index) => Some(team.roster.get(index).cloned().ok_or(
+                ScoreboardError::RosterIndexOutOfRange {
+                    side,
+                    index,
+                    len: team.roster.len(),
+                },
+            )?),
+        };
+        Ok(())
     }
 
     /// Bound field values at `frame` that differ from `scene`'s current ones.

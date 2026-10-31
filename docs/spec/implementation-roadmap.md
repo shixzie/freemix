@@ -5096,8 +5096,9 @@ Preview selection. English and Spanish, with unit tests of the
 resolution and an offscreen render (`docs/progress/studio-cue-preview*.png`).
 Remaining gaps: lists are not bound to an input button, and Studio has no
 direct MIDI, HID, or X-keys input (only OSC, through a bridge); the cue
-bindings are fixed, with no rebinding or learn UI, and act only on the
-list the Cues panel shows (no per-list or per-cue key or OSC address);
+bindings are fixed, with no rebinding or learn UI, and console keys act only
+on the list the Cues panel shows (OSC can address a list by 1-based project
+order, but there is no per-cue key or address);
 the cue preview is worked out on the console, not by the authority:
 it does not run a script step (values a script may change are left out
 after it), cannot see a
