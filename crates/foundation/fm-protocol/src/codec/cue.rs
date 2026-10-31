@@ -19,7 +19,10 @@
 //!   `stream.<target>.<0|1>`, `media_play.<input>`, `media_pause.<input>`,
 //!   `media_restart.<input>`, `media_seek.<input>.<frame>`, `wait.<frames>`,
 //!   `delay.<millis>` (the media and delay tokens since Protocol 2.51),
-//!   `run_script.<script>` (Protocol 2.60, a nonzero project script id).
+//!   `run_script.<script>` (Protocol 2.60, a nonzero project script id), and
+//!   `clock.<name>.<start|pause|reset|set|adjust|preset>[.<value ns>]`
+//!   (Protocol 2.151, SW-013: the value is a canonical signed decimal and
+//!   accompanies `set`, `adjust`, and `preset` only).
 //!   Since Protocol 2.88 (RC-004) every `<input>` of an action is an input
 //!   id or a role resolved when the action is fired: `preview`, `program`,
 //!   or `selected` (see [`crate::WireInputTarget`]). Since Protocol 2.104
@@ -137,6 +140,13 @@ pub(super) fn action_is_valid(action: &WireCueAction) -> bool {
         WireCueAction::Wait { frames } => (1..=MAX_CUE_WAIT_FRAMES).contains(frames),
         WireCueAction::Delay { millis } => (1..=MAX_CUE_DELAY_MS).contains(millis),
         WireCueAction::RunScript { script } => *script != 0,
+        WireCueAction::Clock { name, operation } => {
+            crate::clock_name_is_valid(name)
+                && operation.value_ns().is_none_or(|value| {
+                    value <= crate::cue::MAX_CUE_CLOCK_VALUE_NS
+                        && value >= -crate::cue::MAX_CUE_CLOCK_VALUE_NS
+                })
+        }
         WireCueAction::AudioGain { gain, .. } => gain.is_valid(),
         _ => true,
     }
@@ -276,6 +286,10 @@ pub fn cue_action_token(action: &WireCueAction) -> String {
         WireCueAction::Wait { frames } => format!("wait.{frames}"),
         WireCueAction::Delay { millis } => format!("delay.{millis}"),
         WireCueAction::RunScript { script } => format!("run_script.{script}"),
+        WireCueAction::Clock { name, operation } => match operation.value_ns() {
+            None => format!("clock.{name}.{}", operation.token()),
+            Some(value) => format!("clock.{name}.{}.{value}", operation.token()),
+        },
     }
 }
 
@@ -445,6 +459,27 @@ pub fn parse_cue_action_token(value: &str) -> Option<WireCueAction> {
         ["run_script", script] => WireCueAction::RunScript {
             script: parse_canonical_u64(script)?,
         },
+        ["clock", name, operation] if crate::clock_name_is_valid(name) => WireCueAction::Clock {
+            name: (*name).to_owned(),
+            operation: match *operation {
+                "start" => crate::WireCueClockOperation::Start,
+                "pause" => crate::WireCueClockOperation::Pause,
+                "reset" => crate::WireCueClockOperation::Reset,
+                _ => return None,
+            },
+        },
+        ["clock", name, operation, value] if crate::clock_name_is_valid(name) => {
+            let value = parse_i64(value)?;
+            WireCueAction::Clock {
+                name: (*name).to_owned(),
+                operation: match *operation {
+                    "set" => crate::WireCueClockOperation::SetValue(value),
+                    "adjust" => crate::WireCueClockOperation::Adjust(value),
+                    "preset" => crate::WireCueClockOperation::SetPreset(value),
+                    _ => return None,
+                },
+            }
+        }
         _ => return None,
     })
 }

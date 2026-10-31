@@ -7883,6 +7883,8 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::CueActMediaRestart, t("Reiniciar medio")),
     (Msg::CueActDelay, t("Retardo")),
     (Msg::CueActRunScript, t("Guion")),
+    (Msg::CueActClock, t("Reloj")),
+    (Msg::CuePvClock, t("{name}: reloj {operation}")),
     (
         Msg::CueParamScriptHover,
         t(

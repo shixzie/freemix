@@ -350,6 +350,13 @@ pub enum EngineCommand {
     RecordStop {
         recorder: RecorderSlot,
     },
+    /// Starts, pauses, resets, sets, adjusts, or presets production clock
+    /// `name` (SW-013). A live operation like [`Self::RecordStart`]: the
+    /// clock's live value is runtime state, not project state.
+    ControlClock {
+        name: String,
+        operation: fm_model::CueClockOperation,
+    },
     /// Reverts the most recent project edit in the shared history.
     ///
     /// `expected_edit` names the [`EditHistoryEntry::edit`] the caller means
@@ -3351,6 +3358,9 @@ impl Engine {
         let command_events = if let EngineCommand::Replay(operation) = &action {
             self.replay.realize(self.commands.state(), operation, frame);
             Vec::new()
+        } else if let EngineCommand::ControlClock { name, operation } = &action {
+            self.control_production_clock(name, cue_clock_command(*operation))?;
+            Vec::new()
         } else if let EngineCommand::Media(command) = action {
             *realized.media_operations.entry(command.input).or_default() += 1;
             Vec::new()
@@ -4116,6 +4126,11 @@ impl EngineMutation {
             return apply_edit_lock_mutation(state, events, scope, locked, self.target_frame);
         }
         check_edit_locks(state, &self.command).map_err(crate::EditRejection::into_rejection)?;
+        if matches!(&self.command, EngineCommand::ControlClock { .. }) {
+            return Ok(EngineAcceptance {
+                target_frame: self.target_frame,
+            });
+        }
         if is_playlist_command(&self.command)
             || matches!(&self.command, EngineCommand::RealizePlaylistCue(_))
         {
@@ -4846,6 +4861,7 @@ impl EngineMutation {
             | EngineCommand::Media(_)
             | EngineCommand::PageNavigate { .. }
             | EngineCommand::MediaList(_)
+            | EngineCommand::ControlClock { .. }
             | EngineCommand::InputLifecycle(_) => {
                 unreachable!("grade and animation mutations return before switcher command mapping")
             }
@@ -5449,6 +5465,22 @@ fn rational_nanos(numerator: u128, denominator: u128) -> Option<u128> {
     Some(numerator.checked_mul(1_000_000_000)? / denominator)
 }
 
+/// The clock command a validated cue clock action runs (SW-013).
+fn cue_clock_command(operation: fm_model::CueClockOperation) -> fm_clock::production::ClockCommand {
+    use fm_clock::production::{ClockCommand, ClockValue};
+    let value = |nanos: i64| {
+        ClockValue::from_nanos(nanos).expect("validated cue clock values are in range")
+    };
+    match operation {
+        fm_model::CueClockOperation::Start => ClockCommand::Start,
+        fm_model::CueClockOperation::Pause => ClockCommand::Pause,
+        fm_model::CueClockOperation::Reset => ClockCommand::Reset,
+        fm_model::CueClockOperation::SetValue(nanos) => ClockCommand::SetValue(value(nanos)),
+        fm_model::CueClockOperation::Adjust(nanos) => ClockCommand::Adjust(value(nanos)),
+        fm_model::CueClockOperation::SetPreset(nanos) => ClockCommand::SetPreset(value(nanos)),
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn apply_runtime(
     switcher: &mut SwitcherState,
@@ -5481,6 +5513,7 @@ fn apply_runtime(
             | EngineCommand::Media(_)
             | EngineCommand::PageNavigate { .. }
             | EngineCommand::MediaList(_)
+            | EngineCommand::ControlClock { .. }
     ) {
         return Ok(Vec::new());
     }
@@ -5679,6 +5712,7 @@ fn apply_runtime(
         | EngineCommand::Media(_)
         | EngineCommand::PageNavigate { .. }
         | EngineCommand::MediaList(_)
+        | EngineCommand::ControlClock { .. }
         | EngineCommand::InputLifecycle(_) => {
             unreachable!("grade and animation commands return before switcher command mapping")
         }
@@ -5880,6 +5914,7 @@ fn runtime_transition_kind(show: &ShowState, command: &EngineCommand) -> Option<
         | EngineCommand::Media(_)
         | EngineCommand::PageNavigate { .. }
         | EngineCommand::MediaList(_)
+        | EngineCommand::ControlClock { .. }
         | EngineCommand::InputLifecycle(_)
         | EngineCommand::SetCueList { .. }
         | EngineCommand::CueControl { .. }

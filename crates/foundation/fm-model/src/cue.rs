@@ -68,6 +68,12 @@ pub const MAX_CUE_ARM_MS: u32 = 86_400_000;
 pub const MAX_CUE_TRANSITION_FRAMES: u32 = 3_600;
 /// Overlay channels an action may address (`1..=8`).
 pub const CUE_OVERLAY_CHANNELS: u8 = 8;
+/// Longest production clock name a cue action may name, in bytes.
+pub const MAX_CUE_CLOCK_NAME_BYTES: usize = 64;
+/// Largest magnitude a clock action sets, adjusts, or presets, in
+/// nanoseconds: the production clock value range's bound
+/// (`99999:59:59.999999999`).
+pub const MAX_CUE_CLOCK_VALUE_NS: i64 = 360_000_000_000_000_000;
 
 /// One step of a cue.
 ///
@@ -139,6 +145,13 @@ pub enum CueAction<I = InputTarget> {
         input: I,
         navigation: fm_types::paged::PagedNavigation,
     },
+    /// Starts, pauses, resets, sets, adjusts, or presets production clock
+    /// `name` (SW-013, schema 106). The show must define it when the
+    /// action fires.
+    Clock {
+        name: String,
+        operation: CueClockOperation,
+    },
     /// Defers the cue's remaining actions by `frames` (`1..=`
     /// [`MAX_CUE_WAIT_FRAMES`]).
     Wait { frames: u32 },
@@ -191,6 +204,57 @@ impl CueNumberUpdate {
             Some(value)
         } else {
             None
+        }
+    }
+}
+
+/// How a [`CueAction::Clock`] operates a production clock (SW-013,
+/// schema 106).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CueClockOperation {
+    /// Starts or resumes a timer.
+    Start,
+    /// Pauses a timer.
+    Pause,
+    /// Resets a timer to its preset (or clears a session clock).
+    Reset,
+    /// Sets a timer's value.
+    SetValue(i64),
+    /// Adds a signed amount to a timer's value.
+    Adjust(i64),
+    /// Changes a timer's preset and resets.
+    SetPreset(i64),
+}
+
+impl CueClockOperation {
+    /// The operation's stable text token.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Pause => "pause",
+            Self::Reset => "reset",
+            Self::SetValue(_) => "set",
+            Self::Adjust(_) => "adjust",
+            Self::SetPreset(_) => "preset",
+        }
+    }
+
+    /// The value or delta the operation carries, in nanoseconds.
+    #[must_use]
+    pub const fn value_ns(self) -> Option<i64> {
+        match self {
+            Self::Start | Self::Pause | Self::Reset => None,
+            Self::SetValue(value) | Self::Adjust(value) | Self::SetPreset(value) => Some(value),
+        }
+    }
+
+    /// Whether the operation and its value are in range.
+    #[must_use]
+    pub const fn is_valid(self) -> bool {
+        match self.value_ns() {
+            None => true,
+            Some(value) => value <= MAX_CUE_CLOCK_VALUE_NS && value >= -MAX_CUE_CLOCK_VALUE_NS,
         }
     }
 }
@@ -258,6 +322,7 @@ impl<I: Copy> CueAction<I> {
             | Self::PlaylistStop
             | Self::Record { .. }
             | Self::Stream { .. }
+            | Self::Clock { .. }
             | Self::Wait { .. }
             | Self::Delay { .. }
             | Self::RunScript { .. } => None,
@@ -344,6 +409,10 @@ impl<I: Copy> CueAction<I> {
             Self::Page { input, navigation } => CueAction::Page {
                 input: map(*input)?,
                 navigation: *navigation,
+            },
+            Self::Clock { name, operation } => CueAction::Clock {
+                name: name.clone(),
+                operation: *operation,
             },
             Self::Wait { frames } => CueAction::Wait { frames: *frames },
             Self::Delay { millis } => CueAction::Delay { millis: *millis },
@@ -675,6 +744,17 @@ pub fn cue_name_is_valid(name: &str) -> bool {
     !name.trim().is_empty() && name.len() <= MAX_CUE_NAME_BYTES
 }
 
+/// Whether `name` is a valid production clock name an action may target:
+/// 1..=[`MAX_CUE_CLOCK_NAME_BYTES`] bytes of `[A-Za-z0-9_-]`.
+#[must_use]
+pub fn cue_clock_name_is_valid(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_CUE_CLOCK_NAME_BYTES
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
 /// Whether one action is within its ranges (durations, channels, text,
 /// gain, waits); references are checked against the owning show.
 #[must_use]
@@ -706,6 +786,9 @@ pub fn cue_action_is_valid(action: &CueAction) -> bool {
         CueAction::Wait { frames } => (1..=MAX_CUE_WAIT_FRAMES).contains(frames),
         CueAction::Delay { millis } => (1..=MAX_CUE_DELAY_MS).contains(millis),
         CueAction::RunScript { script } => *script != 0,
+        CueAction::Clock { name, operation } => {
+            cue_clock_name_is_valid(name) && operation.is_valid()
+        }
         CueAction::Page { navigation, .. } => match navigation {
             fm_types::paged::PagedNavigation::Goto(page) => {
                 *page < fm_types::paged::MAX_PAGED_PAGES

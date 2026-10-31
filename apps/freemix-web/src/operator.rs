@@ -55,7 +55,8 @@ pub const fn cue_action_permission(action: &WireCueAction) -> Option<&'static st
         | WireCueAction::Record { .. }
         | WireCueAction::Stream { .. }
         | WireCueAction::Media { .. }
-        | WireCueAction::Page { .. } => OPERATOR_TRANSITION_PERMISSION,
+        | WireCueAction::Page { .. }
+        | WireCueAction::Clock { .. } => OPERATOR_TRANSITION_PERMISSION,
     })
 }
 

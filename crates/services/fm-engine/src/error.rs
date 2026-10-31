@@ -436,7 +436,7 @@ impl fmt::Display for SnapshotError {
 
 impl std::error::Error for SnapshotError {}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EngineError {
     Clock(ClockError),
     Schedule(ActionError),
@@ -444,6 +444,7 @@ pub enum EngineError {
     RuntimeSwitcher(SwitcherError),
     CounterExhausted,
     Snapshot(SnapshotError),
+    ProductionClock(crate::EngineProductionClockError),
     StalePreparation,
 }
 
@@ -456,6 +457,7 @@ impl fmt::Display for EngineError {
             Self::RuntimeSwitcher(error) => error.fmt(formatter),
             Self::CounterExhausted => formatter.write_str("engine runtime generation exhausted"),
             Self::Snapshot(error) => error.fmt(formatter),
+            Self::ProductionClock(error) => error.fmt(formatter),
             Self::StalePreparation => {
                 formatter.write_str("prepared engine execution was based on stale authority")
             }
@@ -498,6 +500,12 @@ impl From<CounterOverflow> for EngineError {
 impl From<SnapshotError> for EngineError {
     fn from(value: SnapshotError) -> Self {
         Self::Snapshot(value)
+    }
+}
+
+impl From<crate::EngineProductionClockError> for EngineError {
+    fn from(value: crate::EngineProductionClockError) -> Self {
+        Self::ProductionClock(value)
     }
 }
 

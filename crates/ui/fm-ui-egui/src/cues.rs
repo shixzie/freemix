@@ -621,10 +621,11 @@ pub enum ActionKind {
     Wait,
     Delay,
     RunScript,
+    Clock,
 }
 
 impl ActionKind {
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 28] = [
         Self::Preview,
         Self::Take,
         Self::OverlayOn,
@@ -652,6 +653,7 @@ impl ActionKind {
         Self::Wait,
         Self::Delay,
         Self::RunScript,
+        Self::Clock,
     ];
 
     #[must_use]
@@ -692,6 +694,7 @@ impl ActionKind {
             WireCueAction::Wait { .. } => Self::Wait,
             WireCueAction::Delay { .. } => Self::Delay,
             WireCueAction::RunScript { .. } => Self::RunScript,
+            WireCueAction::Clock { .. } => Self::Clock,
         }
     }
 
@@ -726,6 +729,7 @@ impl ActionKind {
             Self::Wait => Msg::CueActWait.en(),
             Self::Delay => Msg::CueActDelay.en(),
             Self::RunScript => Msg::CueActRunScript.en(),
+            Self::Clock => Msg::CueActClock.en(),
         }
     }
 
@@ -837,6 +841,10 @@ impl ActionKind {
             Self::RunScript => WireCueAction::RunScript {
                 script: project.scripts().first()?.id,
             },
+            // The show's clocks are project data the replicated state does
+            // not carry, so Studio has no name to offer for a new step; the
+            // CLI and a hand-edited project author one.
+            Self::Clock => return None,
         })
     }
 }
@@ -2977,6 +2985,13 @@ fn draw_params(
                 (l.text(Msg::CueParamDelayHover), &unit),
                 enabled,
             )
+        }
+        WireCueAction::Clock { name, operation } => {
+            // The clock's name comes from project data the replicated state
+            // does not carry, so the editor shows the authored step rather
+            // than offering a picker.
+            ui.label(RichText::new(format!("{name} · {}", operation.token())).size(legible(11.0)));
+            None
         }
         WireCueAction::RunScript { script } => {
             let scripts = names.project.scripts();

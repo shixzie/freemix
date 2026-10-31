@@ -718,7 +718,7 @@ pub struct TickOutcome {
 }
 
 /// Failure from ticking the control engine or realizing its rendered frame.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TickWithRealizerError<E> {
     /// The control tick failed before or after frame realization.
     Tick(ControlError),
@@ -856,7 +856,7 @@ impl fmt::Display for SubscribeError {
 
 impl Error for SubscribeError {}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ControlError {
     Engine(EngineError),
     ServerIdentityMismatch,

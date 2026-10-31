@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.150 / schema 106 (2026-10-31,
+(2026-10-19); items refreshed through protocol 2.151 / schema 106 (2026-10-31,
 at `7e139b72`). Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -5471,11 +5471,17 @@ format controls to callers. The registry now reaches clients as read-only readin
 the wire with `clock_control_request`/`clock_control_response` (Protocol
 2.150, requested by `freemix-cli remote-clock-control`, which accepts
 `start`, `pause`, `reset`, `set`, `adjust`, and `preset`); the answer carries
-the clock's reading afterwards or the registry's refusal. Remaining gaps:
-there is no snapshot record, cue action, or UI, so cues and Studio cannot
-start, pause, or set a clock; titles still read their own template clocks
-rather than the shared registry; a media clock can name an input and follows
-its playback
+the clock's reading afterwards or the registry's refusal. A cue action
+operates a clock too (Protocol 2.151, schema 106): `clock.<name>.<operation>`
+(with a canonical nanosecond value for `set`, `adjust`, and `preset`) runs
+as one step of a cue or shortcut, is validated and persisted with the list,
+and faults the cue when the show does not define the clock or the clock's
+kind refuses the operation; Studio previews it and shows the authored step
+in the cue editor (it cannot author a new one yet, because the replicated
+state does not carry the clock names). Remaining gaps:
+there is no snapshot record or full clock UI; titles still read their own
+template clocks rather than the shared registry; a media clock can name an
+input and follows its playback
 through the engine, and stream, recording, replay, and MultiCorder session
 clocks start and stop with their source's activity (an external session clock
 stays stopped); no project-level
