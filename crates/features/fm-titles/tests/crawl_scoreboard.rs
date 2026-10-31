@@ -1335,6 +1335,36 @@ fn scoreboard_snapshots_restore_exactly() {
 }
 
 #[test]
+fn the_shot_clock_duration_can_be_replaced() {
+    let mut board = board(GameClockConfig {
+        direction: ClockDirection::CountDown,
+        format: ClockFormat::MinutesSeconds,
+        frame_rate: FrameRate::new(30, 1).unwrap(),
+        initial_ms: 90_000,
+        limit_ms: None,
+    });
+    board
+        .apply(
+            0,
+            0,
+            &[ScoreboardAction::SetShotClockDuration { value_ms: 30_000 }],
+        )
+        .unwrap();
+    assert_eq!(board.rules().shot_clock_ms, Some(30_000));
+    assert_eq!(board.shot_clock().unwrap().config().initial_ms, 30_000);
+    assert_eq!(board.shot_clock().unwrap().display(0), "00:30");
+    board
+        .apply(1, 1, &[ScoreboardAction::StartShotClock])
+        .unwrap();
+    assert_eq!(board.shot_clock().unwrap().expiry_frame(), Some(901));
+    board
+        .apply_external(2, 2, &[("shot_clock.duration", "24000")])
+        .unwrap();
+    assert_eq!(board.shot_clock().unwrap().display(2), "00:24");
+    assert!(!board.shot_clock().unwrap().is_running());
+}
+
+#[test]
 fn sport_presets_carry_their_rules_and_clocks() {
     let rate = FrameRate::new(25, 1).unwrap();
     let basketball = ScoreboardPreset::Basketball

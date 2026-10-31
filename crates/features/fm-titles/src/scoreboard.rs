@@ -524,6 +524,11 @@ pub enum ScoreboardAction {
     SetShotClock {
         value_ms: u64,
     },
+    /// Replaces the shot clock's count-down duration and resets it to that
+    /// value, stopped.
+    SetShotClockDuration {
+        value_ms: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1069,6 +1074,19 @@ impl Scoreboard {
             ScoreboardAction::SetShotClock { value_ms } => {
                 self.shot_clock_mut()?.set(frame, *value_ms)?;
             }
+            ScoreboardAction::SetShotClockDuration { value_ms } => {
+                check_clock_ms(*value_ms)?;
+                self.shot_clock_mut()?;
+                self.rules.shot_clock_ms = Some(*value_ms);
+                let frame_rate = self.clock.config.frame_rate;
+                self.shot_clock = Some(GameClock::new(GameClockConfig {
+                    direction: ClockDirection::CountDown,
+                    format: ClockFormat::MinutesSeconds,
+                    frame_rate,
+                    initial_ms: *value_ms,
+                    limit_ms: None,
+                })?);
+            }
         }
         Ok(false)
     }
@@ -1256,6 +1274,7 @@ fn check_text(text: &str) -> Result<(), ScoreboardError> {
 /// | `clock.ms` | decimal `u64` | [`ScoreboardAction::SetClock`] |
 /// | `clock.running` | `true` / `false` | start / stop |
 /// | `shot_clock.ms` | decimal `u64` | [`ScoreboardAction::SetShotClock`] |
+/// | `shot_clock.duration` | decimal `u64` | [`ScoreboardAction::SetShotClockDuration`] |
 /// | `shot_clock.running` | `true` / `false` | start / stop the shot clock |
 ///
 /// Numbers are plain ASCII decimal (a leading `-` only for deltas); no
@@ -1349,6 +1368,9 @@ fn external_action(
             _ => return Err(invalid),
         },
         (None, "shot_clock.ms") => ScoreboardAction::SetShotClock {
+            value_ms: parse_unsigned(value).ok_or(invalid)?,
+        },
+        (None, "shot_clock.duration") => ScoreboardAction::SetShotClockDuration {
             value_ms: parse_unsigned(value).ok_or(invalid)?,
         },
         (None, "shot_clock.running") => match value {
