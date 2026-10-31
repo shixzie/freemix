@@ -2629,8 +2629,8 @@ rotations, masks, safe areas, and multiview. Remaining gaps: model crops are
 validated against project rather than source size, so a vertical crop of a
 landscape camera on a portrait project is refused; no model, protocol, or UI
 fit setting (Studio monitor wells now follow the frame's shape); 8K stream
-ladders refuse
-portrait rungs; and the native GPU path is untested. `SW-015` remains
+ladders accept portrait and landscape rungs alike (the long edge is capped at
+7680 and the short edge at 4320); and the native GPU path is untested. `SW-015` remains
 planned.
 
 

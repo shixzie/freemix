@@ -45,8 +45,9 @@
 //! [`StreamTarget::expose_url`]. An HLS ladder is held to the same standard as
 //! the destination that carries it: rung count, rung bitrates, even
 //! dimensions inside [`MIN_STREAM_LADDER_DIMENSION`] through
-//! [`MAX_STREAM_LADDER_WIDTH`] and [`MAX_STREAM_LADDER_HEIGHT`], strictly
-//! increasing bitrates, and nondecreasing dimensions.
+//! [`MAX_STREAM_LADDER_WIDTH`] on the long edge and
+//! [`MAX_STREAM_LADDER_HEIGHT`] on the short edge (either orientation),
+//! strictly increasing bitrates, and nondecreasing dimensions.
 
 use core::{fmt, num::NonZeroU128};
 
@@ -597,8 +598,8 @@ pub enum StreamLadderError {
     BitrateTooHigh,
     /// A rung's width or height is below [`MIN_STREAM_LADDER_DIMENSION`].
     DimensionTooSmall,
-    /// A rung's width is above [`MAX_STREAM_LADDER_WIDTH`] or its height is
-    /// above [`MAX_STREAM_LADDER_HEIGHT`].
+    /// A rung's long edge is above [`MAX_STREAM_LADDER_WIDTH`] or its short
+    /// edge is above [`MAX_STREAM_LADDER_HEIGHT`].
     DimensionTooLarge,
     /// A rung's width or height is not even, so no chroma layout divides it.
     OddDimension,
@@ -634,7 +635,7 @@ impl fmt::Display for StreamLadderError {
             Self::DimensionTooLarge => write!(
                 formatter,
                 "stream ladder rung must not exceed {MAX_STREAM_LADDER_WIDTH} by \
-                 {MAX_STREAM_LADDER_HEIGHT}"
+                 {MAX_STREAM_LADDER_HEIGHT} in either orientation"
             ),
             Self::OddDimension => {
                 formatter.write_str("stream ladder rung width and height must be even")
@@ -672,9 +673,10 @@ impl StreamLadderRung {
     /// [`MIN_VIDEO_BITRATE_KBPS`]..=[`MAX_VIDEO_BITRATE_KBPS`],
     /// [`StreamLadderError::DimensionTooSmall`] when width or height is below
     /// [`MIN_STREAM_LADDER_DIMENSION`],
-    /// [`StreamLadderError::DimensionTooLarge`] when width exceeds
-    /// [`MAX_STREAM_LADDER_WIDTH`] or height exceeds
-    /// [`MAX_STREAM_LADDER_HEIGHT`], and [`StreamLadderError::OddDimension`]
+    /// [`StreamLadderError::DimensionTooLarge`] when the long edge exceeds
+    /// [`MAX_STREAM_LADDER_WIDTH`] or the short edge exceeds
+    /// [`MAX_STREAM_LADDER_HEIGHT`] (so portrait and landscape 8K both fit),
+    /// and [`StreamLadderError::OddDimension`]
     /// when either dimension is not even.
     pub fn new(
         video_bitrate_kbps: u32,
@@ -688,7 +690,9 @@ impl StreamLadderRung {
         if width < MIN_STREAM_LADDER_DIMENSION || height < MIN_STREAM_LADDER_DIMENSION {
             return Err(StreamLadderError::DimensionTooSmall);
         }
-        if width > MAX_STREAM_LADDER_WIDTH || height > MAX_STREAM_LADDER_HEIGHT {
+        if width.max(height) > MAX_STREAM_LADDER_WIDTH
+            || width.min(height) > MAX_STREAM_LADDER_HEIGHT
+        {
             return Err(StreamLadderError::DimensionTooLarge);
         }
         if !width.is_multiple_of(2) || !height.is_multiple_of(2) {

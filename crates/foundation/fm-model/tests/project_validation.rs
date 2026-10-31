@@ -1704,6 +1704,12 @@ fn stream_ladder_rungs_validate_bitrates_and_even_bounded_dimensions() {
             MAX_STREAM_LADDER_WIDTH,
             MAX_STREAM_LADDER_HEIGHT,
         ),
+        // The bounds hold either way round, so portrait 8K fits too.
+        (
+            MAX_VIDEO_BITRATE_KBPS,
+            MAX_STREAM_LADDER_HEIGHT,
+            MAX_STREAM_LADDER_WIDTH,
+        ),
     ] {
         assert!(
             StreamLadderRung::new(bitrate, width, height).is_ok(),
@@ -1745,8 +1751,14 @@ fn stream_ladder_rungs_validate_bitrates_and_even_bounded_dimensions() {
         ),
         (
             MIN_VIDEO_BITRATE_KBPS,
-            640,
+            MAX_STREAM_LADDER_WIDTH,
             MAX_STREAM_LADDER_HEIGHT + 1,
+            StreamLadderError::DimensionTooLarge,
+        ),
+        (
+            MIN_VIDEO_BITRATE_KBPS,
+            MAX_STREAM_LADDER_WIDTH,
+            MAX_STREAM_LADDER_WIDTH,
             StreamLadderError::DimensionTooLarge,
         ),
         (1_000, 641, 360, StreamLadderError::OddDimension),
