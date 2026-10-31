@@ -151,6 +151,12 @@ pub fn decode_line(line: &str) -> Result<WireMessage, CodecError> {
         "diagnostics_response" => {
             WireMessage::DiagnosticsResponse(decode_diagnostics_response(&mut fields)?)
         }
+        "clock_control_request" => {
+            WireMessage::ClockControlRequest(decode_clock_control_request(&mut fields)?)
+        }
+        "clock_control_response" => {
+            WireMessage::ClockControlResponse(decode_clock_control_response(&mut fields)?)
+        }
         "error" => WireMessage::Error(decode_error_message(&mut fields)?),
         "title_state" => WireMessage::TitleState(decode_title_state(&mut fields)?),
         "title_phases" => WireMessage::TitlePhases(crate::TitlePhasesMessage {
@@ -4160,6 +4166,103 @@ fn decode_health(fields: &mut Fields) -> Result<crate::DaemonHealth, CodecError>
         alerts: fields.required("alerts")?,
         notifications: fields.required("notifications")?,
         silences: fields.required("silences")?,
+    })
+}
+
+fn decode_clock_control_request(
+    fields: &mut Fields,
+) -> Result<crate::ClockControlRequest, CodecError> {
+    let protocol = fields.required("protocol")?;
+    let request_id = fields.required("request_id")?;
+    validate_request_id(&request_id)?;
+    let name = fields.required("name")?;
+    if !crate::clock_name_is_valid(&name) {
+        return Err(CodecError::InvalidField {
+            field: "name",
+            value: name,
+        });
+    }
+    let operation = fields.required("operation")?;
+    let value_ns = fields
+        .optional("value_ns")
+        .map(|value| {
+            let digits = value.strip_prefix('-').unwrap_or(&value);
+            let canonical = !digits.is_empty()
+                && (digits == "0" || !digits.starts_with('0'))
+                && digits.bytes().all(|byte| byte.is_ascii_digit())
+                && value != "-0";
+            if canonical {
+                value.parse::<i64>().map_err(|_| CodecError::InvalidField {
+                    field: "value_ns",
+                    value,
+                })
+            } else {
+                Err(CodecError::InvalidField {
+                    field: "value_ns",
+                    value,
+                })
+            }
+        })
+        .transpose()?;
+    let operation =
+        crate::ClockControlOperation::from_parts(&operation, value_ns).ok_or_else(|| {
+            CodecError::InvalidField {
+                field: "operation",
+                value: operation,
+            }
+        })?;
+    Ok(crate::ClockControlRequest {
+        protocol: parse_version(&protocol).ok_or(CodecError::InvalidField {
+            field: "protocol",
+            value: protocol,
+        })?,
+        request_id,
+        name,
+        operation,
+    })
+}
+
+fn decode_clock_control_response(
+    fields: &mut Fields,
+) -> Result<crate::ClockControlResponse, CodecError> {
+    let protocol = fields.required("protocol")?;
+    let request_id = fields.required("request_id")?;
+    validate_request_id(&request_id)?;
+    let name = fields.required("name")?;
+    if !crate::clock_name_is_valid(&name) {
+        return Err(CodecError::InvalidField {
+            field: "name",
+            value: name,
+        });
+    }
+    let accepted = fields.boolean("accepted")?;
+    let error = fields.optional("error");
+    if accepted && error.is_some() {
+        return Err(CodecError::InvalidField {
+            field: "error",
+            value: "an accepted response cannot carry an error".to_owned(),
+        });
+    }
+    let reading = match fields.optional("reading") {
+        Some(value) => {
+            let mut readings = crate::production_clock::decode_statuses(&value)?;
+            if readings.len() > 1 {
+                return Err(CodecError::TooManyItems("reading"));
+            }
+            readings.pop()
+        }
+        None => None,
+    };
+    Ok(crate::ClockControlResponse {
+        protocol: parse_version(&protocol).ok_or(CodecError::InvalidField {
+            field: "protocol",
+            value: protocol,
+        })?,
+        request_id,
+        name,
+        accepted,
+        error,
+        reading,
     })
 }
 

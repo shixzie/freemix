@@ -213,9 +213,11 @@ pub use paged::{
     paged_thumbnail_size_valid,
 };
 pub use production_clock::{
+    ClockControlOperation, ClockControlRequest, ClockControlResponse,
     MAX_PRODUCTION_CLOCK_NAME_BYTES, MAX_PRODUCTION_CLOCK_STATUSES,
     MAX_PRODUCTION_CLOCK_TEXT_BYTES, MAX_PRODUCTION_CLOCK_ZONE_BYTES, ProductionClockKind,
-    ProductionClockState, ProductionClockStatus, decode_statuses, encode_statuses,
+    ProductionClockState, ProductionClockStatus, clock_name_is_valid, decode_statuses,
+    encode_statuses,
 };
 pub use recorder_status::{
     MAX_RECORDER_STATUS_SAMPLES, RecorderRealizedState, RecorderStatusMessage, RecorderStatusSample,

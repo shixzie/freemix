@@ -74,6 +74,62 @@ pub fn diagnostics(address: SocketAddr) -> RemoteResult<()> {
     Ok(())
 }
 
+/// Operates one production clock on the daemon (SW-013, Protocol 2.150).
+pub fn clock_control(
+    address: SocketAddr,
+    name: &str,
+    operation: fm_protocol::ClockControlOperation,
+) -> RemoteResult<()> {
+    let mut remote = Remote::connect(address, Role::Operator)?;
+    let request_id = format!("cli-clock-{}", unique_client_id()?);
+    remote.write(&WireMessage::ClockControlRequest(
+        fm_protocol::ClockControlRequest {
+            protocol: CURRENT_PROTOCOL_VERSION,
+            request_id: request_id.clone(),
+            name: name.to_owned(),
+            operation,
+        },
+    ))?;
+    let deadline = Instant::now() + REMOTE_IO_TIMEOUT;
+    loop {
+        match remote.read_until(deadline)? {
+            WireMessage::ClockControlResponse(response) if response.request_id == request_id => {
+                if response.protocol != CURRENT_PROTOCOL_VERSION {
+                    return Err(RemoteFailure(
+                        "clock control response does not match the request".into(),
+                    )
+                    .into());
+                }
+                if !response.accepted {
+                    return Err(RemoteFailure(
+                        response
+                            .error
+                            .unwrap_or_else(|| "the daemon refused the clock control".into()),
+                    )
+                    .into());
+                }
+                let Some(reading) = response.reading else {
+                    return Err(RemoteFailure(
+                        "an accepted clock control carries no reading".into(),
+                    )
+                    .into());
+                };
+                print_production_clock(&reading);
+                return Ok(());
+            }
+            WireMessage::Error(error)
+                if error.request_id.as_deref() == Some(request_id.as_str()) =>
+            {
+                return Err(protocol_error(&error.error).into());
+            }
+            message @ (WireMessage::Event(_) | WireMessage::RuntimeEvent(_)) => {
+                remote.client.intake(message)?;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Lists the daemon's display-output slots with their presenter state
 /// (OR-011).
 pub fn display_outputs(address: SocketAddr) -> RemoteResult<()> {
@@ -2268,20 +2324,27 @@ fn print_diagnostics(response: &DiagnosticsResponse) {
         println!("{}", format_source_sync(sample));
     }
     for clock in &response.production_clocks {
-        println!(
-            "Clock(name={}, kind={}, state={}, text={}, value_ms={}, expired={}, zone={})",
-            clock.name,
-            clock.kind.token(),
-            clock.state.token(),
-            clock.text,
-            clock.value_ms.map_or_else(|| "-".to_owned(), |value| value.to_string()),
-            clock.expired,
-            clock.zone.as_deref().unwrap_or("-"),
-        );
+        print_production_clock(clock);
     }
     for line in format_health(&response.health) {
         println!("{line}");
     }
+}
+
+/// Prints one production clock's reading as the daemon reports it (SW-013).
+pub(crate) fn print_production_clock(clock: &fm_protocol::ProductionClockStatus) {
+    println!(
+        "Clock(name={}, kind={}, state={}, text={}, value_ms={}, expired={}, zone={})",
+        clock.name,
+        clock.kind.token(),
+        clock.state.token(),
+        clock.text,
+        clock
+            .value_ms
+            .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+        clock.expired,
+        clock.zone.as_deref().unwrap_or("-"),
+    );
 }
 
 /// The daemon's health (RC-015): one `Health` line with the utilization,

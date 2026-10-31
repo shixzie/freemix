@@ -217,7 +217,9 @@ fn diagnostics_response_carries_the_health_fields() {
     let quiet = diagnostics(DaemonHealth::default());
     let line = encode_line(&quiet).unwrap();
     assert!(
-        line.ends_with("\tsource_sync=\tuptime_ms=0\talerts=\tnotifications=\tsilences=\tproduction_clocks=\n"),
+        line.ends_with(
+            "\tsource_sync=\tuptime_ms=0\talerts=\tnotifications=\tsilences=\tproduction_clocks=\n"
+        ),
         "{line}"
     );
     assert_eq!(decode_line(&line).unwrap(), quiet);
@@ -383,7 +385,7 @@ fn alerts_carry_one_entry_per_rule_up_to_nine() {
 
 #[test]
 fn protocol_is_current() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 149));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 150));
 }
 
 /// Protocol 2.109: an acknowledged alert carries its end, silences are

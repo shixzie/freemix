@@ -3,8 +3,8 @@ use std::{collections::VecDeque, error::Error, fmt};
 use fm_auth::{AuthorizationDenial, CommandClass, Policy, Principal};
 use fm_control::RequiredClasses;
 use fm_protocol::{
-    CommandMessage, DiagnosticsRequest, EngineIdentity, EventCursor, ProtocolVersion,
-    ReplayPreviewRequest, ScenePreviewRequest, TitlePreviewRequest,
+    ClockControlRequest, CommandMessage, DiagnosticsRequest, EngineIdentity, EventCursor,
+    ProtocolVersion, ReplayPreviewRequest, ScenePreviewRequest, TitlePreviewRequest,
 };
 
 use crate::{RateLimit, SessionLimits};
@@ -226,6 +226,49 @@ impl Session {
         self.ensure_connected()?;
         self.policy
             .authorize(&self.principal, CommandClass::ViewStatus)?;
+        if request.protocol != self.protocol {
+            return Err(SessionError::ProtocolMismatch {
+                expected: self.protocol,
+                received: request.protocol,
+            });
+        }
+        if encoded_bytes > self.limits.max_command_bytes {
+            return Err(SessionError::CommandTooLarge {
+                size: encoded_bytes,
+                maximum: self.limits.max_command_bytes,
+            });
+        }
+        if !self
+            .inbound_window
+            .has_capacity(now_ms, self.limits.inbound_commands)
+        {
+            return Err(SessionError::InboundRateLimited);
+        }
+        self.inbound_window.record();
+        Ok(())
+    }
+
+    /// Authorizes and accounts for one production-clock control operation
+    /// (SW-013, Protocol 2.150).
+    ///
+    /// Operating a show clock is the operator's call, so it requires
+    /// [`CommandClass::Transition`]; the request must carry the session's
+    /// protocol, and it counts against the inbound command rate like a
+    /// command.
+    ///
+    /// # Errors
+    ///
+    /// Returns a session, authorization, protocol, size, or rate error when
+    /// the control request cannot be admitted.
+    pub fn admit_clock_control(
+        &mut self,
+        request: &ClockControlRequest,
+        encoded_bytes: usize,
+        now_ms: u64,
+    ) -> Result<(), SessionError> {
+        self.ensure_connected()?;
+        self.policy
+            .authorize(&self.principal, CommandClass::Transition)?;
         if request.protocol != self.protocol {
             return Err(SessionError::ProtocolMismatch {
                 expected: self.protocol,

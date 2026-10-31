@@ -12,7 +12,7 @@ use fm_protocol::{
 };
 use fm_types::OutputId;
 
-const PREFIX: &str = "command\tprotocol=2.149\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.150\tid=a\tidempotency_key=k";
 
 fn command(payload: CommandPayload) -> WireMessage {
     WireMessage::Command(CommandMessage {
@@ -80,7 +80,7 @@ fn entry() -> LiveLanEntry {
 
 #[test]
 fn the_current_protocol_is_2_57() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 149));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 150));
 }
 
 #[test]

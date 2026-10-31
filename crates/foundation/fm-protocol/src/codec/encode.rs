@@ -143,6 +143,12 @@ pub fn encode_line(message: &WireMessage) -> Result<String, CodecError> {
         WireMessage::DiagnosticsResponse(message) => {
             encode_diagnostics_response(&mut record, message)?;
         }
+        WireMessage::ClockControlRequest(message) => {
+            encode_clock_control_request(&mut record, message)?;
+        }
+        WireMessage::ClockControlResponse(message) => {
+            encode_clock_control_response(&mut record, message)?;
+        }
         WireMessage::Error(message) => encode_error_message(&mut record, message)?,
         WireMessage::TitleState(message) => encode_title_state(&mut record, message)?,
         WireMessage::TitlePhases(message) => encode_title_phases_record(&mut record, message)?,
@@ -3725,6 +3731,56 @@ fn encode_diagnostics_response(
         "production_clocks",
         crate::production_clock::encode_statuses(&message.production_clocks)?,
     )?;
+    Ok(())
+}
+
+fn encode_clock_control_request(
+    record: &mut Record,
+    message: &crate::ClockControlRequest,
+) -> Result<(), CodecError> {
+    record.kind("clock_control_request");
+    record.field("protocol", message.protocol)?;
+    validate_request_id(&message.request_id)?;
+    record.field_str("request_id", &message.request_id)?;
+    if !crate::clock_name_is_valid(&message.name) {
+        return Err(CodecError::InvalidField {
+            field: "name",
+            value: message.name.clone(),
+        });
+    }
+    record.field_str("name", &message.name)?;
+    record.field_str("operation", message.operation.token())?;
+    if let Some(value) = message.operation.value_ns() {
+        record.field("value_ns", value)?;
+    }
+    Ok(())
+}
+
+fn encode_clock_control_response(
+    record: &mut Record,
+    message: &crate::ClockControlResponse,
+) -> Result<(), CodecError> {
+    record.kind("clock_control_response");
+    record.field("protocol", message.protocol)?;
+    validate_request_id(&message.request_id)?;
+    record.field_str("request_id", &message.request_id)?;
+    if !crate::clock_name_is_valid(&message.name) {
+        return Err(CodecError::InvalidField {
+            field: "name",
+            value: message.name.clone(),
+        });
+    }
+    record.field_str("name", &message.name)?;
+    record.field("accepted", u8::from(message.accepted))?;
+    if let Some(error) = &message.error {
+        record.field_str("error", error)?;
+    }
+    if let Some(reading) = &message.reading {
+        record.field_string(
+            "reading",
+            crate::production_clock::encode_statuses(std::slice::from_ref(reading))?,
+        )?;
+    }
     Ok(())
 }
 

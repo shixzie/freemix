@@ -3474,6 +3474,10 @@ pub enum WireMessage {
     CapabilityReport(CapabilityReportMessage),
     DiagnosticsRequest(DiagnosticsRequest),
     DiagnosticsResponse(DiagnosticsResponse),
+    /// A client's production-clock timer control (SW-013, Protocol 2.150).
+    ClockControlRequest(crate::ClockControlRequest),
+    /// The daemon's answer to a production-clock control request.
+    ClockControlResponse(crate::ClockControlResponse),
     Error(ErrorMessage),
     TitleState(TitleStateMessage),
     /// Every title input's animation phase (Protocol 2.90), a lossy

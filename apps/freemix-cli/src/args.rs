@@ -1335,6 +1335,14 @@ pub enum Command {
     RemoteDiagnostics {
         address: SocketAddr,
     },
+    /// Operates one production clock on the daemon (SW-013, Protocol
+    /// 2.150): start, pause, or reset it, set or adjust its value, or set
+    /// its preset.
+    RemoteClockControl {
+        address: SocketAddr,
+        name: String,
+        operation: fm_protocol::ClockControlOperation,
+    },
     /// Prints every daemon alert rule's setting for the show (RC-015,
     /// Protocol 2.112).
     RemoteAlertRules {
@@ -2745,6 +2753,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "ftb" => parse_local_fade_to_black(arguments),
         "remote-status" => parse_remote_status(arguments),
         "remote-diagnostics" => parse_remote_diagnostics(arguments),
+        "remote-clock-control" => parse_remote_clock_control(arguments),
         "remote-alert" => parse_remote_alert(arguments),
         "remote-alert-rules" => {
             let address = socket_address(&required(&mut arguments, "address")?)?;
@@ -3078,11 +3087,12 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let path = required_path(&mut arguments, "project path")?;
             let input = number(&required(&mut arguments, "input")?, "input")?;
             let token = required(&mut arguments, "transition kind")?;
-            let kind =
-                fm_model::MediaListTransitionKind::from_token(&token).ok_or(ArgsError::InvalidChoice {
+            let kind = fm_model::MediaListTransitionKind::from_token(&token).ok_or(
+                ArgsError::InvalidChoice {
                     field: "transition kind (cut, fade, dip, or wipe)",
                     value: token,
-                })?;
+                },
+            )?;
             let frames = number(&required(&mut arguments, "frames")?, "frames")?;
             let (key, expected_revision) = command_options(arguments)?;
             Ok(Command::InputMediaListTransition {
@@ -4609,9 +4619,7 @@ fn parse_media_input_relink(
 }
 
 #[allow(clippy::too_many_lines)]
-fn parse_clock_add(
-    mut arguments: impl Iterator<Item = String>,
-) -> Result<Command, ArgsError> {
+fn parse_clock_add(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
     let path = required_path(&mut arguments, "project path")?;
     let mut name = None;
     let mut kind_token = None;
@@ -4649,23 +4657,30 @@ fn parse_clock_add(
                 })?;
             }
             "--input" => {
-                media_input = Some(number(&required(&mut arguments, "media input")?, "media input")?);
+                media_input = Some(number(
+                    &required(&mut arguments, "media input")?,
+                    "media input",
+                )?);
             }
             "--preset" => preset = clock_value(&mut arguments, "preset")?,
             "--direction" => {
                 let value = required(&mut arguments, "clock direction")?;
-                direction = fm_types::ProjectClockDirection::from_token(&value).ok_or(ArgsError::InvalidChoice {
-                    field: "clock direction (count_up or count_down)",
-                    value,
-                })?;
+                direction = fm_types::ProjectClockDirection::from_token(&value).ok_or(
+                    ArgsError::InvalidChoice {
+                        field: "clock direction (count_up or count_down)",
+                        value,
+                    },
+                )?;
             }
             "--limit" => limit = Some(clock_value(&mut arguments, "limit")?),
             "--overrun" => {
                 let value = required(&mut arguments, "overrun policy")?;
-                overrun = fm_types::ProjectClockOverrun::from_token(&value).ok_or(ArgsError::InvalidChoice {
-                    field: "overrun (stop_at_target or continue)",
-                    value,
-                })?;
+                overrun = fm_types::ProjectClockOverrun::from_token(&value).ok_or(
+                    ArgsError::InvalidChoice {
+                        field: "overrun (stop_at_target or continue)",
+                        value,
+                    },
+                )?;
             }
             "--format" => {
                 let value = required(&mut arguments, "duration format")?;
@@ -4676,10 +4691,12 @@ fn parse_clock_add(
             }
             "--session" => {
                 let value = required(&mut arguments, "session kind")?;
-                session = fm_types::ProjectSessionKind::from_token(&value).ok_or(ArgsError::InvalidChoice {
-                    field: "session kind (stream, recording, replay, multicorder, or external)",
-                    value,
-                })?;
+                session = fm_types::ProjectSessionKind::from_token(&value).ok_or(
+                    ArgsError::InvalidChoice {
+                        field: "session kind (stream, recording, replay, multicorder, or external)",
+                        value,
+                    },
+                )?;
             }
             _ => return Err(ArgsError::UnknownOption(option)),
         }
@@ -4743,18 +4760,14 @@ fn parse_clock_add(
     })
 }
 
-fn parse_clock_remove(
-    mut arguments: impl Iterator<Item = String>,
-) -> Result<Command, ArgsError> {
+fn parse_clock_remove(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
     let path = required_path(&mut arguments, "project path")?;
     let name = nonblank(&mut arguments, "clock name")?;
     reject_extra(&mut arguments)?;
     Ok(Command::ClockRemove { path, name })
 }
 
-fn parse_clock_list(
-    mut arguments: impl Iterator<Item = String>,
-) -> Result<Command, ArgsError> {
+fn parse_clock_list(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
     let path = required_path(&mut arguments, "project path")?;
     reject_extra(&mut arguments)?;
     Ok(Command::ClockList { path })
@@ -4804,17 +4817,13 @@ fn parse_scoreboard_export(
     Ok(Command::ScoreboardExport { path, input })
 }
 
-fn parse_crawl_check(
-    mut arguments: impl Iterator<Item = String>,
-) -> Result<Command, ArgsError> {
+fn parse_crawl_check(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
     let path = required_path(&mut arguments, "crawl document")?;
     reject_extra(&mut arguments)?;
     Ok(Command::CrawlCheck { path })
 }
 
-fn parse_crawl_import(
-    mut arguments: impl Iterator<Item = String>,
-) -> Result<Command, ArgsError> {
+fn parse_crawl_import(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
     let path = required_path(&mut arguments, "project path")?;
     let input = number(&required(&mut arguments, "input")?, "input")?;
     let document = required_path(&mut arguments, "crawl document")?;
@@ -4826,26 +4835,20 @@ fn parse_crawl_import(
     })
 }
 
-fn parse_crawl_export(
-    mut arguments: impl Iterator<Item = String>,
-) -> Result<Command, ArgsError> {
+fn parse_crawl_export(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
     let path = required_path(&mut arguments, "project path")?;
     let input = number(&required(&mut arguments, "input")?, "input")?;
     reject_extra(&mut arguments)?;
     Ok(Command::CrawlExport { path, input })
 }
 
-fn parse_preview_check(
-    mut arguments: impl Iterator<Item = String>,
-) -> Result<Command, ArgsError> {
+fn parse_preview_check(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
     let path = required_path(&mut arguments, "preview document")?;
     reject_extra(&mut arguments)?;
     Ok(Command::PreviewCheck { path })
 }
 
-fn parse_preview_import(
-    mut arguments: impl Iterator<Item = String>,
-) -> Result<Command, ArgsError> {
+fn parse_preview_import(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
     let path = required_path(&mut arguments, "project path")?;
     let input = number(&required(&mut arguments, "input")?, "input")?;
     let document = required_path(&mut arguments, "preview document")?;
@@ -4857,9 +4860,7 @@ fn parse_preview_import(
     })
 }
 
-fn parse_preview_export(
-    mut arguments: impl Iterator<Item = String>,
-) -> Result<Command, ArgsError> {
+fn parse_preview_export(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
     let path = required_path(&mut arguments, "project path")?;
     let input = number(&required(&mut arguments, "input")?, "input")?;
     reject_extra(&mut arguments)?;
@@ -7809,6 +7810,44 @@ fn parse_remote_diagnostics(
     let address = socket_address(&required(&mut arguments, "address")?)?;
     reject_extra(&mut arguments)?;
     Ok(Command::RemoteDiagnostics { address })
+}
+
+/// `remote-clock-control <address> <name> start|pause|reset` or
+/// `... set|adjust|preset <HH:MM:SS or seconds>` (SW-013, Protocol 2.150).
+fn parse_remote_clock_control(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let address = socket_address(&required(&mut arguments, "address")?)?;
+    let name = nonblank(&mut arguments, "clock name")?;
+    let token = required(&mut arguments, "clock operation")?;
+    let operation = match token.as_str() {
+        "start" => fm_protocol::ClockControlOperation::Start,
+        "pause" => fm_protocol::ClockControlOperation::Pause,
+        "reset" => fm_protocol::ClockControlOperation::Reset,
+        "set" => fm_protocol::ClockControlOperation::SetValue(clock_value(
+            &mut arguments,
+            "clock value",
+        )?),
+        "adjust" => {
+            fm_protocol::ClockControlOperation::Adjust(clock_value(&mut arguments, "clock value")?)
+        }
+        "preset" => fm_protocol::ClockControlOperation::SetPreset(clock_value(
+            &mut arguments,
+            "clock value",
+        )?),
+        _ => {
+            return Err(ArgsError::InvalidChoice {
+                field: "clock operation (start, pause, reset, set, adjust, or preset)",
+                value: token,
+            });
+        }
+    };
+    reject_extra(&mut arguments)?;
+    Ok(Command::RemoteClockControl {
+        address,
+        name,
+        operation,
+    })
 }
 
 /// Longest acknowledgement or silence `remote-alert` sets, in minutes: the

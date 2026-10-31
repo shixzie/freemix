@@ -1625,6 +1625,11 @@ pub fn run(command: Command) -> AppResult<()> {
         )?,
         Command::RemoteStatus { address } => remote::status(address)?,
         Command::RemoteDiagnostics { address } => remote::diagnostics(address)?,
+        Command::RemoteClockControl {
+            address,
+            name,
+            operation,
+        } => remote::clock_control(address, &name, operation)?,
         Command::RemoteAlert {
             address,
             rule,
@@ -6264,8 +6269,8 @@ fn crawl_export(path: &Path, input: u128) -> AppResult<()> {
 }
 
 fn scoreboard_check(path: &Path) -> AppResult<()> {
-    let text = fs::read_to_string(path)
-        .map_err(|error| AppFailure(format!("scoreboard: {error}")))?;
+    let text =
+        fs::read_to_string(path).map_err(|error| AppFailure(format!("scoreboard: {error}")))?;
     let snapshot = fm_titles::ScoreboardSnapshot::from_document(&text)
         .map_err(|error| AppFailure(format!("scoreboard: {error}")))?;
     println!(
@@ -7598,6 +7603,8 @@ Usage:
   freemix-cli input-screen-capture-status <show.freemix>
   freemix-cli remote-status <127.0.0.1:port>
   freemix-cli remote-diagnostics <127.0.0.1:port>
+  freemix-cli remote-clock-control <127.0.0.1:port> <clock> start|pause|reset | set|adjust|preset <HH:MM:SS or seconds>
+    operates one of the show's production clocks and prints its reading (SW-013, Protocol 2.150)
   freemix-cli remote-alert <127.0.0.1:port> <rule> acknowledge|silence <1..1440 minutes> | unsilence
   freemix-cli remote-alert-rules <127.0.0.1:port>
   freemix-cli remote-alert-rule <127.0.0.1:port> <rule> [--on|--off] [--fires-at <value>] [--clears-at <value>] [--hold <0..=3600 seconds>] | --defaults [--key <key>] [--expect <revision>]

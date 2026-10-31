@@ -164,6 +164,42 @@ pub(crate) fn session_rejection(
     }
 }
 
+pub(crate) fn wall_now() -> fm_clock::production::UtcInstant {
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    fm_clock::production::UtcInstant::new(
+        i64::try_from(wall.as_secs()).unwrap_or(i64::MAX),
+        wall.subsec_nanos(),
+    )
+    .unwrap_or(fm_clock::production::UtcInstant::UNIX_EPOCH)
+}
+
+/// Applies one client production-clock control to the live registry and
+/// answers with the clock's reading afterwards or the engine's refusal
+/// (SW-013, Protocol 2.150).
+pub(crate) fn clock_control_response(
+    control: &SharedControl,
+    request: fm_protocol::ClockControlRequest,
+) -> fm_protocol::ClockControlResponse {
+    let result =
+        control
+            .borrow_mut()
+            .control_production_clock(wall_now(), &request.name, request.operation);
+    let (accepted, error, reading) = match result {
+        Ok(reading) => (true, None, Some(reading)),
+        Err(error) => (false, Some(error), None),
+    };
+    fm_protocol::ClockControlResponse {
+        protocol: request.protocol,
+        request_id: request.request_id,
+        name: request.name,
+        accepted,
+        error,
+        reading,
+    }
+}
+
 pub(crate) fn diagnostics_response(
     control: &SharedControl,
     request: DiagnosticsRequest,
@@ -171,15 +207,7 @@ pub(crate) fn diagnostics_response(
     health: fm_protocol::DaemonHealth,
 ) -> AppResult<DiagnosticsResponse> {
     let diagnostics = control.borrow().diagnostics();
-    let wall = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let wall = fm_clock::production::UtcInstant::new(
-        i64::try_from(wall.as_secs()).unwrap_or(i64::MAX),
-        wall.subsec_nanos(),
-    )
-    .unwrap_or(fm_clock::production::UtcInstant::UNIX_EPOCH);
-    let production_clocks = control.borrow().production_clock_statuses(wall);
+    let production_clocks = control.borrow().production_clock_statuses(wall_now());
     Ok(DiagnosticsResponse {
         protocol: request.protocol,
         request_id: request.request_id,

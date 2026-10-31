@@ -751,6 +751,8 @@ impl Client {
             | WireMessage::CapabilityReport(_)
             | WireMessage::DiagnosticsRequest(_)
             | WireMessage::DiagnosticsResponse(_)
+            | WireMessage::ClockControlRequest(_)
+            | WireMessage::ClockControlResponse(_)
             | WireMessage::TitlePreviewRequest(_)
             | WireMessage::TitlePreviewFrame(_)
             | WireMessage::ScenePreviewRequest(_)

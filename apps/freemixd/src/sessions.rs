@@ -45,10 +45,10 @@ use fm_server::{Server, Session, SessionError, SyncPayload};
 use super::{
     AppResult, CLIENT_READ_POLL_INTERVAL, CLIENT_WRITE_TIMEOUT, CommandDelivery, ControlHandle,
     DaemonShutdownReason, GroupMember, NativeDaemon, PendingWrite, ProcessShutdown, SharedControl,
-    admit_session_command, current_handshake, diagnostics_response, error_message,
-    execute_command_group, execute_session_command, group_commit_eligible, handshake_code,
-    handshake_response, is_client_session_termination, native_group_eligible, now_millis,
-    reconciled_handshake_outcome, record_heartbeat, rejected_handshake_response,
+    admit_session_command, clock_control_response, current_handshake, diagnostics_response,
+    error_message, execute_command_group, execute_session_command, group_commit_eligible,
+    handshake_code, handshake_response, is_client_session_termination, native_group_eligible,
+    now_millis, reconciled_handshake_outcome, record_heartbeat, rejected_handshake_response,
     requested_daemon_shutdown, server_identity, shutdown_message, structured_session_error,
 };
 use crate::input_thumbnails::{ThumbnailKey, ThumbnailOutbox, ThumbnailWork, ThumbnailWorker};
@@ -2466,6 +2466,31 @@ impl Runtime<'_> {
                         )
                         .map_err(|_| ())?,
                     ),
+                    Err(error) => WireMessage::Error(ErrorMessage {
+                        request_id: Some(request.request_id),
+                        current_revision: Some(
+                            self.control.borrow().diagnostics().current_revision,
+                        ),
+                        error: structured_session_error(&error),
+                    }),
+                };
+                peer.reply(response)?;
+                Ok(())
+            }
+            WireMessage::ClockControlRequest(request) => {
+                let encoded_bytes = encode_line(&WireMessage::ClockControlRequest(request.clone()))
+                    .map_err(|_| ())?
+                    .len();
+                let session = peer.session_mut()?;
+                let response = match session.admit_clock_control(
+                    &request,
+                    encoded_bytes,
+                    now_millis().map_err(|_| ())?,
+                ) {
+                    Ok(()) => WireMessage::ClockControlResponse(clock_control_response(
+                        self.control,
+                        request,
+                    )),
                     Err(error) => WireMessage::Error(ErrorMessage {
                         request_id: Some(request.request_id),
                         current_revision: Some(

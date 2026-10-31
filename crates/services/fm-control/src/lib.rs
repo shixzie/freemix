@@ -2633,63 +2633,50 @@ impl<A: AuthorizationHook> ControlService<A> {
         self.engine
             .production_clock_readings(at)
             .into_iter()
-            .map(|reading| fm_protocol::ProductionClockStatus {
-                name: reading.name.as_str().to_owned(),
-                kind: match reading.kind {
-                    fm_clock::production::ClockKind::Timer => {
-                        fm_protocol::ProductionClockKind::Timer
-                    }
-                    fm_clock::production::ClockKind::TimeOfDay => {
-                        fm_protocol::ProductionClockKind::TimeOfDay
-                    }
-                    fm_clock::production::ClockKind::MediaRemaining => {
-                        fm_protocol::ProductionClockKind::MediaRemaining
-                    }
-                    fm_clock::production::ClockKind::Session(
-                        fm_clock::production::SessionKind::Stream,
-                    ) => fm_protocol::ProductionClockKind::Stream,
-                    fm_clock::production::ClockKind::Session(
-                        fm_clock::production::SessionKind::Recording,
-                    ) => fm_protocol::ProductionClockKind::Recording,
-                    fm_clock::production::ClockKind::Session(
-                        fm_clock::production::SessionKind::Replay,
-                    ) => fm_protocol::ProductionClockKind::Replay,
-                    fm_clock::production::ClockKind::Session(
-                        fm_clock::production::SessionKind::MultiCorder,
-                    ) => fm_protocol::ProductionClockKind::MultiCorder,
-                    fm_clock::production::ClockKind::Session(
-                        fm_clock::production::SessionKind::External,
-                    ) => fm_protocol::ProductionClockKind::External,
-                },
-                state: match reading.state {
-                    fm_clock::production::ReadingState::Idle => {
-                        fm_protocol::ProductionClockState::Idle
-                    }
-                    fm_clock::production::ReadingState::Running => {
-                        fm_protocol::ProductionClockState::Running
-                    }
-                    fm_clock::production::ReadingState::Paused => {
-                        fm_protocol::ProductionClockState::Paused
-                    }
-                    fm_clock::production::ReadingState::Expired => {
-                        fm_protocol::ProductionClockState::Expired
-                    }
-                    fm_clock::production::ReadingState::Stopped => {
-                        fm_protocol::ProductionClockState::Stopped
-                    }
-                    fm_clock::production::ReadingState::Live => {
-                        fm_protocol::ProductionClockState::Live
-                    }
-                    fm_clock::production::ReadingState::Unavailable => {
-                        fm_protocol::ProductionClockState::Unavailable
-                    }
-                },
-                text: reading.text,
-                value_ms: reading.value.map(fm_clock::production::ClockValue::as_millis),
-                expired: reading.expired,
-                zone: reading.zone,
-            })
+            .map(wire_clock_status)
             .collect()
+    }
+
+    /// Applies one client production-clock operation at `wall` and returns
+    /// the clock's reading afterwards (SW-013).
+    ///
+    /// # Errors
+    ///
+    /// Returns the engine's refusal text for an unknown clock, an invalid
+    /// value, or a command the clock's kind does not accept; nothing
+    /// changes then.
+    pub fn control_production_clock(
+        &mut self,
+        wall: fm_clock::production::UtcInstant,
+        name: &str,
+        operation: fm_protocol::ClockControlOperation,
+    ) -> Result<fm_protocol::ProductionClockStatus, String> {
+        use fm_clock::production::{ClockCommand, ClockValue};
+        let value = |nanos: i64| ClockValue::from_nanos(nanos).map_err(|error| error.to_string());
+        let command = match operation {
+            fm_protocol::ClockControlOperation::Start => ClockCommand::Start,
+            fm_protocol::ClockControlOperation::Pause => ClockCommand::Pause,
+            fm_protocol::ClockControlOperation::Reset => ClockCommand::Reset,
+            fm_protocol::ClockControlOperation::SetValue(nanos) => {
+                ClockCommand::SetValue(value(nanos)?)
+            }
+            fm_protocol::ClockControlOperation::Adjust(nanos) => {
+                ClockCommand::Adjust(value(nanos)?)
+            }
+            fm_protocol::ClockControlOperation::SetPreset(nanos) => {
+                ClockCommand::SetPreset(value(nanos)?)
+            }
+        };
+        self.engine
+            .control_production_clock(name, command)
+            .map_err(|error| error.to_string())?;
+        let at = fm_clock::production::TimeReading::new(self.engine.clock_time(), wall);
+        self.engine
+            .production_clock_readings(at)
+            .into_iter()
+            .find(|reading| reading.name.as_str() == name)
+            .map(wire_clock_status)
+            .ok_or_else(|| format!("clock `{name}` has no reading"))
     }
 
     /// Creates a bounded live-event subscription.
@@ -5513,6 +5500,61 @@ pub fn wire_manual_kind(kind: EngineManualTransitionKind) -> ManualTransitionKin
             slot: WireStingerSlotId::new(slot.number()).expect("domain Stinger slots are bounded"),
             duration_frames,
         },
+    }
+}
+
+fn wire_clock_status(
+    reading: fm_clock::production::ClockReading,
+) -> fm_protocol::ProductionClockStatus {
+    fm_protocol::ProductionClockStatus {
+        name: reading.name.as_str().to_owned(),
+        kind: match reading.kind {
+            fm_clock::production::ClockKind::Timer => fm_protocol::ProductionClockKind::Timer,
+            fm_clock::production::ClockKind::TimeOfDay => {
+                fm_protocol::ProductionClockKind::TimeOfDay
+            }
+            fm_clock::production::ClockKind::MediaRemaining => {
+                fm_protocol::ProductionClockKind::MediaRemaining
+            }
+            fm_clock::production::ClockKind::Session(fm_clock::production::SessionKind::Stream) => {
+                fm_protocol::ProductionClockKind::Stream
+            }
+            fm_clock::production::ClockKind::Session(
+                fm_clock::production::SessionKind::Recording,
+            ) => fm_protocol::ProductionClockKind::Recording,
+            fm_clock::production::ClockKind::Session(fm_clock::production::SessionKind::Replay) => {
+                fm_protocol::ProductionClockKind::Replay
+            }
+            fm_clock::production::ClockKind::Session(
+                fm_clock::production::SessionKind::MultiCorder,
+            ) => fm_protocol::ProductionClockKind::MultiCorder,
+            fm_clock::production::ClockKind::Session(
+                fm_clock::production::SessionKind::External,
+            ) => fm_protocol::ProductionClockKind::External,
+        },
+        state: match reading.state {
+            fm_clock::production::ReadingState::Idle => fm_protocol::ProductionClockState::Idle,
+            fm_clock::production::ReadingState::Running => {
+                fm_protocol::ProductionClockState::Running
+            }
+            fm_clock::production::ReadingState::Paused => fm_protocol::ProductionClockState::Paused,
+            fm_clock::production::ReadingState::Expired => {
+                fm_protocol::ProductionClockState::Expired
+            }
+            fm_clock::production::ReadingState::Stopped => {
+                fm_protocol::ProductionClockState::Stopped
+            }
+            fm_clock::production::ReadingState::Live => fm_protocol::ProductionClockState::Live,
+            fm_clock::production::ReadingState::Unavailable => {
+                fm_protocol::ProductionClockState::Unavailable
+            }
+        },
+        text: reading.text,
+        value_ms: reading
+            .value
+            .map(fm_clock::production::ClockValue::as_millis),
+        expired: reading.expired,
+        zone: reading.zone,
     }
 }
 

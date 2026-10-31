@@ -139,9 +139,7 @@ impl ProductionClockStatus {
 ///
 /// Returns [`CodecError::TooManyItems`] past the bound and
 /// [`CodecError::InvalidField`] for an invalid or out-of-order status.
-pub fn encode_statuses(
-    statuses: &[ProductionClockStatus],
-) -> Result<String, CodecError> {
+pub fn encode_statuses(statuses: &[ProductionClockStatus]) -> Result<String, CodecError> {
     if statuses.len() > MAX_PRODUCTION_CLOCK_STATUSES {
         return Err(CodecError::TooManyItems("production_clocks"));
     }
@@ -149,9 +147,7 @@ pub fn encode_statuses(
     let entries = statuses
         .iter()
         .map(|status| {
-            if !status.is_valid()
-                || previous.is_some_and(|name| status.name.as_str() <= name)
-            {
+            if !status.is_valid() || previous.is_some_and(|name| status.name.as_str() <= name) {
                 return Err(invalid(&status.name));
             }
             previous = Some(status.name.as_str());
@@ -165,7 +161,10 @@ pub fn encode_statuses(
                     .value_ms
                     .map_or_else(|| "none".to_owned(), |value| value.to_string()),
                 u8::from(status.expired),
-                status.zone.as_ref().map_or_else(|| "none".to_owned(), |zone| hex(zone)),
+                status
+                    .zone
+                    .as_ref()
+                    .map_or_else(|| "none".to_owned(), |zone| hex(zone)),
             ))
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -300,11 +299,96 @@ mod tests {
         ] {
             assert!(decode_statuses(&malformed).is_err(), "{malformed}");
         }
-        assert!(decode_statuses(&format!(
-            "{};{}",
-            encode_statuses(&[status("b")]).unwrap(),
-            encode_statuses(&[status("a")]).unwrap()
-        ))
-        .is_err());
+        assert!(
+            decode_statuses(&format!(
+                "{};{}",
+                encode_statuses(&[status("b")]).unwrap(),
+                encode_statuses(&[status("a")]).unwrap()
+            ))
+            .is_err()
+        );
     }
+}
+
+/// A timer operation a client sends to one production clock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClockControlOperation {
+    Start,
+    Pause,
+    Reset,
+    SetValue(i64),
+    Adjust(i64),
+    SetPreset(i64),
+}
+
+impl ClockControlOperation {
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Pause => "pause",
+            Self::Reset => "reset",
+            Self::SetValue(_) => "set_value",
+            Self::Adjust(_) => "adjust",
+            Self::SetPreset(_) => "set_preset",
+        }
+    }
+
+    #[must_use]
+    pub const fn value_ns(self) -> Option<i64> {
+        match self {
+            Self::Start | Self::Pause | Self::Reset => None,
+            Self::SetValue(value) | Self::Adjust(value) | Self::SetPreset(value) => Some(value),
+        }
+    }
+
+    #[must_use]
+    pub const fn operation(value: i64) -> Self {
+        Self::SetValue(value)
+    }
+
+    #[must_use]
+    pub fn from_parts(token: &str, value_ns: Option<i64>) -> Option<Self> {
+        match (token, value_ns) {
+            ("start", None) => Some(Self::Start),
+            ("pause", None) => Some(Self::Pause),
+            ("reset", None) => Some(Self::Reset),
+            ("set_value", Some(value)) => Some(Self::SetValue(value)),
+            ("adjust", Some(value)) => Some(Self::Adjust(value)),
+            ("set_preset", Some(value)) => Some(Self::SetPreset(value)),
+            _ => None,
+        }
+    }
+}
+
+/// A client request to control one production timer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClockControlRequest {
+    pub protocol: crate::ProtocolVersion,
+    pub request_id: String,
+    pub name: String,
+    pub operation: ClockControlOperation,
+}
+
+/// The daemon's answer to one production-clock control request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClockControlResponse {
+    pub protocol: crate::ProtocolVersion,
+    pub request_id: String,
+    pub name: String,
+    pub accepted: bool,
+    /// The typed refusal, when `accepted` is false.
+    pub error: Option<String>,
+    /// The clock's reading after an accepted operation.
+    pub reading: Option<ProductionClockStatus>,
+}
+
+/// Whether `name` is a valid production clock name.
+#[must_use]
+pub fn clock_name_is_valid(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_PRODUCTION_CLOCK_NAME_BYTES
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }
