@@ -151,6 +151,45 @@ pub(crate) fn preset_name(l: Locale, preset: StripDspPreset) -> &'static str {
     })
 }
 
+/// The chain's engaged stages in processing order: `DLY`, `POL`, `HPF`,
+/// `EQ`, `GATE`, `EXP`, `COMP`, and `LIM`, space separated, `BYPASS` for a
+/// bypassed chain, or `-` when every stage is off.
+pub(crate) fn stage_summary(chain: &StripDsp) -> String {
+    if chain.bypass {
+        return "BYPASS".to_owned();
+    }
+    let mut stages = Vec::new();
+    if chain.delay.enabled {
+        stages.push("DLY");
+    }
+    if chain.invert_polarity {
+        stages.push("POL");
+    }
+    if chain.high_pass.enabled {
+        stages.push("HPF");
+    }
+    if chain.eq.enabled {
+        stages.push("EQ");
+    }
+    if chain.gate.enabled {
+        stages.push("GATE");
+    }
+    if chain.expander.enabled {
+        stages.push("EXP");
+    }
+    if chain.compressor.enabled {
+        stages.push("COMP");
+    }
+    if chain.limiter.enabled {
+        stages.push("LIM");
+    }
+    if stages.is_empty() {
+        "-".to_owned()
+    } else {
+        stages.join(" ")
+    }
+}
+
 fn kind_name(l: Locale, kind: EqBandKind) -> &'static str {
     l.text(match kind {
         EqBandKind::LowShelf => Msg::FxKindLowShelf,
@@ -1538,6 +1577,21 @@ fn loudness_readout(ui: &mut Ui, scale: &str, value: &str, unit: &str) -> egui::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_chain_summarizes_its_engaged_stages() {
+        assert_eq!(stage_summary(&StripDsp::DEFAULT), "-");
+        let mut chain = StripDspPreset::Voice.chain();
+        assert_eq!(stage_summary(&chain), "HPF EQ GATE COMP");
+        chain.bypass = true;
+        assert_eq!(stage_summary(&chain), "BYPASS");
+        chain.bypass = false;
+        chain.delay.enabled = true;
+        chain.invert_polarity = true;
+        chain.expander.enabled = true;
+        chain.limiter.enabled = true;
+        assert_eq!(stage_summary(&chain), "DLY POL HPF EQ GATE EXP COMP LIM");
+    }
 
     #[test]
     fn the_response_display_maps_frequency_and_gain_both_ways() {

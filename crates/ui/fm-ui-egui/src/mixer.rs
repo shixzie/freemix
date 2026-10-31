@@ -3227,6 +3227,11 @@ fn draw_bus_mixer_contents(
             ) {
                 *fx = Some(StripDspTarget::Aux(number));
             }
+            ui.label(
+                RichText::new(crate::strip_fx::stage_summary(&bus.dsp))
+                    .monospace()
+                    .color(muted_color()),
+            );
         });
         ui.horizontal(|ui| {
             ui.label(caption(l.text(Msg::BusMixerDsp)));
