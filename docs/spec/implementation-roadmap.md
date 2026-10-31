@@ -5956,8 +5956,9 @@ Replay panel and the CLI render up to eight recorded angles in an adaptive
 grid (Protocol 2.127, decoded and composed by the native daemon), led by the
 requested Replay input and its linked A/B partner as channel tiles; controller
 bindings are MIDI (real device input) and persist with the key profile, and a
-second transport profile drives the second Replay input from channel 2, though
-the full typed controller surface and jog acceleration remain; the native daemon samples
+second transport profile drives the second Replay input from channel 2, and
+repeated jog keys accelerate from one frame to thirty, though the full typed
+controller surface remains; the native daemon samples
 its replay root's free space and reports the predicted recording time at the
 observed write rate (Protocol 2.125, shown in Studio and the CLI), and a
 root below the recorder's 512 MiB floor pauses recording (`storage:low_space`)

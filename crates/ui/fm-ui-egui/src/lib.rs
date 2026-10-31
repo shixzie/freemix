@@ -1686,7 +1686,7 @@ fn live_console_intents(state: &StudioUiState, action: ConsoleAction) -> Vec<Stu
                 state,
                 fm_protocol::ReplayOperation::Step {
                     input: player.input,
-                    frames: -1,
+                    frames: replay_ui::jog_frames(action, -1),
                 },
             )
         }),
@@ -1695,7 +1695,7 @@ fn live_console_intents(state: &StudioUiState, action: ConsoleAction) -> Vec<Stu
                 state,
                 fm_protocol::ReplayOperation::Step {
                     input: player.input,
-                    frames: 1,
+                    frames: replay_ui::jog_frames(action, 1),
                 },
             )
         }),
@@ -1741,7 +1741,7 @@ fn live_console_intents(state: &StudioUiState, action: ConsoleAction) -> Vec<Stu
                     true,
                     fm_protocol::ReplayOperation::Step {
                         input: player.input,
-                        frames: -1,
+                        frames: replay_ui::jog_frames(action, -1),
                     },
                 )
             })
@@ -1753,7 +1753,7 @@ fn live_console_intents(state: &StudioUiState, action: ConsoleAction) -> Vec<Stu
                     true,
                     fm_protocol::ReplayOperation::Step {
                         input: player.input,
-                        frames: 1,
+                        frames: replay_ui::jog_frames(action, 1),
                     },
                 )
             })

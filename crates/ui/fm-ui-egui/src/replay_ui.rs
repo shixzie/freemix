@@ -374,6 +374,52 @@ pub(crate) fn transport_intent_for(
         .then_some(StudioIntent::Replay(operation))
 }
 
+/// How long repeated jog steps accelerate, and the largest step.
+const JOG_ACCELERATION_WINDOW: std::time::Duration = std::time::Duration::from_millis(400);
+const JOG_MAX_FRAMES: i32 = 30;
+
+/// The acceleration of repeated replay step keys: a repeat within
+/// [`JOG_ACCELERATION_WINDOW`] doubles the step up to [`JOG_MAX_FRAMES`],
+/// and another action or a pause starts over at one frame (OR-012).
+#[derive(Default)]
+pub(crate) struct JogAcceleration {
+    action: Option<ConsoleAction>,
+    at: Option<std::time::Instant>,
+    frames: i32,
+}
+
+impl JogAcceleration {
+    pub(crate) fn step(
+        &mut self,
+        action: ConsoleAction,
+        now: std::time::Instant,
+    ) -> i32 {
+        let repeated = self.action == Some(action)
+            && self
+                .at
+                .is_some_and(|at| now.duration_since(at) <= JOG_ACCELERATION_WINDOW);
+        self.frames = if repeated {
+            self.frames.saturating_mul(2).min(JOG_MAX_FRAMES)
+        } else {
+            1
+        };
+        self.action = Some(action);
+        self.at = Some(now);
+        self.frames
+    }
+}
+
+thread_local! {
+    static JOG: std::cell::RefCell<JogAcceleration> =
+        std::cell::RefCell::new(JogAcceleration::default());
+}
+
+/// The signed frame step one jog key press sends, accelerating while it
+/// repeats.
+pub(crate) fn jog_frames(action: ConsoleAction, direction: i32) -> i32 {
+    JOG.with_borrow_mut(|jog| direction * jog.step(action, std::time::Instant::now()))
+}
+
 /// Why live replay keys (marks, captures, players) cannot be pressed.
 #[must_use]
 pub(crate) fn live_block(state: &StudioUiState) -> Option<&'static str> {
@@ -2725,4 +2771,29 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn repeated_jog_steps_accelerate_and_reset_after_a_pause() {
+        let mut jog = JogAcceleration::default();
+        let start = std::time::Instant::now();
+        let after = |ms| start + std::time::Duration::from_millis(ms);
+        assert_eq!(jog.step(ConsoleAction::ReplayStepForward, start), 1);
+        assert_eq!(jog.step(ConsoleAction::ReplayStepForward, after(100)), 2);
+        assert_eq!(jog.step(ConsoleAction::ReplayStepForward, after(200)), 4);
+        // Another action starts over.
+        assert_eq!(jog.step(ConsoleAction::ReplayStepBack, after(250)), 1);
+        // A pause starts over too.
+        assert_eq!(
+            jog.step(ConsoleAction::ReplayStepForward, after(2_000)),
+            1
+        );
+        // The step caps at 30 frames.
+        let mut jog = JogAcceleration::default();
+        let mut frames = 0;
+        for _ in 0..10 {
+            frames = jog.step(ConsoleAction::ReplayStepForward, start);
+        }
+        assert_eq!(frames, JOG_MAX_FRAMES);
+    }
+
 }
