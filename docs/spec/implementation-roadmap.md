@@ -225,11 +225,12 @@ there come before any new breadth below.
     crash quarantine in the render path, and a real sandboxed plugin in the
     chain (see the Phase 8 boundary).
 15. **MIDI and controller surfaces (`RC-005`).** Studio reads ALSA raw MIDI
-    ports on Linux and binds notes and controls to console actions with
-    `fm-automation`'s parser and control map, with LED and motor-fader
-    feedback through the router. Remaining: no MIDI on macOS or Windows,
-    no binding reaches `freemixd` or the project, no HID or X-keys input,
-    and no NRPN/RPN, MIDI 2.0, or GPIO (see the Phase 5 boundary).
+    ports on Linux, `CoreMIDI` on macOS, and `WinMM` on Windows, and binds
+    notes and controls to console actions with `fm-automation`'s parser and
+    control map, with LED and motor-fader feedback through the router.
+    Remaining: no HID or X-keys input, no fader or encoder value mapping,
+    no feedback to controller LEDs, and no NRPN/RPN, MIDI 2.0, or GPIO (see
+    the Phase 5 boundary).
 
 Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
 since landed: WAV/MP3/AAC/FLAC/Ogg music beds and stings play on both daemons
@@ -4943,12 +4944,10 @@ argument of 1 ms to 24 hours). Keys and messages act on the list the Cues
 panel shows and are gated exactly like the panel key (GO and arming also
 need the armed chain's permissions); an OSC cue message whose key is
 unavailable counts as rejected. A Stream Deck, X-keys, or MIDI surface can
-drive cues through an OSC bridge such as Bitfocus Companion. Studio does
-not read MIDI itself: `fm-automation`'s MIDI parser and control map have
-no device transport, and no MIDI device crate is in the dependency graph.
-`xtask deps check` only polices workspace layering, so a crate such as
-`midir` would pass it, but it needs ALSA development headers on Linux
-and is `RC-005`'s dependency decision to make.
+drive cues through an OSC bridge such as Bitfocus Companion. Studio reads
+MIDI itself: raw ALSA ports on Linux and `CoreMIDI`/`WinMM` through `midir`
+on macOS and Windows, so no ALSA development headers are needed for the
+Linux build and `RC-005`'s device transport is in place.
 Cue preview (Studio-local; no protocol or schema change): under the GO
 key a "GO will:" box lists, step by step, what firing the standby cue
 does across its waits and delays and every cue it auto-follows into
@@ -5290,11 +5289,15 @@ the controllers and binds each action by Learn (the next press) or Unbind,
 and the bindings are saved with the console's preferences
 (`keymap.midi.note.<channel>.<number> = <action>`), at most 64 (unit tests
 of the bindings and the dispatch, the reader against a FIFO port, and the
-preferences round trip). Remaining gaps: no MIDI on macOS or Windows, no
-feedback to controller LEDs, no fader or encoder value mapping (a
-controller acts as a button), no UDP transport or raw HID parsing; nothing
-reaches `freemixd` or the project; and NRPN/RPN, MIDI 2.0, and GPIO or
-network tally adapters are absent. `RC-005` and `RC-006` remain planned.
+preferences round trip). The same reader uses `CoreMIDI` on macOS and
+`WinMM` on Windows through `midir`, so all three Tier-1 platforms list and
+read MIDI controllers; the Linux raw-port path keeps no ALSA development
+dependency. Remaining gaps: no feedback to controller LEDs, no fader or
+encoder value mapping (a controller acts as a button), no UDP transport or
+raw HID parsing; the bindings drive console actions (and so reach
+`freemixd` through them) but are not persisted in the project; and
+NRPN/RPN, MIDI 2.0, and GPIO or network tally adapters are absent.
+`RC-005` and `RC-006` remain planned.
 
 Current implementation boundary for item 8 fader feedback (`AU-009`):
 `fm-automation` adds a bounded per-control `ControlCoalescer` that keeps the

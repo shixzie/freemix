@@ -1,22 +1,26 @@
-//! MIDI controller input (RC-005): reads the ALSA raw MIDI ports
-//! (`/dev/snd/midiC<card>D<device>`) and hands the console each note and
-//! controller message.
+//! MIDI controller input (RC-005): hands the console each note and
+//! controller message from the platform's MIDI inputs.
 //!
-//! A scanner thread lists the ports once a second, so a controller plugged
-//! in while Studio runs is read within a second; each port is read on its
-//! own thread until it is unplugged, through [`NoteParser`]: the MIDI 1.0
-//! note and control change messages (running status and interleaved
-//! real-time bytes included; Studio links no server-side crate, so not
-//! `fm-automation`'s full parser). A port is
-//! named by its card's ALSA id (`/proc/asound/card<n>/id`) when the system
-//! reports one. Where no such directory exists (macOS and Windows) no
-//! controller is listed. The console's bindings decide what a message does
-//! (see `fm_ui_egui::MidiBindings`).
+//! Linux reads the ALSA raw MIDI ports (`/dev/snd/midiC<card>D<device>`)
+//! directly, so no ALSA development package is needed. macOS and Windows use
+//! `CoreMIDI` and `WinMM` through `midir`. A scanner thread lists the ports once
+//! a second, so a controller plugged in while Studio runs is read within a
+//! second; each port is read through [`NoteParser`]: the MIDI 1.0 note and
+//! control change messages (running status and interleaved real-time bytes
+//! included; Studio links no server-side crate, so not `fm-automation`'s
+//! full parser). On Linux a port is named by its card's ALSA id
+//! (`/proc/asound/card<n>/id`) when the system reports one. The console's
+//! bindings decide what a message does (see `fm_ui_egui::MidiBindings`).
 
+#[cfg(target_os = "linux")]
 use std::collections::BTreeSet;
+#[cfg(target_os = "linux")]
 use std::fs::{self, File};
+#[cfg(target_os = "linux")]
 use std::io::Read;
-use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
@@ -48,15 +52,25 @@ pub(crate) struct MidiReader {
 }
 
 impl MidiReader {
-    /// Starts reading the raw MIDI ports under `root`; `repaint` wakes the
-    /// console when a message arrives.
+    /// Starts reading the platform's MIDI ports; `repaint` wakes the console
+    /// when a message arrives. `root` is the Linux raw-MIDI directory and is
+    /// ignored elsewhere.
+    #[cfg_attr(not(target_os = "linux"), allow(clippy::needless_pass_by_value))]
     pub(crate) fn start(root: PathBuf, repaint: egui::Context) -> Self {
         let (sender, events) = mpsc::sync_channel(EVENT_CAPACITY);
         let stop = Arc::new(Mutex::new(false));
         let scanner_stop = Arc::clone(&stop);
         let _ = thread::Builder::new()
             .name("freemix-midi-scan".to_owned())
-            .spawn(move || scan(&root, &sender, &scanner_stop, &repaint));
+            .spawn(move || {
+                #[cfg(target_os = "linux")]
+                scan(&root, &sender, &scanner_stop, &repaint);
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = root;
+                    scan_midi(&sender, &scanner_stop, &repaint);
+                }
+            });
         Self { events, stop }
     }
 
@@ -72,6 +86,7 @@ impl Drop for MidiReader {
 }
 
 /// The raw MIDI ports under `root`, sorted.
+#[cfg(target_os = "linux")]
 fn ports(root: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(root) else {
         return Vec::new();
@@ -90,6 +105,7 @@ fn ports(root: &Path) -> Vec<PathBuf> {
 }
 
 /// A port's name: its card's ALSA id and the port, or the port alone.
+#[cfg(target_os = "linux")]
 fn port_name(path: &Path) -> String {
     let file = path
         .file_name()
@@ -106,6 +122,7 @@ fn port_name(path: &Path) -> String {
         .map_or_else(|| file.clone(), |id| format!("{id} ({file})"))
 }
 
+#[cfg(target_os = "linux")]
 fn scan(
     root: &Path,
     sender: &SyncSender<MidiEvent>,
@@ -155,6 +172,7 @@ fn scan(
 }
 
 /// Reads one port until it ends (the controller is unplugged).
+#[cfg(target_os = "linux")]
 fn read_port(mut file: File, sender: &SyncSender<MidiEvent>, repaint: &egui::Context) {
     let mut parser = NoteParser::default();
     let mut buffer = [0_u8; 256];
@@ -172,6 +190,71 @@ fn read_port(mut file: File, sender: &SyncSender<MidiEvent>, repaint: &egui::Con
             repaint.request_repaint();
         }
     }
+}
+
+/// `CoreMIDI` (macOS) and `WinMM` (Windows): list the inputs once a second and
+/// keep one connection per input, dropping one that disappears and opening
+/// one that appears.
+#[cfg(not(target_os = "linux"))]
+fn scan_midi(sender: &SyncSender<MidiEvent>, stop: &Arc<Mutex<bool>>, repaint: &egui::Context) {
+    let mut connections: Vec<(String, midir::MidiInputConnection<()>)> = Vec::new();
+    let mut announced: Option<Vec<String>> = None;
+    while !*stop.lock().unwrap_or_else(PoisonError::into_inner) {
+        let Ok(probe) = midir::MidiInput::new("FreeMix Studio") else {
+            return;
+        };
+        let names: Vec<String> = probe
+            .ports()
+            .into_iter()
+            .filter_map(|port| probe.port_name(&port).ok())
+            .collect();
+        // A controller unplugged and plugged back in is a new connection.
+        connections.retain(|(name, _)| names.contains(name));
+        for name in &names {
+            if connections.iter().any(|(connected, _)| connected == name) {
+                continue;
+            }
+            let Ok(midi) = midir::MidiInput::new("FreeMix Studio") else {
+                break;
+            };
+            let Some(port) = midi
+                .ports()
+                .into_iter()
+                .find(|port| midi.port_name(port).ok().as_deref() == Some(name.as_str()))
+            else {
+                continue;
+            };
+            let sender = sender.clone();
+            let repaint = repaint.clone();
+            let mut parser = NoteParser::default();
+            let connected = midi.connect(
+                &port,
+                "freemix-studio",
+                move |_timestamp, message, ()| {
+                    let mut sent = false;
+                    for input in parser.feed(message) {
+                        sent |= sender.try_send(MidiEvent::Input(input)).is_ok();
+                    }
+                    if sent {
+                        repaint.request_repaint();
+                    }
+                },
+                (),
+            );
+            if let Ok(connection) = connected {
+                connections.push((name.clone(), connection));
+            }
+        }
+        if announced.as_ref() != Some(&names) {
+            if sender.send(MidiEvent::Devices(names.clone())).is_err() {
+                return;
+            }
+            repaint.request_repaint();
+            announced = Some(names);
+        }
+        thread::sleep(SCAN_INTERVAL);
+    }
+    drop(connections);
 }
 
 /// A MIDI 1.0 byte stream's note on, note off, and control change
@@ -229,8 +312,9 @@ impl NoteParser {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
+    use std::fs;
     use std::io::Write as _;
     use std::time::Instant;
 
@@ -316,6 +400,11 @@ mod tests {
         drop(reader);
         let _ = fs::remove_dir_all(directory);
     }
+}
+
+#[cfg(test)]
+mod parser_tests {
+    use super::*;
 
     #[test]
     fn only_notes_and_controllers_reach_the_console() {

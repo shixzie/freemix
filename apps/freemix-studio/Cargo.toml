@@ -26,6 +26,11 @@ fm-ui-model = { path = "../../crates/ui/fm-ui-model" }
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.27.1", default-features = false, features = ["signal"] }
 
+# CoreMIDI on macOS and WinMM on Windows (RC-005); Linux keeps reading the
+# ALSA raw MIDI ports directly, so no ALSA development package is needed.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+midir = { version = "0.10.3", default-features = false }
+
 [dev-dependencies]
 fm-auth = { path = "../../crates/services/fm-auth" }
 fm-clock = { path = "../../crates/media/fm-clock" }
