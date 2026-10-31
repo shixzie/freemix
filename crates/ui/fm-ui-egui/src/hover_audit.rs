@@ -2597,6 +2597,7 @@ fn daemon_health() -> fm_protocol::HealthStatusMessage {
 
 /// OR-012: two recorded sources, a mark, a complete and a partial event,
 /// and two Replay inputs, one playing and one with nothing cued.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
     use fm_protocol::{
         ReplayEventStatus, ReplayFeed, ReplayPlayerStatus, ReplaySettings, ReplaySourceStatus,

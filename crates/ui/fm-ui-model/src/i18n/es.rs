@@ -9863,6 +9863,20 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::FxPluginTrimHover,
         t("La ganancia guardada del ajuste en dB"),
     ),
+    (Msg::FxPluginSoftClipDown, t("-1")),
+    (
+        Msg::FxPluginSoftClipDownHover,
+        t("Bajar este umbral de recorte 1 dB"),
+    ),
+    (Msg::FxPluginSoftClipUp, t("+1")),
+    (
+        Msg::FxPluginSoftClipUpHover,
+        t("Subir este umbral de recorte 1 dB"),
+    ),
+    (
+        Msg::FxPluginSoftClipHover,
+        t("El umbral guardado del recortador en dBFS"),
+    ),
     (Msg::FxPluginLatency, t("{frames} fotogramas")),
     (
         Msg::FxPluginLatencyHover,

@@ -470,6 +470,19 @@ fn trim_millidb(slot: &fm_protocol::PluginChainSlot) -> Option<i32> {
     }
 }
 
+/// A soft clipper's saved threshold in millidB, or `None` when the slot is
+/// another plugin or its state is not one little-endian `i32`.
+fn softclip_millidb(slot: &fm_protocol::PluginChainSlot) -> Option<i32> {
+    if slot.plugin != fm_plugin_host_api_ids::SOFTCLIP {
+        return None;
+    }
+    match slot.state.as_slice() {
+        [] => Some(0),
+        [a, b, c, d] => Some(i32::from_le_bytes([*a, *b, *c, *d])),
+        _ => None,
+    }
+}
+
 fn send_plugin_chain(
     target: StripDspTarget,
     slots: Vec<fm_protocol::PluginChainSlot>,
@@ -618,6 +631,33 @@ fn draw_plugins(
                     slots[index].state = (millidb + 1_000).min(24_000).to_le_bytes().to_vec();
                     send_plugin_chain(target, slots, intents);
                 }
+            } else if let Some(millidb) = softclip_millidb(slot) {
+                #[allow(clippy::cast_precision_loss)] // display only
+                let db = millidb as f32 / 1_000.0;
+                if ui
+                    .add_enabled(enabled, small_button(l.text(Msg::FxPluginSoftClipDown)))
+                    .hint(l.text(Msg::FxPluginSoftClipDownHover), reason)
+                    .clicked()
+                {
+                    let mut slots = status.slots.clone();
+                    slots[index].state = millidb
+                        .saturating_sub(1_000)
+                        .max(-60_000)
+                        .to_le_bytes()
+                        .to_vec();
+                    send_plugin_chain(target, slots, intents);
+                }
+                ui.label(RichText::new(format!("{db:+.1} dBFS")).monospace())
+                    .on_hover_text(l.text(Msg::FxPluginSoftClipHover));
+                if ui
+                    .add_enabled(enabled, small_button(l.text(Msg::FxPluginSoftClipUp)))
+                    .hint(l.text(Msg::FxPluginSoftClipUpHover), reason)
+                    .clicked()
+                {
+                    let mut slots = status.slots.clone();
+                    slots[index].state = (millidb + 1_000).min(0).to_le_bytes().to_vec();
+                    send_plugin_chain(target, slots, intents);
+                }
             } else if slot.latency_frames > 0 {
                 ui.label(crate::theme::caption(l.format(
                     Msg::FxPluginLatency,
@@ -672,6 +712,7 @@ fn draw_plugins(
 /// wire names (the daemon reports the authoritative list beside the chain).
 mod fm_plugin_host_api_ids {
     pub(super) const TRIM: &str = "freemix.reference.trim";
+    pub(super) const SOFTCLIP: &str = "freemix.reference.softclip";
 }
 
 #[allow(clippy::too_many_lines)] // one curve, its bands, and its keys

@@ -216,8 +216,10 @@ there come before any new breadth below.
     edits it (Protocol 2.129). A chain is now a
     padlocked, undoable project edit persisted since schema 91 (now 92) for every strip
     and Master, so it survives a save, a restart, and a journal replay.
-    Remaining: scanning, parameters beyond the reference trim, crash
-    quarantine in the render path, and a real sandboxed plugin in the
+    Studio edits each reference plugin's saved parameter (the trim's gain,
+    the soft clipper's threshold, and the polarity inverter's fixed action).
+    Remaining: scanning, parameters for plugins beyond the reference set,
+    crash quarantine in the render path, and a real sandboxed plugin in the
     chain (see the Phase 8 boundary).
 15. **MIDI and controller surfaces (`RC-005`).** Studio reads ALSA raw MIDI
     ports on Linux and binds notes and controls to console actions with
@@ -6041,9 +6043,11 @@ edits a project's chain offline (`audio-plugin-chain <project>
 <input|master> ...`), and Studio's FX window reads the open target's chain
 (Protocol 2.129) and edits its PLUGINS section. Chains are padlocked, undoable project edits
 persisted since schema 91 (now 92) on every strip and on Master, so a show carries them
-through a save, a restart, and a journal replay. There is no VST3 host; scanning, parameters for
-plugins beyond the reference trim, crash quarantine in the render
-path, and plugging a real sandboxed plugin into the chain remain. Vendor capture and output adapters keep their SDKs out of the
+through a save, a restart, and a journal replay; Studio edits the trim gain
+and soft-clip threshold of each reference slot. There is no VST3 host;
+scanning, parameters for plugins beyond the reference set, crash quarantine
+in the render path, and plugging a real sandboxed plugin into the chain
+remain. Vendor capture and output adapters keep their SDKs out of the
 portable workspace and implement the in-tree `fm-io-api` contracts.
 
 Exit: each adapter ships only with a platform-specific conformance report.
