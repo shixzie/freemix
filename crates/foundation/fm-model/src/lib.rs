@@ -102,6 +102,7 @@ pub use project::{
     InputBalanceBasisPoints, InputDelaySamples, InputGainMilliDb, InputKind, InputPanBasisPoints,
     InputReference, Layer, LayerAnchor, LayerEffect, LayerEffectError, LayerGeometry, MainMix,
     MixFeed, Output, OutputFormat, Project, ProjectSettings, RECORDER_SLOT_COUNT, RecorderSlot,
+    MAX_SOURCE_CROP_SIDE,
     RecorderSlotError, RectMask, RelinkMediaInputError, RemoveAudioBusError, RemoveInputError,
     RemoveOutputError, RemoveSceneError, RemoveStreamTargetError, RenameAudioBusError,
     RenameOutputError, RenameProjectError, RenameSceneError, ReplaceInputError, RestartPolicy,

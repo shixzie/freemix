@@ -1094,7 +1094,7 @@ fn validate_inputs(project: &Project, errors: &mut Vec<ValidationError>) {
                         kind: ValidationErrorKind::MissingReference(EntityRef::Input(*target)),
                     });
                 }
-                if crop.is_some_and(|crop| !crop_fits_project(project, crop)) {
+                if crop.is_some_and(|crop| !crop.fits_source()) {
                     errors.push(ValidationError {
                         entity,
                         field: "kind.alias.crop",

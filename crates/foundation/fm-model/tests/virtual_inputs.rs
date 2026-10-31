@@ -292,11 +292,11 @@ fn validation_rejects_missing_self_and_cyclic_alias_targets() {
 }
 
 #[test]
-fn alias_crops_must_be_nonempty_and_inside_the_project_frame() {
+fn alias_crops_must_be_nonempty_and_inside_the_source_bound() {
     for crop in [
         CropRect::new(0, 0, 0, 10),
         CropRect::new(0, 0, 10, 0),
-        CropRect::new(1, 0, 1920, 1080),
+        CropRect::new(1, 0, fm_model::MAX_SOURCE_CROP_SIDE, 1080),
         CropRect::new(0, u32::MAX, 10, 10),
     ] {
         let mut project = aliased_project();
@@ -311,6 +311,22 @@ fn alias_crops_must_be_nonempty_and_inside_the_project_frame() {
             "{crop:?}"
         );
     }
+}
+
+#[test]
+fn a_source_crop_is_not_limited_to_the_project_frame() {
+    // A landscape camera on a portrait show: the 1920x1080 crop is larger
+    // than the 1080x1920 canvas and is still a valid source crop.
+    let mut portrait = settings();
+    portrait.video.dimensions = VideoDimensions::new(1080, 1920).unwrap();
+    let mut project = Project::new(ProjectId::new(NonZeroU128::MIN), "Show", portrait);
+    project.add_input(input(1, "Camera", bars()));
+    project.add_input(input(
+        2,
+        "Camera uncropped",
+        alias(1, Some(CropRect::new(0, 0, 1920, 1080))),
+    ));
+    assert_eq!(project.validate(), Ok(()));
 }
 
 #[test]

@@ -2628,12 +2628,13 @@ so a portrait Program is not distorted in a landscape multiview. The simulated
 pipeline and WebRTC 1080p ladder caps are orientation-independent, and project
 validation requires even dimensions for 4:2:0 and 4:2:2 formats. Pixel-exact
 CPU tests cover portrait, square, and odd canvases with letterbox, fill crops,
-rotations, masks, safe areas, and multiview. Remaining gaps: model crops are
-validated against project rather than source size, so a vertical crop of a
-landscape camera on a portrait project is refused; no model, protocol, or UI
-fit setting (Studio monitor wells now follow the frame's shape); 8K stream
-ladders accept portrait and landscape rungs alike (the long edge is capped at
-7680 and the short edge at 4320); and the native GPU path is untested. `SW-015` remains
+rotations, masks, safe areas, and multiview. Remaining gaps: a source crop
+is validated against a 16384-pixel source bound rather than the actual
+decoded source size, so an oversized crop reaches the compositor and shows
+black beyond the picture; no model, protocol, or UI fit setting (Studio
+monitor wells now follow the frame's shape); 8K stream ladders accept
+portrait and landscape rungs alike (the long edge is capped at 7680 and the
+short edge at 4320); and the native GPU path is untested. `SW-015` remains
 planned.
 
 

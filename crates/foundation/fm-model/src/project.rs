@@ -5520,6 +5520,10 @@ pub struct CropRect {
     pub height: u32,
 }
 
+/// The largest source frame an input crop may address, in pixels on either
+/// side (a source crop is in the source's own space, not the project's).
+pub const MAX_SOURCE_CROP_SIDE: u32 = 16_384;
+
 impl CropRect {
     #[must_use]
     pub const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
@@ -5529,6 +5533,22 @@ impl CropRect {
             width,
             height,
         }
+    }
+
+    /// Whether this crop is nonempty and lies inside the largest source frame
+    /// the show accepts (a source crop is in the source's own pixels, not the
+    /// project's).
+    #[must_use]
+    pub fn fits_source(self) -> bool {
+        self.width != 0
+            && self.height != 0
+            && self.x.checked_add(self.width).is_some_and(|right| {
+                right <= MAX_SOURCE_CROP_SIDE
+            })
+            && self
+                .y
+                .checked_add(self.height)
+                .is_some_and(|bottom| bottom <= MAX_SOURCE_CROP_SIDE)
     }
 }
 
