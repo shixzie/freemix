@@ -645,6 +645,7 @@ impl NativeDaemon {
                     previous_list_item(list),
                 ),
                 (native_files::PrefetchRole::First, first_list_item(list)),
+                (native_files::PrefetchRole::Last, last_list_item(list)),
             ] {
                 let Some(item) = item else {
                     continue;
@@ -793,6 +794,11 @@ pub(crate) fn previous_list_item(list: &fm_model::MediaList) -> Option<&fm_model
 /// The item First steps to: the first of the current cycle's play order.
 pub(crate) fn first_list_item(list: &fm_model::MediaList) -> Option<&fm_model::MediaListItem> {
     list.item(*list.play_order().first()?)
+}
+
+/// The item Last steps to: the last of the current cycle's play order.
+pub(crate) fn last_list_item(list: &fm_model::MediaList) -> Option<&fm_model::MediaListItem> {
+    list.item(*list.play_order().last()?)
 }
 
 /// Whether the file at `path` starts like a still image (one read of its

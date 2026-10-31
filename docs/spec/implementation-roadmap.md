@@ -4835,9 +4835,9 @@ plays it when the list was playing. Both daemons journal an Auto Next
 `advance` when the active item ends, so replay is frame-exact; host paths
 are imported into the bundle; snapshots carry `media_list_state` records
 (Protocol 2.74, schema 64).
-The native daemon prefetches every open list's next, previous, and first
-items (the one Auto Next steps to, the one Previous steps to, and the first
-of the current cycle, when each is another file): a background thread opens
+The native daemon prefetches every open list's next, previous, first, and
+last items (the one Auto Next steps to, the one Previous steps to, and the
+first and last of the current cycle, when each is another file): a background thread opens
 the file, decodes its in-mark picture and first audio block, and the window
 after them. A step to that item (Auto Next, Next, Previous, or First)
 switches the input's worker to the cued player before the step's frame is
@@ -4872,7 +4872,7 @@ gains (`native_media_lists` records Program through a wipe and checks
 every composited frame); a step to a file that was not prefetched still
 cuts. The simulated daemon runs the timing without compositing its
 synthetic pictures. Studio's list card edits the transition with hover
-help. Gaps: a jump is not prefetched; the CLI steps a list
+help. Gaps: a jump to an arbitrary item is not prefetched (Last is); the CLI steps a list
 (`input-media-list-navigate` and its `remote-` form) and edits its options and
 items (`input-media-list-options`, `input-media-list-item`); no vMix API
 verbs, no cross-input GO bank, and Linux-only native evidence. The generic
