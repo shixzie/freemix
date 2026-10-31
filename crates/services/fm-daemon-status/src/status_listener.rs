@@ -47,7 +47,7 @@ use fm_observability::{
 };
 use fm_server::{HealthState, ReadinessState, ServiceStatus};
 
-use super::AppResult;
+use crate::AppResult;
 
 const TOKEN_ENVIRONMENT: &str = "FREEMIXD_STATUS_TOKEN";
 const TOKEN_MIN_BYTES: usize = 32;
@@ -129,7 +129,7 @@ const UNSET_MILLIS: u64 = u64::MAX;
 /// The operator-state section is the one lock-guarded cell: the control loop
 /// writes it at most once a second and a bundle worker copies it out, and both
 /// sides hold the lock only for one bounded copy.
-pub(super) struct DaemonStatus {
+pub struct DaemonStatus {
     started: Instant,
     beat_millis: AtomicU64,
     readiness: AtomicU8,
@@ -150,7 +150,7 @@ pub(super) struct DaemonStatus {
 }
 
 impl DaemonStatus {
-    pub(super) fn new() -> Arc<Self> {
+    pub fn new() -> Arc<Self> {
         Arc::new(Self {
             started: Instant::now(),
             // No beat has happened yet, so a probe that arrives before the
@@ -176,7 +176,7 @@ impl DaemonStatus {
 
     /// Records that the control loop completed another pass. One clock read and
     /// one release store; the loop calls this several times per pass.
-    pub(super) fn beat(&self) {
+    pub fn beat(&self) {
         self.beat_millis
             .store(self.uptime_millis(), Ordering::Release);
     }
@@ -186,7 +186,7 @@ impl DaemonStatus {
     /// The control loop calls this on every pass, so a daemon that degrades is
     /// visible to a supervisor within one poll interval rather than being
     /// frozen at whatever startup happened to publish.
-    pub(super) fn publish(&self, status: ServiceStatus) {
+    pub fn publish(&self, status: ServiceStatus) {
         let readiness = match status.readiness() {
             ReadinessState::Starting => READINESS_STARTING,
             ReadinessState::Ready => READINESS_READY,
@@ -213,19 +213,19 @@ impl DaemonStatus {
     /// [`OPERATOR_STATE_MAX_BYTES`] is truncated at a UTF-8 boundary and
     /// marked rather than stored whole, so the cell can never grow past the
     /// documented bound no matter what the caller publishes.
-    pub(super) fn publish_operator_state(&self, text: &str) {
+    pub fn publish_operator_state(&self, text: &str) {
         store_capped(&self.operator_state, text, OPERATOR_STATE_MAX_BYTES);
     }
 
     /// Publishes the latest `fm-statistics-v1` text (RC-015), bounded like
     /// [`Self::publish_operator_state`] to [`STATISTICS_MAX_BYTES`].
-    pub(super) fn publish_statistics(&self, text: &str) {
+    pub fn publish_statistics(&self, text: &str) {
         store_capped(&self.statistics, text, STATISTICS_MAX_BYTES);
     }
 
     /// Copies the published statistics out of the cell, or `None` when the
     /// control loop never published any.
-    pub(super) fn statistics(&self) -> Option<Box<str>> {
+    pub fn statistics(&self) -> Option<Box<str>> {
         let slot = self
             .statistics
             .lock()
@@ -235,7 +235,7 @@ impl DaemonStatus {
 
     /// Copies the published operator state out of the cell, or `None` when the
     /// control loop never published one.
-    pub(super) fn operator_state(&self) -> Option<Box<str>> {
+    pub fn operator_state(&self) -> Option<Box<str>> {
         let slot = self
             .operator_state
             .lock()
@@ -248,7 +248,7 @@ impl DaemonStatus {
     /// Draining is a process-level fact the republished server status must not
     /// erase, so it is held beside the published state and folded in by
     /// [`Self::snapshot`] rather than written over the published readiness.
-    pub(super) fn begin_draining(&self) {
+    pub fn begin_draining(&self) {
         if !self.draining.swap(true, Ordering::AcqRel) {
             self.stamp(&self.draining_millis);
         }
@@ -400,7 +400,7 @@ fn bearer_credentials(authorization: &[u8]) -> &[u8] {
 }
 
 /// A bounded HTTP/1.1 listener serving liveness, readiness, and support state.
-pub(super) struct StatusListener {
+pub struct StatusListener {
     address: SocketAddr,
     cancel: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
@@ -414,7 +414,7 @@ impl StatusListener {
     /// Fails when the address is not loopback, the bearer token environment is
     /// missing or malformed, the socket cannot be bound, or a thread cannot be
     /// spawned. Threads already started are stopped before returning.
-    pub(super) fn bind(address: SocketAddr, status: &Arc<DaemonStatus>) -> AppResult<Self> {
+    pub fn bind(address: SocketAddr, status: &Arc<DaemonStatus>) -> AppResult<Self> {
         if !address.ip().is_loopback() {
             return Err("--status-listen must use a loopback address".into());
         }
@@ -463,7 +463,7 @@ impl StatusListener {
         })
     }
 
-    pub(super) fn address(&self) -> SocketAddr {
+    pub fn address(&self) -> SocketAddr {
         self.address
     }
 
@@ -483,7 +483,7 @@ impl StatusListener {
     /// # Errors
     ///
     /// Returns an error if a listener thread panicked.
-    pub(super) fn shutdown(mut self) -> AppResult<()> {
+    pub fn shutdown(mut self) -> AppResult<()> {
         if self.stop() {
             return Err("freemixd status listener thread panicked".into());
         }

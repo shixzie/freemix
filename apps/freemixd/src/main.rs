@@ -175,7 +175,7 @@ mod scene_preview;
 mod screen_capture_targets;
 #[cfg(feature = "native-media")]
 mod source_wait;
-mod status_listener;
+use fm_daemon_status::status_listener;
 #[cfg(feature = "native-media")]
 mod stinger_mutation;
 #[cfg(feature = "native-media")]

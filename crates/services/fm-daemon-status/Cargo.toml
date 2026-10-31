@@ -1,0 +1,14 @@
+[package]
+name = "fm-daemon-status"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The daemon's operator status listener, extracted from freemixd"
+
+[dependencies]
+fm-observability = { path = "../fm-observability" }
+fm-server = { path = "../fm-server" }
+
+[lints]
+workspace = true

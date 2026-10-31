@@ -1768,6 +1768,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fm-daemon-status"
+version = "0.1.0"
+dependencies = [
+ "fm-observability",
+ "fm-server",
+]
+
+[[package]]
 name = "fm-daemon-web"
 version = "0.1.0"
 dependencies = [
@@ -2396,6 +2404,7 @@ dependencies = [
  "fm-daemon-native",
  "fm-daemon-render",
  "fm-daemon-statistics",
+ "fm-daemon-status",
  "fm-daemon-web",
  "fm-engine",
  "fm-frame",

@@ -46,6 +46,7 @@ fm-daemon-journal = { path = "../../crates/services/fm-daemon-journal" }
 fm-daemon-native = { path = "../../crates/services/fm-daemon-native", optional = true }
 fm-daemon-render = { path = "../../crates/services/fm-daemon-render" }
 fm-daemon-statistics = { path = "../../crates/services/fm-daemon-statistics" }
+fm-daemon-status = { path = "../../crates/services/fm-daemon-status" }
 fm-daemon-web = { path = "../../crates/services/fm-daemon-web" }
 fm-engine = { path = "../../crates/services/fm-engine" }
 fm-frame = { path = "../../crates/media/fm-frame" }
