@@ -151,6 +151,7 @@ impl EngineStreamTargetSpec {
                 | StreamTargetError::InvalidSrtStreamId => "stream_key",
                 StreamTargetError::BackupNotAllowed => "backup_endpoint",
                 StreamTargetError::LadderNotAllowed => "ladder",
+                StreamTargetError::VideoBitrateOutOfRange => "video_bitrate_kbps",
                 StreamTargetError::UrlTooLong | StreamTargetError::EndpointProtocolMismatch => {
                     "endpoint"
                 }

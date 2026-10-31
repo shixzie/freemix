@@ -1153,7 +1153,7 @@ fn settings_import_apply_updates_format_and_restart_only() {
         text(&changed_path),
         "--apply",
     ]);
-    assert_failure_contains(&refused, "cannot apply stream_targets changes yet");
+    assert_failure_contains(&refused, "adding stream targets is not applied yet");
     let loaded = load(&show);
     assert_eq!(loaded.project().audio_buses()[0].name, "Clean feed");
 }

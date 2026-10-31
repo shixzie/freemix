@@ -4015,10 +4015,12 @@ The CLI now writes the export document (`settings-export`), previews an
 import against a project (`settings-import`), and applies the `format` and
 `restart_policy` sections and the names, routes, startup policies, and
 existing entities of the `outputs` and `audio_buses` sections atomically with
-`settings-import --apply` (a stream-target change refuses the whole import
-before saving); stream-target mutations and engine commands are still not
-applied, nothing in the daemon, protocol, or UI calls the planner, and
-secrets are excluded rather than separately encrypted. For `SW-017`,
+`settings-import --apply`; an existing stream target's exported fields are
+applied too while its stream key and unexported options stay untouched.
+Stream-target additions, removals, and protocol changes still refuse the
+whole import, engine commands are not emitted, nothing in the daemon,
+protocol, or UI calls the planner, and secrets are excluded rather than
+separately encrypted. For `SW-017`,
 `fm-engine` classifies commands into undoable project edits (input add,
 remove, rename, and reorder; stinger and overlay settings; grades; title and
 scene animations; scene layers; the playlist, cue lists, and scripts;

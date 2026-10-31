@@ -593,3 +593,26 @@ fn replacing_a_section_that_strands_references_is_a_conflict() {
         Some(ChangeKind::Removed)
     );
 }
+
+#[test]
+fn apply_updates_an_existing_stream_target_and_preserves_its_key() {
+    let snapshot = with(current(), "stream_targets.40.name", text("Backup ingest"));
+    let mut project = project();
+    snapshot.apply_exported(&mut project).unwrap();
+    let target = project
+        .stream_targets()
+        .iter()
+        .find(|target| target.id().get() == nz(40))
+        .unwrap();
+    assert_eq!(target.name(), "Backup ingest");
+    assert!(target.key().is_some());
+}
+
+#[test]
+fn apply_refuses_stream_target_additions_and_protocol_changes() {
+    let mut project = project();
+    let added = with(current(), "stream_targets.41.name", text("New"));
+    assert!(added.apply_exported(&mut project).is_err());
+    let changed = with(current(), "stream_targets.40.protocol", text("rtmp"));
+    assert!(changed.apply_exported(&mut project).is_err());
+}

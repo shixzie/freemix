@@ -6101,10 +6101,11 @@ fn settings_import(path: &Path, input: &Path, apply: bool) -> AppResult<()> {
                         | fm_persistence::SettingsSection::RestartPolicy
                         | fm_persistence::SettingsSection::Outputs
                         | fm_persistence::SettingsSection::AudioBuses
+                        | fm_persistence::SettingsSection::StreamTargets
                 )
         }) {
             return Err(AppFailure(format!(
-                "settings-import: cannot apply {} changes yet (only format, restart_policy, outputs, and audio_buses); nothing was saved",
+                "settings-import: cannot apply {} changes yet (only format, restart_policy, outputs, audio_buses, and stream_targets); nothing was saved",
                 change.key.section()
             ))
             .into());

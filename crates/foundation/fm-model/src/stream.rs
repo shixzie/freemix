@@ -999,6 +999,8 @@ pub enum StreamTargetError {
     /// An SRT latency outside [`MIN_STREAM_SRT_LATENCY_MS`] through
     /// [`MAX_STREAM_SRT_LATENCY_MS`].
     SrtLatencyOutOfRange,
+    /// The authored video bitrate is outside the sink's range.
+    VideoBitrateOutOfRange,
 }
 
 impl fmt::Display for StreamTargetError {
@@ -1035,6 +1037,12 @@ impl fmt::Display for StreamTargetError {
                 formatter,
                 "SRT latency must be {MIN_STREAM_SRT_LATENCY_MS} to {MAX_STREAM_SRT_LATENCY_MS} ms"
             ),
+            Self::VideoBitrateOutOfRange => {
+                write!(
+                    formatter,
+                    "stream video bitrate must be {MIN_VIDEO_BITRATE_KBPS} to {MAX_VIDEO_BITRATE_KBPS} kbps"
+                )
+            }
         }
     }
 }
@@ -1255,6 +1263,47 @@ impl StreamTarget {
         validate_video_bitrate(video_bitrate_kbps)?;
         self.video_bitrate_kbps = video_bitrate_kbps;
         Ok(self)
+    }
+
+    /// Replaces the exported settings of this destination, preserving its
+    /// ladder, reconnect policy, running state, stream key, and SRT-only
+    /// options.
+    ///
+    /// The protocol stays the same; changing it would reinterpret those
+    /// unexported options.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StreamTargetError`] for a malformed name, endpoint, backup,
+    /// key pairing, or video bitrate; nothing changes on error.
+    pub fn apply_exported(
+        &mut self,
+        name: String,
+        endpoint: StreamEndpoint,
+        backup_endpoint: Option<StreamEndpoint>,
+        startup: StartupPolicy,
+        video_bitrate_kbps: u32,
+        output: OutputId,
+    ) -> Result<(), StreamTargetError> {
+        let mut candidate = StreamTarget::new(
+            self.id,
+            name,
+            self.protocol,
+            endpoint,
+            self.key.clone(),
+            output,
+        )?
+        .with_backup_endpoint(backup_endpoint)?
+        .with_startup(startup)
+        .with_video_bitrate(video_bitrate_kbps)
+        .map_err(|_| StreamTargetError::VideoBitrateOutOfRange)?;
+        candidate.running = self.running;
+        candidate.ladder.clone_from(&self.ladder);
+        candidate.reconnect = self.reconnect;
+        candidate.srt_latency_ms = self.srt_latency_ms;
+        candidate.srt_passphrase.clone_from(&self.srt_passphrase);
+        *self = candidate;
+        Ok(())
     }
 
     #[must_use]

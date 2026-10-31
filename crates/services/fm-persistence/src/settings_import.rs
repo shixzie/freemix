@@ -12,7 +12,9 @@ use std::{
     num::NonZeroU128,
 };
 
-use fm_model::{AudioBus, Output, Project, ProjectSettings, RestartPolicy, StartupPolicy};
+use fm_model::{
+    AudioBus, Output, Project, ProjectSettings, RestartPolicy, StartupPolicy, StreamEndpoint,
+};
 use fm_types::{
     AudioFormat, BusId, Channel, ChannelLayout, DiscreteChannel, FrameRate, OutputId, SampleRate,
     SceneId, VideoDimensions, VideoFormat,
@@ -639,11 +641,13 @@ impl fmt::Display for SettingsApplyError {
 impl std::error::Error for SettingsApplyError {}
 
 impl SettingsSnapshot {
-    /// Applies the format, restart policy, audio bus, and output sections to
-    /// `project`.
+    /// Applies the format, restart policy, audio bus, output, and existing
+    /// stream-target sections to `project`.
     ///
-    /// Stream targets are not applied yet. The whole import is applied to a
-    /// clone and committed only when every section succeeds.
+    /// A stream-target addition or removal is refused; a change to an
+    /// existing target must keep its protocol so unexported options keep
+    /// their meaning. The whole import is applied to a clone and committed
+    /// only when every section succeeds.
     ///
     /// # Errors
     ///
@@ -656,6 +660,7 @@ impl SettingsSnapshot {
         apply_restart(self, &mut candidate)?;
         apply_audio_buses(self, &mut candidate)?;
         apply_outputs(self, &mut candidate)?;
+        apply_stream_targets(self, &mut candidate)?;
         *project = candidate;
         Ok(())
     }
@@ -929,6 +934,102 @@ fn apply_outputs(
                     key: key.clone(),
                     reason: error.to_string(),
                 })?;
+        }
+    }
+    Ok(())
+}
+
+fn apply_stream_targets(
+    snapshot: &SettingsSnapshot,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    let mut present = BTreeSet::new();
+    for entity in snapshot
+        .entities()
+        .into_iter()
+        .filter(|entity| entity.section() == SettingsSection::StreamTargets)
+    {
+        let Some(id) = entity.id() else {
+            return Err(SettingsApplyError::Invalid {
+                key: "stream_targets".to_owned(),
+            });
+        };
+        present.insert(id);
+        let key = format!("stream_targets.{id}");
+        let Some(target) = project
+            .stream_targets()
+            .iter()
+            .find(|target| target.id().get() == id)
+            .cloned()
+        else {
+            return Err(SettingsApplyError::Model {
+                key,
+                reason: "adding stream targets is not applied yet".to_owned(),
+            });
+        };
+        let name = snapshot
+            .entity_name(entity)
+            .ok_or_else(|| SettingsApplyError::Missing {
+                key: format!("{key}.name"),
+            })?
+            .to_owned();
+        let protocol = setting_text(snapshot, &format!("{key}.protocol"))?;
+        if protocol != target.protocol().scheme() {
+            return Err(SettingsApplyError::Model {
+                key,
+                reason: "changing a stream target's protocol is not applied yet".to_owned(),
+            });
+        }
+        let endpoint = StreamEndpoint::parse_for(
+            target.protocol(),
+            setting_text(snapshot, &format!("{key}.endpoint"))?,
+        )
+        .map_err(|_| SettingsApplyError::Invalid {
+            key: format!("{key}.endpoint"),
+        })?;
+        let backup = match snapshot.get_path(&format!("{key}.backup_endpoint")) {
+            Some(SettingValue::Text(text)) => {
+                Some(StreamEndpoint::parse_for(target.protocol(), text).map_err(|_| {
+                    SettingsApplyError::Invalid {
+                        key: format!("{key}.backup_endpoint"),
+                    }
+                })?)
+            }
+            Some(_) => {
+                return Err(SettingsApplyError::Invalid {
+                    key: format!("{key}.backup_endpoint"),
+                });
+            }
+            None => None,
+        };
+        let startup = startup_policy(snapshot, &format!("{key}.startup"))?;
+        let bitrate = bounded_u32(
+            setting_integer(snapshot, &format!("{key}.video_bitrate_kbps"))?,
+            &format!("{key}.video_bitrate_kbps"),
+        )?;
+        let output = OutputId::new(
+            setting_reference(snapshot, &format!("{key}.output"), ReferenceKind::Output)?.id,
+        );
+        let mut updated = target;
+        updated
+            .apply_exported(name, endpoint, backup, startup, bitrate, output)
+            .map_err(|error| SettingsApplyError::Model {
+                key: key.clone(),
+                reason: error.to_string(),
+            })?;
+        project
+            .replace_stream_target(updated)
+            .map_err(|error| SettingsApplyError::Model {
+                key: key.clone(),
+                reason: error.to_string(),
+            })?;
+    }
+    for target in project.stream_targets() {
+        if !present.contains(&target.id().get()) {
+            return Err(SettingsApplyError::Model {
+                key: format!("stream_targets.{}", target.id().get()),
+                reason: "removing stream targets is not applied yet".to_owned(),
+            });
         }
     }
     Ok(())
