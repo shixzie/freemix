@@ -32,7 +32,10 @@
     text-align: center; font-size: .9rem; color: #ddd; background: #000a; }
   #board { display: grid; gap: .5rem; grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
     width: min(100%, 48rem); margin-top: 1rem; }
-  #board button { min-height: 4rem; font-weight: 600; }
+  #board button { min-height: 4rem; font-weight: 600; position: relative; overflow: hidden; }
+  #board button .meter { position: absolute; left: 0; bottom: 0; height: 4px; width: 100%;
+    transform-origin: left; transform: scaleX(0);
+    background: linear-gradient(to right, #1fa34a 0 63.6%, #e3a21a 63.6% 81.8%, #e5322d 81.8% 100%); }
   #board button[data-light="program"] { background: var(--program); }
   #board button[data-light="preview"] { background: var(--preview); }
   #board button[data-light="idle"] { background: var(--idle); }
@@ -542,6 +545,8 @@
     recorders: null, recordersAt: 0, recorderSequence: -1,
     streams: new Map(), streamsAt: 0, streamSequence: -1,
     meters: null, metersAt: 0, meterSequence: -1,
+    // `audio_meters` `inputs`: input id -> its loudest channel's peak.
+    inputMeters: new Map(),
   };
   // Lossy status older than this is not shown (the daemon stops sending
   // `stream_status` once no destination runs).
@@ -1153,8 +1158,10 @@
         if (sequence < 0) return LOSSY;
         // Master `<peak>:<rms>` millionths, comma separated.
         telemetry.meters = required(record, "master").split(",").map((item) => Number(item.split(":")[0]) / 1e6);
+        telemetry.inputMeters = parseInputMeters(record.fields.get("inputs") || "");
         telemetry.metersAt = Date.now();
         telemetry.meterSequence = sequence;
+        paintInputMeters();
         return LOSSY;
       }
       case "source_sync_status":
@@ -1328,6 +1335,25 @@
     return match && match[2] !== undefined ? tr("failWithExitCode", { reason, code: match[2] }) : reason;
   }
 
+  // `audio_meters` `inputs`: `<input>~<peak>:<rms>,...` per input; the
+  // loudest channel becomes the input's bar.
+  function parseInputMeters(value) {
+    const meters = new Map();
+    if (!value) return meters;
+    for (const entry of value.split(";")) {
+      const at = entry.indexOf("~");
+      const input = entry.slice(0, at);
+      if (at <= 0 || !/^[1-9][0-9]*$/.test(input)) throw new Error("malformed input meter");
+      let peak = 0;
+      for (const channel of entry.slice(at + 1).split(",")) {
+        const [channelPeak] = channel.split(":").map(Number);
+        if (!Number.isFinite(channelPeak)) throw new Error("malformed input meter");
+        peak = Math.max(peak, channelPeak / 1e6);
+      }
+      meters.set(input, { peak });
+    }
+    return meters;
+  }
   // H:MM:SS of a running time.
   function clock(ms) {
     const total = Math.max(0, Math.floor(ms / 1000));
@@ -1403,12 +1429,16 @@
       button.type = "button";
       button.setAttribute("role", "listitem");
       button.dataset.light = lightOf(input.id);
+      button.dataset.input = input.id;
       button.textContent = input.label;
       if (lockOf(input.id) === "input") {
         button.dataset.lock = "input";
         button.prepend(padlock());
         button.setAttribute("aria-label", tr("inputLocked", { input: input.label }));
       }
+      const meter = document.createElement("i");
+      meter.className = "meter";
+      button.append(meter);
       button.addEventListener("click", () => {
         selected = input.id;
         choosing = false;
@@ -1418,6 +1448,22 @@
       return button;
     });
     ui.board.replaceChildren(...buttons);
+    paintInputMeters();
+  }
+
+  // Per-input audio tally from the newest `audio_meters` `inputs`.
+  function paintInputMeters() {
+    const live = link.phase === "live";
+    const fresh = live && telemetry.metersAt > 0 && Date.now() - telemetry.metersAt < METER_STALE_MS;
+    for (const button of ui.board.children) {
+      const meter = button.querySelector(".meter");
+      if (!meter) continue;
+      const reading = fresh ? telemetry.inputMeters.get(button.dataset.input) : undefined;
+      const peak = reading ? reading.peak : 0;
+      const db = peak > 0 ? 20 * Math.log10(peak) : -Infinity;
+      const position = Math.min(1, Math.max(0, (db + 60) / 66));
+      meter.style.transform = "scaleX(" + position.toFixed(3) + ")";
+    }
   }
 
   // ---- Shortcuts. The server authorizes every command again. ----

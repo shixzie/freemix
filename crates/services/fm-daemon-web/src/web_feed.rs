@@ -2,7 +2,8 @@
 //!
 //! Web peers (the operator and tally pages) with `view_status` receive the
 //! show's live status beside their durable records: Master/Program
-//! `audio_meters` (Master only: no per-input or monitor meters; since
+//! `audio_meters` (Master and the first 32 inputs' meters, no monitor
+//! meters; since
 //! Protocol 2.94 with the loudness of Master and at most
 //! [`WEB_LOUDNESS_INPUTS`] strips), the
 //! `stream_status` destination samples, and the `recorder_status` slots.

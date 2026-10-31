@@ -5665,10 +5665,10 @@ Screenshots against a native daemon recording and streaming a media clip:
 The operator page now draws each strip's share of Program as a peak bar
 (green, amber past -6 dBFS, red past -1 dBFS) from the Web meter record,
 which carries the first 32 inputs' meters (no wire change; the page's
-parser is checked under Node.js against the Rust codec's record).
-Remaining gaps: no audio tally on the pages, the tally
-receives meters it only draws as a thin level (there is no per-session
-opt-out), and the simulated daemon sends no meters or realized recorder
+parser is checked under Node.js against the Rust codec's record). The tally
+page draws a small per-input peak bar from those same meters.
+Remaining gaps: the tally's bars have no per-session opt-out, and the
+simulated daemon sends no meters or realized recorder
 state.
 
 Readable output failures (Protocol 2.67, no schema change): a stream
