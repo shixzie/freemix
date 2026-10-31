@@ -2736,12 +2736,12 @@ Master mixer, including gain-matrix downmixes to a stereo Master. The project
 JSON contract names them `left_rear_surround`, `right_rear_surround`, and
 `discrete_1`..`discrete_16`; recordings map them to exact ffmpeg layouts
 (7.1 as `FL FR FC LFE BL BR SL SR`, discrete as unspecified-order `{n}C`).
-Remaining gaps: project settings still allow at most 8 audio channels;
-the daemon uses the standard downmix matrices only for pushed media and
+Remaining gaps: the daemon uses the standard downmix matrices only for pushed media and
 stream audio, and nothing reaches persisted strips, protocol, or Studio; streaming
 outputs refuse 7.1 and discrete layouts; there is no device ancillary-data
-extraction, composite or Lt/Rt downmix, or hardware evidence. `AU-003`
-remains planned.
+extraction, composite or Lt/Rt downmix, or hardware evidence. Project
+settings now accept every channel layout the model holds, 1 through 16.
+`AU-003` remains planned.
 
 Current implementation boundary for system audio inputs (`AU-011`):
 Protocol 2.55 (schema 52) adds an audio-only input kind that captures the
@@ -5954,10 +5954,11 @@ immediately and recover only past a hysteresis margin. Remaining gaps: Studio's
 Replay panel and the CLI render up to eight recorded angles in an adaptive
 grid (Protocol 2.127, decoded and composed by the native daemon), led by the
 requested Replay input and its linked A/B partner as channel tiles; controller bindings have no real device
-input, persistence, or jog acceleration; the native daemon now samples
+input, persistence, or jog acceleration; the native daemon samples
 its replay root's free space and reports the predicted recording time at the
-observed write rate (Protocol 2.125, shown in Studio and the CLI), but there
-are no SMART queries or `fm-record` low-space wiring; and no storage profile
+observed write rate (Protocol 2.125, shown in Studio and the CLI), and a
+root below the recorder's 512 MiB floor pauses recording (`storage:low_space`)
+until a later sample clears it; SMART queries remain; and no storage profile
 is certified. `OR-014` remains planned.
 
 Current end-to-end slice for item 7: the show persists up to eight highlight

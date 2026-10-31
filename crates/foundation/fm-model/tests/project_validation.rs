@@ -3633,3 +3633,15 @@ fn source_replacement_refuses_a_key_input_that_would_render_a_scene() {
         .unwrap();
     assert_eq!(project.validate(), Ok(()));
 }
+
+#[test]
+fn a_project_holds_up_to_sixteen_audio_channels() {
+    assert_eq!(ProjectSettings::MAX_AUDIO_CHANNELS, 16);
+    let channels = (1..=16_u8)
+        .map(|number| fm_types::Channel::Discrete(fm_types::DiscreteChannel::new(number).unwrap()))
+        .collect();
+    let mut settings = settings();
+    settings.audio.channels = ChannelLayout::new(channels).unwrap();
+    let project = Project::new(project_id(7), "Sixteen channels", settings);
+    assert_eq!(project.validate(), Ok(()));
+}

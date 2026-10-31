@@ -4622,7 +4622,9 @@ impl ProjectSettings {
     pub const MAX_VIDEO_HEIGHT: u32 = 8_192;
     pub const MIN_AUDIO_SAMPLE_RATE_HZ: u32 = 8_000;
     pub const MAX_AUDIO_SAMPLE_RATE_HZ: u32 = 384_000;
-    pub const MAX_AUDIO_CHANNELS: usize = 8;
+    /// Widest program audio layout: every channel [`ChannelLayout`] holds
+    /// (1 through 16, including 7.1 and 16 discrete channels).
+    pub const MAX_AUDIO_CHANNELS: usize = 16;
 
     #[must_use]
     pub fn new(frame_rate: FrameRate, output: OutputFormat) -> Self {

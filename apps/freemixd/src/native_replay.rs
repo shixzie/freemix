@@ -432,6 +432,12 @@ pub(crate) struct NativeReplay {
     restored: bool,
     /// When the storage root was last sampled.
     storage_sample: Option<Instant>,
+    /// The root's free bytes fell below [`Self::min_free_bytes`]; recording
+    /// is paused until the next sample clears it (OR-014).
+    low_space: bool,
+    /// Free bytes a replay root keeps before recording pauses, matching the
+    /// recorder's floor.
+    min_free_bytes: u64,
 }
 
 impl NativeReplay {
@@ -443,6 +449,8 @@ impl NativeReplay {
             sources: BTreeMap::new(),
             restored: false,
             storage_sample: None,
+            low_space: false,
+            min_free_bytes: crate::disk::RECORDING_MINIMUM_FREE_BYTES,
         }
     }
 
@@ -477,21 +485,33 @@ impl NativeReplay {
             }
         }
         let inputs: Vec<InputId> = self.sources.keys().copied().collect();
-        for input in inputs {
-            self.advance(host, input);
+        // Sample the root before starting or stopping runs: a root below the
+        // recorder's floor pauses recording, and a recovered one resumes it.
+        self.sample_storage(host);
+        if self.low_space {
+            for input in inputs {
+                if matches!(self.sources[&input].state, SourceState::Running(_)) {
+                    self.fail(input, "storage:low_space");
+                }
+            }
+        } else {
+            for input in inputs {
+                self.advance(host, input);
+            }
         }
         for path in host.take_pruned() {
             let _ = fs::remove_file(path);
         }
-        self.sample_storage(host);
     }
 
     /// Samples the storage root's free space at most once a second and
     /// reports it to the engine, in whole mebibytes so the lossy status
-    /// does not churn on every write.
+    /// does not churn on every write. A root below
+    /// [`Self::min_free_bytes`] pauses recording (OR-014).
     fn sample_storage(&mut self, host: &mut dyn ReplayHost) {
         let Some((_, root)) = &self.recording else {
             self.storage_sample = None;
+            self.low_space = false;
             host.set_storage_free(None);
             return;
         };
@@ -506,6 +526,7 @@ impl NativeReplay {
         let free = crate::disk::existing_ancestor(root)
             .and_then(|path| crate::disk::available_bytes(path).ok())
             .map(|free| free / (1024 * 1024) * (1024 * 1024));
+        self.low_space = free.is_some_and(|free| free < self.min_free_bytes);
         host.set_storage_free(free);
     }
 
@@ -550,8 +571,11 @@ impl NativeReplay {
             return;
         };
         match &mut source.state {
-            SourceState::Idle => self.start(input),
-            SourceState::Failed { at } if at.elapsed() >= RETRY_DELAY => self.start(input),
+            SourceState::Idle if !self.low_space => self.start(input),
+            SourceState::Idle => {}
+            SourceState::Failed { at } if !self.low_space && at.elapsed() >= RETRY_DELAY => {
+                self.start(input);
+            }
             SourceState::Failed { .. } => {}
             SourceState::Running(run) => {
                 let mut failure = None;
@@ -1954,4 +1978,55 @@ mod tests {
         assert!(session.join(RESTORED_MANIFEST_FILE).exists());
         assert!(segment.exists());
     }
+
+    #[test]
+    fn a_replay_root_below_the_floor_pauses_recording() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("replay");
+        fs::create_dir_all(&root).unwrap();
+        let rate = FrameRate::new(25, 1).unwrap();
+        let format = ReplayFormat {
+            width: WIDTH,
+            height: HEIGHT,
+            rate,
+            clock_domain: clock_domain(),
+        };
+        let show = ShowState::new(
+            "replay",
+            (1..=2)
+                .map(|value| (input(value), format!("Camera {value}")))
+                .collect(),
+            input(1),
+            input(2),
+        )
+        .unwrap();
+        let mut engine = Engine::new(
+            show,
+            rate,
+            fm_clock::ClockDomainId::new(NonZeroU128::new(100).unwrap()),
+        );
+        engine.set_replay_feed(EngineReplayFeed::External);
+        accept(
+            &mut engine,
+            "configure",
+            EngineCommand::Replay(EngineReplayOperation::Configure(Box::new(ReplaySettings {
+                sources: vec![input(1)],
+                retention_seconds: 10,
+                storage_root: Some(root.to_string_lossy().into_owned()),
+                auto_return: None,
+                transition: fm_types::replay::ReplayTransition::CUT,
+            }))),
+        );
+        let _ = engine.tick().unwrap();
+        let mut replay = NativeReplay::new(format);
+        // A root whose free space is below this floor is low on space.
+        replay.min_free_bytes = u64::MAX;
+        replay.sync(&mut engine);
+        assert!(replay.low_space);
+        assert!(matches!(
+            replay.sources[&input(1)].state,
+            SourceState::Idle
+        ));
+    }
+
 }
