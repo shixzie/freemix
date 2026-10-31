@@ -978,8 +978,14 @@ mod resilient {
         let output = ResilientOutput::new(session, ResilientWriterConfig::default());
         let status = output.status();
         let format = format();
-        let mut recorder =
-            Recorder::start_with_sink(Box::new(output), RecordConfig::new(format.clone())).unwrap();
+        let mut config = RecordConfig::new(format.clone());
+        // Cancel must wait for the output worker to close the current
+        // fragment and sync it. A loaded CI host can take longer than the
+        // production two-second kill budget, which would hand the file to the
+        // asynchronous fallback cleanup and report `Unconfirmed`; this test
+        // asserts the synchronous path instead.
+        config.limits.kill_timeout = Duration::from_secs(15);
+        let mut recorder = Recorder::start_with_sink(Box::new(output), config).unwrap();
         enqueue_range(&mut recorder, &format, 0..FRAME_COUNT);
         wait_for(&status, "a fragment", |status| {
             status.get().stats.fragments_written >= 1
