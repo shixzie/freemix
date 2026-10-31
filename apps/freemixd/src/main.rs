@@ -830,8 +830,6 @@ struct NativeDaemon {
     catalogue: std::collections::BTreeMap<InputId, native_catalogue::NativeSourceKey>,
     /// Still images of inputs added live, decoding off the loop.
     stills: Vec<native_catalogue::PendingStill>,
-    /// Every slideshow source's uploaded slides (IN-009).
-    slides: native_slides::NativeSlides,
     /// The project's picture size, in pixels.
     picture_size: (u32, u32),
     #[cfg(target_os = "macos")]
@@ -5356,8 +5354,13 @@ impl NativeDaemon {
         let mut output_set = OutputSet::new();
         let (streams, stream_groups, local_output_dirs) =
             NativeProgramStream::compile(&runtime, stored, &mut output_set)?;
+        let slides = native_slides::NativeSlides::new(
+            store.assets_root(),
+            stored.project().settings().video.dimensions,
+        );
         let video = native_video_realizer::NativeVideoHandle::spawn(
             Arc::clone(&runtime),
+            slides,
             "freemix-video-realizer",
         )?;
         #[cfg(target_os = "macos")]
@@ -5444,10 +5447,6 @@ impl NativeDaemon {
             captures,
             catalogue: native_catalogue::catalogue_keys(stored.project()),
             stills: Vec::new(),
-            slides: native_slides::NativeSlides::new(
-                store.assets_root(),
-                stored.project().settings().video.dimensions,
-            ),
             picture_size: {
                 let dimensions = stored.project().settings().video.dimensions;
                 (dimensions.width(), dimensions.height())
@@ -5699,6 +5698,7 @@ impl NativeDaemon {
                 stingers,
                 grades: job.grades,
                 grade_revision: job.grade_revision,
+                slides: None,
             })
             .map_err(|error| AppFailure(format!("Preview realizer: {error}")))?;
         self.pending_preview_render = Some(PendingPreviewRender {
@@ -7538,15 +7538,15 @@ impl NativeDaemon {
         (compiled, revision)
     }
 
-    #[allow(clippy::too_many_lines)]
-    /// Composes each slideshow source's slides for the frame about to be
-    /// realized (the projected frame), on the GPU (IN-009).
-    fn present_slideshows(&mut self, control: &ControlService<Policy>) -> AppResult<()> {
-        let Some(frame) = self.projected_frame.as_ref() else {
-            return Ok(());
-        };
+    /// The projected frame's slideshow slides and the next ones to decode
+    /// ahead, for the video realizer (IN-009).
+    fn slideshow_job(
+        &self,
+        control: &ControlService<Policy>,
+    ) -> Option<native_video_realizer::SlideshowJob> {
+        let frame = self.projected_frame.as_ref()?;
         if frame.slideshows.is_empty() {
-            return Ok(());
+            return None;
         }
         let mut frames = Vec::with_capacity(frame.slideshows.len());
         let mut ahead = Vec::new();
@@ -7564,16 +7564,7 @@ impl NativeDaemon {
             }
             frames.push((slideshow.clone(), fit));
         }
-        self.slides
-            .present(
-                &self.runtime,
-                self.playback
-                    .as_mut()
-                    .expect("the video realizer holds the playback"),
-                &frames,
-                &ahead,
-            )
-            .map_err(|error| AppFailure(format!("native slideshow cannot render: {error}")).into())
+        Some(native_video_realizer::SlideshowJob { frames, ahead })
     }
 
     #[allow(clippy::too_many_lines)]
@@ -7590,7 +7581,7 @@ impl NativeDaemon {
         // the frame is produced, so the first fed pair is the next real frame.
         self.start_pending_streams();
         let (compiled_grades, grade_revision) = self.compiled_grades(control);
-        self.present_slideshows(control)?;
+        let slideshow_job = self.slideshow_job(control);
         let shows_preview = self.display_shows_preview();
         self.project_plan
             .refresh_scene_models(|scene| control.scene_model(scene));
@@ -7684,6 +7675,7 @@ impl NativeDaemon {
                         .expect("a compose collected its stingers before the next"),
                     grades: Arc::clone(&compiled_grades),
                     grade_revision,
+                    slides: slideshow_job,
                 })
                 .map_err(NativeRealizationError::RealizerThread)?;
             fade_to_black_excluded.clone_from(&frame.fade_to_black_excluded_outputs);

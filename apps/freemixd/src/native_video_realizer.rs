@@ -23,8 +23,10 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use fm_engine::{CompiledProjectGrades, FrameResult};
+use crate::native_slides::NativeSlides;
+use fm_engine::{CompiledProjectGrades, EngineSlideshowFrame, FrameResult};
 use fm_gpu::NativeTexture;
+use fm_types::OutputScaling;
 use freemixd::native_media::{
     NativeMediaError, NativeMediaRuntime, NativeOutputFrame, NativeProjectGrades,
     NativeProjectPlan, NativeSourcePlayback, NativeSourceRenderError,
@@ -40,6 +42,15 @@ pub(crate) struct VideoRenderJob {
     /// per revision.
     pub grades: Arc<CompiledProjectGrades>,
     pub grade_revision: u64,
+    /// The projected frame's slideshow slides to compose before the render
+    /// (IN-009); the worker owns the slide cache.
+    pub slides: Option<SlideshowJob>,
+}
+
+/// A slideshow's projected slides and the next ones to decode ahead.
+pub(crate) struct SlideshowJob {
+    pub frames: Vec<(EngineSlideshowFrame, OutputScaling)>,
+    pub ahead: Vec<(Arc<str>, OutputScaling)>,
 }
 
 /// Either one Program texture (no project outputs) or every project output.
@@ -91,6 +102,9 @@ enum VideoCommand {
         job: Box<VideoRenderJob>,
         reply: SyncSender<PreviewRenderOutcome>,
     },
+    ForgetSlide {
+        input: fm_types::InputId,
+    },
     Shutdown,
 }
 
@@ -108,17 +122,32 @@ impl NativeVideoHandle {
     /// # Errors
     ///
     /// Returns the thread-spawn failure.
-    pub(crate) fn spawn(runtime: Arc<NativeMediaRuntime>, name: &str) -> std::io::Result<Self> {
+    pub(crate) fn spawn(
+        runtime: Arc<NativeMediaRuntime>,
+        slides: NativeSlides,
+        name: &str,
+    ) -> std::io::Result<Self> {
         let (commands, receiver) = sync_channel(2);
         let thread = thread::Builder::new()
             .name(name.to_owned())
-            .spawn(move || video_thread(&runtime, &receiver))?;
+            .spawn(move || video_thread(&runtime, slides, &receiver))?;
         Ok(Self {
             commands,
             pending: None,
             pending_preview: None,
             thread: Some(thread),
         })
+    }
+
+    /// Drops a removed input's uploaded slides.
+    ///
+    /// # Errors
+    ///
+    /// Returns the video thread stopping.
+    pub(crate) fn forget_slide(&mut self, input: fm_types::InputId) -> Result<(), String> {
+        self.commands
+            .send(VideoCommand::ForgetSlide { input })
+            .map_err(|_| "the video thread stopped".to_owned())
     }
 
     /// Submits one Program compose.
@@ -229,7 +258,11 @@ impl PreparedGrades {
     }
 }
 
-fn video_thread(runtime: &NativeMediaRuntime, commands: &Receiver<VideoCommand>) {
+fn video_thread(
+    runtime: &NativeMediaRuntime,
+    mut slides: NativeSlides,
+    commands: &Receiver<VideoCommand>,
+) {
     let mut grades = PreparedGrades(None);
     for command in commands {
         match command {
@@ -239,6 +272,16 @@ fn video_thread(runtime: &NativeMediaRuntime, commands: &Receiver<VideoCommand>)
                     .apply(runtime, &mut job.plan, job.grade_revision, &job.grades)
                     .map_err(VideoError::Grades)
                     .and_then(|()| {
+                        if let Some(slideshow) = job.slides.take() {
+                            slides
+                                .present(
+                                    runtime,
+                                    &mut job.playback,
+                                    &slideshow.frames,
+                                    &slideshow.ahead,
+                                )
+                                .map_err(VideoError::Render)?;
+                        }
                         if job.plan.output_ids().is_empty() {
                             runtime
                                 .render_project_frame_result_with_stingers_blocking(
@@ -288,6 +331,7 @@ fn video_thread(runtime: &NativeMediaRuntime, commands: &Receiver<VideoCommand>)
                     result,
                 });
             }
+            VideoCommand::ForgetSlide { input } => slides.forget(input),
             VideoCommand::Shutdown => break,
         }
     }

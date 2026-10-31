@@ -359,6 +359,16 @@ per week of work; items 1 and 2 land before any new feature breadth.
    monitor/display/stream/recorder consumers, and single-owner
    `NativeMediaRuntime` remain.
 
+   **Sixth stage (landed).** Slideshow slide composition (IN-009) moved to
+   the video realizer: the control thread builds the projected frame's slide
+   list and the ahead decodes from the engine's statuses, and the worker owns
+   the `NativeSlides` cache, composes each slide with the runtime before the
+   Program render, and drops a removed input's slides through the same
+   bounded channel. `present_slideshows` and the control-side `slides` field
+   are gone. Native stills (slideshow), pacing, transitions, display,
+   Preview-tap, strip-DSP, replay, audio-only, media-file, and media-list
+   suites pass.
+
    **Split plan.** The bounded channel carries a `NativeFrameJob` (the
    engine's `FrameResult`, which is plain data, plus the plan deltas the
    media side applies) to a `NativeRealizer` thread that owns `runtime`

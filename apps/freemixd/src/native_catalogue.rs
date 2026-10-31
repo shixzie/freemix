@@ -389,7 +389,7 @@ impl NativeDaemon {
         for input in removed.iter().chain(&replaced) {
             self.files.remove(*input);
             self.stills.retain(|still| still.input != *input);
-            self.slides.forget(*input);
+            self.video.forget_slide(*input).map_err(AppFailure)?;
             resolved.retain(|source| source.input() != *input);
             eprintln!("FREEMIXD_INPUT\tv=1\tinput={input}\tretired");
         }
@@ -506,7 +506,7 @@ impl NativeDaemon {
                 // A slideshow composes its slides into its source each frame
                 // they change (IN-009).
                 NativeSourceKey::Slideshow(_) => {
-                    self.slides.forget(input);
+                    self.video.forget_slide(input).map_err(AppFailure)?;
                     let frame = blank()?;
                     resolved.push(NativeResolvedSource::LiveFrame {
                         input,
