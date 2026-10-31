@@ -431,6 +431,31 @@ pub enum RemoveAudioBusError {
     IncomingSend { bus: BusId, source: BusId },
 }
 
+/// Why a scoreboard document could not be stored on a project.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScoreboardDocumentError {
+    UnknownInput(InputId),
+    /// The input exists but is not a title.
+    NotATitle(InputId),
+    Empty,
+    TooLarge { maximum: usize },
+}
+
+impl std::fmt::Display for ScoreboardDocumentError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownInput(input) => write!(formatter, "unknown input {input}"),
+            Self::NotATitle(input) => write!(formatter, "input {input} is not a title"),
+            Self::Empty => formatter.write_str("scoreboard document is empty"),
+            Self::TooLarge { maximum } => {
+                write!(formatter, "scoreboard document exceeds {maximum} bytes")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ScoreboardDocumentError {}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AddSceneLayerError {
     UnknownScene(SceneId),
@@ -933,7 +958,14 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(105);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(106);
+
+/// Maximum stored scoreboard documents on one project (GX-003).
+pub const MAX_SCOREBOARDS: usize = 256;
+
+/// Maximum bytes of one canonical scoreboard document (GX-003), matching
+/// `fm_titles::MAX_SCOREBOARD_DOCUMENT_BYTES`.
+pub const MAX_SCOREBOARD_DOCUMENT_BYTES: usize = 256 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1008,6 +1040,9 @@ pub struct Project {
     /// The show's own settings for health alert rules, in rule order, none
     /// equal to its rule's default (RC-015, schema 85).
     alert_rules: Vec<fm_types::alert_rules::AlertRuleSetting>,
+    /// Each title input's canonical scoreboard document (GX-003, schema
+    /// 106), by input. Runtime state the engine owns.
+    scoreboards: BTreeMap<InputId, String>,
 }
 
 impl Project {
@@ -1059,6 +1094,7 @@ impl Project {
             replay: fm_types::replay::ReplaySettings::default(),
             reels: Vec::new(),
             alert_rules: Vec::new(),
+            scoreboards: BTreeMap::new(),
         }
     }
 
@@ -1930,6 +1966,65 @@ impl Project {
         self.title_timelines = timelines;
     }
 
+    /// Every title input's canonical scoreboard document (GX-003, schema
+    /// 106), ascending by input. Runtime state the engine owns.
+    #[must_use]
+    pub const fn scoreboard_documents(&self) -> &BTreeMap<InputId, String> {
+        &self.scoreboards
+    }
+
+    /// One title input's canonical scoreboard document, if stored.
+    #[must_use]
+    pub fn scoreboard_document(&self, input: InputId) -> Option<&str> {
+        self.scoreboards.get(&input).map(String::as_str)
+    }
+
+    /// Stores `document` as `input`'s scoreboard, replacing any previous one.
+    ///
+    /// The document is parsed and canonicalized by the persistence layer;
+    /// this stores the text only, checking the input and the byte bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScoreboardDocumentError::UnknownInput`] when `input` does
+    /// not exist, [`ScoreboardDocumentError::NotATitle`] when it is not a
+    /// title input, and [`ScoreboardDocumentError::TooLarge`] past the
+    /// document bound. Nothing changes on error.
+    pub fn set_scoreboard_document(
+        &mut self,
+        input: InputId,
+        document: String,
+    ) -> Result<(), ScoreboardDocumentError> {
+        let Some(candidate) = self.inputs.iter().find(|candidate| candidate.id == input) else {
+            return Err(ScoreboardDocumentError::UnknownInput(input));
+        };
+        if !matches!(candidate.kind, InputKind::Title(_)) {
+            return Err(ScoreboardDocumentError::NotATitle(input));
+        }
+        if document.len() > MAX_SCOREBOARD_DOCUMENT_BYTES {
+            return Err(ScoreboardDocumentError::TooLarge {
+                maximum: MAX_SCOREBOARD_DOCUMENT_BYTES,
+            });
+        }
+        if document.is_empty() {
+            return Err(ScoreboardDocumentError::Empty);
+        }
+        self.scoreboards.insert(input, document);
+        Ok(())
+    }
+
+    /// Removes `input`'s scoreboard, returning the stored document.
+    pub fn remove_scoreboard_document(&mut self, input: InputId) -> Option<String> {
+        self.scoreboards.remove(&input)
+    }
+
+    /// Replaces every scoreboard document without checking them;
+    /// [`Project::validate`] reports one on a non-title input or past the
+    /// bound. Documents are parsed by the persistence layer.
+    pub fn restore_scoreboards(&mut self, documents: BTreeMap<InputId, String>) {
+        self.scoreboards = documents;
+    }
+
     /// Every screen capture input's desktop restore token (IN-011, schema
     /// 72), by input: what a Wayland desktop's screen sharing dialog last
     /// granted, so the same screen or window is shared again without
@@ -2395,6 +2490,7 @@ impl Project {
         self.input_lifecycle.remove(&input);
         self.media_lists.remove(&input);
         self.title_timelines.remove(&input);
+        self.scoreboards.remove(&input);
         self.screen_capture_restore_tokens.remove(&input);
         Ok(())
     }

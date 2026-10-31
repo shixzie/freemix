@@ -66,6 +66,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_shortcuts(project, &mut errors);
     validate_media_lists(project, &mut errors);
     validate_title_timelines(project, &mut errors);
+    validate_scoreboards(project, &mut errors);
     validate_grading(project, &mut errors);
     validate_animation_presets(project, &mut errors);
     validate_main_mix(project, &mut errors);
@@ -392,6 +393,35 @@ fn validate_playlist(project: &Project, errors: &mut Vec<ValidationError>) {
             field: "playlist.next_take",
             kind: ValidationErrorKind::OutOfRange,
         });
+    }
+}
+
+fn validate_scoreboards(project: &Project, errors: &mut Vec<ValidationError>) {
+    if project.scoreboard_documents().len() > crate::MAX_SCOREBOARDS {
+        errors.push(ValidationError {
+            entity: None,
+            field: "scoreboards",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+    for (input, document) in project.scoreboard_documents() {
+        let is_title = project.inputs().iter().any(|candidate| {
+            candidate.id == *input && matches!(candidate.kind, crate::InputKind::Title(_))
+        });
+        if !is_title {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(*input)),
+                field: "scoreboards.input",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Input(*input)),
+            });
+        }
+        if document.is_empty() || document.len() > crate::MAX_SCOREBOARD_DOCUMENT_BYTES {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(*input)),
+                field: "scoreboards.document",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
     }
 }
 

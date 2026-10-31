@@ -19,6 +19,7 @@ mod replay;
 mod scene_animation;
 mod screen_capture;
 mod screen_capture_tokens;
+mod scoreboard;
 mod script;
 mod shortcut;
 mod still;

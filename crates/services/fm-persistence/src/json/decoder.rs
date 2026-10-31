@@ -100,6 +100,7 @@ struct ProjectDto {
     shortcuts: Vec<fm_model::Shortcut>,
     media_lists: std::collections::BTreeMap<fm_types::InputId, fm_model::MediaList>,
     title_timelines: std::collections::BTreeMap<fm_types::InputId, fm_model::TitleTimeline>,
+    scoreboards: std::collections::BTreeMap<fm_types::InputId, String>,
     screen_capture_restore_tokens: Vec<(fm_types::InputId, String)>,
 }
 
@@ -175,6 +176,7 @@ impl ProjectDto {
             shortcuts: super::shortcut::parse_shortcuts(&mut object)?,
             media_lists: super::media_list::parse_media_lists(&mut object)?,
             title_timelines: super::title_timeline::parse_title_timelines(&mut object)?,
+            scoreboards: super::scoreboard::parse_scoreboards(&mut object)?,
             screen_capture_restore_tokens:
                 super::screen_capture_tokens::parse_screen_capture_restore_tokens(&mut object)?,
         };
@@ -326,6 +328,7 @@ impl ProjectDto {
         // A timeline naming an input that is not a title is reported by
         // project validation.
         project.set_title_timelines(self.title_timelines);
+        project.restore_scoreboards(self.scoreboards);
         // A token of an unknown or other input, or an unusable token, is
         // reported by project validation.
         for (input, token) in self.screen_capture_restore_tokens {

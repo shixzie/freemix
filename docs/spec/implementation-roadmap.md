@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.148 / schema 105 (2026-10-31,
+(2026-10-19); items refreshed through protocol 2.148 / schema 106 (2026-10-31,
 at `7e139b72`). Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -4156,7 +4156,9 @@ round-trips the whole operator state and serializes as a versioned text
 document. Remaining gaps:
 crawls are runtime overlays outside template z-order and the project schema,
 with per-item fill and logo images drawn before the text but no easing; the
-scoreboard has two teams and its document is not yet stored in `project.json`;
+scoreboard has two teams, and its canonical versioned document now persists
+per title input in `project.json` (schema 106), strictly parsed and
+canonicalized on load, but no engine or protocol publishes it;
 and there are
 no feed transports, shortcut
 or control-surface wiring, or engine output. `GX-003` remains planned.
