@@ -5410,7 +5410,8 @@ registry, so title clocks are per title, not operator-controllable timers,
 and not exposed through the protocol, CLI commands, or UI; no project-level
 time zone (each time-of-day clock names its zone); templates cannot show
 media remaining, session, or playlist clocks; designer compositions and crawls take no clock
-source; no IANA tz database, leap seconds, drop-frame timecode,
+source; an IANA `TZif` parser exists (`fm_clock::production::TzifZone`) but
+title clocks still name POSIX rules; no leap seconds, drop-frame timecode,
 playback-speed-aware media remaining, or locale formats. `SW-013` remains
 planned.
 
