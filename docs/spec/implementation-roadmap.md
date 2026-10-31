@@ -4813,7 +4813,9 @@ choice between refusing errored results and keeping live values for failed
 fields. Remaining gaps: bound values do not reach `fm-titles`, the renderer,
 the project schema, the protocol, or a UI preview; there is no time-zone
 database or localization; image URIs are never fetched; and preview state is
-in memory only. `GX-005` remains planned.
+in memory only. `GX-005` remains planned. Preview state now round-trips through a strict,
+versioned text document (`PreviewSnapshot`), but it is not yet stored in a
+project or shown by a UI.
 
 Current implementation boundary for item 5: `fm-playback` provides a
 fixture-backed `ListPlayer` that advances once per monotonic engine frame tick

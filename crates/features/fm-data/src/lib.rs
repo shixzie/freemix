@@ -41,7 +41,9 @@ pub use html::parse_html_table;
 pub use mapping::{FieldBinding, FieldMappingReport, Mapper, MappingReport, MappingStatus};
 pub use parse::{CsvOptions, ParseError, ParseErrorKind, ParseLimits, parse_csv, parse_json};
 pub use preview::{
-    CommitOutcome, FieldChange, PreviewError, PreviewState, StagePolicy, StagedPreview, diff_values,
+    CommitOutcome, FieldChange, MAX_PREVIEW_DOCUMENT_BYTES, MAX_PREVIEW_FIELD_NAME_BYTES,
+    MAX_PREVIEW_FIELDS, MAX_PREVIEW_VALUE_BYTES, PreviewDocumentError, PreviewError,
+    PreviewSnapshot, PreviewState, StagePolicy, StagedPreview, diff_values,
 };
 pub use retry::{RetryError, RetryOutcome, RetryPolicy, RetryRecord, RetryState};
 pub use schema::{
