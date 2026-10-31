@@ -622,6 +622,21 @@ fn translate(
                 percent,
             }))
         }
+        "StartPlayList" | "StopPlayList" | "NextPlayListEntry" | "PreviousPlayListEntry" => {
+            allowed(parameters, &["Function"])?;
+            let operation = match function {
+                "StartPlayList" => fm_protocol::PlaylistOperation::Start {
+                    at: fm_protocol::PlaylistStart::Now,
+                    from: None,
+                },
+                "StopPlayList" => fm_protocol::PlaylistOperation::Stop,
+                "NextPlayListEntry" => fm_protocol::PlaylistOperation::Next,
+                _ => fm_protocol::PlaylistOperation::Previous,
+            };
+            Ok(Translation::Protocol(CommandPayload::PlaylistControl {
+                operation,
+            }))
+        }
         "OverlayInputAllOff" => {
             allowed(parameters, &["Function"])?;
             Ok(Translation::Compat(CompatIntent::AllOverlaysOff))

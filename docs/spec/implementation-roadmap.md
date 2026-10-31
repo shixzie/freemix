@@ -4964,7 +4964,9 @@ changes, and list edits apply while the playlist runs, keeping the on-air
 entry's timing (an edit that removes or
 disables the on-air entry is refused); Studio's Start in field schedules a
 start a chosen number of seconds ahead; no per-entry hard starts or
-calendar recurrence; no vMix API. The daemon now appends every realized
+calendar recurrence; vMix's `StartPlayList`, `StopPlayList`,
+`NextPlayListEntry`, and `PreviousPlayListEntry` verbs translate, but no vMix
+server is wired. The daemon now appends every realized
 Program change to `as-run.log` beside the bundle (wall clock, engine frame,
 input, and name), and `freemix-cli as-run` prints it. `OR-015` remains
 planned.

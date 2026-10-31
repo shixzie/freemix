@@ -507,3 +507,34 @@ fn set_input_name_becomes_a_rename_intent() {
     assert!(parse_http_query("Function=SetInputName&Input=2&Value=", &state).is_err());
     assert!(parse_http_query("Function=SetInputName&Value=Games", &state).is_err());
 }
+
+#[test]
+fn playlist_verbs_translate_to_playlist_control() {
+    let state = state();
+    for (function, operation) in [
+        (
+            "StartPlayList",
+            fm_protocol::PlaylistOperation::Start {
+                at: fm_protocol::PlaylistStart::Now,
+                from: None,
+            },
+        ),
+        ("StopPlayList", fm_protocol::PlaylistOperation::Stop),
+        ("NextPlayListEntry", fm_protocol::PlaylistOperation::Next),
+        (
+            "PreviousPlayListEntry",
+            fm_protocol::PlaylistOperation::Previous,
+        ),
+    ] {
+        assert_eq!(
+            parse_http_query(&format!("Function={function}"), &state),
+            Ok(Translation::Protocol(CommandPayload::PlaylistControl {
+                operation,
+            }))
+        );
+        assert!(
+            parse_http_query(&format!("Function={function}&Input=1"), &state).is_err(),
+            "{function}"
+        );
+    }
+}
