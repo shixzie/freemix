@@ -3221,7 +3221,7 @@ fn draw_bus_mixer_contents(
             let open_target = *fx;
             if fx_key(
                 ui,
-                open_target == Some(StripDspTarget::Aux(number)),
+                open_target == Some(StripDspTarget::Aux(number)) || !bus.dsp.is_default(),
                 l.text(Msg::FxKeyHover),
                 40.0,
             ) {
