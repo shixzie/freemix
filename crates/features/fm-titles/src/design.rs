@@ -96,7 +96,10 @@ impl Default for GroupTransform {
 /// `x <= px < x + width` and `y <= py < y + height`, and, in a corner square of
 /// side `r = min(corner_radius, width / 2, height / 2)`, the exact integer test
 /// `(2px + 1 - 2cx)^2 + (2py + 1 - 2cy)^2 <= (2r)^2` against that corner's
-/// circle center `(cx, cy)`. Masks are hard edged (no anti-aliasing).
+/// circle center `(cx, cy)`. In the renderer the mask reports a 4x4
+/// subpixel coverage so a rounded corner fades instead of stepping; the
+/// `contains` test above remains the exact pixel-center rule used by
+/// callers that need a binary answer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClipMask {
     pub bounds: Bounds,
