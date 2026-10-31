@@ -1376,6 +1376,110 @@ fn the_shot_clock_duration_can_be_replaced() {
 }
 
 #[test]
+fn a_roster_can_be_replaced_atomically() {
+    let mut board = board(GameClockConfig {
+        direction: ClockDirection::CountDown,
+        format: ClockFormat::MinutesSeconds,
+        frame_rate: FrameRate::new(30, 1).unwrap(),
+        initial_ms: 90_000,
+        limit_ms: None,
+    });
+    let jane = Player {
+        number: Some(23),
+        name: "Jane Doe".into(),
+    };
+    let sam = Player {
+        number: Some(7),
+        name: "Sam Roe".into(),
+    };
+    board
+        .apply(
+            0,
+            0,
+            &[
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Home,
+                    player: jane.clone(),
+                },
+                ScoreboardAction::SelectRosterPlayer {
+                    side: TeamSide::Home,
+                    index: Some(0),
+                },
+            ],
+        )
+        .unwrap();
+    // Replacing without the featured player clears the featured slot.
+    board
+        .apply(
+            1,
+            1,
+            &[ScoreboardAction::SetRoster {
+                side: TeamSide::Home,
+                roster: vec![sam.clone()],
+            }],
+        )
+        .unwrap();
+    assert_eq!(board.team(TeamSide::Home).roster, vec![sam.clone()]);
+    assert_eq!(board.team(TeamSide::Home).player, None);
+    // Keeping it leaves the featured player set.
+    board
+        .apply(
+            2,
+            2,
+            &[
+                ScoreboardAction::SelectRosterPlayer {
+                    side: TeamSide::Home,
+                    index: Some(0),
+                },
+                ScoreboardAction::SetRoster {
+                    side: TeamSide::Home,
+                    roster: vec![sam.clone()],
+                },
+            ],
+        )
+        .unwrap();
+    assert_eq!(board.team(TeamSide::Home).player, Some(sam.clone()));
+    // Duplicates and over-capacity rosters are refused whole.
+    let before = board.clone();
+    assert_eq!(
+        board.apply(
+            3,
+            3,
+            &[ScoreboardAction::SetRoster {
+                side: TeamSide::Home,
+                roster: vec![sam.clone(), sam.clone()],
+            }],
+        ),
+        Err(ScoreboardError::DuplicateRosterPlayer {
+            side: TeamSide::Home,
+            player: "7 Sam Roe".into(),
+        })
+    );
+    assert_eq!(board, before);
+    let full: Vec<Player> = (0..=u16::try_from(MAX_ROSTER_PLAYERS).unwrap())
+        .map(|number| Player {
+            number: Some(number),
+            name: format!("Player {number}"),
+        })
+        .collect();
+    assert_eq!(
+        board.apply(
+            3,
+            3,
+            &[ScoreboardAction::SetRoster {
+                side: TeamSide::Home,
+                roster: full,
+            }],
+        ),
+        Err(ScoreboardError::RosterFull {
+            side: TeamSide::Home,
+            maximum: MAX_ROSTER_PLAYERS,
+        })
+    );
+    assert_eq!(board, before);
+}
+
+#[test]
 fn sport_presets_carry_their_rules_and_clocks() {
     let rate = FrameRate::new(25, 1).unwrap();
     let basketball = ScoreboardPreset::Basketball

@@ -507,6 +507,12 @@ pub enum ScoreboardAction {
     ClearRoster {
         side: TeamSide,
     },
+    /// Replaces the roster atomically; the featured player is cleared when
+    /// it is not in the new roster.
+    SetRoster {
+        side: TeamSide,
+        roster: Vec<Player>,
+    },
     /// Saturates at `1..=max_period`.
     AdjustPeriod {
         delta: i32,
@@ -1061,6 +1067,33 @@ impl Scoreboard {
                 let team = self.team_mut(*side);
                 team.roster.clear();
                 team.player = None;
+            }
+            ScoreboardAction::SetRoster { side, roster } => {
+                if roster.len() > MAX_ROSTER_PLAYERS {
+                    return Err(ScoreboardError::RosterFull {
+                        side: *side,
+                        maximum: MAX_ROSTER_PLAYERS,
+                    });
+                }
+                for (index, player) in roster.iter().enumerate() {
+                    check_text(&player.name)?;
+                    if duplicate_roster_player(&roster[..index], player) {
+                        return Err(ScoreboardError::DuplicateRosterPlayer {
+                            side: *side,
+                            player: player.display(),
+                        });
+                    }
+                }
+                let keep = self
+                    .team_mut(*side)
+                    .player
+                    .as_ref()
+                    .is_some_and(|player| roster.contains(player));
+                let team = self.team_mut(*side);
+                team.roster.clone_from(roster);
+                if !keep {
+                    team.player = None;
+                }
             }
             ScoreboardAction::AdjustPeriod { delta } => {
                 let wanted = i64::from(self.period) + i64::from(*delta);
