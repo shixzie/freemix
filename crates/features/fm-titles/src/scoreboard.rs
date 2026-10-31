@@ -110,10 +110,13 @@ fn duplicate_roster_player(roster: &[Player], player: &Player) -> bool {
 }
 
 /// Inclusive bounds: scores are `0..=max_score`, periods `1..=max_period`.
+/// `shot_clock_ms` is the shot clock's count-down duration; `None` has no
+/// shot clock.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScoreboardRules {
     pub max_score: u32,
     pub max_period: u16,
+    pub shot_clock_ms: Option<u64>,
 }
 
 /// A sport's standard scoreboard rules and game clock.
@@ -140,18 +143,22 @@ impl ScoreboardPreset {
             Self::Basketball => ScoreboardRules {
                 max_score: 199,
                 max_period: 4,
+                shot_clock_ms: Some(24_000),
             },
             Self::AmericanFootball => ScoreboardRules {
                 max_score: 199,
                 max_period: 4,
+                shot_clock_ms: Some(40_000),
             },
             Self::IceHockey => ScoreboardRules {
                 max_score: 99,
                 max_period: 3,
+                shot_clock_ms: Some(30_000),
             },
             Self::Soccer => ScoreboardRules {
                 max_score: 99,
                 max_period: 2,
+                shot_clock_ms: None,
             },
         }
     }
@@ -511,6 +518,8 @@ pub enum ScoreboardError {
     },
     /// Starting an expired clock; set it first.
     ClockExpired,
+    /// The scoreboard's rules have no shot clock.
+    NoShotClock,
     UnknownExternalKey {
         index: usize,
     },
@@ -565,6 +574,7 @@ impl fmt::Display for ScoreboardError {
                 write!(formatter, "clock value {value_ms}ms exceeds {maximum}ms")
             }
             Self::ClockExpired => formatter.write_str("clock has expired; set it before starting"),
+            Self::NoShotClock => formatter.write_str("scoreboard rules have no shot clock"),
             Self::UnknownExternalKey { index } => {
                 write!(formatter, "external entry {index} has an unknown key")
             }
@@ -601,7 +611,7 @@ pub struct Scoreboard {
     away: TeamState,
     period: u16,
     clock: GameClock,
-    shot_clock: GameClock,
+    shot_clock: Option<GameClock>,
     rules: ScoreboardRules,
     revision: u64,
     last_frame: u64,
@@ -657,13 +667,18 @@ impl Scoreboard {
             away,
             period: 1,
             clock: GameClock::new(clock)?,
-            shot_clock: GameClock::new(GameClockConfig {
-                direction: ClockDirection::CountDown,
-                format: ClockFormat::MinutesSeconds,
-                frame_rate: clock.frame_rate,
-                initial_ms: DEFAULT_SHOT_CLOCK_MS,
-                limit_ms: None,
-            })?,
+            shot_clock: rules
+                .shot_clock_ms
+                .map(|initial_ms| {
+                    GameClock::new(GameClockConfig {
+                        direction: ClockDirection::CountDown,
+                        format: ClockFormat::MinutesSeconds,
+                        frame_rate: clock.frame_rate,
+                        initial_ms,
+                        limit_ms: None,
+                    })
+                })
+                .transpose()?,
             rules,
             revision: 0,
             last_frame: 0,
@@ -688,10 +703,12 @@ impl Scoreboard {
         &self.clock
     }
 
-    /// The shot clock: a stopped 24-second count-down by default.
+    /// The shot clock, when the rules have one: a stopped 24-second
+    /// count-down when it was created from [`ScoreboardRules`] without an
+    /// override.
     #[must_use]
-    pub const fn shot_clock(&self) -> &GameClock {
-        &self.shot_clock
+    pub const fn shot_clock(&self) -> Option<&GameClock> {
+        self.shot_clock.as_ref()
     }
 
     #[must_use]
@@ -736,7 +753,9 @@ impl Scoreboard {
     pub fn advance(&mut self, frame: u64) -> Result<Vec<ScoreboardEvent>, ScoreboardError> {
         self.check_frame(frame)?;
         self.clock.settle(frame);
-        self.shot_clock.settle(frame);
+        if let Some(shot_clock) = &mut self.shot_clock {
+            shot_clock.settle(frame);
+        }
         self.last_frame = frame;
         Ok(self.take_events())
     }
@@ -749,9 +768,11 @@ impl Scoreboard {
                 events.push(ScoreboardEvent::ClockExpired { frame });
             }
         }
-        if self.shot_clock.expiry_pending {
-            self.shot_clock.expiry_pending = false;
-            if let Some(frame) = self.shot_clock.expired_at {
+        if let Some(shot_clock) = &mut self.shot_clock
+            && shot_clock.expiry_pending
+        {
+            shot_clock.expiry_pending = false;
+            if let Some(frame) = shot_clock.expired_at {
                 events.push(ScoreboardEvent::ShotClockExpired { frame });
             }
         }
@@ -789,7 +810,9 @@ impl Scoreboard {
         }
         let mut next = self.clone();
         next.clock.settle(frame);
-        next.shot_clock.settle(frame);
+        if let Some(shot_clock) = &mut next.shot_clock {
+            shot_clock.settle(frame);
+        }
         next.last_frame = frame;
         let mut saturated = Vec::new();
         for (index, action) in actions.iter().enumerate() {
@@ -932,13 +955,17 @@ impl Scoreboard {
             ScoreboardAction::StartClock => self.clock.start(frame)?,
             ScoreboardAction::StopClock => self.clock.stop(frame),
             ScoreboardAction::SetClock { value_ms } => self.clock.set(frame, *value_ms)?,
-            ScoreboardAction::StartShotClock => self.shot_clock.start(frame)?,
-            ScoreboardAction::StopShotClock => self.shot_clock.stop(frame),
+            ScoreboardAction::StartShotClock => self.shot_clock_mut()?.start(frame)?,
+            ScoreboardAction::StopShotClock => self.shot_clock_mut()?.stop(frame),
             ScoreboardAction::SetShotClock { value_ms } => {
-                self.shot_clock.set(frame, *value_ms)?;
+                self.shot_clock_mut()?.set(frame, *value_ms)?;
             }
         }
         Ok(false)
+    }
+
+    fn shot_clock_mut(&mut self) -> Result<&mut GameClock, ScoreboardError> {
+        self.shot_clock.as_mut().ok_or(ScoreboardError::NoShotClock)
     }
 
     /// Bound field values at `frame` that differ from `scene`'s current ones.
@@ -962,7 +989,12 @@ impl Scoreboard {
             (binding.away_abbreviation, self.away.abbreviation.clone()),
             (binding.away_player, player(&self.away)),
             (binding.clock, self.clock.display(frame)),
-            (binding.shot_clock, self.shot_clock.display(frame)),
+            (
+                binding.shot_clock,
+                self.shot_clock
+                    .as_ref()
+                    .map_or_else(String::new, |clock| clock.display(frame)),
+            ),
         ];
         let numbers = [
             (binding.home_score, i64::from(self.home.score)),

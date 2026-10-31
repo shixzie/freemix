@@ -759,6 +759,7 @@ fn board(clock: GameClockConfig) -> Scoreboard {
         ScoreboardRules {
             max_score: 99,
             max_period: 4,
+            shot_clock_ms: Some(24_000),
         },
         clock,
     )
@@ -960,9 +961,9 @@ fn the_shot_clock_counts_down_and_reports_its_expiry_once() {
         .unwrap();
     assert_eq!(outcome.revision, 1);
     // 24 s at 25 fps is 600 frames, so it expires at frame 610.
-    assert_eq!(board.shot_clock().expiry_frame(), Some(610));
-    assert_eq!(board.shot_clock().value_ms(10), 24_000);
-    assert_eq!(board.shot_clock().display(10), "00:24");
+    assert_eq!(board.shot_clock().unwrap().expiry_frame(), Some(610));
+    assert_eq!(board.shot_clock().unwrap().value_ms(10), 24_000);
+    assert_eq!(board.shot_clock().unwrap().display(10), "00:24");
     assert_eq!(board.advance(609).unwrap(), Vec::new());
     assert_eq!(
         board.advance(610).unwrap(),
@@ -978,7 +979,7 @@ fn the_shot_clock_counts_down_and_reports_its_expiry_once() {
         )
         .unwrap();
     assert_eq!(outcome.revision, 2);
-    assert_eq!(board.shot_clock().value_ms(620), 14_000);
+    assert_eq!(board.shot_clock().unwrap().value_ms(620), 14_000);
 }
 
 #[test]
@@ -1139,6 +1140,7 @@ fn rosters_add_select_and_remove_players_atomically() {
         ScoreboardRules {
             max_score: 99,
             max_period: 4,
+            shot_clock_ms: Some(24_000),
         },
         GameClockConfig {
             direction: ClockDirection::CountDown,
@@ -1180,6 +1182,8 @@ fn sport_presets_carry_their_rules_and_clocks() {
         .unwrap();
     assert_eq!(basketball.rules().max_period, 4);
     assert_eq!(basketball.rules().max_score, 199);
+    assert_eq!(basketball.rules().shot_clock_ms, Some(24_000));
+    assert_eq!(basketball.shot_clock().unwrap().config().initial_ms, 24_000);
     assert_eq!(basketball.clock().config().initial_ms, 600_000);
     assert_eq!(
         basketball.clock().config().direction,
@@ -1193,8 +1197,16 @@ fn sport_presets_carry_their_rules_and_clocks() {
         )
         .unwrap();
     assert_eq!(soccer.rules().max_period, 2);
+    assert_eq!(soccer.rules().shot_clock_ms, None);
+    assert_eq!(soccer.shot_clock(), None);
     assert_eq!(soccer.clock().config().direction, ClockDirection::CountUp);
     assert_eq!(soccer.clock().config().limit_ms, Some(2_700_000));
+    assert_eq!(
+        soccer
+            .clone()
+            .apply(0, 0, &[ScoreboardAction::StartShotClock]),
+        Err(ScoreboardError::NoShotClock)
+    );
 }
 
 fn scoreboard_template() -> TitleTemplate {
