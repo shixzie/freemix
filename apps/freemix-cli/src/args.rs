@@ -1004,6 +1004,8 @@ pub enum Command {
         path: PathBuf,
         input: PathBuf,
         apply: bool,
+        /// Stream keys for keyed stream targets the import adds, by id.
+        stream_keys: Vec<(u128, String)>,
     },
     /// `title-design-check <file.fmdesign>`: validate a designer document
     /// (GX-002).
@@ -2473,9 +2475,31 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let path = required_path(&mut arguments, "project path")?;
             let input = required_path(&mut arguments, "export path")?;
             let mut apply = false;
-            for option in arguments.by_ref() {
+            let mut stream_keys = Vec::new();
+            loop {
+                let Some(option) = arguments.next() else {
+                    break;
+                };
                 match option.as_str() {
                     "--apply" => apply = true,
+                    "--stream-key" => {
+                        let value = required(&mut arguments, "stream key")?;
+                        let Some((id, key)) = value.split_once('=') else {
+                            return Err(ArgsError::InvalidChoice {
+                                field: "stream key (expected <id>=<key>)",
+                                value,
+                            });
+                        };
+                        let id: u128 = number(id, "stream id")?;
+                        if id == 0 {
+                            return Err(ArgsError::InvalidChoice {
+                                field: "stream id",
+                                value: id.to_string(),
+                            });
+                        }
+                        let key = secret("--stream-key", key.to_owned())?;
+                        stream_keys.push((id, key));
+                    }
                     _ => return Err(ArgsError::UnknownOption(option)),
                 }
             }
@@ -2483,6 +2507,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                 path,
                 input,
                 apply,
+                stream_keys,
             })
         }
         "title-design-check" => {

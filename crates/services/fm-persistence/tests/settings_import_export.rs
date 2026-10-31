@@ -656,3 +656,41 @@ fn apply_refuses_a_keyed_stream_target_addition() {
     let mut project = project();
     assert!(snapshot.apply_exported(&mut project).is_err());
 }
+
+#[test]
+fn apply_adds_a_keyed_stream_target_with_a_supplied_key() {
+    let mut snapshot = current();
+    snapshot = with(snapshot, "stream_targets.41.name", text("Live"));
+    snapshot = with(snapshot, "stream_targets.41.protocol", text("rtmp"));
+    snapshot = with(
+        snapshot,
+        "stream_targets.41.endpoint",
+        text("live.example.test/app"),
+    );
+    snapshot = with(
+        snapshot,
+        "stream_targets.41.output",
+        SettingValue::Reference(SettingReference {
+            kind: ReferenceKind::Output,
+            id: nz(30),
+        }),
+    );
+    snapshot = with(snapshot, "stream_targets.41.startup", text("stopped"));
+    snapshot = with(
+        snapshot,
+        "stream_targets.41.video_bitrate_kbps",
+        SettingValue::Integer(4500),
+    );
+    let mut project = project();
+    let keys = std::collections::BTreeMap::from([(41, "live-key-1234".to_owned())]);
+    snapshot
+        .apply_exported_with_keys(&mut project, &keys)
+        .unwrap();
+    let target = project
+        .stream_targets()
+        .iter()
+        .find(|target| target.id().get() == nz(41))
+        .unwrap();
+    assert_eq!(target.protocol(), StreamProtocol::Rtmp);
+    assert_eq!(target.key().unwrap().expose_secret(), "live-key-1234");
+}

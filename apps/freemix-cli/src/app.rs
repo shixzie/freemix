@@ -1089,7 +1089,11 @@ pub fn run(command: Command) -> AppResult<()> {
             path,
             input,
             apply,
-        } => settings_import(&path, &input, apply)?,
+            stream_keys,
+        } => {
+            let stream_keys = stream_keys.into_iter().collect();
+            settings_import(&path, &input, apply, &stream_keys)?;
+        }
         Command::TitleDesignCheck { path } => title_design_check(&path)?,
         Command::TitleApplyRow {
             path,
@@ -6110,7 +6114,12 @@ fn settings_export(path: &Path, output: &Path) -> AppResult<()> {
     Ok(())
 }
 
-fn settings_import(path: &Path, input: &Path, apply: bool) -> AppResult<()> {
+fn settings_import(
+    path: &Path,
+    input: &Path,
+    apply: bool,
+    stream_keys: &std::collections::BTreeMap<u128, String>,
+) -> AppResult<()> {
     let stored = if apply {
         load_stored_project(path)?
     } else {
@@ -6162,7 +6171,7 @@ fn settings_import(path: &Path, input: &Path, apply: bool) -> AppResult<()> {
         let mut project = stored.project().clone();
         outcome
             .result
-            .apply_exported(&mut project)
+            .apply_exported_with_keys(&mut project, stream_keys)
             .map_err(|error| AppFailure(format!("settings-import: {error}")))?;
         let configured = stored.with_project(project)?;
         ProjectStore::new(path)?.save(&configured)?;
@@ -7185,7 +7194,7 @@ Usage:
   freemix-cli scenes <show.freemix>
   freemix-cli asset-audit <show.freemix>
   freemix-cli settings-export <show.freemix> <settings.json>
-  freemix-cli settings-import <show.freemix> <settings.json> [--apply]
+  freemix-cli settings-import <show.freemix> <settings.json> [--apply] [--stream-key <stream-id>=<key>]...
   freemix-cli title-design-check <design.fmdesign>
   freemix-cli title-apply-row <show.freemix> <input-id> <row.json> [--keep-live] [--preview]
   freemix-cli title-design-import <show.freemix> <design.fmdesign> --id <nonzero-input-id> --name <name> [--font <Family=path.ttf>]...

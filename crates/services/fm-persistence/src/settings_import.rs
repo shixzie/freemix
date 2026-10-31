@@ -14,7 +14,7 @@ use std::{
 
 use fm_model::{
     AudioBus, Output, Project, ProjectSettings, RestartPolicy, StartupPolicy, StreamEndpoint,
-    StreamProtocol, StreamTarget, StreamTargetId,
+    StreamKey, StreamProtocol, StreamTarget, StreamTargetId,
 };
 use fm_types::{
     AudioFormat, BusId, Channel, ChannelLayout, DiscreteChannel, FrameRate, OutputId, SampleRate,
@@ -657,12 +657,27 @@ impl SettingsSnapshot {
     /// model refusal, or an invalid resulting format; nothing changes on
     /// error.
     pub fn apply_exported(&self, project: &mut Project) -> Result<(), SettingsApplyError> {
+        self.apply_exported_with_keys(project, &BTreeMap::new())
+    }
+
+    /// Like [`Self::apply_exported`], with `stream_keys` supplying the key for
+    /// each keyed stream target the snapshot adds, by target id.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::apply_exported`]; a keyed addition without a key is
+    /// refused.
+    pub fn apply_exported_with_keys(
+        &self,
+        project: &mut Project,
+        stream_keys: &BTreeMap<u128, String>,
+    ) -> Result<(), SettingsApplyError> {
         let mut candidate = project.clone();
         apply_format(self, &mut candidate)?;
         apply_restart(self, &mut candidate)?;
         apply_audio_buses(self, &mut candidate)?;
         apply_outputs(self, &mut candidate)?;
-        apply_stream_targets(self, &mut candidate)?;
+        apply_stream_targets(self, &mut candidate, stream_keys)?;
         *project = candidate;
         Ok(())
     }
@@ -944,6 +959,7 @@ fn apply_outputs(
 fn apply_stream_targets(
     snapshot: &SettingsSnapshot,
     project: &mut Project,
+    stream_keys: &BTreeMap<u128, String>,
 ) -> Result<(), SettingsApplyError> {
     let mut present = BTreeSet::new();
     for entity in snapshot
@@ -966,7 +982,7 @@ fn apply_stream_targets(
         if let Some(target) = existing {
             apply_existing_stream_target(snapshot, &key, entity, target, project)?;
         } else {
-            add_hls_stream_target(snapshot, &key, entity, id, project)?;
+            add_stream_target(snapshot, &key, entity, id, project, stream_keys)?;
         }
     }
     for target in project.stream_targets() {
@@ -1045,21 +1061,19 @@ fn apply_existing_stream_target(
         })
 }
 
-fn add_hls_stream_target(
+fn add_stream_target(
     snapshot: &SettingsSnapshot,
     key: &str,
     entity: EntityKey,
     id: NonZeroU128,
     project: &mut Project,
+    stream_keys: &BTreeMap<u128, String>,
 ) -> Result<(), SettingsApplyError> {
     let protocol = match setting_text(snapshot, &format!("{key}.protocol"))? {
+        "rtmp" => StreamProtocol::Rtmp,
+        "rtmps" => StreamProtocol::Rtmps,
+        "srt" => StreamProtocol::Srt,
         "hls" => StreamProtocol::Hls,
-        "rtmp" | "rtmps" | "srt" => {
-            return Err(SettingsApplyError::Model {
-                key: key.to_owned(),
-                reason: "adding a keyed stream target needs its stream key".to_owned(),
-            });
-        }
         _ => {
             return Err(SettingsApplyError::Invalid {
                 key: format!("{key}.protocol"),
@@ -1072,15 +1086,21 @@ fn add_hls_stream_target(
             key: format!("{key}.name"),
         })?
         .to_owned();
-    if snapshot
-        .get_path(&format!("{key}.backup_endpoint"))
-        .is_some()
-    {
-        return Err(SettingsApplyError::Model {
-            key: key.to_owned(),
-            reason: "an HLS stream target has no backup endpoint".to_owned(),
-        });
-    }
+    let backup = match snapshot.get_path(&format!("{key}.backup_endpoint")) {
+        Some(SettingValue::Text(text)) => {
+            Some(StreamEndpoint::parse_for(protocol, text).map_err(|_| {
+                SettingsApplyError::Invalid {
+                    key: format!("{key}.backup_endpoint"),
+                }
+            })?)
+        }
+        Some(_) => {
+            return Err(SettingsApplyError::Invalid {
+                key: format!("{key}.backup_endpoint"),
+            });
+        }
+        None => None,
+    };
     let endpoint = StreamEndpoint::parse_for(
         protocol,
         setting_text(snapshot, &format!("{key}.endpoint"))?,
@@ -1096,14 +1116,34 @@ fn add_hls_stream_target(
     let output = OutputId::new(
         setting_reference(snapshot, &format!("{key}.output"), ReferenceKind::Output)?.id,
     );
+    let stream_key = if protocol.carries_key() {
+        let text = stream_keys.get(&id.get()).ok_or_else(|| {
+            SettingsApplyError::Model {
+                key: key.to_owned(),
+                reason: "adding a keyed stream target needs its stream key (pass                          --stream-key <id>=<key>)"
+                    .to_owned(),
+            }
+        })?;
+        Some(StreamKey::parse(text).map_err(|error| SettingsApplyError::Model {
+            key: key.to_owned(),
+            reason: error.to_string(),
+        })?)
+    } else {
+        None
+    };
     let target = StreamTarget::new(
         StreamTargetId::new(id),
         name,
         protocol,
         endpoint,
-        None,
+        stream_key,
         output,
     )
+    .map_err(|error| SettingsApplyError::Model {
+        key: key.to_owned(),
+        reason: error.to_string(),
+    })?
+    .with_backup_endpoint(backup)
     .map_err(|error| SettingsApplyError::Model {
         key: key.to_owned(),
         reason: error.to_string(),
