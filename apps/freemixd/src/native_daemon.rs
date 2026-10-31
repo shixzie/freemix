@@ -3262,6 +3262,7 @@ impl NativeDaemon {
         let sync_samples = self.source_sync_samples();
         let sync = statistics::SyncSample::from_samples(&sync_samples);
         let encoder = encoder_sample(&self.recorders, &self.streams);
+        let slideshow_retained_bytes = self.video.slideshow_retained_bytes().unwrap_or(0);
         let telemetry = &mut self.telemetry;
         let tap = |tap: MonitorTap| {
             let counters = telemetry.monitor_taps[tap.index()];
@@ -3288,7 +3289,7 @@ impl NativeDaemon {
             audio_sink_dropped: telemetry.audio_sink_dropped,
             audio_source_stalls: telemetry.audio_source_stalls,
             audio_retained_bytes: telemetry.audio_retained_bytes,
-            slideshow_retained_bytes: self.slides.retained_bytes(),
+            slideshow_retained_bytes,
             recorder_outstanding_pairs: telemetry.recorder_outstanding_pairs,
             recorder_retained_bytes: telemetry.recorder_retained_bytes,
             stream_enqueued_pairs: telemetry.stream_enqueued_pairs_total,

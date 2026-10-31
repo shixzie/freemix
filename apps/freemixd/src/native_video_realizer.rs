@@ -180,6 +180,9 @@ enum VideoCommand {
     ForgetSlide {
         input: InputId,
     },
+    SlideshowRetainedBytes {
+        reply: SyncSender<u64>,
+    },
     Shutdown,
 }
 
@@ -411,6 +414,21 @@ impl NativeVideoHandle {
     pub(crate) fn forget_slide(&mut self, input: InputId) -> Result<(), String> {
         self.commands
             .send(VideoCommand::ForgetSlide { input })
+            .map_err(|_| "the video thread stopped".to_owned())
+    }
+
+    /// Bytes of slideshow textures the video thread retains.
+    ///
+    /// # Errors
+    ///
+    /// Returns the video thread stopping.
+    pub(crate) fn slideshow_retained_bytes(&mut self) -> Result<u64, String> {
+        let (reply, answer) = sync_channel(0);
+        self.commands
+            .send(VideoCommand::SlideshowRetainedBytes { reply })
+            .map_err(|_| "the video thread stopped".to_owned())?;
+        answer
+            .recv()
             .map_err(|_| "the video thread stopped".to_owned())
     }
 
@@ -736,6 +754,9 @@ impl VideoRealizer {
                     let _ = reply.send(retired);
                 }
                 VideoCommand::ForgetSlide { input } => self.slides.forget(input),
+                VideoCommand::SlideshowRetainedBytes { reply } => {
+                    let _ = reply.send(self.slides.retained_bytes());
+                }
                 VideoCommand::Shutdown => break,
             }
         }
