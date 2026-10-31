@@ -6,7 +6,7 @@
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
 (2026-10-19); items refreshed through protocol 2.133 / schema 93 (2026-10-31,
-at `09d78c85`). Every parity row is still `planned` (or `blocked`); these are
+at `b3d1abe2`). Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
 frame loop) is ranked separately in [Structural work before more
@@ -165,11 +165,14 @@ there come before any new breadth below.
     source (Protocol 2.116). Studio's Replay panel has 2x shuttle buttons and
     console keys play or pause the Replay player on Preview (else Program),
     step it a frame each way, and shuttle it at 2x each way, next to the
-    marks and capture keys. Remaining: the
+    marks and capture keys, and the Key profiles window binds a controller's
+    transport (channel 1 notes 36–43) to the replay marks, capture,
+    play/pause, stepping, and shuttling in one click. Remaining: the
     recorder takes a source's last
     decoded picture rather than a genlocked one, segment files from a
     previous run are removed rather than reloaded,
-    transitions and controller wiring, and certification are absent; Studio's
+    transitions and the dedicated two-profile replay controllers, and
+    certification are absent; Studio's
     Replay panel and the CLI record up to eight inputs and render their angles
     in an adaptive grid (Protocol 2.127), now led by the input and its linked
     A/B partner as channel tiles; storage health reaches Studio and the CLI (Protocol 2.125),
@@ -212,8 +215,10 @@ there come before any new breadth below.
     the wire (Protocol 2.130), the native mixer, the CLI (`--sends`), and
     Studio's BUSES window. Each bus now carries a persisted DSP chain that
     the native mixer processes after its fader, the snapshot reports it, and
-    Studio's BUSES window opens the FX editor on it (Protocol 2.133).
-    Remaining: `BusMatrix` bus processing, mix-minus
+    Studio's BUSES window opens the FX editor on it (Protocol 2.133); the
+    Web operator page lists the seven buses with their level and mute and
+    edits each chain in place. Remaining: `BusMatrix` bus processing,
+    mix-minus
     feeds, and device or network destinations are not wired, and the legacy
     project audio bus graph is unchanged (see the Phase 3 `AU-002`
     boundary).
