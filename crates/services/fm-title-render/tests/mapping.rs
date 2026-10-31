@@ -137,3 +137,23 @@ fn the_mapped_input_id_is_not_required() {
     // the unused import honest if the test grows an input-backed case.
     let _ = InputId::new(nz(1));
 }
+
+#[test]
+fn a_non_asset_image_is_refused_whole() {
+    let template = template();
+    let mut scene = scene(&template);
+    let before = scene.clone();
+    let mut bad = report();
+    bad.values.insert(
+        "logo".into(),
+        TitleFieldValue::Image("https://example.test/logo.png".into()),
+    );
+    assert_eq!(
+        apply_title_mapping(&mut scene, &template, 0, &bad),
+        Err(TitleMappingError::InvalidAsset {
+            field: "logo".into(),
+            asset: "https://example.test/logo.png".into(),
+        })
+    );
+    assert_eq!(scene, before);
+}

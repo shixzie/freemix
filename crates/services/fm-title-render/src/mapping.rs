@@ -14,6 +14,8 @@ use fm_titles::{Color, FieldValue, ImageSource, TitleScene, TitleTemplate, Updat
 pub enum TitleMappingError {
     /// The report names a field the template does not define.
     UnknownField { field: String },
+    /// An image value is not a project `asset://` reference.
+    InvalidAsset { field: String, asset: String },
     /// The scene refused the update (a stale revision, a duplicate field, or
     /// a value of the wrong type).
     Update(UpdateError),
@@ -25,6 +27,10 @@ impl fmt::Display for TitleMappingError {
             Self::UnknownField { field } => {
                 write!(formatter, "the title template has no field named {field:?}")
             }
+            Self::InvalidAsset { field, asset } => write!(
+                formatter,
+                "title field {field:?} names {asset:?}, which is not a project asset URI"
+            ),
             Self::Update(error) => error.fmt(formatter),
         }
     }
@@ -60,6 +66,14 @@ pub fn apply_title_mapping(
             .ok_or_else(|| TitleMappingError::UnknownField {
                 field: name.clone(),
             })?;
+        if let TitleFieldValue::Image(asset) = value {
+            fm_persistence::validate_asset_uri(asset).map_err(|_| {
+                TitleMappingError::InvalidAsset {
+                    field: name.clone(),
+                    asset: asset.clone(),
+                }
+            })?;
+        }
         updates.push((field.id, field_value(value)));
     }
     scene
