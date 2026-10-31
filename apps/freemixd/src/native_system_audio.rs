@@ -73,6 +73,8 @@ struct Source {
 pub(crate) struct NativeSystemAudio {
     sources: BTreeMap<InputId, Source>,
     format: Format,
+    /// The project's audio channel count; capture is decoded to it.
+    channels: u16,
     /// The engine frame last pulled for.
     last_frame: Option<u64>,
 }
@@ -100,6 +102,7 @@ impl NativeSystemAudio {
         clock_domain: ClockDomainId,
         dimensions: (u32, u32),
         sample_rate: SampleRate,
+        channels: u16,
     ) -> Self {
         let mut audio = Self {
             sources: BTreeMap::new(),
@@ -109,6 +112,7 @@ impl NativeSystemAudio {
                 dimensions,
                 sample_rate,
             },
+            channels,
             last_frame: None,
         };
         for SystemAudioInput {
@@ -149,7 +153,7 @@ impl NativeSystemAudio {
             self.format.rate,
         );
         config.sample_rate = self.format.sample_rate.hertz();
-        config.channels = 2;
+        config.channels = self.channels;
         match NetworkReceiver::start(config) {
             Ok(receiver) => {
                 source.receiver = Some(receiver);
@@ -394,6 +398,7 @@ mod tests {
             ClockDomainId::new(NonZeroU128::new(1).unwrap()),
             (32, 18),
             SampleRate::new(48_000).unwrap(),
+            2,
         )
     }
 

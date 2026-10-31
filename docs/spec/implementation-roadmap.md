@@ -2810,7 +2810,8 @@ Remaining gaps:
   outside it), and no real `PulseAudio`/`PipeWire` server listing has been
   exercised;
 - there is no edit command beyond replacing the source;
-- capture is stereo only, with no channel selection or per-input delay;
+- capture is decoded to the project's channel layout rather than fixed
+  stereo, but there is no per-input channel selection or delay;
 - there is no Windows (WASAPI loopback) or macOS capture, and no
   per-application capture;
 - there is no virtual audio device publishing Program or buses;
