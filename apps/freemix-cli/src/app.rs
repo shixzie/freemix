@@ -1009,6 +1009,12 @@ pub fn run(command: Command) -> AppResult<()> {
         Command::SettingsExport { path, output } => settings_export(&path, &output)?,
         Command::SettingsImport { path, input } => settings_import(&path, &input)?,
         Command::TitleDesignCheck { path } => title_design_check(&path)?,
+        Command::TitleApplyRow {
+            path,
+            input,
+            row,
+            keep_live,
+        } => crate::title_row::apply_row(&path, input, &row, keep_live)?,
         Command::AudioStrip {
             path,
             input,
@@ -7037,6 +7043,7 @@ Usage:
   freemix-cli settings-export <show.freemix> <settings.json>
   freemix-cli settings-import <show.freemix> <settings.json>
   freemix-cli title-design-check <design.fmdesign>
+  freemix-cli title-apply-row <show.freemix> <input-id> <row.json> [--keep-live]
   freemix-cli audio-strip <show.freemix> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp:-10000..=10000>]
   freemix-cli audio-label <show.freemix> <input> <label (empty clears)> [--key <key>] [--expect <revision>]
   freemix-cli audio-group <show.freemix> <input> <1..4|none> [--key <key>] [--expect <revision>]

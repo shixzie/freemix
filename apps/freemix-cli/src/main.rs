@@ -9,6 +9,7 @@ mod scene_animation;
 mod scene_render;
 mod shortcut_sets;
 mod title_animation;
+mod title_row;
 
 use std::process::ExitCode;
 

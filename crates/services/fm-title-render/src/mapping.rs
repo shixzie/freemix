@@ -7,7 +7,9 @@
 use core::fmt;
 
 use fm_data::{TitleFieldValue, TitleMappingReport};
-use fm_titles::{Color, FieldValue, ImageSource, TitleScene, TitleTemplate, UpdateError};
+use fm_titles::{
+    Color, FieldValue, ImageSource, TitleFieldSet, TitleScene, TitleTemplate, UpdateError,
+};
 
 /// Why a mapped row could not be applied.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,6 +59,37 @@ pub fn apply_title_mapping(
     expected_revision: u64,
     report: &TitleMappingReport,
 ) -> Result<u64, TitleMappingError> {
+    let updates = mapping_updates(template, report)?;
+    scene
+        .update_fields(expected_revision, &updates)
+        .map_err(Into::into)
+}
+
+/// Writes every value in `report` onto the matching field of a standalone
+/// field set.
+///
+/// This is [`apply_title_mapping`] without a scene: the project keeps a
+/// title's typed values and per-field revisions in a [`TitleFieldSet`] (see
+/// `freemix-cli title-apply-row`), so mapped rows reach the project schema
+/// through the same field resolution and validation.
+///
+/// # Errors
+///
+/// Returns the same errors as [`apply_title_mapping`].
+pub fn apply_title_mapping_to_fields(
+    fields: &mut TitleFieldSet,
+    template: &TitleTemplate,
+    expected_revision: u64,
+    report: &TitleMappingReport,
+) -> Result<u64, TitleMappingError> {
+    let updates = mapping_updates(template, report)?;
+    fields.update(expected_revision, &updates).map_err(Into::into)
+}
+
+fn mapping_updates(
+    template: &TitleTemplate,
+    report: &TitleMappingReport,
+) -> Result<Vec<(fm_titles::FieldId, FieldValue)>, TitleMappingError> {
     let mut updates = Vec::with_capacity(report.values.len());
     for (name, value) in &report.values {
         let field = template
@@ -76,9 +109,7 @@ pub fn apply_title_mapping(
         }
         updates.push((field.id, field_value(value)));
     }
-    scene
-        .update_fields(expected_revision, &updates)
-        .map_err(Into::into)
+    Ok(updates)
 }
 
 fn field_value(value: &TitleFieldValue) -> FieldValue {

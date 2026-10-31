@@ -700,3 +700,120 @@ fn title_design_check_validates_a_designer_document() {
     fs::write(&design, "{\"contract\": \"nope\"}").unwrap();
     assert!(!run(&["title-design-check", text(&design)]).status.success());
 }
+
+/// A `.fmtitle` source document with two fields and no font: a number and a
+/// color.
+const ROW_TITLE_SOURCE: &str = r##"{
+  "schema_version": 104,
+  "template": {
+    "id": 7,
+    "name": "Score bar",
+    "width": 1920,
+    "height": 1080,
+    "background": "#00000000",
+    "fields": [
+      {"id": 2, "name": "Bar color", "default": {"type": "color", "value": "#112233FF"}},
+      {"id": 1, "name": "Score", "default": {"type": "number", "value": -4}}
+    ],
+    "elements": [
+      {"id": 1, "name": "Bar", "bounds": {"x": 0, "y": 900, "width": 1920, "height": 120}, "z_index": 0, "visible": true, "style": {"fill": "#ffffffff", "background": null, "opacity": 255, "font": null, "alignment": {"horizontal": "start", "vertical": "start"}}, "color_field": 2, "kind": {"type": "rectangle"}}
+    ],
+    "animation": {"timebase": "30/1", "revision": 0, "in_frames": 0, "out_frames": 0, "tracks": []}
+  },
+  "fonts": [],
+  "clocks": []
+}
+"##;
+
+fn title_fields(project: &StoredProject, id: u128) -> (u64, Vec<fm_model::TitleFieldEntry>) {
+    let input = project
+        .project()
+        .inputs()
+        .iter()
+        .find(|candidate| candidate.id == input(id))
+        .expect("title input exists");
+    match &input.kind {
+        InputKind::Title(title) => (title.field_revision, title.fields.clone()),
+        other => panic!("input {id} is {other:?}, not a title"),
+    }
+}
+
+#[test]
+fn title_apply_row_writes_a_mapped_row_into_the_project() {
+    let root = TempRoot::new();
+    let show = root.path("row.freemix");
+    new_project(&show, "Row");
+    let template = root.path("score-bar.fmtitle");
+    fs::write(&template, ROW_TITLE_SOURCE).unwrap();
+    assert_success(&run(&[
+        "title-input-add",
+        text(&show),
+        "--id",
+        "9",
+        "--name",
+        "Score bar",
+        "--template",
+        text(&template),
+    ]));
+
+    let row = root.path("row.json");
+    fs::write(&row, r##"{"Score": "12", "Bar color": "#ABCDEF"}"##).unwrap();
+    let out = assert_success(&run(&[
+        "title-apply-row",
+        text(&show),
+        "9",
+        text(&row),
+    ]));
+    assert_eq!(
+        out.lines().last(),
+        Some("title-apply-row: input=9 fields=2 revision=1")
+    );
+    let (revision, fields) = title_fields(&load(&show), 9);
+    assert_eq!(revision, 1);
+    assert_eq!(fields[0].id.get().get(), 1);
+    assert_eq!(fields[0].value, fm_model::TitleFieldValue::Number(12));
+    assert_eq!(fields[0].revision, 1);
+    assert_eq!(fields[1].id.get().get(), 2);
+    assert_eq!(
+        fields[1].value,
+        fm_model::TitleFieldValue::Color(fm_model::Rgba8::new(0xab, 0xcd, 0xef, 0xff))
+    );
+
+    // A field that fails coercion refuses the whole row and saves nothing.
+    let manifest = fs::read(show.join("project.json")).unwrap();
+    fs::write(&row, r#"{"Score": "twelve"}"#).unwrap();
+    let refused = run(&["title-apply-row", text(&show), "9", text(&row)]);
+    assert_failure_contains(&refused, "field(s) failed");
+    assert_eq!(fs::read(show.join("project.json")).unwrap(), manifest);
+
+    // A row key that names no template field is refused before any update.
+    fs::write(&row, r#"{"Nope": 1}"#).unwrap();
+    assert_failure_contains(
+        &run(&["title-apply-row", text(&show), "9", text(&row)]),
+        "does not define",
+    );
+
+    // --keep-live applies the fields that mapped and keeps the failed one.
+    fs::write(
+        &row,
+        r##"{"Score": "twelve", "Bar color": "#010203"}"##,
+    )
+    .unwrap();
+    let out = assert_success(&run(&[
+        "title-apply-row",
+        text(&show),
+        "9",
+        text(&row),
+        "--keep-live",
+    ]));
+    assert!(out.contains("field \"Score\" coercion-error"), "{out}");
+    let (revision, fields) = title_fields(&load(&show), 9);
+    assert_eq!(revision, 2);
+    assert_eq!(fields[0].value, fm_model::TitleFieldValue::Number(12));
+    assert_eq!(fields[0].revision, 1);
+    assert_eq!(
+        fields[1].value,
+        fm_model::TitleFieldValue::Color(fm_model::Rgba8::new(0x01, 0x02, 0x03, 0xff))
+    );
+    assert_eq!(fields[1].revision, 2);
+}

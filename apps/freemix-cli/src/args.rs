@@ -980,6 +980,16 @@ pub enum Command {
     TitleDesignCheck {
         path: PathBuf,
     },
+    /// `title-apply-row <project> <input> <row.json>`: coerce a flat JSON
+    /// row onto a title input's template fields and save it (GX-005).
+    TitleApplyRow {
+        path: PathBuf,
+        input: u128,
+        row: PathBuf,
+        /// Apply the fields that mapped and keep the live value of any field
+        /// that failed instead of refusing the whole row.
+        keep_live: bool,
+    },
     AudioStrip {
         path: PathBuf,
         input: u128,
@@ -2426,6 +2436,24 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let path = required_path(&mut arguments, "design path")?;
             reject_extra(&mut arguments)?;
             Ok(Command::TitleDesignCheck { path })
+        }
+        "title-apply-row" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let row = required_path(&mut arguments, "row path")?;
+            let mut keep_live = false;
+            for option in arguments.by_ref() {
+                match option.as_str() {
+                    "--keep-live" => keep_live = true,
+                    _ => return Err(ArgsError::UnknownOption(option)),
+                }
+            }
+            Ok(Command::TitleApplyRow {
+                path,
+                input,
+                row,
+                keep_live,
+            })
         }
         "audio-strip" => parse_audio_strip(arguments),
         mixer @ ("audio-label"

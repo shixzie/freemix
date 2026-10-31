@@ -4807,9 +4807,15 @@ no XPath, spreadsheet,
 Google Sheets, chat, or database adapters, no real network polling, and
 `fm-title-render`'s `apply_title_mapping` now writes a mapped report onto a
 `TitleScene` atomically by template field name, so title text, number, color,
-image, and field-backed ticker elements update; mapped values do not yet feed
-the project schema, crawl item lists, or a daemon. Item 4 remains incomplete
-and `GX-004` remains planned.
+image, and field-backed ticker elements update, and
+`apply_title_mapping_to_fields` writes the same report onto a standalone
+`TitleFieldSet`. `freemix-cli title-apply-row` reads one flat JSON row keyed
+by template field name, coerces each value with `fm-data`'s title rules,
+refuses unknown field names, failed fields, and non-`asset://` images before
+saving (or keeps the live value of a failed field with `--keep-live`), and
+writes the mapped values and per-field revisions into the title input's
+`project.json` fields. Mapped values do not yet feed crawl item lists, the
+daemon, or a UI. Item 4 remains incomplete and `GX-004` remains planned.
 
 Current implementation boundary for item 4 title binding (`GX-005`):
 `fm-data` binds rows onto text, integer, color, validated image URI (scheme
@@ -4822,12 +4828,17 @@ bounded strftime-like pattern. Bindings can follow the cursor-selected row. A
 preview state stages a result with a per-field change list against live values
 and commits atomically with a revision counter, stale-stage detection, and a
 choice between refusing errored results and keeping live values for failed
-fields. Remaining gaps: bound values do not reach `fm-titles`, the renderer,
-the project schema, the protocol, or a UI preview; there is no time-zone
-database or localization; image URIs are never fetched; and preview state is
-in memory only. `GX-005` remains planned. Preview state now round-trips through a strict,
-versioned text document (`PreviewSnapshot`), but it is not yet stored in a
-project or shown by a UI.
+fields. `fm-title-render` writes mapped reports onto a `TitleScene` and a
+standalone `TitleFieldSet` by template field name, and
+`freemix-cli title-apply-row` coerces one flat JSON row (refusing unknown
+fields, failed coercions, and non-`asset://` images unless `--keep-live`
+keeps the live value of each failed field) and saves the result into the
+title input's `project.json` fields with per-field revisions. Remaining gaps:
+no daemon, protocol command, or UI preview drives a mapped row; there is no
+time-zone database or localization; image URIs are never fetched; and
+preview state is in memory only. `GX-005` remains planned. Preview state now
+round-trips through a strict, versioned text document (`PreviewSnapshot`),
+but it is not yet stored in a project or shown by a UI.
 
 Current implementation boundary for item 5: `fm-playback` provides a
 fixture-backed `ListPlayer` that advances once per monotonic engine frame tick

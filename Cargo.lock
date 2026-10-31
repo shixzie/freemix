@@ -2323,6 +2323,7 @@ dependencies = [
  "fm-command",
  "fm-compositor",
  "fm-control",
+ "fm-data",
  "fm-engine",
  "fm-grade",
  "fm-model",
