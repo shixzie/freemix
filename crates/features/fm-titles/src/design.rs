@@ -506,9 +506,70 @@ impl TitleDesign {
         Ok(design)
     }
 
+    /// Creates a design from decoded parts, validating the whole document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DesignError`] for an invalid tree, node bound, field, or
+    /// animation clip.
+    #[allow(clippy::too_many_arguments)] // one field per decoded design section
+    pub fn from_parts(
+        id: TemplateId,
+        name: String,
+        width: u32,
+        height: u32,
+        background: Color,
+        fields: Vec<FieldDefinition>,
+        nodes: BTreeMap<ElementId, DesignNode>,
+        roots: Vec<ElementId>,
+        children: BTreeMap<ElementId, Vec<ElementId>>,
+        animation: TitleClip,
+    ) -> Result<Self, DesignError> {
+        let design = Self {
+            id,
+            name,
+            width,
+            height,
+            background,
+            fields,
+            nodes,
+            roots,
+            children,
+            animation,
+        };
+        design.validate()?;
+        Ok(design)
+    }
+
     #[must_use]
     pub const fn id(&self) -> TemplateId {
         self.id
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub const fn background(&self) -> Color {
+        self.background
+    }
+
+    #[must_use]
+    pub fn fields(&self) -> &[FieldDefinition] {
+        &self.fields
+    }
+
+    /// Every node in id order.
+    pub fn nodes(&self) -> impl Iterator<Item = (&ElementId, &DesignNode)> {
+        self.nodes.iter()
+    }
+
+    /// Each group's ordered children.
+    #[must_use]
+    pub const fn children_map(&self) -> &BTreeMap<ElementId, Vec<ElementId>> {
+        &self.children
     }
 
     #[must_use]

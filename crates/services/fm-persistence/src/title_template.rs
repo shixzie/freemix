@@ -1285,19 +1285,19 @@ pub fn encode_title_template(stored: &StoredTitleTemplate) -> Result<String, Tit
     Ok(output)
 }
 
-fn write_string(output: &mut String, value: &str) {
+pub(crate) fn write_string(output: &mut String, value: &str) {
     output.push('"');
     escape_string(output, value);
     output.push('"');
 }
 
-fn write_color(output: &mut String, color: Color) {
+pub(crate) fn write_color(output: &mut String, color: Color) {
     output.push('"');
     write_hex_color(output, Rgba8::new(color.r, color.g, color.b, color.a));
     output.push('"');
 }
 
-fn write_field_value(output: &mut String, value: &FieldValue) {
+pub(crate) fn write_field_value(output: &mut String, value: &FieldValue) {
     match value {
         FieldValue::Text(text) => {
             output.push_str("{\"type\": \"text\", \"value\": ");
@@ -1319,7 +1319,7 @@ fn write_field_value(output: &mut String, value: &FieldValue) {
     output.push('}');
 }
 
-fn write_element(output: &mut String, element: &Element) {
+pub(crate) fn write_element(output: &mut String, element: &Element) {
     write!(output, "{{\"id\": {}, \"name\": ", element.id)
         .expect("writing to a string cannot fail");
     write_string(output, &element.name);
@@ -1365,7 +1365,7 @@ fn write_element(output: &mut String, element: &Element) {
 }
 
 /// Writes `"animation": {...}` with the tracks in clip order.
-fn write_animation(
+pub(crate) fn write_animation(
     output: &mut String,
     animation: &TitleAnimation,
 ) -> Result<(), TitleTemplateError> {
@@ -1825,7 +1825,7 @@ fn parse_color(value: &str) -> Result<Color, DecodeError> {
     Ok(Color::new(color.red, color.green, color.blue, color.alpha))
 }
 
-fn parse_field(value: Value) -> Result<FieldDefinition, DecodeError> {
+pub(crate) fn parse_field(value: Value) -> Result<FieldDefinition, DecodeError> {
     let mut object = Object::new(value, "title template field")?;
     let field = FieldDefinition {
         id: FieldId::new(object.nonzero_u128("id")?),
@@ -1860,7 +1860,7 @@ fn parse_field_value(value: Value) -> Result<FieldValue, DecodeError> {
     Ok(value)
 }
 
-fn parse_element(value: Value) -> Result<Element, TitleTemplateError> {
+pub(crate) fn parse_element(value: Value) -> Result<Element, TitleTemplateError> {
     let mut object = Object::new(value, "title element")?;
     let id = ElementId::new(object.nonzero_u128("id")?);
     let name = object.string("name")?;
@@ -2017,7 +2017,7 @@ fn parse_kind(value: Value) -> Result<ElementKind, DecodeError> {
     Ok(kind)
 }
 
-fn parse_animation(value: Value) -> Result<TitleAnimation, TitleTemplateError> {
+pub(crate) fn parse_animation(value: Value) -> Result<TitleAnimation, TitleTemplateError> {
     let mut object = Object::new(value, "title animation")?;
     let timebase = parse_timebase(&object.string("timebase")?)?;
     let revision = object.u64("revision")?;

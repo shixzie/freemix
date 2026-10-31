@@ -15,6 +15,7 @@ mod recent;
 mod settings_export;
 mod settings_import;
 mod store;
+mod title_design;
 mod title_template;
 
 pub use append::{
@@ -83,6 +84,10 @@ pub use settings_import::{
     ImportPlan, ImportResolutions, KeyChange, MergeStrategy, SectionChoice,
 };
 pub use store::{MAX_MANIFEST_BYTES, ProjectStore, StoreError};
+pub use title_design::{
+    MAX_TITLE_DESIGN_BYTES, TITLE_DESIGN_CONTRACT, TitleDesignError, decode_title_design,
+    encode_title_design, read_title_design_file, write_title_design_file,
+};
 pub use title_template::{
     ImportedTitleFont, ImportedTitleTemplate, MAX_TITLE_TEMPLATE_BYTES, StoredTitleTemplate,
     TITLE_TEMPLATE_EXTENSION, TitleFontAsset, TitleImportError, TitleIssue, TitleProblem,

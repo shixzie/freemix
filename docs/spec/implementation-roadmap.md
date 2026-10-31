@@ -4161,8 +4161,10 @@ remove, retime, phase stretch, and every other clip edit onto atomic
 `fm-animation` edits and validates the whole document, with bounded snapshot
 undo and redo. Remaining gaps: group transforms are translation and opacity
 only, rendering is CPU-only, and there is no
-designer UI, live field editor, design persistence, protocol, or engine
-playback. `GX-002` remains planned.
+designer UI, live field editor, protocol, or engine playback; designs persist
+as strict `.fmdesign` documents (`fm-persistence::encode_title_design` /
+`decode_title_design`) but no UI or protocol reads them. `GX-002` remains
+planned.
 
 Current implementation boundary for the keyframe animation editor (`GX-011`):
 `fm-animation` is the shared, pure model: Q16 easing presets with stable ids
