@@ -5,8 +5,8 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.137 / schema 97 (2026-10-31,
-at `efee1ebf`). Every parity row is still `planned` (or `blocked`); these are
+(2026-10-19); items refreshed through protocol 2.147 / schema 104 (2026-10-31,
+at `f5777572`). Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
 frame loop) is ranked separately in [Structural work before more
@@ -81,9 +81,9 @@ there come before any new breadth below.
    RC-004 boundary below). This is a P0 row.
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
    a real input end to end (engine, protocol, persistence, both daemons,
-   Studio), and the native daemon prefetches each list's next, previous, and
-   first items so Auto Next, Next, Previous, and First switch files
-   gaplessly, Studio's list card shows each item's own picture, and each
+   Studio), and the native daemon prefetches each list's next, previous,
+   first, and last items so Auto Next, Next, Previous, First, and Last
+   switch files gaplessly, Studio's list card shows each item's own picture, and each
    list has its own transition between items
    (cut, fade, dip to black, or wipe, with a length; Protocol 2.95, schema
    77) that both daemons run on Auto Next and Next, the native one
