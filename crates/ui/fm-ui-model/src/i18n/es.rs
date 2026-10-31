@@ -6216,6 +6216,16 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("esta acción no tiene control MIDI"),
     ),
     (Msg::MidiControl, t("CC {number} · canal {channel}")),
+    (Msg::MidiValues, t("Valores MIDI")),
+    (Msg::MidiValueMonitorLevel, t("Nivel de monitores")),
+    (
+        Msg::MidiValueLearnHover,
+        t("Asignar el próximo controlador que reciba esta consola a este valor"),
+    ),
+    (
+        Msg::MidiValueControlHover,
+        t("El controlador que mueve este valor; su rango 0–127 se asigna al rango del valor"),
+    ),
     (Msg::DesignEffectDeinterlace, t("Desentrelazar")),
     (
         Msg::DesignEffectDeinterlaceHover,

@@ -138,6 +138,7 @@ pub use media_transport::{
 pub use menu::ConsoleLayout;
 pub use midi_bindings::{
     MAX_MIDI_BINDINGS, MidiBindings, MidiControlKind, MidiFeedback, MidiInput, MidiTrigger,
+    MidiValueTarget,
 };
 pub use playlist::{
     Countdown, EntryForm, EntryRole, ListEdit, PlaylistIntent, PlaylistPhase,
@@ -1515,6 +1516,24 @@ struct TBarKeys {
     kind: ManualTransitionKind,
 }
 
+/// The intent one continuous MIDI control sends for `target`: its value
+/// maps onto the target's range.
+fn value_intent(state: &StudioUiState, target: MidiValueTarget, input: MidiInput) -> StudioIntent {
+    match target {
+        MidiValueTarget::MonitorLevel => {
+            let muted = state
+                .view
+                .as_ref()
+                .is_some_and(|view| view.audio_mixer.monitor.muted);
+            let gain_millidb = -96_000 + i32::from(input.value) * 120_000 / 127;
+            StudioIntent::AudioMixer(fm_protocol::AudioMixerOperation::SetMonitorLevel {
+                gain_millidb,
+                muted,
+            })
+        }
+    }
+}
+
 /// The lamp state of one console action: `Some(true)` while it shows an
 /// active state, `Some(false)` while it shows an inactive one, `None` when
 /// the action has no visible state.
@@ -2138,8 +2157,25 @@ impl StudioShell {
         state: &StudioUiState,
         inputs: &[MidiInput],
     ) -> Vec<StudioIntent> {
-        let presses = self.key_profiles.midi.presses(inputs);
         let mut intents = Vec::new();
+        let mut action_inputs = Vec::new();
+        for input in inputs {
+            if let Some(target) = self.key_profiles_window.midi_value_learning {
+                // A continuous value is learned from a controller change,
+                // not from a note.
+                if input.trigger.kind == MidiControlKind::Control {
+                    self.key_profiles.midi.bind_value(input.trigger, target);
+                    self.key_profiles_window.midi_value_learning = None;
+                }
+                continue;
+            }
+            if let Some(target) = self.key_profiles.midi.value_target(input.trigger) {
+                intents.push(value_intent(state, target, *input));
+                continue;
+            }
+            action_inputs.push(*input);
+        }
+        let presses = self.key_profiles.midi.presses(&action_inputs);
         for trigger in presses {
             if let Some(action) = self.key_profiles_window.midi_learning.take() {
                 self.key_profiles.midi.bind(trigger, action);
@@ -5160,5 +5196,35 @@ mod tests {
         );
         assert!(shell.key_profiles.midi.bind(trigger, ConsoleAction::Cut));
         assert!(shell.midi_feedback(&state).is_empty());
+    }
+    /// RC-005: a controller bound to a value maps its 0-127 range onto the
+    /// monitor level and sends the matching live mixer operation.
+    #[test]
+    fn a_bound_midi_controller_drives_the_monitor_level() {
+        let mut shell = StudioShell::default();
+        let state = crate::hover_audit::bank_fixture();
+        let trigger = MidiTrigger::new(MidiControlKind::Control, 1, 7).unwrap();
+        assert!(
+            shell
+                .key_profiles
+                .midi
+                .bind_value(trigger, MidiValueTarget::MonitorLevel)
+        );
+        let intents = shell.receive_midi(
+            &state,
+            &[MidiInput {
+                trigger,
+                value: 127,
+            }],
+        );
+        match &intents[..] {
+            [
+                StudioIntent::AudioMixer(fm_protocol::AudioMixerOperation::SetMonitorLevel {
+                    gain_millidb,
+                    ..
+                }),
+            ] => assert_eq!(*gain_millidb, 24_000),
+            other => panic!("unexpected intents: {other:?}"),
+        }
     }
 }

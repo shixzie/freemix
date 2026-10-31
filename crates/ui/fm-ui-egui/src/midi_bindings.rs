@@ -29,6 +29,7 @@ use crate::l10n::{Arg, Locale, Msg};
 /// Most MIDI bindings one console keeps.
 pub const MAX_MIDI_BINDINGS: usize = 64;
 const PREFIX: &str = "keymap.midi.";
+const VALUE_PREFIX: &str = "keymap.midi.value.";
 
 /// Which kind of MIDI message a trigger answers.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -127,10 +128,45 @@ pub struct MidiFeedback {
     pub value: u8,
 }
 
+/// A continuous console value a MIDI fader or knob can drive.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum MidiValueTarget {
+    /// The monitor bus's headphone level; 0 is the fader's floor and 127
+    /// its ceiling.
+    MonitorLevel,
+}
+
+impl MidiValueTarget {
+    /// Every value target, in the order the profile editor lists them.
+    #[must_use]
+    pub const fn all() -> [Self; 1] {
+        [Self::MonitorLevel]
+    }
+
+    /// The target's name in the preferences file.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::MonitorLevel => "monitor_level",
+        }
+    }
+
+    /// Parses [`Self::token`].
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::all()
+            .into_iter()
+            .find(|target| target.token() == token)
+    }
+}
+
 /// The console's MIDI bindings; see the module documentation.
 #[derive(Clone, Debug, Default)]
+#[allow(clippy::zero_sized_map_values)] // value targets stay unit enums
 pub struct MidiBindings {
     bindings: BTreeMap<MidiTrigger, ConsoleAction>,
+    /// Continuous controls bound to a value rather than an action.
+    values: BTreeMap<MidiTrigger, MidiValueTarget>,
     /// Triggers held since their press (runtime only).
     held: BTreeSet<MidiTrigger>,
 }
@@ -165,20 +201,69 @@ impl MidiBindings {
         self.bindings.get(&trigger).copied()
     }
 
-    /// Binds `trigger` to `action`, taking it from any other action and
-    /// dropping `action`'s previous trigger; `false` (and nothing changes)
-    /// when the console already keeps [`MAX_MIDI_BINDINGS`] other bindings.
+    /// Binds `trigger` to `action`, taking it from any other action or
+    /// value and dropping `action`'s previous trigger; `false` (and nothing
+    /// changes) when the console already keeps [`MAX_MIDI_BINDINGS`] other
+    /// bindings.
     pub fn bind(&mut self, trigger: MidiTrigger, action: ConsoleAction) -> bool {
         let previous = self.trigger_of(action);
         let grows = previous.is_none() && !self.bindings.contains_key(&trigger);
-        if grows && self.bindings.len() >= MAX_MIDI_BINDINGS {
+        if grows && self.bindings.len() + self.values.len() >= MAX_MIDI_BINDINGS {
             return false;
         }
         if let Some(previous) = previous {
             self.bindings.remove(&previous);
         }
+        self.values.remove(&trigger);
         self.bindings.insert(trigger, action);
         true
+    }
+
+    /// The trigger bound to value `target`, if any.
+    #[must_use]
+    pub fn value_trigger(&self, target: MidiValueTarget) -> Option<MidiTrigger> {
+        self.values
+            .iter()
+            .find_map(|(trigger, bound)| (*bound == target).then_some(*trigger))
+    }
+
+    /// The value `trigger` drives, if any.
+    #[must_use]
+    pub fn value_target(&self, trigger: MidiTrigger) -> Option<MidiValueTarget> {
+        self.values.get(&trigger).copied()
+    }
+
+    /// Every value binding, by trigger.
+    pub fn value_bindings(&self) -> impl Iterator<Item = (MidiTrigger, MidiValueTarget)> + '_ {
+        self.values
+            .iter()
+            .map(|(trigger, target)| (*trigger, *target))
+    }
+
+    /// Binds `trigger` to value `target`, taking it from any action or other
+    /// value and dropping `target`'s previous trigger; `false` (and nothing
+    /// changes) when the console already keeps [`MAX_MIDI_BINDINGS`] other
+    /// bindings.
+    pub fn bind_value(&mut self, trigger: MidiTrigger, target: MidiValueTarget) -> bool {
+        let previous = self.value_trigger(target);
+        let grows = previous.is_none() && !self.values.contains_key(&trigger);
+        if grows && self.bindings.len() + self.values.len() >= MAX_MIDI_BINDINGS {
+            return false;
+        }
+        if let Some(previous) = previous {
+            self.values.remove(&previous);
+        }
+        self.bindings.remove(&trigger);
+        self.values.insert(trigger, target);
+        true
+    }
+
+    /// Drops `target`'s value binding; whether it had one.
+    pub fn unbind_value(&mut self, target: MidiValueTarget) -> bool {
+        match self.value_trigger(target) {
+            Some(trigger) => self.values.remove(&trigger).is_some(),
+            None => false,
+        }
     }
 
     /// Drops `action`'s binding; whether it had one.
@@ -214,12 +299,27 @@ impl MidiBindings {
         self.bindings
             .iter()
             .map(|(trigger, action)| (format!("{PREFIX}{}", trigger.token()), action.token()))
+            .chain(self.values.iter().map(|(trigger, target)| {
+                (
+                    format!("{VALUE_PREFIX}{}", trigger.token()),
+                    target.token().to_owned(),
+                )
+            }))
             .collect()
     }
 
     /// Applies one preference line; `false` for a key that is not a MIDI
     /// binding or an unusable one.
     pub fn apply_preference(&mut self, key: &str, value: &str) -> bool {
+        if let Some(rest) = key.strip_prefix(VALUE_PREFIX) {
+            let Some(trigger) = MidiTrigger::from_token(rest) else {
+                return false;
+            };
+            let Some(target) = MidiValueTarget::from_token(value) else {
+                return false;
+            };
+            return self.bind_value(trigger, target);
+        }
         let Some(trigger) = key.strip_prefix(PREFIX).and_then(MidiTrigger::from_token) else {
             return false;
         };
@@ -321,5 +421,42 @@ mod tests {
                 usize::from(number) < MAX_MIDI_BINDINGS
             );
         }
+    }
+
+    #[test]
+    fn a_value_binding_round_trips_and_is_exclusive() {
+        let mut bindings = MidiBindings::default();
+        let trigger = cc(1, 7);
+        assert!(bindings.bind_value(trigger, MidiValueTarget::MonitorLevel));
+        assert_eq!(
+            bindings.value_target(trigger),
+            Some(MidiValueTarget::MonitorLevel)
+        );
+        assert_eq!(
+            bindings.value_trigger(MidiValueTarget::MonitorLevel),
+            Some(trigger)
+        );
+        assert_eq!(bindings.action(trigger), None);
+        let entries = bindings.preference_entries();
+        assert_eq!(
+            entries,
+            [(
+                "keymap.midi.value.cc.1.7".to_owned(),
+                "monitor_level".to_owned()
+            )]
+        );
+        let mut read = MidiBindings::default();
+        for (key, value) in &entries {
+            assert!(read.apply_preference(key, value), "{key}");
+        }
+        assert_eq!(read, bindings);
+        // An action and a value cannot share one control.
+        assert!(bindings.bind(trigger, ConsoleAction::Cut));
+        assert!(bindings.value_target(trigger).is_none());
+        assert_eq!(bindings.action(trigger), Some(ConsoleAction::Cut));
+        assert!(bindings.bind_value(trigger, MidiValueTarget::MonitorLevel));
+        assert_eq!(bindings.action(trigger), None);
+        assert!(bindings.unbind_value(MidiValueTarget::MonitorLevel));
+        assert!(!bindings.unbind_value(MidiValueTarget::MonitorLevel));
     }
 }

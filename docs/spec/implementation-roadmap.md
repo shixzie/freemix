@@ -5311,9 +5311,10 @@ read MIDI controllers; the Linux raw-port path keeps no ALSA development
 dependency. The same reader drives lamp feedback to bound controls: the
 selected Preview and Program inputs, Fade to Black, overlays, and the Replay
 player's transport light their LEDs, writes going through the raw ALSA port
-on Linux and `midir` on macOS and Windows. Remaining gaps: no fader or
-encoder value mapping (a controller acts as a button) and no motor-fader
-feedback, no UDP transport or raw HID parsing; the bindings drive console
+on Linux and `midir` on macOS and Windows. A controller bound to a value
+maps its 0–127 range onto that value (the monitor bus level), so a fader or
+knob is no longer only a button. Remaining gaps: no motor-fader feedback,
+no UDP transport or raw HID parsing; the bindings drive console
 actions (and so reach `freemixd` through them) but are not persisted in the
 project; and NRPN/RPN, MIDI 2.0, and GPIO or network tally adapters are
 absent. `RC-005` and `RC-006` remain planned.

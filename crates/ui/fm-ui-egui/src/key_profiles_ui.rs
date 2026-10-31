@@ -45,6 +45,8 @@ pub(crate) struct KeyProfilesWindow {
     pub(crate) file_requests: Vec<PresetFileRequest>,
     /// The action the next MIDI press binds (RC-005).
     pub(crate) midi_learning: Option<ConsoleAction>,
+    /// The continuous value the next MIDI controller binds.
+    pub(crate) midi_value_learning: Option<crate::midi_bindings::MidiValueTarget>,
 }
 
 /// Every profile the picker offers: the built-in ones, then the
@@ -361,6 +363,24 @@ impl StudioShell {
         };
         ui.label(caption(&device_text))
             .on_hover_text(l.text(Msg::MidiDevicesHover));
+        ui.label(caption(l.text(Msg::MidiValues)));
+        for target in crate::midi_bindings::MidiValueTarget::all() {
+            ui.horizontal(|ui| {
+                let name = match target {
+                    crate::midi_bindings::MidiValueTarget::MonitorLevel => {
+                        l.text(Msg::MidiValueMonitorLevel)
+                    }
+                };
+                ui.label(name);
+                midi_value_cell(
+                    ui,
+                    l,
+                    &mut profiles.midi,
+                    &mut window.midi_value_learning,
+                    target,
+                );
+            });
+        }
         let Some(keymap) = profiles.keymap(selected) else {
             return;
         };
@@ -453,6 +473,42 @@ impl StudioShell {
                         }
                     });
             });
+    }
+}
+
+/// One continuous value's MIDI binding: its controller, Learn, and Unbind.
+fn midi_value_cell(
+    ui: &mut Ui,
+    l: Locale,
+    midi: &mut crate::midi_bindings::MidiBindings,
+    learning: &mut Option<crate::midi_bindings::MidiValueTarget>,
+    target: crate::midi_bindings::MidiValueTarget,
+) {
+    let bound = midi.value_trigger(target);
+    let text = bound.map_or_else(
+        || l.text(Msg::KeyProfilesNoKeyText).to_owned(),
+        |trigger| trigger.text(l),
+    );
+    ui.label(RichText::new(text).monospace())
+        .on_hover_text(l.text(Msg::MidiValueControlHover));
+    let waiting = *learning == Some(target);
+    let learn_text = if waiting {
+        l.text(Msg::MidiLearning)
+    } else {
+        l.text(Msg::MidiLearn)
+    };
+    if ui
+        .button(learn_text)
+        .on_hover_text(l.text(Msg::MidiValueLearnHover))
+        .clicked()
+    {
+        *learning = if waiting { None } else { Some(target) };
+    }
+    if ui
+        .add_enabled(bound.is_some(), Button::new(l.text(Msg::MidiUnbind)))
+        .clicked()
+    {
+        midi.unbind_value(target);
     }
 }
 
