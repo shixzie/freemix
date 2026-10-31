@@ -5735,8 +5735,9 @@ order; they hold a third raw peer and refuse the seventeenth Web client until
 a slot frees; and they show a Studio peer that never reads delaying neither
 the other sessions (round trips under a second) nor the Program (median
 host lateness under half a frame, a recording holding every paced frame).
-Remaining gaps: the windowed program daemon (`--fullscreen-program`,
-`--display-presenter`) still serves no Web gateway.
+Remaining gaps: none in the session path; the windowed program daemon
+(`--fullscreen-program`, `--display-presenter`) serves the same Web gateway
+as the headless daemon (`serve_inner` binds it for either mode).
 
 Multi-session hardening (no protocol or schema change): both modes now serve
 up to eight raw sessions, and a raw connection beyond them is refused at once
