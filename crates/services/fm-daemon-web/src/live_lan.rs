@@ -54,7 +54,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::AppResult;
+use crate::AppResult;
 
 /// Connections served at once; more are closed at once.
 pub const MAX_CONNECTIONS: usize = 64;
@@ -110,7 +110,7 @@ const PLAYLIST_CONTENT_TYPE: &str = "application/vnd.apple.mpegurl";
 const SEGMENT_CONTENT_TYPE: &str = "video/mp4";
 
 /// The viewer page.
-const PAGE: &str = include_str!("../../../crates/services/fm-daemon-web/src/live_lan.html");
+const PAGE: &str = include_str!("live_lan.html");
 
 /// What viewers may watch: the PIN, if any, and how many may watch at once.
 #[derive(Clone, Eq, PartialEq)]
@@ -187,9 +187,9 @@ struct AccessState {
 /// shares that `/64`, or the `/64` network of any other IPv6 address,
 /// since one remote host may hold any number of addresses in its `/64` and
 /// would otherwise get a fresh allowance each (grouped as the Web
-/// gateway's connection bound and pairing are, [`crate::web::peer_group_at`]).
+/// gateway's connection bound and pairing are, [`crate::worker::peer_group_at`]).
 fn throttle_key(address: IpAddr, local: Option<IpAddr>) -> IpAddr {
-    crate::web::peer_group_at(address, local)
+    crate::worker::peer_group_at(address, local)
 }
 
 #[derive(Clone, Copy)]

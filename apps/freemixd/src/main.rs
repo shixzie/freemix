@@ -110,8 +110,7 @@ mod hls_server;
 mod input_thumbnails;
 use fm_daemon_journal as journal;
 mod latest_record;
-#[cfg_attr(not(feature = "native-media"), allow(dead_code))]
-mod live_lan;
+use fm_daemon_web::live_lan;
 mod media_clock;
 mod media_lengths;
 #[cfg(feature = "native-media")]
