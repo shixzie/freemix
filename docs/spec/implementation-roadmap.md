@@ -5292,8 +5292,8 @@ Remaining gaps:
 - Studio has no per-slide picture thumbnails in the strip (numbered names
   only) and no native file or folder dialog;
 - captions are metadata and labels only; nothing draws them on the picture;
-- only cut and fade transitions exist; OSC and keyboard shortcuts do not step
-  slides, and scripts cannot;
+- only cut and fade transitions exist; OSC and scripts cannot step slides
+  (console keys bound to Next slide and Previous slide can);
 - a host folder is copied once, so live edits follow the project's copy,
   not the original folder; there is no filesystem watch, only a 2 s rescan;
 - portable bundle export, asset audit, and relink do not yet treat a

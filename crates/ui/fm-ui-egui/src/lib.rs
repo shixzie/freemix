@@ -1630,6 +1630,8 @@ fn console_action_intents(
         // The overlay toggles and replay marks read the session's state,
         // gated like their panels' keys.
         ConsoleAction::Overlay(_)
+        | ConsoleAction::SlideNext
+        | ConsoleAction::SlidePrevious
         | ConsoleAction::ReplayMarkIn
         | ConsoleAction::ReplayMarkOut
         | ConsoleAction::ReplayCapture
@@ -1783,10 +1785,30 @@ fn live_console_intents(state: &StudioUiState, action: ConsoleAction) -> Vec<Stu
                     },
                 )
             }),
+        ConsoleAction::SlideNext => slideshow_step(state, fm_protocol::PagedNavigation::Next),
+        ConsoleAction::SlidePrevious => {
+            slideshow_step(state, fm_protocol::PagedNavigation::Previous)
+        }
         _ => None,
     }
     .into_iter()
     .collect()
+}
+
+/// Steps the slideshow input on Program, else Preview, one slide (IN-009).
+fn slideshow_step(
+    state: &StudioUiState,
+    navigation: fm_protocol::PagedNavigation,
+) -> Option<StudioIntent> {
+    let view = state.view.as_ref()?;
+    let input = [view.switcher.desired.program, view.switcher.desired.preview]
+        .into_iter()
+        .find(|input| {
+            view.still_inputs
+                .get(input)
+                .is_some_and(|still| still.status.page.count > 1)
+        })?;
+    Some(StudioIntent::PageNavigate { input, navigation })
 }
 
 #[allow(clippy::too_many_arguments)] // the console keys' gates and parameters

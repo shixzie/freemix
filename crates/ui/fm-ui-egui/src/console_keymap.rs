@@ -92,6 +92,10 @@ pub enum ConsoleAction {
     Overlay(u8),
     /// GO on the Cues panel's list.
     CueGo,
+    /// Step the slideshow on Program (else Preview) to its next slide.
+    SlideNext,
+    /// Step the slideshow on Program (else Preview) to its previous slide.
+    SlidePrevious,
     /// The replay in mark at the live frame.
     ReplayMarkIn,
     /// The replay out mark at the live frame.
@@ -134,6 +138,8 @@ impl ConsoleAction {
             .chain((1..=OVERLAY_KEYS).map(Self::Overlay))
             .chain([
                 Self::CueGo,
+                Self::SlideNext,
+                Self::SlidePrevious,
                 Self::ReplayMarkIn,
                 Self::ReplayMarkOut,
                 Self::ReplayCapture,
@@ -164,6 +170,8 @@ impl ConsoleAction {
             Self::Favorite(n) => format!("favorite.{n}"),
             Self::Overlay(n) => format!("overlay.{n}"),
             Self::CueGo => "cue_go".to_owned(),
+            Self::SlideNext => "slide_next".to_owned(),
+            Self::SlidePrevious => "slide_previous".to_owned(),
             Self::ReplayMarkIn => "replay_mark_in".to_owned(),
             Self::ReplayMarkOut => "replay_mark_out".to_owned(),
             Self::ReplayCapture => "replay_capture".to_owned(),
@@ -199,6 +207,7 @@ impl ConsoleAction {
             | Self::Overlay(_) => crate::ShortcutGroup::Switching,
             Self::Fade | Self::FadeToBlack | Self::Favorite(_) => crate::ShortcutGroup::Transitions,
             Self::CueGo => crate::ShortcutGroup::Cues,
+            Self::SlideNext | Self::SlidePrevious => crate::ShortcutGroup::Switching,
             Self::ReplayMarkIn
             | Self::ReplayMarkOut
             | Self::ReplayCapture
@@ -229,6 +238,8 @@ impl ConsoleAction {
             Self::Favorite(n) => numbered(Msg::ConsoleActionFavorite, n),
             Self::Overlay(n) => numbered(Msg::ConsoleActionOverlay, n),
             Self::CueGo => l.text(Msg::ShortcutCueGo).to_owned(),
+            Self::SlideNext => l.text(Msg::CueActSlideNext).to_owned(),
+            Self::SlidePrevious => l.text(Msg::CueActSlidePrevious).to_owned(),
             Self::ReplayMarkIn => l.text(Msg::ConsoleActionReplayMarkIn).to_owned(),
             Self::ReplayMarkOut => l.text(Msg::ConsoleActionReplayMarkOut).to_owned(),
             Self::ReplayCapture => l.text(Msg::ConsoleActionReplayCapture).to_owned(),
@@ -275,6 +286,15 @@ impl ConsoleStroke {
     pub const fn command(key: Key) -> Self {
         Self {
             command: true,
+            ..Self::plain(key)
+        }
+    }
+
+    /// `key` with Shift.
+    #[must_use]
+    pub const fn shift(key: Key) -> Self {
+        Self {
+            shift: true,
             ..Self::plain(key)
         }
     }
@@ -438,6 +458,16 @@ impl BuiltinProfile {
                 }
                 bindings.push((ConsoleAction::CueGo, ConsoleStroke::plain(Key::G)));
                 bindings.extend([
+                    (
+                        ConsoleAction::SlideNext,
+                        ConsoleStroke::shift(Key::ArrowRight),
+                    ),
+                    (
+                        ConsoleAction::SlidePrevious,
+                        ConsoleStroke::shift(Key::ArrowLeft),
+                    ),
+                ]);
+                bindings.extend([
                     (ConsoleAction::ReplayMarkIn, ConsoleStroke::plain(Key::I)),
                     (ConsoleAction::ReplayMarkOut, ConsoleStroke::plain(Key::O)),
                     (ConsoleAction::ReplayCapture, ConsoleStroke::plain(Key::E)),
@@ -478,6 +508,16 @@ impl BuiltinProfile {
                     bindings.push((ConsoleAction::Overlay(n), ConsoleStroke::plain(key)));
                 }
                 bindings.extend([(ConsoleAction::CueGo, ConsoleStroke::plain(Key::G))]);
+                bindings.extend([
+                    (
+                        ConsoleAction::SlideNext,
+                        ConsoleStroke::shift(Key::ArrowRight),
+                    ),
+                    (
+                        ConsoleAction::SlidePrevious,
+                        ConsoleStroke::shift(Key::ArrowLeft),
+                    ),
+                ]);
                 bindings.extend([
                     (ConsoleAction::ReplayMarkIn, ConsoleStroke::plain(Key::I)),
                     (ConsoleAction::ReplayMarkOut, ConsoleStroke::plain(Key::O)),

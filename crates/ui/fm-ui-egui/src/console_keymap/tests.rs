@@ -26,7 +26,7 @@ fn tokens_round_trip_and_profiles_are_unambiguous() {
     let all = ConsoleAction::all();
     assert_eq!(
         all.len(),
-        3 * usize::from(NUMBERED_INPUTS) + 3 + 4 + 4 + 1 + 8
+        3 * usize::from(NUMBERED_INPUTS) + 3 + 4 + 4 + 1 + 8 + 5 + 2
     );
     for action in &all {
         assert_eq!(ConsoleAction::from_token(&action.token()), Some(*action));
@@ -170,6 +170,8 @@ fn reference_rows_fold_numbered_runs() {
             "B",
             "F5 – F8",
             "G",
+            "Shift+Right",
+            "Shift+Left",
             "I",
             "O",
             "E",
@@ -194,6 +196,8 @@ fn reference_rows_fold_numbered_runs() {
             "Ctrl+F1 – F4",
             "F9 – F12",
             "G",
+            "Shift+Right",
+            "Shift+Left",
             "I",
             "O",
             "E",
@@ -208,7 +212,7 @@ fn reference_rows_fold_numbered_runs() {
         vmix[7].1,
         "Put the Preview input on the numbered overlay, or take it off"
     );
-    assert_eq!(vmix[11].1, "Capture the marked replay event");
+    assert_eq!(vmix[13].1, "Capture the marked replay event");
     // A broken run lists its keys one by one.
     let mut profiles = ConsoleKeyProfiles::default();
     let ProfileChoice::Custom(index) = profiles
