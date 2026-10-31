@@ -9,6 +9,9 @@ pub const MAX_DESTINATIONS: usize = 5;
 pub struct DestinationId(u8);
 
 impl DestinationId {
+    /// The first destination slot, for a caller whose ordinal was refused.
+    pub const FIRST: Self = Self(1);
+
     /// Creates one of the five independently controlled destination slots.
     ///
     /// # Errors
@@ -297,6 +300,18 @@ pub struct ReconnectPolicy {
 }
 
 impl ReconnectPolicy {
+    /// A deterministic one-to-five second backoff with three attempts, for
+    /// a caller whose authored policy could not be built.
+    #[must_use]
+    pub const fn fallback() -> Self {
+        Self {
+            initial_delay_ms: 1_000,
+            maximum_delay_ms: 5_000,
+            multiplier: 2,
+            maximum_attempts: Some(3),
+        }
+    }
+
     /// Creates deterministic exponential backoff parameters.
     ///
     /// `maximum_attempts == None` retries indefinitely. A value of `Some(0)`

@@ -976,7 +976,7 @@ impl NativeDaemon {
             let config = self
                 .output_set
                 .config(stream.destination_id)
-                .expect("every compiled stream owns one output-set slot");
+                .ok_or_else(|| AppFailure("a compiled stream owns an output-set slot".into()))?;
             if config.protocol() != OutputProtocol::Hls {
                 continue;
             }
@@ -1363,7 +1363,7 @@ impl NativeDaemon {
                 &format,
                 frames_rendered,
                 &mut self.output_set,
-            );
+            )?;
             self.streams.push(stream);
         }
         self.local_output_dirs = self.local_hls_directories();
@@ -1403,8 +1403,8 @@ impl NativeDaemon {
         }
         let (width, height) = self.picture_size;
         let size = (
-            NonZeroU32::new(width).expect("project width is nonzero"),
-            NonZeroU32::new(height).expect("project height is nonzero"),
+            NonZeroU32::new(width).unwrap_or(NonZeroU32::MIN),
+            NonZeroU32::new(height).unwrap_or(NonZeroU32::MIN),
         );
         if let Some(index) = self
             .stream_groups
@@ -2415,10 +2415,9 @@ impl NativeDaemon {
             self.projected_frame = Some(control.project_next_frame()?);
         }
         let replay_deadline = self.next_deadline()?;
-        let projected = self
-            .projected_frame
-            .as_ref()
-            .expect("next frame projection was initialized");
+        let Some(projected) = self.projected_frame.as_ref() else {
+            return Err(AppFailure("next frame projection was initialized".into()).into());
+        };
         // Replay inputs show their recorded frames and, at 100%, play their
         // recorded audio (OR-012). The video realizer owns the decode
         // players; the control thread pushes their audio before the frame's
@@ -3267,7 +3266,7 @@ impl NativeDaemon {
 
 #[cfg(feature = "native-media")]
 impl Drop for NativeDaemon {
-    pub(crate) fn drop(&mut self) {
+    fn drop(&mut self) {
         if let Some(mutation) = self.pending_stinger_mutation.take() {
             let _ = self.stinger_retirements.discard(mutation);
         }

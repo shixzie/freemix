@@ -253,7 +253,7 @@ pub struct GaugeSummary {
     pub dropped_samples: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct HistogramSummary {
     pub count: u64,
     pub retained_samples: usize,
