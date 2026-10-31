@@ -70,6 +70,9 @@ pub enum MediaListItemEdit {
         mark_in: u64,
         mark_out: Option<u64>,
     },
+    /// Moves the item with this id to a zero-based position, clamped to the
+    /// end of the list.
+    Move { item: u32, position: usize },
 }
 
 /// The automatic mix a CLI token names.
@@ -2992,6 +2995,11 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                         item,
                         title: (title != "-").then_some(title),
                     }
+                }
+                "move" => {
+                    let item = number(&required(&mut arguments, "item")?, "item")?;
+                    let position = number(&required(&mut arguments, "position")?, "position")?;
+                    MediaListItemEdit::Move { item, position }
                 }
                 "marks" => {
                     let item = number(&required(&mut arguments, "item")?, "item")?;

@@ -825,6 +825,18 @@ pub fn run(command: Command) -> AppResult<()> {
                     target.mark_in = mark_in;
                     target.mark_out = mark_out;
                 }
+                crate::args::MediaListItemEdit::Move { item, position } => {
+                    let index = list
+                        .items
+                        .iter()
+                        .position(|candidate| candidate.id == item)
+                        .ok_or_else(|| {
+                            AppFailure(format!("media list {input} has no item {item}"))
+                        })?;
+                    let moved = list.items.remove(index);
+                    let position = position.min(list.items.len());
+                    list.items.insert(position, moved);
+                }
             }
             mutate(
                 &path,
@@ -7115,7 +7127,7 @@ Usage:
   freemix-cli input-media-list-navigate <show.freemix> <input-id> <next|previous|first|last|goto <position>|item <id>> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-media-list-navigate <address> <input-id> <next|previous|first|last|goto <position>|item <id>> [--key <key>] [--expect <revision>]
   freemix-cli input-media-list-options <show.freemix> <input-id> <auto-next on|off> <auto-first on|off> <loop on|off> <shuffle seed|off> [--key <key>] [--expect <revision>]
-  freemix-cli input-media-list-item <show.freemix> <input-id> add <asset://key> <title|-> | remove <item-id> | title <item-id> <title|-> | marks <item-id> <in> <out|end> [--key <key>] [--expect <revision>]
+  freemix-cli input-media-list-item <show.freemix> <input-id> add <asset://key> <title|-> | remove <item-id> | title <item-id> <title|-> | marks <item-id> <in> <out|end> | move <item-id> <zero-based-position> [--key <key>] [--expect <revision>]
   freemix-cli input-media-list-import <show.freemix> <input-id> <playlist.m3u>
   freemix-cli input-pages <show.freemix>
   freemix-cli input-page <show.freemix> <input-id> <next|previous|first|last|goto <page>> [--key <key>] [--expect <revision>]

@@ -978,6 +978,7 @@ fn title_design_import_flattens_a_design_into_a_title_input() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn input_media_list_item_edits_title_and_marks() {
     let root = TempRoot::new();
     let show = root.path("item-edit.freemix");
@@ -996,7 +997,11 @@ fn input_media_list_item_edits_title_and_marks() {
         [(
             input(9),
             fm_model::MediaList::new(
-                vec![fm_model::MediaListItem::new(1, "asset://clip.mkv")],
+                vec![
+                    fm_model::MediaListItem::new(1, "asset://clip.mkv"),
+                    fm_model::MediaListItem::new(2, "asset://clip2.mkv"),
+                    fm_model::MediaListItem::new(3, "asset://clip3.mkv"),
+                ],
                 fm_model::MediaListOptions::default(),
             )
             .unwrap(),
@@ -1052,6 +1057,23 @@ fn input_media_list_item_edits_title_and_marks() {
     assert_eq!(list.items[0].title, None);
     assert_eq!(list.items[0].mark_in, 0);
     assert_eq!(list.items[0].mark_out, None);
+
+    // Reordering keeps the ids and the active item; the position clamps.
+    assert_success(&run(&[
+        "input-media-list-item",
+        text(&show),
+        "9",
+        "move",
+        "3",
+        "1",
+    ]));
+    let loaded = load(&show);
+    let list = loaded.project().media_list(input(9)).unwrap();
+    assert_eq!(
+        list.items.iter().map(|item| item.id).collect::<Vec<_>>(),
+        vec![1, 3, 2]
+    );
+    assert_eq!(list.active, 1);
 
     // An out mark at or before the in mark is refused and leaves the list
     // unchanged (the rejected command's receipt still advances the project).
