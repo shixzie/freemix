@@ -357,6 +357,12 @@ fn media_transport_verbs_translate_exactly() {
             input: id(2)
         }))
     );
+    assert_eq!(
+        parse_http_query("Function=Restart&Input=2", &state),
+        Ok(Translation::Compat(CompatIntent::RestartMedia {
+            input: id(2)
+        }))
+    );
     for query in [
         "Function=Play",
         "Function=Play&Input=2&Value=1",
@@ -379,6 +385,12 @@ fn overlay_in_and_off_translate_exactly() {
     );
     assert_eq!(
         parse_http_query("Function=OverlayInput3Off", &state),
+        Ok(Translation::Protocol(CommandPayload::OverlayOff {
+            channel
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=OverlayInput3Out", &state),
         Ok(Translation::Protocol(CommandPayload::OverlayOff {
             channel
         }))

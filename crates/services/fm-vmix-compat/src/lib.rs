@@ -351,6 +351,9 @@ pub enum CompatIntent {
     /// Toggle one media input's play/pause state; the dispatcher reads the
     /// current transport state.
     ToggleMediaPlayback { input: WireInputId },
+    /// Restart one media input from its trim start and play it; the
+    /// dispatcher issues the seek and play.
+    RestartMedia { input: WireInputId },
     /// Set one input's volume as vMix's 0 through 100 percentage; the
     /// dispatcher maps it onto the strip's gain.
     SetInputVolume { input: WireInputId, percent: u8 },
@@ -593,13 +596,14 @@ fn translate(
                 navigation: fm_protocol::PagedNavigation::Goto(value - 1),
             }))
         }
-        "Play" | "Pause" | "Stop" => {
+        "Play" | "Pause" | "Stop" | "Restart" => {
             allowed(parameters, &["Function", "Input"])?;
             let input = state.resolve_input(required(parameters, "Input")?)?;
             let operation = match function {
                 "Play" => fm_protocol::MediaOperation::Play,
                 "Pause" => fm_protocol::MediaOperation::Pause,
-                _ => fm_protocol::MediaOperation::Stop,
+                "Stop" => fm_protocol::MediaOperation::Stop,
+                _ => return Ok(Translation::Compat(CompatIntent::RestartMedia { input })),
             };
             Ok(Translation::Protocol(CommandPayload::Media {
                 input,
@@ -721,7 +725,9 @@ fn translate(
                     source: state.resolve_input(required(parameters, "Input")?)?,
                 }));
             }
-            if let Some(channel) = overlay_channel_with_suffix(function, "Off") {
+            if let Some(channel) = overlay_channel_with_suffix(function, "Off")
+                .or_else(|| overlay_channel_with_suffix(function, "Out"))
+            {
                 allowed(parameters, &["Function", "Mix"])?;
                 if !is_main_mix(parameters) {
                     return Ok(unsupported(

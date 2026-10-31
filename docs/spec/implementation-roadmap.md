@@ -6370,9 +6370,10 @@ exact UTF-8 byte length, XMLTEXT through a bounded `vmix`-rooted XPath subset,
 SUBSCRIBE/UNSUBSCRIBE for TALLY and ACTS, VERSION, and QUIT. A hub of at most
 64 sessions fans out per-session change events in deterministic order. The
 function surface now includes list and picture navigation, media transport
-(including volume and mute), overlay in/off/all-off, Fade to Black, and
-recording/streaming toggles, input renaming, and playlist start/stop/next/
-previous in addition to the switcher, title, recording, and streaming verbs. A nonblocking `VmixTcpServer` now binds a listener, accepts bounded
+(play, pause, stop, restart, volume, and mute), overlay in/off/out/all-off,
+Fade to Black, and recording/streaming toggles, input renaming, and playlist
+start/stop/next/previous in addition to the switcher, title, recording, and
+streaming verbs. A nonblocking `VmixTcpServer` now binds a listener, accepts bounded
 sessions, reads capped lines, writes responses and subscription events, and
 calls a caller-supplied translation executor. Remaining gaps: no daemon
 runs the server yet, a partial function and state-document surface, XPath
