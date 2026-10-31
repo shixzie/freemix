@@ -479,3 +479,17 @@ fn start_stop_verbs_become_toggle_intents() {
     );
     assert!(parse_http_query("Function=StartStopRecording&Value=1", &state).is_err());
 }
+
+#[test]
+fn all_overlays_off_and_fade_to_black_are_toggle_intents() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=OverlayInputAllOff", &state),
+        Ok(Translation::Compat(CompatIntent::AllOverlaysOff))
+    );
+    assert_eq!(
+        parse_http_query("Function=FadeToBlack", &state),
+        Ok(Translation::Compat(CompatIntent::ToggleFadeToBlack))
+    );
+    assert!(parse_http_query("Function=FadeToBlack&Input=1", &state).is_err());
+}

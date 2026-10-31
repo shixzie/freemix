@@ -359,6 +359,10 @@ pub enum CompatIntent {
     /// Toggle all streams or one zero-based stream index; the dispatcher
     /// reads the current state.
     ToggleStreaming { stream: Option<u16> },
+    /// Turn every overlay channel off.
+    AllOverlaysOff,
+    /// Toggle the Fade to Black state; the dispatcher reads the current state.
+    ToggleFadeToBlack,
 }
 
 /// A recognized function that this compatibility core cannot preserve.
@@ -615,6 +619,14 @@ fn translate(
                 input: state.resolve_input(required(parameters, "Input")?)?,
                 percent,
             }))
+        }
+        "OverlayInputAllOff" => {
+            allowed(parameters, &["Function"])?;
+            Ok(Translation::Compat(CompatIntent::AllOverlaysOff))
+        }
+        "FadeToBlack" => {
+            allowed(parameters, &["Function"])?;
+            Ok(Translation::Compat(CompatIntent::ToggleFadeToBlack))
         }
         "StartStopRecording" => {
             allowed(parameters, &["Function"])?;
