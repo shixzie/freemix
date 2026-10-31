@@ -4133,8 +4133,8 @@ count-up or count-down game clock whose expiry is reported once; changed
 values publish onto template fields in one scene revision, and a strict
 key/value parser maps external data onto actions. Remaining gaps:
 crawls are runtime overlays outside template z-order and the project schema,
-with no per-item styling, logos, or easing; the scoreboard has two teams and
-no persistence; and there are no feed transports, shortcut
+with no logos or easing and only a per-item fill override; the scoreboard has
+two teams and no persistence; and there are no feed transports, shortcut
 or control-surface wiring, or engine output. `GX-003` remains planned.
 
 Current implementation boundary for item 2: `fm-titles` provides a designer
