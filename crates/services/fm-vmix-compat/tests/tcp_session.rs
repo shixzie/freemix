@@ -483,7 +483,8 @@ fn xmltext_errors_are_distinct_and_bounded() {
         "vmix/inputs/input[@title='x]",
         "vmix/inputs/input[@title=x]",
         "vmix/@x/y",
-        "vmix/text()",
+        "vmix/text(1)",
+        "vmix/inputs/input[1]/text()/@x",
         "@x",
     ] {
         assert!(
