@@ -4806,9 +4806,10 @@ HTML table's header and body cells into rows. Remaining gaps:
 no XPath, spreadsheet,
 Google Sheets, chat, or database adapters, no real network polling, and
 `fm-title-render`'s `apply_title_mapping` now writes a mapped report onto a
-`TitleScene` atomically by template field name, but mapped values do not yet
-feed the project schema, ticker updates, or a daemon. Item 4 remains
-incomplete and `GX-004` remains planned.
+`TitleScene` atomically by template field name, so title text, number, color,
+image, and field-backed ticker elements update; mapped values do not yet feed
+the project schema, crawl item lists, or a daemon. Item 4 remains incomplete
+and `GX-004` remains planned.
 
 Current implementation boundary for item 4 title binding (`GX-005`):
 `fm-data` binds rows onto text, integer, color, validated image URI (scheme
