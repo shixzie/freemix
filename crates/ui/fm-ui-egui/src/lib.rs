@@ -1570,6 +1570,13 @@ fn action_led(state: &StudioUiState, action: ConsoleAction) -> Option<bool> {
             .map(|player| player.shuttling && player.rate_milli < 0),
         ConsoleAction::ReplayShuttleForward => replay_ui::transport_player(state)
             .map(|player| player.shuttling && player.rate_milli > 0),
+        ConsoleAction::ReplayPlayPauseB => {
+            replay_ui::transport_player_for(state, true).map(|player| player.playing)
+        }
+        ConsoleAction::ReplayShuttleBackB => replay_ui::transport_player_for(state, true)
+            .map(|player| player.shuttling && player.rate_milli < 0),
+        ConsoleAction::ReplayShuttleForwardB => replay_ui::transport_player_for(state, true)
+            .map(|player| player.shuttling && player.rate_milli > 0),
         _ => None,
     }
 }
@@ -1629,6 +1636,11 @@ fn console_action_intents(
         | ConsoleAction::ReplayStepForward
         | ConsoleAction::ReplayShuttleBack
         | ConsoleAction::ReplayShuttleForward
+        | ConsoleAction::ReplayPlayPauseB
+        | ConsoleAction::ReplayStepBackB
+        | ConsoleAction::ReplayStepForwardB
+        | ConsoleAction::ReplayShuttleBackB
+        | ConsoleAction::ReplayShuttleForwardB
             if transition_available =>
         {
             live_key(action)
@@ -1700,6 +1712,69 @@ fn live_console_intents(state: &StudioUiState, action: ConsoleAction) -> Vec<Stu
             replay_ui::transport_player(state).and_then(|player| {
                 replay_ui::transport_intent(
                     state,
+                    fm_protocol::ReplayOperation::Shuttle {
+                        input: player.input,
+                        rate_milli: 2_000,
+                    },
+                )
+            })
+        }
+        ConsoleAction::ReplayPlayPauseB => {
+            replay_ui::transport_player_for(state, true).and_then(|player| {
+                let operation = if player.playing {
+                    fm_protocol::ReplayOperation::Pause {
+                        input: player.input,
+                    }
+                } else {
+                    fm_protocol::ReplayOperation::Play {
+                        input: player.input,
+                        speed: fm_protocol::ReplaySpeed::Full,
+                    }
+                };
+                replay_ui::transport_intent_for(state, true, operation)
+            })
+        }
+        ConsoleAction::ReplayStepBackB => {
+            replay_ui::transport_player_for(state, true).and_then(|player| {
+                replay_ui::transport_intent_for(
+                    state,
+                    true,
+                    fm_protocol::ReplayOperation::Step {
+                        input: player.input,
+                        frames: -1,
+                    },
+                )
+            })
+        }
+        ConsoleAction::ReplayStepForwardB => {
+            replay_ui::transport_player_for(state, true).and_then(|player| {
+                replay_ui::transport_intent_for(
+                    state,
+                    true,
+                    fm_protocol::ReplayOperation::Step {
+                        input: player.input,
+                        frames: 1,
+                    },
+                )
+            })
+        }
+        ConsoleAction::ReplayShuttleBackB => {
+            replay_ui::transport_player_for(state, true).and_then(|player| {
+                replay_ui::transport_intent_for(
+                    state,
+                    true,
+                    fm_protocol::ReplayOperation::Shuttle {
+                        input: player.input,
+                        rate_milli: -2_000,
+                    },
+                )
+            })
+        }
+        ConsoleAction::ReplayShuttleForwardB => {
+            replay_ui::transport_player_for(state, true).and_then(|player| {
+                replay_ui::transport_intent_for(
+                    state,
+                    true,
                     fm_protocol::ReplayOperation::Shuttle {
                         input: player.input,
                         rate_milli: 2_000,

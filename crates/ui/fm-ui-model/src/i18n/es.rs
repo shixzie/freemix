@@ -6258,6 +6258,13 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Asigna las notas 36–43 del canal 1 a marcar entrada, marcar salida, capturar, reproducir/pausar, paso atrás, paso adelante, retroceso y avance de la repetición",
         ),
     ),
+    (Msg::MidiReplayTransportB, t("Transporte de repetición B")),
+    (
+        Msg::MidiReplayTransportBHover,
+        t(
+            "Asigna las notas 39–43 del canal 2 a reproducir/pausar, paso atrás, paso adelante, retroceso y avance de la segunda entrada de repetición",
+        ),
+    ),
     (Msg::MidiValueMonitorLevel, t("Nivel de monitores")),
     (
         Msg::MidiValueLearnHover,
@@ -10883,6 +10890,23 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (
         Msg::ConsoleActionReplayShuttleForward,
         t("Repetición rápida hacia adelante"),
+    ),
+    (
+        Msg::ConsoleActionReplayPlayPauseB,
+        t("Repetición B reproducir/pausar"),
+    ),
+    (Msg::ConsoleActionReplayStepBackB, t("Repetición B paso atrás")),
+    (
+        Msg::ConsoleActionReplayStepForwardB,
+        t("Repetición B paso adelante"),
+    ),
+    (
+        Msg::ConsoleActionReplayShuttleBackB,
+        t("Repetición B rápida hacia atrás"),
+    ),
+    (
+        Msg::ConsoleActionReplayShuttleForwardB,
+        t("Repetición B rápida hacia adelante"),
     ),
     (
         Msg::ConsoleActionPreviewRun,

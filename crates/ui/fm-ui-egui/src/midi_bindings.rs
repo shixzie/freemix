@@ -43,6 +43,16 @@ pub const REPLAY_TRANSPORT: [(u16, ConsoleAction); 8] = [
     (42, ConsoleAction::ReplayShuttleBack),
     (43, ConsoleAction::ReplayShuttleForward),
 ];
+/// The second controller's transport, in note order from channel 2 note 39:
+/// play/pause, step back, step forward, shuttle back, and shuttle forward on
+/// the second Replay input (OR-012). The marks and capture stay global.
+pub const REPLAY_TRANSPORT_B: [(u16, ConsoleAction); 5] = [
+    (39, ConsoleAction::ReplayPlayPauseB),
+    (40, ConsoleAction::ReplayStepBackB),
+    (41, ConsoleAction::ReplayStepForwardB),
+    (42, ConsoleAction::ReplayShuttleBackB),
+    (43, ConsoleAction::ReplayShuttleForwardB),
+];
 const PREFIX: &str = "keymap.midi.";
 const VALUE_PREFIX: &str = "keymap.midi.value.";
 
@@ -259,6 +269,21 @@ impl MidiBindings {
             .into_iter()
             .filter(|(note, action)| {
                 MidiTrigger::new(MidiControlKind::Note, 1, *note)
+                    .is_some_and(|trigger| self.bind(trigger, *action))
+            })
+            .count()
+    }
+
+    /// Binds channel 2 notes 39 through 43 to the second Replay input's
+    /// transport (play/pause, step back, step forward, shuttle back, and
+    /// shuttle forward), taking each from any other action or control
+    /// (OR-012). Returns how many bound (fewer only when the console's bound
+    /// is already full).
+    pub fn bind_replay_transport_b(&mut self) -> usize {
+        REPLAY_TRANSPORT_B
+            .into_iter()
+            .filter(|(note, action)| {
+                MidiTrigger::new(MidiControlKind::Note, 2, *note)
                     .is_some_and(|trigger| self.bind(trigger, *action))
             })
             .count()
@@ -520,6 +545,33 @@ mod tests {
         assert_eq!(held.bind_replay_transport(), 8);
         assert_eq!(held.action(note(36)), Some(ConsoleAction::ReplayMarkIn));
         assert_eq!(held.trigger_of(ConsoleAction::Cut), None);
+    }
+
+    #[test]
+    fn the_second_replay_transport_binds_channel_two_notes() {
+        let mut bindings = MidiBindings::default();
+        assert_eq!(bindings.bind_replay_transport_b(), 5);
+        let note = |number| MidiTrigger::new(MidiControlKind::Note, 2, number).unwrap();
+        assert_eq!(
+            bindings.action(note(39)),
+            Some(ConsoleAction::ReplayPlayPauseB)
+        );
+        assert_eq!(
+            bindings.action(note(40)),
+            Some(ConsoleAction::ReplayStepBackB)
+        );
+        assert_eq!(
+            bindings.action(note(43)),
+            Some(ConsoleAction::ReplayShuttleForwardB)
+        );
+        // The first transport's channel is untouched.
+        assert_eq!(bindings.action(note(36)), None);
+        // Running it again keeps the same five bindings, not a copy.
+        assert_eq!(bindings.bind_replay_transport_b(), 5);
+        assert_eq!(bindings.bindings().count(), 5);
+        // Both presets coexist on their own channels.
+        assert_eq!(bindings.bind_replay_transport(), 8);
+        assert_eq!(bindings.bindings().count(), 13);
     }
 
     #[test]

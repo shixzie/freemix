@@ -108,6 +108,17 @@ pub enum ConsoleAction {
     ReplayShuttleBack,
     /// Shuttle the Replay player forwards at 2x.
     ReplayShuttleForward,
+    /// Play the second Replay input's player, or pause it (OR-012): two
+    /// controllers can drive A and B independently.
+    ReplayPlayPauseB,
+    /// Step the second Replay input's player one frame back, paused.
+    ReplayStepBackB,
+    /// Step the second Replay input's player one frame on, paused.
+    ReplayStepForwardB,
+    /// Shuttle the second Replay input's player backwards at 2x.
+    ReplayShuttleBackB,
+    /// Shuttle the second Replay input's player forwards at 2x.
+    ReplayShuttleForwardB,
 }
 
 impl ConsoleAction {
@@ -131,6 +142,11 @@ impl ConsoleAction {
                 Self::ReplayStepForward,
                 Self::ReplayShuttleBack,
                 Self::ReplayShuttleForward,
+                Self::ReplayPlayPauseB,
+                Self::ReplayStepBackB,
+                Self::ReplayStepForwardB,
+                Self::ReplayShuttleBackB,
+                Self::ReplayShuttleForwardB,
             ])
             .collect()
     }
@@ -156,6 +172,11 @@ impl ConsoleAction {
             Self::ReplayStepForward => "replay_step_forward".to_owned(),
             Self::ReplayShuttleBack => "replay_shuttle_back".to_owned(),
             Self::ReplayShuttleForward => "replay_shuttle_forward".to_owned(),
+            Self::ReplayPlayPauseB => "replay_play_pause_b".to_owned(),
+            Self::ReplayStepBackB => "replay_step_back_b".to_owned(),
+            Self::ReplayStepForwardB => "replay_step_forward_b".to_owned(),
+            Self::ReplayShuttleBackB => "replay_shuttle_back_b".to_owned(),
+            Self::ReplayShuttleForwardB => "replay_shuttle_forward_b".to_owned(),
         }
     }
 
@@ -185,7 +206,12 @@ impl ConsoleAction {
             | Self::ReplayStepBack
             | Self::ReplayStepForward
             | Self::ReplayShuttleBack
-            | Self::ReplayShuttleForward => crate::ShortcutGroup::Output,
+            | Self::ReplayShuttleForward
+            | Self::ReplayPlayPauseB
+            | Self::ReplayStepBackB
+            | Self::ReplayStepForwardB
+            | Self::ReplayShuttleBackB
+            | Self::ReplayShuttleForwardB => crate::ShortcutGroup::Output,
         }
     }
 
@@ -211,6 +237,11 @@ impl ConsoleAction {
             Self::ReplayStepForward => l.text(Msg::ConsoleActionReplayStepForward).to_owned(),
             Self::ReplayShuttleBack => l.text(Msg::ConsoleActionReplayShuttleBack).to_owned(),
             Self::ReplayShuttleForward => l.text(Msg::ConsoleActionReplayShuttleForward).to_owned(),
+            Self::ReplayPlayPauseB => l.text(Msg::ConsoleActionReplayPlayPauseB).to_owned(),
+            Self::ReplayStepBackB => l.text(Msg::ConsoleActionReplayStepBackB).to_owned(),
+            Self::ReplayStepForwardB => l.text(Msg::ConsoleActionReplayStepForwardB).to_owned(),
+            Self::ReplayShuttleBackB => l.text(Msg::ConsoleActionReplayShuttleBackB).to_owned(),
+            Self::ReplayShuttleForwardB => l.text(Msg::ConsoleActionReplayShuttleForwardB).to_owned(),
         }
     }
 }

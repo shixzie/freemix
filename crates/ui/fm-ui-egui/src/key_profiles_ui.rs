@@ -370,6 +370,13 @@ impl StudioShell {
         {
             profiles.midi.bind_replay_transport();
         }
+        if ui
+            .add(small_button(l.text(Msg::MidiReplayTransportB)))
+            .on_hover_text(l.text(Msg::MidiReplayTransportBHover))
+            .clicked()
+        {
+            profiles.midi.bind_replay_transport_b();
+        }
         ui.label(caption(l.text(Msg::MidiValues)));
         for target in crate::midi_bindings::MidiValueTarget::all() {
             ui.horizontal(|ui| {

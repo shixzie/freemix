@@ -327,13 +327,48 @@ pub(crate) fn transport_player(state: &StudioUiState) -> Option<&fm_protocol::Re
         .or_else(|| status.players.first())
 }
 
+/// The player a controller profile drives: the console's player (Preview,
+/// else Program, else the first) or, for the second profile, the other
+/// Replay input's player (OR-012).
+pub(crate) fn transport_player_for(
+    state: &StudioUiState,
+    second: bool,
+) -> Option<&fm_protocol::ReplayPlayerStatus> {
+    let first = transport_player(state)?;
+    if !second {
+        return Some(first);
+    }
+    let status = state.replay.as_deref()?;
+    let buses = state.view.as_ref().map(|view| view.switcher.desired);
+    let other = |player: &&fm_protocol::ReplayPlayerStatus| player.input != first.input;
+    let on = |bus: fm_types::InputId| {
+        status
+            .players
+            .iter()
+            .find(|player| player.input.to_domain() == bus)
+    };
+    buses
+        .and_then(|buses| on(buses.preview).filter(other))
+        .or_else(|| buses.and_then(|buses| on(buses.program).filter(other)))
+        .or_else(|| status.players.iter().find(other))
+}
+
 /// What a console transport key sends, while replay is live and a player is
 /// available.
 pub(crate) fn transport_intent(
     state: &StudioUiState,
     operation: ReplayOperation,
 ) -> Option<StudioIntent> {
-    transport_player(state)?;
+    transport_intent_for(state, false, operation)
+}
+
+/// [`transport_intent`] for the first or second controller profile.
+pub(crate) fn transport_intent_for(
+    state: &StudioUiState,
+    second: bool,
+    operation: ReplayOperation,
+) -> Option<StudioIntent> {
+    transport_player_for(state, second)?;
     live_block(state)
         .is_none()
         .then_some(StudioIntent::Replay(operation))

@@ -173,7 +173,8 @@ there come before any new breadth below.
     Remaining: the
     recorder takes a source's last
     decoded picture rather than a genlocked one, the
-    dedicated two-profile replay controllers, and
+    full typed two-profile replay controller surface (the console's MIDI
+    transport now has a second profile for the second Replay input), and
     certification are absent; Studio's
     Replay panel and the CLI record up to eight inputs and render their angles
     in an adaptive grid (Protocol 2.127), now led by the input and its linked
@@ -5953,8 +5954,10 @@ recording time with warning, critical, and full levels that worsen
 immediately and recover only past a hysteresis margin. Remaining gaps: Studio's
 Replay panel and the CLI render up to eight recorded angles in an adaptive
 grid (Protocol 2.127, decoded and composed by the native daemon), led by the
-requested Replay input and its linked A/B partner as channel tiles; controller bindings have no real device
-input, persistence, or jog acceleration; the native daemon samples
+requested Replay input and its linked A/B partner as channel tiles; controller
+bindings are MIDI (real device input) and persist with the key profile, and a
+second transport profile drives the second Replay input from channel 2, though
+the full typed controller surface and jog acceleration remain; the native daemon samples
 its replay root's free space and reports the predicted recording time at the
 observed write rate (Protocol 2.125, shown in Studio and the CLI), and a
 root below the recorder's 512 MiB floor pauses recording (`storage:low_space`)
