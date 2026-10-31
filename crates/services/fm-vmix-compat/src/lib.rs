@@ -939,7 +939,19 @@ fn overlay_channel(function: &str) -> Option<u8> {
 }
 
 fn known_unsupported(function: &str) -> bool {
-    matches!(function, "AddInput" | "FadeToBlack" | "OverlayInputAllOff")
+    matches!(
+        function,
+        "AddInput"
+            | "SetOutput"
+            | "SetOutput2"
+            | "SetOutput3"
+            | "SetOutput4"
+            | "SetOutputFullscreen"
+            | "SetOutputFullscreen2"
+            | "StartExternal"
+            | "StopExternal"
+            | "StartStopExternal"
+    ) || function.starts_with("SetVolumeChannel")
         || (function.starts_with("OverlayInput")
             && ["In", "Last", "Off", "Out", "Zoom"]
                 .iter()
