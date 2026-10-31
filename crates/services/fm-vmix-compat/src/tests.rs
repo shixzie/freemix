@@ -190,10 +190,19 @@ fn malformed_unknown_and_unsupported_are_distinct() {
             reason: "the function has no semantics in the current compatibility core",
         }))
     );
-    assert!(matches!(
+    assert_eq!(
         parse_http_query("Function=Fade", &state),
-        Ok(Translation::Unsupported(_))
-    ));
+        Ok(Translation::Compat(CompatIntent::Fade {
+            input: None,
+            duration_millis: 500,
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=SetTransitionDuration&Value=1200", &state),
+        Ok(Translation::Compat(CompatIntent::SetTransitionDuration {
+            millis: 1200,
+        }))
+    );
     assert_eq!(
         parse_http_query("Function=Cut&Function=Fade", &state),
         Err(ParseError::DuplicateParameter("Function".to_owned()))

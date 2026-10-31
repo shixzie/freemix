@@ -41,6 +41,8 @@ pub const MAX_INPUTS: usize = 1_000;
 pub const OVERLAY_CHANNELS: usize = 8;
 
 const MAX_TRANSITION_MILLIS: u32 = 86_400_000;
+/// vMix's default transition duration, in milliseconds.
+const DEFAULT_TRANSITION_MILLIS: u32 = 500;
 
 /// A title text field exposed in a compatibility state snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -138,6 +140,9 @@ pub struct CompatState {
     pub recording: bool,
     /// Streaming activity exposed by XML.
     pub streaming: bool,
+    /// The configured transition duration in milliseconds (`Fade` without
+    /// `Duration` uses it; vMix's default is 500).
+    pub transition_millis: u32,
 }
 
 impl CompatState {
@@ -174,6 +179,7 @@ impl CompatState {
             overlays: [None; OVERLAY_CHANNELS],
             recording: false,
             streaming: false,
+            transition_millis: DEFAULT_TRANSITION_MILLIS,
         })
     }
 
@@ -336,6 +342,9 @@ pub enum CompatIntent {
         input: Option<WireInputId>,
         duration_millis: u32,
     },
+    /// Configure the duration `Fade` uses when its request omits one; the
+    /// dispatcher stores it on the compatibility state.
+    SetTransitionDuration { millis: u32 },
     /// Toggle a one-based overlay channel for an input on the main mix.
     ToggleOverlay { channel: u8, input: WireInputId },
     /// Set one title field.
@@ -559,19 +568,30 @@ fn translate(
                     "only the main mix (0) is represented",
                 ));
             }
-            let Some(duration) = optional(parameters, "Duration") else {
-                return Ok(unsupported(
-                    function,
-                    "the configured vMix transition duration is not present in the request",
-                ));
+            let duration_millis = match optional(parameters, "Duration") {
+                Some(duration) => parse_u32(duration, "Duration", 1, MAX_TRANSITION_MILLIS)?,
+                // vMix uses the duration configured by
+                // `SetTransitionDuration` when the request omits one.
+                None => state.transition_millis.max(1),
             };
-            let duration_millis = parse_u32(duration, "Duration", 1, MAX_TRANSITION_MILLIS)?;
             let input = optional(parameters, "Input")
                 .map(|reference| state.resolve_input(reference))
                 .transpose()?;
             Ok(Translation::Compat(CompatIntent::Fade {
                 input,
                 duration_millis,
+            }))
+        }
+        "SetTransitionDuration" => {
+            allowed(parameters, &["Function", "Value"])?;
+            let millis = parse_u32(
+                required(parameters, "Value")?,
+                "Value",
+                1,
+                MAX_TRANSITION_MILLIS,
+            )?;
+            Ok(Translation::Compat(CompatIntent::SetTransitionDuration {
+                millis,
             }))
         }
         "NextItem" | "PreviousItem" | "NextPicture" | "PreviousPicture" => {
