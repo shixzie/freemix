@@ -12,10 +12,10 @@ use std::{
     num::NonZeroU128,
 };
 
-use fm_model::{Project, ProjectSettings, RestartPolicy};
+use fm_model::{AudioBus, Output, Project, ProjectSettings, RestartPolicy, StartupPolicy};
 use fm_types::{
-    AudioFormat, Channel, ChannelLayout, DiscreteChannel, FrameRate, SampleRate, VideoDimensions,
-    VideoFormat,
+    AudioFormat, BusId, Channel, ChannelLayout, DiscreteChannel, FrameRate, OutputId, SampleRate,
+    SceneId, VideoDimensions, VideoFormat,
 };
 
 use crate::settings_export::{
@@ -612,9 +612,11 @@ impl ImportPlan {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SettingsApplyError {
     /// A required key is missing from the snapshot.
-    Missing { key: &'static str },
+    Missing { key: String },
     /// A key holds the wrong value type or an out-of-range value.
-    Invalid { key: &'static str },
+    Invalid { key: String },
+    /// The project model refused an entity edit.
+    Model { key: String, reason: String },
     /// The project rejected the new format.
     Project(Vec<fm_model::ValidationError>),
 }
@@ -624,6 +626,9 @@ impl fmt::Display for SettingsApplyError {
         match self {
             Self::Missing { key } => write!(formatter, "settings snapshot has no `{key}`"),
             Self::Invalid { key } => write!(formatter, "setting `{key}` is not applicable"),
+            Self::Model { key, reason } => {
+                write!(formatter, "setting `{key}` was refused: {reason}")
+            }
             Self::Project(errors) => {
                 write!(formatter, "project rejected the imported settings: {errors:?}")
             }
@@ -634,23 +639,23 @@ impl fmt::Display for SettingsApplyError {
 impl std::error::Error for SettingsApplyError {}
 
 impl SettingsSnapshot {
-    /// Applies the `format` and `restart_policy` sections to `project`.
+    /// Applies the format, restart policy, audio bus, and output sections to
+    /// `project`.
     ///
-    /// Every other project setting is left untouched. The caller decides
-    /// whether the snapshot's other sections may change (the CLI refuses
-    /// them rather than silently ignoring them).
+    /// Stream targets are not applied yet. The whole import is applied to a
+    /// clone and committed only when every section succeeds.
     ///
     /// # Errors
     ///
-    /// Returns [`SettingsApplyError`] for a missing or malformed entry, or
-    /// when the project rejects the new format; nothing changes on error.
-    pub fn apply_format_and_restart(
-        &self,
-        project: &mut Project,
-    ) -> Result<(), SettingsApplyError> {
+    /// Returns [`SettingsApplyError`] for a missing or malformed entry, a
+    /// model refusal, or an invalid resulting format; nothing changes on
+    /// error.
+    pub fn apply_exported(&self, project: &mut Project) -> Result<(), SettingsApplyError> {
         let mut candidate = project.clone();
         apply_format(self, &mut candidate)?;
         apply_restart(self, &mut candidate)?;
+        apply_audio_buses(self, &mut candidate)?;
+        apply_outputs(self, &mut candidate)?;
         *project = candidate;
         Ok(())
     }
@@ -658,28 +663,40 @@ impl SettingsSnapshot {
 
 fn setting_integer(
     snapshot: &SettingsSnapshot,
-    key: &'static str,
+    key: &str,
 ) -> Result<i64, SettingsApplyError> {
     match snapshot.get_path(key) {
         Some(SettingValue::Integer(value)) => Ok(*value),
-        Some(_) => Err(SettingsApplyError::Invalid { key }),
-        None => Err(SettingsApplyError::Missing { key }),
+        Some(_) => Err(SettingsApplyError::Invalid { key: key.to_owned() }),
+        None => Err(SettingsApplyError::Missing { key: key.to_owned() }),
     }
 }
 
 fn setting_text<'a>(
     snapshot: &'a SettingsSnapshot,
-    key: &'static str,
+    key: &str,
 ) -> Result<&'a str, SettingsApplyError> {
     match snapshot.get_path(key) {
         Some(SettingValue::Text(value)) => Ok(value.as_str()),
-        Some(_) => Err(SettingsApplyError::Invalid { key }),
-        None => Err(SettingsApplyError::Missing { key }),
+        Some(_) => Err(SettingsApplyError::Invalid { key: key.to_owned() }),
+        None => Err(SettingsApplyError::Missing { key: key.to_owned() }),
     }
 }
 
-fn bounded_u32(value: i64, key: &'static str) -> Result<u32, SettingsApplyError> {
-    u32::try_from(value).map_err(|_| SettingsApplyError::Invalid { key })
+fn setting_reference(
+    snapshot: &SettingsSnapshot,
+    key: &str,
+    kind: ReferenceKind,
+) -> Result<SettingReference, SettingsApplyError> {
+    match snapshot.get_path(key) {
+        Some(SettingValue::Reference(reference)) if reference.kind == kind => Ok(*reference),
+        Some(_) => Err(SettingsApplyError::Invalid { key: key.to_owned() }),
+        None => Err(SettingsApplyError::Missing { key: key.to_owned() }),
+    }
+}
+
+fn bounded_u32(value: i64, key: &str) -> Result<u32, SettingsApplyError> {
+    u32::try_from(value).map_err(|_| SettingsApplyError::Invalid { key: key.to_owned() })
 }
 
 fn apply_format(
@@ -694,11 +711,10 @@ fn apply_format(
         setting_integer(snapshot, "format.frame_rate.denominator")?,
         "format.frame_rate.denominator",
     )?;
-    let frame_rate = FrameRate::new(numerator, denominator).map_err(|_| {
-        SettingsApplyError::Invalid {
-            key: "format.frame_rate",
-        }
-    })?;
+    let frame_rate =
+        FrameRate::new(numerator, denominator).map_err(|_| SettingsApplyError::Invalid {
+            key: "format.frame_rate".to_owned(),
+        })?;
     let width = bounded_u32(
         setting_integer(snapshot, "format.video.width")?,
         "format.video.width",
@@ -709,24 +725,22 @@ fn apply_format(
     )?;
     let dimensions =
         VideoDimensions::new(width, height).ok_or(SettingsApplyError::Invalid {
-            key: "format.video.width",
+            key: "format.video.width".to_owned(),
         })?;
     let sample_rate = SampleRate::new(bounded_u32(
         setting_integer(snapshot, "format.audio.sample_rate_hz")?,
         "format.audio.sample_rate_hz",
     )?)
     .ok_or(SettingsApplyError::Invalid {
-        key: "format.audio.sample_rate_hz",
+        key: "format.audio.sample_rate_hz".to_owned(),
     })?;
-    let channel_count = usize::try_from(setting_integer(
-        snapshot,
-        "format.audio.channel_count",
-    )?)
-    .ok()
-    .filter(|count| (1..=ChannelLayout::MAX_CHANNELS).contains(count))
-    .ok_or(SettingsApplyError::Invalid {
-        key: "format.audio.channel_count",
-    })?;
+    let channel_count =
+        usize::try_from(setting_integer(snapshot, "format.audio.channel_count")?)
+            .ok()
+            .filter(|count| (1..=ChannelLayout::MAX_CHANNELS).contains(count))
+            .ok_or(SettingsApplyError::Invalid {
+                key: "format.audio.channel_count".to_owned(),
+            })?;
 
     let current = project.settings().clone();
     let channels = if channel_count == current.audio.channels.channels().len() {
@@ -739,12 +753,12 @@ fn apply_format(
                     .and_then(DiscreteChannel::new)
                     .map(Channel::Discrete)
                     .ok_or(SettingsApplyError::Invalid {
-                        key: "format.audio.channel_count",
+                        key: "format.audio.channel_count".to_owned(),
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
         ChannelLayout::new(labels).ok_or(SettingsApplyError::Invalid {
-            key: "format.audio.channel_count",
+            key: "format.audio.channel_count".to_owned(),
         })?
     };
     let settings = ProjectSettings {
@@ -782,7 +796,7 @@ fn apply_restart(
                 *attempts > 0 && *attempts <= RestartPolicy::MAX_RESTART_ATTEMPTS
             })
             .ok_or(SettingsApplyError::Invalid {
-                key: "restart_policy.max_attempts",
+                key: "restart_policy.max_attempts".to_owned(),
             })?;
             RestartPolicy::OnFailure {
                 max_attempts: attempts,
@@ -790,10 +804,143 @@ fn apply_restart(
         }
         _ => {
             return Err(SettingsApplyError::Invalid {
-                key: "restart_policy.mode",
+                key: "restart_policy.mode".to_owned(),
             });
         }
     };
     project.set_restart_policy(restart);
     Ok(())
+}
+
+fn apply_audio_buses(
+    snapshot: &SettingsSnapshot,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    for entity in snapshot
+        .entities()
+        .into_iter()
+        .filter(|entity| entity.section() == SettingsSection::AudioBuses)
+    {
+        let Some(id) = entity.id() else {
+            return Err(SettingsApplyError::Invalid {
+                key: "audio_buses".to_owned(),
+            });
+        };
+        let bus = BusId::new(id);
+        let key = format!("audio_buses.{id}");
+        let name = snapshot
+            .entity_name(entity)
+            .ok_or_else(|| SettingsApplyError::Missing {
+                key: format!("{key}.name"),
+            })?
+            .to_owned();
+        if project.audio_buses().iter().any(|candidate| candidate.id == bus) {
+            project
+                .rename_audio_bus(bus, name)
+                .map_err(|error| SettingsApplyError::Model {
+                    key: key.clone(),
+                    reason: error.to_string(),
+                })?;
+        } else {
+            project
+                .add_audio_bus_checked(AudioBus {
+                    id: bus,
+                    name,
+                    sends: Vec::new(),
+                })
+                .map_err(|error| SettingsApplyError::Model {
+                    key: key.clone(),
+                    reason: error.to_string(),
+                })?;
+        }
+    }
+    Ok(())
+}
+
+fn apply_outputs(
+    snapshot: &SettingsSnapshot,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    for entity in snapshot
+        .entities()
+        .into_iter()
+        .filter(|entity| entity.section() == SettingsSection::Outputs)
+    {
+        let Some(id) = entity.id() else {
+            return Err(SettingsApplyError::Invalid {
+                key: "outputs".to_owned(),
+            });
+        };
+        let output = OutputId::new(id);
+        let key = format!("outputs.{id}");
+        let name = snapshot
+            .entity_name(entity)
+            .ok_or_else(|| SettingsApplyError::Missing {
+                key: format!("{key}.name"),
+            })?
+            .to_owned();
+        let scene = SceneId::new(
+            setting_reference(
+                snapshot,
+                &format!("{key}.video_source"),
+                ReferenceKind::Scene,
+            )?
+            .id,
+        );
+        let bus = BusId::new(
+            setting_reference(
+                snapshot,
+                &format!("{key}.audio_source"),
+                ReferenceKind::AudioBus,
+            )?
+            .id,
+        );
+        let startup = startup_policy(snapshot, &format!("{key}.startup"))?;
+        if project.outputs().iter().any(|candidate| candidate.id == output) {
+            project
+                .rename_output(output, name)
+                .map_err(|error| SettingsApplyError::Model {
+                    key: key.clone(),
+                    reason: error.to_string(),
+                })?;
+            project
+                .set_output_route(output, scene, bus)
+                .map_err(|error| SettingsApplyError::Model {
+                    key: key.clone(),
+                    reason: error.to_string(),
+                })?;
+            project
+                .set_output_startup(output, startup)
+                .map_err(|error| SettingsApplyError::Model {
+                    key: key.clone(),
+                    reason: error.to_string(),
+                })?;
+        } else {
+            project
+                .add_output_checked(Output {
+                    id: output,
+                    name,
+                    video_source: scene,
+                    audio_source: bus,
+                    startup,
+                    required_capabilities: Vec::new(),
+                })
+                .map_err(|error| SettingsApplyError::Model {
+                    key: key.clone(),
+                    reason: error.to_string(),
+                })?;
+        }
+    }
+    Ok(())
+}
+
+fn startup_policy(
+    snapshot: &SettingsSnapshot,
+    key: &str,
+) -> Result<StartupPolicy, SettingsApplyError> {
+    match setting_text(snapshot, key)? {
+        "stopped" => Ok(StartupPolicy::Stopped),
+        "reconcile_desired_state" => Ok(StartupPolicy::ReconcileDesiredState),
+        _ => Err(SettingsApplyError::Invalid { key: key.to_owned() }),
+    }
 }

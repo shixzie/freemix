@@ -6099,10 +6099,12 @@ fn settings_import(path: &Path, input: &Path, apply: bool) -> AppResult<()> {
                     change.key.section(),
                     fm_persistence::SettingsSection::Format
                         | fm_persistence::SettingsSection::RestartPolicy
+                        | fm_persistence::SettingsSection::Outputs
+                        | fm_persistence::SettingsSection::AudioBuses
                 )
         }) {
             return Err(AppFailure(format!(
-                "settings-import: cannot apply {} changes yet (only format and restart_policy); nothing was saved",
+                "settings-import: cannot apply {} changes yet (only format, restart_policy, outputs, and audio_buses); nothing was saved",
                 change.key.section()
             ))
             .into());
@@ -6110,7 +6112,7 @@ fn settings_import(path: &Path, input: &Path, apply: bool) -> AppResult<()> {
         let mut project = stored.project().clone();
         outcome
             .result
-            .apply_format_and_restart(&mut project)
+            .apply_exported(&mut project)
             .map_err(|error| AppFailure(format!("settings-import: {error}")))?;
         let configured = stored.with_project(project)?;
         ProjectStore::new(path)?.save(&configured)?;

@@ -4011,11 +4011,12 @@ per-section choice, report secret re-entry, unknown references, and ID
 collisions, and apply atomically only when resolved against an unchanged base.
 The CLI now writes the export document (`settings-export`), previews an
 import against a project (`settings-import`), and applies the `format` and
-`restart_policy` sections atomically with `settings-import --apply` (a change
-in any other section refuses the whole import before saving); output, audio
-bus, and stream-target mutations and engine commands are still not applied,
-nothing in the daemon, protocol, or UI calls the planner, and secrets are
-excluded rather than separately encrypted. For `SW-017`,
+`restart_policy` sections and the names, routes, startup policies, and
+existing entities of the `outputs` and `audio_buses` sections atomically with
+`settings-import --apply` (a stream-target change refuses the whole import
+before saving); stream-target mutations and engine commands are still not
+applied, nothing in the daemon, protocol, or UI calls the planner, and
+secrets are excluded rather than separately encrypted. For `SW-017`,
 `fm-engine` classifies commands into undoable project edits (input add,
 remove, rename, and reorder; stinger and overlay settings; grades; title and
 scene animations; scene layers; the playlist, cue lists, and scripts;

@@ -1114,7 +1114,7 @@ fn settings_import_apply_updates_format_and_restart_only() {
     assert_eq!(settings.video.frame_rate, settings.frame_rate);
     assert_eq!(loaded.project().restart_policy(), fm_model::RestartPolicy::Always);
 
-    // A change outside the applied sections refuses the whole import.
+    // Audio bus names are applied too.
     let first_export = root.path("settings-2.json");
     assert_success(&run(&["settings-export", text(&show), text(&first_export)]));
     let json = fs::read_to_string(&first_export).unwrap();
@@ -1125,13 +1125,35 @@ fn settings_import_apply_updates_format_and_restart_only() {
     assert_ne!(changed, json);
     let changed_path = root.path("bus.json");
     fs::write(&changed_path, changed).unwrap();
+    let out = assert_success(&run(&[
+        "settings-import",
+        text(&show),
+        text(&changed_path),
+        "--apply",
+    ]));
+    assert!(out.contains("0 added, 1 changed, 0 removed; applied"), "{out}");
+    let loaded = load(&show);
+    assert_eq!(loaded.project().audio_buses()[0].name, "Clean feed");
+
+    // A stream-target change is not applied yet, and refuses the whole
+    // import before anything is saved.
+    let second_export = root.path("settings-3.json");
+    assert_success(&run(&["settings-export", text(&show), text(&second_export)]));
+    let json = fs::read_to_string(&second_export).unwrap();
+    let changed = json.replace(
+        "\n  }\n}\n",
+        ",\n    \"stream_targets.1.name\": {\"text\": \"Live\"}\n  }\n}\n",
+    );
+    assert_ne!(changed, json);
+    let changed_path = root.path("stream.json");
+    fs::write(&changed_path, changed).unwrap();
     let refused = run(&[
         "settings-import",
         text(&show),
         text(&changed_path),
         "--apply",
     ]);
-    assert_failure_contains(&refused, "cannot apply audio_buses changes yet");
+    assert_failure_contains(&refused, "cannot apply stream_targets changes yet");
     let loaded = load(&show);
-    assert_eq!(loaded.project().audio_buses()[0].name, "Program bus");
+    assert_eq!(loaded.project().audio_buses()[0].name, "Clean feed");
 }
