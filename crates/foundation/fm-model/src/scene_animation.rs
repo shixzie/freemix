@@ -58,9 +58,7 @@ use fm_animation::{
 };
 use fm_types::{FrameRate, GarbageMatte, MAX_GARBAGE_MATTE_POINTS, MattePoint};
 
-use crate::{
-    CropRect, Layer, LayerAnchor, LayerGeometry, LayerKey, RectMask, Rotation, Scene,
-};
+use crate::{CropRect, Layer, LayerAnchor, LayerGeometry, LayerKey, RectMask, Rotation, Scene};
 
 /// The stable id of one layer within its scene: the target of every scene
 /// animation track. Unique within a scene and kept by every layer edit.
@@ -765,9 +763,7 @@ fn apply_matte_pose(layer: &mut Layer, matte: &[Option<u16>; MAX_GARBAGE_MATTE_P
         }
         changed = true;
     }
-    if changed
-        && let Ok(rebuilt) = GarbageMatte::new(&points[..len], static_matte.invert())
-    {
+    if changed && let Ok(rebuilt) = GarbageMatte::new(&points[..len], static_matte.invert()) {
         refinement.garbage_matte = rebuilt.with_feather(static_matte.feather()).ok();
     }
 }

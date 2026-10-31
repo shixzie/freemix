@@ -349,8 +349,5 @@ fn matte_coordinates_are_sampled_from_the_scene_clip() {
     assert_eq!(pose.matte[0], Some(500));
     assert_eq!(pose.matte[15], Some(500));
     assert_eq!(pose.matte[1], None);
-    assert_eq!(
-        Scene::check_animation_clip(&scene(), &clip),
-        Ok(())
-    );
+    assert_eq!(Scene::check_animation_clip(&scene(), &clip), Ok(()));
 }

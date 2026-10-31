@@ -232,7 +232,11 @@ fn clip_bytes<T: ClipTarget>(clip: &Clip<T>) -> Vec<u8> {
 pub(super) fn encode_clip<T: ClipTarget>(clip: &Clip<T>) -> Result<String, CodecError> {
     clip.validate()
         .map_err(|error| invalid_clip(error.to_string()))?;
-    if let Some(track) = clip.tracks().iter().find(|track| !T::allows(track.key.property)) {
+    if let Some(track) = clip
+        .tracks()
+        .iter()
+        .find(|track| !T::allows(track.key.property))
+    {
         return Err(invalid_clip(format!(
             "{} cannot animate {}",
             track.key.target.to_wire(),
