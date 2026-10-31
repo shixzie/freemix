@@ -170,8 +170,8 @@ there come before any new breadth below.
     previous run are removed rather than reloaded,
     transitions and controller wiring, and certification are absent; Studio's
     Replay panel and the CLI record up to eight inputs and render their angles
-    in an adaptive grid (Protocol 2.127); the A/B channel tiles of the full
-    multiview are not wired; storage health reaches Studio and the CLI (Protocol 2.125),
+    in an adaptive grid (Protocol 2.127), now led by the input and its linked
+    A/B partner as channel tiles; storage health reaches Studio and the CLI (Protocol 2.125),
     without SMART queries or `fm-record` low-space integration (see the
     Phase 7 boundary).
 11. **Highlight reels, end to end (`OR-013`).** The show persists up to eight
@@ -5880,8 +5880,8 @@ bitrates into per-camera and per-root byte rates and predicts remaining
 recording time with warning, critical, and full levels that worsen
 immediately and recover only past a hysteresis margin. Remaining gaps: Studio's
 Replay panel and the CLI render up to eight recorded angles in an adaptive
-grid (Protocol 2.127, decoded and composed by the native daemon), but the A/B
-channel tiles of the full multiview are not wired; controller bindings have no real device
+grid (Protocol 2.127, decoded and composed by the native daemon), led by the
+requested Replay input and its linked A/B partner as channel tiles; controller bindings have no real device
 input, persistence, or jog acceleration; the native daemon now samples
 its replay root's free space and reports the predicted recording time at the
 observed write rate (Protocol 2.125, shown in Studio and the CLI), but there
