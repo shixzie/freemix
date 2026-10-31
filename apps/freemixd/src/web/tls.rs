@@ -28,11 +28,12 @@ use rustls::{
     sign::CertifiedKey,
 };
 
+use fm_daemon_arguments::WebTls;
+
 use super::{
     AppResult,
     certs::{self, LeafInfo},
     local_ca::{self, LocalCa},
-    settings::WebTls,
 };
 
 /// The local CA's current leaf and its key in the state directory.
@@ -519,7 +520,9 @@ pub(crate) fn fingerprint(der: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{CERT_FILE, KEY_FILE, WebTls, load, now_ms, write_private};
+    use fm_daemon_arguments::WebTls;
+
+    use super::{CERT_FILE, KEY_FILE, load, now_ms, write_private};
     use crate::web::local_ca::{CA_CERT_FILE, CA_KEY_FILE};
     use fm_protocol::{WebCertProblem, WebTrust};
     use rcgen::{CertificateParams, ExtendedKeyUsagePurpose, KeyPair};

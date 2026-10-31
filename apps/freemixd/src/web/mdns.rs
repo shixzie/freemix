@@ -21,18 +21,6 @@ pub(crate) const HTTPS_SERVICE: &str = "_https._tcp.local.";
 const DEFAULT_LABEL: &str = "freemix";
 const MAX_LABEL_BYTES: usize = 63;
 
-/// Whether `label` is one DNS label of lowercase letters, digits, and
-/// hyphens.
-pub(crate) fn valid_label(label: &str) -> bool {
-    !label.is_empty()
-        && label.len() <= MAX_LABEL_BYTES
-        && !label.starts_with('-')
-        && !label.ends_with('-')
-        && label
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-}
-
 /// `freemix-<computer name>`, reduced to one valid label: the computer's
 /// own `.local` name belongs to the operating system's responder, so the
 /// gateway never claims it.
@@ -181,6 +169,18 @@ impl Drop for Mdns {
         }
         let _ = self.daemon.shutdown();
     }
+}
+
+/// One mDNS label: 1..=63 letters, digits, and hyphens, not at an edge.
+#[cfg(test)]
+fn valid_label(label: &str) -> bool {
+    !label.is_empty()
+        && label.len() <= 63
+        && !label.starts_with('-')
+        && !label.ends_with('-')
+        && label
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 #[cfg(test)]

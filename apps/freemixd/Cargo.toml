@@ -9,7 +9,7 @@ rust-version.workspace = true
 default = []
 # Borderless fullscreen display outputs (OR-011) through winit windows on
 # every platform; `macos-program-surface` is the historical name.
-display-surface = ["native-media", "dep:winit"]
+display-surface = ["native-media", "dep:winit", "fm-daemon-arguments/display-surface"]
 macos-program-surface = ["display-surface"]
 native-media = [
     "dep:fm-codec-ffmpeg",
@@ -38,6 +38,7 @@ fm-color = { path = "../../crates/gpu/fm-color", optional = true }
 fm-command = { path = "../../crates/foundation/fm-command" }
 fm-compositor = { path = "../../crates/gpu/fm-compositor" }
 fm-control = { path = "../../crates/services/fm-control" }
+fm-daemon-arguments = { path = "../../crates/services/fm-daemon-arguments" }
 fm-daemon-journal = { path = "../../crates/services/fm-daemon-journal" }
 fm-engine = { path = "../../crates/services/fm-engine" }
 fm-frame = { path = "../../crates/media/fm-frame" }

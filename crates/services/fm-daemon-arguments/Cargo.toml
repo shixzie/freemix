@@ -1,0 +1,19 @@
+[package]
+name = "fm-daemon-arguments"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+# The daemon's `display-surface` build opens the presenter; parse_args uses
+# the same feature to decide whether `--display-presenter-if-available` may
+# fall back to headless serving.
+display-surface = []
+
+[dependencies]
+fm-io-api = { path = "../../io/fm-io-api" }
+fm-types = { path = "../../foundation/fm-types" }
+
+[lints]
+workspace = true

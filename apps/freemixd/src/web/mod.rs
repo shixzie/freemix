@@ -16,7 +16,7 @@ use fm_protocol::{MAX_LINE_BYTES, WireMessage, decode_line};
 use super::AppResult;
 
 pub(crate) use access::{Reach, WebAccess, WebIdentity};
-pub(crate) use settings::WebSettings;
+pub(crate) use fm_daemon_arguments::WebSettings;
 
 const PATH: &str = "/v1/control";
 const TOKEN_MIN_BYTES: usize = 32;
@@ -411,7 +411,7 @@ impl WebGateway {
                 .unwrap_or_else(|| mdns::default_label(computer.as_deref()));
             format!("{label}.local")
         });
-        let tls_on = settings.tls != settings::WebTls::Off;
+        let tls_on = settings.tls != fm_daemon_arguments::WebTls::Off;
         let (reach, names) = plan(settings, address, &lan, mdns_host.as_deref(), tls_on);
         let tls = tls::load(&settings.tls, state_dir.as_deref(), &names)?;
         let config = tls.as_ref().map(tls::TlsState::server_config).transpose()?;
@@ -616,7 +616,6 @@ mod http;
 mod local_ca;
 mod mdns;
 mod page;
-mod settings;
 mod tls;
 mod worker;
 pub(crate) use worker::peer_group_at;

@@ -1639,6 +1639,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fm-daemon-arguments"
+version = "0.1.0"
+dependencies = [
+ "fm-io-api",
+ "fm-types",
+]
+
+[[package]]
 name = "fm-daemon-journal"
 version = "0.1.0"
 dependencies = [
@@ -2242,6 +2250,7 @@ dependencies = [
  "fm-command",
  "fm-compositor",
  "fm-control",
+ "fm-daemon-arguments",
  "fm-daemon-journal",
  "fm-engine",
  "fm-frame",
