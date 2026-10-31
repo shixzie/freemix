@@ -147,6 +147,12 @@ pub enum AudioMixerArgs {
         output: u128,
         bus: Option<fm_model::AuxBusNumber>,
     },
+    /// `audio-aux-dsp <A-G> <preset|chain code>`: an aux bus's DSP chain
+    /// (AU-002).
+    AuxDsp {
+        bus: fm_model::AuxBusNumber,
+        chain: fm_types::strip_dsp::StripDsp,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2335,6 +2341,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "audio-loudness-reset"
         | "audio-aux-name"
         | "audio-aux-level"
+        | "audio-aux-dsp"
         | "audio-output-aux"
         | "remote-audio-label"
         | "remote-audio-group"
@@ -2349,6 +2356,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-audio-loudness-reset"
         | "remote-audio-aux-name"
         | "remote-audio-aux-level"
+        | "remote-audio-aux-dsp"
         | "remote-audio-output-aux") => parse_audio_mixer(mixer, arguments),
         "remote-audio-output-devices" => {
             let address = socket_address(&required(&mut arguments, "address")?)?;
@@ -3405,6 +3413,17 @@ fn parse_dsp_target(
     })
 }
 
+/// A DSP preset name or canonical chain code (AU-005, AU-002).
+fn parse_dsp_chain(value: &str) -> Result<fm_types::strip_dsp::StripDsp, ArgsError> {
+    fm_types::strip_dsp::StripDspPreset::from_token(value)
+        .map(fm_types::strip_dsp::StripDspPreset::chain)
+        .or_else(|| fm_types::strip_dsp::StripDsp::from_code(value).ok())
+        .ok_or_else(|| ArgsError::InvalidChoice {
+            field: "DSP preset or chain code",
+            value: value.to_owned(),
+        })
+}
+
 /// `<input|master> <preset|chain code>` of `audio-strip-dsp` (AU-005).
 fn parse_strip_dsp(
     arguments: &mut impl Iterator<Item = String>,
@@ -3413,13 +3432,7 @@ fn parse_strip_dsp(
     let chain = required(arguments, "DSP preset or chain code")?;
     Ok(AudioMixerArgs::StripDsp {
         input,
-        chain: fm_types::strip_dsp::StripDspPreset::from_token(&chain)
-            .map(fm_types::strip_dsp::StripDspPreset::chain)
-            .or_else(|| fm_types::strip_dsp::StripDsp::from_code(&chain).ok())
-            .ok_or(ArgsError::InvalidChoice {
-                field: "DSP preset or chain code",
-                value: chain,
-            })?,
+        chain: parse_dsp_chain(&chain)?,
     })
 }
 
@@ -3508,6 +3521,10 @@ fn parse_audio_mixer(
             bus: aux_bus(&required(&mut arguments, "aux bus")?)?,
             gain_millidb: number(&required(&mut arguments, "gain millidB")?, "gain millidB")?,
             muted: boolean_choice(&required(&mut arguments, "muted")?, "muted")?,
+        },
+        "audio-aux-dsp" => AudioMixerArgs::AuxDsp {
+            bus: aux_bus(&required(&mut arguments, "aux bus")?)?,
+            chain: parse_dsp_chain(&required(&mut arguments, "DSP preset or chain code")?)?,
         },
         "audio-output-aux" => {
             let output = number(&required(&mut arguments, "output")?, "output")?;
@@ -10642,6 +10659,36 @@ mod tests {
                 expected_revision: None,
             })
         );
+        assert_eq!(
+            parse(strings(&["audio-aux-dsp", "show.freemix", "B", "voice"])),
+            Ok(Command::AudioMixer {
+                path: PathBuf::from("show.freemix"),
+                edit: AudioMixerArgs::AuxDsp {
+                    bus: fm_model::AuxBusNumber::from_letter('B').unwrap(),
+                    chain: fm_types::strip_dsp::StripDspPreset::Voice.chain(),
+                },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert_eq!(
+            parse(strings(&[
+                "remote-audio-aux-dsp",
+                "127.0.0.1:9123",
+                "G",
+                "podcast",
+            ])),
+            Ok(Command::RemoteAudioMixer {
+                address: "127.0.0.1:9123".parse().unwrap(),
+                edit: AudioMixerArgs::AuxDsp {
+                    bus: fm_model::AuxBusNumber::from_letter('G').unwrap(),
+                    chain: fm_types::strip_dsp::StripDspPreset::Podcast.chain(),
+                },
+                key: None,
+                expected_revision: None,
+            })
+        );
+        assert!(parse(strings(&["audio-aux-dsp", "show.freemix", "H", "voice"])).is_err());
         let code = fm_types::strip_dsp::StripDspPreset::Master.chain().code();
         assert_eq!(
             parse(strings(&[

@@ -5107,6 +5107,10 @@ fn engine_audio_mixer_edit(edit: AudioMixerArgs) -> AppResult<fm_engine::EngineA
                 muted,
             },
         },
+        AudioMixerArgs::AuxDsp { bus, chain } => fm_engine::EngineAudioMixerEdit::SetAuxBusDsp {
+            bus,
+            chain: Box::new(chain),
+        },
         AudioMixerArgs::StripDsp { input, chain } => fm_engine::EngineAudioMixerEdit::SetStripDsp {
             target: match input {
                 Some(input) => fm_types::strip_dsp::StripDspTarget::Input(input_id(input)?),
