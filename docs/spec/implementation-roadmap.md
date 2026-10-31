@@ -5544,9 +5544,12 @@ payloads and control messages with a wrapping sequencer, and maps joystick and
 mouse input to axis speeds through deadzones and response curves.
 `ViscaUdpTransport` now provides a connected UDP path with bounded
 retransmission, per-attempt timeouts, reply correlation by sequence, and
-recovery from an abnormal-sequence control reply, with counters. Remaining
-gaps: no serial transport and nothing binds the UDP transport to a camera
-adapter yet,
+recovery from an abnormal-sequence control reply, with counters.
+`ViscaUdpAdapter` implements the `PtzAdapter` contract over that transport:
+it validates and clamps an intent, encodes and acknowledges every VISCA
+command, updates telemetry and presets only after the wire succeeds, and
+marks the camera disconnected on a lost transport. Remaining
+gaps: no serial transport, no hardware validation of the UDP adapter,
 no camera adapter or hardware validation, presets are not yet switchable
 virtual inputs with thumbnails, no HID or UI binding, and no ONVIF, Panasonic, or
 digital PTZ. `IN-028` remains planned.
