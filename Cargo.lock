@@ -2158,6 +2158,7 @@ version = "0.1.0"
 dependencies = [
  "fm-clock",
  "fm-codec-image",
+ "fm-data",
  "fm-engine",
  "fm-frame",
  "fm-model",

@@ -76,6 +76,9 @@ use fm_titles::{
 use fm_types::{FrameRate, InputId};
 use fm_video::ImageFrame;
 
+mod mapping;
+pub use mapping::{TitleMappingError, apply_title_mapping};
+
 /// Largest encoded image file a title loads.
 pub const MAX_TITLE_IMAGE_ENCODED_BYTES: usize = 32 * 1024 * 1024;
 

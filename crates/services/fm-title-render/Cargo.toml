@@ -13,6 +13,7 @@ images = ["dep:fm-codec-image", "dep:fm-frame"]
 
 [dependencies]
 fm-clock = { path = "../../media/fm-clock" }
+fm-data = { path = "../../features/fm-data" }
 fm-codec-image = { path = "../../io/fm-codec-image", optional = true }
 fm-engine = { path = "../fm-engine" }
 fm-frame = { path = "../../media/fm-frame", optional = true }
