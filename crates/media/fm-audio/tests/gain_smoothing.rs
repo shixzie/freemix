@@ -5,7 +5,7 @@
 #![allow(clippy::float_cmp)]
 
 use fm_audio::{
-    Gain, GainSmoother, GainSmootherConfig, GainSmootherError, MAX_CHANNELS,
+    Gain, GainSmoother, GainSmootherConfig, GainSmootherError, GainTaper, MAX_CHANNELS,
     MAX_GAIN_SMOOTHER_RAMP_SAMPLES, MAX_SAMPLES_PER_BLOCK,
 };
 
@@ -25,6 +25,14 @@ fn config(max_step: f32, min: u32, max: u32) -> GainSmootherConfig {
         max_step,
         min_ramp_samples: min,
         max_ramp_samples: max,
+        taper: GainTaper::Linear,
+    }
+}
+
+fn db_config(max_step: f32, min: u32, max: u32) -> GainSmootherConfig {
+    GainSmootherConfig {
+        taper: GainTaper::Decibel,
+        ..config(max_step, min, max)
     }
 }
 
@@ -277,4 +285,57 @@ fn configuration_is_validated_and_jump_is_explicit() {
     assert_eq!(smoother.telemetry().jumps, 1);
     // Targeting the current value is a no-op.
     assert_eq!(smoother.set_target(db(-6.0)), 0);
+}
+
+#[test]
+fn decibel_taper_is_uniform_in_db_and_still_arrives_exactly() {
+    let cfg = db_config(1.0 / 480.0, 1, 4_800);
+    let mut smoother = GainSmoother::new(cfg, db(-20.0)).unwrap();
+    let target = db(6.0);
+    let length = smoother.set_target(target);
+    assert!(length > 0 && length <= cfg.max_ramp_samples);
+    let bound = smoother.max_step_bound();
+    let gains = run(&mut smoother, length as usize);
+    assert!(max_step(db(-20.0).linear(), &gains) <= bound + STEP_SLACK);
+    assert_eq!(gains.last().unwrap().to_bits(), target.linear().to_bits());
+    assert!(smoother.is_settled());
+    // Linear in dB, so the halfway sample is the -7 dB geometric mean of the
+    // endpoints and every step is the same number of decibels.
+    let midpoint_db = 20.0 * gains[length as usize / 2 - 1].log10();
+    assert!(
+        (midpoint_db - (-7.0)).abs() < 0.01,
+        "midpoint {midpoint_db}"
+    );
+    let first_db = 20.0 * (gains[1] / gains[0]).log10();
+    let middle_db = 20.0 * (gains[length as usize / 2] / gains[length as usize / 2 - 1]).log10();
+    assert!((first_db - middle_db).abs() < 1.0e-4);
+    assert!(first_db > 0.0 && first_db < 0.02);
+}
+
+#[test]
+fn decibel_taper_bounds_steps_over_the_whole_gain_range() {
+    let cfg = db_config(1.0 / 480.0, 48, 2_400);
+    let mut smoother = GainSmoother::new(cfg, db(24.0)).unwrap();
+    let bound = smoother.max_step_bound();
+    let mut previous = smoother.current();
+    // Silence is the steepest leg: the loud end of the dB ramp moves by the
+    // whole bound per sample.
+    for target in [Gain::SILENCE, db(24.0), db(-60.0), Gain::UNITY] {
+        smoother.set_target(target);
+        let gains = run(&mut smoother, cfg.max_ramp_samples as usize + 1);
+        let worst = max_step(previous, &gains);
+        assert!(worst <= bound + STEP_SLACK, "worst {worst} > bound {bound}");
+        assert_eq!(gains.last().unwrap().to_bits(), target.linear().to_bits());
+        previous = *gains.last().unwrap();
+    }
+    // Every leg is a very large move, spread over exactly max_ramp_samples.
+    assert_eq!(smoother.telemetry().clamped_ramps, 4);
+    // Re-targeting mid-ramp starts from the current value, not the target.
+    smoother.set_target(Gain::UNITY);
+    run(&mut smoother, 100);
+    let current = smoother.current();
+    smoother.set_target(db(-12.0));
+    assert!(smoother.remaining() > 0);
+    let next = run(&mut smoother, 1);
+    assert!(max_step(current, &next) <= bound + STEP_SLACK);
 }

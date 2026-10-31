@@ -5431,13 +5431,14 @@ budgets, round-robin fairness, per-binding minimum intervals, touch
 suppression with a forced resync on release, a post-release settle hold, and
 a per-device byte-rate limit of encoded feedback bytes per second, and
 acknowledged-level echo suppression. `fm-audio` adds a `GainSmoother` whose
-per-sample linear ramps
+per-sample ramps
 have a guaranteed step bound and land bit-exactly on target across block
-splits and retargets. A 14-bit controller's MSB is now held until its LSB
+splits and retargets; its `GainTaper` selects a ramp that is linear in gain or
+linear in decibels, the decibel ramp lengthening itself so the same linear
+step bound and settling bound still hold. A 14-bit controller's MSB is now held until its LSB
 arrives, so a pair that straddles a tick boundary never surfaces the
 intermediate value. Remaining gaps: no daemon, Studio, CLI, or real-time
-mixer wiring; ramps are
-linear in gain with no fader taper; and there is no end-to-end
+mixer wiring; and there is no end-to-end
 device-to-audio test or motor-fader
 hardware evidence. `AU-009` remains planned.
 

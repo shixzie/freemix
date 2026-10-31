@@ -54,7 +54,7 @@ pub use embedded_audio::{
     EmbeddedAudioMap, EmbeddedPair, EmbeddedSlot, deembed_group, deembed_mono, deembed_pair,
 };
 pub use gain_smoother::{
-    GainSmoother, GainSmootherConfig, GainSmootherError, GainSmootherTelemetry,
+    GainSmoother, GainSmootherConfig, GainSmootherError, GainSmootherTelemetry, GainTaper,
     MAX_GAIN_SMOOTHER_RAMP_SAMPLES,
 };
 pub use live_block::{
