@@ -1667,7 +1667,7 @@ pub(super) fn run(
         // Preview's composite and tap use the slack left after this pass's
         // peer work, never the slot before the next Program frame.
         if let Some(native) = native.as_deref_mut()
-            && let Err(error) = native.service_deferred_preview()
+            && let Err(error) = native.service_deferred_preview(authority)
         {
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);

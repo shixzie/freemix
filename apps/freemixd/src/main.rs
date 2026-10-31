@@ -705,7 +705,7 @@ struct NativeDaemon {
     pending_frame: Option<PendingFrame>,
     /// A Preview composite submitted to the video realizer, collected at the
     /// next pass's start.
-    pending_preview_render: Option<PendingPreviewRender>,
+    pending_preview_render: bool,
     projected_frame: Option<FrameResult>,
     runtime: Arc<NativeMediaRuntime>,
     resolved_sources: Arc<Vec<NativeResolvedSource>>,
@@ -802,8 +802,19 @@ struct NativeDaemon {
     recorder_status: recorder_status::RecorderStatusTracker,
     /// Live source drift telemetry records (Protocol 2.76, AU-004).
     source_sync_status: native_sync::SourceSyncTracker,
-    /// Encoded-fallback Program monitor tap; see [`NativeMonitorTap`].
-    monitor: NativeMonitorTap,
+    /// The monitor taps' frame interval, or `None` when the fitted tap size
+    /// is unusable; the control loop schedules Preview tap frames from it.
+    monitor_interval: Option<u64>,
+    /// Whether any peer wants monitor frames.
+    monitor_demand: bool,
+    /// Which due Preview tap frames a late loop still composites, mirroring
+    /// the realizer's own capture pacing.
+    preview_pacing: display_outputs::PresentationPacing,
+    /// Due Preview frames the control loop paced out before the realizer saw
+    /// them; added to the realizer's snapshots so telemetry stays truthful.
+    monitor_control_skips: u64,
+    /// Encoded monitor frames the realizer produced, waiting to be published.
+    pending_monitor_frames: Vec<(MonitorTap, Vec<u8>)>,
     /// Title inputs realized as live source frames rendered off the loop;
     /// see [`native_titles`].
     titles: native_titles::NativeTitleSources,
@@ -1823,8 +1834,9 @@ impl NativeRuntimeTelemetry {
         }
     }
 
-    fn monitor_tap_mut(&mut self, tap: MonitorTap) -> &mut NativeTapCounters {
-        &mut self.monitor_taps[tap.index()]
+    /// Replaces the monitor tap counters with the realizer's snapshot.
+    const fn set_monitor_taps(&mut self, taps: [NativeTapCounters; 2]) {
+        self.monitor_taps = taps;
     }
 
     fn observe_host_lateness(&mut self, deadline: Instant, observed: Instant) {
@@ -5188,13 +5200,6 @@ struct PendingFrame {
     events: Vec<RuntimeEventMessage>,
 }
 
-/// A Preview composite submitted to the video realizer.
-#[cfg(feature = "native-media")]
-struct PendingPreviewRender {
-    tap_frame: Option<u64>,
-    preview: InputId,
-}
-
 #[cfg(feature = "native-media")]
 #[derive(Debug)]
 enum NativeRealizationError {
@@ -5363,12 +5368,15 @@ impl NativeDaemon {
             clock_domain: native_clock_domain(),
         };
         let latest_frames = playback.latest_frames();
+        let monitor = NativeMonitorTap::new(&runtime, stored.project().settings());
+        let monitor_interval = monitor.dimensions.map(|_| monitor.interval());
         let video = native_video_realizer::NativeVideoHandle::spawn(
             Arc::clone(&runtime),
             playback,
             stingers,
             slides,
             replay_format,
+            monitor,
             "freemix-video-realizer",
         )?;
         #[cfg(target_os = "macos")]
@@ -5381,7 +5389,6 @@ impl NativeDaemon {
         let pacer_start_offset = host_deadline_offset(&pacer)?;
         let origin = Instant::now();
         let telemetry = NativeRuntimeTelemetry::new(origin, runtime.context().adapter_info());
-        let monitor = NativeMonitorTap::new(&runtime, stored.project().settings());
         Ok(Self {
             pacer,
             pacer_start_offset,
@@ -5398,7 +5405,7 @@ impl NativeDaemon {
             video,
             latest_frames,
             pending_frame: None,
-            pending_preview_render: None,
+            pending_preview_render: false,
             projected_frame: None,
             runtime,
             resolved_sources: Arc::new(resolved_sources),
@@ -5444,7 +5451,11 @@ impl NativeDaemon {
             pending_stream_status: None,
             recorder_status: recorder_status::RecorderStatusTracker::default(),
             source_sync_status: native_sync::SourceSyncTracker::default(),
-            monitor,
+            monitor_interval,
+            monitor_demand: false,
+            preview_pacing: display_outputs::PresentationPacing::default(),
+            monitor_control_skips: 0,
+            pending_monitor_frames: Vec::new(),
             titles,
             documents: native_documents::NativeDocumentSources::start(native_clock_domain())?,
             files,
@@ -5674,7 +5685,7 @@ impl NativeDaemon {
     /// Program deadline waits for the next pass.
     const PREVIEW_SLACK: Duration = Duration::from_millis(2);
 
-    fn service_deferred_preview(&mut self) -> AppResult<()> {
+    fn service_deferred_preview(&mut self, server: &ServerIdentity) -> AppResult<()> {
         let Some(job) = self.pending_preview.take() else {
             return Ok(());
         };
@@ -5683,8 +5694,7 @@ impl NativeDaemon {
         };
         // A composite that would not finish a comfortable margin before the
         // next frame waits instead; Program's deadline wins.
-        if Instant::now() + Self::PREVIEW_SLACK >= deadline || self.pending_preview_render.is_some()
-        {
+        if Instant::now() + Self::PREVIEW_SLACK >= deadline || self.pending_preview_render {
             self.pending_preview.requeue(job);
             return Ok(());
         }
@@ -5695,24 +5705,29 @@ impl NativeDaemon {
                 grades: job.grades,
                 grade_revision: job.grade_revision,
                 slides: None,
+                monitor: native_video_realizer::MonitorJob {
+                    server: server.clone(),
+                    program_frame: None,
+                    preview_tap_frame: job.tap_frame,
+                    preview: job.preview,
+                    demand: self.monitor_demand,
+                },
             })
             .map_err(|error| AppFailure(format!("Preview realizer: {error}")))?;
-        self.pending_preview_render = Some(PendingPreviewRender {
-            tap_frame: job.tap_frame,
-            preview: job.preview,
-        });
+        self.pending_preview_render = true;
         Ok(())
     }
 
     /// Collects a Preview composite submitted at the end of the last pass.
     fn poll_deferred_preview(&mut self) -> AppResult<()> {
-        let Some(pending) = self.pending_preview_render.take() else {
+        if !std::mem::take(&mut self.pending_preview_render) {
             return Ok(());
-        };
+        }
         let outcome = self
             .video
             .collect_preview()
             .map_err(|error| AppFailure(format!("Preview realizer: {error}")))?;
+        self.apply_monitor_outcome(outcome.monitor_frames, outcome.monitor_counters);
         match outcome.result {
             Ok(texture) => {
                 self.latest_preview = Some(texture);
@@ -5728,16 +5743,6 @@ impl NativeDaemon {
                 self.preview_failed = true;
                 self.latest_preview = None;
             }
-        }
-        if let Some(tap_frame) = pending.tap_frame {
-            self.monitor.capture(
-                MonitorTap::Preview,
-                &self.runtime,
-                self.latest_preview.as_ref(),
-                tap_frame,
-                pending.preview,
-                &mut self.telemetry,
-            );
         }
         Ok(())
     }
@@ -6580,7 +6585,7 @@ impl NativeDaemon {
     /// Whether any eligible session currently wants monitor frames; without
     /// demand no readback runs.
     fn set_monitor_demand(&mut self, demand: bool) {
-        self.monitor.demand = demand;
+        self.monitor_demand = demand;
     }
 
     /// A snapshot of the newest CPU frame of every Program source, for an
@@ -6593,7 +6598,20 @@ impl NativeDaemon {
     /// Consumes every tap's latest encoded monitor frame group, Preview
     /// first.
     fn take_monitor_frames(&mut self) -> Vec<(MonitorTap, Vec<u8>)> {
-        self.monitor.take_frames()
+        std::mem::take(&mut self.pending_monitor_frames)
+    }
+
+    /// Applies one realizer outcome's monitor frames and counters, folding in
+    /// the due frames the control loop paced out before submitting.
+    fn apply_monitor_outcome(
+        &mut self,
+        frames: Vec<(MonitorTap, Vec<u8>)>,
+        mut counters: [NativeTapCounters; 2],
+    ) {
+        let skipped = &mut counters[MonitorTap::Preview.index()].skipped;
+        *skipped = skipped.saturating_add(self.monitor_control_skips);
+        self.telemetry.set_monitor_taps(counters);
+        self.pending_monitor_frames.extend(frames);
     }
 
     /// Monotonic milliseconds since the native runtime's origin — the clock
@@ -7534,7 +7552,8 @@ impl NativeDaemon {
         let project_plan = &mut self.project_plan;
         let projected_frame = self.projected_frame.as_ref();
         let mut fade_to_black_excluded = Vec::new();
-        let monitor_tap = &self.monitor;
+        let monitor_interval = self.monitor_interval;
+        let monitor_demand = self.monitor_demand;
         let mut monitor_frame = None;
         let mut preview_source = None;
         let replay_inputs = if self.replay.is_some() {
@@ -7546,7 +7565,14 @@ impl NativeDaemon {
             debug_assert_eq!(projected_frame, Some(frame));
             monitor_frame = Some((frame.frame.get(), frame.program.primary));
             // The Preview monitor tap composes Preview only on its due frames.
-            if shows_preview || monitor_tap.due(MonitorTap::Preview, frame.frame.get()) {
+            if shows_preview
+                || monitor_due(
+                    monitor_interval,
+                    monitor_demand,
+                    MonitorTap::Preview,
+                    frame.frame.get(),
+                )
+            {
                 preview_source = Some(frame.clone());
             }
             for &(input, state) in &frame.input_audio_strip_updates {
@@ -7611,6 +7637,13 @@ impl NativeDaemon {
                     grades: Arc::clone(&compiled_grades),
                     grade_revision,
                     slides: slideshow_job,
+                    monitor: native_video_realizer::MonitorJob {
+                        server: server.clone(),
+                        program_frame: monitor_frame,
+                        preview_tap_frame: None,
+                        preview: frame.program.primary,
+                        demand: monitor_demand,
+                    },
                 })
                 .map_err(NativeRealizationError::RealizerThread)?;
             fade_to_black_excluded.clone_from(&frame.fade_to_black_excluded_outputs);
@@ -7658,11 +7691,16 @@ impl NativeDaemon {
         } = pending;
         let finish_started = Instant::now();
         let (preview_grades, preview_grade_revision) = self.compiled_grades(control);
-        let composed = self
+        let native_video_realizer::VideoRenderOutcome {
+            result,
+            monitor_frames,
+            monitor_counters,
+        } = self
             .video
             .collect()
             .map_err(NativeRealizationError::RealizerThread)?;
-        match composed.result.map_err(|error| match error {
+        self.apply_monitor_outcome(monitor_frames, monitor_counters);
+        match result.map_err(|error| match error {
             native_video_realizer::VideoError::Render(error) => {
                 NativeRealizationError::Video(error)
             }
@@ -7811,24 +7849,6 @@ impl NativeDaemon {
         if let Some(reel) = &mut self.reel {
             reel.sync(control);
         }
-        // Monitor taps finish earlier readbacks without waiting, then start
-        // this frame's; neither waits for the GPU.
-        self.monitor
-            .harvest(&self.runtime, server, &mut self.telemetry);
-        if let Some((frame, input)) = monitor_frame {
-            self.monitor.capture(
-                MonitorTap::Program,
-                &self.runtime,
-                resolve_project_output_texture(
-                    None,
-                    &self.latest_project_outputs,
-                    self.latest_output.as_ref(),
-                ),
-                frame,
-                input,
-                &mut self.telemetry,
-            );
-        }
         // Display outputs and the Preview monitor tap follow Program's own
         // consumers, so a Preview composite never delays them. A loop that is
         // behind its frame deadlines drops display frames and Preview tap
@@ -7844,13 +7864,17 @@ impl NativeDaemon {
         let preview_tap_frame = preview_source
             .as_ref()
             .map(|frame| frame.frame.get())
-            .filter(|&frame| self.monitor.due(MonitorTap::Preview, frame));
+            .filter(|&frame| {
+                monitor_due(
+                    self.monitor_interval,
+                    self.monitor_demand,
+                    MonitorTap::Preview,
+                    frame,
+                )
+            });
         let preview_tap_frame = match preview_tap_frame {
-            Some(_)
-                if self.monitor.busy(MonitorTap::Preview)
-                    || !self.monitor.preview_pacing.due(started, behind) =>
-            {
-                NativeMonitorTap::skip(MonitorTap::Preview, &mut self.telemetry);
+            Some(_) if !self.preview_pacing.due(started, behind) => {
+                self.monitor_control_skips = self.monitor_control_skips.saturating_add(1);
                 None
             }
             due => due,
@@ -7875,9 +7899,7 @@ impl NativeDaemon {
             self.pending_preview.clear();
         }
         if preview_tap_frame.is_some() {
-            self.monitor
-                .preview_pacing
-                .presented(started, Instant::now());
+            self.preview_pacing.presented(started, Instant::now());
         }
         if display_due {
             self.present_display_outputs()?;
@@ -8651,8 +8673,6 @@ struct NativeMonitorTap {
     dimensions: Option<(u16, u16)>,
     interval: u64,
     demand: bool,
-    /// Which due Preview frames a late loop still captures.
-    preview_pacing: display_outputs::PresentationPacing,
     /// Per tap, in [`MonitorTap::index`] order.
     taps: [NativeTapSlot; 2],
 }
@@ -8705,7 +8725,6 @@ impl NativeMonitorTap {
             dimensions: monitor_tap::fit_monitor(dimensions.width(), dimensions.height()),
             interval: whole_fps.div_ceil(Self::TARGET_FPS).max(1),
             demand: false,
-            preview_pacing: display_outputs::PresentationPacing::default(),
             taps: [NativeTapSlot::default(), NativeTapSlot::default()],
         };
         if let Some((width, height)) = tap.dimensions {
@@ -8714,6 +8733,16 @@ impl NativeMonitorTap {
             }
         }
         tap
+    }
+
+    /// The frame interval between this monitor's taps.
+    const fn interval(&self) -> u64 {
+        self.interval
+    }
+
+    /// Sets whether any peer wants monitor frames.
+    const fn set_demand(&mut self, demand: bool) {
+        self.demand = demand;
     }
 
     /// Whether realized frame `frame` falls due for `tap`: there is demand
@@ -8739,7 +8768,7 @@ impl NativeMonitorTap {
         &mut self,
         runtime: &NativeMediaRuntime,
         server: &ServerIdentity,
-        telemetry: &mut NativeRuntimeTelemetry,
+        counters: &mut [NativeTapCounters; 2],
     ) {
         let Some((width, height)) = self.dimensions else {
             return;
@@ -8765,11 +8794,11 @@ impl NativeMonitorTap {
                 ),
                 Err(_) => false,
             };
-            let counters = telemetry.monitor_tap_mut(tap);
+            let tap_counters = &mut counters[tap.index()];
             if published {
-                counters.published = counters.published.saturating_add(1);
+                tap_counters.published = tap_counters.published.saturating_add(1);
             } else {
-                counters.failed = counters.failed.saturating_add(1);
+                tap_counters.failed = tap_counters.failed.saturating_add(1);
             }
         }
     }
@@ -8784,13 +8813,13 @@ impl NativeMonitorTap {
         texture: Option<&NativeTexture>,
         frame: u64,
         input: InputId,
-        telemetry: &mut NativeRuntimeTelemetry,
+        counters: &mut [NativeTapCounters; 2],
     ) {
         if !self.due(tap, frame) {
             return;
         }
         if self.busy(tap) {
-            Self::skip(tap, telemetry);
+            Self::skip(tap, counters);
             return;
         }
         let Some((width, height)) = self.dimensions else {
@@ -8801,15 +8830,15 @@ impl NativeMonitorTap {
             self.taps[tap.index()].begin(runtime, texture, frame, input, width, height)
         });
         if !started {
-            let counters = telemetry.monitor_tap_mut(tap);
-            counters.failed = counters.failed.saturating_add(1);
+            let tap_counters = &mut counters[tap.index()];
+            tap_counters.failed = tap_counters.failed.saturating_add(1);
         }
     }
 
     /// Counts a due frame of `tap` that was not captured.
-    fn skip(tap: MonitorTap, telemetry: &mut NativeRuntimeTelemetry) {
-        let counters = telemetry.monitor_tap_mut(tap);
-        counters.skipped = counters.skipped.saturating_add(1);
+    fn skip(tap: MonitorTap, counters: &mut [NativeTapCounters; 2]) {
+        let tap_counters = &mut counters[tap.index()];
+        tap_counters.skipped = tap_counters.skipped.saturating_add(1);
     }
 
     /// Every tap's latest encoded group, Preview first.
@@ -8905,6 +8934,20 @@ impl NativeTapSlot {
         self.pending = Some(bytes);
         true
     }
+}
+
+/// Whether realized frame `frame` is due for `tap` at the control loop's
+/// monitor interval and demand.
+#[cfg(feature = "native-media")]
+fn monitor_due(interval: Option<u64>, demand: bool, tap: MonitorTap, frame: u64) -> bool {
+    let Some(interval) = interval else {
+        return false;
+    };
+    let phase = match tap {
+        MonitorTap::Program => 0,
+        MonitorTap::Preview => interval / 2,
+    };
+    demand && frame.wrapping_add(phase).is_multiple_of(interval)
 }
 
 /// Whether a realized frame renders the Preview composite: only for a
@@ -9344,7 +9387,7 @@ impl NativeDaemon {
     fn advance_recordings(&mut self) {}
 
     #[allow(clippy::unused_self)]
-    fn service_deferred_preview(&mut self) -> AppResult<()> {
+    fn service_deferred_preview(&mut self, server: &ServerIdentity) -> AppResult<()> {
         Ok(())
     }
 

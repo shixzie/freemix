@@ -11,8 +11,8 @@
 //! revision, so Program and Preview share one prepared set.
 //!
 //! The runtime itself is shared as an `Arc<NativeMediaRuntime>` for now:
-//! monitor taps and display presentation still use it on the control thread.
-//! Moving those to the realizer is the next stage.
+//! display presentation still uses it on the control thread. Moving that to
+//! the realizer is the next stage.
 
 use std::{
     sync::{
@@ -27,6 +27,7 @@ use fm_clock::ClockTime;
 use fm_engine::{CompiledProjectGrades, EngineSlideshowFrame, FrameResult};
 use fm_frame::{AudioBlock, CpuVideoFrame};
 use fm_gpu::NativeTexture;
+use fm_protocol::{MonitorTap, ServerIdentity};
 use fm_types::{InputId, OutputScaling};
 use freemixd::native_media::{
     NativeMediaError, NativeMediaRuntime, NativeOutputFrame, NativeProjectGrades,
@@ -34,6 +35,7 @@ use freemixd::native_media::{
 };
 
 use crate::native_replay::{ReplayFormat, ReplayPlayers};
+use crate::{NativeMonitorTap, NativeTapCounters};
 use crate::native_slides::NativeSlides;
 
 /// One compose's inputs.
@@ -47,6 +49,17 @@ pub(crate) struct VideoRenderJob {
     /// The projected frame's slideshow slides to compose before the render
     /// (IN-009); the worker owns the slide cache.
     pub slides: Option<SlideshowJob>,
+    /// The monitor taps this job may capture.
+    pub monitor: MonitorJob,
+}
+
+/// One job's monitor-tap inputs.
+pub(crate) struct MonitorJob {
+    pub server: ServerIdentity,
+    pub program_frame: Option<(u64, InputId)>,
+    pub preview_tap_frame: Option<u64>,
+    pub preview: InputId,
+    pub demand: bool,
 }
 
 /// A slideshow's projected slides and the next ones to decode ahead.
@@ -64,11 +77,15 @@ pub(crate) enum NativeVideoFrame {
 /// A compose's reply.
 pub(crate) struct VideoRenderOutcome {
     pub result: Result<NativeVideoFrame, VideoError>,
+    pub monitor_frames: Vec<(MonitorTap, Vec<u8>)>,
+    pub monitor_counters: [NativeTapCounters; 2],
 }
 
 /// A Preview composite's reply.
 pub(crate) struct PreviewRenderOutcome {
     pub result: Result<NativeTexture, VideoError>,
+    pub monitor_frames: Vec<(MonitorTap, Vec<u8>)>,
+    pub monitor_counters: [NativeTapCounters; 2],
 }
 
 /// A replay presentation's reply: the recorded audio to push before the
@@ -187,6 +204,7 @@ impl NativeVideoHandle {
         stingers: NativeSourcePlayback,
         slides: NativeSlides,
         replay: ReplayFormat,
+        monitor: NativeMonitorTap,
         name: &str,
     ) -> std::io::Result<Self> {
         let (commands, receiver) = sync_channel(4);
@@ -199,6 +217,8 @@ impl NativeVideoHandle {
                     stingers,
                     slides,
                     replay: ReplayPlayers::new(replay),
+                    monitor,
+                    monitor_counters: [NativeTapCounters::default(); 2],
                     grades: PreparedGrades(None),
                 };
                 realizer.run(&receiver);
@@ -507,6 +527,8 @@ struct VideoRealizer {
     stingers: NativeSourcePlayback,
     slides: NativeSlides,
     replay: ReplayPlayers,
+    monitor: NativeMonitorTap,
+    monitor_counters: [NativeTapCounters; 2],
     grades: PreparedGrades,
 }
 
@@ -517,6 +539,12 @@ impl VideoRealizer {
             match command {
                 VideoCommand::Render { job, reply } => {
                     let mut job = *job;
+                    self.monitor.set_demand(job.monitor.demand);
+                    self.monitor.harvest(
+                        &self.runtime,
+                        &job.monitor.server,
+                        &mut self.monitor_counters,
+                    );
                     let result = self
                         .grades
                         .apply(
@@ -538,31 +566,64 @@ impl VideoRealizer {
                                     .map_err(VideoError::Render)?;
                             }
                             if job.plan.output_ids().is_empty() {
-                                self.runtime
+                                let output = self
+                                    .runtime
                                     .render_project_frame_result_with_stingers_blocking(
                                         self.playback.registry(),
                                         self.stingers.registry(),
                                         &job.plan,
                                         &job.frame,
                                     )
-                                    .map(NativeVideoFrame::Program)
-                                    .map_err(VideoError::Render)
+                                    .map_err(VideoError::Render)?;
+                                if let Some((frame, input)) = job.monitor.program_frame {
+                                    self.monitor.capture(
+                                        MonitorTap::Program,
+                                        &self.runtime,
+                                        Some(&output),
+                                        frame,
+                                        input,
+                                        &mut self.monitor_counters,
+                                    );
+                                }
+                                Ok(NativeVideoFrame::Program(output))
                             } else {
-                                self.runtime
+                                let outputs = self
+                                    .runtime
                                     .render_project_outputs_with_stingers_blocking(
                                         self.playback.registry(),
                                         self.stingers.registry(),
                                         &job.plan,
                                         &job.frame,
                                     )
-                                    .map(NativeVideoFrame::Outputs)
-                                    .map_err(VideoError::Render)
+                                    .map_err(VideoError::Render)?;
+                                // Program is the first realized project output.
+                                if let Some((frame, input)) = job.monitor.program_frame {
+                                    self.monitor.capture(
+                                        MonitorTap::Program,
+                                        &self.runtime,
+                                        outputs.first().map(NativeOutputFrame::texture),
+                                        frame,
+                                        input,
+                                        &mut self.monitor_counters,
+                                    );
+                                }
+                                Ok(NativeVideoFrame::Outputs(outputs))
                             }
                         });
-                    let _ = reply.send(VideoRenderOutcome { result });
+                    let _ = reply.send(VideoRenderOutcome {
+                        result,
+                        monitor_frames: self.monitor.take_frames(),
+                        monitor_counters: self.monitor_counters,
+                    });
                 }
                 VideoCommand::Preview { job, reply } => {
                     let mut job = *job;
+                    self.monitor.set_demand(job.monitor.demand);
+                    self.monitor.harvest(
+                        &self.runtime,
+                        &job.monitor.server,
+                        &mut self.monitor_counters,
+                    );
                     let result = self
                         .grades
                         .apply(
@@ -582,7 +643,23 @@ impl VideoRealizer {
                                 )
                                 .map_err(VideoError::Render)
                         });
-                    let _ = reply.send(PreviewRenderOutcome { result });
+                    if let Ok(texture) = &result
+                        && let Some(tap_frame) = job.monitor.preview_tap_frame
+                    {
+                        self.monitor.capture(
+                            MonitorTap::Preview,
+                            &self.runtime,
+                            Some(texture),
+                            tap_frame,
+                            job.monitor.preview,
+                            &mut self.monitor_counters,
+                        );
+                    }
+                    let _ = reply.send(PreviewRenderOutcome {
+                        result,
+                        monitor_frames: self.monitor.take_frames(),
+                        monitor_counters: self.monitor_counters,
+                    });
                 }
                 VideoCommand::PresentReplay { job, reply } => {
                     let mut audio = Vec::new();
