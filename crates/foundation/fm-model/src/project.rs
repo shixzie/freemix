@@ -933,7 +933,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(93);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(94);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -983,6 +983,10 @@ pub struct Project {
     audio_groups: crate::AudioGroups,
     aux_buses: crate::AuxBuses,
     output_aux_buses: BTreeMap<OutputId, crate::AuxBusNumber>,
+    /// The input each output's aux feed leaves out (AU-002 mix-minus, schema
+    /// 94), ascending. An entry only applies while the output hears an aux
+    /// bus.
+    output_mix_minus: BTreeMap<OutputId, InputId>,
     audio_solo_mode: crate::AudioSoloMode,
     audio_monitor_output: crate::AudioMonitorOutput,
     master_audio_dsp: fm_types::strip_dsp::StripDsp,
@@ -1041,6 +1045,7 @@ impl Project {
             audio_groups: crate::AudioGroups::default(),
             aux_buses: crate::AuxBuses::default(),
             output_aux_buses: BTreeMap::new(),
+            output_mix_minus: BTreeMap::new(),
             audio_solo_mode: crate::AudioSoloMode::InPlace,
             audio_monitor_output: crate::AudioMonitorOutput::default(),
             master_audio_dsp: fm_types::strip_dsp::StripDsp::DEFAULT,
@@ -1439,6 +1444,46 @@ impl Project {
     /// [`Self::validate`].
     pub fn restore_output_aux_buses(&mut self, buses: BTreeMap<OutputId, crate::AuxBusNumber>) {
         self.output_aux_buses = buses;
+    }
+
+    /// The input each output's aux feed leaves out (AU-002 mix-minus, schema
+    /// 94), ascending. An entry applies only while the output hears an aux
+    /// bus instead of Master.
+    #[must_use]
+    pub const fn output_mix_minus(&self) -> &BTreeMap<OutputId, InputId> {
+        &self.output_mix_minus
+    }
+
+    /// The input `output`'s aux feed leaves out, or `None` for a full mix.
+    #[must_use]
+    pub fn output_mix_minus_input(&self, output: OutputId) -> Option<InputId> {
+        self.output_mix_minus.get(&output).copied()
+    }
+
+    /// Makes `output`'s aux feed leave `input` out, or nothing for `None`.
+    /// Returns `false`, changing nothing, for an unknown output or input.
+    pub fn set_output_mix_minus(&mut self, output: OutputId, input: Option<InputId>) -> bool {
+        if !self.outputs.iter().any(|candidate| candidate.id == output) {
+            return false;
+        }
+        match input {
+            Some(input) => {
+                if !self.inputs.iter().any(|candidate| candidate.id == input) {
+                    return false;
+                }
+                self.output_mix_minus.insert(output, input);
+            }
+            None => {
+                self.output_mix_minus.remove(&output);
+            }
+        }
+        true
+    }
+
+    /// Replaces every output's mix-minus feed; unknown outputs and inputs
+    /// are reported by [`Self::validate`].
+    pub fn restore_output_mix_minus(&mut self, inputs: BTreeMap<OutputId, InputId>) {
+        self.output_mix_minus = inputs;
     }
 
     /// The project outputs Fade to Black leaves live (SW-004, schema 39).
@@ -4172,6 +4217,7 @@ impl Project {
         self.fade_to_black_excluded_outputs.remove(&output);
         self.fade_to_black_output_durations.remove(&output);
         self.output_aux_buses.remove(&output);
+        self.output_mix_minus.remove(&output);
         Ok(())
     }
 

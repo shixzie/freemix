@@ -15,7 +15,7 @@ use fm_protocol::{
 };
 use fm_types::strip_dsp::{STRIP_DSP_CODE_LEN, StripDsp, StripDspPreset};
 
-const PREFIX: &str = "command\tprotocol=2.133\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.134\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -93,6 +93,7 @@ fn snapshot(audio_mixer: AudioMixerStatus, excluded: Vec<WireOutputId>) -> WireM
                 output: output(value),
                 name: format!("Output {value}"),
                 aux_bus: None,
+                mix_minus: None,
             })
             .into(),
         input_audio_strips: vec![strip(1, -10_000, Some(4)), strip(2, 0, None)],
@@ -181,7 +182,7 @@ fn mixer() -> AudioMixerStatus {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 133));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 134));
 }
 
 #[test]
@@ -1153,6 +1154,20 @@ fn aux_bus_commands_have_an_exact_wire_form_and_are_strict() {
             "payload=audio_output_bus\toutput=8\tbus=-",
         ),
         (
+            AudioMixerOperation::SetOutputMixMinus {
+                output: output(8),
+                input: Some(input(7)),
+            },
+            "payload=audio_output_mix_minus\toutput=8\tinput=7",
+        ),
+        (
+            AudioMixerOperation::SetOutputMixMinus {
+                output: output(8),
+                input: None,
+            },
+            "payload=audio_output_mix_minus\toutput=8\tinput=-",
+        ),
+        (
             AudioMixerOperation::RenameAuxBus {
                 bus: bus('A'),
                 name: "Stage".into(),
@@ -1191,6 +1206,12 @@ fn aux_bus_commands_have_an_exact_wire_form_and_are_strict() {
         "payload=audio_output_bus\toutput=8\tbus=",
         "payload=audio_output_bus\toutput=8\tbus=M",
         "payload=audio_output_bus\toutput=8",
+        "payload=audio_output_mix_minus\toutput=0\tinput=1",
+        "payload=audio_output_mix_minus\toutput=8\tinput=",
+        "payload=audio_output_mix_minus\toutput=8\tinput=0",
+        "payload=audio_output_mix_minus\toutput=8\tinput=01",
+        "payload=audio_output_mix_minus\toutput=8",
+        "payload=audio_output_mix_minus\tinput=1",
         "payload=audio_aux_bus_name\tbus=A\tname=%20",
         "payload=audio_aux_bus_name\tbus=Z\tname=Stage",
     ] {
@@ -1282,7 +1303,7 @@ fn snapshot_carries_aux_buses_and_output_buses_strictly() {
         "{line}"
     );
     assert!(
-        line.contains("\toutputs=7%7EOutput%25207%7EB%2C8%7EOutput%25208%7E-\t"),
+        line.contains("\toutputs=7%7EOutput%25207%7EB%7E-%2C8%7EOutput%25208%7E-%7E-\t"),
         "{line}"
     );
     for (from, to) in [
@@ -1291,6 +1312,9 @@ fn snapshot_carries_aux_buses_and_output_buses_strictly() {
         ("7%7EOutput%25207%7EB", "7%7EOutput%25207%7E"),
         ("7%7EOutput%25207%7EB", "7%7EOutput%25207"),
         ("7%7EOutput%25207%7EB", "7%7EOutput%25207%7EB%7EB"),
+        ("7%7EOutput%25207%7EB%7E-", "7%7EOutput%25207%7EB%7E0"),
+        ("7%7EOutput%25207%7EB%7E-", "7%7EOutput%25207%7EB%7E01"),
+        ("7%7EOutput%25207%7EB%7E-", "7%7EOutput%25207%7EB%7E1x"),
         ("%2CBus%2520G%7E0%7E0\t", "\t"),
         ("Bus%2520C%7E0%7E0", "%2520%7E0%7E0"),
         ("Bus%2520C%7E0%7E0", "Bus%2520C%7E24001%7E0"),

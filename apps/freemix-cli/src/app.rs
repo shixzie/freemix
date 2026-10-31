@@ -5152,6 +5152,21 @@ fn engine_audio_mixer_edit(edit: AudioMixerArgs) -> AppResult<fm_engine::EngineA
                 bus,
             }
         }
+        AudioMixerArgs::OutputMixMinus { output, input } => {
+            fm_engine::EngineAudioMixerEdit::SetOutputMixMinus {
+                output: fm_types::OutputId::new(
+                    NonZeroU128::new(output)
+                        .ok_or_else(|| AppFailure("output ID must be nonzero".into()))?,
+                ),
+                input: input
+                    .map(|input| {
+                        NonZeroU128::new(input)
+                            .map(fm_types::InputId::new)
+                            .ok_or_else(|| AppFailure("input ID must be nonzero".into()))
+                    })
+                    .transpose()?,
+            }
+        }
     })
 }
 
@@ -5250,6 +5265,12 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
             fm_protocol::AudioMixerOperation::SetOutputBus {
                 output: fm_protocol::WireOutputId::from_domain(output),
                 bus,
+            }
+        }
+        fm_engine::EngineAudioMixerEdit::SetOutputMixMinus { output, input } => {
+            fm_protocol::AudioMixerOperation::SetOutputMixMinus {
+                output: fm_protocol::WireOutputId::from_domain(output),
+                input: input.map(fm_protocol::WireInputId::from_domain),
             }
         }
         fm_engine::EngineAudioMixerEdit::ResetLoudness { target } => {
@@ -5352,6 +5373,9 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppRes
     }
     for (&output, &bus) in project.output_aux_buses() {
         show.set_output_aux_bus(output, Some(bus));
+    }
+    for (&output, &input) in project.output_mix_minus() {
+        show.set_output_mix_minus(output, Some(input));
     }
     show.set_audio_solo_mode(project.audio_solo_mode());
     let monitor = project.audio_monitor_output();
@@ -5499,6 +5523,7 @@ fn sync_audio_mixer(project: &mut Project, show: &ShowState) -> AppResult<()> {
         .collect::<Vec<_>>();
     for output in outputs {
         project.set_output_aux_bus(output, show.output_aux_bus(output));
+        project.set_output_mix_minus(output, show.output_mix_minus_input(output));
     }
     project.set_audio_solo_mode(show.audio_solo_mode());
     let monitor = show.audio_monitor();

@@ -104,11 +104,13 @@ fn snapshot(project_id: ProjectId, revision: u64) -> ProjectSnapshot {
                 output: output(1),
                 name: "Main".into(),
                 aux_bus: None,
+                mix_minus: None,
             },
             OutputStatus {
                 output: output(2),
                 name: "Aux".into(),
                 aux_bus: None,
+                mix_minus: None,
             },
         ],
         input_audio_strips: input_audio_strips(),

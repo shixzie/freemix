@@ -386,11 +386,13 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
                 output: output(1),
                 name: "Program Output".into(),
                 aux_bus: None,
+                mix_minus: None,
             },
             OutputStatus {
                 output: output(2),
                 name: "Clean Feed".into(),
                 aux_bus: None,
+                mix_minus: None,
             },
         ],
         input_audio_strips: (1..=6)

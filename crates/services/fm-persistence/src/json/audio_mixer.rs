@@ -13,6 +13,7 @@
 //!   ... seven buses, A first ...
 //! ],
 //! "output_aux_buses": [{"output": 4, "bus": "B"}],
+//! "output_mix_minus": [{"output": 4, "input": 7}],
 //! "audio_solo_mode": "pfl",
 //! "audio_monitor_output": {"device": "default", "gain_milli_db": -6000, "muted": false},
 //! "fade_to_black_excluded_outputs": [5],
@@ -25,7 +26,9 @@
 //! validation). Exactly [`AUX_BUS_COUNT`] `aux_buses` (schema 90, AU-002),
 //! bus A first, each named like a group; `output_aux_buses` lists the
 //! outputs that hear an aux bus (`A` through `G`) instead of Master,
-//! strictly ascending by output. Every strip in `input_audio_strips` carries
+//! strictly ascending by output; `output_mix_minus` (schema 94) lists the
+//! input each such output's feed leaves out (AU-002 mix-minus), strictly
+//! ascending by output. Every strip in `input_audio_strips` carries
 //! `buses`: `M` when it feeds Master, then the letter of each aux bus it
 //! feeds (`MAC`), or `-` for none. `audio_solo_mode` is `sip`, `pfl`, or
 //! `afl`.
@@ -97,6 +100,14 @@ pub(crate) fn write_audio_mixer(output: &mut String, project: &fm_model::Project
             bus.letter()
         )
         .expect("writing to a string cannot fail");
+    }
+    output.push_str("],\n    \"output_mix_minus\": [");
+    for (index, (id, input)) in project.output_mix_minus().iter().enumerate() {
+        if index != 0 {
+            output.push_str(", ");
+        }
+        write!(output, "{{\"output\": {id}, \"input\": {input}}}")
+            .expect("writing to a string cannot fail");
     }
     write!(
         output,
@@ -280,6 +291,29 @@ pub(crate) fn parse_output_aux_buses(
     if entries.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
         return Err(syntax(
             "output_aux_buses must be strictly ascending by output",
+        ));
+    }
+    Ok(entries.into_iter().collect())
+}
+
+/// Parses `"output_mix_minus"` from the project object.
+pub(crate) fn parse_output_mix_minus(
+    object: &mut Object,
+) -> Result<std::collections::BTreeMap<OutputId, fm_types::InputId>, DecodeError> {
+    let entries = parse_array(
+        object.take("output_mix_minus")?,
+        "output_mix_minus",
+        |value| {
+            let mut entry = Object::new(value, "output mix-minus")?;
+            let output = OutputId::new(entry.nonzero_u128("output")?);
+            let input = fm_types::InputId::new(entry.nonzero_u128("input")?);
+            entry.finish()?;
+            Ok((output, input))
+        },
+    )?;
+    if entries.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+        return Err(syntax(
+            "output_mix_minus must be strictly ascending by output",
         ));
     }
     Ok(entries.into_iter().collect())

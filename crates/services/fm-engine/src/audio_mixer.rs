@@ -224,6 +224,13 @@ pub enum EngineAudioMixerEdit {
         output: OutputId,
         bus: Option<AuxBusNumber>,
     },
+    /// Makes `output`'s aux feed leave `input` out, or restores its full mix
+    /// for `None` (AU-002 mix-minus). A project edit; it applies only while
+    /// the output hears an aux bus.
+    SetOutputMixMinus {
+        output: OutputId,
+        input: Option<InputId>,
+    },
 }
 
 impl EngineAudioMixerEdit {
@@ -300,7 +307,8 @@ impl EngineAudioMixerEdit {
             | Self::RenameAuxBus { .. }
             | Self::SetAuxBusLevel { .. }
             | Self::SetAuxBusDsp { .. }
-            | Self::SetOutputAuxBus { .. } => None,
+            | Self::SetOutputAuxBus { .. }
+            | Self::SetOutputMixMinus { .. } => None,
         }
     }
 
@@ -308,6 +316,13 @@ impl EngineAudioMixerEdit {
     #[must_use]
     pub fn names_input(&self, input: InputId) -> bool {
         self.locked_input() == Some(input)
+            || matches!(
+                self,
+                Self::SetOutputMixMinus {
+                    input: Some(candidate),
+                    ..
+                } if *candidate == input
+            )
     }
 }
 
@@ -369,6 +384,12 @@ pub enum EngineAudioMixerUpdate {
         output: OutputId,
         bus: Option<AuxBusNumber>,
     },
+    /// An output's aux feed now leaves an input out, or has a full mix
+    /// (AU-002 mix-minus).
+    OutputMixMinus {
+        output: OutputId,
+        input: Option<InputId>,
+    },
 }
 
 impl EngineAudioMixerUpdate {
@@ -420,6 +441,12 @@ impl EngineAudioMixerUpdate {
                 output: *output,
                 bus: *bus,
             }),
+            EngineAudioMixerEdit::SetOutputMixMinus { output, input } => {
+                Some(Self::OutputMixMinus {
+                    output: *output,
+                    input: *input,
+                })
+            }
             EngineAudioMixerEdit::SetLabel { .. }
             | EngineAudioMixerEdit::RenameGroup { .. }
             | EngineAudioMixerEdit::RenameAuxBus { .. } => None,
@@ -630,7 +657,8 @@ pub(crate) fn apply(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Resul
         EngineAudioMixerEdit::RenameAuxBus { .. }
         | EngineAudioMixerEdit::SetAuxBusLevel { .. }
         | EngineAudioMixerEdit::SetAuxBusDsp { .. }
-        | EngineAudioMixerEdit::SetOutputAuxBus { .. } => apply_aux(state, edit),
+        | EngineAudioMixerEdit::SetOutputAuxBus { .. }
+        | EngineAudioMixerEdit::SetOutputMixMinus { .. } => apply_aux(state, edit),
     }
 }
 
@@ -684,6 +712,27 @@ fn apply_aux(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Result<(), R
                 ));
             }
             state.set_output_aux_bus(*output, *bus);
+            Ok(())
+        }
+        EngineAudioMixerEdit::SetOutputMixMinus { output, input } => {
+            if !state
+                .outputs()
+                .iter()
+                .any(|(candidate, _)| candidate == output)
+            {
+                return Err(rejection(
+                    RejectionCode::NotFound,
+                    "output",
+                    "unknown_output",
+                    format!("show does not contain output {output}"),
+                ));
+            }
+            if let Some(input) = input
+                && !state.inputs().contains(input)
+            {
+                return Err(unknown_input(*input));
+            }
+            state.set_output_mix_minus(*output, *input);
             Ok(())
         }
         _ => Ok(()),
@@ -809,6 +858,14 @@ pub(crate) fn inverse(
             .then(|| EngineAudioMixerEdit::SetOutputAuxBus {
                 output: *output,
                 bus: state.output_aux_bus(*output),
+            }),
+        EngineAudioMixerEdit::SetOutputMixMinus { output, .. } => state
+            .outputs()
+            .iter()
+            .any(|(candidate, _)| candidate == output)
+            .then(|| EngineAudioMixerEdit::SetOutputMixMinus {
+                output: *output,
+                input: state.output_mix_minus_input(*output),
             }),
         EngineAudioMixerEdit::SetGroupLevel { .. }
         | EngineAudioMixerEdit::SetGroupSolo { .. }

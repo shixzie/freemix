@@ -269,6 +269,12 @@ pub(super) fn engine_command(operation: &AudioMixerOperation) -> EngineCommand {
                 bus: *bus,
             }
         }
+        AudioMixerOperation::SetOutputMixMinus { output, input } => {
+            EngineAudioMixerEdit::SetOutputMixMinus {
+                output: output.to_domain(),
+                input: input.map(fm_protocol::WireInputId::to_domain),
+            }
+        }
         AudioMixerOperation::SetPluginChain { target, slots } => {
             EngineAudioMixerEdit::SetPluginChain {
                 target: dsp_target(*target),
@@ -359,6 +365,12 @@ pub(super) fn wire_operation(edit: &EngineAudioMixerEdit) -> AudioMixerOperation
             AudioMixerOperation::SetOutputBus {
                 output: WireOutputId::from_domain(*output),
                 bus: *bus,
+            }
+        }
+        EngineAudioMixerEdit::SetOutputMixMinus { output, input } => {
+            AudioMixerOperation::SetOutputMixMinus {
+                output: WireOutputId::from_domain(*output),
+                input: input.map(WireInputId::from_domain),
             }
         }
     }

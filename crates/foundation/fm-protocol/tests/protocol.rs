@@ -154,11 +154,13 @@ fn snapshot(inputs: Vec<InputStatus>) -> WireMessage {
                 output: output(7),
                 name: "Main".into(),
                 aux_bus: None,
+                mix_minus: None,
             },
             OutputStatus {
                 output: output(8),
                 name: "Aux".into(),
                 aux_bus: None,
+                mix_minus: None,
             },
         ],
         input_audio_strips: input_audio_strips(&[1, 2]),
@@ -801,11 +803,13 @@ fn output_statuses_preserve_escaped_order_and_reject_duplicate_ids() {
             output: output(7),
             name: "Clean, Main".into(),
             aux_bus: None,
+            mix_minus: None,
         },
         OutputStatus {
             output: output(8),
             name: "Aux ~ ISO".into(),
             aux_bus: None,
+            mix_minus: None,
         },
     ];
     let encoded = encode_line(&message).unwrap();
@@ -2962,7 +2966,7 @@ fn edit_history_and_padlock_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.133\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.134\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2971,7 +2975,7 @@ fn edit_history_and_padlock_commands_are_exact() {
 
 #[test]
 fn edit_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.133\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.134\tid=a\tidempotency_key=k";
     for (tail, expected) in [
         (
             "\tpayload=undo\texpected_edit=0",
@@ -3296,7 +3300,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.133\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.134\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -3306,7 +3310,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn input_catalogue_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.133\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.134\tid=a\tidempotency_key=k";
     let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
         field,
         value: value.to_owned(),
@@ -3494,7 +3498,7 @@ mod titles {
         WireTitleFieldId,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.133\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.134\tid=a\tidempotency_key=k";
 
     fn field(value: u128) -> WireTitleFieldId {
         WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
@@ -3596,7 +3600,7 @@ mod titles {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.133\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.134\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -4460,7 +4464,7 @@ mod playlists {
         PlaylistRunState, PlaylistStart, PlaylistStateMessage, PlaylistTransitionKind,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.133\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.134\tid=a\tidempotency_key=k";
     const EVENT: &str = "event\tengine_id=engine-a\tstate_epoch=7\tlog_id=log-a\trevision=1842";
     const HISTORY: &str = "\tundo_depth=0\tredo_depth=0\n";
 
@@ -4572,7 +4576,7 @@ mod playlists {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.133\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.134\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);

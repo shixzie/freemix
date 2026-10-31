@@ -859,6 +859,7 @@ fn manual_stingers_and_fade_to_black_timing_reduce_into_the_client_model() {
         output,
         name: "Program".into(),
         aux_bus: None,
+        mix_minus: None,
     }];
     initial.fade_to_black_output_durations = vec![(output, 90)];
     initial.desired_manual_transition = ManualTransitionStatus::Active(ManualTransitionState {

@@ -79,6 +79,7 @@ struct ProjectDto {
     audio_groups: fm_model::AudioGroups,
     aux_buses: fm_model::AuxBuses,
     output_aux_buses: std::collections::BTreeMap<fm_types::OutputId, fm_model::AuxBusNumber>,
+    output_mix_minus: std::collections::BTreeMap<fm_types::OutputId, fm_types::InputId>,
     audio_solo_mode: fm_model::AudioSoloMode,
     audio_monitor_output: fm_model::AudioMonitorOutput,
     master_audio_dsp: fm_types::strip_dsp::StripDsp,
@@ -148,6 +149,7 @@ impl ProjectDto {
             audio_groups: super::audio_mixer::parse_audio_groups(&mut object)?,
             aux_buses: super::audio_mixer::parse_aux_buses(&mut object)?,
             output_aux_buses: super::audio_mixer::parse_output_aux_buses(&mut object)?,
+            output_mix_minus: super::audio_mixer::parse_output_mix_minus(&mut object)?,
             audio_solo_mode: super::audio_mixer::parse_audio_solo_mode(&mut object)?,
             audio_monitor_output: super::audio_mixer::parse_audio_monitor_output(&mut object)?,
             master_audio_dsp: super::strip_dsp::parse_strip_dsp(
@@ -234,6 +236,7 @@ impl ProjectDto {
         // Bus names and outputs are reported by project validation.
         project.restore_aux_buses(self.aux_buses);
         project.restore_output_aux_buses(self.output_aux_buses);
+        project.restore_output_mix_minus(self.output_mix_minus);
         project.set_audio_solo_mode(self.audio_solo_mode);
         // An unusable device name is reported by project validation.
         project.restore_audio_monitor_output(self.audio_monitor_output);

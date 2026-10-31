@@ -258,6 +258,8 @@ pub struct ShowState {
     aux_buses: [crate::EngineAuxBus; fm_model::AUX_BUS_COUNT],
     /// The outputs that hear an aux bus instead of Master (AU-002).
     output_aux_buses: BTreeMap<fm_types::OutputId, fm_model::AuxBusNumber>,
+    /// The input each output's aux feed leaves out (AU-002 mix-minus).
+    output_mix_minus: BTreeMap<fm_types::OutputId, fm_types::InputId>,
     /// How a soloed strip is heard (AU-001).
     audio_solo_mode: fm_model::AudioSoloMode,
     audio_monitor: crate::EngineAudioMonitor,
@@ -367,6 +369,7 @@ impl ShowState {
             audio_groups: fm_model::AudioGroupNumber::ALL.map(crate::EngineAudioGroup::default_for),
             aux_buses: fm_model::AuxBusNumber::ALL.map(crate::EngineAuxBus::default_for),
             output_aux_buses: BTreeMap::new(),
+            output_mix_minus: BTreeMap::new(),
             audio_solo_mode: fm_model::AudioSoloMode::InPlace,
             audio_monitor: crate::EngineAudioMonitor::default(),
             display_outputs: BTreeMap::new(),
@@ -979,6 +982,34 @@ impl ShowState {
         match bus {
             Some(bus) => self.output_aux_buses.insert(output, bus),
             None => self.output_aux_buses.remove(&output),
+        };
+    }
+
+    /// The inputs each output's aux feed leaves out (AU-002 mix-minus),
+    /// ascending.
+    #[must_use]
+    pub const fn output_mix_minus(
+        &self,
+    ) -> &BTreeMap<fm_types::OutputId, fm_types::InputId> {
+        &self.output_mix_minus
+    }
+
+    /// The input `output`'s aux feed leaves out, or `None`.
+    #[must_use]
+    pub fn output_mix_minus_input(&self, output: fm_types::OutputId) -> Option<fm_types::InputId> {
+        self.output_mix_minus.get(&output).copied()
+    }
+
+    /// Makes `output`'s aux feed leave `input` out, or nothing for `None`;
+    /// the caller checks that both exist.
+    pub fn set_output_mix_minus(
+        &mut self,
+        output: fm_types::OutputId,
+        input: Option<fm_types::InputId>,
+    ) {
+        match input {
+            Some(input) => self.output_mix_minus.insert(output, input),
+            None => self.output_mix_minus.remove(&output),
         };
     }
 

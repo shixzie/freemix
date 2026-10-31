@@ -290,12 +290,13 @@ pub(super) fn output_statuses(values: &[OutputStatus]) -> Result<String, CodecEr
             });
         }
         Ok(format!(
-            "{}~{}~{}",
+            "{}~{}~{}~{}",
             output.output,
             escape_bounded(&output.name)?,
             output
                 .aux_bus
-                .map_or('-', fm_types::audio_bus::AuxBusNumber::letter)
+                .map_or('-', fm_types::audio_bus::AuxBusNumber::letter),
+            output.mix_minus.map_or_else(|| "-".to_owned(), |input| input.to_string())
         ))
     })?;
     let mut outputs = BTreeSet::new();
@@ -320,8 +321,14 @@ pub(super) fn parse_output_statuses(value: &str) -> Result<Vec<OutputStatus>, Co
         .split(',')
         .map(|entry| {
             let mut parts = entry.split('~');
-            let (Some(output), Some(name), Some(bus), None) =
-                (parts.next(), parts.next(), parts.next(), parts.next())
+            let (Some(output), Some(name), Some(bus), Some(mix_minus), None) =
+                (
+                    parts.next(),
+                    parts.next(),
+                    parts.next(),
+                    parts.next(),
+                    parts.next(),
+                )
             else {
                 return Err(CodecError::InvalidRecord);
             };
@@ -359,6 +366,14 @@ pub(super) fn parse_output_statuses(value: &str) -> Result<Vec<OutputStatus>, Co
                     field: "outputs",
                     value: value.to_owned(),
                 })?);
+            let mix_minus = if mix_minus == "-" {
+                None
+            } else {
+                Some(parse_canonical_input(mix_minus).ok_or_else(|| CodecError::InvalidField {
+                    field: "outputs",
+                    value: value.to_owned(),
+                })?)
+            };
             if !outputs.insert(output.get()) {
                 return Err(CodecError::InvalidField {
                     field: "outputs",
@@ -369,6 +384,7 @@ pub(super) fn parse_output_statuses(value: &str) -> Result<Vec<OutputStatus>, Co
                 output,
                 name,
                 aux_bus,
+                mix_minus,
             })
         })
         .collect()

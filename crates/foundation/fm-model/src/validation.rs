@@ -142,6 +142,26 @@ fn validate_aux_buses(project: &Project, errors: &mut Vec<ValidationError>) {
             });
         }
     }
+    for (&output, &input) in project.output_mix_minus() {
+        if !project
+            .outputs()
+            .iter()
+            .any(|candidate| candidate.id == output)
+        {
+            errors.push(ValidationError {
+                entity: None,
+                field: "output_mix_minus",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Output(output)),
+            });
+        }
+        if !project.inputs().iter().any(|candidate| candidate.id == input) {
+            errors.push(ValidationError {
+                entity: None,
+                field: "output_mix_minus",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Input(input)),
+            });
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)]

@@ -137,6 +137,7 @@ fn render(
         Some(AuxBusOutput {
             planes: &mut aux,
             meters: &mut aux_meters,
+            mix_minus: None,
         }),
     )?;
     Ok(Rendered {
@@ -387,6 +388,7 @@ fn a_misshapen_aux_target_is_refused_before_anything_renders() {
         Some(AuxBusOutput {
             planes: &mut aux,
             meters: &mut aux_meters,
+            mix_minus: None,
         }),
     );
     assert_eq!(
@@ -430,4 +432,108 @@ fn an_aux_bus_dsp_chain_processes_only_that_bus() {
     }
     let restored = render(&mut mixer, &[(id, (0.5, 0.25))], &[id]).unwrap();
     assert_level(restored.bus(MixBus::A), 0.5, 0.25);
+}
+
+/// Renders like [`render`] with one mix-minus feed and returns it.
+fn render_mix_minus(
+    mixer: &mut MasterMixer,
+    strips: &[(InputId, (f32, f32))],
+    feed: (MixBus, InputId),
+) -> Result<(Rendered, Vec<Vec<f32>>), AudioError> {
+    let layout = ChannelLayout::stereo();
+    let planes: Vec<Vec<Vec<f32>>> = strips
+        .iter()
+        .map(|&(_, (left, right))| vec![vec![left; SAMPLES], vec![right; SAMPLES]])
+        .collect();
+    let sources: Vec<PlanarAudioSource<'_>> = strips
+        .iter()
+        .zip(&planes)
+        .map(|(&(id, _), planes)| PlanarAudioSource {
+            input: id,
+            sample_rate: SampleRate::new(RATE).unwrap(),
+            channel_layout: &layout,
+            planes,
+            samples: SAMPLES,
+            source_gain: SourceGain::UNITY,
+        })
+        .collect();
+    let mut master = vec![vec![0.0; SAMPLES]; 2];
+    let mut monitor = vec![vec![0.0; SAMPLES]; 2];
+    let mut aux = vec![vec![9.0; SAMPLES]; AUX_BUS_COUNT * 2];
+    let mut aux_meters = vec![ChannelMeter::default(); AUX_BUS_COUNT * 2];
+    let mut feed_planes = vec![vec![0.0; SAMPLES]; 2];
+    let mut feed_meters = vec![ChannelMeter::default(); 2];
+    let configs = [feed];
+    let mut master_meters = [ChannelMeter::default(); 2];
+    let mut input_meters = vec![ChannelMeter::default(); strips.len() * 2];
+    let mut monitor_meters = [ChannelMeter::default(); 2];
+    mixer.mix_planar_timed_into_with_aux(
+        timing(),
+        SAMPLES,
+        &sources,
+        &strips.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        (&mut master, &mut monitor),
+        MixerMeterSlices {
+            master: &mut master_meters,
+            inputs: &mut input_meters,
+            monitor: &mut monitor_meters,
+            loudness: None,
+        },
+        None,
+        Some(AuxBusOutput {
+            planes: &mut aux,
+            meters: &mut aux_meters,
+            mix_minus: Some(fm_audio::AuxMixMinusFeeds {
+                configs: &configs,
+                planes: &mut feed_planes,
+                meters: &mut feed_meters,
+            }),
+        }),
+    )?;
+    Ok((
+        Rendered {
+            master,
+            aux,
+            aux_meters,
+        },
+        feed_planes,
+    ))
+}
+
+#[test]
+fn a_mix_minus_feed_is_the_bus_with_that_send_disabled_through_bus_dsp() {
+    let host = input(1);
+    let guest = input(2);
+    let strips = [(host, (0.25, -0.1)), (guest, (0.4, 0.2))];
+    let chain = fm_types::strip_dsp::StripDspPreset::Music.chain();
+    let build = || {
+        let mut mixer = mixer(&[(host, audible()), (guest, audible())]);
+        mixer
+            .set_aux_send(host, MixBus::B, send(-3.0, SendTap::PostFader))
+            .unwrap();
+        mixer
+            .set_aux_send(guest, MixBus::B, send(0.0, SendTap::PreFader))
+            .unwrap();
+        mixer.set_aux_dsp(MixBus::B, &chain).unwrap();
+        mixer
+    };
+
+    let mut full_mixer = build();
+    let full = render(&mut full_mixer, &strips, &[host, guest]).unwrap();
+    let mut without_mixer = build();
+    without_mixer
+        .set_aux_send(guest, MixBus::B, BusSend::DISABLED)
+        .unwrap();
+    let without = render(&mut without_mixer, &strips, &[host, guest]).unwrap();
+
+    let mut feed_mixer = build();
+    let (mixed, feed) = render_mix_minus(&mut feed_mixer, &strips, (MixBus::B, guest)).unwrap();
+
+    // The feed re-sums without the guest exactly as the bus with the send
+    // disabled, chain processing included, and only the feed leaves the
+    // guest out.
+    assert_eq!(feed, without.bus(MixBus::B));
+    assert_ne!(feed, full.bus(MixBus::B));
+    assert_eq!(mixed.bus(MixBus::B), full.bus(MixBus::B));
+    assert!(feed.iter().flatten().any(|sample| *sample != 0.0));
 }

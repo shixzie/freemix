@@ -5,8 +5,8 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.133 / schema 93 (2026-10-31,
-at `b3d1abe2`). Every parity row is still `planned` (or `blocked`); these are
+(2026-10-19); items refreshed through protocol 2.134 / schema 94 (2026-10-31,
+at `efee1ebf`). Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
 frame loop) is ranked separately in [Structural work before more
@@ -217,9 +217,12 @@ there come before any new breadth below.
     the native mixer processes after its fader, the snapshot reports it, and
     Studio's BUSES window opens the FX editor on it (Protocol 2.133); the
     Web operator page lists the seven buses with their level and mute and
-    edits each chain in place. Remaining: `BusMatrix` bus processing,
-    mix-minus
-    feeds, and device or network destinations are not wired, and the legacy
+    edits each chain in place. A project output that hears an aux bus can
+    now leave one input out of its feed (mix-minus, Protocol 2.134, schema
+    94), chosen in Studio's BUSES window and the CLI, and the native mixer
+    re-sums the feed without that strip exactly as the bus with the send
+    disabled, chain processing included. Remaining: device or network
+    destinations are not wired, and the legacy
     project audio bus graph is unchanged (see the Phase 3 `AU-002`
     boundary).
 14. **Audio plugin chains (`AU-006`).** `fm-plugin-host-api` models an
@@ -2692,9 +2695,16 @@ processed after its fader and mute and before its meters, and the chain
 reaches clients in the snapshot's `audio_aux_buses` (Protocol 2.133):
 Studio's BUSES window opens the FX editor on a bus (`audio_strip_dsp`
 target `aux:a`..`aux:g`, a drag folding into one undo step), loads a
-preset chain, and the CLI sets it. Remaining gaps: mix-minus feeds and
-device or network destinations; the legacy project audio bus graph and
-each output's `audio_source` are unchanged. `AU-002` remains planned.
+preset chain, and the CLI sets it. An output that hears an aux bus can
+leave one input out of its feed (AU-002 mix-minus, Protocol 2.134, schema
+94): the snapshot's output records name the excluded input, Studio's
+BUSES window and the CLI choose it, and the native daemon renders a
+separate feed per such output in the same mixer pass, re-summing the bus
+without the strip — bit-identical to the bus with that send disabled,
+through its DSP chain — and gives that feed the output's own Fade-to-Black
+trajectory. Remaining gaps: device or network destinations; the legacy
+project audio bus graph and each output's `audio_source` are unchanged.
+`AU-002` remains planned.
 
 Current implementation boundary for multichannel audio (`AU-003`): `fm-audio`
 provides a 1–16 channel layout catalog (1.0, 2.0, 2.1, 5.1, 7.1, and 16

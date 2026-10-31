@@ -432,6 +432,7 @@ impl AudioMixerStatus {
             AudioMixerOperation::SetGroup { .. }
             | AudioMixerOperation::ResetLoudness { .. }
             | AudioMixerOperation::SetOutputBus { .. }
+            | AudioMixerOperation::SetOutputMixMinus { .. }
             | AudioMixerOperation::SetPluginChain { .. } => {}
             AudioMixerOperation::SetAuxBusDsp { bus, chain } => {
                 self.aux_buses[bus.index()].dsp = **chain;
@@ -605,6 +606,13 @@ pub enum AudioMixerOperation {
         output: WireOutputId,
         bus: Option<AuxBusNumber>,
     },
+    /// Makes `output`'s aux feed leave `input` out (AU-002 mix-minus, 2.134),
+    /// or restores its full mix for `None`. A project edit; it applies only
+    /// while the output hears an aux bus.
+    SetOutputMixMinus {
+        output: WireOutputId,
+        input: Option<WireInputId>,
+    },
     /// Replaces a strip's or the Master's plugin chain (2.128, AU-006). A
     /// live operation: chains are runtime state.
     SetPluginChain {
@@ -633,6 +641,7 @@ impl AudioMixerOperation {
             Self::SetAuxBusLevel { .. } => "audio_aux_bus_level",
             Self::SetAuxBusDsp { .. } => "audio_aux_bus_dsp",
             Self::SetOutputBus { .. } => "audio_output_bus",
+            Self::SetOutputMixMinus { .. } => "audio_output_mix_minus",
             Self::SetPluginChain { .. } => "audio_plugin_chain",
         }
     }

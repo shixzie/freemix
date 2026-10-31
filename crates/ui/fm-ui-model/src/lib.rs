@@ -224,6 +224,9 @@ pub struct OutputStatus {
     pub name: String,
     /// The aux bus the output hears, or `None` for Master (Protocol 2.118).
     pub aux_bus: Option<fm_types::audio_bus::AuxBusNumber>,
+    /// The input the output's aux feed leaves out (Protocol 2.134), or
+    /// `None` for a full mix.
+    pub mix_minus: Option<InputId>,
 }
 
 /// One replicated title input.
@@ -556,6 +559,7 @@ impl ProjectSnapshot {
                 output: output.output.to_domain(),
                 name: output.name,
                 aux_bus: output.aux_bus,
+                mix_minus: output.mix_minus.map(fm_protocol::WireInputId::to_domain),
             })
             .collect();
         Self {
@@ -5695,6 +5699,14 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             {
                 status.aux_bus = *bus;
             }
+            if let fm_protocol::AudioMixerOperation::SetOutputMixMinus { output, input } = &operation
+                && let Some(status) = state
+                    .outputs
+                    .iter_mut()
+                    .find(|status| status.output == output.to_domain())
+            {
+                status.mix_minus = input.map(fm_protocol::WireInputId::to_domain);
+            }
             state.audio_mixer.apply(&operation);
         }
         DurableChange::DisplayOutputChanged { slot, config } => match config {
@@ -6015,6 +6027,13 @@ fn validate_audio_mixer_change(
             .outputs
             .iter()
             .any(|candidate| candidate.output == output.to_domain()),
+        fm_protocol::AudioMixerOperation::SetOutputMixMinus { output, input } => {
+            state
+                .outputs
+                .iter()
+                .any(|candidate| candidate.output == output.to_domain())
+                && input.as_ref().is_none_or(|input| known(input))
+        }
         fm_protocol::AudioMixerOperation::SetPluginChain { target, slots } => {
             let target_known = match target {
                 fm_protocol::AudioDspTarget::Master => true,

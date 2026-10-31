@@ -25,8 +25,11 @@
 //!   `<name>~<gain_millidb>~<muted 0|1>` entries, bus A first, each name
 //!   percent-escaped and non-blank.
 //! * Each `outputs` entry ends with the aux bus letter the output hears, or
-//!   `-` for Master (Protocol 2.118). An `audio_output_bus` command or event
-//!   `bus` is a letter or `-` for Master; an aux bus operation's `bus` is a
+//!   `-` for Master (Protocol 2.118), then the input its mix-minus feed
+//!   leaves out or `-` for a full mix (Protocol 2.134). An
+//!   `audio_output_bus` command or event `bus` is a letter or `-` for
+//!   Master; an `audio_output_mix_minus` command or event `input` is an
+//!   input id or `-` for a full mix; an aux bus operation's `bus` is a
 //!   letter.
 //!
 //! Group names inside `audio_groups` are percent-escaped before they are
@@ -952,6 +955,13 @@ pub(super) fn encode_operation(
                 bus.map_or_else(|| "-".to_owned(), |bus| bus.letter().to_string()),
             )
         }
+        AudioMixerOperation::SetOutputMixMinus { output, input } => {
+            push("output", output.to_string())?;
+            push(
+                "input",
+                input.map_or_else(|| "-".to_owned(), |input| input.to_string()),
+            )
+        }
         AudioMixerOperation::SetPluginChain { target, slots } => {
             push("target", encode_target(*target))?;
             push("plugins", encode_plugin_slots(slots)?)
@@ -1135,6 +1145,22 @@ pub(super) fn decode_operation(
                     None
                 } else {
                     Some(parse_bus("bus", &bus)?)
+                },
+            }
+        }
+        "audio_output_mix_minus" => {
+            let value = fields.required("output")?;
+            let output = parse_canonical_output(&value).ok_or_else(|| invalid("output", value))?;
+            let input = fields.required("input")?;
+            AudioMixerOperation::SetOutputMixMinus {
+                output,
+                input: if input == "-" {
+                    None
+                } else {
+                    Some(
+                        parse_canonical_input(&input)
+                            .ok_or_else(|| invalid("input", input.clone()))?,
+                    )
                 },
             }
         }

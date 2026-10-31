@@ -15,7 +15,7 @@ use fm_protocol::{
     StreamTargetProtocol, WireMessage, WireOutputId, WireStreamTargetId, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.133\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.134\tid=a\tidempotency_key=k";
 const KEY: &str = "live-secret-key-0001";
 
 fn target(value: u128) -> WireStreamTargetId {

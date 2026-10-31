@@ -147,6 +147,12 @@ pub enum AudioMixerArgs {
         output: u128,
         bus: Option<fm_model::AuxBusNumber>,
     },
+    /// `audio-output-mix-minus <output> <input|none>`: the input an
+    /// output's aux feed leaves out (AU-002).
+    OutputMixMinus {
+        output: u128,
+        input: Option<u128>,
+    },
     /// `audio-aux-dsp <A-G> <preset|chain code>`: an aux bus's DSP chain
     /// (AU-002).
     AuxDsp {
@@ -2343,6 +2349,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "audio-aux-level"
         | "audio-aux-dsp"
         | "audio-output-aux"
+        | "audio-output-mix-minus"
         | "remote-audio-label"
         | "remote-audio-group"
         | "remote-audio-group-name"
@@ -2357,7 +2364,8 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-audio-aux-name"
         | "remote-audio-aux-level"
         | "remote-audio-aux-dsp"
-        | "remote-audio-output-aux") => parse_audio_mixer(mixer, arguments),
+        | "remote-audio-output-aux"
+        | "remote-audio-output-mix-minus") => parse_audio_mixer(mixer, arguments),
         "remote-audio-output-devices" => {
             let address = socket_address(&required(&mut arguments, "address")?)?;
             reject_extra(&mut arguments)?;
@@ -3535,6 +3543,18 @@ fn parse_audio_mixer(
                     None
                 } else {
                     Some(aux_bus(&bus)?)
+                },
+            }
+        }
+        "audio-output-mix-minus" => {
+            let output = number(&required(&mut arguments, "output")?, "output")?;
+            let input = required(&mut arguments, "input")?;
+            AudioMixerArgs::OutputMixMinus {
+                output,
+                input: if input == "none" {
+                    None
+                } else {
+                    Some(number(&input, "input")?)
                 },
             }
         }

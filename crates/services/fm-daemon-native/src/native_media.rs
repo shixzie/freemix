@@ -21,7 +21,9 @@ use std::{
     thread,
 };
 
-use fm_audio::{AUX_BUS_COUNT, AuxBusOutput, BusSend, MixBus};
+use fm_audio::{
+    AUX_BUS_COUNT, AuxBusOutput, AuxMixMinusFeeds, BusSend, MixBus,
+};
 use fm_audio::{
     AudioCadenceOrigin, AudioRenderPlan, AudioSilenceSpan, AudioSynchronizerLimits, Balance,
     ChannelMapping, ChannelMeter, ClockMappedAudioSynchronizer, GroupState, InputState,
@@ -567,6 +569,8 @@ pub struct NativeProjectPlan {
     aux_bus_levels: [(i32, bool); fm_model::AUX_BUS_COUNT],
     /// The outputs that hear an aux bus instead of Master (AU-002).
     output_aux_buses: BTreeMap<OutputId, fm_model::AuxBusNumber>,
+    /// The input each output's aux feed leaves out (AU-002 mix-minus).
+    output_mix_minus: BTreeMap<OutputId, InputId>,
     /// Every aux bus's non-default DSP chain, bus A first (AU-002).
     aux_bus_dsp: [Option<fm_types::strip_dsp::StripDsp>; fm_model::AUX_BUS_COUNT],
     /// Every strip's non-default DSP chain (AU-005).
@@ -960,6 +964,7 @@ impl NativeProjectPlan {
                 (level.gain.get(), level.muted)
             }),
             output_aux_buses: project.output_aux_buses().clone(),
+            output_mix_minus: project.output_mix_minus().clone(),
             aux_bus_dsp: fm_model::AuxBusNumber::ALL.map(|bus| {
                 let dsp = project.aux_buses().get(bus).dsp;
                 (!dsp.is_default()).then_some(dsp)
@@ -1094,6 +1099,27 @@ impl NativeProjectPlan {
         match bus {
             Some(bus) => self.output_aux_buses.insert(output, bus),
             None => self.output_aux_buses.remove(&output),
+        };
+    }
+
+    /// The input `output`'s aux feed leaves out, or `None` (AU-002).
+    #[must_use]
+    pub fn output_mix_minus(&self, output: OutputId) -> Option<InputId> {
+        self.output_mix_minus.get(&output).copied()
+    }
+
+    /// Every output's mix-minus feed, ascending (AU-002).
+    #[must_use]
+    pub const fn output_mix_minus_map(&self) -> &BTreeMap<OutputId, InputId> {
+        &self.output_mix_minus
+    }
+
+    /// Makes `output`'s aux feed leave `input` out, or nothing for `None`
+    /// (AU-002).
+    pub fn set_output_mix_minus(&mut self, output: OutputId, input: Option<InputId>) {
+        match input {
+            Some(input) => self.output_mix_minus.insert(output, input),
+            None => self.output_mix_minus.remove(&output),
         };
     }
 
@@ -3216,6 +3242,13 @@ struct NativeAudioScratch {
     /// meters.
     aux: Vec<Vec<f32>>,
     aux_meters: Vec<ChannelMeter>,
+    /// The aux feeds of outputs that leave one strip out (AU-002
+    /// mix-minus), feed-major, with each feed's bus and strip.
+    aux_mix_minus: Vec<Vec<f32>>,
+    aux_mix_minus_meters: Vec<ChannelMeter>,
+    aux_mix_minus_configs: Vec<(MixBus, InputId)>,
+    /// The output each `aux_mix_minus_configs` feed belongs to.
+    aux_mix_minus_outputs: Vec<OutputId>,
     meter_frame: Option<(u64, u64, u64)>,
     /// The gain reduction of every running DSP chain at the last taken
     /// interval (AU-005): Master (`None`) first, then ascending inputs.
@@ -3316,6 +3349,10 @@ impl NativeAudioScratch {
             monitor_solo: false,
             aux: vec![vec![0.0; samples]; AUX_BUS_COUNT * channels],
             aux_meters: vec![ChannelMeter::default(); AUX_BUS_COUNT * channels],
+            aux_mix_minus: Vec::new(),
+            aux_mix_minus_meters: Vec::new(),
+            aux_mix_minus_configs: Vec::new(),
+            aux_mix_minus_outputs: Vec::new(),
             dynamics: Vec::with_capacity(source_count + 1),
             input_loudness: Vec::new(),
             loudness_inputs: Vec::new(),
@@ -4529,7 +4566,8 @@ impl NativeMasterRuntime {
                 | fm_engine::EngineAudioMixerUpdate::MonitorLevel(_)
                 | fm_engine::EngineAudioMixerUpdate::LoudnessReset { .. }
                 | fm_engine::EngineAudioMixerUpdate::PluginChain { .. }
-                | fm_engine::EngineAudioMixerUpdate::OutputAuxBus { .. } => {}
+                | fm_engine::EngineAudioMixerUpdate::OutputAuxBus { .. }
+                | fm_engine::EngineAudioMixerUpdate::OutputMixMinus { .. } => {}
                 // An aux bus fader ramps like a group fader (AU-002).
                 fm_engine::EngineAudioMixerUpdate::AuxBusLevel { bus, state } => {
                     mixer.set_aux_bus_state(
@@ -5462,6 +5500,33 @@ impl NativeMasterRuntime {
             1
         };
         let active_video_inputs = &active_video_inputs[..active_video_input_count];
+        // A project output that hears an aux bus can leave one strip out of
+        // its feed (AU-002 mix-minus). Each such output gets its own plane
+        // set, summed in the same pass as the buses.
+        let channels = self.format.channels.channels().len();
+        self.scratch.aux_mix_minus_configs.clear();
+        self.scratch.aux_mix_minus_outputs.clear();
+        if let Some(project) = project {
+            for (&output, &input) in project.output_mix_minus_map() {
+                let Some(bus) = project.output_aux_bus(output) else {
+                    continue;
+                };
+                self.scratch.aux_mix_minus_configs.push((native_aux_bus(bus), input));
+                self.scratch.aux_mix_minus_outputs.push(output);
+            }
+        }
+        let feed_planes = self.scratch.aux_mix_minus_configs.len() * channels;
+        if self.scratch.aux_mix_minus.len() < feed_planes {
+            self.scratch.aux_mix_minus.resize(feed_planes, Vec::new());
+        }
+        for plane in &mut self.scratch.aux_mix_minus {
+            if plane.len() < samples {
+                plane.resize(samples, 0.0);
+            }
+        }
+        self.scratch
+            .aux_mix_minus_meters
+            .resize(feed_planes, ChannelMeter::default());
         if let Some(project) = project {
             self.scratch.monitor_solo = mix_project_audio_strips(
                 &mut self.pending_mixer,
@@ -5485,6 +5550,13 @@ impl NativeMasterRuntime {
                 AuxBusOutput {
                     planes: &mut self.scratch.aux,
                     meters: &mut self.scratch.aux_meters,
+                    mix_minus: (!self.scratch.aux_mix_minus_configs.is_empty()).then(|| {
+                        AuxMixMinusFeeds {
+                            configs: &self.scratch.aux_mix_minus_configs,
+                            planes: &mut self.scratch.aux_mix_minus,
+                            meters: &mut self.scratch.aux_mix_minus_meters,
+                        }
+                    }),
                 },
             )?;
         } else {
@@ -5625,8 +5697,21 @@ impl NativeMasterRuntime {
                         (!frame.fade_to_black_excluded_outputs.contains(&output))
                             .then_some(frame.fade_to_black)
                     });
-                let start = bus.index() * channels;
-                let mut planes: Vec<Vec<f32>> = self.scratch.aux[start..start + channels]
+                // A mix-minus output hears its own feed, the bus without the
+                // excluded strip (AU-002).
+                let feed = self
+                    .scratch
+                    .aux_mix_minus_outputs
+                    .iter()
+                    .position(|candidate| *candidate == output);
+                let source = match feed {
+                    Some(index) => &self.scratch.aux_mix_minus[index * channels..(index + 1) * channels],
+                    None => {
+                        let start = bus.index() * channels;
+                        &self.scratch.aux[start..start + channels]
+                    }
+                };
+                let mut planes: Vec<Vec<f32>> = source
                     .iter()
                     .map(|plane| plane[..samples].to_vec())
                     .collect();
@@ -13670,6 +13755,71 @@ mod tests {
                 .all(|sample| (*sample - 1.0).abs() < 1.0e-6)
         );
         assert!(master.take_override_audio().is_empty());
+    }
+
+    #[test]
+    fn an_output_mix_minus_leaves_one_strip_out_of_its_aux_feed() {
+        let host = input(1);
+        let guest = input(2);
+        let stage = fm_model::AuxBusNumber::new(2).unwrap();
+        let mut project = native_plan_project(4, 2);
+        add_leaf(&mut project, host);
+        add_leaf(&mut project, guest);
+        add_output(&mut project, output(7));
+        assert!(project.set_output_aux_bus(output(7), Some(stage)));
+        assert!(project.set_output_mix_minus(output(7), Some(guest)));
+        let aux_only = InputAudioStripState {
+            sends: fm_model::AudioSends::MASTER
+                .with_master(false)
+                .with_aux(stage, true),
+            follow_video: false,
+            ..InputAudioStripState::default()
+        };
+        assert!(project.set_input_audio_strip(host, aux_only));
+        assert!(project.set_input_audio_strip(guest, aux_only));
+        let mut plan =
+            NativeProjectPlan::compile(&project, NativeProjectLimits::default()).unwrap();
+        let mut master = audio_test_master(&[(host, 0.25), (guest, 0.125)], 4);
+        master.realize_project_audio(&plan).unwrap();
+
+        assert!(master.service_next_frame().unwrap());
+        let program = master
+            .render_project_frame_audio(&frame_result(0, host, None), &plan)
+            .unwrap();
+        assert!(
+            program
+                .plane(0)
+                .unwrap()
+                .iter()
+                .all(|sample| *sample == 0.0)
+        );
+        let overrides = master.take_override_audio();
+        assert_eq!(overrides.len(), 1);
+        assert_eq!(overrides[0].0, output(7));
+        // The guest's 0.125 is left out of the feed; the host's 0.25 stays,
+        // and Program is untouched.
+        assert!(
+            overrides[0]
+                .1
+                .plane(0)
+                .unwrap()
+                .iter()
+                .all(|sample| (*sample - 0.25).abs() < 1.0e-6)
+        );
+
+        // Clearing the mix-minus restores the full bus feed.
+        plan.set_output_mix_minus(output(7), None);
+        assert!(master.service_next_frame().unwrap());
+        let _ = master
+            .render_project_frame_audio(&frame_result(1, host, None), &plan)
+            .unwrap();
+        let sample = *master.take_override_audio()[0]
+            .1
+            .plane(0)
+            .unwrap()
+            .last()
+            .unwrap();
+        assert!((sample - 0.375).abs() < 1.0e-6, "{sample} != 0.375");
     }
 
     #[test]

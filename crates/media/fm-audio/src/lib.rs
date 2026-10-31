@@ -1300,6 +1300,22 @@ pub struct MixerMeterSlices<'a> {
 pub struct AuxBusOutput<'a> {
     pub planes: &'a mut [Vec<f32>],
     pub meters: &'a mut [ChannelMeter],
+    /// Feeds of one bus without one strip (AU-002 mix-minus). Each is summed
+    /// in the same pass as the buses and processed by that bus's chain, so
+    /// it is bit-identical to the bus with the strip's send disabled.
+    pub mix_minus: Option<AuxMixMinusFeeds<'a>>,
+}
+
+/// Aux bus feeds that leave one strip out (AU-002 mix-minus).
+#[derive(Debug)]
+pub struct AuxMixMinusFeeds<'a> {
+    /// One entry per feed: the bus to render and the strip it leaves out.
+    pub configs: &'a [(MixBus, InputId)],
+    /// Feed-major, one plane per Master channel, each at least the render's
+    /// length.
+    pub planes: &'a mut [Vec<f32>],
+    /// Laid out like `planes`: one meter per plane.
+    pub meters: &'a mut [ChannelMeter],
 }
 
 /// Audio summed into (or replacing) the Program bus after the strips and
@@ -2576,6 +2592,22 @@ impl MasterMixer {
                     actual: aux.meters.len(),
                 });
             }
+            if let Some(feeds) = &aux.mix_minus {
+                for &(bus, _) in feeds.configs {
+                    aux_index(bus)?;
+                }
+                validate_mixer_output_planes(
+                    samples,
+                    feeds.configs.len() * channels,
+                    feeds.planes,
+                )?;
+                if feeds.meters.len() != feeds.configs.len() * channels {
+                    return Err(AudioError::MeterCountMismatch {
+                        expected: feeds.configs.len() * channels,
+                        actual: feeds.meters.len(),
+                    });
+                }
+            }
         }
         let solo = self.monitor_carries_solo();
         self.mix_block_views_into(
@@ -2800,6 +2832,11 @@ impl MasterMixer {
             for plane in aux.planes.iter_mut() {
                 plane[..samples].fill(0.0);
             }
+            if let Some(feeds) = &mut aux.mix_minus {
+                for plane in feeds.planes.iter_mut() {
+                    plane[..samples].fill(0.0);
+                }
+            }
         }
         self.process_strip_dsp(samples, blocks);
         let metering = measure_output || meter_output.is_some();
@@ -2882,6 +2919,31 @@ impl MasterMixer {
                         None,
                         Some(planes),
                     )?;
+                }
+                if let Some(feeds) = &mut aux.mix_minus {
+                    for (index, &(bus, excluded)) in feeds.configs.iter().enumerate() {
+                        if excluded == *id {
+                            continue;
+                        }
+                        let send = strip.aux_sends[aux_index(bus)?];
+                        if !send.enabled {
+                            continue;
+                        }
+                        let tap = match send.tap {
+                            SendTap::PreFader => StripTap::PreFader,
+                            SendTap::PostFader => StripTap::Program,
+                        };
+                        let planes = &mut feeds.planes[index * channels..(index + 1) * channels];
+                        mix_strip_samples(
+                            samples,
+                            &self.format.channels,
+                            block,
+                            strip,
+                            (&mut { ramps }, tap, send.level.linear()),
+                            None,
+                            Some(planes),
+                        )?;
+                    }
                 }
             }
             if metering {
@@ -2989,13 +3051,48 @@ impl MasterMixer {
     }
 
     /// Applies each aux bus's fader ramp, mute, and the clipping policy to
-    /// its summed sends, then meters it.
+    /// its summed sends, then meters it. Mix-minus feeds run first through
+    /// the bus chain from the render's checkpoint (which is restored after
+    /// each), so the canonical bus and every feed start from the same state.
     fn finish_aux_buses(
         &mut self,
         samples: usize,
         channels: usize,
         aux: &mut AuxBusOutput<'_>,
     ) -> Result<(), AudioError> {
+        if let Some(feeds) = &mut aux.mix_minus {
+            for index in 0..feeds.configs.len() {
+                let (bus, _) = feeds.configs[index];
+                let bus_index = aux_index(bus)?;
+                let group = self.aux[bus_index];
+                let planes = &mut feeds.planes[index * channels..(index + 1) * channels];
+                let meters = &mut feeds.meters[index * channels..(index + 1) * channels];
+                for plane in planes.iter_mut() {
+                    let plane = &mut plane[..samples];
+                    if group.state.muted {
+                        plane.fill(0.0);
+                        continue;
+                    }
+                    let mut ramp = group.ramp;
+                    for sample in plane {
+                        *sample *= ramp.next();
+                        if self.clipping_policy == ClippingPolicy::Clamp {
+                            *sample = sample.clamp(-1.0, 1.0);
+                        }
+                    }
+                }
+                if let Some(live) = &mut self.aux_dsp[bus_index]
+                    && !live.is_transparent()
+                {
+                    live.process(samples, &mut InPlacePlanes(planes));
+                    if let Some(checkpoint) = &self.aux_checkpoints[bus_index] {
+                        let _ = live.copy_render_state_from(checkpoint);
+                    }
+                }
+                validate_finite_sample_prefix(planes, samples)?;
+                measure_plane_prefix_into(planes, samples, meters);
+            }
+        }
         for index in 0..AUX_BUS_COUNT {
             let bus = self.aux[index];
             let planes = &mut aux.planes[index * channels..(index + 1) * channels];

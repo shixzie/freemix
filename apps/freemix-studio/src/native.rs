@@ -7210,6 +7210,7 @@ mod tests {
             output: config.output.to_domain(),
             name: "Program".to_owned(),
             aux_bus: None,
+            mix_minus: None,
         });
         assert_eq!(
             intent_payload(
@@ -7749,6 +7750,7 @@ mod tests {
             output,
             name: "Program".into(),
             aux_bus: None,
+            mix_minus: None,
         }];
         let channel = snapshot.desired_overlays[0].channel;
         let mut model = ClientModel::new(project);

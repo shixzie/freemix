@@ -3320,6 +3320,45 @@ fn draw_bus_mixer_contents(
                     },
                 ));
             }
+            if chosen.is_some() {
+                let mut mix_minus = output.mix_minus;
+                let selected = match mix_minus {
+                    None => l.text(Msg::BusMixerFullMix).to_owned(),
+                    Some(input) => view
+                        .inputs
+                        .iter()
+                        .position(|candidate| *candidate == input)
+                        .map_or_else(
+                            || input.to_string(),
+                            |index| view.input_names[index].clone(),
+                        ),
+                };
+                ui.add_enabled_ui(edit_enabled, |ui| {
+                    egui::ComboBox::from_id_salt(("bus-mixer-mix-minus", output.output))
+                        .selected_text(selected)
+                        .width(140.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut mix_minus,
+                                None,
+                                l.text(Msg::BusMixerFullMix),
+                            );
+                            for (input, name) in view.inputs.iter().zip(&view.input_names) {
+                                ui.selectable_value(&mut mix_minus, Some(*input), name);
+                            }
+                        });
+                })
+                .response
+                .hint(l.text(Msg::BusMixerMixMinusHover), edit_reason);
+                if mix_minus != output.mix_minus {
+                    intents.push(StudioIntent::AudioMixer(
+                        fm_protocol::AudioMixerOperation::SetOutputMixMinus {
+                            output: fm_protocol::WireOutputId::from_domain(output.output),
+                            input: mix_minus.map(fm_protocol::WireInputId::from_domain),
+                        },
+                    ));
+                }
+            }
         });
     }
     draw_send_levels(ui, state, intents, audio_enabled, audio_reason);

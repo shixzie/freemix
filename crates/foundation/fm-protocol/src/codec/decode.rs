@@ -768,6 +768,7 @@ fn decode_command_payload(
         | "audio_aux_bus_level"
         | "audio_aux_bus_dsp"
         | "audio_output_bus"
+        | "audio_output_mix_minus"
         | "audio_plugin_chain") => CommandPayload::AudioMixer(
             super::audio_mixer::decode_operation(mixer, fields)?
                 .expect("every listed payload is a mixer operation"),

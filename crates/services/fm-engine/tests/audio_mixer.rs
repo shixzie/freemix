@@ -1046,3 +1046,75 @@ fn aux_bus_refusals_name_the_problem_and_strip_buses_are_live() {
     let frame = engine.tick().unwrap();
     assert!(frame.input_audio_strip_updates.contains(&(input(2), state)));
 }
+
+#[test]
+fn output_mix_minus_names_a_known_input_and_undoes_exactly() {
+    let mut engine = engine();
+    assert_eq!(engine.show().output_mix_minus_input(output(2)), None);
+    accept(
+        &mut engine,
+        "mix-minus",
+        mixer(EngineAudioMixerEdit::SetOutputMixMinus {
+            output: output(2),
+            input: Some(input(3)),
+        }),
+    );
+    assert_eq!(
+        engine.show().output_mix_minus_input(output(2)),
+        Some(input(3))
+    );
+    let frame = engine.tick().unwrap();
+    assert_eq!(
+        frame.audio_mixer_updates,
+        vec![EngineAudioMixerUpdate::OutputMixMinus {
+            output: output(2),
+            input: Some(input(3)),
+        }]
+    );
+    undo(&mut engine, "undo-mix-minus");
+    assert_eq!(engine.show().output_mix_minus_input(output(2)), None);
+    redo(&mut engine, "redo-mix-minus");
+    assert_eq!(
+        engine.show().output_mix_minus_input(output(2)),
+        Some(input(3))
+    );
+    // Unknown outputs and inputs are refused without changing the show.
+    for (key, edit) in [
+        (
+            "unknown-output",
+            EngineAudioMixerEdit::SetOutputMixMinus {
+                output: output(9),
+                input: Some(input(3)),
+            },
+        ),
+        (
+            "unknown-input",
+            EngineAudioMixerEdit::SetOutputMixMinus {
+                output: output(2),
+                input: Some(input(9)),
+            },
+        ),
+    ] {
+        let outcome = execute(&mut engine, key, mixer(edit));
+        assert_eq!(rejection(&outcome).code, RejectionCode::NotFound);
+    }
+    assert_eq!(
+        engine.show().output_mix_minus_input(output(2)),
+        Some(input(3))
+    );
+    // Clearing the feed is its own undoable edit.
+    accept(
+        &mut engine,
+        "clear-mix-minus",
+        mixer(EngineAudioMixerEdit::SetOutputMixMinus {
+            output: output(2),
+            input: None,
+        }),
+    );
+    assert_eq!(engine.show().output_mix_minus_input(output(2)), None);
+    undo(&mut engine, "undo-clear-mix-minus");
+    assert_eq!(
+        engine.show().output_mix_minus_input(output(2)),
+        Some(input(3))
+    );
+}

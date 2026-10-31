@@ -5081,6 +5081,10 @@ fn snapshot_record(
                 output: WireOutputId::from_domain(*output),
                 name: name.clone(),
                 aux_bus: engine.show().output_aux_bus(*output),
+                mix_minus: engine
+                    .show()
+                    .output_mix_minus_input(*output)
+                    .map(WireInputId::from_domain),
             })
             .collect(),
         input_audio_strips: protocol_input_audio_strips(engine),

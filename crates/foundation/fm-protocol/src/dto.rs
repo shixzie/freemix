@@ -2547,6 +2547,9 @@ pub struct OutputStatus {
     pub name: String,
     /// The aux bus the output hears, or `None` for Master (2.118).
     pub aux_bus: Option<fm_types::audio_bus::AuxBusNumber>,
+    /// The input the output's aux feed leaves out (AU-002 mix-minus, 2.134),
+    /// or `None` for a full mix. Applies only while `aux_bus` is `Some`.
+    pub mix_minus: Option<WireInputId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

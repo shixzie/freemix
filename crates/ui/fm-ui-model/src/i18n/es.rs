@@ -3826,6 +3826,14 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::BusMixerMaster, t("Mezcla Master")),
     (Msg::BusMixerBus, t("Bus {bus}")),
+    (Msg::BusMixerMixMinus, t("Mezcla sin")),
+    (
+        Msg::BusMixerMixMinusHover,
+        t(
+            "Deja esta entrada fuera del envío auxiliar de la salida: un retorno de invitado sin su propio micrófono",
+        ),
+    ),
+    (Msg::BusMixerFullMix, t("Mezcla completa")),
     (Msg::BusMixerNoOutputs, t("Este proyecto no tiene salidas.")),
     (
         Msg::BusMixerMeterHover,
