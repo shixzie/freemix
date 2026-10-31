@@ -127,6 +127,68 @@ fn distance_is_an_exact_rational_function_of_the_frame_index() {
 }
 
 #[test]
+fn crawl_right_enters_from_the_left_edge_and_moves_right() {
+    let config = crawl_config(
+        CrawlMode::CrawlRight,
+        Bounds {
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 20,
+        },
+        120,
+        (30, 1),
+    );
+    let crawl = Crawl::new(
+        ElementId::new(nz(7)),
+        config,
+        &["AAAA", "BB"],
+        &FixedMeasure(10),
+    )
+    .unwrap();
+    assert_eq!(
+        summary(&crawl.view(10).unwrap().segments),
+        vec![("AAAA".into(), 0, 0)]
+    );
+    assert_eq!(
+        summary(&crawl.view(11).unwrap().segments),
+        vec![("AAAA".into(), 4, 0)]
+    );
+    // At distance 40 the separator's right edge enters the left edge.
+    assert_eq!(
+        summary(&crawl.view(20).unwrap().segments),
+        vec![("|".into(), -5, 0), ("AAAA".into(), 40, 0)]
+    );
+}
+
+#[test]
+fn roll_down_moves_items_top_to_bottom() {
+    let config = crawl_config(
+        CrawlMode::RollDown,
+        Bounds {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 200,
+        },
+        120,
+        (30, 1),
+    );
+    let crawl = Crawl::new(
+        ElementId::new(nz(7)),
+        config,
+        &["AAAA", "BB"],
+        &FixedMeasure(10),
+    )
+    .unwrap();
+    assert_eq!(
+        summary(&crawl.view(10).unwrap().segments),
+        vec![("AAAA".into(), 0, 0)]
+    );
+    assert_eq!(crawl.view(11).unwrap().segments[0].offset, 4);
+}
+
+#[test]
 fn crawl_enters_from_the_right_edge_and_wraps_seamlessly_with_separators() {
     let crawl = sample_crawl();
     assert_eq!(crawl.view(10).unwrap().segments, Vec::new());

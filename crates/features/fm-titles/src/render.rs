@@ -1247,9 +1247,10 @@ fn draw_crawl(
             break;
         }
         let laid = layout_segment(&scaled, config.mode, config.bounds.width, segment.text);
-        let forced = match config.mode {
-            CrawlMode::Crawl => (Some(segment.offset), None),
-            CrawlMode::Roll => (None, Some(segment.offset)),
+        let forced = if config.mode.is_horizontal() {
+            (Some(segment.offset), None)
+        } else {
+            (None, Some(segment.offset))
         };
         paint.paint_lines(canvas, &scaled, &laid, forced, state)?;
     }

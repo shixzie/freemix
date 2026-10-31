@@ -19,8 +19,9 @@
 //! tape offset `p` is drawn at viewport offset `viewport + p - distance`: the
 //! first item's leading edge sits on the far (right or bottom) edge at
 //! `start_frame` and enters on the next frame that moves at least one pixel.
-//! Crawl mode moves right to left along x; roll mode moves bottom to top along
-//! y, with each item word-wrapped to the viewport width.
+//! `Crawl` moves right to left and `Roll` bottom to top; `CrawlRight` and
+//! `RollDown` are the mirror images, entering from the left or top edge. Roll
+//! modes word-wrap each item to the viewport width.
 //!
 //! # Live updates never jump
 //!
@@ -67,8 +68,26 @@ pub const MAX_CRAWL_VISIBLE_SEGMENTS: usize = 1_024;
 pub enum CrawlMode {
     /// Horizontal, right to left, one unwrapped line per item.
     Crawl,
+    /// Horizontal, left to right, one unwrapped line per item.
+    CrawlRight,
     /// Vertical, bottom to top, each item word-wrapped to the viewport width.
     Roll,
+    /// Vertical, top to bottom, each item word-wrapped to the viewport width.
+    RollDown,
+}
+
+impl CrawlMode {
+    #[must_use]
+    pub const fn is_horizontal(self) -> bool {
+        matches!(self, Self::Crawl | Self::CrawlRight)
+    }
+
+    /// Whether items travel toward increasing x or y (left to right, or top
+    /// to bottom).
+    #[must_use]
+    pub const fn is_reversed(self) -> bool {
+        matches!(self, Self::CrawlRight | Self::RollDown)
+    }
 }
 
 /// An exact rational speed: `pixels` every `seconds`, normalized.
@@ -135,9 +154,10 @@ impl CrawlConfig {
     /// Viewport length along the motion axis.
     #[must_use]
     pub const fn viewport_length(&self) -> u32 {
-        match self.mode {
-            CrawlMode::Crawl => self.bounds.width,
-            CrawlMode::Roll => self.bounds.height,
+        if self.mode.is_horizontal() {
+            self.bounds.width
+        } else {
+            self.bounds.height
         }
     }
 
@@ -218,20 +238,20 @@ pub(crate) fn layout_segment(
     wrap_width: u32,
     text: &str,
 ) -> LaidText {
-    let wrap = match mode {
-        CrawlMode::Crawl => None,
-        CrawlMode::Roll => Some(wrap_width),
+    let wrap = if mode.is_horizontal() {
+        None
+    } else {
+        Some(wrap_width)
     };
     layout_text(scaled, text, wrap, MAX_CRAWL_ITEM_CHARS)
 }
 
 fn segment_extent(mode: CrawlMode, laid: &LaidText) -> u32 {
-    match mode {
-        CrawlMode::Crawl => laid.width_px,
-        CrawlMode::Roll => {
-            let lines = i64::try_from(laid.lines.len()).unwrap_or(i64::MAX);
-            u32::try_from(laid.line_height_px.saturating_mul(lines).max(0)).unwrap_or(u32::MAX)
-        }
+    if mode.is_horizontal() {
+        laid.width_px
+    } else {
+        let lines = i64::try_from(laid.lines.len()).unwrap_or(i64::MAX);
+        u32::try_from(laid.line_height_px.saturating_mul(lines).max(0)).unwrap_or(u32::MAX)
     }
 }
 
@@ -266,7 +286,8 @@ pub struct CrawlSegment<'a> {
     pub kind: CrawlSegmentKind,
     pub text: &'a str,
     /// Leading edge relative to the viewport origin along the motion axis:
-    /// x from the viewport's left for a crawl, y from its top for a roll.
+    /// x from the viewport's left for a horizontal mode, y from its top for a
+    /// vertical one.
     pub offset: i64,
     pub extent: u32,
     /// Item-list revision that produced the segment.
@@ -278,7 +299,7 @@ pub struct CrawlSegment<'a> {
 pub struct CrawlView<'a> {
     pub frame: u64,
     pub distance: u64,
-    /// In tape order, i.e. increasing `offset`.
+    /// In increasing viewport offset, i.e. left to right or top to bottom.
     pub segments: Vec<CrawlSegment<'a>>,
     /// [`MAX_CRAWL_VISIBLE_SEGMENTS`] stopped the walk early.
     pub truncated: bool,
@@ -587,16 +608,28 @@ impl Crawl {
         self.epochs = epochs;
         self.revision = revision;
         self.last_frame = frame;
+        let first_extent = self
+            .epochs
+            .last()
+            .and_then(|epoch| epoch.items.get(epoch.start_index))
+            .map_or(1, |item| u64::from(item.extent));
+        let enters_at_frame = if self.config.mode.is_reversed() {
+            self.config
+                .first_frame_reaching(boundary.saturating_sub(first_extent).saturating_add(1))
+        } else {
+            self.config.first_frame_reaching(boundary.saturating_add(1))
+        };
         Ok(CrawlSchedule {
             revision,
             boundary,
             start_index,
-            enters_at_frame: self.config.first_frame_reaching(boundary.saturating_add(1)),
+            enters_at_frame,
         })
     }
 
-    /// First item start at or beyond `distance` within `epoch`, and the old
-    /// list index of the item that would have started there.
+    /// First item start that has not begun entering the viewport at
+    /// `distance` within `epoch`, and the old list index of the item that
+    /// would have started there.
     fn next_boundary(&self, epoch: &Epoch, distance: u64) -> (u64, usize) {
         let items = &epoch.items;
         if items.is_empty() {
@@ -607,7 +640,15 @@ impl Crawl {
         let mut position = epoch.start.saturating_add(relative / cycle * cycle);
         let mut index = epoch.start_index % items.len();
         // At most one cycle (<= MAX_CRAWL_ITEMS steps), each >= 1 pixel.
-        while position < distance {
+        loop {
+            let unseen = if self.config.mode.is_reversed() {
+                position >= distance.saturating_add(u64::from(items[index].extent))
+            } else {
+                position >= distance
+            };
+            if unseen {
+                break;
+            }
             position = position.saturating_add(self.step(&items[index]));
             index = (index + 1) % items.len();
         }
@@ -636,8 +677,15 @@ impl Crawl {
         let viewport = i128::from(self.config.viewport_length());
         let high = i128::from(distance);
         let low = high - viewport;
-        let screen = |position: u64| -> i64 {
-            let offset = viewport + i128::from(position) - high;
+        let reversed = self.config.mode.is_reversed();
+        let raw_offset = |position: u64| -> i128 {
+            if reversed {
+                high - i128::from(position)
+            } else {
+                viewport + i128::from(position) - high
+            }
+        };
+        let screen = |offset: i128| -> i64 {
             i64::try_from(offset).unwrap_or(if offset < 0 { i64::MIN } else { i64::MAX })
         };
         let group = self.group();
@@ -647,7 +695,7 @@ impl Crawl {
 
         'epochs: for (number, epoch) in self.epochs.iter().enumerate() {
             let end = self.epochs.get(number + 1).map(|next| next.start);
-            if i128::from(epoch.start) >= high {
+            if !reversed && i128::from(epoch.start) >= high {
                 break;
             }
             if end.is_some_and(|end| i128::from(end) <= low) || epoch.items.is_empty() {
@@ -658,13 +706,31 @@ impl Crawl {
             let skip = u64::try_from((low - i128::from(epoch.start)).max(0)).unwrap_or(u64::MAX);
             let mut position = epoch.start.saturating_add(skip / cycle * cycle);
             let mut index = epoch.start_index % items.len();
+            // Later items are further left for a reversed tape; once even the
+            // widest one cannot reach the viewport, the rest of this epoch is
+            // invisible.
+            let max_extent = items
+                .iter()
+                .map(|item| i128::from(item.extent))
+                .max()
+                .unwrap_or(0);
             loop {
-                if i128::from(position) >= high || end.is_some_and(|end| position >= end) {
+                if end.is_some_and(|end| position >= end) {
+                    break;
+                }
+                let offset = raw_offset(position);
+                if reversed {
+                    if offset + max_extent <= 0 {
+                        break;
+                    }
+                } else if offset >= viewport {
                     break;
                 }
                 let item = &items[index];
+                let item_extent = i128::from(item.extent);
                 let item_end = position.saturating_add(u64::from(item.extent));
-                if i128::from(item_end) > low {
+                let visible = offset < viewport && offset + item_extent > 0;
+                if visible {
                     if segments.len() >= MAX_CRAWL_VISIBLE_SEGMENTS {
                         truncated = true;
                         break 'epochs;
@@ -672,7 +738,7 @@ impl Crawl {
                     segments.push(CrawlSegment {
                         kind: CrawlSegmentKind::Item { index },
                         text: &item.text,
-                        offset: screen(position),
+                        offset: screen(offset),
                         extent: item.extent,
                         revision: epoch.revision,
                     });
@@ -680,7 +746,10 @@ impl Crawl {
                 if !self.separator.text.is_empty() {
                     let separator = item_end.saturating_add(gap);
                     let separator_end = separator.saturating_add(u64::from(self.separator.extent));
-                    if i128::from(separator) < high && i128::from(separator_end) > low {
+                    let separator_offset = raw_offset(separator);
+                    if separator_offset < viewport
+                        && separator_offset + i128::from(self.separator.extent) > 0
+                    {
                         if segments.len() >= MAX_CRAWL_VISIBLE_SEGMENTS {
                             truncated = true;
                             break 'epochs;
@@ -688,7 +757,7 @@ impl Crawl {
                         segments.push(CrawlSegment {
                             kind: CrawlSegmentKind::Separator,
                             text: &self.separator.text,
-                            offset: screen(separator),
+                            offset: screen(separator_offset),
                             extent: self.separator.extent,
                             revision: epoch.revision,
                         });
@@ -697,6 +766,9 @@ impl Crawl {
                 position = item_end.saturating_add(group);
                 index = (index + 1) % items.len();
             }
+        }
+        if reversed {
+            segments.reverse();
         }
         Ok(CrawlView {
             frame,
