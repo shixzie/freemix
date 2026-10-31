@@ -3123,8 +3123,10 @@ re-anchor, and frame-count, byte, and duration bounds evict oldest-first and rej
 oversized frames. The effective delay converts to audio samples, aligning with
 `fm-audio` `SampleDelay` within one sample at 48 kHz. Remaining gaps: no
 engine, input, command, protocol, persistence, or UI wiring; no loop, freeze
-integration, or clip save; `SampleDelay` cannot follow live changes or exceed
-one second; no source/output clock drift compensation; and memory accounting
+integration, or clip save; `SampleDelay` can change its delay live within the
+one-second bound while preserving history (growing prepends silence), and the
+Master mixer's delay setter uses that path; it still cannot exceed one
+second; no source/output clock drift compensation; and memory accounting
 relies on caller-reported sizes. `IN-022` remains planned.
 
 Current implementation boundary for virtual and mix-feed inputs (`IN-024`,

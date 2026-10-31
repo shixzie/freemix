@@ -2167,9 +2167,11 @@ impl MasterMixer {
 
     /// Reconfigures one strip's exact raw-planar delay.
     ///
-    /// A changed delay starts with leading silence. Allocation, bounds, and the
-    /// per-mixer retained-byte budget are checked before the strip is mutated.
-    /// Setting the existing value preserves its history.
+    /// A changed delay preserves the retained history: growing it prepends
+    /// the missing older samples as silence, and shrinking it keeps the most
+    /// recent samples. Allocation, bounds, and the per-mixer retained-byte
+    /// budget are checked before the strip is mutated. Setting the existing
+    /// value changes nothing.
     ///
     /// # Errors
     ///
@@ -2202,11 +2204,10 @@ impl MasterMixer {
                 maximum: MAX_MASTER_MIXER_DELAY_BYTES,
             });
         }
-        let delay = SampleDelay::new(channels, delay_samples)?;
         let Some(strip) = self.inputs.get_mut(&id) else {
             return Err(MasterMixerDelayError::UnknownInput(id));
         };
-        strip.delay = delay;
+        strip.delay.set_delay_samples(delay_samples)?;
         self.retained_delay_bytes = retained;
         Ok(())
     }
