@@ -440,28 +440,31 @@ per week of work; items 1 and 2 land before any new feature breadth.
    test targets. Target: no file over 5k lines, `main.rs` under 1k.
 
    **Progress (2026-10-31).** The journal and durable document pages, the
-   command-line arguments and web settings, the web gateway, the native
-   media runtime and overlay layout, the shared renderers (grades,
-   stills, the CPU scene reference, title rendering, and the simulated
-   monitor tap), and the daemon's statistics, CPU, and disk helpers are now
-   the library crates `fm-daemon-journal`, `fm-daemon-arguments`,
-   `fm-daemon-web` (which also took the web title bridge), `fm-daemon-native`,
-   `fm-overlay-layout`, `fm-daemon-render`, and `fm-daemon-statistics`. The
-   binary's 12.7k-line
-   unit-test module moved to `tests.rs`, so `main.rs` is 16.5k lines and
-   `apps/freemixd/src` 77.5k, down from 157k. `xtask deps check` allows a
-   service crate to depend on the simulation composition root, which the
-   extracted daemon libraries need. What remains is the pass loop and peer
-   scheduler (`sessions.rs`), the `NativeDaemon` composition, and the
-   runtime consumers; `main.rs` still owns the `NativeDaemon` type and its
-   command window.
+   command-line arguments and web settings, the web gateway (with the web
+   title bridge and status feed), the native media runtime, source clock
+   sync, and overlay layout, the shared renderers (grades, stills, the CPU
+   scene reference, title rendering, and the simulated monitor tap), the
+   daemon's statistics, CPU, and disk helpers, the operator status listener,
+   the recorder status tracker, and the LiveLAN viewer server are now the
+   library crates `fm-daemon-journal`, `fm-daemon-arguments`,
+   `fm-daemon-web`, `fm-daemon-native`, `fm-overlay-layout`,
+   `fm-daemon-render`, `fm-daemon-statistics`, and `fm-daemon-status`.
+   The binary's 12.7k-line unit-test module moved to `tests.rs`;
+   `NativeDaemon` moved to `native_daemon.rs`, the macOS camera supervision
+   to `native_cameras.rs`, and the scheduler's I/O to `sessions/io.rs`, so
+   `main.rs` is 12.2k lines and no file but `main.rs` and `tests.rs` is over
+   5k. `xtask deps check` allows a service crate to depend on the
+   simulation composition root, which the extracted daemon libraries need.
+   What remains in `main.rs` is the command window, the runtime consumers
+   that are not yet library crates, and the simulated daemon's composition.
 3. **Burn down panics on the frame path.** `fm-daemon-render`,
    `fm-daemon-native`, and the `freemixd` binary deny
    `clippy::unwrap_used` and `clippy::expect_used` outside tests. The
-   realizer, the session scheduler's dispatch and outbound paths, and the
-   daemon's state restores now return typed errors or clamp a value the
-   model already bounds; the metric and alert tables name their static
-   invariants in one documented expectation.
+   realizer, the native-gated stream, camera, and replay paths, the session
+   scheduler's dispatch and outbound paths, and the daemon's state restores
+   now return typed errors or clamp a value the model already bounds; the
+   metric and alert tables name their static invariants in one documented
+   expectation.
 4. ~~**Tier the CI matrix and cache builds.**~~ Landed: `rust-toolchain.toml`
    pins 1.97.0 for local builds and CI, `Swatinem/rust-cache` caches each OS
    target, pull requests run the Linux workspace job only, and macOS and
