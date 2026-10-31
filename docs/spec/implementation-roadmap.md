@@ -4328,7 +4328,8 @@ active Advanced row, else every row of the phase. Undo and redo select only
 restored keys of the shown phase, so an edit undone from the other phase
 leaves no hidden keys for Delete to reach. Remaining
 limitations: Studio imports and exports by typed path (there is no file
-dialog), and a preset applies to one target at a time.
+dialog); a preset picked with keys selected on several targets animates all
+of them in one undo step.
 
 Current implementation boundary for the color grading suite (`SW-019`):
 `fm-grade` is the pure, all-integer grade model (white balance, exposure,
