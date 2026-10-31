@@ -5358,9 +5358,16 @@ impl NativeDaemon {
             store.assets_root(),
             stored.project().settings().video.dimensions,
         );
+        let replay_format = native_replay::ReplayFormat {
+            width: stored.project().settings().video.dimensions.width(),
+            height: stored.project().settings().video.dimensions.height(),
+            rate: stored.project().settings().frame_rate,
+            clock_domain: native_clock_domain(),
+        };
         let video = native_video_realizer::NativeVideoHandle::spawn(
             Arc::clone(&runtime),
             slides,
+            replay_format,
             "freemix-video-realizer",
         )?;
         #[cfg(target_os = "macos")]
@@ -7440,28 +7447,33 @@ impl NativeDaemon {
             .as_ref()
             .expect("next frame projection was initialized");
         // Replay inputs show their recorded frames and, at 100%, play their
-        // recorded audio (OR-012).
+        // recorded audio (OR-012). The video realizer owns the decode
+        // players; the control thread pushes their audio before the frame's
+        // audio render.
         let audio_handle = &mut self.audio;
-        let replay_covered = match &mut self.replay {
-            Some(replay) => replay.present(
-                projected,
-                replay_deadline,
-                &self.runtime,
-                self.playback
-                    .as_mut()
-                    .expect("the video realizer holds the playback"),
-                &mut |input, block| {
-                    if let Err(error) =
-                        audio_handle.push_frame_audio(input, projected.frame.get(), block)
-                    {
-                        eprintln!(
-                            "FREEMIXD_REPLAY_FAILURE\tv=1\tinput={input}\tfailure={}",
-                            diagnostic_field(&format!("audio:{error}"))
-                        );
-                    }
-                },
-            ),
-            None => true,
+        let playback_slot = &mut self.playback;
+        let video = &mut self.video;
+        let replay_covered = if self.replay.is_some() {
+            let playback = playback_slot
+                .take()
+                .expect("the video realizer holds the playback");
+            let outcome = video
+                .present_replay(projected.clone(), replay_deadline, playback)
+                .map_err(|error| AppFailure(format!("replay realizer: {error}")))?;
+            *playback_slot = Some(outcome.playback);
+            for (input, block) in outcome.audio {
+                if let Err(error) =
+                    audio_handle.push_frame_audio(input, projected.frame.get(), &block)
+                {
+                    eprintln!(
+                        "FREEMIXD_REPLAY_FAILURE\tv=1\tinput={input}\tfailure={}",
+                        diagnostic_field(&format!("audio:{error}"))
+                    );
+                }
+            }
+            outcome.covered
+        } else {
+            true
         };
         // Network streams hand over the projected frame's picture and audio
         // from their jitter buffers, once per frame; they never wait.

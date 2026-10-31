@@ -23,10 +23,14 @@ use std::{
     thread::{self, JoinHandle},
 };
 
+use crate::native_replay::{ReplayFormat, ReplayPlayers};
 use crate::native_slides::NativeSlides;
+use std::time::Instant;
+
 use fm_engine::{CompiledProjectGrades, EngineSlideshowFrame, FrameResult};
+use fm_frame::AudioBlock;
 use fm_gpu::NativeTexture;
-use fm_types::OutputScaling;
+use fm_types::{InputId, OutputScaling};
 use freemixd::native_media::{
     NativeMediaError, NativeMediaRuntime, NativeOutputFrame, NativeProjectGrades,
     NativeProjectPlan, NativeSourcePlayback, NativeSourceRenderError,
@@ -64,6 +68,21 @@ pub(crate) struct VideoRenderOutcome {
     pub playback: NativeSourcePlayback,
     pub stingers: NativeSourcePlayback,
     pub result: Result<NativeVideoFrame, VideoError>,
+}
+
+/// One replay presentation's inputs.
+pub(crate) struct PresentReplayJob {
+    pub frame: FrameResult,
+    pub deadline: Instant,
+    pub playback: NativeSourcePlayback,
+}
+
+/// A replay presentation's reply: the registries, the recorded audio to
+/// push before the audio render, and whether every player is covered.
+pub(crate) struct PresentReplayOutcome {
+    pub playback: NativeSourcePlayback,
+    pub audio: Vec<(InputId, AudioBlock)>,
+    pub covered: bool,
 }
 
 /// A Preview composite's reply.
@@ -105,6 +124,10 @@ enum VideoCommand {
     ForgetSlide {
         input: fm_types::InputId,
     },
+    PresentReplay {
+        job: Box<PresentReplayJob>,
+        reply: SyncSender<PresentReplayOutcome>,
+    },
     Shutdown,
 }
 
@@ -125,18 +148,47 @@ impl NativeVideoHandle {
     pub(crate) fn spawn(
         runtime: Arc<NativeMediaRuntime>,
         slides: NativeSlides,
+        replay: ReplayFormat,
         name: &str,
     ) -> std::io::Result<Self> {
         let (commands, receiver) = sync_channel(2);
         let thread = thread::Builder::new()
             .name(name.to_owned())
-            .spawn(move || video_thread(&runtime, slides, &receiver))?;
+            .spawn(move || video_thread(&runtime, slides, ReplayPlayers::new(replay), &receiver))?;
         Ok(Self {
             commands,
             pending: None,
             pending_preview: None,
             thread: Some(thread),
         })
+    }
+
+    /// Presents every Replay input's recorded frame into `playback` and
+    /// returns the recorded audio to push before the audio render.
+    ///
+    /// # Errors
+    ///
+    /// Returns the video thread stopping.
+    pub(crate) fn present_replay(
+        &mut self,
+        frame: FrameResult,
+        deadline: Instant,
+        playback: NativeSourcePlayback,
+    ) -> Result<PresentReplayOutcome, String> {
+        let (reply, answer) = sync_channel(0);
+        self.commands
+            .send(VideoCommand::PresentReplay {
+                job: Box::new(PresentReplayJob {
+                    frame,
+                    deadline,
+                    playback,
+                }),
+                reply,
+            })
+            .map_err(|_| "the video thread stopped".to_owned())?;
+        answer
+            .recv()
+            .map_err(|_| "the video thread stopped".to_owned())
     }
 
     /// Drops a removed input's uploaded slides.
@@ -261,6 +313,7 @@ impl PreparedGrades {
 fn video_thread(
     runtime: &NativeMediaRuntime,
     mut slides: NativeSlides,
+    mut replay: ReplayPlayers,
     commands: &Receiver<VideoCommand>,
 ) {
     let mut grades = PreparedGrades(None);
@@ -332,6 +385,22 @@ fn video_thread(
                 });
             }
             VideoCommand::ForgetSlide { input } => slides.forget(input),
+            VideoCommand::PresentReplay { job, reply } => {
+                let mut job = *job;
+                let mut audio = Vec::new();
+                let covered = replay.present(
+                    &job.frame,
+                    job.deadline,
+                    runtime,
+                    &mut job.playback,
+                    &mut |input, block| audio.push((input, block.clone())),
+                );
+                let _ = reply.send(PresentReplayOutcome {
+                    playback: job.playback,
+                    audio,
+                    covered,
+                });
+            }
             VideoCommand::Shutdown => break,
         }
     }

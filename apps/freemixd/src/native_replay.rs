@@ -277,14 +277,116 @@ struct Source {
 }
 
 /// The replay recording and players of one native daemon.
+/// The decode side of replay playback: one player per Replay input, owned by
+/// the video realizer (structural item 1).
+pub(crate) struct ReplayPlayers {
+    format: ReplayFormat,
+    players: BTreeMap<InputId, Player>,
+    wait: SourceWait,
+}
+
+impl ReplayPlayers {
+    pub(crate) fn new(format: ReplayFormat) -> Self {
+        Self {
+            format,
+            players: BTreeMap::new(),
+            wait: SourceWait::new(crate::native_files::MAX_MEDIA_FRAME_WAIT),
+        }
+    }
+
+    pub(crate) fn present(
+        &mut self,
+        projected: &FrameResult,
+        deadline: Instant,
+        runtime: &NativeMediaRuntime,
+        playback: &mut NativeSourcePlayback,
+        push_audio: &mut dyn FnMut(InputId, &AudioBlock),
+    ) -> bool {
+        let frame = projected.frame.get();
+        self.players
+            .retain(|input, _| projected.replay.iter().any(|replay| replay.input == *input));
+        let mut pending = false;
+        for replay in &projected.replay {
+            let player = self
+                .players
+                .entry(replay.input)
+                .or_insert_with(|| Player::start(replay.input, self.format));
+            let wanted = Shown::of(replay);
+            if let Shown::Frame(path, index) = &wanted
+                && player.requested.as_ref() != Some(&(path.clone(), *index))
+            {
+                player.request(path.clone(), *index);
+            }
+            if let Some(decoded) = player.take_decoded() {
+                player.decoded = Some(decoded);
+            }
+            if !playback.registry().contains(replay.input) || player.shown == wanted {
+                continue;
+            }
+            let picture = match &wanted {
+                Shown::Nothing | Shown::Hold => continue,
+                Shown::Blank => crate::native_files::output_timing(
+                    frame,
+                    self.format.rate,
+                    self.format.clock_domain,
+                )
+                .and_then(|timing| {
+                    crate::native_files::blank_picture(
+                        (self.format.width, self.format.height),
+                        timing,
+                    )
+                }),
+                Shown::Frame(path, index) => match &player.decoded {
+                    Some((key, picture, audio)) if key.0 == *path && key.1 == *index => {
+                        // Forward play at 100% plays the frame's recorded
+                        // audio; slow motion stays silent.
+                        if replay.playing
+                            && replay.speed == fm_types::replay::ReplaySpeed::Full
+                            && let Some(block) = audio.as_deref().and_then(|planes| {
+                                recorded_audio(
+                                    self.format.rate,
+                                    self.format.clock_domain,
+                                    frame,
+                                    planes,
+                                )
+                            })
+                        {
+                            push_audio(replay.input, &block);
+                        }
+                        picture
+                            .as_ref()
+                            .and_then(|picture| retimed(picture, frame, self.format))
+                    }
+                    _ => {
+                        pending = true;
+                        continue;
+                    }
+                },
+            };
+            player.shown = wanted;
+            // A picture the source refuses is reported, never fatal: the
+            // Replay input holds its previous picture.
+            if let Some(picture) = picture
+                && let Err(error) =
+                    runtime.ingest_live_video_frame_blocking(playback, replay.input, picture)
+            {
+                eprintln!(
+                    "FREEMIXD_REPLAY_FAILURE\tv=1\tinput={}\tfailure={}",
+                    replay.input,
+                    crate::diagnostic_field(&format!("present:{error}"))
+                );
+            }
+        }
+        !pending || self.wait.waited_out(frame, deadline, Instant::now())
+    }
+}
+
 pub(crate) struct NativeReplay {
     format: ReplayFormat,
     /// The sources and root recorded, as the engine last asked.
     recording: Option<(Vec<InputId>, PathBuf)>,
     session: Option<PathBuf>,
     sources: BTreeMap<InputId, Source>,
-    players: BTreeMap<InputId, Player>,
-    wait: SourceWait,
     /// When the storage root was last sampled.
     storage_sample: Option<Instant>,
 }
@@ -296,8 +398,6 @@ impl NativeReplay {
             recording: None,
             session: None,
             sources: BTreeMap::new(),
-            players: BTreeMap::new(),
-            wait: SourceWait::new(crate::native_files::MAX_MEDIA_FRAME_WAIT),
             storage_sample: None,
         }
     }
@@ -601,101 +701,10 @@ impl NativeReplay {
                 .values()
                 .all(|source| matches!(&source.state, SourceState::Running(run) if run.ready))
     }
-
-    /// Presents what every Replay input shows on the projected frame:
-    /// requests each player's recorded frame and ingests what the decode
-    /// workers finished. Returns whether every Replay input's frame is
-    /// ready (or has waited out its bound).
-    pub(crate) fn present(
-        &mut self,
-        projected: &FrameResult,
-        deadline: Instant,
-        runtime: &NativeMediaRuntime,
-        playback: &mut NativeSourcePlayback,
-        push_audio: &mut dyn FnMut(InputId, &AudioBlock),
-    ) -> bool {
-        let frame = projected.frame.get();
-        self.players
-            .retain(|input, _| projected.replay.iter().any(|replay| replay.input == *input));
-        let mut pending = false;
-        for replay in &projected.replay {
-            let player = self
-                .players
-                .entry(replay.input)
-                .or_insert_with(|| Player::start(replay.input, self.format));
-            let wanted = Shown::of(replay);
-            if let Shown::Frame(path, index) = &wanted
-                && player.requested.as_ref() != Some(&(path.clone(), *index))
-            {
-                player.request(path.clone(), *index);
-            }
-            if let Some(decoded) = player.take_decoded() {
-                player.decoded = Some(decoded);
-            }
-            if !playback.registry().contains(replay.input) || player.shown == wanted {
-                continue;
-            }
-            let picture = match &wanted {
-                Shown::Nothing | Shown::Hold => continue,
-                Shown::Blank => crate::native_files::output_timing(
-                    frame,
-                    self.format.rate,
-                    self.format.clock_domain,
-                )
-                .and_then(|timing| {
-                    crate::native_files::blank_picture(
-                        (self.format.width, self.format.height),
-                        timing,
-                    )
-                }),
-                Shown::Frame(path, index) => match &player.decoded {
-                    Some((key, picture, audio)) if key.0 == *path && key.1 == *index => {
-                        // Forward play at 100% plays the frame's recorded
-                        // audio; slow motion stays silent.
-                        if replay.playing
-                            && replay.speed == fm_types::replay::ReplaySpeed::Full
-                            && let Some(block) = audio.as_deref().and_then(|planes| {
-                                recorded_audio(
-                                    self.format.rate,
-                                    self.format.clock_domain,
-                                    frame,
-                                    planes,
-                                )
-                            })
-                        {
-                            push_audio(replay.input, &block);
-                        }
-                        picture
-                            .as_ref()
-                            .and_then(|picture| retimed(picture, frame, self.format))
-                    }
-                    _ => {
-                        pending = true;
-                        continue;
-                    }
-                },
-            };
-            player.shown = wanted;
-            // A picture the source refuses is reported, never fatal: the
-            // Replay input holds its previous picture.
-            if let Some(picture) = picture
-                && let Err(error) =
-                    runtime.ingest_live_video_frame_blocking(playback, replay.input, picture)
-            {
-                eprintln!(
-                    "FREEMIXD_REPLAY_FAILURE\tv=1\tinput={}\tfailure={}",
-                    replay.input,
-                    crate::diagnostic_field(&format!("present:{error}"))
-                );
-            }
-        }
-        !pending || self.wait.waited_out(frame, deadline, Instant::now())
-    }
 }
 
 impl Drop for NativeReplay {
     fn drop(&mut self) {
-        self.players.clear();
         self.end_session();
     }
 }

@@ -369,6 +369,19 @@ per week of work; items 1 and 2 land before any new feature breadth.
    Preview-tap, strip-DSP, replay, audio-only, media-file, and media-list
    suites pass.
 
+   **Seventh stage (landed).** Replay playback moved to the video realizer.
+   `NativeReplay` keeps recording, session, and retention; a new
+   `ReplayPlayers` owns the per-Replay-input decode players and their wait.
+   The control thread sends the projected frame and deadline through
+   `present_replay` before the frame's audio render; the worker presents each
+   player's recorded picture into the playback registry and returns the
+   recorded audio for the control thread to push to the audio realizer before
+   it renders, plus the coverage answer. Native replay, stills (slideshow),
+   pacing, transitions, display, Preview-tap, strip-DSP, audio-only,
+   media-file, and media-list suites pass. `NativeSourcePlayback` is still
+   passed to the worker per request rather than owned by it; making that
+   ownership permanent is the next stage.
+
    **Split plan.** The bounded channel carries a `NativeFrameJob` (the
    engine's `FrameResult`, which is plain data, plus the plan deltas the
    media side applies) to a `NativeRealizer` thread that owns `runtime`
