@@ -2805,8 +2805,9 @@ hangs, the daemon's listing worker with a fake enumerator (off the loop,
 reuse, deferral), the picker state, and the CLI output.
 
 Remaining gaps:
-- devices are listed only when asked; nothing reports a device appearing
-  or going away, and no real `PulseAudio`/`PipeWire` server listing has been
+- devices are listed only when asked (Studio's form asks again every five
+  seconds while it stays open, but nothing reports an appearance or removal
+  outside it), and no real `PulseAudio`/`PipeWire` server listing has been
   exercised;
 - there is no edit command beyond replacing the source;
 - capture is stereo only, with no channel selection or per-input delay;

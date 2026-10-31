@@ -293,6 +293,20 @@ pub(crate) fn draw_system_audio_form(
     draft: &mut SystemAudioDraft,
 ) -> bool {
     let mut rescan = false;
+    // While the form stays open, refresh the list every few seconds so a
+    // device appearing or going away shows up without the operator asking.
+    const RESCAN_SECONDS: f64 = 5.0;
+    let refreshed_at = ui.make_persistent_id(format!("{id}-system-audio-refreshed-at"));
+    let now = ui.input(|input| input.time);
+    let due = ui
+        .data(|data| data.get_temp::<f64>(refreshed_at))
+        .is_none_or(|last| now < last || now - last >= RESCAN_SECONDS);
+    if due {
+        ui.data_mut(|data| data.insert_temp(refreshed_at, now));
+        rescan = true;
+    }
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_secs_f64(RESCAN_SECONDS));
     ui.label(section_label(l.text(Msg::SaBackend)));
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
