@@ -324,7 +324,7 @@ impl NativeDaemon {
                 .saturating_mul(u64::from(height))
                 .saturating_mul(8)
                 .max(1),
-            decoded: self.master.decoded_inputs().collect(),
+            decoded: self.audio.decoded_inputs().unwrap_or_default(),
             capture_live: self.captures.is_some(),
         }
     }
@@ -550,7 +550,7 @@ impl NativeDaemon {
             eprintln!("FREEMIXD_INPUT\tv=1\tinput={input}\tstarted");
         }
 
-        self.master
+        self.audio
             .follow_catalogue(&plan, &replaced, &pushed)
             .map_err(|error| AppFailure(format!("native Master cannot follow inputs: {error}")))?;
         if let Some(mutation) = self.pending_stinger_mutation.as_mut() {

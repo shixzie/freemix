@@ -212,7 +212,10 @@ impl NativeDaemon {
         self.playback
             .set_retained_byte_limit(mutation.ordinary_video_limit);
         let old_stingers = core::mem::replace(&mut self.stingers, mutation.stingers);
-        let old_audio = self.master.replace_stinger_audio(mutation.audio);
+        let old_audio = self
+            .audio
+            .replace_stinger_audio(mutation.audio)
+            .map_err(|error| AppFailure(format!("native Stinger audio: {error}")))?;
         self.project_plan = mutation.project_plan;
         match self.stinger_retirements.retire(Box::new(RetiredResources {
             stingers: old_stingers,

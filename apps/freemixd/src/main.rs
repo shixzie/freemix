@@ -117,6 +117,8 @@ mod media_clock;
 mod media_lengths;
 mod monitor_tap;
 #[cfg(feature = "native-media")]
+mod native_audio_realizer;
+#[cfg(feature = "native-media")]
 mod native_captures;
 #[cfg(feature = "native-media")]
 mod native_catalogue;
@@ -684,7 +686,10 @@ struct NativeDaemon {
     pacing_trace: Option<pacing_trace::PacingTrace>,
     latest_output: Option<NativeTexture>,
     latest_project_outputs: Vec<NativeOutputFrame>,
-    master: NativeMasterRuntime,
+    /// The audio mixer and its decoders on their own thread (structural
+    /// item 1): one bounded, ordered handoff for pushes, coverage waits,
+    /// and per-frame mixes.
+    audio: native_audio_realizer::NativeAudioHandle,
     project_plan: NativeProjectPlan,
     /// Compiled grades per engine revision and their GPU uploads, attached
     /// to [`Self::project_plan`] before every render.
@@ -1852,19 +1857,19 @@ impl NativeRuntimeTelemetry {
         }
     }
 
-    fn observe_audio(&mut self, master: &NativeMasterRuntime) {
-        let audio = master.audio_telemetry();
-        self.audio_retained_blocks = saturating_u64(master.retained_blocks());
+    fn observe_audio(&mut self, snapshot: native_audio_realizer::AudioSnapshot) {
+        let audio = snapshot.telemetry;
+        self.audio_retained_blocks = saturating_u64(snapshot.retained_blocks);
         self.audio_peak_retained_blocks = self
             .audio_peak_retained_blocks
             .max(self.audio_retained_blocks)
             .max(saturating_u64(audio.peak_retained_blocks));
-        self.audio_retained_samples = saturating_u64(master.retained_samples());
+        self.audio_retained_samples = saturating_u64(snapshot.retained_samples);
         self.audio_peak_retained_samples = self
             .audio_peak_retained_samples
             .max(self.audio_retained_samples)
             .max(saturating_u64(audio.peak_retained_samples));
-        self.audio_retained_bytes = saturating_u64(master.retained_bytes());
+        self.audio_retained_bytes = saturating_u64(snapshot.retained_bytes);
         self.audio_peak_retained_bytes = self
             .audio_peak_retained_bytes
             .max(self.audio_retained_bytes)
@@ -1882,10 +1887,9 @@ impl NativeRuntimeTelemetry {
         self.audio_leading_silence_samples = audio.leading_silence_samples;
         self.audio_eos_padding_blocks = audio.eos_padding_blocks;
         self.audio_eos_padding_samples = audio.eos_padding_samples;
-        self.audio_sink_depth = saturating_u64(master.sink_len());
-        let sink = master.sink_telemetry();
-        self.audio_sink_peak_depth = saturating_u64(sink.high_watermark());
-        self.audio_sink_dropped = sink.dropped();
+        self.audio_sink_depth = saturating_u64(snapshot.sink_depth);
+        self.audio_sink_peak_depth = saturating_u64(snapshot.sink.high_watermark());
+        self.audio_sink_dropped = snapshot.sink.dropped();
     }
 
     /// Aggregates the running recorder slots into the whole-run sample.
@@ -5169,6 +5173,8 @@ fn realized_stream_state(
 enum NativeRealizationError {
     Video(NativeSourceRenderError),
     Audio(NativeMasterError),
+    /// The mixer thread stopped or refused its command (structural item 1).
+    AudioThread(String),
 }
 
 #[cfg(feature = "native-media")]
@@ -5177,6 +5183,7 @@ impl fmt::Display for NativeRealizationError {
         match self {
             Self::Video(error) => error.fmt(formatter),
             Self::Audio(error) => error.fmt(formatter),
+            Self::AudioThread(error) => formatter.write_str(error),
         }
     }
 }
@@ -5187,6 +5194,7 @@ impl Error for NativeRealizationError {
         match self {
             Self::Video(error) => Some(error),
             Self::Audio(error) => Some(error),
+            Self::AudioThread(_) => None,
         }
     }
 }
@@ -5298,6 +5306,11 @@ impl NativeDaemon {
         {
             master.attach_pushed_audio(input.id)?;
         }
+        // The audio thread starts once every pushed source is attached, so
+        // it owns the whole mixer and its decode workers from the first
+        // frame; the control loop only sends it ordered commands.
+        let audio =
+            native_audio_realizer::NativeAudioHandle::spawn(master, "freemix-audio-realizer")?;
         let (playback, stingers) = preflight_native_video(
             &runtime,
             adapter.as_ref(),
@@ -5332,7 +5345,7 @@ impl NativeDaemon {
             pacing_trace: pacing_trace::PacingTrace::from_environment(),
             latest_output: None,
             latest_project_outputs: Vec::new(),
-            master,
+            audio,
             project_plan,
             grade_cache: grading::GradeCache::default(),
             prepared_grades: None,
@@ -7295,8 +7308,9 @@ impl NativeDaemon {
                 )?;
             }
             if let Some(audio) = &presented.audio {
-                self.master
-                    .push_frame_audio(presented.input, presented.frame, audio)?;
+                self.audio
+                    .push_frame_audio(presented.input, presented.frame, audio)
+                    .map_err(AppFailure)?;
             }
         }
         let deadline = control.next_frame_deadline()?;
@@ -7314,7 +7328,7 @@ impl NativeDaemon {
             .expect("next frame projection was initialized");
         // Replay inputs show their recorded frames and, at 100%, play their
         // recorded audio (OR-012).
-        let master = &mut self.master;
+        let audio_handle = &mut self.audio;
         let replay_covered = match &mut self.replay {
             Some(replay) => replay.present(
                 projected,
@@ -7322,7 +7336,8 @@ impl NativeDaemon {
                 &self.runtime,
                 &mut self.playback,
                 &mut |input, block| {
-                    if let Err(error) = master.push_frame_audio(input, projected.frame.get(), block)
+                    if let Err(error) =
+                        audio_handle.push_frame_audio(input, projected.frame.get(), block)
                     {
                         eprintln!(
                             "FREEMIXD_REPLAY_FAILURE\tv=1\tinput={input}\tfailure={}",
@@ -7358,8 +7373,9 @@ impl NativeDaemon {
                 )?;
             }
             if let Some(audio) = &pulled.audio {
-                self.master
-                    .push_frame_audio(pulled.input, projected.frame.get(), audio)?;
+                self.audio
+                    .push_frame_audio(pulled.input, projected.frame.get(), audio)
+                    .map_err(AppFailure)?;
             }
         }
         self.titles.observe_frame(projected);
@@ -7370,8 +7386,9 @@ impl NativeDaemon {
         let titles_covered = self.titles.covered(projected, self.next_deadline()?);
         let files_covered = self.files.covered(projected, self.next_deadline()?);
         let audio_covered = self
-            .master
-            .service_project_next_frame(projected, &self.project_plan)?;
+            .audio
+            .service_next_frame(projected, &self.project_plan)
+            .map_err(|error| AppFailure(format!("native audio: {error}")))?;
         let stinger_covered = match self.project_plan.stinger_frame_request(projected)? {
             Some(request) => self
                 .runtime
@@ -7461,7 +7478,7 @@ impl NativeDaemon {
         let runtime = &self.runtime;
         let registry = self.playback.registry();
         let stinger_registry = self.stingers.registry();
-        let master = &mut self.master;
+        let audio_handle = &mut self.audio;
         let monitor_output = &mut self.monitor_output;
         let project_plan = &mut self.project_plan;
         let projected_frame = self.projected_frame.as_ref();
@@ -7470,10 +7487,17 @@ impl NativeDaemon {
         let mut audio = None;
         let mut live_audio = None;
         let mut override_audio = Vec::new();
+        let mut audio_meters = None;
+        let mut rendered_audio = std::collections::BTreeMap::new();
         let mut fade_to_black_excluded = Vec::new();
         let monitor_tap = &self.monitor;
         let mut monitor_frame = None;
         let mut preview_source = None;
+        let replay_inputs = if self.replay.is_some() {
+            control.replay_settings().sources.clone()
+        } else {
+            Vec::new()
+        };
         let outcome = control.tick_with_realizer(server, |frame| {
             debug_assert_eq!(projected_frame, Some(frame));
             monitor_frame = Some((frame.frame.get(), frame.program.primary));
@@ -7483,17 +7507,11 @@ impl NativeDaemon {
             }
             for &(input, state) in &frame.input_audio_strip_updates {
                 let strip = model_audio_strip_state(state);
-                master
-                    .set_input_audio_strip(input, strip)
-                    .map_err(NativeRealizationError::Audio)?;
                 project_plan
                     .set_input_audio_strip(input, strip)
                     .map_err(NativeRealizationError::Audio)?;
             }
             for update in &frame.audio_mixer_updates {
-                master
-                    .apply_audio_mixer_update(update)
-                    .map_err(NativeRealizationError::Audio)?;
                 match *update {
                     fm_engine::EngineAudioMixerUpdate::Membership { input, group } => project_plan
                         .set_input_audio_group(input, group)
@@ -7531,6 +7549,17 @@ impl NativeDaemon {
                     | fm_engine::EngineAudioMixerUpdate::LoudnessReset { .. } => {}
                 }
             }
+            // The mixer starts before the GPU compose and its outcome is
+            // collected after it, so the two overlap.
+            audio_handle
+                .submit_render(native_audio_realizer::AudioRenderJob {
+                    frame: frame.clone(),
+                    plan: project_plan.clone(),
+                    strip_updates: frame.input_audio_strip_updates.clone(),
+                    mixer_updates: frame.audio_mixer_updates.clone(),
+                    replay_inputs: replay_inputs.clone(),
+                })
+                .map_err(NativeRealizationError::AudioThread)?;
             if project_plan.output_ids().is_empty() {
                 let output = runtime
                     .render_project_frame_result_with_stingers_blocking(
@@ -7554,16 +7583,18 @@ impl NativeDaemon {
                 *latest_project_outputs = outputs;
                 *latest_output = None;
             }
-            let block = master
-                .render_project_frame_audio(frame, project_plan)
-                .map_err(NativeRealizationError::Audio)?;
-            audio = Some(block);
-            live_audio = master.take_live_audio();
-            override_audio = master.take_override_audio();
+            let mixed = audio_handle
+                .collect_render()
+                .map_err(NativeRealizationError::AudioThread)?;
+            audio = Some(mixed.block);
+            live_audio = mixed.live;
+            override_audio = mixed.overrides;
+            audio_meters = mixed.meters;
+            rendered_audio = mixed.rendered;
             fade_to_black_excluded.clone_from(&frame.fade_to_black_excluded_outputs);
             Ok::<(), NativeRealizationError>(())
         })?;
-        if let Some(meters) = master.take_audio_meters() {
+        if let Some(meters) = audio_meters {
             let sequence = self
                 .audio_meter_sequence
                 .checked_add(1)
@@ -7571,7 +7602,7 @@ impl NativeDaemon {
             let samples = usize::try_from(meters.end_sample - meters.start_sample)
                 .map_err(|_| AppFailure("audio meter interval exceeds memory".into()))?;
             self.monitor_output
-                .push(meters.monitor_planes, samples, meters.sample_rate);
+                .push(&meters.monitor_planes, samples, meters.sample_rate);
             let output = self.monitor_output.state();
             self.pending_audio_meters = Some(audio_meters_message(
                 server,
@@ -7673,9 +7704,8 @@ impl NativeDaemon {
         // and its own audio of this frame.
         if let (Some(replay), Some((frame, _))) = (&mut self.replay, monitor_frame) {
             let latest = self.playback.latest_frames();
-            let master = &self.master;
             replay.record(control, frame, &|input| latest.get(input), &|input| {
-                master.rendered_input_audio(input)
+                rendered_audio.get(&input).cloned()
             });
         }
         // Highlight reel exports (OR-013) take their frames from the engine
@@ -7846,7 +7876,7 @@ impl NativeDaemon {
     }
 
     fn observe_native_telemetry(&mut self) {
-        self.telemetry.observe_audio(&self.master);
+        self.telemetry.observe_audio(self.audio.snapshot());
         #[cfg(target_os = "macos")]
         if !self.camera_telemetry_frozen {
             self.telemetry.camera = aggregate_camera_telemetry(&self.cameras.source_telemetry());
@@ -8800,6 +8830,26 @@ pub(crate) struct AudioMeterView<'a> {
     dynamics: &'a [(Option<InputId>, fm_audio::DspDynamicsReading)],
     loudness: &'a [(Option<InputId>, fm_audio::LoudnessReading)],
     aux: &'a [fm_audio::ChannelMeter],
+}
+
+#[cfg(feature = "native-media")]
+impl<'a> From<&'a native_audio_realizer::OwnedAudioMeters> for AudioMeterView<'a> {
+    fn from(meters: &'a native_audio_realizer::OwnedAudioMeters) -> Self {
+        Self {
+            frame: meters.frame,
+            start_sample: meters.start_sample,
+            end_sample: meters.end_sample,
+            channels: meters.channels,
+            master: &meters.master,
+            inputs: &meters.inputs,
+            input_meters: &meters.input_meters,
+            monitor: &meters.monitor,
+            monitor_solo: meters.monitor_solo,
+            dynamics: &meters.dynamics,
+            loudness: &meters.loudness,
+            aux: &meters.aux,
+        }
+    }
 }
 
 #[cfg(feature = "native-media")]

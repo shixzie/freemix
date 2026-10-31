@@ -295,6 +295,21 @@ per week of work; items 1 and 2 land before any new feature breadth.
    realizer thread will consume. The native display, Preview-tap,
    transition, and pacing suites stay green.
 
+   **Second stage (landed).** The audio mixer now runs on its own thread:
+   `native_audio_realizer::NativeAudioHandle` owns the `NativeMasterRuntime`
+   (mixer, decode workers, plugin racks, meters, stinger playback) behind one
+   bounded, ordered channel for pushed live audio, the pre-frame coverage
+   wait, catalogue and Stinger-audio commands, and one outstanding render
+   reply. A frame applies its strip and mixer updates to the plan, submits
+   the audio job, composes video on the control thread, then collects the
+   block, live/override audio, owned meters, replay angles' rendered audio,
+   and counters. The control thread reads the mixer's retention and sink
+   counters from a shared snapshot instead of touching the mixer. Native
+   pacing, transitions, audio-only media, strip DSP, replay, and display
+   suites stay green on the M5 and the startup pacing gate passes on the
+   Linux `llvmpipe` sandbox. The frame and plan are cloned per job for now;
+   moving them behind an `Arc` is part of the GPU/plan stage.
+
    **Split plan.** The bounded channel carries a `NativeFrameJob` (the
    engine's `FrameResult`, which is plain data, plus the plan deltas the
    media side applies) to a `NativeRealizer` thread that owns `runtime`
