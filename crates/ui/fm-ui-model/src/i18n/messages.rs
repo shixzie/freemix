@@ -3945,6 +3945,8 @@ messages! {
     HealthRuleClearsAtHover => t("The reading past which a firing alert clears; it must lie on the far side of the firing reading, so the alert does not flap"),
     HealthRuleHold => t("Holds for"),
     HealthRuleHoldHover => t("How long the firing reading must hold before the rule fires"),
+    HealthRuleSeverity => t("Severity"),
+    HealthRuleSeverityHover => t("How urgent this rule's notifications are"),
     HealthRuleUseDefaults => t("Use defaults"),
     HealthRuleUseDefaultsHover => t("Give this rule its default thresholds and hold again and evaluate it"),
     HealthRuleReasonDefault => t("this rule already uses its defaults"),

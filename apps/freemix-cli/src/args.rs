@@ -7208,6 +7208,7 @@ fn parse_remote_alert(mut arguments: impl Iterator<Item = String>) -> Result<Com
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AlertRuleEdit {
     pub enabled: Option<bool>,
+    pub severity: Option<fm_protocol::AlertSeverity>,
     pub trigger_milli: Option<i64>,
     pub clear_milli: Option<i64>,
     pub hold_ms: Option<u32>,
@@ -7224,6 +7225,7 @@ impl AlertRuleEdit {
         }
         fm_protocol::AlertRuleSetting {
             enabled: self.enabled.unwrap_or(current.enabled),
+            severity: self.severity.unwrap_or(current.severity),
             trigger_milli: self.trigger_milli.unwrap_or(current.trigger_milli),
             clear_milli: self.clear_milli.unwrap_or(current.clear_milli),
             hold_ms: self.hold_ms.unwrap_or(current.hold_ms),
@@ -7241,9 +7243,9 @@ fn threshold(field: &'static str, value: String) -> Result<f64, ArgsError> {
         .ok_or(ArgsError::InvalidChoice { field, value })
 }
 
-/// `remote-alert-rule <address> <rule> [--on|--off] [--fires-at <value>]
-/// [--clears-at <value>] [--hold <seconds>] | --defaults [--key <key>]
-/// [--expect <revision>]` (RC-015, Protocol 2.112).
+/// `remote-alert-rule <address> <rule> [--on|--off] [--severity <severity>]
+/// [--fires-at <value>] [--clears-at <value>] [--hold <seconds>] | --defaults
+/// [--key <key>] [--expect <revision>]` (RC-015, Protocol 2.142).
 fn parse_remote_alert_rule(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<Command, ArgsError> {
@@ -7275,6 +7277,15 @@ fn parse_remote_alert_rule(
                     required(&mut arguments, "alert threshold")?,
                 )?;
                 edit.trigger_milli = Some(rule.reading().milli(shown));
+            }
+            "--severity" => {
+                let value = required(&mut arguments, "alert severity")?;
+                edit.severity = Some(fm_protocol::AlertSeverity::from_token(&value).ok_or(
+                    ArgsError::InvalidChoice {
+                        field: "alert severity",
+                        value,
+                    },
+                )?);
             }
             "--clears-at" => {
                 let shown = threshold(
@@ -7314,13 +7325,14 @@ fn parse_remote_alert_rule(
         }
     }
     let changes = edit.enabled.is_some()
+        || edit.severity.is_some()
         || edit.trigger_milli.is_some()
         || edit.clear_milli.is_some()
         || edit.hold_ms.is_some();
     if edit.defaults && changes {
         return Err(ArgsError::ConflictingOptions {
             option: "--defaults",
-            conflicts: "--on, --off, --fires-at, --clears-at, and --hold",
+            conflicts: "--on, --off, --severity, --fires-at, --clears-at, and --hold",
         });
     }
     if !edit.defaults && !changes {

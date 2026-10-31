@@ -4,10 +4,9 @@
 //! once-a-second statistics. Each rule compares one reading against a
 //! trigger threshold, held for a time before it fires, and clears past a
 //! clear threshold on the far side of a hysteresis band. A show may change
-//! any rule's thresholds and hold, or switch it off, with an
-//! [`AlertRuleSetting`] (schema 85); a rule without one uses its
-//! [`AlertRuleDefaults`]. A rule's severity and the reading it watches are
-//! fixed.
+//! any rule's thresholds and hold, its severity, or switch it off, with an
+//! [`AlertRuleSetting`] (schema 99); a rule without one uses its
+//! [`AlertRuleDefaults`]. The reading a rule watches is fixed.
 //!
 //! Thresholds are the reading times 1000 (a "milli" value), as alert
 //! readings are on the wire: a share of `0.9` is `900`, one dropped picture
@@ -102,20 +101,23 @@ impl HealthAlertRule {
         !matches!(self, Self::DiskLow)
     }
 
-    /// The rule's thresholds and hold when the show sets none.
+    /// The rule's severity, thresholds, and hold when the show sets none.
     #[must_use]
     pub const fn defaults(self) -> AlertRuleDefaults {
-        let (trigger_milli, clear_milli, hold_ms) = match self {
-            Self::CpuSaturated => (900, 750, 10_000),
-            Self::DiskLow => (GIB_MILLI, 2 * GIB_MILLI, 0),
-            Self::FrameLate => (250, 50, 5_000),
-            Self::FramesDropped => (1_000, 0, 3_000),
-            Self::GpuSaturated => (900, 700, 5_000),
-            Self::OutputFailed => (1_000, 0, 0),
-            Self::EncoderSaturated => (900, 600, 5_000),
-            Self::StreamReconnecting | Self::SyncDegraded => (1_000, 0, 10_000),
+        let (severity, trigger_milli, clear_milli, hold_ms) = match self {
+            Self::CpuSaturated => (AlertSeverity::Warning, 900, 750, 10_000),
+            Self::DiskLow => (AlertSeverity::Critical, GIB_MILLI, 2 * GIB_MILLI, 0),
+            Self::FrameLate => (AlertSeverity::Warning, 250, 50, 5_000),
+            Self::FramesDropped => (AlertSeverity::Warning, 1_000, 0, 3_000),
+            Self::GpuSaturated => (AlertSeverity::Warning, 900, 700, 5_000),
+            Self::OutputFailed => (AlertSeverity::Critical, 1_000, 0, 0),
+            Self::EncoderSaturated => (AlertSeverity::Warning, 900, 600, 5_000),
+            Self::StreamReconnecting | Self::SyncDegraded => {
+                (AlertSeverity::Warning, 1_000, 0, 10_000)
+            }
         };
         AlertRuleDefaults {
+            severity,
             trigger_milli,
             clear_milli,
             hold_ms,
@@ -136,6 +138,49 @@ impl HealthAlertRule {
 
 const MIB_MILLI: i64 = 1024 * 1024 * 1000;
 const GIB_MILLI: i64 = 1024 * MIB_MILLI;
+
+/// How urgent an alert rule's notifications are.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum AlertSeverity {
+    Info,
+    Warning,
+    Critical,
+}
+
+impl AlertSeverity {
+    /// Every severity, least urgent first, which is also the wire order.
+    pub const ALL: [Self; 3] = [Self::Info, Self::Warning, Self::Critical];
+
+    /// The wire token.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Critical => "critical",
+        }
+    }
+
+    /// The wire token, for logs and support text.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        self.token()
+    }
+
+    /// Parses [`Self::token`].
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|severity| severity.token() == token)
+    }
+}
+
+impl fmt::Display for AlertSeverity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.token())
+    }
+}
 
 /// Longest hold a rule takes before it fires: one hour.
 pub const MAX_ALERT_HOLD_MS: u32 = 3_600_000;
@@ -195,9 +240,10 @@ impl AlertReading {
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
-/// A rule's thresholds and hold when the show sets none.
+/// A rule's severity, thresholds, and hold when the show sets none.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct AlertRuleDefaults {
+    pub severity: AlertSeverity,
     pub trigger_milli: i64,
     pub clear_milli: i64,
     pub hold_ms: u32,
@@ -209,6 +255,8 @@ pub struct AlertRuleSetting {
     pub rule: HealthAlertRule,
     /// `false` switches the rule off: it never fires.
     pub enabled: bool,
+    /// How urgent the rule's notifications are.
+    pub severity: AlertSeverity,
     /// The reading (times 1000) at which the rule starts to fire.
     pub trigger_milli: i64,
     /// The reading (times 1000) past which a firing rule clears, on the far
@@ -226,6 +274,7 @@ impl AlertRuleSetting {
         Self {
             rule,
             enabled: true,
+            severity: defaults.severity,
             trigger_milli: defaults.trigger_milli,
             clear_milli: defaults.clear_milli,
             hold_ms: defaults.hold_ms,
@@ -364,6 +413,17 @@ mod tests {
             ..cpu
         };
         assert_eq!(stricter.check(), Ok(()));
+        // Changing only the severity is a valid, non-default setting.
+        let louder = AlertRuleSetting {
+            severity: AlertSeverity::Critical,
+            ..cpu
+        };
+        assert_eq!(louder.check(), Ok(()));
+        assert!(!louder.is_default());
+        for severity in AlertSeverity::ALL {
+            assert_eq!(AlertSeverity::from_token(severity.token()), Some(severity));
+        }
+        assert_eq!(AlertSeverity::from_token("fatal"), None);
         // Above-firing rules clear below the trigger, disk_low above it.
         assert_eq!(
             AlertRuleSetting {

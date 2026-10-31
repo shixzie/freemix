@@ -133,15 +133,19 @@ fn alert_rule_settings_round_trip_exactly_and_strictly() {
     save(&store, expected.clone());
     assert_eq!(store.load().unwrap().project(), &expected);
     let text = fs::read_to_string(&manifest).unwrap();
-    let rules = "\"alert_rules\": [{\"rule\": \"cpu_saturated\", \"enabled\": true, \"trigger\": \
-                 800, \"clear\": 600, \"hold_ms\": 5000}, {\"rule\": \"output_failed\", \
-                 \"enabled\": false, \"trigger\": 1000, \"clear\": 0, \"hold_ms\": 0}]";
+    let rules = "\"alert_rules\": [{\"rule\": \"cpu_saturated\", \"enabled\": true, \"severity\": \
+                 \"warning\", \"trigger\": 800, \"clear\": 600, \"hold_ms\": 5000}, \
+                 {\"rule\": \"output_failed\", \"enabled\": false, \"severity\": \"critical\", \
+                 \"trigger\": 1000, \"clear\": 0, \"hold_ms\": 0}]";
     assert!(text.contains(rules), "{text}");
 
     for (from, to) in [
         // Syntax: every field is required, nothing else is accepted, and
-        // the rule must be known.
-        ("\"hold_ms\": 5000", "\"hold_ms\": 5000, \"severity\": 1"),
+        // the rule and severity must be known.
+        ("\"severity\": \"warning\"", "\"severity\": 1"),
+        ("\"severity\": \"warning\"", "\"severity\": \"fatal\""),
+        (", \"severity\": \"warning\"", ""),
+        ("\"hold_ms\": 5000", "\"hold_ms\": 5000, \"silenced\": true"),
         (", \"clear\": 600", ""),
         ("\"cpu_saturated\"", "\"disk_full\""),
         // Validation: out of range, no band, too long a hold, a repeated
@@ -151,8 +155,8 @@ fn alert_rule_settings_round_trip_exactly_and_strictly() {
         ("\"hold_ms\": 5000", "\"hold_ms\": 3600001"),
         ("\"output_failed\"", "\"cpu_saturated\""),
         (
-            "\"enabled\": false, \"trigger\": 1000",
-            "\"enabled\": true, \"trigger\": 1000",
+            "\"enabled\": false, \"severity\": \"critical\", \"trigger\": 1000",
+            "\"enabled\": true, \"severity\": \"critical\", \"trigger\": 1000",
         ),
     ] {
         assert!(text.contains(from), "{from}");

@@ -149,8 +149,8 @@ pub use fm_command::{
     ScriptFailureKind,
 };
 pub use health::{
-    AlertReading, AlertRuleDefaults, AlertRuleError, AlertRuleSetting, MAX_ALERT_HOLD_MS,
-    check_alert_rule_settings, effective_alert_rule,
+    AlertReading, AlertRuleDefaults, AlertRuleError, AlertRuleSetting, AlertSeverity,
+    MAX_ALERT_HOLD_MS, check_alert_rule_settings, effective_alert_rule,
 };
 pub use health::{
     DaemonHealth, HealthAlert, HealthAlertAction, HealthAlertRequest, HealthAlertRule,

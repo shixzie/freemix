@@ -15,10 +15,10 @@
 //! undoable `alert_rule_set` project edit, sent when the field is let go;
 //! the fields need project-edit authority and follow the project padlock.
 
-use egui::{Button, Checkbox, DragValue, Id, RichText, Ui};
+use egui::{Button, Checkbox, ComboBox, DragValue, Id, RichText, Ui};
 use fm_protocol::{
-    AlertReading, AlertRuleSetting, DaemonHealth, HealthAlertAction, HealthAlertRule,
-    MAX_ALERT_HOLD_MS,
+    AlertReading, AlertRuleSetting, AlertSeverity, DaemonHealth, HealthAlertAction,
+    HealthAlertRule, MAX_ALERT_HOLD_MS,
 };
 
 use crate::daemon_health_ui::{alert_text, rule_word};
@@ -156,6 +156,15 @@ enum Field {
     Hold,
 }
 
+/// The localized name of one alert severity.
+fn severity_label(severity: AlertSeverity) -> Msg {
+    match severity {
+        AlertSeverity::Info => Msg::AlertSeverityInfo,
+        AlertSeverity::Warning => Msg::AlertSeverityWarning,
+        AlertSeverity::Critical => Msg::AlertSeverityCritical,
+    }
+}
+
 /// The rule's setting: whether it is evaluated, its thresholds and hold,
 /// and the key back to its defaults.
 fn draw_setting(
@@ -189,6 +198,28 @@ fn draw_setting(
             .changed()
         {
             send(AlertRuleSetting { enabled, ..setting }, ui);
+        }
+        ui.label(RichText::new(l.text(Msg::HealthRuleSeverity)).color(muted_color()))
+            .on_hover_text(l.text(Msg::HealthRuleSeverityHover));
+        let mut severity = setting.severity;
+        let picker = ComboBox::from_id_salt(("studio-alert-rule-severity", rule))
+            .selected_text(l.text(severity_label(severity)))
+            .show_ui(ui, |ui| {
+                for choice in AlertSeverity::ALL {
+                    ui.selectable_value(&mut severity, choice, l.text(severity_label(choice)));
+                }
+            });
+        picker
+            .response
+            .on_hover_text(l.text(Msg::HealthRuleSeverityHover));
+        if severity != setting.severity {
+            send(
+                AlertRuleSetting {
+                    severity,
+                    ..setting
+                },
+                ui,
+            );
         }
         for (field, label, hover) in [
             (

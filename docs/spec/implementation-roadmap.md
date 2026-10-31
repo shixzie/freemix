@@ -272,8 +272,8 @@ both daemons with CPU and GPU-proxy utilization, default alert rules, and a
 `health_status` view in Studio and `remote-diagnostics` (`RC-015`), and
 operators acknowledge and silence alerts (Protocol 2.109) from Studio, the
 CLI, and the Web operator page, which shows the daemon's health too
-(Protocol 2.110), and a show sets each rule's thresholds and hold or
-switches it off (Protocol 2.112, schema 85). Native daemons now group commit the
+(Protocol 2.110), and a show sets each rule's thresholds, hold, and severity or
+switches it off (Protocol 2.142, schema 99). Native daemons now group commit the
 commands queued at a command turn (see Native group commit below), but the
 group's disk sync still runs in front of its frame.
 
@@ -3883,8 +3883,8 @@ checked under Node.js against the Rust codec, and a gateway test where an
 Operator page silences and unsilences a rule while a Viewer page is
 refused). Protocol 2.112 (schema 85) lets a show set its own rules: an
 undoable `alert_rule_set` project edit (needing `edit_project`) changes one
-rule's trigger, clear threshold, and hold or switches it off, the project
-keeps only rules that differ from their defaults, the snapshot and an
+rule's trigger, clear threshold, hold, or severity or switches it off, the
+project keeps only rules that differ from their defaults, the snapshot and an
 `alert_rules_changed` event carry them, and both daemons restart only the
 changed rules from their next statistics sample. Studio's Health alerts
 window edits them under each rule in natural units, and `freemix-cli`
@@ -3894,8 +3894,8 @@ Remaining
 gaps: no input-health or
 hardware-encoder session sampling, and the simulated daemon has no network,
 sync, or encoder readings (an unsupported reading stays unknown rather than
-zero); a show changes each rule's thresholds, hold, and switch but not its
-severity or the reading it watches, and cannot add rules; the CPU reading
+zero); a show changes each rule's thresholds, hold, severity, and switch but
+not the reading it watches, and cannot add rules; the CPU reading
 excludes child encoders and the GPU reading is a compositor-pass proxy. The
 Web operator page now lists the daemon's recent health notifications
 (firing, resolved, and reminder) with rule, severity, and age. `RC-015`

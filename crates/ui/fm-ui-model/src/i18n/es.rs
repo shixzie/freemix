@@ -11208,6 +11208,11 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::HealthRuleHoldHover,
         t("Cuánto debe mantenerse la lectura de activación antes de que la regla se active"),
     ),
+    (Msg::HealthRuleSeverity, t("Gravedad")),
+    (
+        Msg::HealthRuleSeverityHover,
+        t("La urgencia de las notificaciones de esta regla"),
+    ),
     (Msg::HealthRuleUseDefaults, t("Usar valores por defecto")),
     (
         Msg::HealthRuleUseDefaultsHover,

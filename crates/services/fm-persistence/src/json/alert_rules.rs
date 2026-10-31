@@ -1,10 +1,10 @@
 //! A show's health alert rule settings in `project.json` (RC-015,
-//! schema 85).
+//! schema 99).
 //!
 //! ```text
 //! "alert_rules": [
-//!   {"rule": "cpu_saturated", "enabled": true, "trigger": 800, "clear": 600, "hold_ms": 5000},
-//!   {"rule": "output_failed", "enabled": false, "trigger": 1000, "clear": 0, "hold_ms": 0}
+//!   {"rule": "cpu_saturated", "enabled": true, "severity": "critical", "trigger": 800, "clear": 600, "hold_ms": 5000},
+//!   {"rule": "output_failed", "enabled": false, "severity": "critical", "trigger": 1000, "clear": 0, "hold_ms": 0}
 //! ]
 //! ```
 //!
@@ -33,9 +33,10 @@ pub(crate) fn write_alert_rules(output: &mut String, project: &fm_model::Project
         }
         write!(
             output,
-            "{{\"rule\": \"{}\", \"enabled\": {}, \"trigger\": {}, \"clear\": {}, \"hold_ms\": {}}}",
+            "{{\"rule\": \"{}\", \"enabled\": {}, \"severity\": \"{}\", \"trigger\": {}, \"clear\": {}, \"hold_ms\": {}}}",
             setting.rule.token(),
             setting.enabled,
+            setting.severity.token(),
             setting.trigger_milli,
             setting.clear_milli,
             setting.hold_ms
@@ -60,6 +61,9 @@ fn parse_setting(value: Value) -> Result<AlertRuleSetting, DecodeError> {
     let rule = HealthAlertRule::from_token(&token)
         .ok_or_else(|| syntax(format!("alert rule {token:?} is unknown")))?;
     let enabled = setting.boolean("enabled")?;
+    let severity_token = setting.string("severity")?;
+    let severity = fm_types::alert_rules::AlertSeverity::from_token(&severity_token)
+        .ok_or_else(|| syntax(format!("alert rule severity {severity_token:?} is unknown")))?;
     let trigger_milli = setting.i64("trigger")?;
     let clear_milli = setting.i64("clear")?;
     let hold_ms = setting.u32("hold_ms")?;
@@ -67,6 +71,7 @@ fn parse_setting(value: Value) -> Result<AlertRuleSetting, DecodeError> {
     Ok(AlertRuleSetting {
         rule,
         enabled,
+        severity,
         trigger_milli,
         clear_milli,
         hold_ms,

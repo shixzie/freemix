@@ -68,23 +68,10 @@ impl fmt::Display for RuleId {
 }
 
 /// Alert importance, ordered from least to most severe.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum AlertSeverity {
-    Info,
-    Warning,
-    Critical,
-}
-
-impl AlertSeverity {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Info => "info",
-            Self::Warning => "warning",
-            Self::Critical => "critical",
-        }
-    }
-}
+///
+/// The show's alert rule settings use the same type, so an operator-chosen
+/// severity reaches the rule engine unchanged.
+pub use fm_types::alert_rules::AlertSeverity;
 
 /// Scalar a rule reads from its series.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

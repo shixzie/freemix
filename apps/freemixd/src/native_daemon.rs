@@ -103,7 +103,7 @@ pub(crate) struct NativeDaemon {
     /// query.
     pub(crate) recorder_free: [Option<u64>; RECORDER_SLOTS],
     /// Latest estimated seconds of recording left for each slot, from its
-    /// free space and configured bitrate (2.141); `None` for a slot with no
+    /// free space and configured bitrate (2.142); `None` for a slot with no
     /// output, no known rate, or a failed query.
     pub(crate) recorder_remaining: [Option<u64>; RECORDER_SLOTS],
     /// When the last disk sample was attempted; `None` makes the first sample

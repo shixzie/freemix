@@ -165,7 +165,6 @@ pub struct DefaultRule {
     /// The rule ID, which is also its wire token.
     pub id: &'static str,
     pub metric: &'static str,
-    pub severity: AlertSeverity,
     /// `true` for a per-second rate of the metric, `false` for its value.
     pub rate: bool,
     pub direction: ThresholdDirection,
@@ -180,7 +179,6 @@ pub const DEFAULT_RULES: [DefaultRule; 9] = [
     DefaultRule {
         id: "cpu_saturated",
         metric: names::CPU_UTILIZATION,
-        severity: AlertSeverity::Warning,
         rate: false,
         direction: ThresholdDirection::Above,
     },
@@ -189,7 +187,6 @@ pub const DEFAULT_RULES: [DefaultRule; 9] = [
     DefaultRule {
         id: "disk_low",
         metric: names::DISK_FREE_BYTES,
-        severity: AlertSeverity::Critical,
         rate: false,
         direction: ThresholdDirection::Below,
     },
@@ -198,7 +195,6 @@ pub const DEFAULT_RULES: [DefaultRule; 9] = [
     DefaultRule {
         id: "frame_late",
         metric: names::FRAME_LATE_RATIO,
-        severity: AlertSeverity::Warning,
         rate: false,
         direction: ThresholdDirection::Above,
     },
@@ -206,7 +202,6 @@ pub const DEFAULT_RULES: [DefaultRule; 9] = [
     DefaultRule {
         id: "frames_dropped",
         metric: names::FRAMES_DROPPED,
-        severity: AlertSeverity::Warning,
         rate: true,
         direction: ThresholdDirection::Above,
     },
@@ -214,7 +209,6 @@ pub const DEFAULT_RULES: [DefaultRule; 9] = [
     DefaultRule {
         id: "gpu_saturated",
         metric: names::GPU_UTILIZATION,
-        severity: AlertSeverity::Warning,
         rate: false,
         direction: ThresholdDirection::Above,
     },
@@ -222,7 +216,6 @@ pub const DEFAULT_RULES: [DefaultRule; 9] = [
     DefaultRule {
         id: "output_failed",
         metric: names::OUTPUTS_FAILED,
-        severity: AlertSeverity::Critical,
         rate: false,
         direction: ThresholdDirection::Above,
     },
@@ -230,7 +223,6 @@ pub const DEFAULT_RULES: [DefaultRule; 9] = [
     DefaultRule {
         id: "encoder_saturated",
         metric: names::ENCODER_QUEUE_UTILIZATION,
-        severity: AlertSeverity::Warning,
         rate: false,
         direction: ThresholdDirection::Above,
     },
@@ -238,7 +230,6 @@ pub const DEFAULT_RULES: [DefaultRule; 9] = [
     DefaultRule {
         id: "stream_reconnecting",
         metric: names::NETWORK_RECONNECTING_TARGETS,
-        severity: AlertSeverity::Warning,
         rate: false,
         direction: ThresholdDirection::Above,
     },
@@ -246,7 +237,6 @@ pub const DEFAULT_RULES: [DefaultRule; 9] = [
     DefaultRule {
         id: "sync_degraded",
         metric: names::SYNC_DEGRADED_SOURCES,
-        severity: AlertSeverity::Warning,
         rate: false,
         direction: ThresholdDirection::Above,
     },
@@ -315,7 +305,7 @@ fn alert_rule(rule: &DefaultRule, setting: AlertRuleSetting) -> AlertRule {
     };
     AlertRule::new(
         RuleId::new(rule.id).expect("default rule IDs keep the grammar"),
-        rule.severity,
+        setting.severity,
         SeriesKey::new(metric(rule.metric), LabelSet::new()),
         RuleReading::Value,
         condition,
