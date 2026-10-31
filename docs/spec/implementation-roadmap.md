@@ -3444,9 +3444,9 @@ Remaining gaps:
 - The simulated daemon reports every stream idle.
 - `ffmpeg` is required at runtime. Without it the input stays reconnecting
   with "ffmpeg unavailable".
-- Audio is delivered as stereo: up to eight source channels are downmixed or
-  one stereo pair is picked, but no multichannel stream audio reaches the
-  mixer.
+- Stream audio is decoded to the project's channel layout (up to sixteen
+  channels), but one source's layout is still chosen by `ffmpeg`'s `-ac`
+  downmix/upmix rather than mapped from the source labels.
 - A stream found without audio is treated as video-only until its input
   reopens.
 - The decoded-byte cap (256 MiB) can shorten the jitter target at large

@@ -219,6 +219,8 @@ pub(crate) struct NativeNetworkStreams {
     clock_domain: ClockDomainId,
     dimensions: (u32, u32),
     sample_rate: SampleRate,
+    /// The project's audio channel count; stream audio is decoded to it.
+    channels: u16,
     /// The engine frame last pulled for.
     last_frame: Option<u64>,
 }
@@ -231,6 +233,7 @@ impl NativeNetworkStreams {
         clock_domain: ClockDomainId,
         dimensions: (u32, u32),
         sample_rate: SampleRate,
+        channels: u16,
     ) -> Self {
         let mut streams = Self {
             streams: BTreeMap::new(),
@@ -238,6 +241,7 @@ impl NativeNetworkStreams {
             clock_domain,
             dimensions,
             sample_rate,
+            channels,
             last_frame: None,
         };
         for NetworkStreamInput {
@@ -271,7 +275,7 @@ impl NativeNetworkStreams {
             self.rate,
         );
         config.sample_rate = self.sample_rate.hertz();
-        config.channels = 2;
+        config.channels = self.channels;
         // A new receiver reports (and logs its URL) afresh.
         stream.reported = None;
         let started = if omt_authority(&stream.config.url).is_some() {
@@ -676,6 +680,7 @@ mod tests {
             ClockDomainId::new(NonZeroU128::new(1).unwrap()),
             (32, 18),
             SampleRate::new(48_000).unwrap(),
+            2,
         )
     }
 
@@ -753,6 +758,7 @@ mod tests {
             ClockDomainId::new(NonZeroU128::new(1).unwrap()),
             (2, 2),
             SampleRate::new(48_000).unwrap(),
+            2,
         );
         let deadline = Instant::now() + Duration::from_secs(5);
         while (sender.subscribers(fm_io_omt::FrameKind::Video) == 0

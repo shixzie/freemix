@@ -268,6 +268,7 @@ pub(crate) fn start_native_network_streams(
         native_clock_domain(),
         (dimensions.width(), dimensions.height()),
         settings.audio.sample_rate,
+        u16::try_from(settings.audio.channels.channels().len()).unwrap_or(2),
     )
 }
 
