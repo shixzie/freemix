@@ -704,7 +704,7 @@ fn title_design_check_validates_a_designer_document() {
 /// A `.fmtitle` source document with two fields and no font: a number and a
 /// color.
 const ROW_TITLE_SOURCE: &str = r##"{
-  "schema_version": 105,
+  "schema_version": 106,
   "template": {
     "id": 7,
     "name": "Score bar",
