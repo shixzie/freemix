@@ -162,9 +162,10 @@ there come before any new breadth below.
     event's ends, with the rate and shuttling state on the wire (Protocol
     2.131) and `remote-replay-do shuttle`; a player also jogs frame by frame
     (Protocol 2.114) and a finished replay returns Program to the live
-    source (Protocol 2.116). Console keys now play or pause the Replay
-    player on Preview (else Program), step it a frame each way, and shuttle
-    it at 2x each way, next to the marks and capture keys. Remaining: the
+    source (Protocol 2.116). Studio's Replay panel has 2x shuttle buttons and
+    console keys play or pause the Replay player on Preview (else Program),
+    step it a frame each way, and shuttle it at 2x each way, next to the
+    marks and capture keys. Remaining: the
     recorder takes a source's last
     decoded picture rather than a genlocked one, segment files from a
     previous run are removed rather than reloaded,

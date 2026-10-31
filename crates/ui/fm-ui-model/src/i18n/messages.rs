@@ -3922,6 +3922,8 @@ messages! {
     ReplayAutoReturnFramesHover => t("Frames of the mix back to the live source; 0 cuts"),
     ReplayStepBackHover => t("One frame back, paused"),
     ReplayStepForwardHover => t("One frame on, paused"),
+    ReplayShuttleBackHover => t("Shuttle back at 2x, pausing at the event's first frame"),
+    ReplayShuttleForwardHover => t("Shuttle forward at 2x, pausing at the event's last frame"),
     ReelMusicSection => t("Music bed"),
     ReelMusicPathHover => t("Absolute path of an audio file on the server (WAV, MP3, AAC, FLAC, or Ogg), played under the clips from the reel's first frame"),
     ReelMusicSet => t("SET"),

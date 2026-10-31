@@ -1068,6 +1068,22 @@ fn draw_player(
                 }));
             }
         }
+        // Shuttle: 2x back or forward, pausing at either end (Protocol 2.131).
+        for (rate, label, hover) in [
+            (-2_000, "◀◀", Msg::ReplayShuttleBackHover),
+            (2_000, "▶▶", Msg::ReplayShuttleForwardHover),
+        ] {
+            if ui
+                .add_enabled(cued_reason.is_none(), key_button(label, None, 32.0))
+                .hint(l.text(hover), reason)
+                .clicked()
+            {
+                intents.push(StudioIntent::Replay(ReplayOperation::Shuttle {
+                    input: player.input,
+                    rate_milli: rate,
+                }));
+            }
+        }
         if ui
             .add_enabled(
                 block.is_none(),

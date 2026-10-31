@@ -10955,6 +10955,14 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReplayStepForwardHover,
         t("Un fotograma adelante, en pausa"),
     ),
+    (
+        Msg::ReplayShuttleBackHover,
+        t("Reproducción rápida hacia atrás a 2x, con pausa en el primer fotograma del evento"),
+    ),
+    (
+        Msg::ReplayShuttleForwardHover,
+        t("Reproducción rápida hacia adelante a 2x, con pausa en el último fotograma del evento"),
+    ),
     (Msg::ReelMusicSection, t("Música de fondo")),
     (
         Msg::ReelMusicPathHover,
