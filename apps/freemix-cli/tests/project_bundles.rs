@@ -653,4 +653,20 @@ fn settings_export_and_import_preview_the_project() {
         preview.trim(),
         "settings-import: 0 added, 0 changed, 0 removed; nothing applied"
     );
+    let changed = json.replace(
+        "\"format.audio.channel_count\": {\"integer\": 2}",
+        "\"format.audio.channel_count\": {\"integer\": 3}",
+    );
+    assert_ne!(changed, json);
+    let changed_path = root.path("changed.json");
+    fs::write(&changed_path, changed).unwrap();
+    let preview = assert_success(&run(&["settings-import", text(&show), text(&changed_path)]));
+    assert!(
+        preview.contains("changed format.audio.channel_count"),
+        "{preview}"
+    );
+    assert!(
+        preview.contains("settings-import: 0 added, 1 changed, 0 removed; nothing applied"),
+        "{preview}"
+    );
 }
