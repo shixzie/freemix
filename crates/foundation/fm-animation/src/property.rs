@@ -1,6 +1,6 @@
 //! Animatable properties and how each layers onto a target's static value.
 
-use fm_types::{GARBAGE_MATTE_UNIT, MAX_GARBAGE_MATTE_POINTS};
+use fm_types::{GARBAGE_MATTE_UNIT, MAX_GARBAGE_MATTE_FEATHER, MAX_GARBAGE_MATTE_POINTS};
 
 use crate::value::{Rgba, Value};
 
@@ -73,6 +73,11 @@ pub enum Property {
     MattePoint8X,
     /// The y coordinate of garbage matte point 8.
     MattePoint8Y,
+    /// Whether the garbage matte is inverted: `0` keeps the polygon, `1`
+    /// keeps everything outside it.
+    MatteInvert,
+    /// Pixels the garbage matte's edge softens over to each side.
+    MatteFeather,
 }
 
 /// How an animated value combines with the static value beneath it.
@@ -87,7 +92,7 @@ pub enum Layering {
 }
 
 impl Property {
-    pub const ALL: [Self; 11 + MAX_GARBAGE_MATTE_POINTS * 2] = [
+    pub const ALL: [Self; 13 + MAX_GARBAGE_MATTE_POINTS * 2] = [
         Self::PositionX,
         Self::PositionY,
         Self::ScaleX,
@@ -115,6 +120,8 @@ impl Property {
         Self::MattePoint7Y,
         Self::MattePoint8X,
         Self::MattePoint8Y,
+        Self::MatteInvert,
+        Self::MatteFeather,
     ];
 
     /// Stable id for UI and wire use.
@@ -148,6 +155,8 @@ impl Property {
             Self::MattePoint7Y => "matte-point-7-y",
             Self::MattePoint8X => "matte-point-8-x",
             Self::MattePoint8Y => "matte-point-8-y",
+            Self::MatteInvert => "matte-invert",
+            Self::MatteFeather => "matte-feather",
         }
     }
 
@@ -176,7 +185,9 @@ impl Property {
             | Self::MattePoint7X
             | Self::MattePoint7Y
             | Self::MattePoint8X
-            | Self::MattePoint8Y => Layering::Override,
+            | Self::MattePoint8Y
+            | Self::MatteInvert
+            | Self::MatteFeather => Layering::Override,
             Self::PositionX
             | Self::PositionY
             | Self::Rotation
@@ -211,7 +222,9 @@ impl Property {
             | Self::MattePoint7X
             | Self::MattePoint7Y
             | Self::MattePoint8X
-            | Self::MattePoint8Y => None,
+            | Self::MattePoint8Y
+            | Self::MatteInvert
+            | Self::MatteFeather => None,
             _ => Some(Value::Scalar(0)),
         }
     }
@@ -245,6 +258,8 @@ impl Property {
             | Self::MattePoint7Y
             | Self::MattePoint8X
             | Self::MattePoint8Y => Some((0, GARBAGE_MATTE_UNIT as i64)),
+            Self::MatteInvert => Some((0, 1)),
+            Self::MatteFeather => Some((0, MAX_GARBAGE_MATTE_FEATHER as i64)),
             Self::Color => None,
         }
     }

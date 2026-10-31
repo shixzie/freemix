@@ -311,14 +311,37 @@ fn garbage_matte_points_animate_and_keep_their_feather_and_invert() {
     );
     assert_eq!(posed_matte.feather(), 8);
     assert!(posed_matte.invert());
-    // A track for a point the matte does not have is ignored.
+    // The invert flag and feather animate too.
+    let mut appearance = LayerPose::IDENTITY;
+    appearance.matte_invert = Some(false);
+    appearance.matte_feather = Some(16);
+    let posed = apply_pose(&base, appearance, 1920, 1080);
+    let Some(LayerKey::Chroma(key)) = posed.key else {
+        panic!("the key survives posing");
+    };
+    let posed_matte = key.refinement.garbage_matte.expect("the matte survives");
+    assert!(!posed_matte.invert());
+    assert_eq!(posed_matte.feather(), 16);
+    // A track for a point the matte does not have extends the polygon.
     let mut extra = LayerPose::IDENTITY;
     extra.matte[8] = Some(500);
     let posed = apply_pose(&base, extra, 1920, 1080);
     let Some(LayerKey::Chroma(key)) = posed.key else {
         panic!("the key survives posing");
     };
-    assert_eq!(key.refinement.garbage_matte, Some(matte));
+    let posed_matte = key.refinement.garbage_matte.expect("the matte survives");
+    assert_eq!(
+        posed_matte.points(),
+        &[
+            MattePoint::new(100, 100),
+            MattePoint::new(900, 100),
+            MattePoint::new(900, 900),
+            MattePoint::new(100, 900),
+            MattePoint::new(500, 0),
+        ]
+    );
+    assert!(posed_matte.invert());
+    assert_eq!(posed_matte.feather(), 8);
 }
 
 #[test]

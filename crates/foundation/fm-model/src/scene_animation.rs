@@ -56,7 +56,9 @@ use fm_animation::{
     AnimationPreset, Clip, ClipError, ClipState, Phase, PresetGeometry, Property, Timebase, Value,
     round_half_up,
 };
-use fm_types::{FrameRate, GarbageMatte, MAX_GARBAGE_MATTE_POINTS, MattePoint};
+use fm_types::{
+    FrameRate, GarbageMatte, MAX_GARBAGE_MATTE_FEATHER, MAX_GARBAGE_MATTE_POINTS, MattePoint,
+};
 
 use crate::{CropRect, Layer, LayerAnchor, LayerGeometry, LayerKey, RectMask, Rotation, Scene};
 
@@ -101,7 +103,7 @@ impl fmt::Display for LayerId {
 pub type SceneClip = Clip<LayerId>;
 
 /// Every property a scene layer animates: all but [`Property::Color`].
-pub const SCENE_ANIMATION_PROPERTIES: [Property; 10 + MAX_GARBAGE_MATTE_POINTS * 2] = [
+pub const SCENE_ANIMATION_PROPERTIES: [Property; 12 + MAX_GARBAGE_MATTE_POINTS * 2] = [
     Property::PositionX,
     Property::PositionY,
     Property::ScaleX,
@@ -128,6 +130,8 @@ pub const SCENE_ANIMATION_PROPERTIES: [Property; 10 + MAX_GARBAGE_MATTE_POINTS *
     Property::MattePoint7Y,
     Property::MattePoint8X,
     Property::MattePoint8Y,
+    Property::MatteInvert,
+    Property::MatteFeather,
 ];
 
 /// Whether a scene layer can animate `property`.
@@ -397,6 +401,10 @@ pub struct LayerPose {
     /// x and y per point in normalized `0..=1000` units; `None` keeps the
     /// static coordinate.
     pub matte: [Option<u16>; MAX_GARBAGE_MATTE_POINTS * 2],
+    /// Whether the garbage matte is inverted; `None` keeps the static flag.
+    pub matte_invert: Option<bool>,
+    /// The garbage matte's feather in pixels; `None` keeps the static one.
+    pub matte_feather: Option<u16>,
 }
 
 impl LayerPose {
@@ -409,6 +417,8 @@ impl LayerPose {
         opacity: fm_animation::OPACITY_IDENTITY,
         crop: [0; 4],
         matte: [None; MAX_GARBAGE_MATTE_POINTS * 2],
+        matte_invert: None,
+        matte_feather: None,
     };
 
     /// Samples every scene property of `layer`; [`ClipState::Static`] and
@@ -441,6 +451,13 @@ impl LayerPose {
                 Property::CropTop => pose.crop[1] = scalar.max(0),
                 Property::CropRight => pose.crop[2] = scalar.max(0),
                 Property::CropBottom => pose.crop[3] = scalar.max(0),
+                Property::MatteInvert => pose.matte_invert = Some(scalar != 0),
+                Property::MatteFeather => {
+                    pose.matte_feather = Some(
+                        u16::try_from(scalar.clamp(0, i64::from(MAX_GARBAGE_MATTE_FEATHER)))
+                            .unwrap_or(0),
+                    );
+                }
                 _ => {}
             }
         }
@@ -613,7 +630,12 @@ pub fn pose_layer(
 #[allow(clippy::too_many_lines)] // one pose, applied in drawing order
 pub fn apply_pose(layer: &Layer, pose: LayerPose, source_width: u32, source_height: u32) -> Layer {
     let mut posed = layer.clone();
-    apply_matte_pose(&mut posed, &pose.matte);
+    apply_matte_pose(
+        &mut posed,
+        &pose.matte,
+        pose.matte_invert,
+        pose.matte_feather,
+    );
     let hidden = |mut layer: Layer| {
         layer.enabled = false;
         layer
@@ -730,10 +752,15 @@ pub fn apply_pose(layer: &Layer, pose: LayerPose, source_width: u32, source_heig
 }
 
 /// Replaces the coordinates `matte` names on `layer`'s garbage matte,
-/// keeping its invert flag and feather. A layer without a matte, a track for
-/// a point past the matte's count, or a pose that would flatten the polygon
-/// keeps the static matte.
-fn apply_matte_pose(layer: &mut Layer, matte: &[Option<u16>; MAX_GARBAGE_MATTE_POINTS * 2]) {
+/// extends it with points the animation adds, and applies the animated
+/// invert flag and feather. A layer without a matte, or a pose that would
+/// flatten the polygon, keeps the static matte.
+fn apply_matte_pose(
+    layer: &mut Layer,
+    matte: &[Option<u16>; MAX_GARBAGE_MATTE_POINTS * 2],
+    matte_invert: Option<bool>,
+    matte_feather: Option<u16>,
+) {
     let Some(key) = &mut layer.key else {
         return;
     };
@@ -745,25 +772,37 @@ fn apply_matte_pose(layer: &mut Layer, matte: &[Option<u16>; MAX_GARBAGE_MATTE_P
     let Some(static_matte) = refinement.garbage_matte else {
         return;
     };
+    let static_len = static_matte.points().len();
+    // Animation may extend the polygon up to the highest point it tracks.
+    let highest = matte
+        .iter()
+        .rposition(Option::is_some)
+        .map_or(0, |index| index / 2 + 1);
+    let len = static_len.max(highest);
     let mut points = [MattePoint::default(); MAX_GARBAGE_MATTE_POINTS];
-    let len = static_matte.points().len();
-    points[..len].copy_from_slice(static_matte.points());
-    let mut changed = false;
+    points[..static_len].copy_from_slice(static_matte.points());
+    let mut changed = matte_invert.is_some() || matte_feather.is_some() || highest > static_len;
     for (index, coordinate) in matte.iter().enumerate() {
         let Some(coordinate) = *coordinate else {
             continue;
         };
-        let Some(point) = points.get_mut(index / 2) else {
-            continue;
-        };
-        if index % 2 == 0 {
-            point.x = coordinate;
-        } else {
-            point.y = coordinate;
+        if let Some(point) = points.get_mut(index / 2) {
+            if index % 2 == 0 {
+                point.x = coordinate;
+            } else {
+                point.y = coordinate;
+            }
+            changed = true;
         }
-        changed = true;
     }
-    if changed && let Ok(rebuilt) = GarbageMatte::new(&points[..len], static_matte.invert()) {
-        refinement.garbage_matte = rebuilt.with_feather(static_matte.feather()).ok();
+    if !changed {
+        return;
+    }
+    let invert = matte_invert.unwrap_or_else(|| static_matte.invert());
+    let feather = matte_feather
+        .and_then(|feather| u8::try_from(feather).ok())
+        .unwrap_or_else(|| static_matte.feather());
+    if let Ok(rebuilt) = GarbageMatte::new(&points[..len], invert) {
+        refinement.garbage_matte = rebuilt.with_feather(feather).ok();
     }
 }

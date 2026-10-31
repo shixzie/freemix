@@ -85,6 +85,8 @@ pub const fn property_name(property: Property) -> &'static str {
         Property::MattePoint7Y => "matte_point_7_y",
         Property::MattePoint8X => "matte_point_8_x",
         Property::MattePoint8Y => "matte_point_8_y",
+        Property::MatteInvert => "matte_invert",
+        Property::MatteFeather => "matte_feather",
     }
 }
 

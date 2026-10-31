@@ -332,7 +332,9 @@ impl ElementAnimation {
                 | Property::MattePoint7X
                 | Property::MattePoint7Y
                 | Property::MattePoint8X
-                | Property::MattePoint8Y => {}
+                | Property::MattePoint8Y
+                | Property::MatteInvert
+                | Property::MatteFeather => {}
             }
         }
         sampled
