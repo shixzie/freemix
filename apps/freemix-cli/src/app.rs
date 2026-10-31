@@ -1008,6 +1008,7 @@ pub fn run(command: Command) -> AppResult<()> {
         Command::AssetAudit { path } => audit_assets(&path)?,
         Command::SettingsExport { path, output } => settings_export(&path, &output)?,
         Command::SettingsImport { path, input } => settings_import(&path, &input)?,
+        Command::TitleDesignCheck { path } => title_design_check(&path)?,
         Command::AudioStrip {
             path,
             input,
@@ -6034,6 +6035,20 @@ fn settings_import(path: &Path, input: &Path) -> AppResult<()> {
     Ok(())
 }
 
+fn title_design_check(path: &Path) -> AppResult<()> {
+    let design = fm_persistence::read_title_design_file(path)
+        .map_err(|error| AppFailure(format!("title design: {error}")))?;
+    println!(
+        "title-design: id={} name={} nodes={} roots={} fields={}",
+        design.id(),
+        design.name(),
+        design.node_count(),
+        design.roots().len(),
+        design.fields().len(),
+    );
+    Ok(())
+}
+
 fn recover_journal(path: &Path) -> AppResult<()> {
     let store = ProjectStore::new(path)?;
     let scan = store.scan_journal()?;
@@ -7021,6 +7036,7 @@ Usage:
   freemix-cli asset-audit <show.freemix>
   freemix-cli settings-export <show.freemix> <settings.json>
   freemix-cli settings-import <show.freemix> <settings.json>
+  freemix-cli title-design-check <design.fmdesign>
   freemix-cli audio-strip <show.freemix> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp:-10000..=10000>]
   freemix-cli audio-label <show.freemix> <input> <label (empty clears)> [--key <key>] [--expect <revision>]
   freemix-cli audio-group <show.freemix> <input> <1..4|none> [--key <key>] [--expect <revision>]

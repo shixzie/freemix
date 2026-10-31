@@ -10,7 +10,7 @@ use std::{
 };
 
 use fm_model::InputKind;
-use fm_persistence::{ProjectStore, StoredProject};
+use fm_persistence::{CURRENT_SCHEMA_VERSION, ProjectStore, StoredProject};
 use fm_types::InputId;
 
 static TEST_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -669,4 +669,34 @@ fn settings_export_and_import_preview_the_project() {
         preview.contains("settings-import: 0 added, 1 changed, 0 removed; nothing applied"),
         "{preview}"
     );
+}
+
+#[test]
+fn title_design_check_validates_a_designer_document() {
+    let root = TempRoot::new();
+    let design = root.path("empty.fmdesign");
+    let document = format!(
+        r##"{{
+  "contract": "freemix.title-design",
+  "schema_version": {CURRENT_SCHEMA_VERSION},
+  "id": 1,
+  "name": "Empty",
+  "width": 64,
+  "height": 32,
+  "background": "#00000000",
+  "fields": [],
+  "nodes": [],
+  "roots": [],
+  "children": [],
+  "animation": {{"timebase": "30/1", "revision": 0, "in_frames": 0, "out_frames": 0, "tracks": []}}
+}}"##
+    );
+    fs::write(&design, document).unwrap();
+    let out = assert_success(&run(&["title-design-check", text(&design)]));
+    assert_eq!(
+        out.trim(),
+        "title-design: id=1 name=Empty nodes=0 roots=0 fields=0"
+    );
+    fs::write(&design, "{\"contract\": \"nope\"}").unwrap();
+    assert!(!run(&["title-design-check", text(&design)]).status.success());
 }

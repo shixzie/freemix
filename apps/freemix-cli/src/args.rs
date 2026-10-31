@@ -975,6 +975,11 @@ pub enum Command {
         path: PathBuf,
         input: PathBuf,
     },
+    /// `title-design-check <file.fmdesign>`: validate a designer document
+    /// (GX-002).
+    TitleDesignCheck {
+        path: PathBuf,
+    },
     AudioStrip {
         path: PathBuf,
         input: u128,
@@ -2416,6 +2421,11 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let input = required_path(&mut arguments, "export path")?;
             reject_extra(&mut arguments)?;
             Ok(Command::SettingsImport { path, input })
+        }
+        "title-design-check" => {
+            let path = required_path(&mut arguments, "design path")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::TitleDesignCheck { path })
         }
         "audio-strip" => parse_audio_strip(arguments),
         mixer @ ("audio-label"
