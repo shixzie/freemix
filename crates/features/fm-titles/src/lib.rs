@@ -140,8 +140,8 @@ pub use runtime::{
 pub use scoreboard::{
     GameClock, GameClockConfig, MAX_GAME_CLOCK_MS, MAX_SCOREBOARD_ACTIONS,
     MAX_SCOREBOARD_TEXT_CHARS, Player, Scoreboard, ScoreboardAction, ScoreboardBinding,
-    ScoreboardError, ScoreboardEvent, ScoreboardOutcome, ScoreboardRules, TeamSide, TeamState,
-    actions_from_external,
+    ScoreboardError, ScoreboardEvent, ScoreboardOutcome, ScoreboardPreset, ScoreboardRules,
+    TeamSide, TeamState, actions_from_external,
 };
 pub use validation::{
     AssetCatalog, ImageAssetError, MAX_IMAGE_ASSET_BYTES, MAX_IMAGE_ASSETS, MissingFont,

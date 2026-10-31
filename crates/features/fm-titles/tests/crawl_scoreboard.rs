@@ -11,8 +11,8 @@ use fm_titles::{
     Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldValue, FontCrawlMeasure,
     FontStyle, GameClockConfig, HorizontalAlignment, MAX_CRAWL_ITEMS, Player, ReferenceRenderer,
     Scoreboard, ScoreboardAction, ScoreboardBinding, ScoreboardError, ScoreboardEvent,
-    ScoreboardRules, Style, TeamSide, TeamState, TemplateId, TitleId, TitleScene, TitleTemplate,
-    UpdateError, VerticalAlignment, actions_from_external,
+    ScoreboardPreset, ScoreboardRules, Style, TeamSide, TeamState, TemplateId, TitleId, TitleScene,
+    TitleTemplate, UpdateError, VerticalAlignment, actions_from_external,
 };
 use fm_types::FrameRate;
 use std::fs;
@@ -917,6 +917,35 @@ fn the_shot_clock_counts_down_and_reports_its_expiry_once() {
         .unwrap();
     assert_eq!(outcome.revision, 2);
     assert_eq!(board.shot_clock().value_ms(620), 14_000);
+}
+
+#[test]
+fn sport_presets_carry_their_rules_and_clocks() {
+    let rate = FrameRate::new(25, 1).unwrap();
+    let basketball = ScoreboardPreset::Basketball
+        .board(
+            TeamState::new("Home", "HOM"),
+            TeamState::new("Away", "AWY"),
+            rate,
+        )
+        .unwrap();
+    assert_eq!(basketball.rules().max_period, 4);
+    assert_eq!(basketball.rules().max_score, 199);
+    assert_eq!(basketball.clock().config().initial_ms, 600_000);
+    assert_eq!(
+        basketball.clock().config().direction,
+        ClockDirection::CountDown
+    );
+    let soccer = ScoreboardPreset::Soccer
+        .board(
+            TeamState::new("Home", "HOM"),
+            TeamState::new("Away", "AWY"),
+            rate,
+        )
+        .unwrap();
+    assert_eq!(soccer.rules().max_period, 2);
+    assert_eq!(soccer.clock().config().direction, ClockDirection::CountUp);
+    assert_eq!(soccer.clock().config().limit_ms, Some(2_700_000));
 }
 
 fn scoreboard_template() -> TitleTemplate {

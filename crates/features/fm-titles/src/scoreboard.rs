@@ -100,6 +100,87 @@ pub struct ScoreboardRules {
     pub max_period: u16,
 }
 
+/// A sport's standard scoreboard rules and game clock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScoreboardPreset {
+    Basketball,
+    AmericanFootball,
+    IceHockey,
+    Soccer,
+}
+
+impl ScoreboardPreset {
+    pub const ALL: [Self; 4] = [
+        Self::Basketball,
+        Self::AmericanFootball,
+        Self::IceHockey,
+        Self::Soccer,
+    ];
+
+    /// The preset's period and score bounds.
+    #[must_use]
+    pub const fn rules(self) -> ScoreboardRules {
+        match self {
+            Self::Basketball => ScoreboardRules {
+                max_score: 199,
+                max_period: 4,
+            },
+            Self::AmericanFootball => ScoreboardRules {
+                max_score: 199,
+                max_period: 4,
+            },
+            Self::IceHockey => ScoreboardRules {
+                max_score: 99,
+                max_period: 3,
+            },
+            Self::Soccer => ScoreboardRules {
+                max_score: 99,
+                max_period: 2,
+            },
+        }
+    }
+
+    /// The preset's game clock at `frame_rate`: a count-down period for
+    /// basketball (10:00), football (15:00), and hockey (20:00), and a
+    /// count-up half with a 45:00 limit for soccer.
+    #[must_use]
+    pub const fn clock(self, frame_rate: FrameRate) -> GameClockConfig {
+        let minutes = match self {
+            Self::Basketball => 10,
+            Self::AmericanFootball => 15,
+            Self::IceHockey => 20,
+            Self::Soccer => 0,
+        };
+        GameClockConfig {
+            direction: match self {
+                Self::Soccer => ClockDirection::CountUp,
+                _ => ClockDirection::CountDown,
+            },
+            format: ClockFormat::MinutesSeconds,
+            frame_rate,
+            initial_ms: minutes * 60 * 1_000,
+            limit_ms: match self {
+                Self::Soccer => Some(45 * 60 * 1_000),
+                _ => None,
+            },
+        }
+    }
+
+    /// A scoreboard with this preset's rules and clock.
+    ///
+    /// # Errors
+    ///
+    /// Returns the [`Scoreboard::new`] validation error.
+    pub fn board(
+        self,
+        home: TeamState,
+        away: TeamState,
+        frame_rate: FrameRate,
+    ) -> Result<Scoreboard, ScoreboardError> {
+        Scoreboard::new(home, away, self.rules(), self.clock(frame_rate))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GameClockConfig {
     pub direction: ClockDirection,
