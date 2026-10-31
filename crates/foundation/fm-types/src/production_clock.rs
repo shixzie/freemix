@@ -340,10 +340,9 @@ impl ProjectDurationFormat {
             numerator,
             denominator,
         } = self
+            && (numerator == 0 || denominator == 0)
         {
-            if numerator == 0 || denominator == 0 {
-                return Err(ProjectClockError::InvalidFrameRate(name.to_owned()));
-            }
+            return Err(ProjectClockError::InvalidFrameRate(name.to_owned()));
         }
         Ok(())
     }

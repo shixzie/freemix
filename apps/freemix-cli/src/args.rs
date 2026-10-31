@@ -1007,6 +1007,21 @@ pub enum Command {
         /// Stream keys for keyed stream targets the import adds, by id.
         stream_keys: Vec<(u128, String)>,
     },
+    /// Adds or replaces one project-level production clock definition
+    /// (SW-013).
+    ClockAdd {
+        path: PathBuf,
+        clock: fm_types::ProjectClock,
+    },
+    /// Removes one project-level production clock by name (SW-013).
+    ClockRemove {
+        path: PathBuf,
+        name: String,
+    },
+    /// Prints the project's production clock definitions (SW-013).
+    ClockList {
+        path: PathBuf,
+    },
     /// `title-design-check <file.fmdesign>`: validate a designer document
     /// (GX-002).
     TitleDesignCheck {
@@ -2476,10 +2491,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let input = required_path(&mut arguments, "export path")?;
             let mut apply = false;
             let mut stream_keys = Vec::new();
-            loop {
-                let Some(option) = arguments.next() else {
-                    break;
-                };
+            while let Some(option) = arguments.next() {
                 match option.as_str() {
                     "--apply" => apply = true,
                     "--stream-key" => {
@@ -2510,6 +2522,9 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                 stream_keys,
             })
         }
+        "clock-add" => parse_clock_add(arguments),
+        "clock-remove" => parse_clock_remove(arguments),
+        "clock-list" => parse_clock_list(arguments),
         "title-design-check" => {
             let path = required_path(&mut arguments, "design path")?;
             reject_extra(&mut arguments)?;
@@ -2993,12 +3008,11 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let path = required_path(&mut arguments, "project path")?;
             let input = number(&required(&mut arguments, "input")?, "input")?;
             let token = required(&mut arguments, "transition kind")?;
-            let kind = fm_model::MediaListTransitionKind::from_token(&token).ok_or_else(|| {
-                ArgsError::InvalidChoice {
+            let kind =
+                fm_model::MediaListTransitionKind::from_token(&token).ok_or(ArgsError::InvalidChoice {
                     field: "transition kind (cut, fade, dip, or wipe)",
                     value: token,
-                }
-            })?;
+                })?;
             let frames = number(&required(&mut arguments, "frames")?, "frames")?;
             let (key, expected_revision) = command_options(arguments)?;
             Ok(Command::InputMediaListTransition {
@@ -4522,6 +4536,149 @@ fn parse_media_input_relink(
         input,
         asset_uri,
     })
+}
+
+#[allow(clippy::too_many_lines)]
+fn parse_clock_add(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let mut name = None;
+    let mut kind_token = None;
+    let mut zone = None;
+    let mut time_format = fm_types::ProjectTimeFormat::Hours24;
+    let mut preset = 300_000_000_000_i64;
+    let mut direction = fm_types::ProjectClockDirection::CountDown;
+    let mut limit = None;
+    let mut overrun = fm_types::ProjectClockOverrun::StopAtTarget;
+    let mut format = fm_types::ProjectDurationFormat::MinutesSeconds;
+    let mut session = fm_types::ProjectSessionKind::Stream;
+    while let Some(option) = arguments.next() {
+        match option.as_str() {
+            "--name" => name = Some(nonblank(&mut arguments, "clock name")?),
+            "--kind" => {
+                let value = required(&mut arguments, "clock kind")?;
+                if !matches!(
+                    value.as_str(),
+                    "timer" | "time-of-day" | "media-remaining" | "session"
+                ) {
+                    return Err(ArgsError::InvalidChoice {
+                        field: "clock kind (timer, time-of-day, media-remaining, or session)",
+                        value,
+                    });
+                }
+                kind_token = Some(value);
+            }
+            "--zone" => zone = Some(required(&mut arguments, "time zone")?),
+            "--time-format" => {
+                let value = required(&mut arguments, "time format")?;
+                time_format = fm_types::ProjectTimeFormat::from_token(&value).ok_or(ArgsError::InvalidChoice {
+                    field: "time format (hours_24, hours_24_minutes, hours_12, hours_12_minutes, date, or rfc3339)",
+                    value,
+                })?;
+            }
+            "--preset" => preset = clock_value(&mut arguments, "preset")?,
+            "--direction" => {
+                let value = required(&mut arguments, "clock direction")?;
+                direction = fm_types::ProjectClockDirection::from_token(&value).ok_or(ArgsError::InvalidChoice {
+                    field: "clock direction (count_up or count_down)",
+                    value,
+                })?;
+            }
+            "--limit" => limit = Some(clock_value(&mut arguments, "limit")?),
+            "--overrun" => {
+                let value = required(&mut arguments, "overrun policy")?;
+                overrun = fm_types::ProjectClockOverrun::from_token(&value).ok_or(ArgsError::InvalidChoice {
+                    field: "overrun (stop_at_target or continue)",
+                    value,
+                })?;
+            }
+            "--format" => {
+                let value = required(&mut arguments, "duration format")?;
+                format = fm_types::ProjectDurationFormat::from_token(&value).ok_or(ArgsError::InvalidChoice {
+                    field: "duration format (hours_minutes_seconds, minutes_seconds, seconds, hours_minutes_seconds_tenths, minutes_seconds_tenths, hours_minutes_seconds_millis, or compact)",
+                    value,
+                })?;
+            }
+            "--session" => {
+                let value = required(&mut arguments, "session kind")?;
+                session = fm_types::ProjectSessionKind::from_token(&value).ok_or(ArgsError::InvalidChoice {
+                    field: "session kind (stream, recording, replay, multicorder, or external)",
+                    value,
+                })?;
+            }
+            _ => return Err(ArgsError::UnknownOption(option)),
+        }
+    }
+    let name = name.ok_or(ArgsError::MissingValue("--name"))?;
+    let kind = match kind_token.as_deref().unwrap_or("timer") {
+        "timer" => fm_types::ProjectClockKind::Timer {
+            direction,
+            preset_nanos: preset,
+            limit_nanos: limit,
+            overrun,
+            format,
+        },
+        "time-of-day" => {
+            let zone = zone.ok_or(ArgsError::MissingValue("--zone"))?;
+            let parsed = fm_clock::production::TimeZone::parse_posix(&zone).map_err(|_| {
+                ArgsError::InvalidChoice {
+                    field: "canonical POSIX time zone",
+                    value: zone.clone(),
+                }
+            })?;
+            if parsed.to_string() != zone {
+                return Err(ArgsError::InvalidChoice {
+                    field: "canonical POSIX time zone",
+                    value: zone,
+                });
+            }
+            fm_types::ProjectClockKind::TimeOfDay {
+                zone,
+                format: time_format,
+            }
+        }
+        "media-remaining" => fm_types::ProjectClockKind::MediaRemaining { format },
+        "session" => fm_types::ProjectClockKind::Session {
+            kind: session,
+            format,
+        },
+        _ => unreachable!("the kind token is validated above"),
+    };
+    Ok(Command::ClockAdd {
+        path,
+        clock: fm_types::ProjectClock { name, kind },
+    })
+}
+
+fn parse_clock_remove(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let name = nonblank(&mut arguments, "clock name")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::ClockRemove { path, name })
+}
+
+fn parse_clock_list(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::ClockList { path })
+}
+
+fn clock_value(
+    arguments: &mut impl Iterator<Item = String>,
+    field: &'static str,
+) -> Result<i64, ArgsError> {
+    let value = required(arguments, field)?;
+    fm_clock::production::parse_clock_value(&value)
+        .map(fm_clock::production::ClockValue::as_nanos)
+        .map_err(|_| ArgsError::InvalidChoice {
+            field: "clock value (HH:MM:SS or seconds)",
+            value,
+        })
 }
 
 fn parse_title_input_add(

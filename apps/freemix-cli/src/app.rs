@@ -1085,6 +1085,9 @@ pub fn run(command: Command) -> AppResult<()> {
         Command::AsRun { path } => print_as_run(&path)?,
         Command::AssetAudit { path } => audit_assets(&path)?,
         Command::SettingsExport { path, output } => settings_export(&path, &output)?,
+        Command::ClockAdd { path, clock } => clock_add(&path, clock)?,
+        Command::ClockRemove { path, name } => clock_remove(&path, &name)?,
+        Command::ClockList { path } => clock_list(&path)?,
         Command::SettingsImport {
             path,
             input,
@@ -6114,6 +6117,81 @@ fn settings_export(path: &Path, output: &Path) -> AppResult<()> {
     Ok(())
 }
 
+fn clock_add(path: &Path, clock: fm_types::ProjectClock) -> AppResult<()> {
+    let stored = load_stored_project(path)?;
+    let mut project = stored.project().clone();
+    let mut clocks = project.production_clocks().to_vec();
+    if clocks.iter().any(|candidate| candidate.name == clock.name) {
+        return Err(AppFailure(format!(
+            "clock `{}` already exists; remove it first",
+            clock.name
+        ))
+        .into());
+    }
+    let name = clock.name.clone();
+    clocks.push(clock);
+    project
+        .set_production_clocks(clocks)
+        .map_err(|error| AppFailure(format!("clock-add: {error}")))?;
+    ProjectStore::new(path)?.save(&stored.with_project(project)?)?;
+    println!("clock-add: {name}");
+    Ok(())
+}
+
+fn clock_remove(path: &Path, name: &str) -> AppResult<()> {
+    let stored = load_stored_project(path)?;
+    let mut project = stored.project().clone();
+    let clocks = project.production_clocks().to_vec();
+    let Some(position) = clocks.iter().position(|clock| clock.name == name) else {
+        return Err(AppFailure(format!("clock `{name}` does not exist")).into());
+    };
+    let mut clocks = clocks;
+    clocks.remove(position);
+    project
+        .set_production_clocks(clocks)
+        .map_err(|error| AppFailure(format!("clock-remove: {error}")))?;
+    ProjectStore::new(path)?.save(&stored.with_project(project)?)?;
+    println!("clock-remove: {name}");
+    Ok(())
+}
+
+fn clock_list(path: &Path) -> AppResult<()> {
+    let stored = inspect_stored_project(path)?;
+    for clock in stored.project().production_clocks() {
+        match &clock.kind {
+            fm_types::ProjectClockKind::Timer {
+                direction,
+                preset_nanos,
+                limit_nanos,
+                overrun,
+                format,
+            } => println!(
+                "timer {} {} preset_ns={preset_nanos} limit_ns={} overrun={} format={}",
+                clock.name,
+                direction.token(),
+                limit_nanos.map_or_else(|| "none".to_owned(), |value| value.to_string()),
+                overrun.token(),
+                format.token()
+            ),
+            fm_types::ProjectClockKind::TimeOfDay { zone, format } => println!(
+                "time_of_day {} {zone} format={}",
+                clock.name,
+                format.token()
+            ),
+            fm_types::ProjectClockKind::MediaRemaining { format } => {
+                println!("media_remaining {} format={}", clock.name, format.token());
+            }
+            fm_types::ProjectClockKind::Session { kind, format } => println!(
+                "session {} {} format={}",
+                clock.name,
+                kind.token(),
+                format.token()
+            ),
+        }
+    }
+    Ok(())
+}
+
 fn settings_import(
     path: &Path,
     input: &Path,
@@ -7195,6 +7273,9 @@ Usage:
   freemix-cli asset-audit <show.freemix>
   freemix-cli settings-export <show.freemix> <settings.json>
   freemix-cli settings-import <show.freemix> <settings.json> [--apply] [--stream-key <stream-id>=<key>]...
+  freemix-cli clock-add <show.freemix> --name <name> [--kind timer|time-of-day|media-remaining|session] [--preset HH:MM:SS] [--direction count_up|count_down] [--limit HH:MM:SS] [--overrun stop_at_target|continue] [--format <duration preset>] [--zone <POSIX zone>] [--time-format <time preset>] [--session stream|recording|replay|multicorder|external]
+  freemix-cli clock-remove <show.freemix> <name>
+  freemix-cli clock-list <show.freemix>
   freemix-cli title-design-check <design.fmdesign>
   freemix-cli title-apply-row <show.freemix> <input-id> <row.json> [--keep-live] [--preview]
   freemix-cli title-design-import <show.freemix> <design.fmdesign> --id <nonzero-input-id> --name <name> [--font <Family=path.ttf>]...
