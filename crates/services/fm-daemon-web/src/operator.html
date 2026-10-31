@@ -324,6 +324,7 @@
   <section aria-labelledby="audio-heading">
     <h2 id="audio-heading" data-i18n="audio">Audio</h2>
     <div id="strips"></div>
+    <div id="aux-buses" role="group" data-i18n-label="auxBuses" aria-label="Aux buses"></div>
     <p id="why-audio" class="why" aria-live="polite"></p>
   </section>
 
@@ -716,6 +717,7 @@
       commandLoudnessReset: "Reset the loudness of {bus}",
       programLoudnessBus: "Program",
       audio: "Audio",
+      auxBuses: "Aux buses",
       mute: "Mute",
       muted: "MUTED",
       muteLabel: "Mute {input}",
@@ -1099,6 +1101,7 @@
       commandLoudnessReset: "Reiniciar la sonoridad de {bus}",
       programLoudnessBus: "Programa",
       audio: "Audio",
+      auxBuses: "Buses auxiliares",
       mute: "Silenciar",
       muted: "SILENCIADA",
       muteLabel: "Silenciar {input}",
@@ -1344,6 +1347,7 @@
     cut: $("cut"), auto: $("auto"), autoKind: $("auto-kind"), ftb: $("ftb"), ftbState: $("ftb-state"),
     kindChoices: $("kind-choices"), durationChoices: $("duration-choices"),
     recorders: $("recorders"), streams: $("streams"), noStreams: $("no-streams"), strips: $("strips"),
+    auxBuses: $("aux-buses"),
     shortcuts: $("shortcut-buttons"), noShortcuts: $("no-shortcuts"), whyShortcuts: $("why-shortcuts"),
     selectBus: $("select-bus"), selectedNote: $("selected-note"),
     whyProgram: $("why-program"), whyPreview: $("why-preview"), whyTransition: $("why-transition"), whyOutputs: $("why-outputs"),
@@ -2298,6 +2302,13 @@
     } else if (name === "audio_mixer_changed" && required(record, "operation") === "audio_aux_bus_dsp") {
       const bus = required(record, "bus").toLowerCase();
       fxTakeChain("aux:" + bus, required(record, "chain"));
+    } else if (name === "audio_mixer_changed" && required(record, "operation") === "audio_aux_bus_level") {
+      const target = "aux:" + required(record, "bus").toLowerCase();
+      const bus = (show.auxBuses || []).find((candidate) => candidate.target === target);
+      if (bus) {
+        bus.gain = required(record, "gain_millidb");
+        bus.muted = required(record, "muted") === "1";
+      }
     } else if (name === "audio_mixer_changed" && required(record, "operation") === "audio_group_solo") {
       // A group solo re-solos its members; resynchronize so a mute never
       // writes back a stale solo.
@@ -2650,6 +2661,23 @@
       reset.setAttribute("aria-label", tr("loudnessResetStripHover", { input: input.label }));
       setDisabled(reset, gate("audio", id));
       if (!reset.disabled) reset.title = tr("loudnessResetStripHover", { input: input.label });
+    });
+    syncChildren(ui.auxBuses, (show.auxBuses || []).map((bus) => bus.target), (target) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = "<span class=\"name\"></span><span class=\"gain\"></span><button type=\"button\" class=\"mute\" aria-describedby=\"why-audio\"></button>";
+      row.querySelector(".mute").addEventListener("click", () => toggleAuxMute(target));
+      return row;
+    }, (row, target) => {
+      const bus = (show.auxBuses || []).find((candidate) => candidate.target === target);
+      if (!bus) return;
+      row.querySelector(".name").textContent = bus.name;
+      row.querySelector(".gain").textContent = (Number(bus.gain) / 1000).toFixed(1) + " dB";
+      const button = row.querySelector(".mute");
+      button.textContent = tr(bus.muted ? "muted" : "mute");
+      button.setAttribute("aria-pressed", String(bus.muted));
+      button.setAttribute("aria-label", tr("muteLabel", { input: bus.name }));
+      setDisabled(button, gate("audio"));
     });
     ui.whyAudio.textContent = sectionReason("audio");
     paintLoudness();
@@ -4017,6 +4045,16 @@
       ["sends", strip.sends || strip.buses],
     ], link.revision);
     mutesSent.set(commandId, { input: id, strip: { ...strip }, retried });
+  }
+  // One aux bus's mute: a live `audio_aux_bus_level`, named by its letter.
+  function toggleAuxMute(target) {
+    if (gate("audio")) return;
+    const bus = (show.auxBuses || []).find((candidate) => candidate.target === target);
+    if (!bus) return;
+    sendCommand(tr(bus.muted ? "commandUnmute" : "commandMute", { input: bus.name }), [
+      ["payload", "audio_aux_bus_level"], ["bus", target.slice(4).toUpperCase()],
+      ["gain_millidb", bus.gain], ["muted", bus.muted ? "0" : "1"],
+    ]);
   }
 
   async function requestWakeLock() {
