@@ -46,6 +46,10 @@ pub(super) fn engine_operation(operation: &ReplayOperation) -> EngineReplayOpera
             input: input.to_domain(),
             speed: *speed,
         },
+        ReplayOperation::Shuttle { input, rate_milli } => EngineReplayOperation::Shuttle {
+            input: input.to_domain(),
+            rate_milli: *rate_milli,
+        },
         ReplayOperation::Pause { input } => EngineReplayOperation::Pause {
             input: input.to_domain(),
         },
@@ -119,6 +123,10 @@ pub(super) fn wire_operation(operation: &EngineReplayOperation) -> ReplayOperati
         EngineReplayOperation::Play { input, speed } => ReplayOperation::Play {
             input: WireInputId::from_domain(*input),
             speed: *speed,
+        },
+        EngineReplayOperation::Shuttle { input, rate_milli } => ReplayOperation::Shuttle {
+            input: WireInputId::from_domain(*input),
+            rate_milli: *rate_milli,
         },
         EngineReplayOperation::Pause { input } => ReplayOperation::Pause {
             input: WireInputId::from_domain(*input),
@@ -245,6 +253,8 @@ pub(super) fn status_message(
                 event: player.event,
                 angle: player.angle.map(WireInputId::from_domain),
                 speed: player.speed,
+                rate_milli: player.rate_milli,
+                shuttling: player.shuttling,
                 playing: player.playing,
                 frame: player.frame,
                 playlist: player

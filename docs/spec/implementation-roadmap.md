@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.130 / schema 92 (2026-10-30,
+(2026-10-19); items refreshed through protocol 2.131 / schema 92 (2026-10-31,
 at `8497393`). Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -157,11 +157,14 @@ there come before any new breadth below.
     wire. Two Replay inputs can now be linked for A/B playback (Protocol
     2.124): cueing, playing, pausing, cue-in, and stepping one moves both at
     the same instant while each keeps its own angle, and their playlists
-    advance only together. Remaining: the recorder takes a source's last
+    advance only together. A player now shuttles at any rate from -16x to
+    +16x in thousandths of real time, forwards or backwards, pausing at its
+    event's ends, with the rate and shuttling state on the wire (Protocol
+    2.131) and `remote-replay-do shuttle`; a player also jogs frame by frame
+    (Protocol 2.114) and a finished replay returns Program to the live
+    source (Protocol 2.116). Remaining: the recorder takes a source's last
     decoded picture rather than a genlocked one, segment files from a
-    previous run are removed rather than reloaded, and shuttle (a player
-    now jogs frame by frame, Protocol 2.114, and a finished replay returns
-    Program to the live source, Protocol 2.116),
+    previous run are removed rather than reloaded,
     transitions and controller wiring, and certification are absent; Studio's
     Replay panel and the CLI record up to eight inputs and render their angles
     in an adaptive grid (Protocol 2.127); the A/B channel tiles of the full
@@ -5972,8 +5975,11 @@ that still exists, keeping Program on the replay until the last entry
 ends, and Studio's Replay panel and `remote-replay-do playlist`,
 `playlist-next`, and `playlist-prev` edit and step it. Two Replay inputs can
 be linked for A/B playback (Protocol 2.124), sharing cue, play, pause,
-cue-in, and step while keeping their own angles. There is no shuttle,
-replay transition, multiview, or controller wiring; storage health reaches
+cue-in, and step while keeping their own angles. A player shuttles at a
+signed rate from -16x to +16x in thousandths of real time (Protocol 2.131,
+`remote-replay-do shuttle`), pausing at either end without auto return, and
+reports its rate and shuttling state on the wire; there is no replay
+transition, multiview, or controller wiring; storage health reaches
 Studio and the CLI (Protocol 2.125), but not SMART or `fm-record` low-space
 behavior, and nothing is certified. `OR-012`, `OR-013`, and `OR-014` remain planned.
 

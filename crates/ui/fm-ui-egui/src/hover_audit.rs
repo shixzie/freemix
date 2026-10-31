@@ -2662,6 +2662,8 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
                 event: Some(1),
                 angle: Some(wire(2)),
                 speed: ReplaySpeed::Half,
+                rate_milli: 0,
+                shuttling: false,
                 playing: true,
                 frame: Some(2_600),
                 playlist: vec![
@@ -2684,6 +2686,8 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
                 event: None,
                 angle: None,
                 speed: ReplaySpeed::Full,
+                rate_milli: 0,
+                shuttling: false,
                 playing: false,
                 frame: None,
                 playlist: Vec::new(),

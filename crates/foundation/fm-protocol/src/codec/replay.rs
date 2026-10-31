@@ -215,6 +215,13 @@ pub(super) fn encode_operation(
             push("input", input.to_string())?;
             push("speed", speed.percent().to_string())
         }
+        ReplayOperation::Shuttle { input, rate_milli } => {
+            if !(-16_000..=16_000).contains(rate_milli) {
+                return Err(invalid("rate", rate_milli.to_string()));
+            }
+            push("input", input.to_string())?;
+            push("rate", rate_milli.to_string())
+        }
         ReplayOperation::Pause { input }
         | ReplayOperation::CueIn { input }
         | ReplayOperation::PlaylistNext { input }
@@ -292,6 +299,15 @@ pub(super) fn decode_operation(
             input: input(fields)?,
             speed: parse_speed("speed", &fields.required("speed")?)?,
         },
+        "replay_shuttle" => {
+            let input = input(fields)?;
+            let value = fields.required("rate")?;
+            let rate_milli = super::source_sync::parse_canonical_i64(&value)
+                .and_then(|rate| i32::try_from(rate).ok())
+                .filter(|rate| (-16_000..=16_000).contains(rate))
+                .ok_or_else(|| invalid("rate", value))?;
+            ReplayOperation::Shuttle { input, rate_milli }
+        }
         "replay_pause" => ReplayOperation::Pause {
             input: input(fields)?,
         },
@@ -497,7 +513,7 @@ fn encode_players(players: &[ReplayPlayerStatus]) -> Result<String, CodecError> 
         .iter()
         .map(|player| {
             Ok(format!(
-                "{}:{}:{}:{}:{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
                 player.input,
                 optional_text(player.event),
                 optional_text(player.angle),
@@ -506,7 +522,9 @@ fn encode_players(players: &[ReplayPlayerStatus]) -> Result<String, CodecError> 
                 optional_text(player.frame),
                 optional_text(player.playlist_index),
                 encode_playlist(&player.playlist)?,
-                optional_text(player.linked)
+                optional_text(player.linked),
+                player.rate_milli,
+                u8::from(player.shuttling)
             ))
         })
         .collect::<Result<Vec<_>, _>>()
@@ -534,6 +552,8 @@ fn decode_players(value: &str) -> Result<Vec<ReplayPlayerStatus>, CodecError> {
                 index,
                 playlist,
                 linked,
+                rate_milli,
+                shuttling,
             ] = entry.split(':').collect::<Vec<_>>()[..]
             else {
                 return Err(invalid("players", entry));
@@ -545,11 +565,17 @@ fn decode_players(value: &str) -> Result<Vec<ReplayPlayerStatus>, CodecError> {
             {
                 return Err(invalid("players", entry));
             }
+            let rate_milli = super::source_sync::parse_canonical_i64(rate_milli)
+                .and_then(|rate| i32::try_from(rate).ok())
+                .filter(|rate| (-16_000..=16_000).contains(rate))
+                .ok_or_else(|| invalid("players", entry))?;
             Ok(ReplayPlayerStatus {
                 input: parse_input("players", input)?,
                 event: parse_optional(event, |value| parse_number("players", value))?,
                 angle: parse_optional(angle, |value| parse_input("players", value))?,
                 speed: parse_speed("players", speed)?,
+                rate_milli,
+                shuttling: parse_flag("players", shuttling)?,
                 playing: parse_flag("players", playing)?,
                 frame: parse_optional(frame, |value| parse_number("players", value))?,
                 playlist,

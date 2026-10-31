@@ -341,6 +341,7 @@ impl ReplayPlayers {
                         // Forward play at 100% plays the frame's recorded
                         // audio; slow motion stays silent.
                         if replay.playing
+                            && !replay.shuttling
                             && replay.speed == fm_types::replay::ReplaySpeed::Full
                             && let Some(block) = audio.as_deref().and_then(|planes| {
                                 recorded_audio(

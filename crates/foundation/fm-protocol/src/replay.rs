@@ -111,6 +111,10 @@ pub enum ReplayOperation {
         input: WireInputId,
         speed: ReplaySpeed,
     },
+    /// Shuttles a Replay input at `rate_milli` thousandths of real time
+    /// (negative plays backwards; zero pauses), pausing at the event's
+    /// first or last frame (Protocol 2.131).
+    Shuttle { input: WireInputId, rate_milli: i32 },
     /// Pauses a Replay input.
     Pause { input: WireInputId },
     /// Jumps a Replay input back to its event's first frame, paused.
@@ -144,7 +148,7 @@ pub enum ReplayOperation {
 
 impl ReplayOperation {
     /// Every payload token, in table order.
-    pub const TOKENS: [&'static str; 18] = [
+    pub const TOKENS: [&'static str; 19] = [
         "replay_configure",
         "replay_mark_in",
         "replay_mark_out",
@@ -155,6 +159,7 @@ impl ReplayOperation {
         "replay_cue",
         "replay_angle",
         "replay_play",
+        "replay_shuttle",
         "replay_pause",
         "replay_cue_in",
         "replay_step",
@@ -179,6 +184,7 @@ impl ReplayOperation {
             Self::Cue { .. } => "replay_cue",
             Self::Angle { .. } => "replay_angle",
             Self::Play { .. } => "replay_play",
+            Self::Shuttle { .. } => "replay_shuttle",
             Self::Pause { .. } => "replay_pause",
             Self::CueIn { .. } => "replay_cue_in",
             Self::Step { .. } => "replay_step",
@@ -261,6 +267,9 @@ pub struct ReplayPlayerStatus {
     pub event: Option<u32>,
     pub angle: Option<WireInputId>,
     pub speed: ReplaySpeed,
+    /// The shuttle rate, or zero when not shuttling (Protocol 2.131).
+    pub rate_milli: i32,
+    pub shuttling: bool,
     pub playing: bool,
     /// The source frame shown, while cued.
     pub frame: Option<u64>,

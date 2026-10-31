@@ -136,6 +136,13 @@ fn operations() -> Vec<(ReplayOperation, &'static str)> {
             "replay_play\tinput=9\tspeed=50",
         ),
         (
+            ReplayOperation::Shuttle {
+                input: wire(9),
+                rate_milli: -2_000,
+            },
+            "replay_shuttle\tinput=9\trate=-2000",
+        ),
+        (
             ReplayOperation::Pause { input: wire(9) },
             "replay_pause\tinput=9",
         ),
@@ -394,6 +401,8 @@ fn status(request_id: Option<&str>) -> ReplayStatusMessage {
                 event: Some(1),
                 angle: Some(wire(2)),
                 speed: ReplaySpeed::Quarter,
+                rate_milli: 0,
+                shuttling: false,
                 playing: true,
                 frame: Some(2_510),
                 playlist: vec![
@@ -416,6 +425,8 @@ fn status(request_id: Option<&str>) -> ReplayStatusMessage {
                 event: None,
                 angle: None,
                 speed: ReplaySpeed::Full,
+                rate_milli: 0,
+                shuttling: false,
                 playing: false,
                 frame: None,
                 playlist: Vec::new(),
@@ -446,8 +457,8 @@ fn status_and_its_request_have_an_exact_wire_form() {
     );
     assert!(
         line.contains(
-            "\tplayers=9%3A1%3A2%3A25%3A1%3A2510%3A1%3A3%2F2%2F100%7C4%2F%2F50%3A10%3B\
-             10%3A%3A%3A100%3A0%3A%3A%3A%3A9\t\
+            "\tplayers=9%3A1%3A2%3A25%3A1%3A2510%3A1%3A3%2F2%2F100%7C4%2F%2F50%3A10%3A0%3A0%3B\
+             10%3A%3A%3A100%3A0%3A%3A%3A%3A9%3A0%3A0\t\
              storage=7200000000%3A24000000%3A300%3Awarning\n"
         ),
         "{line}"

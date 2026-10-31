@@ -6331,6 +6331,19 @@ fn parse_remote_replay_do(
                 }
             })?,
         },
+        ("shuttle", [input, rate]) => {
+            let rate_milli: i32 = number(rate, "shuttle rate")?;
+            if !(-16_000..=16_000).contains(&rate_milli) {
+                return Err(ArgsError::InvalidChoice {
+                    field: "shuttle rate",
+                    value: rate.clone(),
+                });
+            }
+            ReplayOperation::Shuttle {
+                input: replay_input(input)?,
+                rate_milli,
+            }
+        }
         ("pause", [input]) => ReplayOperation::Pause {
             input: replay_input(input)?,
         },
@@ -11944,6 +11957,16 @@ mod tests {
                 speed: ReplaySpeed::Half,
             })
         );
+        assert_eq!(
+            remote(&["shuttle", "7", "-2000"]),
+            Ok(ReplayOperation::Shuttle {
+                input: input(7),
+                rate_milli: -2_000,
+            })
+        );
+        for rate in ["16001", "-16001", "x"] {
+            assert!(remote(&["shuttle", "7", rate]).is_err(), "{rate}");
+        }
         assert_eq!(
             remote(&["cue", "7", "2", "--angle", "3"]),
             Ok(ReplayOperation::Cue {

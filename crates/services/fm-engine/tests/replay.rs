@@ -545,6 +545,111 @@ fn a_replay_input_plays_its_event_frame_exactly_at_every_speed() {
     assert_eq!(empty.source_frame, None);
 }
 
+/// Protocol 2.131 shuttle: a player advances at a signed rate in
+/// thousandths of real time, pauses at its event's ends, and reports the
+/// rate and shuttling state.
+#[test]
+fn a_replay_input_shuttles_forward_and_backward() {
+    let mut engine = engine();
+    add_player(&mut engine, 9);
+    replay(
+        &mut engine,
+        "configure",
+        EngineReplayOperation::Configure(Box::new(settings(&[1, 2], 600))),
+    );
+    settle(&mut engine);
+    ticks(&mut engine, 12 * FPS);
+    replay(
+        &mut engine,
+        "last",
+        EngineReplayOperation::CaptureLast { seconds: 5 },
+    );
+    settle(&mut engine);
+    let event = engine.replay_status().events[0].clone();
+    replay(
+        &mut engine,
+        "cue",
+        EngineReplayOperation::Cue {
+            input: input(9),
+            event: 1,
+            angle: None,
+        },
+    );
+    settle(&mut engine);
+
+    // 2x forward: two source frames a tick.
+    replay(
+        &mut engine,
+        "shuttle-forward",
+        EngineReplayOperation::Shuttle {
+            input: input(9),
+            rate_milli: 2_000,
+        },
+    );
+    let first = settle(&mut engine).last().unwrap().replay[0].clone();
+    assert_eq!(first.rate_milli, 2_000);
+    assert!(first.shuttling && first.playing);
+    let shown: Vec<u64> = ticks(&mut engine, 8)
+        .iter()
+        .filter_map(|frame| frame.replay[0].source_frame)
+        .collect();
+    let expected: Vec<u64> = (1..=8).map(|index| event.in_frame + index * 2).collect();
+    assert_eq!(shown, expected);
+
+    // -1x back from there: one source frame back a tick.
+    replay(
+        &mut engine,
+        "shuttle-back",
+        EngineReplayOperation::Shuttle {
+            input: input(9),
+            rate_milli: -1_000,
+        },
+    );
+    let back: Vec<u64> = settle(&mut engine)
+        .iter()
+        .chain(ticks(&mut engine, 4).iter())
+        .filter_map(|frame| frame.replay[0].source_frame)
+        .collect();
+    assert!(
+        back[..5].windows(2).all(|pair| pair[0] == pair[1] + 1),
+        "{back:?}"
+    );
+    assert!(back[0] > event.in_frame);
+
+    // Reverse stops at the event's first frame without auto-return.
+    replay(
+        &mut engine,
+        "shuttle-start",
+        EngineReplayOperation::Shuttle {
+            input: input(9),
+            rate_milli: -16_000,
+        },
+    );
+    settle(&mut engine);
+    let stopped = ticks(&mut engine, event.out_frame - event.in_frame + 2)
+        .last()
+        .unwrap()
+        .replay[0]
+        .clone();
+    assert!(!stopped.playing && !stopped.shuttling);
+    assert_eq!(stopped.source_frame, Some(event.in_frame));
+
+    // Zero pauses, and the rate is bounded.
+    assert!(
+        execute(
+            &mut engine,
+            "shuttle-too-fast",
+            EngineCommand::Replay(EngineReplayOperation::Shuttle {
+                input: input(9),
+                rate_milli: 16_001,
+            }),
+        )
+        .receipt
+        .rejected()
+        .is_some()
+    );
+}
+
 /// Protocol 2.114 jog: a step moves a cued player that many source frames,
 /// paused, and stops at its event's first and last frames; a zero or
 /// overlong step is refused.
