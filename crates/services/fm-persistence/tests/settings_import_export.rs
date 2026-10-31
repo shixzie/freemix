@@ -616,3 +616,43 @@ fn apply_refuses_stream_target_additions_and_protocol_changes() {
     let changed = with(current(), "stream_targets.40.protocol", text("rtmp"));
     assert!(changed.apply_exported(&mut project).is_err());
 }
+
+#[test]
+fn apply_adds_a_keyless_hls_stream_target() {
+    let mut snapshot = current();
+    snapshot = with(snapshot, "stream_targets.41.name", text("Archive"));
+    snapshot = with(snapshot, "stream_targets.41.protocol", text("hls"));
+    snapshot = with(snapshot, "stream_targets.41.endpoint", text("/archive/live"));
+    snapshot = with(
+        snapshot,
+        "stream_targets.41.output",
+        SettingValue::Reference(SettingReference {
+            kind: ReferenceKind::Output,
+            id: nz(30),
+        }),
+    );
+    snapshot = with(snapshot, "stream_targets.41.startup", text("stopped"));
+    snapshot = with(
+        snapshot,
+        "stream_targets.41.video_bitrate_kbps",
+        SettingValue::Integer(4500),
+    );
+    let mut project = project();
+    snapshot.apply_exported(&mut project).unwrap();
+    let target = project
+        .stream_targets()
+        .iter()
+        .find(|target| target.id().get() == nz(41))
+        .unwrap();
+    assert_eq!(target.name(), "Archive");
+    assert_eq!(target.protocol(), StreamProtocol::Hls);
+}
+
+#[test]
+fn apply_refuses_a_keyed_stream_target_addition() {
+    let mut snapshot = current();
+    snapshot = with(snapshot, "stream_targets.41.name", text("Live"));
+    snapshot = with(snapshot, "stream_targets.41.protocol", text("rtmp"));
+    let mut project = project();
+    assert!(snapshot.apply_exported(&mut project).is_err());
+}

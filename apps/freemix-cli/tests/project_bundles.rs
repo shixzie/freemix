@@ -1179,7 +1179,7 @@ fn settings_import_apply_updates_format_and_restart_only() {
     let json = fs::read_to_string(&second_export).unwrap();
     let changed = json.replace(
         "\n  }\n}\n",
-        ",\n    \"stream_targets.1.name\": {\"text\": \"Live\"}\n  }\n}\n",
+        ",\n    \"stream_targets.1.name\": {\"text\": \"Live\"},\n    \"stream_targets.1.protocol\": {\"text\": \"rtmp\"}\n  }\n}\n",
     );
     assert_ne!(changed, json);
     let changed_path = root.path("stream.json");
@@ -1190,7 +1190,10 @@ fn settings_import_apply_updates_format_and_restart_only() {
         text(&changed_path),
         "--apply",
     ]);
-    assert_failure_contains(&refused, "adding stream targets is not applied yet");
+    assert_failure_contains(
+        &refused,
+        "adding a keyed stream target needs its stream key",
+    );
     let loaded = load(&show);
     assert_eq!(loaded.project().audio_buses()[0].name, "Clean feed");
 }

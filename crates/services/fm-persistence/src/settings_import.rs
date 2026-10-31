@@ -14,6 +14,7 @@ use std::{
 
 use fm_model::{
     AudioBus, Output, Project, ProjectSettings, RestartPolicy, StartupPolicy, StreamEndpoint,
+    StreamProtocol, StreamTarget, StreamTargetId,
 };
 use fm_types::{
     AudioFormat, BusId, Channel, ChannelLayout, DiscreteChannel, FrameRate, OutputId, SampleRate,
@@ -644,10 +645,11 @@ impl SettingsSnapshot {
     /// Applies the format, restart policy, audio bus, output, and existing
     /// stream-target sections to `project`.
     ///
-    /// A stream-target addition or removal is refused; a change to an
-    /// existing target must keep its protocol so unexported options keep
-    /// their meaning. The whole import is applied to a clone and committed
-    /// only when every section succeeds.
+    /// A keyless HLS stream target may be added; a keyed addition, a removal,
+    /// or a protocol change is refused, and a change to an existing target
+    /// must keep its protocol so unexported options keep their meaning. The
+    /// whole import is applied to a clone and committed only when every
+    /// section succeeds.
     ///
     /// # Errors
     ///
@@ -956,73 +958,16 @@ fn apply_stream_targets(
         };
         present.insert(id);
         let key = format!("stream_targets.{id}");
-        let Some(target) = project
+        let existing = project
             .stream_targets()
             .iter()
             .find(|target| target.id().get() == id)
-            .cloned()
-        else {
-            return Err(SettingsApplyError::Model {
-                key,
-                reason: "adding stream targets is not applied yet".to_owned(),
-            });
-        };
-        let name = snapshot
-            .entity_name(entity)
-            .ok_or_else(|| SettingsApplyError::Missing {
-                key: format!("{key}.name"),
-            })?
-            .to_owned();
-        let protocol = setting_text(snapshot, &format!("{key}.protocol"))?;
-        if protocol != target.protocol().scheme() {
-            return Err(SettingsApplyError::Model {
-                key,
-                reason: "changing a stream target's protocol is not applied yet".to_owned(),
-            });
+            .cloned();
+        if let Some(target) = existing {
+            apply_existing_stream_target(snapshot, &key, entity, target, project)?;
+        } else {
+            add_hls_stream_target(snapshot, &key, entity, id, project)?;
         }
-        let endpoint = StreamEndpoint::parse_for(
-            target.protocol(),
-            setting_text(snapshot, &format!("{key}.endpoint"))?,
-        )
-        .map_err(|_| SettingsApplyError::Invalid {
-            key: format!("{key}.endpoint"),
-        })?;
-        let backup = match snapshot.get_path(&format!("{key}.backup_endpoint")) {
-            Some(SettingValue::Text(text)) => {
-                Some(StreamEndpoint::parse_for(target.protocol(), text).map_err(|_| {
-                    SettingsApplyError::Invalid {
-                        key: format!("{key}.backup_endpoint"),
-                    }
-                })?)
-            }
-            Some(_) => {
-                return Err(SettingsApplyError::Invalid {
-                    key: format!("{key}.backup_endpoint"),
-                });
-            }
-            None => None,
-        };
-        let startup = startup_policy(snapshot, &format!("{key}.startup"))?;
-        let bitrate = bounded_u32(
-            setting_integer(snapshot, &format!("{key}.video_bitrate_kbps"))?,
-            &format!("{key}.video_bitrate_kbps"),
-        )?;
-        let output = OutputId::new(
-            setting_reference(snapshot, &format!("{key}.output"), ReferenceKind::Output)?.id,
-        );
-        let mut updated = target;
-        updated
-            .apply_exported(name, endpoint, backup, startup, bitrate, output)
-            .map_err(|error| SettingsApplyError::Model {
-                key: key.clone(),
-                reason: error.to_string(),
-            })?;
-        project
-            .replace_stream_target(updated)
-            .map_err(|error| SettingsApplyError::Model {
-                key: key.clone(),
-                reason: error.to_string(),
-            })?;
     }
     for target in project.stream_targets() {
         if !present.contains(&target.id().get()) {
@@ -1033,6 +978,148 @@ fn apply_stream_targets(
         }
     }
     Ok(())
+}
+
+fn apply_existing_stream_target(
+    snapshot: &SettingsSnapshot,
+    key: &str,
+    entity: EntityKey,
+    target: StreamTarget,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    let name = snapshot
+        .entity_name(entity)
+        .ok_or_else(|| SettingsApplyError::Missing {
+            key: format!("{key}.name"),
+        })?
+        .to_owned();
+    let protocol = setting_text(snapshot, &format!("{key}.protocol"))?;
+    if protocol != target.protocol().scheme() {
+        return Err(SettingsApplyError::Model {
+            key: key.to_owned(),
+            reason: "changing a stream target's protocol is not applied yet".to_owned(),
+        });
+    }
+    let endpoint = StreamEndpoint::parse_for(
+        target.protocol(),
+        setting_text(snapshot, &format!("{key}.endpoint"))?,
+    )
+    .map_err(|_| SettingsApplyError::Invalid {
+        key: format!("{key}.endpoint"),
+    })?;
+    let backup = match snapshot.get_path(&format!("{key}.backup_endpoint")) {
+        Some(SettingValue::Text(text)) => {
+            Some(StreamEndpoint::parse_for(target.protocol(), text).map_err(|_| {
+                SettingsApplyError::Invalid {
+                    key: format!("{key}.backup_endpoint"),
+                }
+            })?)
+        }
+        Some(_) => {
+            return Err(SettingsApplyError::Invalid {
+                key: format!("{key}.backup_endpoint"),
+            });
+        }
+        None => None,
+    };
+    let startup = startup_policy(snapshot, &format!("{key}.startup"))?;
+    let bitrate = bounded_u32(
+        setting_integer(snapshot, &format!("{key}.video_bitrate_kbps"))?,
+        &format!("{key}.video_bitrate_kbps"),
+    )?;
+    let output = OutputId::new(
+        setting_reference(snapshot, &format!("{key}.output"), ReferenceKind::Output)?.id,
+    );
+    let mut updated = target;
+    updated
+        .apply_exported(name, endpoint, backup, startup, bitrate, output)
+        .map_err(|error| SettingsApplyError::Model {
+            key: key.to_owned(),
+            reason: error.to_string(),
+        })?;
+    project
+        .replace_stream_target(updated)
+        .map_err(|error| SettingsApplyError::Model {
+            key: key.to_owned(),
+            reason: error.to_string(),
+        })
+}
+
+fn add_hls_stream_target(
+    snapshot: &SettingsSnapshot,
+    key: &str,
+    entity: EntityKey,
+    id: NonZeroU128,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    let protocol = match setting_text(snapshot, &format!("{key}.protocol"))? {
+        "hls" => StreamProtocol::Hls,
+        "rtmp" | "rtmps" | "srt" => {
+            return Err(SettingsApplyError::Model {
+                key: key.to_owned(),
+                reason: "adding a keyed stream target needs its stream key".to_owned(),
+            });
+        }
+        _ => {
+            return Err(SettingsApplyError::Invalid {
+                key: format!("{key}.protocol"),
+            });
+        }
+    };
+    let name = snapshot
+        .entity_name(entity)
+        .ok_or_else(|| SettingsApplyError::Missing {
+            key: format!("{key}.name"),
+        })?
+        .to_owned();
+    if snapshot
+        .get_path(&format!("{key}.backup_endpoint"))
+        .is_some()
+    {
+        return Err(SettingsApplyError::Model {
+            key: key.to_owned(),
+            reason: "an HLS stream target has no backup endpoint".to_owned(),
+        });
+    }
+    let endpoint = StreamEndpoint::parse_for(
+        protocol,
+        setting_text(snapshot, &format!("{key}.endpoint"))?,
+    )
+    .map_err(|_| SettingsApplyError::Invalid {
+        key: format!("{key}.endpoint"),
+    })?;
+    let startup = startup_policy(snapshot, &format!("{key}.startup"))?;
+    let bitrate = bounded_u32(
+        setting_integer(snapshot, &format!("{key}.video_bitrate_kbps"))?,
+        &format!("{key}.video_bitrate_kbps"),
+    )?;
+    let output = OutputId::new(
+        setting_reference(snapshot, &format!("{key}.output"), ReferenceKind::Output)?.id,
+    );
+    let target = StreamTarget::new(
+        StreamTargetId::new(id),
+        name,
+        protocol,
+        endpoint,
+        None,
+        output,
+    )
+    .map_err(|error| SettingsApplyError::Model {
+        key: key.to_owned(),
+        reason: error.to_string(),
+    })?
+    .with_video_bitrate(bitrate)
+    .map_err(|error| SettingsApplyError::Model {
+        key: key.to_owned(),
+        reason: error.to_string(),
+    })?
+    .with_startup(startup);
+    project
+        .add_stream_target_checked(target)
+        .map_err(|error| SettingsApplyError::Model {
+            key: key.to_owned(),
+            reason: error.to_string(),
+        })
 }
 
 fn startup_policy(
