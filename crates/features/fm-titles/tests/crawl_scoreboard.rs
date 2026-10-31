@@ -1557,6 +1557,13 @@ fn scoreboard_documents_round_trip_strictly() {
                     side: TeamSide::Home,
                     index: Some(0),
                 },
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Away,
+                    player: Player {
+                        number: Some(11),
+                        name: "Away One".into(),
+                    },
+                },
                 ScoreboardAction::SetShotClockDuration { value_ms: 30_000 },
                 ScoreboardAction::StartClock,
             ],
