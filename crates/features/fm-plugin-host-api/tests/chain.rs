@@ -2,8 +2,9 @@
 //! per-plugin state snapshots.
 
 use fm_plugin_host_api::{
-    MAX_PLUGIN_CHAIN_SLOTS, MAX_PLUGIN_LATENCY_FRAMES, PluginChain, PluginChainError, PluginId,
-    PluginSlot, ProtocolLimits, StateSnapshot, StateVersion,
+    MAX_PLUGIN_CHAIN_SLOTS, MAX_PLUGIN_LATENCY_FRAMES, MAX_PLUGIN_PARAMETER_NAME_BYTES,
+    MAX_PLUGIN_PARAMETERS, PluginChain, PluginChainError, PluginId, PluginSlot, ProtocolLimits,
+    StateSnapshot, StateVersion,
 };
 
 fn plugin(name: &str) -> PluginId {
@@ -146,4 +147,43 @@ fn a_slot_keeps_only_its_own_plugins_snapshot() {
             found: plugin("comp"),
         })
     );
+}
+
+#[test]
+fn a_slot_keeps_bounded_finite_parameters() {
+    let mut eq = slot("eq");
+    assert_eq!(eq.parameter("gain"), None);
+    eq.set_parameter("gain", 0.5).unwrap();
+    eq.set_parameter("gain", -3.0).unwrap();
+    assert_eq!(eq.parameter("gain"), Some(-3.0));
+    assert_eq!(eq.parameters().collect::<Vec<_>>(), [("gain", -3.0)]);
+    assert_eq!(eq.clear_parameter("gain"), Some(-3.0));
+    assert_eq!(eq.parameter("gain"), None);
+    assert_eq!(
+        eq.set_parameter("", 1.0),
+        Err(PluginChainError::ParameterNameTooLong {
+            maximum: MAX_PLUGIN_PARAMETER_NAME_BYTES,
+        })
+    );
+    assert_eq!(
+        eq.set_parameter(&"x".repeat(MAX_PLUGIN_PARAMETER_NAME_BYTES + 1), 1.0),
+        Err(PluginChainError::ParameterNameTooLong {
+            maximum: MAX_PLUGIN_PARAMETER_NAME_BYTES,
+        })
+    );
+    assert_eq!(
+        eq.set_parameter("nan", f32::NAN),
+        Err(PluginChainError::InvalidParameterValue)
+    );
+    for index in 0..MAX_PLUGIN_PARAMETERS {
+        eq.set_parameter(&format!("p{index}"), 0.0).unwrap();
+    }
+    assert_eq!(
+        eq.set_parameter("overflow", 0.0),
+        Err(PluginChainError::TooManyParameters {
+            maximum: MAX_PLUGIN_PARAMETERS,
+        })
+    );
+    eq.set_parameter("p0", 1.0).unwrap();
+    assert_eq!(eq.parameter("p0"), Some(1.0));
 }

@@ -9,6 +9,7 @@
 //! by its plugin even after reordering.
 
 use core::fmt;
+use std::collections::BTreeMap;
 
 use crate::{PluginId, StateSnapshot};
 
@@ -16,6 +17,10 @@ use crate::{PluginId, StateSnapshot};
 pub const MAX_PLUGIN_CHAIN_SLOTS: usize = 8;
 /// Most frames of latency one slot may report.
 pub const MAX_PLUGIN_LATENCY_FRAMES: u32 = 60_000;
+/// Most parameters one slot may hold.
+pub const MAX_PLUGIN_PARAMETERS: usize = 64;
+/// Longest parameter name, in bytes.
+pub const MAX_PLUGIN_PARAMETER_NAME_BYTES: usize = 64;
 
 /// One plugin's place in a chain.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,6 +29,8 @@ pub struct PluginSlot {
     bypassed: bool,
     latency_frames: u32,
     snapshot: Option<StateSnapshot>,
+    /// Parameter values, stored as `f32` bit patterns so a slot stays `Eq`.
+    parameters: BTreeMap<String, u32>,
 }
 
 impl PluginSlot {
@@ -35,6 +42,7 @@ impl PluginSlot {
             bypassed: false,
             latency_frames: 0,
             snapshot: None,
+            parameters: BTreeMap::new(),
         }
     }
 
@@ -104,6 +112,50 @@ impl PluginSlot {
     /// Drops the plugin's saved state.
     pub fn clear_snapshot(&mut self) {
         self.snapshot = None;
+    }
+
+    /// Every parameter value, in name order.
+    pub fn parameters(&self) -> impl Iterator<Item = (&str, f32)> {
+        self.parameters
+            .iter()
+            .map(|(name, bits)| (name.as_str(), f32::from_bits(*bits)))
+    }
+
+    /// Parameter `name`, if set.
+    #[must_use]
+    pub fn parameter(&self, name: &str) -> Option<f32> {
+        self.parameters.get(name).map(|bits| f32::from_bits(*bits))
+    }
+
+    /// Sets parameter `name` to `value`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginChainError::ParameterNameTooLong`] for an empty or
+    /// oversized name, [`PluginChainError::InvalidParameterValue`] for a
+    /// non-finite value, or [`PluginChainError::TooManyParameters`] when a
+    /// new name would exceed [`MAX_PLUGIN_PARAMETERS`].
+    pub fn set_parameter(&mut self, name: &str, value: f32) -> Result<(), PluginChainError> {
+        if name.is_empty() || name.len() > MAX_PLUGIN_PARAMETER_NAME_BYTES {
+            return Err(PluginChainError::ParameterNameTooLong {
+                maximum: MAX_PLUGIN_PARAMETER_NAME_BYTES,
+            });
+        }
+        if !value.is_finite() {
+            return Err(PluginChainError::InvalidParameterValue);
+        }
+        if !self.parameters.contains_key(name) && self.parameters.len() >= MAX_PLUGIN_PARAMETERS {
+            return Err(PluginChainError::TooManyParameters {
+                maximum: MAX_PLUGIN_PARAMETERS,
+            });
+        }
+        self.parameters.insert(name.to_owned(), value.to_bits());
+        Ok(())
+    }
+
+    /// Removes parameter `name`, returning its value.
+    pub fn clear_parameter(&mut self, name: &str) -> Option<f32> {
+        self.parameters.remove(name).map(f32::from_bits)
     }
 }
 
@@ -283,6 +335,12 @@ pub enum PluginChainError {
     LatencyTooLarge { frames: u32, maximum: u32 },
     /// A state snapshot belongs to another plugin.
     SnapshotPluginMismatch { expected: PluginId, found: PluginId },
+    /// A parameter name is empty or longer than the bound.
+    ParameterNameTooLong { maximum: usize },
+    /// A parameter value is not finite.
+    InvalidParameterValue,
+    /// A slot holds more than the parameter bound.
+    TooManyParameters { maximum: usize },
 }
 
 impl fmt::Display for PluginChainError {
@@ -305,6 +363,18 @@ impl fmt::Display for PluginChainError {
                 formatter,
                 "a {found} snapshot cannot be stored in the {expected} slot"
             ),
+            Self::ParameterNameTooLong { maximum } => {
+                write!(formatter, "a plugin parameter name is 1 to {maximum} bytes")
+            }
+            Self::InvalidParameterValue => {
+                formatter.write_str("a plugin parameter value must be finite")
+            }
+            Self::TooManyParameters { maximum } => {
+                write!(
+                    formatter,
+                    "a plugin slot holds at most {maximum} parameters"
+                )
+            }
         }
     }
 }

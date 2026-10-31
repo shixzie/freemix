@@ -17,7 +17,8 @@ pub use catalog::{
     parse_manifest,
 };
 pub use chain::{
-    MAX_PLUGIN_CHAIN_SLOTS, MAX_PLUGIN_LATENCY_FRAMES, PluginChain, PluginChainError, PluginSlot,
+    MAX_PLUGIN_CHAIN_SLOTS, MAX_PLUGIN_LATENCY_FRAMES, MAX_PLUGIN_PARAMETER_NAME_BYTES,
+    MAX_PLUGIN_PARAMETERS, PluginChain, PluginChainError, PluginSlot,
 };
 pub use exchange::{
     DataBatch, DataMessage, EventBatch, EventMessage, ExchangeError, HeartbeatMessage,
