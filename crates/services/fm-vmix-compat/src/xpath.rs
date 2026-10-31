@@ -84,9 +84,53 @@ impl Node {
 #[derive(Debug, Eq, PartialEq)]
 enum Predicate {
     Position(usize),
-    Attribute { name: String, value: String },
-    AttributeContains { name: String, value: String },
-    AttributeStartsWith { name: String, value: String },
+    Attribute {
+        name: String,
+        value: String,
+    },
+    AttributeContains {
+        name: String,
+        value: String,
+    },
+    AttributeStartsWith {
+        name: String,
+        value: String,
+    },
+    /// `[@name <op> N]`: a numeric attribute comparison.
+    AttributeNumber {
+        name: String,
+        comparison: Comparison,
+        value: i64,
+    },
+    /// `[position() <op> N]`: a numeric position comparison.
+    PositionNumber {
+        comparison: Comparison,
+        value: i64,
+    },
+}
+
+/// A numeric comparison operator in a predicate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Comparison {
+    Eq,
+    NotEq,
+    Less,
+    LessOrEqual,
+    Greater,
+    GreaterOrEqual,
+}
+
+impl Comparison {
+    const fn holds(self, left: i64, right: i64) -> bool {
+        match self {
+            Self::Eq => left == right,
+            Self::NotEq => left != right,
+            Self::Less => left < right,
+            Self::LessOrEqual => left <= right,
+            Self::Greater => left > right,
+            Self::GreaterOrEqual => left >= right,
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -318,6 +362,27 @@ fn select<'a>(candidates: impl IntoIterator<Item = &'a Node>, step: &Step) -> Ve
                         .is_some_and(|attribute| attribute.starts_with(value.as_str()))
                 })
                 .collect(),
+            Predicate::AttributeNumber {
+                name,
+                comparison,
+                value,
+            } => selected
+                .into_iter()
+                .filter(|node| {
+                    node.attribute(name)
+                        .and_then(|attribute| attribute.parse::<i64>().ok())
+                        .is_some_and(|attribute| comparison.holds(attribute, *value))
+                })
+                .collect(),
+            Predicate::PositionNumber { comparison, value } => selected
+                .into_iter()
+                .enumerate()
+                .filter(|(index, _)| {
+                    let position = i64::try_from(*index).unwrap_or(i64::MAX).saturating_add(1);
+                    comparison.holds(position, *value)
+                })
+                .map(|(_, node)| node)
+                .collect(),
         };
     }
     selected
@@ -521,6 +586,60 @@ impl<'a> Parser<'a> {
         Ok(value)
     }
 
+    fn comparison(&mut self) -> Result<Comparison, XPathError> {
+        if self.eat(b'=') {
+            return Ok(Comparison::Eq);
+        }
+        if self.eat(b'!') {
+            if self.eat(b'=') {
+                return Ok(Comparison::NotEq);
+            }
+            return Err(XPathError::Syntax("expected '!=' in a predicate"));
+        }
+        if self.eat(b'<') {
+            return Ok(if self.eat(b'=') {
+                Comparison::LessOrEqual
+            } else {
+                Comparison::Less
+            });
+        }
+        if self.eat(b'>') {
+            return Ok(if self.eat(b'=') {
+                Comparison::GreaterOrEqual
+            } else {
+                Comparison::Greater
+            });
+        }
+        Err(XPathError::Syntax("expected a comparison operator"))
+    }
+
+    fn peek_quote(&self) -> bool {
+        matches!(self.bytes.get(self.position), Some(b'\'' | b'"'))
+    }
+
+    fn integer(&mut self) -> Result<i64, XPathError> {
+        let start = self.position;
+        let negative = self.eat(b'-');
+        let digits_start = self.position;
+        while self
+            .bytes
+            .get(self.position)
+            .is_some_and(u8::is_ascii_digit)
+        {
+            self.position += 1;
+        }
+        let digits = &self.source[digits_start..self.position];
+        if digits.is_empty()
+            || (digits.len() > 1 && digits.starts_with('0'))
+            || (negative && digits == "0")
+        {
+            return Err(XPathError::Syntax("expected a canonical integer"));
+        }
+        self.source[start..self.position]
+            .parse::<i64>()
+            .map_err(|_| XPathError::Syntax("integer is out of range"))
+    }
+
     fn name(&mut self) -> Result<&'a str, XPathError> {
         let start = self.position;
         while self
@@ -542,11 +661,31 @@ impl<'a> Parser<'a> {
     fn predicate(&mut self) -> Result<Predicate, XPathError> {
         if self.eat(b'@') {
             let name = self.name()?.to_owned();
-            if !self.eat(b'=') {
-                return Err(XPathError::Syntax("expected '=' in attribute predicate"));
+            let comparison = self.comparison()?;
+            // `=` with a quoted literal keeps string equality; a bare
+            // integer compares numerically.
+            if comparison == Comparison::Eq && self.peek_quote() {
+                let value = self.literal()?;
+                return Ok(Predicate::Attribute { name, value });
             }
-            let value = self.literal()?;
-            return Ok(Predicate::Attribute { name, value });
+            let value = self.integer()?;
+            return Ok(Predicate::AttributeNumber {
+                name,
+                comparison,
+                value,
+            });
+        }
+        if self.peek_name() == Some("position") {
+            self.position += "position".len();
+            if !self.eat(b'(') {
+                return Err(XPathError::Syntax("expected '(' after position"));
+            }
+            if !self.eat(b')') {
+                return Err(XPathError::Syntax("expected ')' after position("));
+            }
+            let comparison = self.comparison()?;
+            let value = self.integer()?;
+            return Ok(Predicate::PositionNumber { comparison, value });
         }
         if let Some(name) = self.peek_name() {
             let kind = match name {

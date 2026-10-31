@@ -501,6 +501,52 @@ fn xpath_unions_pick_the_first_node_in_document_order() {
 }
 
 #[test]
+fn xpath_numeric_comparisons_select_nodes() {
+    let state = state();
+    assert_eq!(
+        state.xml_text("//input[@number>1]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[@number>=2][1]/@number"),
+        Ok("2".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[@number<=2]/@title"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[@number!=2]/@number"),
+        Ok("1".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[position()>1]/@number"),
+        Ok("2".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[position()=3]/@title"),
+        Ok("Spare".into())
+    );
+    // A quoted literal still compares as text, not a number.
+    assert_eq!(
+        state.xml_text("//input[@number='2']/@title"),
+        Ok("News <GT>".into())
+    );
+    for path in [
+        "//input[@number>x]",
+        "//input[@number>02]",
+        "//input[@number>-0]",
+        "//input[position()]",
+        "//input[@number]",
+    ] {
+        assert!(
+            matches!(state.xml_text(path), Err(XPathError::Syntax(_))),
+            "{path}"
+        );
+    }
+}
+
+#[test]
 fn set_volume_translates_the_percentage() {
     let state = state();
     assert_eq!(

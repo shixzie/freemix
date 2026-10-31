@@ -6378,9 +6378,9 @@ sessions, reads capped lines, writes responses and subscription events, and
 calls a caller-supplied translation executor. Remaining gaps: no daemon
 runs the server yet, a partial function and state-document surface, XPath
 lacks arithmetic and axes beyond child and descendant (it supports unions
-of up to four paths, a final `text()` step, and `contains`/`starts-with`
-attribute predicates), a partial ACTS set, no authentication, and no byte
-comparison
+of up to four paths, numeric attribute and `position()` comparisons, a final
+`text()` step, and `contains`/`starts-with` attribute predicates), a partial
+ACTS set, no authentication, and no byte comparison
 against a real vMix 29 instance. `RC-009` remains planned.
 
 Current implementation boundary for item 3 (social moderation): `fm-social`
