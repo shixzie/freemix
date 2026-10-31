@@ -58,7 +58,7 @@ pub fn parse_feed(bytes: &[u8], limits: &ParseLimits) -> Result<Vec<DataValue>, 
                 .into_iter()
                 .find(|child| tag(child) == Some("channel"))
                 .ok_or(FeedError::NotAFeed)?;
-            (named_children(&channel, "item"), false)
+            (named_children(channel, "item"), false)
         }
         "feed" => (named_children(&document, "entry"), true),
         _ => return Err(FeedError::NotAFeed),
@@ -68,7 +68,7 @@ pub fn parse_feed(bytes: &[u8], limits: &ParseLimits) -> Result<Vec<DataValue>, 
             limit: limits.max_rows,
         });
     }
-    Ok(items.into_iter().map(|item| entry(&item, atom)).collect())
+    Ok(items.into_iter().map(|item| entry(item, atom)).collect())
 }
 
 fn entry(item: &DataValue, atom: bool) -> DataValue {
@@ -76,13 +76,13 @@ fn entry(item: &DataValue, atom: bool) -> DataValue {
         names
             .iter()
             .find_map(|name| child_text(item, name))
-            .map_or(DataValue::Null, |text| DataValue::String(text))
+            .map_or(DataValue::Null, DataValue::String)
     };
     let link = if atom {
         children(item)
             .into_iter()
             .find(|child| tag(child) == Some("link"))
-            .and_then(|child| attribute(&child, "href"))
+            .and_then(|child| attribute(child, "href"))
             .map_or_else(
                 || field(&["link"]),
                 |href| DataValue::String(href.to_owned()),
@@ -241,7 +241,7 @@ mod tests {
     #[test]
     fn non_feeds_and_too_many_items_are_refused() {
         assert_eq!(parse_feed(b"<root/>", &LIMITS), Err(FeedError::NotAFeed));
-        let feed = br#"<rss><channel><item/><item/><item/></channel></rss>"#;
+        let feed = br"<rss><channel><item/><item/><item/></channel></rss>";
         assert_eq!(
             parse_feed(feed, &LIMITS),
             Err(FeedError::TooManyItems { limit: 2 })

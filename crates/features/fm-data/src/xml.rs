@@ -59,7 +59,7 @@ impl XmlParser<'_> {
         while self
             .bytes
             .get(self.pos)
-            .is_some_and(|byte| byte.is_ascii_whitespace())
+            .is_some_and(u8::is_ascii_whitespace)
         {
             self.pos += 1;
         }

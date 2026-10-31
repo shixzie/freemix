@@ -11,7 +11,7 @@
 use crate::parse::{ParseError, ParseErrorKind, ParseLimits, decode};
 use crate::value::DataValue;
 use crate::xml::decode_entities;
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 /// Reads the first table of an HTML document as rows of named cells.
 ///
@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 ///
 /// Returns a located [`ParseError`] for malformed markup, duplicate or empty
 /// headers, ragged rows, or limit violations.
+#[allow(clippy::too_many_lines)] // one branch per table section
 pub fn parse_html_table(bytes: &[u8], limits: &ParseLimits) -> Result<Vec<DataValue>, ParseError> {
     let text = decode(bytes, limits)?;
     let lower = text.to_ascii_lowercase();
@@ -89,7 +90,7 @@ pub fn parse_html_table(bytes: &[u8], limits: &ParseLimits) -> Result<Vec<DataVa
     let Some((headers, data)) = rows.split_first() else {
         return Ok(Vec::new());
     };
-    let mut seen = BTreeMap::new();
+    let mut seen = BTreeSet::new();
     for (column, header) in headers.iter().enumerate() {
         if header.is_empty() {
             return Err(ParseError::at(
@@ -98,7 +99,7 @@ pub fn parse_html_table(bytes: &[u8], limits: &ParseLimits) -> Result<Vec<DataVa
                 ParseErrorKind::EmptyHeader { column },
             ));
         }
-        if seen.insert(header.as_str(), ()).is_some() {
+        if !seen.insert(header.as_str()) {
             return Err(ParseError::at(
                 text,
                 start,
