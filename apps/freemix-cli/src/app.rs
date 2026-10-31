@@ -1102,6 +1102,13 @@ pub fn run(command: Command) -> AppResult<()> {
             document,
         } => crawl_import(&path, input, &document)?,
         Command::CrawlExport { path, input } => crawl_export(&path, input)?,
+        Command::PreviewCheck { path } => preview_check(&path)?,
+        Command::PreviewImport {
+            path,
+            input,
+            document,
+        } => preview_import(&path, input, &document)?,
+        Command::PreviewExport { path, input } => preview_export(&path, input)?,
         Command::SettingsImport {
             path,
             input,
@@ -6132,6 +6139,47 @@ fn settings_export(path: &Path, output: &Path) -> AppResult<()> {
     Ok(())
 }
 
+fn preview_check(path: &Path) -> AppResult<()> {
+    let text = fs::read_to_string(path).map_err(|error| AppFailure(format!("preview: {error}")))?;
+    let snapshot = fm_data::PreviewSnapshot::from_document(&text)
+        .map_err(|error| AppFailure(format!("preview: {error}")))?;
+    println!(
+        "preview: policy={:?} revision={} fields={}",
+        snapshot.policy,
+        snapshot.revision,
+        snapshot.live.len()
+    );
+    Ok(())
+}
+
+fn preview_import(path: &Path, input: u128, document: &Path) -> AppResult<()> {
+    let text = fs::read_to_string(document)
+        .map_err(|error| AppFailure(format!("preview import: {error}")))?;
+    let snapshot = fm_data::PreviewSnapshot::from_document(&text)
+        .map_err(|error| AppFailure(format!("preview import: {error}")))?;
+    let canonical = snapshot.to_document();
+    let stored = load_stored_project(path)?;
+    let mut project = stored.project().clone();
+    let input = input_id(input)?;
+    project
+        .set_preview_document(input, canonical)
+        .map_err(|error| AppFailure(format!("preview import: {error}")))?;
+    ProjectStore::new(path)?.save(&stored.with_project(project)?)?;
+    println!("preview-import: {input}");
+    Ok(())
+}
+
+fn preview_export(path: &Path, input: u128) -> AppResult<()> {
+    let stored = inspect_stored_project(path)?;
+    let input = input_id(input)?;
+    let document = stored
+        .project()
+        .preview_document(input)
+        .ok_or_else(|| AppFailure(format!("input {input} has no stored preview")))?;
+    print!("{document}");
+    Ok(())
+}
+
 fn crawl_check(path: &Path) -> AppResult<()> {
     let text = fs::read_to_string(path).map_err(|error| AppFailure(format!("crawl: {error}")))?;
     let snapshot = fm_titles::CrawlSnapshot::from_document(&text)
@@ -7391,6 +7439,9 @@ Usage:
   freemix-cli crawl-check <crawl.txt>
   freemix-cli crawl-import <show.freemix> <title-input> <crawl.txt>
   freemix-cli crawl-export <show.freemix> <title-input>
+  freemix-cli preview-check <preview.txt>
+  freemix-cli preview-import <show.freemix> <title-input> <preview.txt>
+  freemix-cli preview-export <show.freemix> <title-input>
   freemix-cli title-design-check <design.fmdesign>
   freemix-cli title-apply-row <show.freemix> <input-id> <row.json> [--keep-live] [--preview]
   freemix-cli title-design-import <show.freemix> <design.fmdesign> --id <nonzero-input-id> --name <name> [--font <Family=path.ttf>]...

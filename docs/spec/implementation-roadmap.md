@@ -4865,8 +4865,9 @@ time-zone database or localization; image URIs are never fetched; and
 preview state is in memory only. `GX-005` remains planned. Preview state now
 round-trips through a strict, versioned text document (`PreviewSnapshot`) and
 persists per title input in `project.json` (schema 106), strictly parsed and
-canonicalized on load, but no protocol command or UI stages, inspects, or
-commits it yet.
+canonicalized on load; `freemix-cli preview-check`, `preview-import`, and
+`preview-export` validate and move one, but no protocol command or UI stages,
+inspects, or commits it yet.
 
 Current implementation boundary for item 5: `fm-playback` provides a
 fixture-backed `ListPlayer` that advances once per monotonic engine frame tick

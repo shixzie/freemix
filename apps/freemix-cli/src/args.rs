@@ -1052,6 +1052,21 @@ pub enum Command {
         path: PathBuf,
         input: u128,
     },
+    /// Validates a preview-state document file (GX-005).
+    PreviewCheck {
+        path: PathBuf,
+    },
+    /// Stores a canonical preview-state document on a title input (GX-005).
+    PreviewImport {
+        path: PathBuf,
+        input: u128,
+        document: PathBuf,
+    },
+    /// Prints a title input's stored preview-state document (GX-005).
+    PreviewExport {
+        path: PathBuf,
+        input: u128,
+    },
     /// `title-design-check <file.fmdesign>`: validate a designer document
     /// (GX-002).
     TitleDesignCheck {
@@ -2561,6 +2576,9 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "crawl-check" => parse_crawl_check(arguments),
         "crawl-import" => parse_crawl_import(arguments),
         "crawl-export" => parse_crawl_export(arguments),
+        "preview-check" => parse_preview_check(arguments),
+        "preview-import" => parse_preview_import(arguments),
+        "preview-export" => parse_preview_export(arguments),
         "title-design-check" => {
             let path = required_path(&mut arguments, "design path")?;
             reject_extra(&mut arguments)?;
@@ -4777,6 +4795,37 @@ fn parse_crawl_export(
     let input = number(&required(&mut arguments, "input")?, "input")?;
     reject_extra(&mut arguments)?;
     Ok(Command::CrawlExport { path, input })
+}
+
+fn parse_preview_check(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "preview document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::PreviewCheck { path })
+}
+
+fn parse_preview_import(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let document = required_path(&mut arguments, "preview document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::PreviewImport {
+        path,
+        input,
+        document,
+    })
+}
+
+fn parse_preview_export(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::PreviewExport { path, input })
 }
 
 fn parse_title_input_add(
