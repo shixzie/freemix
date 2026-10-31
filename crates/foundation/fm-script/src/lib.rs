@@ -367,6 +367,17 @@ pub enum MediaOperation {
     Restart,
 }
 
+/// A paged-input (slideshow or document) step.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum PageOperation {
+    Next,
+    Previous,
+    First,
+    Last,
+    /// Zero-based page `n`, clamped to the last page.
+    Goto(u32),
+}
+
 /// One show action a script asks the host to perform. Numbers are only
 /// range-checked to their type here; the host checks them against the show.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -428,6 +439,11 @@ pub enum ScriptAction {
         input: InputRef,
         operation: MediaOperation,
     },
+    /// Steps paged input `input` (a slideshow or document).
+    Page {
+        input: InputRef,
+        operation: PageOperation,
+    },
 }
 
 /// The action verbs, one per statement kind that acts on the show.
@@ -485,11 +501,21 @@ pub enum Verb {
     Seek,
     /// `restart INPUT`
     Restart,
+    /// `page_next INPUT`
+    PageNext,
+    /// `page_previous INPUT`
+    PagePrevious,
+    /// `page_first INPUT`
+    PageFirst,
+    /// `page_last INPUT`
+    PageLast,
+    /// `page_goto INPUT, PAGE`
+    PageGoto,
 }
 
 impl Verb {
     /// Every verb, in declaration order.
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 31] = [
         Self::Preview,
         Self::Cut,
         Self::Transition,
@@ -516,6 +542,11 @@ impl Verb {
         Self::Pause,
         Self::Seek,
         Self::Restart,
+        Self::PageNext,
+        Self::PagePrevious,
+        Self::PageFirst,
+        Self::PageLast,
+        Self::PageGoto,
     ];
 
     /// The word a script writes.
@@ -548,6 +579,11 @@ impl Verb {
             Self::Pause => "pause",
             Self::Seek => "seek",
             Self::Restart => "restart",
+            Self::PageNext => "page_next",
+            Self::PagePrevious => "page_previous",
+            Self::PageFirst => "page_first",
+            Self::PageLast => "page_last",
+            Self::PageGoto => "page_goto",
         }
     }
 
@@ -565,7 +601,7 @@ impl Verb {
             Self::Cut => (0, 1),
             Self::Transition => (1, 2),
             Self::Stinger => (2, 3),
-            Self::Overlay | Self::TitleOn | Self::Gain | Self::Seek => (2, 2),
+            Self::Overlay | Self::TitleOn | Self::Gain | Self::Seek | Self::PageGoto => (2, 2),
             Self::TitleText | Self::TitleNumber | Self::TitleAdd => (3, 3),
             Self::Preview
             | Self::OverlayOff
@@ -580,7 +616,11 @@ impl Verb {
             | Self::StreamStop
             | Self::Play
             | Self::Pause
-            | Self::Restart => (1, 1),
+            | Self::Restart
+            | Self::PageNext
+            | Self::PagePrevious
+            | Self::PageFirst
+            | Self::PageLast => (1, 1),
         }
     }
 }

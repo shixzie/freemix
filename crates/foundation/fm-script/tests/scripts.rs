@@ -2,8 +2,8 @@
 //! refusals.
 
 use fm_script::{
-    Budget, Effect, FailureKind, InputRef, Limits, MAX_SOURCE_BYTES, MediaOperation, ScriptAction,
-    ScriptHost, Span, TakeEffect, Verb, parse, run, run_source,
+    Budget, Effect, FailureKind, InputRef, Limits, MAX_SOURCE_BYTES, MediaOperation, PageOperation,
+    ScriptAction, ScriptHost, Span, TakeEffect, Verb, parse, run, run_source,
 };
 
 /// A host that records actions and refuses inputs above `inputs`.
@@ -92,11 +92,16 @@ play 2
 pause 2
 seek 2, 250
 restart 2
+page_next 2
+page_previous 2
+page_first 2
+page_last 2
+page_goto 2, 3
 "#;
     let mut host = host();
     let report = run_source(source, &mut host, Limits::default());
     assert_eq!(report.failure, None);
-    assert_eq!(report.actions, 28);
+    assert_eq!(report.actions, 33);
     let name = |text: &str| InputRef::Name(text.to_owned());
     assert_eq!(
         host.actions,
@@ -207,6 +212,26 @@ restart 2
             ScriptAction::Media {
                 input: InputRef::Number(2),
                 operation: MediaOperation::Restart
+            },
+            ScriptAction::Page {
+                input: InputRef::Number(2),
+                operation: PageOperation::Next
+            },
+            ScriptAction::Page {
+                input: InputRef::Number(2),
+                operation: PageOperation::Previous
+            },
+            ScriptAction::Page {
+                input: InputRef::Number(2),
+                operation: PageOperation::First
+            },
+            ScriptAction::Page {
+                input: InputRef::Number(2),
+                operation: PageOperation::Last
+            },
+            ScriptAction::Page {
+                input: InputRef::Number(2),
+                operation: PageOperation::Goto(3)
             },
         ]
     );

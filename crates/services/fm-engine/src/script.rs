@@ -95,7 +95,7 @@ use fm_script::{
     Budget, Effect, FailureKind, InputRef, Limits, MediaOperation, ScriptAction, ScriptFailure,
     ScriptHost, TakeEffect,
 };
-use fm_types::InputId;
+use fm_types::{InputId, paged::PagedNavigation};
 
 use crate::engine::{CueFrame, CuePlan};
 use crate::{Engine, EngineEvent, ShowState};
@@ -458,6 +458,19 @@ fn cue_action(state: &ShowState, action: &ScriptAction) -> Result<CueAction, Str
                 MediaOperation::Pause => CueMediaOperation::Pause,
                 MediaOperation::Seek(frame) => CueMediaOperation::Seek { frame: *frame },
                 MediaOperation::Restart => CueMediaOperation::Restart,
+            },
+        },
+        ScriptAction::Page {
+            input: reference,
+            operation,
+        } => CueAction::Page {
+            input: input(reference)?,
+            navigation: match operation {
+                fm_script::PageOperation::Next => PagedNavigation::Next,
+                fm_script::PageOperation::Previous => PagedNavigation::Previous,
+                fm_script::PageOperation::First => PagedNavigation::First,
+                fm_script::PageOperation::Last => PagedNavigation::Last,
+                fm_script::PageOperation::Goto(page) => PagedNavigation::Goto(*page),
             },
         },
     })

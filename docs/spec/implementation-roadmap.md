@@ -5232,7 +5232,8 @@ a server) and document-aware
 `project-import-media` and `input-import-batch`. Remaining gaps: no
 PowerPoint rendering without LibreOffice (no slide builds, transitions, or
 embedded media; a converted deck shows its final slide state), Keynote needs
-a PDF export, no script, OSC, or keyboard page actions yet, the
+a PDF export, scripts can step pages but there are no OSC or keyboard page
+actions yet, the
 simulated scene composer does not draw a document used as a Scene layer,
 and conversion is not cancelled when the input is removed (it finishes or
 times out). `IN-014` remains planned.

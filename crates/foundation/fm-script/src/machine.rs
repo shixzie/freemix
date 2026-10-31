@@ -2,9 +2,9 @@
 
 use crate::parser::{BinaryOp, Builtin, Expr, ExprKind, Statement, StatementKind, UnaryOp};
 use crate::{
-    Budget, Effect, FailureKind, InputRef, Limits, MediaOperation, Program, ResumePoint,
-    ScriptAction, ScriptFailure, ScriptHost, ScriptReport, Span, Suspended, Suspension, TakeEffect,
-    Verb,
+    Budget, Effect, FailureKind, InputRef, Limits, MediaOperation, PageOperation, Program,
+    ResumePoint, ScriptAction, ScriptFailure, ScriptHost, ScriptReport, Span, Suspended,
+    Suspension, TakeEffect, Verb,
 };
 
 use crate::ScriptValue as Value;
@@ -844,6 +844,25 @@ fn build_action(
             ScriptAction::Media {
                 input,
                 operation: MediaOperation::Seek(arguments.integer("a frame")?),
+            }
+        }
+        Verb::PageNext | Verb::PagePrevious | Verb::PageFirst | Verb::PageLast => {
+            ScriptAction::Page {
+                input: arguments.input()?,
+                operation: match verb {
+                    Verb::PageNext => PageOperation::Next,
+                    Verb::PagePrevious => PageOperation::Previous,
+                    Verb::PageFirst => PageOperation::First,
+                    _ => PageOperation::Last,
+                },
+            }
+        }
+        Verb::PageGoto => {
+            let input = arguments.input()?;
+            let page = arguments.integer("a page")?;
+            ScriptAction::Page {
+                input,
+                operation: PageOperation::Goto(page),
             }
         }
     })
