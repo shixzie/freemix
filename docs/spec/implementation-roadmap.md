@@ -6269,8 +6269,8 @@ SUBSCRIBE/UNSUBSCRIBE for TALLY and ACTS, VERSION, and QUIT. A hub of at most
 64 sessions fans out per-session change events in deterministic order. The
 function surface now includes list and picture navigation, media transport
 (including volume and mute), overlay in/off/all-off, Fade to Black, and
-recording/streaming toggles in addition to the switcher, title, recording,
-and streaming verbs. Remaining gaps: no sockets or running-server wiring, a
+recording/streaming toggles and input renaming in addition to the switcher,
+title, recording, and streaming verbs. Remaining gaps: no sockets or running-server wiring, a
 partial function and state-document surface, no XPath functions, unions, or
 axes beyond child and descendant, a partial ACTS set, no authentication, and
 no byte comparison against a real vMix 29 instance. `RC-009` remains planned.
