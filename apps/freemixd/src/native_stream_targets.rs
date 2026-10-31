@@ -4,7 +4,8 @@
 //!
 //! Extracted from `main.rs` as a mechanical move.
 
-#[allow(clippy::wildcard_imports)] // the binary's items and imports
+#[allow(unused_imports, clippy::wildcard_imports)]
+// the binary items, some of them native only
 use super::*;
 
 /// Per-target bookkeeping for the native streaming feed path.
