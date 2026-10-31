@@ -349,6 +349,9 @@ pub enum CompatIntent {
     /// Toggle one media input's play/pause state; the dispatcher reads the
     /// current transport state.
     ToggleMediaPlayback { input: WireInputId },
+    /// Set one input's volume as vMix's 0 through 100 percentage; the
+    /// dispatcher maps it onto the strip's gain.
+    SetInputVolume { input: WireInputId, percent: u8 },
 }
 
 /// A recognized function that this compatibility core cannot preserve.
@@ -591,6 +594,18 @@ fn translate(
             allowed(parameters, &["Function", "Input"])?;
             Ok(Translation::Compat(CompatIntent::ToggleMediaPlayback {
                 input: state.resolve_input(required(parameters, "Input")?)?,
+            }))
+        }
+        "SetVolume" => {
+            allowed(parameters, &["Function", "Input", "Value"])?;
+            let percent = u8::try_from(parse_u32(required(parameters, "Value")?, "Value", 0, 100)?)
+                .map_err(|_| ParseError::InvalidParameter {
+                    parameter: "Value",
+                    reason: "volume is 0 through 100",
+                })?;
+            Ok(Translation::Compat(CompatIntent::SetInputVolume {
+                input: state.resolve_input(required(parameters, "Input")?)?,
+                percent,
             }))
         }
         "SetText" => translate_set_text(parameters, state),

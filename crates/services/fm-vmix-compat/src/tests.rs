@@ -418,3 +418,22 @@ fn xpath_descendant_and_wildcard_steps_select_nodes() {
         Err(XPathError::Syntax(_))
     ));
 }
+
+#[test]
+fn set_volume_translates_the_percentage() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=SetVolume&Input=2&Value=75", &state),
+        Ok(Translation::Compat(CompatIntent::SetInputVolume {
+            input: id(2),
+            percent: 75,
+        }))
+    );
+    for value in ["-1", "101", "x", ""] {
+        assert!(
+            parse_http_query(&format!("Function=SetVolume&Input=2&Value={value}"), &state).is_err(),
+            "{value}"
+        );
+    }
+    assert!(parse_http_query("Function=SetVolume&Input=2", &state).is_err());
+}
