@@ -5557,8 +5557,12 @@ recovery from an abnormal-sequence control reply, with counters.
 `ViscaUdpAdapter` implements the `PtzAdapter` contract over that transport:
 it validates and clamps an intent, encodes and acknowledges every VISCA
 command, updates telemetry and presets only after the wire succeeds, and
-marks the camera disconnected on a lost transport. Remaining
-gaps: no serial transport, no hardware validation of the UDP adapter,
+marks the camera disconnected on a lost transport. `PresetVirtualInputs`
+now models camera presets as bounded, named, thumbnail-carrying virtual
+inputs and resolves an enabled one to its camera and recall intent.
+Remaining gaps: no serial transport, no hardware validation of the UDP
+adapter, and nothing binds the virtual inputs to the engine, protocol, or
+UI yet,
 no camera adapter or hardware validation, presets are not yet switchable
 virtual inputs with thumbnails, no HID or UI binding, and no ONVIF, Panasonic, or
 digital PTZ. `IN-028` remains planned.

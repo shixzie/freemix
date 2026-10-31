@@ -12,6 +12,7 @@ mod queue;
 mod visca;
 mod visca_ip;
 mod visca_ip_transport;
+mod virtual_input;
 mod visca_udp_adapter;
 
 pub use adapter::{AdapterError, CommandOutcome, PtzAdapter};
@@ -40,3 +41,7 @@ pub use visca_ip_transport::{
     ViscaUdpError, ViscaUdpTransport,
 };
 pub use visca_udp_adapter::{ViscaUdpAdapter, ViscaUdpCamera};
+pub use virtual_input::{
+    MAX_PRESET_THUMBNAIL_BYTES, MAX_PRESET_VIRTUAL_INPUTS, MAX_PRESET_VIRTUAL_INPUT_NAME_BYTES,
+    PresetSwitch, PresetVirtualInput, PresetVirtualInputError, PresetVirtualInputs,
+};
