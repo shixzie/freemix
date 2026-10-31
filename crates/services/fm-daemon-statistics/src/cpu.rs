@@ -64,6 +64,7 @@ impl Default for CpuSampler {
 
 /// The process's user plus system CPU time so far, with its children's.
 #[cfg(target_os = "linux")]
+#[allow(clippy::unnecessary_wraps)] // the shared signature returns None off Linux
 fn process_cpu_time() -> Option<Duration> {
     let mut ticks = 0_u64;
     let mut seen = std::collections::BTreeSet::new();
