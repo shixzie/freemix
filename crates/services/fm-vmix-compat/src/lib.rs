@@ -610,6 +610,18 @@ fn translate(
                 operation,
             }))
         }
+        "SetPosition" => {
+            allowed(parameters, &["Function", "Input", "Value"])?;
+            let input = state.resolve_input(required(parameters, "Input")?)?;
+            let millis = parse_u32(required(parameters, "Value")?, "Value", 0, u32::MAX)?;
+            Ok(Translation::Protocol(CommandPayload::Media {
+                input,
+                operation: fm_protocol::MediaOperation::Seek(fm_protocol::MediaSeekTarget::Time {
+                    numerator: u64::from(millis),
+                    denominator: 1_000,
+                }),
+            }))
+        }
         "PlayPause" => {
             allowed(parameters, &["Function", "Input"])?;
             Ok(Translation::Compat(CompatIntent::ToggleMediaPlayback {

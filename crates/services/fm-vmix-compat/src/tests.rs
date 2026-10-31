@@ -363,6 +363,16 @@ fn media_transport_verbs_translate_exactly() {
             input: id(2)
         }))
     );
+    assert_eq!(
+        parse_http_query("Function=SetPosition&Input=2&Value=1500", &state),
+        Ok(Translation::Protocol(CommandPayload::Media {
+            input: id(2),
+            operation: fm_protocol::MediaOperation::Seek(fm_protocol::MediaSeekTarget::Time {
+                numerator: 1_500,
+                denominator: 1_000,
+            },),
+        }))
+    );
     for query in [
         "Function=Play",
         "Function=Play&Input=2&Value=1",
