@@ -614,13 +614,14 @@ impl NativeDaemon {
         Ok(())
     }
 
-    /// Opens every media list's next item ahead of need (IN-006): the item
-    /// Auto Next or Next steps to from the active one ([`next_list_item`]),
-    /// when it is another file (an item of the file already open re-cues
-    /// in place). A still image is recognized on the standby's own thread
-    /// (reading the file never blocks the loop) and holds nothing. A closed
-    /// list prefetches nothing; a list that no longer has a next item drops
-    /// its standby.
+    /// Opens every media list's neighbouring items ahead of need (IN-006):
+    /// the item Auto Next or Next steps to from the active one
+    /// ([`next_list_item`]) and the item Previous steps to
+    /// ([`previous_list_item`]), when each is another file (an item of the
+    /// file already open re-cues in place). A still image is recognized on
+    /// the standby's own thread (reading the file never blocks the loop) and
+    /// holds nothing. A closed list prefetches nothing; a neighbour a list no
+    /// longer has drops its standby.
     pub(crate) fn sync_media_list_prefetch(&mut self, project: &Project) {
         let mut wanted = BTreeSet::new();
         for input in project.inputs() {
@@ -633,35 +634,43 @@ impl NativeDaemon {
             if project.input_lifecycle(input.id).closed {
                 continue;
             }
-            let Some(next) = next_list_item(list) else {
-                continue;
-            };
             let current = match &input.kind {
                 InputKind::Media { asset_uri, .. } => Some(asset_uri.as_str()),
                 _ => None,
             };
-            if current == Some(next.asset_uri.as_str()) {
-                continue;
+            for (role, item) in [
+                (native_files::PrefetchRole::Next, next_list_item(list)),
+                (
+                    native_files::PrefetchRole::Previous,
+                    previous_list_item(list),
+                ),
+            ] {
+                let Some(item) = item else {
+                    continue;
+                };
+                if current == Some(item.asset_uri.as_str()) {
+                    continue;
+                }
+                let Some(path) = self.asset_path(&item.asset_uri) else {
+                    continue;
+                };
+                wanted.insert((input.id, role));
+                let mut settings = *settings;
+                settings.trim_in = item.mark_in;
+                settings.trim_out = item.mark_out;
+                settings.start_frame = item.mark_in;
+                let assets_root = self.assets_root.clone();
+                self.files.prefetch(input.id, role, path, &settings, || {
+                    Adapter::new(FfmpegConfig {
+                        allowed_root: Some(assets_root),
+                        ..FfmpegConfig::default()
+                    })
+                    .ok()
+                });
             }
-            let Some(path) = self.asset_path(&next.asset_uri) else {
-                continue;
-            };
-            wanted.insert(input.id);
-            let mut settings = *settings;
-            settings.trim_in = next.mark_in;
-            settings.trim_out = next.mark_out;
-            settings.start_frame = next.mark_in;
-            let assets_root = self.assets_root.clone();
-            self.files.prefetch(input.id, path, &settings, || {
-                Adapter::new(FfmpegConfig {
-                    allowed_root: Some(assets_root),
-                    ..FfmpegConfig::default()
-                })
-                .ok()
-            });
         }
         self.files
-            .retain_prefetched(|input| wanted.contains(&input));
+            .retain_prefetched(|input, role| wanted.contains(&(input, role)));
     }
 
     /// Switches every media list whose accepted command moved it to the
@@ -757,6 +766,23 @@ pub(crate) fn next_list_item(list: &fm_model::MediaList) -> Option<&fm_model::Me
         *next.play_order().first()?
     } else if list.options.auto_first {
         *order.first()?
+    } else {
+        return None;
+    };
+    list.item(id)
+}
+
+/// The item Previous steps to from the active one: the one before it in play
+/// order, then the last under Loop (the cycle does not change), and nothing
+/// at the start of a list that does not loop (matching the engine's
+/// clamp).
+pub(crate) fn previous_list_item(list: &fm_model::MediaList) -> Option<&fm_model::MediaListItem> {
+    let order = list.play_order();
+    let position = list.position().unwrap_or(0);
+    let id = if position > 0 {
+        order[position - 1]
+    } else if list.options.loop_list {
+        *order.last()?
     } else {
         return None;
     };
@@ -1083,5 +1109,29 @@ mod tests {
         let mut wrapped = list.clone();
         wrapped.cycle += 1;
         assert_eq!(next(&list), Some(wrapped.play_order()[0]));
+    }
+
+    /// The other prefetched item is the one Previous steps to: the one
+    /// before the active item in play order, the last under Loop, and
+    /// nothing at the start of a list that does not loop.
+    #[test]
+    fn the_previous_list_item_clamps_or_wraps_like_previous() {
+        let items = (1..=3)
+            .map(|id| fm_model::MediaListItem::new(id, format!("asset://{id}.mkv")))
+            .collect();
+        let mut list =
+            fm_model::MediaList::new(items, fm_model::MediaListOptions::default()).unwrap();
+        let previous = |list: &fm_model::MediaList| previous_list_item(list).map(|item| item.id);
+        assert_eq!(previous(&list), None);
+        list.active = 2;
+        assert_eq!(previous(&list), Some(1));
+        list.options.loop_list = true;
+        list.active = 1;
+        assert_eq!(previous(&list), Some(3));
+        list.options.shuffle_seed = Some(7);
+        let order = list.play_order();
+        let last = *order.last().unwrap();
+        list.active = order[0];
+        assert_eq!(previous(&list), Some(last));
     }
 }

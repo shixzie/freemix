@@ -81,9 +81,10 @@ there come before any new breadth below.
    RC-004 boundary below). This is a P0 row.
 5. **Finish the Media List (`IN-006`) and `OR-015`.** The Media List is now
    a real input end to end (engine, protocol, persistence, both daemons,
-   Studio), and the native daemon prefetches each list's next item so Auto
-   Next and Next switch files gaplessly, Studio's list card shows each
-   item's own picture, and each list has its own transition between items
+   Studio), and the native daemon prefetches each list's next and previous
+   items so Auto Next, Next, and Previous switch files gaplessly, Studio's
+   list card shows each item's own picture, and each list has its own
+   transition between items
    (cut, fade, dip to black, or wipe, with a length; Protocol 2.95, schema
    77) that both daemons run on Auto Next and Next, the native one
    compositing the two items; it still lacks Windows/macOS evidence. (The slideshow,
@@ -4829,16 +4830,16 @@ plays it when the list was playing. Both daemons journal an Auto Next
 `advance` when the active item ends, so replay is frame-exact; host paths
 are imported into the bundle; snapshots carry `media_list_state` records
 (Protocol 2.74, schema 64).
-The native daemon prefetches every open list's next item (the one Auto
-Next steps to, when it is another file): a background thread opens the
-file, decodes its in-mark picture and first audio block, and the window
-after them. A step to that item (Auto Next or Next) switches the input's
-worker to the cued player before the step's frame is projected, so that
-frame already shows the new item's in mark (`native_media_lists` records
-Program and proves both switches hold and skip no frame). A step to an
-item that was not prefetched (Previous, First, a jump, or a standby still
-opening) still holds the previous item's last picture until the file
-opens. Studio adds lists (pasted paths and M3U
+The native daemon prefetches every open list's next and previous items (the
+one Auto Next steps to, and the one Previous steps to, when each is another
+file): a background thread opens the file, decodes its in-mark picture and
+first audio block, and the window after them. A step to that item (Auto
+Next, Next, or Previous) switches the input's worker to the cued player
+before the step's frame is projected, so that frame already shows the new
+item's in mark (`native_media_lists` records Program and proves both
+switches hold and skip no frame). A step to an item that was not prefetched
+(First, a jump, or a standby still opening) still holds the previous item's
+last picture until the file opens. Studio adds lists (pasted paths and M3U
 playlists with relative entries and `#EXTINF` titles) and shows a list card in the Media
 tab with search, drag reorder, per-item marks, the active item, Previous and
 Next, and the options. Each row starts with the item's own picture
@@ -4865,7 +4866,7 @@ gains (`native_media_lists` records Program through a wipe and checks
 every composited frame); a step to a file that was not prefetched still
 cuts. The simulated daemon runs the timing without compositing its
 synthetic pictures. Studio's list card edits the transition with hover
-help. Gaps: only the next item is prefetched; the CLI steps a list
+help. Gaps: a jump or First is not prefetched; the CLI steps a list
 (`input-media-list-navigate` and its `remote-` form) and edits its options and
 items (`input-media-list-options`, `input-media-list-item`); no vMix API
 verbs, no cross-input GO bank, and Linux-only native evidence. The generic

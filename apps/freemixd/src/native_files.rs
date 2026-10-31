@@ -345,9 +345,9 @@ pub(crate) struct NativeMediaFiles {
     /// The codec adapter workers open their files through; `None` until a
     /// daemon without media files at startup adds one.
     adapter: Option<Adapter>,
-    /// Each media list's next item, opened and cued ahead of need
-    /// (IN-006), by list input.
-    standbys: BTreeMap<InputId, Standby>,
+    /// Each media list's neighbouring items, opened and cued ahead of need
+    /// (IN-006), by list input and role.
+    standbys: BTreeMap<(InputId, PrefetchRole), Standby>,
     /// Bounds how many standbys open their files at once.
     prefetch_gate: Arc<PrefetchGate>,
     /// Each media list's outgoing item during a transition (IN-006): the
@@ -355,8 +355,16 @@ pub(crate) struct NativeMediaFiles {
     outgoing: BTreeMap<InputId, Worker>,
 }
 
-/// A media list's next item file, opened, indexed, and cued on its own
-/// thread ahead of need (IN-006): its in-mark picture and first audio
+/// Which neighbour of a media list's active item a standby opens: the item
+/// Auto Next or Next steps to, or the one Previous steps to (IN-006).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) enum PrefetchRole {
+    Next,
+    Previous,
+}
+
+/// A media list's neighbouring item file, opened, indexed, and cued on its
+/// own thread ahead of need (IN-006): its in-mark picture and first audio
 /// block are decoded and the window after it too, so the list switches to
 /// it on the switch frame instead of holding the item before while the
 /// file opens.
@@ -857,27 +865,30 @@ impl NativeMediaFiles {
         Ok(seed)
     }
 
-    /// Opens media list input `input`'s next item, the file at `path`
-    /// played with `settings` (the item's marks), on its own thread, cued
-    /// at its in mark (IN-006); see [`Standby`]. A standby already opening
-    /// or open for the same file, cue, and playback configuration is kept;
-    /// one for another item is dropped. `adapter` makes the codec adapter
-    /// when none exists yet; without one nothing is prefetched.
+    /// Opens the neighbouring media list item `role` of input `input`, the
+    /// file at `path` played with `settings` (the item's marks), on its own
+    /// thread, cued at its in mark (IN-006); see [`Standby`]. A standby
+    /// already opening or open for the same role, file, cue, and playback
+    /// configuration is kept; one for another item is dropped. `adapter`
+    /// makes the codec adapter when none exists yet; without one nothing is
+    /// prefetched.
     pub(crate) fn prefetch(
         &mut self,
         input: InputId,
+        role: PrefetchRole,
         path: PathBuf,
         settings: &MediaPlaybackSettings,
         adapter: impl FnOnce() -> Option<Adapter>,
     ) {
+        let key = (input, role);
         let config = playback_config(settings, self.rate, self.clock_domain, self.dimensions);
         let cue = settings.start_frame.max(settings.trim_in);
-        if self.standbys.get(&input).is_some_and(|standby| {
+        if self.standbys.get(&key).is_some_and(|standby| {
             standby.path == path && standby.cue == cue && standby.config == config
         }) {
             return;
         }
-        self.standbys.remove(&input);
+        self.standbys.remove(&key);
         if self.adapter.is_none() {
             self.adapter = adapter();
         }
@@ -890,30 +901,32 @@ impl NativeMediaFiles {
         let cancelled = Arc::new(AtomicBool::new(false));
         let gate = Arc::clone(&self.prefetch_gate);
         let (thread_cancelled, thread_gate) = (Arc::clone(&cancelled), Arc::clone(&gate));
-        let spawned = thread::Builder::new()
-            .name(format!("freemix-media-next-{input}"))
-            .spawn(move || {
-                // At most MAX_CONCURRENT_PREFETCHES files open at once.
-                let Some(_turn) = thread_gate.acquire(MAX_CONCURRENT_PREFETCHES, &thread_cancelled)
-                else {
-                    return;
-                };
-                // A still image is not a media file: its standby holds
-                // nothing and the list opens it the slow way. The sniff
-                // reads the file, so it runs here, off the session loop.
-                if crate::native_catalogue::is_still(&opening) {
-                    let _ = sender.send(Err(EngineMediaFault::Unsupported));
-                    return;
-                }
-                let opened = catch_unwind(AssertUnwindSafe(|| {
-                    open_cued(&adapter, &opening, config, cue, dimensions)
-                }))
-                .unwrap_or(Err(EngineMediaFault::DecodeFailed));
-                let _ = sender.send(opened);
-            });
+        let thread_name = match role {
+            PrefetchRole::Next => format!("freemix-media-next-{input}"),
+            PrefetchRole::Previous => format!("freemix-media-previous-{input}"),
+        };
+        let spawned = thread::Builder::new().name(thread_name).spawn(move || {
+            // At most MAX_CONCURRENT_PREFETCHES files open at once.
+            let Some(_turn) = thread_gate.acquire(MAX_CONCURRENT_PREFETCHES, &thread_cancelled)
+            else {
+                return;
+            };
+            // A still image is not a media file: its standby holds
+            // nothing and the list opens it the slow way. The sniff
+            // reads the file, so it runs here, off the session loop.
+            if crate::native_catalogue::is_still(&opening) {
+                let _ = sender.send(Err(EngineMediaFault::Unsupported));
+                return;
+            }
+            let opened = catch_unwind(AssertUnwindSafe(|| {
+                open_cued(&adapter, &opening, config, cue, dimensions)
+            }))
+            .unwrap_or(Err(EngineMediaFault::DecodeFailed));
+            let _ = sender.send(opened);
+        });
         if spawned.is_ok() {
             self.standbys.insert(
-                input,
+                key,
                 Standby {
                     path,
                     cue,
@@ -926,15 +939,16 @@ impl NativeMediaFiles {
         }
     }
 
-    /// Drops the standby of every media list input `keep` does not name.
-    pub(crate) fn retain_prefetched(&mut self, keep: impl Fn(InputId) -> bool) {
-        self.standbys.retain(|input, _| keep(*input));
+    /// Drops every standby whose input and role `keep` does not name.
+    pub(crate) fn retain_prefetched(&mut self, keep: impl Fn(InputId, PrefetchRole) -> bool) {
+        self.standbys.retain(|(input, role), _| keep(*input, *role));
     }
 
     /// Takes media list input `input`'s standby when it opened the file at
-    /// `path`, cued for `settings`, and is ready. One still opening stays
-    /// (and the caller opens the file the slow way); one that failed is
-    /// dropped, and the file faults when the slow way opens it.
+    /// `path`, cued for `settings`, and is ready, whichever neighbour role it
+    /// holds. One still opening stays (and the caller opens the file the slow
+    /// way); one that failed is dropped, and the file faults when the slow
+    /// way opens it.
     pub(crate) fn take_prefetched(
         &mut self,
         input: InputId,
@@ -943,26 +957,31 @@ impl NativeMediaFiles {
     ) -> Option<Prefetched> {
         let config = playback_config(settings, self.rate, self.clock_domain, self.dimensions);
         let cue = settings.start_frame.max(settings.trim_in);
-        let standby = self.standbys.get(&input)?;
-        if standby.path != path || standby.cue != cue || standby.config != config {
-            return None;
-        }
-        match standby.result.try_recv() {
-            Err(mpsc::TryRecvError::Empty) => None,
-            Ok(Ok(prefetched)) => {
-                self.standbys.remove(&input);
-                Some(prefetched)
-            }
-            Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
-                self.standbys.remove(&input);
-                None
-            }
-        }
+        let key = self
+            .standbys
+            .iter()
+            .find(|((candidate, _), standby)| {
+                *candidate == input
+                    && standby.path == path
+                    && standby.cue == cue
+                    && standby.config == config
+            })
+            .map(|(key, _)| *key)?;
+        let standby = self.standbys.get(&key)?;
+        let taken = match standby.result.try_recv() {
+            Err(mpsc::TryRecvError::Empty) => return None,
+            Ok(Ok(prefetched)) => Some(prefetched),
+            Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => None,
+        };
+        self.standbys.remove(&key);
+        taken
     }
 
-    /// Every media list input with a standby.
+    /// Every media list input with a standby, once each.
     pub(crate) fn prefetched_inputs(&self) -> Vec<InputId> {
-        self.standbys.keys().copied().collect()
+        let mut inputs: Vec<InputId> = self.standbys.keys().map(|(input, _)| *input).collect();
+        inputs.dedup();
+        inputs
     }
 
     /// Replaces media-file input `input`'s worker with one that plays
@@ -988,7 +1007,8 @@ impl NativeMediaFiles {
             growing,
             ..
         } = prefetched;
-        self.standbys.remove(&input);
+        self.standbys
+            .retain(|(candidate, _), _| *candidate != input);
         let outgoing = self.keep_outgoing(input);
         let adapter = self
             .adapter
