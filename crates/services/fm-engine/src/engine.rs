@@ -1301,6 +1301,10 @@ pub struct Engine {
     production_clocks: fm_clock::production::ProductionClocks,
     /// The media input each media-remaining clock follows, by clock name.
     media_clock_inputs: BTreeMap<fm_clock::production::ClockName, InputId>,
+    /// The session clocks a project defines, by name and followed source.
+    session_clocks: Vec<(fm_clock::production::ClockName, fm_types::ProjectSessionKind)>,
+    /// Whether each session clock's source was active on the previous frame.
+    session_clock_states: BTreeMap<fm_clock::production::ClockName, bool>,
     /// Whether a scene clip can be carried to clients (see
     /// [`Self::set_scene_clip_bound`]); `None` bounds nothing.
     scene_clip_bound: Option<crate::SceneClipBound>,
@@ -1330,6 +1334,7 @@ impl Engine {
             crate::production_clock::registry_from_definitions(show.production_clocks());
         let media_clock_inputs =
             crate::production_clock::media_clock_inputs(show.production_clocks());
+        let session_clocks = crate::production_clock::session_clocks(show.production_clocks());
         Self {
             commands: CommandState::new(show, StateEpoch::new(1)).with_receipt_limit(RECEIPT_LIMIT),
             receipts_recorded: 0,
@@ -1350,6 +1355,8 @@ impl Engine {
             title_shown: BTreeMap::new(),
             production_clocks,
             media_clock_inputs,
+            session_clocks,
+            session_clock_states: BTreeMap::new(),
             scene_clip_bound: None,
             media: BTreeMap::new(),
             slideshows: BTreeMap::new(),
@@ -1764,6 +1771,44 @@ impl Engine {
         }
     }
 
+    /// Starts or stops session clocks whose source changed activity.
+    fn update_session_clocks(&mut self) {
+        use fm_clock::production::ClockCommand;
+        let desired = self.commands.state().desired_switcher();
+        let streaming = !desired.running_stream_targets().is_empty();
+        let recording = RecorderSlot::ALL
+            .iter()
+            .any(|slot| desired.recording_desired(*slot));
+        let replay = self.replay.recording_active();
+        let entries = self.session_clocks.clone();
+        for (name, kind) in entries {
+            let active = match kind {
+                fm_types::ProjectSessionKind::Stream => streaming,
+                fm_types::ProjectSessionKind::Recording
+                | fm_types::ProjectSessionKind::MultiCorder => recording,
+                fm_types::ProjectSessionKind::Replay => replay,
+                fm_types::ProjectSessionKind::External => false,
+            };
+            let previous = self
+                .session_clock_states
+                .get(&name)
+                .copied()
+                .unwrap_or(false);
+            if active == previous {
+                continue;
+            }
+            let command = if active {
+                ClockCommand::SessionStarted
+            } else {
+                ClockCommand::SessionStopped
+            };
+            let _ = self
+                .production_clocks
+                .apply(&name, command, self.clock.now());
+            self.session_clock_states.insert(name, active);
+        }
+    }
+
     /// Every live production clock's reading at `at`, in name order.
     #[must_use]
     pub fn production_clock_readings(
@@ -1800,6 +1845,8 @@ impl Engine {
         self.production_clocks =
             crate::production_clock::registry_from_definitions(definitions);
         self.media_clock_inputs = crate::production_clock::media_clock_inputs(definitions);
+        self.session_clocks = crate::production_clock::session_clocks(definitions);
+        self.session_clock_states.clear();
     }
 
     /// Whether any title is playing an In or Out phase on Program or
@@ -3135,6 +3182,7 @@ impl Engine {
             .map_err(|error| EngineError::Tick(fm_scheduler::TickError::Pacing(error)))?;
         self.clock.set(ClockTime::from_nanos(deadline.at_ns))?;
         self.update_media_clocks();
+        self.update_session_clocks();
         let tick = self.scheduler.tick(deadline.at_ns)?;
         self.pending_actions = self.pending_actions.saturating_sub(tick.actions.len());
         if self
@@ -3646,6 +3694,7 @@ impl Engine {
             crate::production_clock::registry_from_definitions(show.production_clocks());
         let media_clock_inputs =
             crate::production_clock::media_clock_inputs(show.production_clocks());
+        let session_clocks = crate::production_clock::session_clocks(show.production_clocks());
         let scheduler = RuntimeScheduler::restore(
             frame_rate,
             0,
@@ -3681,6 +3730,8 @@ impl Engine {
             title_shown: BTreeMap::new(),
             production_clocks,
             media_clock_inputs,
+            session_clocks,
+            session_clock_states: BTreeMap::new(),
             scene_clip_bound: None,
             media: BTreeMap::new(),
             slideshows: BTreeMap::new(),

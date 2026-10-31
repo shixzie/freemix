@@ -94,6 +94,24 @@ pub fn media_clock_inputs(definitions: &[ProjectClock]) -> BTreeMap<ClockName, I
         .collect()
 }
 
+/// The session clocks a project defines, by name and followed source.
+#[must_use]
+pub fn session_clocks(
+    definitions: &[ProjectClock],
+) -> Vec<(ClockName, ProjectSessionKind)> {
+    definitions
+        .iter()
+        .filter_map(|definition| {
+            let ProjectClockKind::Session { kind, .. } = &definition.kind else {
+                return None;
+            };
+            ClockName::new(&definition.name)
+                .ok()
+                .map(|name| (name, *kind))
+        })
+        .collect()
+}
+
 /// Builds the live registry from `definitions`, skipping invalid entries.
 ///
 /// Definitions that reach an engine are validated by the project model; a

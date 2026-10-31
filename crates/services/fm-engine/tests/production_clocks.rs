@@ -10,9 +10,10 @@ use fm_clock::ClockDomainId;
 use fm_engine::{Engine, EngineMediaSource, ShowState};
 use fm_types::{
     FrameRate, InputId, ProjectClock, ProjectClockDirection, ProjectClockKind,
-    ProjectClockOverrun, ProjectDurationFormat, ProjectTimeFormat,
+    ProjectClockOverrun, ProjectDurationFormat, ProjectSessionKind, ProjectTimeFormat,
 };
 use fm_model::MediaPlaybackSettings;
+use fm_switcher::RecorderSlot;
 
 fn nonzero(value: u128) -> NonZeroU128 {
     NonZeroU128::new(value).unwrap()
@@ -48,6 +49,13 @@ fn defs() -> Vec<ProjectClock> {
                 format: ProjectDurationFormat::MinutesSeconds,
             },
         },
+        ProjectClock {
+            name: "Recording".into(),
+            kind: ProjectClockKind::Session {
+                kind: ProjectSessionKind::Recording,
+                format: ProjectDurationFormat::Compact,
+            },
+        },
     ]
 }
 
@@ -64,6 +72,9 @@ fn engine() -> Engine {
     )
     .unwrap();
     show.set_media_input(input(3), MediaPlaybackSettings::default())
+        .unwrap();
+    show.desired_switcher_mut()
+        .set_recording_desired(RecorderSlot::new(1).unwrap(), true)
         .unwrap();
     show.set_production_clocks(defs()).unwrap();
     let mut engine = Engine::new(
@@ -100,7 +111,7 @@ fn reading_at(engine: &Engine, clock: &str) -> fm_clock::production::ClockReadin
 #[test]
 fn timers_run_on_the_engine_clock_and_pause() {
     let mut engine = engine();
-    assert_eq!(engine.production_clock_registry().len(), 3);
+    assert_eq!(engine.production_clock_registry().len(), 4);
     let idle = reading_at(&engine, "Countdown");
     assert_eq!(idle.state, ReadingState::Idle);
     assert_eq!(idle.text, "01:00");
@@ -147,6 +158,14 @@ fn a_media_clock_follows_its_input() {
     assert_eq!(after.state, ReadingState::Live, "{after:?}");
     assert!(after.value.is_some(), "{after:?}");
     assert_ne!(before.state, ReadingState::Live);
+}
+
+#[test]
+fn a_recording_session_clock_runs_while_recording() {
+    let mut engine = engine();
+    assert_eq!(reading_at(&engine, "Recording").state, ReadingState::Stopped);
+    engine.tick().unwrap();
+    assert_eq!(reading_at(&engine, "Recording").state, ReadingState::Running);
 }
 
 #[test]

@@ -698,6 +698,11 @@ impl ReplayRuntime {
         runtime
     }
 
+    /// Whether the replay recorder is observing any input.
+    pub(crate) fn recording_active(&self) -> bool {
+        !self.store.recording.is_empty()
+    }
+
     pub(crate) const fn feed(&self) -> EngineReplayFeed {
         self.feed
     }

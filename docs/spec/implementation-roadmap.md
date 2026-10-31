@@ -5467,7 +5467,9 @@ format controls to callers. The registry now reaches clients as read-only readin
 command, snapshot record, or UI, so clients and cues cannot start, pause, or
 set a clock; titles still read their own template clocks rather than the
 shared registry; a media clock can name an input and follows its playback
-through the engine, while session clocks have no engine feed yet; no project-level
+through the engine, and stream, recording, replay, and MultiCorder session
+clocks start and stop with their source's activity (an external session clock
+stays stopped); no project-level
 time zone (each time-of-day clock names its zone); templates cannot show
 media remaining, session, or playlist clocks; designer compositions and
 crawls take no clock source; an IANA `TZif` parser exists

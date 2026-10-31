@@ -67,7 +67,7 @@ pub use media_list::{
 pub use paged::EnginePagedStatus;
 pub use production_clock::{
     EngineProductionClockError, media_clock_inputs, production_clock_from_definition,
-    registry_from_definitions,
+    registry_from_definitions, session_clocks,
 };
 pub use playlist::{
     EnginePlaylistOperation, EnginePlaylistStart, MAX_PLAYLIST_TRANSITION_FRAMES, PlaylistCue,
