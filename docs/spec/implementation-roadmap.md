@@ -4108,8 +4108,7 @@ placeholder. The title editor core and its protocol bridge live in
 typed fields with conflict rebase/discard, previews, saves, takes on a chosen
 overlay channel, updates live, and takes titles off air. Remaining gaps: no
 grapheme shaping or bidi, no template designer persistence, titles cannot be
-stinger media, tickers and scene clocks still start at frame zero rather than at the
-take (keyframe animation plays from the take frame), and template field names are not localized, so
+stinger media, and template field names are not localized, so
 `GX-001` remains planned. A title input added while the daemon runs now
 loads its stored template on the first engine sync, so the simulated monitor
 renders it like a startup title. Studio's TITLES tab shows the selected title's

@@ -164,8 +164,9 @@ pub(crate) struct ThumbnailWork {
     pub(crate) grades: Arc<CompiledProjectGrades>,
     /// The animation pose of every Scene input on air; others hold.
     pub(crate) scenes: Vec<(InputId, AnimSample)>,
-    /// The animation pose of every title on air; others hold.
-    pub(crate) titles: Vec<(InputId, AnimSample)>,
+    /// The animation pose of every title on air, and the frame its timeline
+    /// was taken on; others hold at zero.
+    pub(crate) titles: Vec<(InputId, AnimSample, Option<u64>)>,
     /// Each media input's playhead and the end of its playable range, as
     /// the engine holds them (a simulated daemon draws them).
     pub(crate) media: Vec<(InputId, u64, u64)>,
@@ -654,8 +655,8 @@ impl LeafContext<'_> {
                     TitleTime::now(
                         frame,
                         work.project.settings().frame_rate,
-                        None,
-                        pose_of(&work.titles, id),
+                        taken_frame_of(&work.titles, id),
+                        title_pose_of(&work.titles, id),
                     ),
                     width,
                     height,
@@ -757,6 +758,23 @@ fn pose_of(poses: &[(InputId, AnimSample)], input: InputId) -> AnimSample {
         .iter()
         .find(|(candidate, _)| *candidate == input)
         .map_or(AnimSample::Hold, |(_, pose)| *pose)
+}
+
+/// The animation pose of title `input` in the thumbnail work's title list,
+/// or Hold.
+fn title_pose_of(titles: &[(InputId, AnimSample, Option<u64>)], input: InputId) -> AnimSample {
+    titles
+        .iter()
+        .find(|(candidate, _, _)| *candidate == input)
+        .map_or(AnimSample::Hold, |(_, pose, _)| *pose)
+}
+
+/// The frame `input`'s title timeline started on, if it is on air.
+fn taken_frame_of(titles: &[(InputId, AnimSample, Option<u64>)], input: InputId) -> Option<u64> {
+    titles
+        .iter()
+        .find(|(candidate, _, _)| *candidate == input)
+        .and_then(|(_, _, taken)| *taken)
 }
 
 /// A native daemon's Scene thumbnail leaves: each source's newest frame

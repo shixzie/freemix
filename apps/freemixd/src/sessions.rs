@@ -1802,6 +1802,7 @@ fn thumbnail_work(
     live: Option<crate::scene_preview::LiveSourceFrames>,
 ) -> ThumbnailWork {
     let revision = control.snapshot().snapshot.revision;
+    let timelines = control.title_timelines();
     ThumbnailWork {
         revision,
         frame: control.frame_cursor(),
@@ -1815,7 +1816,15 @@ fn thumbnail_work(
         titles: control
             .titles_on_air()
             .into_iter()
-            .map(|title| (title.input, title.frame.sample))
+            .map(|title| {
+                (
+                    title.input,
+                    title.frame.sample,
+                    timelines
+                        .get(&title.input)
+                        .map(|timeline| timeline.since_frame),
+                )
+            })
             .collect(),
         media: control
             .media_statuses()
