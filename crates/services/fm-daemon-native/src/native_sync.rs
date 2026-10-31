@@ -32,17 +32,17 @@ use fm_protocol::{
 use fm_types::InputId;
 
 /// How often a steadily running source is reported.
-pub(crate) const SYNC_INTERVAL: Duration = Duration::from_mins(1);
+pub const SYNC_INTERVAL: Duration = Duration::from_mins(1);
 
 /// The shortest spacing of two `source_sync_status` records.
-pub(crate) const SOURCE_SYNC_STATUS_INTERVAL: Duration = Duration::from_secs(1);
+pub const SOURCE_SYNC_STATUS_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The kind of live source a record names.
-pub(crate) use fm_protocol::SourceSyncKind as SourceKind;
+pub use fm_protocol::SourceSyncKind as SourceKind;
 
 /// One source's loop as a wire sample; `None` when the telemetry cannot
 /// keep the wire contract (no rate yet).
-pub(crate) fn wire_sample(
+pub fn wire_sample(
     kind: SourceKind,
     input: InputId,
     telemetry: &LiveSourceTelemetry,
@@ -92,7 +92,7 @@ pub(crate) fn wire_sample(
 }
 
 /// Orders samples by input and keeps the wire bound.
-pub(crate) fn wire_samples(mut samples: Vec<SourceSyncSample>) -> Vec<SourceSyncSample> {
+pub fn wire_samples(mut samples: Vec<SourceSyncSample>) -> Vec<SourceSyncSample> {
     samples.sort_by_key(|sample| sample.input);
     samples.dedup_by_key(|sample| sample.input);
     samples.truncate(MAX_SOURCE_SYNC_SAMPLES);
@@ -101,7 +101,7 @@ pub(crate) fn wire_samples(mut samples: Vec<SourceSyncSample>) -> Vec<SourceSync
 
 /// Builds the lossy `source_sync_status` records (Protocol 2.76).
 #[derive(Clone, Debug, Default)]
-pub(crate) struct SourceSyncTracker {
+pub struct SourceSyncTracker {
     sequence: u64,
     built_at: Option<Instant>,
     /// The last record carried at least one source.
@@ -112,7 +112,7 @@ impl SourceSyncTracker {
     /// The next record when one is due at `now`: at most every
     /// [`SOURCE_SYNC_STATUS_INTERVAL`] while any source runs, and one empty
     /// record after the last source stops.
-    pub(crate) fn poll(
+    pub fn poll(
         &mut self,
         server: &ServerIdentity,
         samples: impl FnOnce() -> Vec<SourceSyncSample>,
@@ -141,13 +141,13 @@ impl SourceSyncTracker {
 
 /// When one source was last reported, and its fault counts then.
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct SyncLog {
+pub struct SyncLog {
     last: Option<(Instant, u64, u64)>,
 }
 
 impl SyncLog {
     /// Logs `telemetry` when due at `now`; returns the record it logged.
-    pub(crate) fn report(
+    pub fn report(
         &mut self,
         kind: SourceKind,
         input: InputId,
@@ -173,7 +173,7 @@ impl SyncLog {
 }
 
 /// One `FREEMIXD_SOURCE_SYNC` record.
-pub(crate) fn record(kind: SourceKind, input: InputId, telemetry: &LiveSourceTelemetry) -> String {
+pub fn record(kind: SourceKind, input: InputId, telemetry: &LiveSourceTelemetry) -> String {
     let sync = &telemetry.sync;
     format!(
         "FREEMIXD_SOURCE_SYNC\tv=1\tinput={input}\tkind={}\tstate={}\tdrift_ppm={:+.2}\tcorrection_ppm={:+.2}\tbuffer_ms={:.1}\ttarget_ms={:.1}\tresyncs={}\tunderruns={}\toverruns={}\tpicture_drops={}\tpicture_repeats={}\trestarts={}",

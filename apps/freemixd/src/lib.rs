@@ -6,6 +6,8 @@ use fm_types::ProjectId;
 pub mod monitor_output;
 #[cfg(feature = "native-media")]
 pub use fm_daemon_native::native_media;
+#[cfg(feature = "native-media")]
+pub use fm_daemon_native::native_sync;
 pub use fm_overlay_layout as overlay_layout;
 
 const READY_PREFIX: &str = "FREEMIXD_READY";

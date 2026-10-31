@@ -140,7 +140,7 @@ mod native_slides;
 #[cfg(feature = "native-media")]
 mod native_streams;
 #[cfg(feature = "native-media")]
-mod native_sync;
+use freemixd::native_sync;
 #[cfg(feature = "native-media")]
 mod native_system_audio;
 #[cfg(feature = "native-media")]

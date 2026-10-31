@@ -1724,6 +1724,7 @@ dependencies = [
  "fm-overlay-layout",
  "fm-persistence",
  "fm-plugin-host-api",
+ "fm-protocol",
  "fm-scheduler",
  "fm-sim",
  "fm-switcher",
