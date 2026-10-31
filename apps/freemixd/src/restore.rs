@@ -343,6 +343,8 @@ pub(crate) fn restore_engine_with_titles(
         canonical.settings().frame_rate,
     )?;
     show.set_shortcuts(canonical.shortcuts().to_vec())?;
+    // The show's named production clocks are engine runtime state (SW-013).
+    show.restore_production_clocks(canonical.production_clocks().to_vec());
     let position = project.position();
     let mut engine = Engine::restore_persisted(
         show,

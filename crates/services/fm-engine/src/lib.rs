@@ -13,6 +13,7 @@ mod media;
 pub(crate) mod media_list;
 mod paged;
 mod playlist;
+mod production_clock;
 mod reel;
 mod replay;
 mod scene_animation;
@@ -64,6 +65,9 @@ pub use media_list::{
     EngineMediaListStatus,
 };
 pub use paged::EnginePagedStatus;
+pub use production_clock::{
+    EngineProductionClockError, production_clock_from_definition, registry_from_definitions,
+};
 pub use playlist::{
     EnginePlaylistOperation, EnginePlaylistStart, MAX_PLAYLIST_TRANSITION_FRAMES, PlaylistCue,
     PlaylistRestoreError, playlist_due_frame, playlist_from_model, playlist_to_model,

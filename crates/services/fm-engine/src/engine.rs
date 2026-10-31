@@ -1296,6 +1296,9 @@ pub struct Engine {
     /// the frame its timeline started (GX-001). Snapshotted, so a restored
     /// title's tickers and clocks continue.
     title_shown: BTreeMap<InputId, crate::title_timeline::TitleShown>,
+    /// The live project production clock registry (SW-013). Rebuilt from
+    /// the show's definitions on construction and restore.
+    production_clocks: fm_clock::production::ProductionClocks,
     /// Whether a scene clip can be carried to clients (see
     /// [`Self::set_scene_clip_bound`]); `None` bounds nothing.
     scene_clip_bound: Option<crate::SceneClipBound>,
@@ -1321,6 +1324,8 @@ impl Engine {
     #[must_use]
     pub fn new(show: ShowState, frame_rate: FrameRate, clock_domain: ClockDomainId) -> Self {
         let realized_switcher = show.desired_switcher().clone();
+        let production_clocks =
+            crate::production_clock::registry_from_definitions(show.production_clocks());
         Self {
             commands: CommandState::new(show, StateEpoch::new(1)).with_receipt_limit(RECEIPT_LIMIT),
             receipts_recorded: 0,
@@ -1339,6 +1344,7 @@ impl Engine {
             title_clip_bound: None,
             scene_air: BTreeMap::new(),
             title_shown: BTreeMap::new(),
+            production_clocks,
             scene_clip_bound: None,
             media: BTreeMap::new(),
             slideshows: BTreeMap::new(),
@@ -1712,6 +1718,49 @@ impl Engine {
     #[must_use]
     pub fn title_timelines(&self) -> BTreeMap<InputId, fm_model::TitleTimeline> {
         crate::title_timeline::saved(&self.title_shown)
+    }
+
+    /// The live production clock registry (SW-013).
+    #[must_use]
+    pub const fn production_clock_registry(&self) -> &fm_clock::production::ProductionClocks {
+        &self.production_clocks
+    }
+
+    /// Every live production clock's reading at `at`, in name order.
+    #[must_use]
+    pub fn production_clock_readings(
+        &self,
+        at: fm_clock::production::TimeReading,
+    ) -> Vec<fm_clock::production::ClockReading> {
+        self.production_clocks.readings(at)
+    }
+
+    /// Applies `command` to the named production clock at the engine's
+    /// current monotonic time (SW-013).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::EngineProductionClockError`] for an invalid or
+    /// unknown name or a command the clock's kind does not accept; nothing
+    /// changes then.
+    pub fn control_production_clock(
+        &mut self,
+        name: &str,
+        command: fm_clock::production::ClockCommand,
+    ) -> Result<(), crate::EngineProductionClockError> {
+        use fm_clock::production::ClockName;
+        let name = ClockName::new(name)?;
+        self.production_clocks
+            .apply(&name, command, self.clock.now())?;
+        Ok(())
+    }
+
+    /// Rebuilds the production clock registry from `definitions`, dropping
+    /// every live value (SW-013). Called after a project edit changes the
+    /// show's clock definitions.
+    pub fn restore_production_clocks(&mut self, definitions: &[fm_types::ProjectClock]) {
+        self.production_clocks =
+            crate::production_clock::registry_from_definitions(definitions);
     }
 
     /// Whether any title is playing an In or Out phase on Program or
@@ -3553,6 +3602,8 @@ impl Engine {
         restore_state: EngineRestoreState,
     ) -> Result<Self, SnapshotError> {
         validate_idle_restore(&show, &realized_switcher, &restore_state, frame_rate)?;
+        let production_clocks =
+            crate::production_clock::registry_from_definitions(show.production_clocks());
         let scheduler = RuntimeScheduler::restore(
             frame_rate,
             0,
@@ -3586,6 +3637,7 @@ impl Engine {
             title_clip_bound: None,
             scene_air: BTreeMap::new(),
             title_shown: BTreeMap::new(),
+            production_clocks,
             scene_clip_bound: None,
             media: BTreeMap::new(),
             slideshows: BTreeMap::new(),

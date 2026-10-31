@@ -5019,6 +5019,7 @@ fn restore_project_edit_state(show: &mut ShowState, project: &Project) -> AppRes
     // A run paused at a wait, or a failed part's report (schema 56).
     show.set_script_run(project.script_run().clone(), project.settings().frame_rate)?;
     show.set_shortcuts(project.shortcuts().to_vec())?;
+    show.restore_production_clocks(project.production_clocks().to_vec());
     // Each list input's active item is its media source (IN-006).
     show.restore_media_lists(project.media_lists().clone())?;
     Ok(())

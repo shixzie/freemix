@@ -274,6 +274,8 @@ pub struct ShowState {
     alert_rules: Vec<fm_types::alert_rules::AlertRuleSetting>,
     /// The project's highlight reels, in display order (OR-013).
     reels: Vec<fm_types::reel::ReelSpec>,
+    /// The show's named production clocks (SW-013), in definition order.
+    production_clocks: Vec<fm_types::ProjectClock>,
     /// Every configured stream destination's authored configuration in
     /// authored order (OR-006), parallel to the switcher's stream inventory.
     /// The switcher owns the desired running flags; each entry's own
@@ -377,6 +379,7 @@ impl ShowState {
             replay: fm_types::replay::ReplaySettings::default(),
             alert_rules: Vec::new(),
             reels: Vec::new(),
+            production_clocks: Vec::new(),
             stream_targets: Vec::new(),
         })
     }
@@ -1212,6 +1215,33 @@ impl ShowState {
 
     /// Restores persisted reels without checking them; problems are
     /// reported by the project's validation.
+    /// The show's named production clocks (SW-013), in definition order.
+    #[must_use]
+    pub fn production_clocks(&self) -> &[fm_types::ProjectClock] {
+        &self.production_clocks
+    }
+
+    /// Replaces the production clock definitions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`fm_types::ProjectClockError`] for an invalid definition;
+    /// nothing changes then.
+    pub fn set_production_clocks(
+        &mut self,
+        clocks: Vec<fm_types::ProjectClock>,
+    ) -> Result<(), fm_types::ProjectClockError> {
+        fm_types::validate_project_clocks(&clocks)?;
+        self.production_clocks = clocks;
+        Ok(())
+    }
+
+    /// Replaces the production clocks without checking them;
+    /// [`fm_model::Project::validate`] reports invalid definitions.
+    pub fn restore_production_clocks(&mut self, clocks: Vec<fm_types::ProjectClock>) {
+        self.production_clocks = clocks;
+    }
+
     pub fn restore_reels(&mut self, reels: Vec<fm_types::reel::ReelSpec>) {
         self.reels = reels;
     }
