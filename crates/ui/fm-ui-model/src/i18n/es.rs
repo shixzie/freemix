@@ -2570,6 +2570,11 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     (Msg::NsDetailKeySet, t("establecida")),
     (Msg::NsDetailKeyNone, t("sin establecer")),
     (Msg::NsDetailOmt, t("Fuente Open Media Transport")),
+    (Msg::NsDiscovered, t("Descubierto en la red local")),
+    (
+        Msg::NsDiscoveredNone,
+        t("Aún no se ha encontrado ninguna fuente OMT"),
+    ),
     (
         Msg::NsDetailSrt,
         t("SRT {mode}, {latency} ms de latencia, {encryption}"),

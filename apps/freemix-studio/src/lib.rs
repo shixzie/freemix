@@ -6,6 +6,7 @@ mod args;
 mod capture_signal;
 mod midi;
 mod native;
+mod omt;
 mod osc;
 mod prefs;
 mod preset_files;

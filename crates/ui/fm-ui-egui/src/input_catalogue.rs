@@ -1259,7 +1259,12 @@ impl StudioShell {
                         );
                         if draft.kind == NewInputKind::Network {
                             ui.add_space(6.0);
-                            crate::network_stream_ui::draw_stream_form(ui, l, &mut draft.stream);
+                            crate::network_stream_ui::draw_stream_form(
+                                ui,
+                                l,
+                                &mut draft.stream,
+                                &self.omt_sources,
+                            );
                         }
                         if draft.kind == NewInputKind::SystemAudio {
                             ui.add_space(6.0);

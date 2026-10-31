@@ -2338,6 +2338,7 @@ dependencies = [
  "fm-control",
  "fm-engine",
  "fm-grade",
+ "fm-io-omt",
  "fm-preset-file",
  "fm-protocol",
  "fm-sim",

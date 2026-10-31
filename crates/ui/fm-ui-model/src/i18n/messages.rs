@@ -1085,6 +1085,8 @@ messages! {
     NsDetailKeyNone => t("not set"),
     NsDetailSrt => t("SRT {mode}, {latency} ms latency, {encryption}"),
     NsDetailOmt => t("Open Media Transport source"),
+    NsDiscovered => t("Discovered on the LAN"),
+    NsDiscoveredNone => t("No OMT source found yet"),
     NsDetailUnencrypted => t("unencrypted"),
     NsDetailAudio => t("Source audio: {count} channels, hearing {pair}"),
     NsBadgeReconnecting => t("RECONNECTING {attempt}"),

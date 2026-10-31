@@ -1012,10 +1012,13 @@ mod tests {
             waits: 1,
             wait_frames: 1500,
         };
-        for state in [
-            crate::hover_audit::script_run_fixture(true, ScriptRunStatus::Idle),
-            crate::hover_audit::script_run_fixture(true, waiting),
-        ] {
+        let mut states = Vec::new();
+        states.push(crate::hover_audit::script_run_fixture(
+            true,
+            ScriptRunStatus::Idle,
+        ));
+        states.push(crate::hover_audit::script_run_fixture(true, waiting));
+        for state in states {
             let rects = window_rects(&state, 120);
             let settled = rects[4];
             for (pass, rect) in rects.iter().enumerate().skip(4) {

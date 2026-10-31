@@ -140,6 +140,7 @@ pub use midi_bindings::{
     MAX_MIDI_BINDINGS, MidiBindings, MidiControlKind, MidiFeedback, MidiInput, MidiTrigger,
     MidiValueTarget,
 };
+pub use network_stream_ui::OmtSource;
 pub use playlist::{
     Countdown, EntryForm, EntryRole, ListEdit, PlaylistIntent, PlaylistPhase,
     TransportAvailability, control_block as playlist_control_block,
@@ -1949,6 +1950,9 @@ pub struct StudioShell {
     canvas: (u16, u16),
     /// The open Add input dialog.
     add_input: Option<input_catalogue::AddInputDraft>,
+    /// OMT sources the host's `_omt._tcp` browse found (IN-019), for the
+    /// Add Input network form.
+    omt_sources: Vec<network_stream_ui::OmtSource>,
     /// The open Remove input confirmation.
     remove_input: Option<input_catalogue::RemoveConfirm>,
     /// Sent input adds and removes awaiting their outcome.
@@ -2135,6 +2139,12 @@ impl StudioShell {
         if state.console_keys != keys {
             state.console_keys = keys;
         }
+    }
+
+    /// Shows the OMT sources the host's LAN browse found in the Add Input
+    /// network form (IN-019).
+    pub fn set_omt_sources(&mut self, sources: Vec<network_stream_ui::OmtSource>) {
+        self.omt_sources = sources;
     }
 
     /// Returns to the Default layout and default sizes, docking every
@@ -2704,6 +2714,7 @@ impl Default for StudioShell {
             input_thumbnails_requested: false,
             canvas: monitors::DEFAULT_CANVAS,
             add_input: None,
+            omt_sources: Vec::new(),
             remove_input: None,
             catalogue: input_catalogue::CatalogueTracker::default(),
             lifecycle: input_lifecycle::LifecyclePanel::default(),

@@ -24,10 +24,10 @@ use fm_protocol::{
 use fm_types::OutputId;
 use fm_ui_egui::{
     CatalogueRefusal, CatalogueRequest, CommandRefusalNotice, ExternalStudioAction, GradeLutFile,
-    GradeRefusal, InputAudioStripUpdate, InputMoveDirection, MidiFeedback, PlaylistIntent,
-    ReconnectStatus, RecordingAction, StreamAction, StreamGroupAction, StudioConnectionStatus,
-    StudioIntent, StudioShell, StudioUiState, TerminalUncertaintyNotice, TitleUpdate,
-    external_intent,
+    GradeRefusal, InputAudioStripUpdate, InputMoveDirection, MidiFeedback, OmtSource,
+    PlaylistIntent, ReconnectStatus, RecordingAction, StreamAction, StreamGroupAction,
+    StudioConnectionStatus, StudioIntent, StudioShell, StudioUiState, TerminalUncertaintyNotice,
+    TitleUpdate, external_intent,
 };
 use fm_ui_model::ClientView;
 use fm_ui_model::grade_editor::GradeCommand;
@@ -394,6 +394,11 @@ struct StudioApp {
     midi_output: crate::midi::MidiOutput,
     /// The lamp states last sent, so only changes reach the controllers.
     sent_midi_feedback: Vec<MidiFeedback>,
+    /// The LAN's OMT sources for the Add Input form (IN-019).
+    omt: crate::omt::OmtDiscovery,
+    /// The sources last handed to the shell, so the form only redraws on a
+    /// change.
+    sent_omt_sources: Vec<OmtSource>,
     osc_rejected: u64,
     osc_notice: Option<String>,
     /// Saves the language, clock, layout, UI scale, and theme for the next
@@ -490,6 +495,8 @@ impl StudioApp {
             )),
             midi_output: crate::midi::MidiOutput::start(),
             sent_midi_feedback: Vec::new(),
+            omt: crate::omt::OmtDiscovery::start(),
+            sent_omt_sources: Vec::new(),
             osc_rejected: 0,
             osc_notice: None,
             preferences,
@@ -629,6 +636,17 @@ impl StudioApp {
         }
     }
 
+    /// Hands the console the OMT sources the LAN browse found (IN-019), only
+    /// when the list changed.
+    fn drain_omt(&mut self) {
+        let sources = self.omt.latest();
+        if sources == self.sent_omt_sources.as_slice() {
+            return;
+        }
+        self.sent_omt_sources = sources.to_vec();
+        self.shell.set_omt_sources(self.sent_omt_sources.clone());
+    }
+
     /// Sends each bound control's lamp state when it changes (RC-005).
     fn refresh_midi_feedback(&mut self) {
         let feedback = self.shell.midi_feedback(&self.state);
@@ -760,6 +778,7 @@ impl eframe::App for StudioApp {
         self.check_worker_health();
         self.drain_osc();
         self.drain_midi();
+        self.drain_omt();
         self.refresh_midi_feedback();
         if self.state.external_notice.is_none() {
             self.state
@@ -4447,6 +4466,8 @@ mod tests {
             midi: None,
             midi_output: crate::midi::MidiOutput::start(),
             sent_midi_feedback: Vec::new(),
+            omt: crate::omt::OmtDiscovery::disabled(),
+            sent_omt_sources: Vec::new(),
             osc_rejected: 0,
             osc_notice: None,
             preferences: PreferenceStore::new(
@@ -7566,6 +7587,8 @@ mod tests {
             midi: None,
             midi_output: crate::midi::MidiOutput::start(),
             sent_midi_feedback: Vec::new(),
+            omt: crate::omt::OmtDiscovery::disabled(),
+            sent_omt_sources: Vec::new(),
             osc_rejected: 0,
             osc_notice: None,
             preferences: PreferenceStore::new(

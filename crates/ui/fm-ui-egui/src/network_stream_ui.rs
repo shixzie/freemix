@@ -401,7 +401,21 @@ fn beside_key(ui: &Ui) -> f32 {
 /// Recovery (stall slate and give-up count; retry waits and timeout). A
 /// problem shows under the field it belongs to, which is outlined in red;
 /// an Advanced group holding it opens.
-pub(crate) fn draw_stream_form(ui: &mut Ui, l: Locale, draft: &mut NetworkStreamDraft) {
+/// One OMT source a LAN browse found, ready to fill an `omt://` URL.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OmtSource {
+    /// The DNS-SD instance name.
+    pub name: String,
+    /// The `omt://host:port` URL a stream input can use.
+    pub url: String,
+}
+
+pub(crate) fn draw_stream_form(
+    ui: &mut Ui,
+    l: Locale,
+    draft: &mut NetworkStreamDraft,
+    discovered: &[OmtSource],
+) {
     let protocol = draft.protocol();
     if let Some(protocol) = protocol
         && !draft.settings.mode.supported_by(protocol)
@@ -419,7 +433,7 @@ pub(crate) fn draw_stream_form(ui: &mut Ui, l: Locale, draft: &mut NetworkStream
         Some(StreamField::Backoff | StreamField::Timeout) => draft.advanced.recovery = true,
         _ => {}
     }
-    draw_source(ui, l, draft, protocol, problem);
+    draw_source(ui, l, draft, protocol, problem, discovered);
     draw_connection(ui, l, draft, protocol, &at);
     draw_recovery(ui, l, draft, &at);
 }
@@ -434,6 +448,7 @@ fn draw_source(
     draft: &mut NetworkStreamDraft,
     protocol: Option<StreamProtocol>,
     problem: Option<FieldProblem<StreamField>>,
+    discovered: &[OmtSource],
 ) {
     section_heading(
         ui,
@@ -499,6 +514,9 @@ fn draw_source(
         }),
     };
     hint_slot(ui, hint);
+    if protocol == Some(StreamProtocol::Omt) {
+        draw_discovered(ui, l, draft, discovered);
+    }
     if !draft.advanced.source {
         return;
     }
@@ -529,6 +547,31 @@ fn draw_source(
                 .clicked()
             {
                 draft.settings.audio = audio;
+            }
+        }
+    });
+}
+
+/// The OMT sources a LAN browse found, each filling the URL when clicked.
+fn draw_discovered(
+    ui: &mut Ui,
+    l: Locale,
+    draft: &mut NetworkStreamDraft,
+    discovered: &[OmtSource],
+) {
+    sub_label(ui, l, Msg::NsDiscovered);
+    if discovered.is_empty() {
+        ui.label(crate::theme::caption(l.text(Msg::NsDiscoveredNone)));
+    }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+        for source in discovered {
+            if ui
+                .add(kind_key(&source.name, draft.url == source.url))
+                .on_hover_text(&source.url)
+                .clicked()
+            {
+                draft.url.clone_from(&source.url);
             }
         }
     });

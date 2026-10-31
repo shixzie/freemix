@@ -17,6 +17,7 @@ eframe = { version = "0.35.0", default-features = false, features = ["default_fo
 fm-animation = { path = "../../crates/foundation/fm-animation" }
 fm-client = { path = "../../crates/services/fm-client", features = ["std-websocket"] }
 fm-grade = { path = "../../crates/foundation/fm-grade" }
+fm-io-omt = { path = "../../crates/io/fm-io-omt" }
 fm-preset-file = { path = "../../crates/foundation/fm-preset-file" }
 fm-protocol = { path = "../../crates/foundation/fm-protocol" }
 fm-types = { path = "../../crates/foundation/fm-types" }
