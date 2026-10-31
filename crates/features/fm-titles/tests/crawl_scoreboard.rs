@@ -1284,6 +1284,57 @@ fn a_player_can_be_featured_by_jersey_number() {
 }
 
 #[test]
+fn scoreboard_snapshots_restore_exactly() {
+    let mut board = board(GameClockConfig {
+        direction: ClockDirection::CountDown,
+        format: ClockFormat::MinutesSeconds,
+        frame_rate: FrameRate::new(30, 1).unwrap(),
+        initial_ms: 90_000,
+        limit_ms: None,
+    });
+    board
+        .apply(
+            0,
+            0,
+            &[
+                ScoreboardAction::SetScore {
+                    side: TeamSide::Home,
+                    score: 3,
+                },
+                ScoreboardAction::SetShotClock { value_ms: 14_000 },
+                ScoreboardAction::StartShotClock,
+                ScoreboardAction::StartClock,
+            ],
+        )
+        .unwrap();
+    board.advance(30).unwrap();
+    let snapshot = board.snapshot();
+    let restored = Scoreboard::restore(snapshot.clone()).unwrap();
+    assert_eq!(restored, board);
+    assert_eq!(restored.clock().display(30), "01:29");
+    assert_eq!(
+        restored.clock().expiry_frame(),
+        board.clock().expiry_frame()
+    );
+    assert_eq!(
+        restored.shot_clock().unwrap().value_ms(30),
+        board.shot_clock().unwrap().value_ms(30)
+    );
+
+    // A running clock that starts after the last frame is refused.
+    let mut broken = snapshot;
+    broken.clock.running_since = Some(99);
+    broken.last_frame = 30;
+    assert_eq!(
+        Scoreboard::restore(broken),
+        Err(ScoreboardError::ClockSnapshotRunningAfterLastFrame {
+            running_since: 99,
+            last_frame: 30,
+        })
+    );
+}
+
+#[test]
 fn sport_presets_carry_their_rules_and_clocks() {
     let rate = FrameRate::new(25, 1).unwrap();
     let basketball = ScoreboardPreset::Basketball

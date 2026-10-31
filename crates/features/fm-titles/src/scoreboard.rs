@@ -388,6 +388,72 @@ fn check_clock_ms(value_ms: u64) -> Result<(), ScoreboardError> {
     Ok(())
 }
 
+/// A [`GameClock`]'s complete state, for persistence and exact restore.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GameClockSnapshot {
+    pub config: GameClockConfig,
+    pub base_ms: u64,
+    pub accumulated_frames: u64,
+    pub running_since: Option<u64>,
+    pub expired_at: Option<u64>,
+    pub expiry_pending: bool,
+}
+
+/// A [`Scoreboard`]'s complete state, for persistence and exact restore.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScoreboardSnapshot {
+    pub rules: ScoreboardRules,
+    pub home: TeamState,
+    pub away: TeamState,
+    pub period: u16,
+    pub clock: GameClockSnapshot,
+    pub shot_clock: Option<GameClockSnapshot>,
+    pub revision: u64,
+    pub last_frame: u64,
+}
+
+impl GameClock {
+    /// This clock's complete state.
+    #[must_use]
+    pub const fn snapshot(&self) -> GameClockSnapshot {
+        GameClockSnapshot {
+            config: self.config,
+            base_ms: self.base_ms,
+            accumulated_frames: self.accumulated_frames,
+            running_since: self.running_since,
+            expired_at: self.expired_at,
+            expiry_pending: self.expiry_pending,
+        }
+    }
+
+    fn from_snapshot(
+        snapshot: GameClockSnapshot,
+        last_frame: u64,
+    ) -> Result<Self, ScoreboardError> {
+        check_clock_ms(snapshot.base_ms)?;
+        check_clock_ms(snapshot.config.initial_ms)?;
+        if let Some(limit) = snapshot.config.limit_ms {
+            check_clock_ms(limit)?;
+        }
+        if let Some(running_since) = snapshot.running_since
+            && running_since > last_frame
+        {
+            return Err(ScoreboardError::ClockSnapshotRunningAfterLastFrame {
+                running_since,
+                last_frame,
+            });
+        }
+        Ok(Self {
+            config: snapshot.config,
+            base_ms: snapshot.base_ms,
+            accumulated_frames: snapshot.accumulated_frames,
+            running_since: snapshot.running_since,
+            expired_at: snapshot.expired_at,
+            expiry_pending: snapshot.expiry_pending,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ScoreboardAction {
     /// Increment/decrement shortcut; saturates at `0..=max_score`.
@@ -528,6 +594,11 @@ pub enum ScoreboardError {
     },
     /// Starting an expired clock; set it first.
     ClockExpired,
+    /// A restored running clock started after the scoreboard's last frame.
+    ClockSnapshotRunningAfterLastFrame {
+        running_since: u64,
+        last_frame: u64,
+    },
     /// The scoreboard's rules have no shot clock.
     NoShotClock,
     UnknownExternalKey {
@@ -587,6 +658,13 @@ impl fmt::Display for ScoreboardError {
                 write!(formatter, "clock value {value_ms}ms exceeds {maximum}ms")
             }
             Self::ClockExpired => formatter.write_str("clock has expired; set it before starting"),
+            Self::ClockSnapshotRunningAfterLastFrame {
+                running_since,
+                last_frame,
+            } => write!(
+                formatter,
+                "clock started on frame {running_since} after the scoreboard's last frame {last_frame}"
+            ),
             Self::NoShotClock => formatter.write_str("scoreboard rules have no shot clock"),
             Self::UnknownExternalKey { index } => {
                 write!(formatter, "external entry {index} has an unknown key")
@@ -738,6 +816,56 @@ impl Scoreboard {
     #[must_use]
     pub const fn last_frame(&self) -> u64 {
         self.last_frame
+    }
+
+    /// This scoreboard's complete state, for persistence.
+    #[must_use]
+    pub fn snapshot(&self) -> ScoreboardSnapshot {
+        ScoreboardSnapshot {
+            rules: self.rules,
+            home: self.home.clone(),
+            away: self.away.clone(),
+            period: self.period,
+            clock: self.clock.snapshot(),
+            shot_clock: self.shot_clock.as_ref().map(GameClock::snapshot),
+            revision: self.revision,
+            last_frame: self.last_frame,
+        }
+    }
+
+    /// Restores a scoreboard exactly from `snapshot`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScoreboardError::InvalidRules`] when the snapshot's rules
+    /// and shot clock disagree, a bound error for a period or clock outside
+    /// its contract, or [`ScoreboardError::ClockSnapshotRunningAfterLastFrame`]
+    /// for a running clock that starts after the last frame.
+    pub fn restore(snapshot: ScoreboardSnapshot) -> Result<Self, ScoreboardError> {
+        let mut board = Self::new(
+            snapshot.home,
+            snapshot.away,
+            snapshot.rules,
+            snapshot.clock.config,
+        )?;
+        if snapshot.period == 0 || snapshot.period > snapshot.rules.max_period {
+            return Err(ScoreboardError::PeriodOutOfRange {
+                period: snapshot.period,
+                maximum: snapshot.rules.max_period,
+            });
+        }
+        board.period = snapshot.period;
+        board.clock = GameClock::from_snapshot(snapshot.clock, snapshot.last_frame)?;
+        board.shot_clock = snapshot
+            .shot_clock
+            .map(|clock| GameClock::from_snapshot(clock, snapshot.last_frame))
+            .transpose()?;
+        if board.shot_clock.is_some() != snapshot.rules.shot_clock_ms.is_some() {
+            return Err(ScoreboardError::InvalidRules);
+        }
+        board.revision = snapshot.revision;
+        board.last_frame = snapshot.last_frame;
+        Ok(board)
     }
 
     const fn team_mut(&mut self, side: TeamSide) -> &mut TeamState {

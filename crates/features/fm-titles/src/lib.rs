@@ -139,10 +139,11 @@ pub use runtime::{
     evaluate_ticker_position,
 };
 pub use scoreboard::{
-    DEFAULT_SHOT_CLOCK_MS, GameClock, GameClockConfig, MAX_GAME_CLOCK_MS, MAX_ROSTER_PLAYERS,
-    MAX_SCOREBOARD_ACTIONS, MAX_SCOREBOARD_TEXT_CHARS, Player, Scoreboard, ScoreboardAction,
-    ScoreboardBinding, ScoreboardError, ScoreboardEvent, ScoreboardOutcome, ScoreboardPreset,
-    ScoreboardRules, TeamSide, TeamState, actions_from_external,
+    DEFAULT_SHOT_CLOCK_MS, GameClock, GameClockConfig, GameClockSnapshot, MAX_GAME_CLOCK_MS,
+    MAX_ROSTER_PLAYERS, MAX_SCOREBOARD_ACTIONS, MAX_SCOREBOARD_TEXT_CHARS, Player, Scoreboard,
+    ScoreboardAction, ScoreboardBinding, ScoreboardError, ScoreboardEvent, ScoreboardOutcome,
+    ScoreboardPreset, ScoreboardRules, ScoreboardSnapshot, TeamSide, TeamState,
+    actions_from_external,
 };
 pub use validation::{
     AssetCatalog, ImageAssetError, MAX_IMAGE_ASSET_BYTES, MAX_IMAGE_ASSETS, MissingFont,
