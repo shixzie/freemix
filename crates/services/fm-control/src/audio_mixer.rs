@@ -105,10 +105,7 @@ pub(super) fn plugin_status(
         server: authority.clone(),
         request_id: request.request_id.clone(),
         target: request.target,
-        available: fm_plugin_host_api::REFERENCE_PLUGINS
-            .iter()
-            .map(|plugin| (*plugin).to_owned())
-            .collect(),
+        available: engine.installed_audio_plugins().to_vec(),
         slots: wire_plugin_chain(&chain),
     }
 }

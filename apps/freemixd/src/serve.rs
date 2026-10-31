@@ -291,6 +291,19 @@ pub(crate) fn serve_inner(
         #[cfg(feature = "native-media")]
         native.sync_media_list_prefetch(project.project());
     }
+    // Installed audio plugins beside the bundle's journal (AU-006): the
+    // built-in reference processors plus every scanned manifest. Scanning
+    // lists what is installed; a chain naming a plugin without a processor
+    // is still refused when it is applied.
+    {
+        let catalog = fm_plugin_host_api::PluginCatalog::scan(&store.root().join("plugins"));
+        let mut available: Vec<String> = fm_plugin_host_api::REFERENCE_PLUGINS
+            .iter()
+            .map(|plugin| (*plugin).to_owned())
+            .collect();
+        available.extend(catalog.identifiers());
+        control.borrow_mut().set_installed_audio_plugins(available);
+    }
     // Every authored local HLS output is a configured show destination, so it
     // fails closed before serving exactly like the configured recording
     // output below: too little free space in any local output directory

@@ -1556,6 +1556,12 @@ impl<A: AuthorizationHook> ControlService<A> {
         audio_mixer::plugin_status(&self.engine, authority, request)
     }
 
+    /// Replaces the audio plugin identifiers this daemon can install, as a
+    /// scanned plugin catalog reports them (AU-006).
+    pub fn set_installed_audio_plugins(&mut self, plugins: Vec<String>) {
+        self.engine.set_installed_audio_plugins(plugins);
+    }
+
     /// Moves whenever any audio plugin chain changed (AU-006).
     #[must_use]
     pub const fn audio_plugin_generation(&self) -> u64 {

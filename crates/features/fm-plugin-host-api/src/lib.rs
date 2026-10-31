@@ -5,11 +5,17 @@
 //! runtime management belong to a host implementation.
 
 mod chain;
+mod catalog;
 mod exchange;
 mod host;
 mod reference;
 mod types;
 
+pub use catalog::{
+    CatalogError, InstalledPlugin, MANIFEST_FILE, MAX_CAPABILITIES, MAX_IDENTIFIER_BYTES,
+    MAX_INSTALLED_PLUGINS, MAX_MANIFEST_BYTES, MAX_NAME_BYTES, PluginCatalog, SkippedPlugin,
+    parse_manifest,
+};
 pub use chain::{
     MAX_PLUGIN_CHAIN_SLOTS, MAX_PLUGIN_LATENCY_FRAMES, PluginChain, PluginChainError, PluginSlot,
 };

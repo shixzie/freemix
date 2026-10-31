@@ -1292,6 +1292,9 @@ pub struct Engine {
     /// The replay recording, events, and players (OR-012). Runtime state:
     /// never snapshotted, so a restored engine starts a new recording.
     replay: crate::replay::ReplayRuntime,
+    /// The audio plugin identifiers this daemon can install (AU-006): the
+    /// built-in reference processors plus every scanned plugin.
+    installed_audio_plugins: Vec<String>,
 }
 
 impl Engine {
@@ -1321,6 +1324,10 @@ impl Engine {
             slideshows: BTreeMap::new(),
             paged_counts: BTreeMap::new(),
             replay: crate::replay::ReplayRuntime::new(frame_rate),
+            installed_audio_plugins: fm_plugin_host_api::REFERENCE_PLUGINS
+                .iter()
+                .map(|plugin| (*plugin).to_owned())
+                .collect(),
         }
     }
 
@@ -3312,6 +3319,21 @@ impl Engine {
         self.commands.state().audio_plugin_generation()
     }
 
+    /// The audio plugin identifiers this daemon can install (AU-006),
+    /// ascending.
+    #[must_use]
+    pub fn installed_audio_plugins(&self) -> &[String] {
+        &self.installed_audio_plugins
+    }
+
+    /// Replaces the list of audio plugin identifiers this daemon can
+    /// install, as a scanned plugin catalog reports them (AU-006).
+    pub fn set_installed_audio_plugins(&mut self, mut plugins: Vec<String>) {
+        plugins.sort();
+        plugins.dedup();
+        self.installed_audio_plugins = plugins;
+    }
+
     /// The up-to-eight-angle view of Replay input `input` at its current
     /// position, or `None` when nothing is cued on it (OR-014).
     #[must_use]
@@ -3518,6 +3540,10 @@ impl Engine {
             slideshows: BTreeMap::new(),
             paged_counts: BTreeMap::new(),
             replay: crate::replay::ReplayRuntime::new(frame_rate),
+            installed_audio_plugins: fm_plugin_host_api::REFERENCE_PLUGINS
+                .iter()
+                .map(|plugin| (*plugin).to_owned())
+                .collect(),
         })
     }
 }

@@ -239,9 +239,12 @@ there come before any new breadth below.
     Studio edits each reference plugin's saved parameter (the trim's gain,
     the soft clipper's threshold, and the polarity inverter's fixed action),
     and a Master plugin stage that panics is quarantined: the mixer keeps the
-    summed Program bus and the next render is clean. Remaining: scanning,
-    parameters for plugins beyond the reference set, and a real sandboxed
-    plugin in the chain (see the Phase 8 boundary).
+    summed Program bus and the next render is clean. A native daemon now
+    scans `<bundle>/plugins/<id>/plugin.ini` manifests and lists their ids
+    (with the built-in reference processors) in `audio_plugin_status`, so
+    Studio shows what is installed. Remaining: parameters for plugins
+    beyond the reference set, and a real sandboxed plugin in the chain
+    (see the Phase 8 boundary).
 15. **MIDI and controller surfaces (`RC-005`).** Studio reads ALSA raw MIDI
     ports on Linux, `CoreMIDI` on macOS, and `WinMM` on Windows, and binds
     notes, controls, and NRPN/RPN parameters to console actions, with LED
@@ -6124,8 +6127,10 @@ persisted since schema 91 (now 92) on every strip and on Master, so a show carri
 through a save, a restart, and a journal replay; Studio edits the trim gain
 and soft-clip threshold of each reference slot, and a Master plugin stage
 that panics mid-render is quarantined while the Program bus keeps its sum.
-There is no VST3 host; scanning, parameters for plugins beyond the reference
-set, and plugging a real sandboxed plugin into the chain remain. Vendor capture and output adapters keep their SDKs out of the
+There is no VST3 host; a native daemon scans `<bundle>/plugins` manifests and
+lists them in `audio_plugin_status`, but parameters for plugins beyond the
+reference set, loading, and plugging a real sandboxed plugin into the chain
+remain. Vendor capture and output adapters keep their SDKs out of the
 portable workspace and implement the in-tree `fm-io-api` contracts.
 
 Exit: each adapter ships only with a platform-specific conformance report.
