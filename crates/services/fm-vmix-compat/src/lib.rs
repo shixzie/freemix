@@ -549,6 +549,28 @@ fn translate(
                 duration_millis,
             }))
         }
+        "NextItem" | "PreviousItem" | "NextPicture" | "PreviousPicture" => {
+            allowed(parameters, &["Function", "Input"])?;
+            let input = state.resolve_input(required(parameters, "Input")?)?;
+            let navigation = if function.starts_with("Next") {
+                fm_protocol::PagedNavigation::Next
+            } else {
+                fm_protocol::PagedNavigation::Previous
+            };
+            Ok(Translation::Protocol(CommandPayload::PageNavigate {
+                input,
+                navigation,
+            }))
+        }
+        "SelectIndex" => {
+            allowed(parameters, &["Function", "Input", "Value"])?;
+            let input = state.resolve_input(required(parameters, "Input")?)?;
+            let value = parse_u32(required(parameters, "Value")?, "Value", 1, u32::MAX)?;
+            Ok(Translation::Protocol(CommandPayload::PageNavigate {
+                input,
+                navigation: fm_protocol::PagedNavigation::Goto(value - 1),
+            }))
+        }
         "SetText" => translate_set_text(parameters, state),
         "StartRecording" | "StopRecording" => {
             allowed(parameters, &["Function"])?;

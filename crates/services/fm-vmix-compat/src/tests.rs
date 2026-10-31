@@ -299,3 +299,38 @@ fn state_rejects_invalid_references_and_input_bounds() {
         Err(StateError::TooManyInputs)
     );
 }
+
+#[test]
+fn list_navigation_verbs_translate_to_page_navigation() {
+    let state = state();
+    for (function, navigation) in [
+        ("NextItem", fm_protocol::PagedNavigation::Next),
+        ("NextPicture", fm_protocol::PagedNavigation::Next),
+        ("PreviousItem", fm_protocol::PagedNavigation::Previous),
+        ("PreviousPicture", fm_protocol::PagedNavigation::Previous),
+    ] {
+        assert_eq!(
+            parse_http_query(&format!("Function={function}&Input=2"), &state),
+            Ok(Translation::Protocol(CommandPayload::PageNavigate {
+                input: id(2),
+                navigation,
+            }))
+        );
+    }
+    assert_eq!(
+        parse_http_query("Function=SelectIndex&Input=2&Value=3", &state),
+        Ok(Translation::Protocol(CommandPayload::PageNavigate {
+            input: id(2),
+            navigation: fm_protocol::PagedNavigation::Goto(2),
+        }))
+    );
+    // Values are one-based, and the verbs take no extra parameters.
+    for query in [
+        "Function=SelectIndex&Input=2&Value=0",
+        "Function=SelectIndex&Input=2",
+        "Function=NextItem",
+        "Function=NextItem&Input=2&Value=1",
+    ] {
+        assert!(parse_http_query(query, &state).is_err(), "{query}");
+    }
+}
