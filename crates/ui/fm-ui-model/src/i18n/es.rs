@@ -3808,6 +3808,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::BusMixerMuteHover,
         t("Silenciar o reactivar este bus en su salida"),
     ),
+    (Msg::BusMixerDsp, t("DSP del bus")),
+    (
+        Msg::BusMixerDspHover,
+        t("Cargar una cadena inicial de puerta/EQ/dinámica en este bus"),
+    ),
+    (Msg::BusMixerDspApply, t("Aplicar al bus")),
     (Msg::BusMixerOutputs, t("Salidas")),
     (
         Msg::BusMixerOutputHover,
@@ -9873,12 +9879,12 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::FxPluginTrimHover,
         t("La ganancia guardada del ajuste en dB"),
     ),
-    (Msg::FxPluginSoftClipDown, t("-1")),
+    (Msg::FxPluginSoftClipDown, t("-1 dB")),
     (
         Msg::FxPluginSoftClipDownHover,
         t("Bajar este umbral de recorte 1 dB"),
     ),
-    (Msg::FxPluginSoftClipUp, t("+1")),
+    (Msg::FxPluginSoftClipUp, t("+1 dB")),
     (
         Msg::FxPluginSoftClipUpHover,
         t("Subir este umbral de recorte 1 dB"),

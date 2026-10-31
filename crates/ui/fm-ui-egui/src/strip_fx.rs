@@ -141,7 +141,7 @@ impl StripFxPanel {
 }
 
 /// The name of a preset in the console language.
-fn preset_name(l: Locale, preset: StripDspPreset) -> &'static str {
+pub(crate) fn preset_name(l: Locale, preset: StripDspPreset) -> &'static str {
     l.text(match preset {
         StripDspPreset::Flat => Msg::FxPresetFlat,
         StripDspPreset::Voice => Msg::FxPresetVoice,

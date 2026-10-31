@@ -3212,6 +3212,47 @@ fn draw_bus_mixer_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
             });
             bus_meter(ui, channels, 56.0, 14.0);
         });
+        ui.horizontal(|ui| {
+            ui.label(caption(l.text(Msg::BusMixerDsp)));
+            let preset_id = egui::Id::new(("aux-bus-dsp-preset", number.index()));
+            let mut preset: fm_types::strip_dsp::StripDspPreset = ui.data_mut(|data| {
+                *data.get_temp_mut_or_insert_with(preset_id, || {
+                    fm_types::strip_dsp::StripDspPreset::Flat
+                })
+            });
+            egui::ComboBox::from_id_salt(("bus-mixer-dsp", number.index()))
+                .selected_text(crate::strip_fx::preset_name(l, preset))
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    for candidate in fm_types::strip_dsp::StripDspPreset::ALL {
+                        if ui
+                            .selectable_label(
+                                preset == candidate,
+                                crate::strip_fx::preset_name(l, candidate),
+                            )
+                            .clicked()
+                        {
+                            preset = candidate;
+                            ui.data_mut(|data| data.insert_temp(preset_id, candidate));
+                        }
+                    }
+                });
+            if ui
+                .add_enabled(
+                    edit_enabled,
+                    egui::Button::new(l.text(Msg::BusMixerDspApply)),
+                )
+                .hint(l.text(Msg::BusMixerDspHover), edit_reason)
+                .clicked()
+            {
+                intents.push(StudioIntent::AudioMixer(
+                    fm_protocol::AudioMixerOperation::SetAuxBusDsp {
+                        bus: number,
+                        chain: Box::new(preset.chain()),
+                    },
+                ));
+            }
+        });
     }
     ui.add_space(8.0);
     ui.label(section_label(l.text(Msg::BusMixerOutputs)));
