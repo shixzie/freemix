@@ -6,7 +6,7 @@
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
 (2026-10-19); items refreshed through protocol 2.147 / schema 104 (2026-10-31,
-at `67dd3268`). Every parity row is still `planned` (or `blocked`); these are
+at `e6d00d05`). Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
 frame loop) is ranked separately in [Structural work before more
