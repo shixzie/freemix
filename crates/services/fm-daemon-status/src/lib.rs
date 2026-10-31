@@ -18,4 +18,5 @@ use std::error::Error;
 /// A failure whose message is already operator-facing.
 pub type AppResult<T> = Result<T, Box<dyn Error>>;
 
+pub mod recorder_status;
 pub mod status_listener;

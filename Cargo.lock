@@ -1772,6 +1772,7 @@ name = "fm-daemon-status"
 version = "0.1.0"
 dependencies = [
  "fm-observability",
+ "fm-protocol",
  "fm-server",
 ]
 

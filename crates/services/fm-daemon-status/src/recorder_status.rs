@@ -18,11 +18,11 @@ use fm_protocol::{
 };
 
 /// How often a `recorder_status` record is built at most.
-pub(crate) const RECORDER_STATUS_INTERVAL: Duration = Duration::from_millis(250);
+pub const RECORDER_STATUS_INTERVAL: Duration = Duration::from_millis(250);
 
 /// What one recorder slot is doing right now, as the daemon sees it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum SlotView {
+pub enum SlotView {
     /// No output is configured for the slot.
     Unconfigured,
     /// Configured, no segment open.
@@ -46,7 +46,7 @@ struct SlotStatus {
 
 /// Per-slot realized recorder bookkeeping and the record sequence.
 #[derive(Debug, Default)]
-pub(crate) struct RecorderStatusTracker {
+pub struct RecorderStatusTracker {
     slots: [SlotStatus; 2],
     sequence: u64,
     built_at: Option<Instant>,
@@ -55,14 +55,14 @@ pub(crate) struct RecorderStatusTracker {
 impl RecorderStatusTracker {
     /// A start was requested for `slot` (zero-based): a latched failure is
     /// cleared so the slot reports its new attempt.
-    pub(crate) fn started(&mut self, slot: usize) {
+    pub fn started(&mut self, slot: usize) {
         if let Some(status) = self.slots.get_mut(slot) {
             status.failure = None;
         }
     }
 
     /// The operator stopped `slot`: it reports `off`.
-    pub(crate) fn stopped(&mut self, slot: usize) {
+    pub fn stopped(&mut self, slot: usize) {
         if let Some(status) = self.slots.get_mut(slot) {
             *status = SlotStatus::default();
         }
@@ -70,7 +70,7 @@ impl RecorderStatusTracker {
 
     /// `slot` lost its segment to `failure`; the slot reports `failed` until
     /// the next start or stop.
-    pub(crate) fn failed(&mut self, slot: usize, failure: OutputFailure) {
+    pub fn failed(&mut self, slot: usize, failure: OutputFailure) {
         if let Some(status) = self.slots.get_mut(slot) {
             status.recording_since = None;
             status.failure = Some(failure);
@@ -130,7 +130,7 @@ impl RecorderStatusTracker {
 
     /// Builds the next record when [`RECORDER_STATUS_INTERVAL`] has passed
     /// since the last one; otherwise only keeps the bookkeeping current.
-    pub(crate) fn poll(
+    pub fn poll(
         &mut self,
         server: &ServerIdentity,
         views: [SlotView; 2],

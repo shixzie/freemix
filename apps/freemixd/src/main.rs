@@ -166,8 +166,6 @@ use fm_daemon_web::{web_feed, web_titles};
 mod preflight;
 #[cfg(feature = "display-surface")]
 mod program_surface;
-#[cfg_attr(not(feature = "native-media"), allow(dead_code))]
-mod recorder_status;
 #[cfg(feature = "native-media")]
 mod recording_session;
 mod replay_preview;
@@ -176,6 +174,9 @@ mod screen_capture_targets;
 #[cfg(feature = "native-media")]
 mod source_wait;
 use fm_daemon_status::status_listener;
+// The recorder status tracker reports only a native daemon's recorders.
+#[cfg_attr(not(feature = "native-media"), allow(unused_imports))]
+use fm_daemon_status::recorder_status;
 #[cfg(feature = "native-media")]
 mod stinger_mutation;
 #[cfg(feature = "native-media")]

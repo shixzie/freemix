@@ -8,6 +8,7 @@ description = "The daemon's operator status listener, extracted from freemixd"
 
 [dependencies]
 fm-observability = { path = "../fm-observability" }
+fm-protocol = { path = "../../foundation/fm-protocol" }
 fm-server = { path = "../fm-server" }
 
 [lints]
