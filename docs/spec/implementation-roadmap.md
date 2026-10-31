@@ -169,9 +169,8 @@ there come before any new breadth below.
     transport (channel 1 notes 36–43) to the replay marks, capture,
     play/pause, stepping, and shuttling in one click. Remaining: the
     recorder takes a source's last
-    decoded picture rather than a genlocked one, segment files from a
-    previous run are removed rather than reloaded,
-    transitions and the dedicated two-profile replay controllers, and
+    decoded picture rather than a genlocked one, transitions and the
+    dedicated two-profile replay controllers, and
     certification are absent; Studio's
     Replay panel and the CLI record up to eight inputs and render their angles
     in an adaptive grid (Protocol 2.127), now led by the input and its linked
@@ -6042,10 +6041,15 @@ video frame, which the B-frame delay starts 80 ms after its sound, so
 replays and reel exports keep lip sync, and a run's first segment, whose
 AAC priming packet ffmpeg's fragmented MP4 muxer leaves ahead of that shift,
 decodes from its second packet (the adapter skips a leading packet that
-does not run into the next). Remaining gaps: slow motion has no audio; the recorder captures
+does not run into the next). Closed segments from a previous run are now
+reloaded: a session writes `manifest.tsv` with every segment's input,
+engine-frame and stream-frame origins, frame count, byte count, and file;
+on startup the daemon restores the newest compatible session's segments
+(observing every frame so they resolve exactly), continues each source's
+stream frames after them, marks its manifest restored, and removes the
+other stale sessions. Remaining gaps: slow motion has no audio; the recorder captures
 what the source last decoded rather than a genlocked frame, so a stalled
-source repeats its picture; segment files from a previous run are removed
-rather than reloaded; a cued player jogs any number of frames up to 600
+source repeats its picture; a cued player jogs any number of frames up to 600
 either way, paused (Protocol 2.114, Studio's ◀ and ▶ keys and `remote-replay-do
 step`) or shuttles at a signed rate (Protocol 2.131), and with auto return
 on a Replay input that plays its event to the end on Program hands Program

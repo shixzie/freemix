@@ -19,9 +19,12 @@
 //! over, like the engine's recording.
 //!
 //! The files live in one `freemixd-replay-<pid>-<random>` session directory
-//! under the storage root (`<input>-<run>/segment-NNNNNN.mp4`), removed on
-//! shutdown; one left behind by a daemon that is gone is removed when the
-//! next daemon records into the same root (on Linux).
+//! under the storage root (`<input>-<run>/segment-NNNNNN.mp4`). A session's
+//! `manifest.tsv` names every closed segment's input, engine-frame origin,
+//! stream-frame origin, frame count, byte count, and file; on startup the
+//! next daemon restores the newest compatible session's closed segments
+//! (marking its manifest restored) and removes the other stale sessions.
+//! Files a config change drops are still removed on the spot.
 //!
 //! Each Replay input has a decode worker that opens the segment file the
 //! projected frame's player shows ([`fm_engine::EngineReplayFrame`]) and
@@ -51,7 +54,7 @@ use std::{
     collections::{BTreeMap, VecDeque},
     fmt::Write as _,
     fs, io,
-    num::NonZeroU32,
+    num::{NonZeroU32, NonZeroU128},
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex, PoisonError,
@@ -98,6 +101,10 @@ const ENQUEUE_RETRY: Duration = Duration::from_millis(2);
 /// The name of every session directory starts with this, followed by
 /// `<pid>-<16 hex digits>`.
 pub(crate) const SESSION_PREFIX: &str = "freemixd-replay-";
+/// The manifest a session writes for the next run to reload (OR-012).
+const MANIFEST_FILE: &str = "manifest.tsv";
+/// The manifest name after its segments were restored.
+const RESTORED_MANIFEST_FILE: &str = "manifest.restored";
 const SEGMENT_PREFIX: &str = "segment";
 /// Most decoded audio blocks read from one segment file: the adapter's
 /// bound, well over its two seconds of AAC frames.
@@ -125,6 +132,39 @@ pub(crate) trait ReplayHost {
     /// Records the free bytes on the replay storage root, or `None` when it
     /// cannot be sampled (Protocol 2.125, OR-014).
     fn set_storage_free(&mut self, free: Option<u64>);
+    /// Catalogs a segment restored from a previous run, observing every
+    /// frame it holds so the segment resolves exactly (OR-012).
+    #[allow(clippy::too_many_arguments)]
+    fn restore_segment(
+        &mut self,
+        input: InputId,
+        index: u64,
+        path: PathBuf,
+        first_frame: u64,
+        first_stream_frame: u64,
+        frames: u64,
+        bytes: u64,
+    ) -> bool {
+        let closed = self.segment_closed(
+            input,
+            index,
+            path,
+            first_frame,
+            first_stream_frame,
+            frames,
+            bytes,
+        );
+        if closed {
+            for offset in 0..frames {
+                let _ = self.observe(
+                    input,
+                    first_frame.saturating_add(offset),
+                    first_stream_frame.saturating_add(offset),
+                );
+            }
+        }
+        closed
+    }
 }
 
 impl ReplayHost for ControlService<Policy> {
@@ -388,6 +428,8 @@ pub(crate) struct NativeReplay {
     recording: Option<(Vec<InputId>, PathBuf)>,
     session: Option<PathBuf>,
     sources: BTreeMap<InputId, Source>,
+    /// Whether a previous run's segments were already looked for.
+    restored: bool,
     /// When the storage root was last sampled.
     storage_sample: Option<Instant>,
 }
@@ -399,6 +441,7 @@ impl NativeReplay {
             recording: None,
             session: None,
             sources: BTreeMap::new(),
+            restored: false,
             storage_sample: None,
         }
     }
@@ -410,7 +453,7 @@ impl NativeReplay {
         if wanted != self.recording {
             self.end_session();
             self.recording = wanted;
-            if let Some((sources, _)) = &self.recording {
+            if let Some((sources, root)) = self.recording.clone() {
                 self.sources = sources
                     .iter()
                     .map(|input| {
@@ -424,6 +467,13 @@ impl NativeReplay {
                         )
                     })
                     .collect();
+                // The first configuration after startup may find the
+                // previous run's closed segments; later configurations
+                // started a new recording and must not resurrect them.
+                if !self.restored {
+                    self.restored = true;
+                    self.restore(&root, host);
+                }
             }
         }
         let inputs: Vec<InputId> = self.sources.keys().copied().collect();
@@ -514,7 +564,16 @@ impl NativeReplay {
                             frames,
                             bytes,
                         }) => {
-                            Self::catalog(host, input, run, index, path, frames, bytes);
+                            Self::catalog(
+                                &self.session,
+                                host,
+                                input,
+                                run,
+                                index,
+                                path,
+                                frames,
+                                bytes,
+                            );
                         }
                         Ok(RunEvent::Failed(reason)) => {
                             failure = Some(reason);
@@ -536,6 +595,7 @@ impl NativeReplay {
     }
 
     fn catalog(
+        session: &Option<PathBuf>,
         host: &mut dyn ReplayHost,
         input: InputId,
         run: &mut Run,
@@ -548,15 +608,27 @@ impl NativeReplay {
             return;
         };
         let first_stream_frame = run.base + run.closed;
-        host.segment_closed(
+        let closed = host.segment_closed(
             input,
             index,
-            path,
+            path.clone(),
             first_frame,
             first_stream_frame,
             frames,
             bytes,
         );
+        if closed && let Some(session) = session {
+            append_segment_manifest(
+                session,
+                input,
+                index,
+                &path,
+                first_frame,
+                first_stream_frame,
+                frames,
+                bytes,
+            );
+        }
         let taken = usize::try_from(frames)
             .unwrap_or(usize::MAX)
             .min(run.engine_frames.len());
@@ -571,7 +643,6 @@ impl NativeReplay {
         }
         let (_, root) = self.recording.as_ref()?;
         fs::create_dir_all(root).ok()?;
-        crate::native_live_lan::remove_stale_prefixed_roots(root, SESSION_PREFIX);
         let mut suffix = [0_u8; 8];
         let _ = getrandom::fill(&mut suffix);
         let suffix = suffix.iter().fold(String::new(), |mut text, byte| {
@@ -585,8 +656,72 @@ impl NativeReplay {
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
         builder.create(&session).ok()?;
+        // The manifest lets the next daemon reload these closed segments.
+        write_session_manifest(&session, self.format, self.sources.keys().copied()).ok()?;
         self.session = Some(session.clone());
         Some(session)
+    }
+
+    /// Reloads the newest compatible previous session's closed segments and
+    /// removes the other sessions (OR-012).
+    fn restore(&mut self, root: &Path, host: &mut dyn ReplayHost) {
+        let Ok(entries) = fs::read_dir(root) else {
+            return;
+        };
+        let mut sessions: Vec<PathBuf> = entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(SESSION_PREFIX)
+            })
+            .map(|entry| entry.path())
+            .collect();
+        sessions.sort_by_key(|path| {
+            std::cmp::Reverse(fs::metadata(path).and_then(|metadata| metadata.modified()).ok())
+        });
+        let mut restored_session = None;
+        for session in &sessions {
+            let manifest = session.join(MANIFEST_FILE);
+            let Ok(text) = fs::read_to_string(&manifest) else {
+                continue;
+            };
+            if !manifest_header_matches(&text, self.format) {
+                continue;
+            }
+            for segment in parse_manifest_segments(&text, session) {
+                if !self.sources.contains_key(&segment.input) || !segment.path.is_file() {
+                    continue;
+                }
+                if host.restore_segment(
+                    segment.input,
+                    segment.index,
+                    segment.path,
+                    segment.first_frame,
+                    segment.first_stream_frame,
+                    segment.frames,
+                    segment.bytes,
+                ) && let Some(source) = self.sources.get_mut(&segment.input)
+                {
+                    source.next_base = source
+                        .next_base
+                        .max(segment.first_stream_frame.saturating_add(segment.frames));
+                }
+            }
+            // The files stay for playback; the manifest is marked so the
+            // next restart does not catalog them twice.
+            let _ = fs::rename(&manifest, session.join(RESTORED_MANIFEST_FILE));
+            restored_session = Some(session.clone());
+            break;
+        }
+        for session in &sessions {
+            if restored_session.as_ref() == Some(session) {
+                continue;
+            }
+            let _ = fs::remove_dir_all(session);
+        }
     }
 
     fn start(&mut self, input: InputId) {
@@ -676,7 +811,16 @@ impl NativeReplay {
                         path,
                         frames,
                         bytes,
-                    }) => Self::catalog(host, input, run, index, path, frames, bytes),
+                    }) => Self::catalog(
+                        &self.session,
+                        host,
+                        input,
+                        run,
+                        index,
+                        path,
+                        frames,
+                        bytes,
+                    ),
                     Ok(RunEvent::Stopped) => {
                         self.sources.get_mut(&input).expect("source").state = SourceState::Idle;
                         break;
@@ -706,7 +850,147 @@ impl NativeReplay {
 
 impl Drop for NativeReplay {
     fn drop(&mut self) {
-        self.end_session();
+        // Keep the session and its manifest so the next daemon reloads its
+        // closed segments (OR-012). The workers stop with the process; a
+        // segment they did not close is not in the manifest.
+        self.sources.clear();
+        self.session = None;
+    }
+}
+
+/// Writes a new session's manifest header: the format and the sources.
+fn write_session_manifest(
+    session: &Path,
+    format: ReplayFormat,
+    sources: impl Iterator<Item = InputId>,
+) -> io::Result<()> {
+    let sources = sources
+        .map(|input| input.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    let text = format!(
+        "format\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        format.width,
+        format.height,
+        format.rate.numerator(),
+        format.rate.denominator(),
+        format.clock_domain.get(),
+        sources
+    );
+    fs::write(session.join(MANIFEST_FILE), text)
+}
+
+/// Whether `text`'s header describes the same picture format and clock.
+fn manifest_header_matches(text: &str, format: ReplayFormat) -> bool {
+    let Some(line) = text.lines().next() else {
+        return false;
+    };
+    let parts: Vec<&str> = line.split('\t').collect();
+    let ["format", width, height, numerator, denominator, clock, _sources] = parts.as_slice()
+    else {
+        return false;
+    };
+    width.parse::<u32>().ok() == Some(format.width)
+        && height.parse::<u32>().ok() == Some(format.height)
+        && numerator.parse::<u32>().ok() == Some(format.rate.numerator())
+        && denominator.parse::<u32>().ok() == Some(format.rate.denominator())
+        && clock.parse::<u128>().ok().and_then(NonZeroU128::new)
+            == Some(format.clock_domain.get())
+}
+
+/// One closed segment a session manifest names.
+struct RestoredSegment {
+    input: InputId,
+    index: u64,
+    path: PathBuf,
+    first_frame: u64,
+    first_stream_frame: u64,
+    frames: u64,
+    bytes: u64,
+}
+
+/// Parses a session's segment lines, skipping a torn or malformed one.
+fn parse_manifest_segments(text: &str, session: &Path) -> Vec<RestoredSegment> {
+    let mut segments = Vec::new();
+    for line in text.lines().skip(1) {
+        let parts: Vec<&str> = line.split('\t').collect();
+        let ["segment", input, index, first_frame, first_stream_frame, frames, bytes, relative] =
+            parts.as_slice()
+        else {
+            continue;
+        };
+        let Some(input) = input
+            .parse::<u128>()
+            .ok()
+            .and_then(NonZeroU128::new)
+            .map(InputId::new)
+        else {
+            continue;
+        };
+        let (
+            Ok(index),
+            Ok(first_frame),
+            Ok(first_stream_frame),
+            Ok(frames),
+            Ok(bytes),
+        ) = (
+            index.parse::<u64>(),
+            first_frame.parse::<u64>(),
+            first_stream_frame.parse::<u64>(),
+            frames.parse::<u64>(),
+            bytes.parse::<u64>(),
+        )
+        else {
+            continue;
+        };
+        if frames == 0 {
+            continue;
+        }
+        let path = session.join(relative);
+        if !path.starts_with(session) {
+            continue;
+        }
+        segments.push(RestoredSegment {
+            input,
+            index,
+            path,
+            first_frame,
+            first_stream_frame,
+            frames,
+            bytes,
+        });
+    }
+    segments.sort_by_key(|segment| segment.first_frame);
+    segments
+}
+
+/// Appends one closed segment to its session's manifest.
+fn append_segment_manifest(
+    session: &Path,
+    input: InputId,
+    index: u64,
+    path: &Path,
+    first_frame: u64,
+    first_stream_frame: u64,
+    frames: u64,
+    bytes: u64,
+) {
+    let Ok(relative) = path.strip_prefix(session) else {
+        return;
+    };
+    let Some(relative) = relative.to_str() else {
+        return;
+    };
+    if relative.contains(['\t', '\n', '\r']) {
+        return;
+    }
+    let line = format!(
+        "segment\t{input}\t{index}\t{first_frame}\t{first_stream_frame}\t{frames}\t{bytes}\t\
+         {relative}\n"
+    );
+    let manifest = session.join(MANIFEST_FILE);
+    if let Ok(mut file) = fs::OpenOptions::new().append(true).open(manifest) {
+        let _ = std::io::Write::write_all(&mut file, line.as_bytes());
     }
 }
 
@@ -1586,5 +1870,86 @@ mod tests {
         for (_, count) in &runs[1..runs.len() - 1] {
             assert_eq!(*count, 2, "{runs:?}");
         }
+    }
+
+    #[test]
+    fn a_previous_run_session_is_restored_and_its_manifest_marked() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("replay");
+        fs::create_dir_all(&root).unwrap();
+        let rate = FrameRate::new(25, 1).unwrap();
+        let format = ReplayFormat {
+            width: WIDTH,
+            height: HEIGHT,
+            rate,
+            clock_domain: clock_domain(),
+        };
+        let session = root.join(format!("{SESSION_PREFIX}1-00"));
+        fs::create_dir(&session).unwrap();
+        write_session_manifest(&session, format, [input(1)].into_iter()).unwrap();
+        let source = session.join("1-0");
+        fs::create_dir(&source).unwrap();
+        let segment = source.join("segment-000001.mp4");
+        fs::write(&segment, b"segment").unwrap();
+        append_segment_manifest(&session, input(1), 1, &segment, 100, 0, 50, 7);
+
+        let manifest = session.join(MANIFEST_FILE);
+        let text = fs::read_to_string(&manifest).unwrap();
+        assert!(manifest_header_matches(&text, format));
+        assert!(!manifest_header_matches(
+            &text,
+            ReplayFormat {
+                width: 100,
+                ..format
+            }
+        ));
+        let segments = parse_manifest_segments(&text, &session);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(
+            (
+                segments[0].input,
+                segments[0].first_frame,
+                segments[0].first_stream_frame,
+                segments[0].frames,
+            ),
+            (input(1), 100, 0, 50)
+        );
+
+        let show = ShowState::new(
+            "replay",
+            (1..=2)
+                .map(|value| (input(value), format!("Camera {value}")))
+                .collect(),
+            input(1),
+            input(2),
+        )
+        .unwrap();
+        let mut engine = Engine::new(
+            show,
+            rate,
+            fm_clock::ClockDomainId::new(NonZeroU128::new(100).unwrap()),
+        );
+        engine.set_replay_feed(EngineReplayFeed::External);
+        accept(
+            &mut engine,
+            "configure",
+            EngineCommand::Replay(EngineReplayOperation::Configure(Box::new(ReplaySettings {
+                sources: vec![input(1)],
+                retention_seconds: 10,
+                storage_root: Some(root.to_string_lossy().into_owned()),
+                auto_return: None,
+            }))),
+        );
+        // The configure command is realized on the next frame; the restore
+        // runs once the runtime records the source.
+        let _ = engine.tick().unwrap();
+        let mut replay = NativeReplay::new(format);
+        replay.sync(&mut engine);
+        assert_eq!(engine.replay_status().sources[0].segments, 1);
+        // The old manifest is marked so a later restart does not restore the
+        // same segment twice, while the file stays playable.
+        assert!(!manifest.exists());
+        assert!(session.join(RESTORED_MANIFEST_FILE).exists());
+        assert!(segment.exists());
     }
 }
