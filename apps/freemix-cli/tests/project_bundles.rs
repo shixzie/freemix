@@ -774,6 +774,21 @@ fn title_apply_row_writes_a_mapped_row_into_the_project() {
         fm_model::TitleFieldValue::Color(fm_model::Rgba8::new(0xab, 0xcd, 0xef, 0xff))
     );
 
+    // --preview reports the change without saving it.
+    fs::write(&row, r#"{"Score": 13}"#).unwrap();
+    let out = assert_success(&run(&[
+        "title-apply-row",
+        text(&show),
+        "9",
+        text(&row),
+        "--preview",
+    ]));
+    assert!(out.contains("would-change \"Score\""), "{out}");
+    assert!(out.contains("title-apply-row: input=9 preview"), "{out}");
+    let (revision, fields) = title_fields(&load(&show), 9);
+    assert_eq!(revision, 1);
+    assert_eq!(fields[0].value, fm_model::TitleFieldValue::Number(12));
+
     // A field that fails coercion refuses the whole row and saves nothing.
     let manifest = fs::read(show.join("project.json")).unwrap();
     fs::write(&row, r#"{"Score": "twelve"}"#).unwrap();

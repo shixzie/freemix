@@ -21,8 +21,15 @@ use fm_types::InputId;
 
 use crate::app::{AppFailure, AppResult, input_id, load_stored_project};
 
-/// Applies `row_path` onto title input `input` of the bundle at `path`.
-pub fn apply_row(path: &Path, input: u128, row_path: &Path, keep_live: bool) -> AppResult<()> {
+/// Applies `row_path` onto title input `input` of the bundle at `path`, or
+/// reports the per-field changes without saving when `preview` is set.
+pub fn apply_row(
+    path: &Path,
+    input: u128,
+    row_path: &Path,
+    keep_live: bool,
+    preview: bool,
+) -> AppResult<()> {
     let stored = load_stored_project(path)?;
     let input = input_id(input)?;
     let (template_uri, title) = title_input(stored.project(), input)?;
@@ -36,6 +43,11 @@ pub fn apply_row(path: &Path, input: u128, row_path: &Path, keep_live: bool) -> 
     check_unknown_fields(&row, template, template_uri)?;
     let report = mapped_report(&row, template);
     print_report(&report);
+    let mut fields = restored_fields(template, title, input)?;
+    if preview {
+        print_preview(&fields, &report, input);
+        return Ok(());
+    }
     let errors = report.errors().count();
     if errors > 0 && !keep_live {
         return Err(AppFailure(format!(
@@ -44,7 +56,6 @@ pub fn apply_row(path: &Path, input: u128, row_path: &Path, keep_live: bool) -> 
         .into());
     }
 
-    let mut fields = restored_fields(template, title, input)?;
     let revision = fm_title_render::apply_title_mapping_to_fields(
         &mut fields,
         template,
@@ -199,6 +210,44 @@ fn print_report(report: &TitleMappingReport) {
             field_status_name(&entry.status)
         );
     }
+}
+
+fn mapped_field_value(value: &fm_data::TitleFieldValue) -> fm_titles::FieldValue {
+    match value {
+        fm_data::TitleFieldValue::Text(text) => fm_titles::FieldValue::Text(text.clone()),
+        fm_data::TitleFieldValue::Number(number) => fm_titles::FieldValue::Number(*number),
+        fm_data::TitleFieldValue::Color(color) => fm_titles::FieldValue::Color(
+            fm_titles::Color::new(color.r, color.g, color.b, color.a),
+        ),
+        fm_data::TitleFieldValue::Image(asset) => {
+            fm_titles::FieldValue::Image(fm_titles::ImageSource::new(asset.clone()))
+        }
+    }
+}
+
+fn print_preview(fields: &TitleFieldSet, report: &TitleMappingReport, input: InputId) {
+    for entry in &report.fields {
+        if let Some(value) = report.values.get(&entry.field) {
+            let new = mapped_field_value(value);
+            let current = fields
+                .definitions()
+                .iter()
+                .find(|definition| definition.name == entry.field)
+                .and_then(|definition| fields.value(definition.id));
+            if current == Some(&new) {
+                println!("unchanged {:?}", entry.field);
+            } else {
+                println!("would-change {:?} {current:?} -> {new:?}", entry.field);
+            }
+        } else {
+            println!(
+                "failed {:?} {}",
+                entry.field,
+                field_status_name(&entry.status)
+            );
+        }
+    }
+    println!("title-apply-row: input={input} preview");
 }
 
 const fn title_field_kind(field_type: FieldType) -> TitleFieldKind {

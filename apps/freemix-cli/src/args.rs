@@ -1007,6 +1007,8 @@ pub enum Command {
         /// Apply the fields that mapped and keep the live value of any field
         /// that failed instead of refusing the whole row.
         keep_live: bool,
+        /// Print the per-field changes without saving anything.
+        preview: bool,
     },
     /// `title-design-import <project> <design.fmdesign> --id <input>
     /// --name <name> [--font <Family=path>]`: flattens a validated designer
@@ -2518,9 +2520,11 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let input = number(&required(&mut arguments, "input")?, "input")?;
             let row = required_path(&mut arguments, "row path")?;
             let mut keep_live = false;
+            let mut preview = false;
             for option in arguments.by_ref() {
                 match option.as_str() {
                     "--keep-live" => keep_live = true,
+                    "--preview" => preview = true,
                     _ => return Err(ArgsError::UnknownOption(option)),
                 }
             }
@@ -2529,6 +2533,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                 input,
                 row,
                 keep_live,
+                preview,
             })
         }
         "audio-strip" => parse_audio_strip(arguments),

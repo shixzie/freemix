@@ -1048,7 +1048,8 @@ pub fn run(command: Command) -> AppResult<()> {
             input,
             row,
             keep_live,
-        } => crate::title_row::apply_row(&path, input, &row, keep_live)?,
+            preview,
+        } => crate::title_row::apply_row(&path, input, &row, keep_live, preview)?,
         Command::TitleDesignImport {
             path,
             input,
@@ -7137,7 +7138,7 @@ Usage:
   freemix-cli settings-export <show.freemix> <settings.json>
   freemix-cli settings-import <show.freemix> <settings.json> [--apply]
   freemix-cli title-design-check <design.fmdesign>
-  freemix-cli title-apply-row <show.freemix> <input-id> <row.json> [--keep-live]
+  freemix-cli title-apply-row <show.freemix> <input-id> <row.json> [--keep-live] [--preview]
   freemix-cli title-design-import <show.freemix> <design.fmdesign> --id <nonzero-input-id> --name <name> [--font <Family=path.ttf>]...
   freemix-cli audio-strip <show.freemix> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp:-10000..=10000>]
   freemix-cli audio-label <show.freemix> <input> <label (empty clears)> [--key <key>] [--expect <revision>]
