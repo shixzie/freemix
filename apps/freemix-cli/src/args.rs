@@ -51,6 +51,18 @@ pub enum MediaTarget {
     Remote(SocketAddr),
 }
 
+/// One item edit of a saved media list (IN-006).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MediaListItemEdit {
+    /// Appends an item for `asset_uri`; `title` is `None` when `-`.
+    Add {
+        asset_uri: String,
+        title: Option<String>,
+    },
+    /// Removes the item with this id.
+    Remove { item: u32 },
+}
+
 /// The automatic mix a CLI token names.
 pub fn transition_kind(value: &str) -> Result<TransitionKind, ArgsError> {
     TransitionKind::from_token(&value.replace('-', "_")).ok_or_else(|| ArgsError::InvalidChoice {
@@ -840,6 +852,25 @@ pub enum Command {
         target: MediaTarget,
         input: u128,
         navigation: fm_protocol::MediaListNavigation,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Replaces a saved media list's options (IN-006).
+    InputMediaListOptions {
+        path: PathBuf,
+        input: u128,
+        auto_next: bool,
+        auto_first: bool,
+        loop_list: bool,
+        shuffle_seed: Option<u64>,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
+    /// Appends or removes one item of a saved media list (IN-006).
+    InputMediaListItem {
+        path: PathBuf,
+        input: u128,
+        operation: MediaListItemEdit,
         key: Option<String>,
         expected_revision: Option<u64>,
     },
@@ -2745,6 +2776,76 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             MediaTarget::Remote(socket_address(&required(&mut arguments, "address")?)?),
             arguments,
         ),
+        "input-media-list-options" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let auto_next = boolean_choice(&required(&mut arguments, "auto-next")?, "auto-next")?;
+            let auto_first =
+                boolean_choice(&required(&mut arguments, "auto-first")?, "auto-first")?;
+            let loop_list = boolean_choice(&required(&mut arguments, "loop")?, "loop")?;
+            let shuffle = required(&mut arguments, "shuffle seed")?;
+            let shuffle_seed = if shuffle == "off" {
+                None
+            } else {
+                Some(
+                    shuffle
+                        .parse::<u64>()
+                        .map_err(|_| ArgsError::InvalidNumber {
+                            field: "shuffle seed",
+                            value: shuffle.clone(),
+                        })?,
+                )
+            };
+            let (key, expected_revision) = command_options(arguments)?;
+            Ok(Command::InputMediaListOptions {
+                path,
+                input,
+                auto_next,
+                auto_first,
+                loop_list,
+                shuffle_seed,
+                key,
+                expected_revision,
+            })
+        }
+        "input-media-list-item" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let action = required(&mut arguments, "item action")?;
+            let operation = match action.as_str() {
+                "add" => {
+                    let asset_uri = required(&mut arguments, "asset URI")?;
+                    if !asset_uri.starts_with("asset://") {
+                        return Err(ArgsError::InvalidChoice {
+                            field: "asset URI (asset://<key>)",
+                            value: asset_uri,
+                        });
+                    }
+                    let title = required(&mut arguments, "title or -")?;
+                    MediaListItemEdit::Add {
+                        asset_uri,
+                        title: (title != "-").then_some(title),
+                    }
+                }
+                "remove" => MediaListItemEdit::Remove {
+                    item: number(&required(&mut arguments, "item")?, "item")?,
+                },
+                _ => {
+                    return Err(ArgsError::InvalidChoice {
+                        field: "item action (add or remove)",
+                        value: action,
+                    });
+                }
+            };
+            let (key, expected_revision) = command_options(arguments)?;
+            Ok(Command::InputMediaListItem {
+                path,
+                input,
+                operation,
+                key,
+                expected_revision,
+            })
+        }
         "help" | "--help" | "-h" => Ok(Command::Help),
         _ => {
             if let Some(operation) = command.strip_prefix("remote-input-media-") {

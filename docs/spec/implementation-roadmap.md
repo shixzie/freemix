@@ -4863,9 +4863,9 @@ every composited frame); a step to a file that was not prefetched still
 cuts. The simulated daemon runs the timing without compositing its
 synthetic pictures. Studio's list card edits the transition with hover
 help. Gaps: only the next item is prefetched; the CLI steps a list
-(`input-media-list-navigate` and its `remote-` form) but has no item or
-options edit verbs; no vMix API verbs, no cross-input GO bank, and Linux-only
-native evidence. The generic
+(`input-media-list-navigate` and its `remote-` form) and edits its options and
+items (`input-media-list-options`, `input-media-list-item`); no vMix API
+verbs, no cross-input GO bank, and Linux-only native evidence. The generic
 `page_navigate` step and the cue `page` action drive a list too: a page step
 naming a media list is rewritten to the list's own `navigate` (same
 next/previous/first/last/goto tokens, but Next and Previous wrap under Loop

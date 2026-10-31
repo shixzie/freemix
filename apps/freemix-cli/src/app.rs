@@ -712,6 +712,110 @@ pub fn run(command: Command) -> AppResult<()> {
                 }
             }
         }
+        Command::InputMediaListOptions {
+            path,
+            input,
+            auto_next,
+            auto_first,
+            loop_list,
+            shuffle_seed,
+            key,
+            expected_revision,
+        } => {
+            let project = inspect_engine(&path)?;
+            let input = input_id(input)?;
+            let list = project
+                .engine
+                .show()
+                .media_list(input)
+                .cloned()
+                .ok_or_else(|| AppFailure(format!("input {input} is not a media list")))?;
+            let mut options = list.options;
+            options.auto_next = auto_next;
+            options.auto_first = auto_first;
+            options.loop_list = loop_list;
+            options.shuffle_seed = shuffle_seed;
+            mutate(
+                &path,
+                EngineCommand::MediaList(fm_engine::EngineMediaListCommand {
+                    input,
+                    operation: fm_engine::EngineMediaListOperation::Set {
+                        items: list.items,
+                        options,
+                        active: Some(list.active),
+                    },
+                }),
+                1,
+                key,
+                expected_revision,
+            )?;
+        }
+        Command::InputMediaListItem {
+            path,
+            input,
+            operation,
+            key,
+            expected_revision,
+        } => {
+            let project = inspect_engine(&path)?;
+            let input = input_id(input)?;
+            let mut list = project
+                .engine
+                .show()
+                .media_list(input)
+                .cloned()
+                .ok_or_else(|| AppFailure(format!("input {input} is not a media list")))?;
+            let active = list.active;
+            let mut keep_active = true;
+            match operation {
+                crate::args::MediaListItemEdit::Add { asset_uri, title } => {
+                    let id = list
+                        .items
+                        .iter()
+                        .map(|item| item.id)
+                        .max()
+                        .unwrap_or(0)
+                        .saturating_add(1);
+                    list.items.push(fm_model::MediaListItem {
+                        id,
+                        asset_uri,
+                        title,
+                        mark_in: 0,
+                        mark_out: None,
+                    });
+                }
+                crate::args::MediaListItemEdit::Remove { item } => {
+                    if !list.items.iter().any(|candidate| candidate.id == item) {
+                        return Err(
+                            AppFailure(format!("media list {input} has no item {item}")).into()
+                        );
+                    }
+                    list.items.retain(|candidate| candidate.id != item);
+                    if list.items.is_empty() {
+                        return Err(
+                            AppFailure("a media list keeps at least one item".into()).into()
+                        );
+                    }
+                    if item == active {
+                        keep_active = false;
+                    }
+                }
+            }
+            mutate(
+                &path,
+                EngineCommand::MediaList(fm_engine::EngineMediaListCommand {
+                    input,
+                    operation: fm_engine::EngineMediaListOperation::Set {
+                        items: list.items,
+                        options: list.options,
+                        active: keep_active.then_some(active),
+                    },
+                }),
+                1,
+                key,
+                expected_revision,
+            )?;
+        }
         Command::InputLifecycle {
             target,
             operation,
@@ -6841,6 +6945,8 @@ Usage:
   freemix-cli input-media-list <show.freemix>
   freemix-cli input-media-list-navigate <show.freemix> <input-id> <next|previous|first|last|goto <position>|item <id>> [--key <key>] [--expect <revision>]
   freemix-cli remote-input-media-list-navigate <address> <input-id> <next|previous|first|last|goto <position>|item <id>> [--key <key>] [--expect <revision>]
+  freemix-cli input-media-list-options <show.freemix> <input-id> <auto-next on|off> <auto-first on|off> <loop on|off> <shuffle seed|off> [--key <key>] [--expect <revision>]
+  freemix-cli input-media-list-item <show.freemix> <input-id> add <asset://key> <title|-> | remove <item-id> [--key <key>] [--expect <revision>]
   freemix-cli input-pages <show.freemix>
   freemix-cli input-page <show.freemix> <input-id> <next|previous|first|last|goto <page>> [--key <key>] [--expect <revision>]
   freemix-cli input-categories <show.freemix> [<id>=<name>...] [--key <key>] [--expect <revision>]
