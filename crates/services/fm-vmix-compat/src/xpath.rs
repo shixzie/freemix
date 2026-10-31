@@ -83,6 +83,8 @@ impl Node {
 enum Predicate {
     Position(usize),
     Attribute { name: String, value: String },
+    AttributeContains { name: String, value: String },
+    AttributeStartsWith { name: String, value: String },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -108,8 +110,10 @@ impl CompatState {
     /// steps rooted at `vmix` (or `*` for any element), a `//` separator that
     /// selects descendants instead of children, each step with up to
     /// [`MAX_XPATH_PREDICATES`] predicates of the form `[N]` (one-based
-    /// position) or `[@name='value']` (single or double quotes, exact match),
-    /// and an optional final `@name` attribute step. Element values follow `XPath` string-value semantics, so
+    /// position), `[@name='value']` (single or double quotes, exact match),
+    /// `[contains(@name,'value')]`, or `[starts-with(@name,'value')]`, an
+    /// optional final `text()` step, and an optional final `@name` attribute
+    /// step. Element values follow `XPath` string-value semantics, so
     /// an `input` element yields its title followed by its text field values.
     ///
     /// # Errors
@@ -255,6 +259,20 @@ fn select<'a>(candidates: impl IntoIterator<Item = &'a Node>, step: &Step) -> Ve
                 .into_iter()
                 .filter(|node| node.attribute(name) == Some(value.as_str()))
                 .collect(),
+            Predicate::AttributeContains { name, value } => selected
+                .into_iter()
+                .filter(|node| {
+                    node.attribute(name)
+                        .is_some_and(|attribute| attribute.contains(value.as_str()))
+                })
+                .collect(),
+            Predicate::AttributeStartsWith { name, value } => selected
+                .into_iter()
+                .filter(|node| {
+                    node.attribute(name)
+                        .is_some_and(|attribute| attribute.starts_with(value.as_str()))
+                })
+                .collect(),
         };
     }
     selected
@@ -289,6 +307,24 @@ fn parse_path(xpath: &str) -> Result<Path, XPathError> {
         }
         if steps.len() == MAX_XPATH_STEPS {
             return Err(XPathError::TooComplex);
+        }
+        if parser.peek_name() == Some("text") {
+            let start = parser.position;
+            parser.position += 4;
+            if parser.eat(b'(') {
+                if !parser.eat(b')') {
+                    return Err(XPathError::Syntax("expected ')' after text("));
+                }
+                if steps.is_empty() || !parser.at_end() {
+                    return Err(XPathError::Syntax(
+                        "text() must be the final step after an element",
+                    ));
+                }
+                // The string value of the selected node is exactly what
+                // `xml_text` returns, so `text()` needs no evaluation.
+                break;
+            }
+            parser.position = start;
         }
         let name = if parser.eat(b'*') {
             None
@@ -347,6 +383,45 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn peek_name(&self) -> Option<&'a str> {
+        let mut position = self.position;
+        while self
+            .bytes
+            .get(position)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        {
+            position += 1;
+        }
+        if position == self.position
+            || !self.bytes[self.position].is_ascii_alphabetic() && self.bytes[self.position] != b'_'
+        {
+            return None;
+        }
+        Some(&self.source[self.position..position])
+    }
+
+    fn literal(&mut self) -> Result<String, XPathError> {
+        let quote = match self.bytes.get(self.position) {
+            Some(quote @ (b'\'' | b'"')) => *quote,
+            _ => return Err(XPathError::Syntax("expected a quoted literal")),
+        };
+        self.position += 1;
+        let start = self.position;
+        while self
+            .bytes
+            .get(self.position)
+            .is_some_and(|byte| *byte != quote)
+        {
+            self.position += 1;
+        }
+        if self.at_end() {
+            return Err(XPathError::Syntax("unterminated literal"));
+        }
+        let value = self.source[start..self.position].to_owned();
+        self.position += 1;
+        Ok(value)
+    }
+
     fn name(&mut self) -> Result<&'a str, XPathError> {
         let start = self.position;
         while self
@@ -371,25 +446,45 @@ impl<'a> Parser<'a> {
             if !self.eat(b'=') {
                 return Err(XPathError::Syntax("expected '=' in attribute predicate"));
             }
-            let quote = match self.bytes.get(self.position) {
-                Some(quote @ (b'\'' | b'"')) => *quote,
-                _ => return Err(XPathError::Syntax("expected a quoted literal")),
-            };
-            self.position += 1;
-            let start = self.position;
-            while self
-                .bytes
-                .get(self.position)
-                .is_some_and(|byte| *byte != quote)
-            {
-                self.position += 1;
-            }
-            if self.at_end() {
-                return Err(XPathError::Syntax("unterminated literal"));
-            }
-            let value = self.source[start..self.position].to_owned();
-            self.position += 1;
+            let value = self.literal()?;
             return Ok(Predicate::Attribute { name, value });
+        }
+        if let Some(name) = self.peek_name() {
+            let kind = match name {
+                "contains" => Some(true),
+                "starts-with" => Some(false),
+                _ => None,
+            };
+            if let Some(contains) = kind {
+                self.position += name.len();
+                if !self.eat(b'(') {
+                    return Err(XPathError::Syntax("expected '(' after a function"));
+                }
+                if !self.eat(b'@') {
+                    return Err(XPathError::Syntax(
+                        "expected an attribute in a function predicate",
+                    ));
+                }
+                let attribute = self.name()?.to_owned();
+                if !self.eat(b',') {
+                    return Err(XPathError::Syntax("expected ',' in a function predicate"));
+                }
+                let value = self.literal()?;
+                if !self.eat(b')') {
+                    return Err(XPathError::Syntax("expected ')' after a function predicate"));
+                }
+                return Ok(if contains {
+                    Predicate::AttributeContains {
+                        name: attribute,
+                        value,
+                    }
+                } else {
+                    Predicate::AttributeStartsWith {
+                        name: attribute,
+                        value,
+                    }
+                });
+            }
         }
         let start = self.position;
         while self

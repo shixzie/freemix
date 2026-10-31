@@ -6348,9 +6348,10 @@ function surface now includes list and picture navigation, media transport
 (including volume and mute), overlay in/off/all-off, Fade to Black, and
 recording/streaming toggles, input renaming, and playlist start/stop/next/
 previous in addition to the switcher, title, recording, and streaming verbs. Remaining gaps: no sockets or running-server wiring, a
-partial function and state-document surface, no XPath functions, unions, or
-axes beyond child and descendant, a partial ACTS set, no authentication, and
-no byte comparison against a real vMix 29 instance. `RC-009` remains planned.
+partial function and state-document surface, XPath lacks unions, arithmetic,
+and axes beyond child and descendant (it does support a final `text()` step
+and `contains`/`starts-with` attribute predicates), a partial ACTS set, no
+authentication, and no byte comparison against a real vMix 29 instance. `RC-009` remains planned.
 
 Current implementation boundary for item 3 (social moderation): `fm-social`
 provides a deterministic moderation desk over its in-memory aggregator.

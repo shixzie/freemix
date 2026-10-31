@@ -420,6 +420,35 @@ fn xpath_descendant_and_wildcard_steps_select_nodes() {
 }
 
 #[test]
+fn xpath_functions_select_attribute_matches_and_text_values() {
+    let state = state();
+    assert_eq!(
+        state.xml_text("/vmix/inputs/input[1]/text()"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("/vmix/inputs/input[contains(@title,'Cam')]/@number"),
+        Ok("1".into())
+    );
+    assert_eq!(
+        state.xml_text("/vmix/inputs/input[starts-with(@title,'News')]/@number"),
+        Ok("2".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[contains(@title,'Spare')]"),
+        Ok("Spare".into())
+    );
+    assert!(matches!(
+        state.xml_text("/vmix/inputs/input[contains(@title)]"),
+        Err(XPathError::Syntax(_))
+    ));
+    assert!(matches!(
+        state.xml_text("/vmix/inputs/input[unknown(@title,'Cam')]"),
+        Err(XPathError::Syntax(_))
+    ));
+}
+
+#[test]
 fn set_volume_translates_the_percentage() {
     let state = state();
     assert_eq!(
