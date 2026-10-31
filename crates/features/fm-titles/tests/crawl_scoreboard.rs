@@ -1536,6 +1536,61 @@ fn publishing_maps_typed_values_onto_template_fields_atomically() {
 }
 
 #[test]
+fn roster_fields_publish_in_player_order() {
+    let roster_field = field(9);
+    let template = template(
+        64,
+        16,
+        vec![FieldDefinition {
+            id: roster_field,
+            name: "roster".into(),
+            default: FieldValue::Text(String::new()),
+            exposed: true,
+        }],
+        Vec::new(),
+    );
+    let mut scene = scene(&template);
+    let mut board = board(GameClockConfig {
+        direction: ClockDirection::CountDown,
+        format: ClockFormat::MinutesSeconds,
+        frame_rate: FrameRate::new(30, 1).unwrap(),
+        initial_ms: 90_000,
+        limit_ms: None,
+    });
+    board
+        .apply(
+            0,
+            0,
+            &[
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Home,
+                    player: Player {
+                        number: Some(23),
+                        name: "Jane Doe".into(),
+                    },
+                },
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Home,
+                    player: Player {
+                        number: Some(7),
+                        name: "Sam Roe".into(),
+                    },
+                },
+            ],
+        )
+        .unwrap();
+    let binding = ScoreboardBinding {
+        home_roster: Some(roster_field),
+        ..ScoreboardBinding::default()
+    };
+    assert_eq!(board.publish(&binding, &mut scene, 0, 0), Ok(1));
+    assert_eq!(
+        scene.field_value(roster_field),
+        Some(&FieldValue::Text("23 Jane Doe, 7 Sam Roe".into()))
+    );
+}
+
+#[test]
 fn external_key_values_map_onto_typed_actions() {
     let mut board = board(clock_config(ClockDirection::CountDown, (30, 1), 0));
     let outcome = board

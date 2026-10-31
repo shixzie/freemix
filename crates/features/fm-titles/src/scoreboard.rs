@@ -700,6 +700,8 @@ pub struct ScoreboardBinding {
     pub away_abbreviation: Option<FieldId>,
     pub away_score: Option<FieldId>,
     pub away_player: Option<FieldId>,
+    pub home_roster: Option<FieldId>,
+    pub away_roster: Option<FieldId>,
     pub period: Option<FieldId>,
     pub clock: Option<FieldId>,
     pub shot_clock: Option<FieldId>,
@@ -1195,13 +1197,22 @@ impl Scoreboard {
                 .as_ref()
                 .map_or_else(String::new, Player::display)
         };
+        let roster = |team: &TeamState| {
+            team.roster
+                .iter()
+                .map(Player::display)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let texts = [
             (binding.home_name, self.home.name.clone()),
             (binding.home_abbreviation, self.home.abbreviation.clone()),
             (binding.home_player, player(&self.home)),
+            (binding.home_roster, roster(&self.home)),
             (binding.away_name, self.away.name.clone()),
             (binding.away_abbreviation, self.away.abbreviation.clone()),
             (binding.away_player, player(&self.away)),
+            (binding.away_roster, roster(&self.away)),
             (binding.clock, self.clock.display(frame)),
             (
                 binding.shot_clock,
