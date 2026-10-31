@@ -961,3 +961,103 @@ fn title_design_import_flattens_a_design_into_a_title_input() {
     );
     assert_eq!(fs::read(show.join("project.json")).unwrap(), manifest);
 }
+
+#[test]
+fn input_media_list_item_edits_title_and_marks() {
+    let root = TempRoot::new();
+    let show = root.path("item-edit.freemix");
+    new_project(&show, "Item edit");
+    assert_success(&run(&[
+        "media-input-add",
+        text(&show),
+        "9",
+        "Clip",
+        "asset://clip.mkv",
+    ]));
+    let store = ProjectStore::new(&show).unwrap();
+    let stored = store.load().unwrap();
+    let mut project = stored.project().clone();
+    project.set_media_lists(
+        [(
+            input(9),
+            fm_model::MediaList::new(
+                vec![fm_model::MediaListItem::new(1, "asset://clip.mkv")],
+                fm_model::MediaListOptions::default(),
+            )
+            .unwrap(),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    store.save(&stored.with_project(project).unwrap()).unwrap();
+
+    assert_success(&run(&[
+        "input-media-list-item",
+        text(&show),
+        "9",
+        "title",
+        "1",
+        "Opening",
+    ]));
+    assert_success(&run(&[
+        "input-media-list-item",
+        text(&show),
+        "9",
+        "marks",
+        "1",
+        "10",
+        "200",
+    ]));
+    let loaded = load(&show);
+    let list = loaded.project().media_list(input(9)).unwrap();
+    assert_eq!(list.items[0].title.as_deref(), Some("Opening"));
+    assert_eq!(list.items[0].mark_in, 10);
+    assert_eq!(list.items[0].mark_out, Some(200));
+
+    // `-` clears the title and `end` clears the out mark.
+    assert_success(&run(&[
+        "input-media-list-item",
+        text(&show),
+        "9",
+        "title",
+        "1",
+        "-",
+    ]));
+    assert_success(&run(&[
+        "input-media-list-item",
+        text(&show),
+        "9",
+        "marks",
+        "1",
+        "0",
+        "end",
+    ]));
+    let loaded = load(&show);
+    let list = loaded.project().media_list(input(9)).unwrap();
+    assert_eq!(list.items[0].title, None);
+    assert_eq!(list.items[0].mark_in, 0);
+    assert_eq!(list.items[0].mark_out, None);
+
+    // An out mark at or before the in mark is refused and leaves the list
+    // unchanged (the rejected command's receipt still advances the project).
+    let before = load(&show);
+    let before_list = before.project().media_list(input(9)).unwrap().clone();
+    assert!(
+        !run(&[
+            "input-media-list-item",
+            text(&show),
+            "9",
+            "marks",
+            "1",
+            "200",
+            "100",
+        ])
+        .status
+        .success()
+    );
+    let after = load(&show);
+    assert_eq!(
+        after.project().media_list(input(9)),
+        Some(&before_list)
+    );
+}

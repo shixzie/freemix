@@ -61,6 +61,15 @@ pub enum MediaListItemEdit {
     },
     /// Removes the item with this id.
     Remove { item: u32 },
+    /// Replaces the item's display title; `None` clears it.
+    SetTitle { item: u32, title: Option<String> },
+    /// Replaces the item's in and out marks; `mark_out` of `None` plays to
+    /// the end of the file.
+    SetMarks {
+        item: u32,
+        mark_in: u64,
+        mark_out: Option<u64>,
+    },
 }
 
 /// The automatic mix a CLI token names.
@@ -2959,9 +2968,32 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                 "remove" => MediaListItemEdit::Remove {
                     item: number(&required(&mut arguments, "item")?, "item")?,
                 },
+                "title" => {
+                    let item = number(&required(&mut arguments, "item")?, "item")?;
+                    let title = required(&mut arguments, "title or -")?;
+                    MediaListItemEdit::SetTitle {
+                        item,
+                        title: (title != "-").then_some(title),
+                    }
+                }
+                "marks" => {
+                    let item = number(&required(&mut arguments, "item")?, "item")?;
+                    let mark_in = number(&required(&mut arguments, "mark in")?, "mark in")?;
+                    let out = required(&mut arguments, "mark out or end")?;
+                    let mark_out = if out == "end" {
+                        None
+                    } else {
+                        Some(number(&out, "mark out")?)
+                    };
+                    MediaListItemEdit::SetMarks {
+                        item,
+                        mark_in,
+                        mark_out,
+                    }
+                }
                 _ => {
                     return Err(ArgsError::InvalidChoice {
-                        field: "item action (add or remove)",
+                        field: "item action (add, remove, title, or marks)",
                         value: action,
                     });
                 }
