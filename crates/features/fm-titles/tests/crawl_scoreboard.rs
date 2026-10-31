@@ -578,6 +578,24 @@ fn reference_scene(
     bounds: Bounds,
     alignment: Alignment,
 ) -> TitleScene {
+    reference_scene_filled(
+        width,
+        height,
+        text,
+        bounds,
+        alignment,
+        Color::new(255, 255, 255, 255),
+    )
+}
+
+fn reference_scene_filled(
+    width: u32,
+    height: u32,
+    text: &str,
+    bounds: Bounds,
+    alignment: Alignment,
+    fill: Color,
+) -> TitleScene {
     scene(&template(
         width,
         height,
@@ -594,7 +612,7 @@ fn reference_scene(
             z_index: 0,
             visible: true,
             style: Style {
-                fill: Color::new(255, 255, 255, 255),
+                fill,
                 background: None,
                 opacity: 255,
                 font: Some(FontStyle {
@@ -689,6 +707,41 @@ fn crawl_text_lands_on_the_exact_pixel_position() {
 
     // Rendering is a pure function of the frame index.
     assert_eq!(render_crawl(&crawl, 40, &assets, 320, 56), crawl_pixels);
+}
+
+#[test]
+fn crawl_item_fill_overrides_the_layer_fill() {
+    let Some(assets) = catalog() else { return };
+    let mut config = render_crawl_config(&assets);
+    config.fill = Color::new(255, 255, 255, 255);
+    let measure = FontCrawlMeasure::new(&config, &assets).unwrap();
+    let red = Color::new(255, 0, 0, 255);
+    let crawl = Crawl::new_styled(
+        ElementId::new(nz(9)),
+        config.clone(),
+        &[CrawlItem::with_fill("HELLO", red)],
+        &measure,
+    )
+    .unwrap();
+    let width = measure.measure("HELLO");
+    assert!(width > 20 && width < 140, "unexpected width {width}");
+    let pixels = render_crawl(&crawl, 40, &assets, 320, 56);
+    let reference = reference_scene_filled(
+        320,
+        56,
+        "HELLO",
+        Bounds {
+            x: 150,
+            y: 8,
+            width: 100_000,
+            height: 40,
+        },
+        config.alignment,
+        red,
+    );
+    let expected = ReferenceRenderer.render(&reference, 0, &assets).unwrap();
+    assert!(pixels.iter().any(|channel| *channel != 0));
+    assert_eq!(pixels, expected.frame.pixels());
 }
 
 #[test]
