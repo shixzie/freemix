@@ -7,12 +7,13 @@
 
 use fm_titles::{
     Alignment, AssetCatalog, Bounds, ClockDirection, ClockFormat, Color, Crawl, CrawlConfig,
-    CrawlError, CrawlLayer, CrawlMeasure, CrawlMode, CrawlSegment, CrawlSegmentKind, CrawlSpeed,
-    Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldValue, FontCrawlMeasure,
-    FontStyle, GameClockConfig, HorizontalAlignment, MAX_CRAWL_ITEMS, MAX_ROSTER_PLAYERS, Player,
-    ReferenceRenderer, Scoreboard, ScoreboardAction, ScoreboardBinding, ScoreboardError,
-    ScoreboardEvent, ScoreboardPreset, ScoreboardRules, Style, TeamSide, TeamState, TemplateId,
-    TitleId, TitleScene, TitleTemplate, UpdateError, VerticalAlignment, actions_from_external,
+    CrawlError, CrawlItem, CrawlLayer, CrawlMeasure, CrawlMode, CrawlSegment, CrawlSegmentKind,
+    CrawlSpeed, Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldValue,
+    FontCrawlMeasure, FontStyle, GameClockConfig, HorizontalAlignment, MAX_CRAWL_ITEMS,
+    MAX_ROSTER_PLAYERS, Player, ReferenceRenderer, Scoreboard, ScoreboardAction, ScoreboardBinding,
+    ScoreboardError, ScoreboardEvent, ScoreboardPreset, ScoreboardRules, Style, TeamSide,
+    TeamState, TemplateId, TitleId, TitleScene, TitleTemplate, UpdateError, VerticalAlignment,
+    actions_from_external,
 };
 use fm_types::FrameRate;
 use std::fs;
@@ -186,6 +187,53 @@ fn roll_down_moves_items_top_to_bottom() {
         vec![("AAAA".into(), 0, 0)]
     );
     assert_eq!(crawl.view(11).unwrap().segments[0].offset, 4);
+}
+
+#[test]
+fn styled_crawl_items_keep_their_own_fill() {
+    let config = crawl_config(
+        CrawlMode::CrawlRight,
+        Bounds {
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 20,
+        },
+        120,
+        (30, 1),
+    );
+    let red = Color::new(255, 0, 0, 255);
+    let blue = Color::new(0, 0, 255, 255);
+    let mut crawl = Crawl::new_styled(
+        ElementId::new(nz(7)),
+        config,
+        &[
+            CrawlItem::with_fill("AAAA", red),
+            CrawlItem::with_fill("BB", blue),
+        ],
+        &FixedMeasure(10),
+    )
+    .unwrap();
+    let view = crawl.view(10).unwrap();
+    assert_eq!(view.segments.len(), 1);
+    assert_eq!(view.segments[0].fill, Some(red));
+    // The second item enters at distance 60 (frame 25) with its own fill.
+    let view = crawl.view(30).unwrap();
+    assert!(
+        view.segments
+            .iter()
+            .any(|segment| segment.fill == Some(blue))
+    );
+    // An update accepts styled items and advances the revision.
+    let schedule = crawl
+        .set_styled_items(
+            0,
+            31,
+            &[CrawlItem::text("CC"), CrawlItem::with_fill("DD", blue)],
+            &FixedMeasure(10),
+        )
+        .unwrap();
+    assert_eq!(schedule.revision, 1);
 }
 
 #[test]

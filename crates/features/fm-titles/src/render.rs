@@ -1225,7 +1225,7 @@ fn draw_crawl(
     let Some(region) = canvas.region(config.bounds) else {
         return Ok(());
     };
-    let paint = TextPaint {
+    let mut paint = TextPaint {
         element: crawl.id(),
         bounds: config.bounds,
         region,
@@ -1237,6 +1237,7 @@ fn draw_crawl(
     };
     let scaled = face.scaled(size_px);
     for segment in &view.segments {
+        paint.color = segment.fill.unwrap_or(config.fill);
         if state.glyphs == 0 {
             state.degrade(
                 crawl.id(),

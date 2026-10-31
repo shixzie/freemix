@@ -97,9 +97,10 @@ pub use animation::{
     AnimSample, AnimationEditError, TitleAnimation, TitleClip, default_title_timebase,
 };
 pub use crawl::{
-    Crawl, CrawlConfig, CrawlError, CrawlMeasure, CrawlMode, CrawlSchedule, CrawlSegment,
-    CrawlSegmentKind, CrawlSpeed, CrawlView, FontCrawlMeasure, MAX_CRAWL_EPOCHS, MAX_CRAWL_GAP_PX,
-    MAX_CRAWL_ITEM_CHARS, MAX_CRAWL_ITEMS, MAX_CRAWL_SEPARATOR_CHARS, MAX_CRAWL_VISIBLE_SEGMENTS,
+    Crawl, CrawlConfig, CrawlError, CrawlItem, CrawlMeasure, CrawlMode, CrawlSchedule,
+    CrawlSegment, CrawlSegmentKind, CrawlSpeed, CrawlView, FontCrawlMeasure, MAX_CRAWL_EPOCHS,
+    MAX_CRAWL_GAP_PX, MAX_CRAWL_ITEM_CHARS, MAX_CRAWL_ITEMS, MAX_CRAWL_SEPARATOR_CHARS,
+    MAX_CRAWL_VISIBLE_SEGMENTS,
 };
 pub use design::{
     ClipMask, Composition, DesignError, DesignNode, ElementPlacement, GROUP_PROPERTIES, Group,

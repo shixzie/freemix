@@ -90,6 +90,29 @@ impl CrawlMode {
     }
 }
 
+/// One item of a crawl with optional per-item styling: `fill` overrides the
+/// crawl's fill colour for that item.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CrawlItem<'a> {
+    pub text: &'a str,
+    pub fill: Option<Color>,
+}
+
+impl<'a> CrawlItem<'a> {
+    #[must_use]
+    pub const fn text(text: &'a str) -> Self {
+        Self { text, fill: None }
+    }
+
+    #[must_use]
+    pub const fn with_fill(text: &'a str, fill: Color) -> Self {
+        Self {
+            text,
+            fill: Some(fill),
+        }
+    }
+}
+
 /// An exact rational speed: `pixels` every `seconds`, normalized.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CrawlSpeed {
@@ -259,6 +282,7 @@ fn segment_extent(mode: CrawlMode, laid: &LaidText) -> u32 {
 struct Measured {
     text: String,
     extent: u32,
+    fill: Option<Color>,
 }
 
 /// A contiguous stretch of tape driven by one item list.
@@ -285,6 +309,8 @@ pub enum CrawlSegmentKind {
 pub struct CrawlSegment<'a> {
     pub kind: CrawlSegmentKind,
     pub text: &'a str,
+    /// Per-item fill override; `None` uses the crawl's fill.
+    pub fill: Option<Color>,
     /// Leading edge relative to the viewport origin along the motion axis:
     /// x from the viewport's left for a horizontal mode, y from its top for a
     /// vertical one.
@@ -435,6 +461,22 @@ impl Crawl {
         items: &[&str],
         measure: &dyn CrawlMeasure,
     ) -> Result<Self, CrawlError> {
+        let items: Vec<CrawlItem<'_>> = items.iter().map(|text| CrawlItem::text(text)).collect();
+        Self::new_styled(id, config, &items, measure)
+    }
+
+    /// Creates a crawl whose items carry optional per-item fill colours.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`CrawlError`] for an empty viewport, oversized font or gap,
+    /// or an invalid separator or item list.
+    pub fn new_styled(
+        id: ElementId,
+        config: CrawlConfig,
+        items: &[CrawlItem<'_>],
+        measure: &dyn CrawlMeasure,
+    ) -> Result<Self, CrawlError> {
         if config.bounds.width == 0 || config.bounds.height == 0 {
             return Err(CrawlError::EmptyViewport);
         }
@@ -457,11 +499,13 @@ impl Crawl {
             Measured {
                 text: String::new(),
                 extent: 0,
+                fill: None,
             }
         } else {
             Measured {
                 extent: measure.measure(&config.separator),
                 text: config.separator.clone(),
+                fill: None,
             }
         };
         let items = measure_items(items, measure)?;
@@ -544,6 +588,24 @@ impl Crawl {
         expected_revision: u64,
         frame: u64,
         items: &[&str],
+        measure: &dyn CrawlMeasure,
+    ) -> Result<CrawlSchedule, CrawlError> {
+        let items: Vec<CrawlItem<'_>> = items.iter().map(|text| CrawlItem::text(text)).collect();
+        self.set_styled_items(expected_revision, frame, &items, measure)
+    }
+
+    /// Replaces the item list with styled items at the next item boundary
+    /// after `frame`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a conflict, frame regression, invalid list, backlog, or
+    /// revision exhaustion without changing the crawl.
+    pub fn set_styled_items(
+        &mut self,
+        expected_revision: u64,
+        frame: u64,
+        items: &[CrawlItem<'_>],
         measure: &dyn CrawlMeasure,
     ) -> Result<CrawlSchedule, CrawlError> {
         if expected_revision != self.revision {
@@ -738,6 +800,7 @@ impl Crawl {
                     segments.push(CrawlSegment {
                         kind: CrawlSegmentKind::Item { index },
                         text: &item.text,
+                        fill: item.fill,
                         offset: screen(offset),
                         extent: item.extent,
                         revision: epoch.revision,
@@ -756,6 +819,7 @@ impl Crawl {
                         segments.push(CrawlSegment {
                             kind: CrawlSegmentKind::Separator,
                             text: &self.separator.text,
+                            fill: None,
                             offset: screen(separator_offset),
                             extent: self.separator.extent,
                             revision: epoch.revision,
@@ -789,7 +853,7 @@ fn check_font_size(size_px: u32) -> Result<(), CrawlError> {
 }
 
 fn measure_items(
-    items: &[&str],
+    items: &[CrawlItem<'_>],
     measure: &dyn CrawlMeasure,
 ) -> Result<Arc<[Measured]>, CrawlError> {
     if items.len() > MAX_CRAWL_ITEMS {
@@ -799,25 +863,26 @@ fn measure_items(
         });
     }
     for (index, item) in items.iter().enumerate() {
-        if item.chars().nth(MAX_CRAWL_ITEM_CHARS).is_some() {
+        if item.text.chars().nth(MAX_CRAWL_ITEM_CHARS).is_some() {
             return Err(CrawlError::ItemTooLong {
                 index,
                 maximum: MAX_CRAWL_ITEM_CHARS,
             });
         }
-        if item.chars().any(char::is_control) {
+        if item.text.chars().any(char::is_control) {
             return Err(CrawlError::ControlCharacter { index: Some(index) });
         }
-        if item.trim().is_empty() {
+        if item.text.trim().is_empty() {
             return Err(CrawlError::BlankItem { index });
         }
     }
     Ok(items
         .iter()
         .map(|item| Measured {
-            text: (*item).to_owned(),
+            text: item.text.to_owned(),
             // At least one pixel so walking the tape always progresses.
-            extent: measure.measure(item).max(1),
+            extent: measure.measure(item.text).max(1),
+            fill: item.fill,
         })
         .collect())
 }
