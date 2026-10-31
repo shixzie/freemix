@@ -932,6 +932,39 @@ fn entry_and_transition_validation() {
 }
 
 #[test]
+fn entries_can_be_edited_while_on_air_without_interrupting_the_airing() {
+    let mut playlist = abc(LoopMode::Off);
+    playlist.apply(0, start_now()).unwrap();
+    assert_eq!(on_air_id(&playlist), Some(1));
+    // Add a fourth entry and disable the second while the first is on air.
+    let mut entries = playlist.entries().to_vec();
+    entries.push(fixed(9, 500));
+    entries[1].enabled = false;
+    playlist.replace_entries(entries).unwrap();
+    assert_eq!(on_air_id(&playlist), Some(1));
+    assert_eq!(playlist.entries().len(), 4);
+    assert!(!playlist.entries()[1].enabled);
+
+    // Removing the on-air entry cannot be applied without cutting it.
+    let mut without = playlist.entries().to_vec();
+    without.retain(|entry| entry.id != id(1));
+    assert_eq!(
+        playlist.replace_entries(without),
+        Err(PlaylistError::EditWhileActive)
+    );
+    // Neither can disabling it.
+    let mut disabled = playlist.entries().to_vec();
+    disabled[0].enabled = false;
+    assert_eq!(
+        playlist.replace_entries(disabled),
+        Err(PlaylistError::EditWhileActive)
+    );
+    // The refused edits changed nothing.
+    assert_eq!(on_air_id(&playlist), Some(1));
+    assert_eq!(playlist.entries().len(), 4);
+}
+
+#[test]
 fn entries_are_replaceable_only_while_inactive() {
     let mut playlist = abc(LoopMode::Off);
     playlist.apply(0, start_now()).unwrap();

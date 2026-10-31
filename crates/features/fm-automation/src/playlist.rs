@@ -663,21 +663,89 @@ impl Playlist {
         }
     }
 
-    /// Replaces every entry while stopped or finished. A finished playlist
-    /// becomes stopped.
+    /// Replaces every entry. While stopped or finished the playlist becomes
+    /// stopped; while armed, playing, or paused the new list applies at once,
+    /// keeping the armed start or the current entry's on-air timing. An edit
+    /// that removes or disables the entry that is armed or on air is refused.
     ///
     /// # Errors
     ///
-    /// Returns [`PlaylistError::EditWhileActive`] while armed or on air, or
-    /// any entry validation error.
+    /// Returns [`PlaylistError::EditWhileActive`] when the armed or on-air
+    /// entry is not in `entries` (or is disabled), or any entry validation
+    /// error.
     pub fn replace_entries(&mut self, entries: Vec<PlaylistEntry>) -> Result<(), PlaylistError> {
-        if !matches!(self.slot, Slot::Stopped | Slot::Finished { .. }) {
-            return Err(PlaylistError::EditWhileActive);
-        }
         validate_entries(&entries)?;
-        self.entries = entries;
-        self.slot = Slot::Stopped;
-        Ok(())
+        match self.slot {
+            Slot::Stopped | Slot::Finished { .. } => {
+                self.entries = entries;
+                self.slot = Slot::Stopped;
+                Ok(())
+            }
+            Slot::Armed { start_at_ms, from } => {
+                let from = from
+                    .and_then(|index| self.entries.get(index))
+                    .and_then(|entry| {
+                        entries
+                            .iter()
+                            .position(|candidate| candidate.id == entry.id)
+                    });
+                self.entries = entries;
+                self.slot = Slot::Armed { start_at_ms, from };
+                Ok(())
+            }
+            Slot::Playing {
+                index,
+                take,
+                cycle,
+                started_at_ms,
+            } => {
+                let next_index = self.replaced_entry(&entries, index)?;
+                self.entries = entries;
+                self.slot = Slot::Playing {
+                    index: next_index,
+                    take,
+                    cycle,
+                    started_at_ms,
+                };
+                Ok(())
+            }
+            Slot::Paused {
+                index,
+                take,
+                cycle,
+                elapsed_ms,
+            } => {
+                let next_index = self.replaced_entry(&entries, index)?;
+                self.entries = entries;
+                self.slot = Slot::Paused {
+                    index: next_index,
+                    take,
+                    cycle,
+                    elapsed_ms,
+                };
+                Ok(())
+            }
+        }
+    }
+
+    /// The index of the entry that is currently armed or on air in a
+    /// replacement list. A replacement that drops or disables it cannot be
+    /// applied without interrupting the airing, so it is refused.
+    fn replaced_entry(
+        &self,
+        entries: &[PlaylistEntry],
+        current: usize,
+    ) -> Result<usize, PlaylistError> {
+        let current = self.entries[current].id;
+        let index = entries
+            .iter()
+            .position(|entry| entry.id == current)
+            .ok_or(PlaylistError::EditWhileActive)?;
+        if entries[index].enabled {
+            Ok(index)
+        } else {
+            Err(PlaylistError::EditWhileActive)
+        }
     }
 
     /// Processes every time-driven boundary up to `now_ms`.

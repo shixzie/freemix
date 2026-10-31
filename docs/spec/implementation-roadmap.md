@@ -4911,8 +4911,10 @@ lagging frame cursor, so Studio's countdown is approximate on the simulated
 daemon; fixed entry durations only (an entry does not follow its media
 length), although an end trigger of the on-air media input advances a playing
 playlist with a journaled `next`; no stinger
-transitions; no enable/disable, loop change, or list editing while the
-playlist runs; no scheduled starts from Studio; no per-entry hard starts or
+transitions; enable/disable, loop changes, and list edits apply while the
+playlist runs, keeping the on-air entry's timing (an edit that removes or
+disables the on-air entry is refused); no scheduled starts from Studio; no
+per-entry hard starts or
 calendar recurrence; no vMix API. The daemon now appends every realized
 Program change to `as-run.log` beside the bundle (wall clock, engine frame,
 input, and name), and `freemix-cli as-run` prints it. `OR-015` remains
