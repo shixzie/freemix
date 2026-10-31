@@ -1999,6 +1999,9 @@ pub struct ClientView {
     /// Every image and slideshow input's source, slide on air, and fetched
     /// listing, ascending by input (IN-008, IN-009).
     pub still_inputs: BTreeMap<InputId, StillInputStatus>,
+    /// Every paged document input's page, page count, and state (IN-014),
+    /// ascending by input.
+    pub paged: BTreeMap<InputId, fm_protocol::PagedStatus>,
     /// Every screen capture input, ascending, with its configuration and
     /// latest status (IN-011).
     pub screen_capture_inputs: Vec<fm_protocol::ScreenCaptureEntry>,
@@ -2050,6 +2053,12 @@ impl ClientView {
     #[must_use]
     pub fn still_input(&self, input: InputId) -> Option<&StillInputStatus> {
         self.still_inputs.get(&input)
+    }
+
+    /// Paged document input `input`'s replicated page and count (IN-014).
+    #[must_use]
+    pub fn paged_status(&self, input: InputId) -> Option<&fm_protocol::PagedStatus> {
+        self.paged.get(&input)
     }
 
     /// System audio input `input`'s device and latest status (Protocol
@@ -3180,6 +3189,12 @@ impl ClientModel {
                 .iter()
                 .filter(|(input, _)| state.inputs.contains(input))
                 .map(|(input, entry)| (*input, entry.clone()))
+                .collect(),
+            paged: state
+                .paged
+                .iter()
+                .filter(|(input, _)| state.inputs.contains(input))
+                .map(|(input, status)| (*input, status.clone()))
                 .collect(),
             screen_capture_inventory: self.screen_capture_inventory.clone(),
             screen_capture_inputs: state

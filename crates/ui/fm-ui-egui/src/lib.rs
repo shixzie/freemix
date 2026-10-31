@@ -1795,7 +1795,8 @@ fn live_console_intents(state: &StudioUiState, action: ConsoleAction) -> Vec<Stu
     .collect()
 }
 
-/// Steps the slideshow input on Program, else Preview, one slide (IN-009).
+/// Steps the paged input on Program, else Preview, one page (IN-009,
+/// IN-014): a document or a slideshow.
 fn slideshow_step(
     state: &StudioUiState,
     navigation: fm_protocol::PagedNavigation,
@@ -1804,9 +1805,11 @@ fn slideshow_step(
     let input = [view.switcher.desired.program, view.switcher.desired.preview]
         .into_iter()
         .find(|input| {
-            view.still_inputs
-                .get(input)
-                .is_some_and(|still| still.status.page.count > 1)
+            view.paged_status(*input)
+                .is_some_and(|paged| paged.count > 1)
+                || view
+                    .still_input(*input)
+                    .is_some_and(|still| still.status.page.count > 1)
         })?;
     Some(StudioIntent::PageNavigate { input, navigation })
 }
@@ -3870,6 +3873,7 @@ mod tests {
             screen_capture_inputs: Vec::new(),
             capture_inputs: Vec::new(),
             still_inputs: std::collections::BTreeMap::new(),
+            paged: std::collections::BTreeMap::new(),
             capture_inventory: None,
             system_audio_inventory: None,
             audio_output_inventory: None,
