@@ -310,6 +310,20 @@ per week of work; items 1 and 2 land before any new feature breadth.
    Linux `llvmpipe` sandbox. The frame and plan are cloned per job for now;
    moving them behind an `Arc` is part of the GPU/plan stage.
 
+   **Third stage (landed).** The Program/Preview GPU compose now runs on a
+   video realizer thread (`native_video_realizer::NativeVideoHandle`): a
+   bounded job carries the engine frame, the plan, and the playback and
+   stinger registries; the reply returns the registries with the Program
+   texture or every project output. The control thread keeps ingesting
+   sources, uploading grades, tapping monitors, and presenting displays on
+   the shared `Arc<NativeMediaRuntime>` while the compose runs on the
+   realizer thread; the compose is still collected synchronously, so
+   overlapping it with peer work is the next stage, together with moving
+   ingestion, grades, and the monitor/display consumers behind the same
+   handoff. Native pacing, transitions, display, Preview-tap, audio-only,
+   strip-DSP, replay, and media-file suites stay green on the M5 and the
+   Linux startup pacing gate passes.
+
    **Split plan.** The bounded channel carries a `NativeFrameJob` (the
    engine's `FrameResult`, which is plain data, plus the plan deltas the
    media side applies) to a `NativeRealizer` thread that owns `runtime`

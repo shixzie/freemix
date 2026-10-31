@@ -176,6 +176,8 @@ impl NativeDaemon {
                     let _ = preflight.worker.join();
                     if self
                         .playback
+                        .as_ref()
+                        .expect("the video realizer holds the playback")
                         .validate_retained_byte_limit(mutation.ordinary_video_limit)
                         .is_err()
                     {
@@ -210,8 +212,13 @@ impl NativeDaemon {
             return Ok(());
         };
         self.playback
+            .as_mut()
+            .expect("the video realizer holds the playback")
             .set_retained_byte_limit(mutation.ordinary_video_limit);
-        let old_stingers = core::mem::replace(&mut self.stingers, mutation.stingers);
+        let old_stingers = self
+            .stingers
+            .replace(mutation.stingers)
+            .expect("the video realizer holds the stingers");
         let old_audio = self
             .audio
             .replace_stinger_audio(mutation.audio)

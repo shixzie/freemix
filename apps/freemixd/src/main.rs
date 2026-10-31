@@ -149,6 +149,8 @@ mod native_system_audio;
 #[cfg(feature = "native-media")]
 mod native_titles;
 #[cfg(feature = "native-media")]
+mod native_video_realizer;
+#[cfg(feature = "native-media")]
 mod output_failure;
 #[cfg(feature = "native-media")]
 mod pacing_trace;
@@ -698,8 +700,13 @@ struct NativeDaemon {
         Arc<fm_engine::CompiledProjectGrades>,
         freemixd::native_media::NativeProjectGrades,
     )>,
-    playback: freemixd::native_media::NativeSourcePlayback,
-    stingers: freemixd::native_media::NativeSourcePlayback,
+    /// Source playback registries, taken by the video realizer for a compose
+    /// and returned with its pictures (structural item 1). They are `None`
+    /// only while a compose is in flight, which the control thread waits for.
+    playback: Option<freemixd::native_media::NativeSourcePlayback>,
+    stingers: Option<freemixd::native_media::NativeSourcePlayback>,
+    /// The GPU compose thread.
+    video: native_video_realizer::NativeVideoHandle,
     projected_frame: Option<FrameResult>,
     runtime: Arc<NativeMediaRuntime>,
     resolved_sources: Arc<Vec<NativeResolvedSource>>,
@@ -5173,8 +5180,9 @@ fn realized_stream_state(
 enum NativeRealizationError {
     Video(NativeSourceRenderError),
     Audio(NativeMasterError),
-    /// The mixer thread stopped or refused its command (structural item 1).
-    AudioThread(String),
+    /// A realizer thread (mixer or compose) stopped or refused its command
+    /// (structural item 1).
+    RealizerThread(String),
 }
 
 #[cfg(feature = "native-media")]
@@ -5183,7 +5191,7 @@ impl fmt::Display for NativeRealizationError {
         match self {
             Self::Video(error) => error.fmt(formatter),
             Self::Audio(error) => error.fmt(formatter),
-            Self::AudioThread(error) => formatter.write_str(error),
+            Self::RealizerThread(error) => formatter.write_str(error),
         }
     }
 }
@@ -5194,7 +5202,7 @@ impl Error for NativeRealizationError {
         match self {
             Self::Video(error) => Some(error),
             Self::Audio(error) => Some(error),
-            Self::AudioThread(_) => None,
+            Self::RealizerThread(_) => None,
         }
     }
 }
@@ -5324,6 +5332,10 @@ impl NativeDaemon {
         let mut output_set = OutputSet::new();
         let (streams, stream_groups, local_output_dirs) =
             NativeProgramStream::compile(&runtime, stored, &mut output_set)?;
+        let video = native_video_realizer::NativeVideoHandle::spawn(
+            Arc::clone(&runtime),
+            "freemix-video-realizer",
+        )?;
         #[cfg(target_os = "macos")]
         resolution.cameras.mark_preflight_frames_ingested();
         let pacer = FramePacer::restore(
@@ -5349,8 +5361,9 @@ impl NativeDaemon {
             project_plan,
             grade_cache: grading::GradeCache::default(),
             prepared_grades: None,
-            playback,
-            stingers,
+            playback: Some(playback),
+            stingers: Some(stingers),
+            video,
             projected_frame: None,
             runtime,
             resolved_sources: Arc::new(resolved_sources),
@@ -5639,8 +5652,14 @@ impl NativeDaemon {
         match self
             .runtime
             .render_project_frame_result_with_stingers_blocking(
-                self.playback.registry(),
-                self.stingers.registry(),
+                self.playback
+                    .as_ref()
+                    .expect("the video realizer holds the playback")
+                    .registry(),
+                self.stingers
+                    .as_ref()
+                    .expect("the video realizer holds the stingers")
+                    .registry(),
                 &self.project_plan,
                 &frame,
             ) {
@@ -6540,7 +6559,13 @@ impl NativeDaemon {
     /// exact scene preview composed off the loop (shared frames, no copy,
     /// no GPU work).
     fn live_source_frames(&self) -> scene_preview::LiveSourceFrames {
-        scene_preview::LiveSourceFrames::snapshot(&self.playback.latest_frames())
+        scene_preview::LiveSourceFrames::snapshot(
+            &self
+                .playback
+                .as_ref()
+                .expect("the video realizer holds the playback")
+                .latest_frames(),
+        )
     }
 
     /// Consumes every tap's latest encoded monitor frame group, Preview
@@ -7280,29 +7305,58 @@ impl NativeDaemon {
     #[allow(clippy::too_many_lines)]
     fn service_playback(&mut self, control: &ControlService<Policy>) -> AppResult<bool> {
         #[cfg(target_os = "macos")]
-        self.cameras.poll_into(&self.runtime, &mut self.playback)?;
+        self.cameras.poll_into(
+            &self.runtime,
+            self.playback
+                .as_mut()
+                .expect("the video realizer holds the playback"),
+        )?;
         self.titles.set_frame(self.pacer.next_frame().get());
         for (input, frame) in self.titles.take_completed() {
             // A title removed live keeps rendering until the worker learns
             // of it; nothing of it is ingested.
-            if !self.playback.registry().contains(input) {
+            if !self
+                .playback
+                .as_ref()
+                .expect("the video realizer holds the playback")
+                .registry()
+                .contains(input)
+            {
                 continue;
             }
-            self.runtime
-                .ingest_live_video_frame_blocking(&mut self.playback, input, frame)?;
+            self.runtime.ingest_live_video_frame_blocking(
+                self.playback
+                    .as_mut()
+                    .expect("the video realizer holds the playback"),
+                input,
+                frame,
+            )?;
         }
         // A document's page, rendered off the loop (IN-014).
         for (input, frame) in self.documents.take_completed() {
-            if !self.playback.registry().contains(input) {
+            if !self
+                .playback
+                .as_ref()
+                .expect("the video realizer holds the playback")
+                .registry()
+                .contains(input)
+            {
                 continue;
             }
-            self.runtime
-                .ingest_live_video_frame_blocking(&mut self.playback, input, frame)?;
+            self.runtime.ingest_live_video_frame_blocking(
+                self.playback
+                    .as_mut()
+                    .expect("the video realizer holds the playback"),
+                input,
+                frame,
+            )?;
         }
         for presented in self.files.take_completed() {
             if let Some(frame) = presented.video {
                 self.runtime.ingest_live_video_frame_blocking(
-                    &mut self.playback,
+                    self.playback
+                        .as_mut()
+                        .expect("the video realizer holds the playback"),
                     presented.input,
                     frame,
                 )?;
@@ -7316,7 +7370,12 @@ impl NativeDaemon {
         let deadline = control.next_frame_deadline()?;
         let video_covered = self
             .runtime
-            .service_source_playback_blocking(&mut self.playback, deadline)
+            .service_source_playback_blocking(
+                self.playback
+                    .as_mut()
+                    .expect("the video realizer holds the playback"),
+                deadline,
+            )
             .map_err(Box::<dyn Error>::from)?;
         if self.projected_frame.is_none() {
             self.projected_frame = Some(control.project_next_frame()?);
@@ -7334,7 +7393,9 @@ impl NativeDaemon {
                 projected,
                 replay_deadline,
                 &self.runtime,
-                &mut self.playback,
+                self.playback
+                    .as_mut()
+                    .expect("the video realizer holds the playback"),
                 &mut |input, block| {
                     if let Err(error) =
                         audio_handle.push_frame_audio(input, projected.frame.get(), block)
@@ -7367,7 +7428,9 @@ impl NativeDaemon {
         {
             if let Some(frame) = pulled.video {
                 self.runtime.ingest_live_video_frame_blocking(
-                    &mut self.playback,
+                    self.playback
+                        .as_mut()
+                        .expect("the video realizer holds the playback"),
                     pulled.input,
                     frame,
                 )?;
@@ -7393,7 +7456,9 @@ impl NativeDaemon {
             Some(request) => self
                 .runtime
                 .service_source_playback_for_input_blocking(
-                    &mut self.stingers,
+                    self.stingers
+                        .as_mut()
+                        .expect("the video realizer holds the stingers"),
                     request.input,
                     request.deadline,
                 )
@@ -7457,7 +7522,14 @@ impl NativeDaemon {
             frames.push((slideshow.clone(), fit));
         }
         self.slides
-            .present(&self.runtime, &mut self.playback, &frames, &ahead)
+            .present(
+                &self.runtime,
+                self.playback
+                    .as_mut()
+                    .expect("the video realizer holds the playback"),
+                &frames,
+                &ahead,
+            )
             .map_err(|error| AppFailure(format!("native slideshow cannot render: {error}")).into())
     }
 
@@ -7475,9 +7547,9 @@ impl NativeDaemon {
         let shows_preview = self.display_shows_preview();
         self.project_plan
             .refresh_scene_models(|scene| control.scene_model(scene));
-        let runtime = &self.runtime;
-        let registry = self.playback.registry();
-        let stinger_registry = self.stingers.registry();
+        let video = &mut self.video;
+        let playback = &mut self.playback;
+        let stinger_slot = &mut self.stingers;
         let audio_handle = &mut self.audio;
         let monitor_output = &mut self.monitor_output;
         let project_plan = &mut self.project_plan;
@@ -7559,33 +7631,34 @@ impl NativeDaemon {
                     mixer_updates: frame.audio_mixer_updates.clone(),
                     replay_inputs: replay_inputs.clone(),
                 })
-                .map_err(NativeRealizationError::AudioThread)?;
-            if project_plan.output_ids().is_empty() {
-                let output = runtime
-                    .render_project_frame_result_with_stingers_blocking(
-                        registry,
-                        stinger_registry,
-                        project_plan,
-                        frame,
-                    )
-                    .map_err(NativeRealizationError::Video)?;
-                *latest_output = Some(output);
-                latest_project_outputs.clear();
-            } else {
-                let outputs = runtime
-                    .render_project_outputs_with_stingers_blocking(
-                        registry,
-                        stinger_registry,
-                        project_plan,
-                        frame,
-                    )
-                    .map_err(NativeRealizationError::Video)?;
-                *latest_project_outputs = outputs;
-                *latest_output = None;
+                .map_err(NativeRealizationError::RealizerThread)?;
+            let composed = video
+                .render(native_video_realizer::VideoRenderJob {
+                    frame: frame.clone(),
+                    plan: project_plan.clone(),
+                    playback: playback
+                        .take()
+                        .expect("a compose collected its playback before the next"),
+                    stingers: stinger_slot
+                        .take()
+                        .expect("a compose collected its stingers before the next"),
+                })
+                .map_err(NativeRealizationError::RealizerThread)?;
+            *playback = Some(composed.playback);
+            *stinger_slot = Some(composed.stingers);
+            match composed.result.map_err(NativeRealizationError::Video)? {
+                native_video_realizer::NativeVideoFrame::Program(output) => {
+                    *latest_output = Some(output);
+                    latest_project_outputs.clear();
+                }
+                native_video_realizer::NativeVideoFrame::Outputs(outputs) => {
+                    *latest_project_outputs = outputs;
+                    *latest_output = None;
+                }
             }
             let mixed = audio_handle
                 .collect_render()
-                .map_err(NativeRealizationError::AudioThread)?;
+                .map_err(NativeRealizationError::RealizerThread)?;
             audio = Some(mixed.block);
             live_audio = mixed.live;
             override_audio = mixed.overrides;
@@ -7703,7 +7776,11 @@ impl NativeDaemon {
         // The replay recording (OR-012) takes every source's newest picture
         // and its own audio of this frame.
         if let (Some(replay), Some((frame, _))) = (&mut self.replay, monitor_frame) {
-            let latest = self.playback.latest_frames();
+            let latest = self
+                .playback
+                .as_ref()
+                .expect("the video realizer holds the playback")
+                .latest_frames();
             replay.record(control, frame, &|input| latest.get(input), &|input| {
                 rendered_audio.get(&input).cloned()
             });
@@ -15346,6 +15423,8 @@ fn execute_native_stinger_mutation(
     if candidate.project().stingers() != updated.project().stingers()
         || native
             .playback
+            .as_ref()
+            .expect("the video realizer holds the playback")
             .validate_retained_byte_limit(mutation.ordinary_video_limit)
             .is_err()
     {

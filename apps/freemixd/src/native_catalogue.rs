@@ -312,7 +312,11 @@ pub(crate) struct PendingStill {
 impl NativeDaemon {
     /// What a catalogue change may use of this runtime now.
     pub(crate) fn catalogue_budget(&self) -> NativeCatalogueBudget {
-        let registry = self.playback.registry();
+        let registry = self
+            .playback
+            .as_ref()
+            .expect("the video realizer holds the playback")
+            .registry();
         let limits = registry.limits();
         let (width, height) = self.picture_size;
         NativeCatalogueBudget {
@@ -374,6 +378,8 @@ impl NativeDaemon {
             .filter(|input| project.media_list(**input).is_some())
             .filter_map(|input| {
                 self.playback
+                    .as_ref()
+                    .expect("the video realizer holds the playback")
                     .latest_frames()
                     .get(*input)
                     .map(|frame| (*input, frame))
@@ -388,7 +394,10 @@ impl NativeDaemon {
             eprintln!("FREEMIXD_INPUT\tv=1\tinput={input}\tretired");
         }
         for input in &removed {
-            self.playback.remove_source(*input);
+            self.playback
+                .as_mut()
+                .expect("the video realizer holds the playback")
+                .remove_source(*input);
         }
 
         let settings = project.settings();
@@ -540,12 +549,21 @@ impl NativeDaemon {
             };
             if let Some(seed) = seed {
                 self.runtime
-                    .insert_live_source_blocking(&mut self.playback, input, seed)
+                    .insert_live_source_blocking(
+                        self.playback
+                            .as_mut()
+                            .expect("the video realizer holds the playback"),
+                        input,
+                        seed,
+                    )
                     .map_err(|error| {
                         AppFailure(format!("native input {input} cannot start: {error}"))
                     })?;
             } else if replaced.contains(&input) {
-                self.playback.remove_source(input);
+                self.playback
+                    .as_mut()
+                    .expect("the video realizer holds the playback")
+                    .remove_source(input);
             }
             eprintln!("FREEMIXD_INPUT\tv=1\tinput={input}\tstarted");
         }
@@ -583,7 +601,13 @@ impl NativeDaemon {
             match outcome {
                 Ok(frame) => {
                     self.runtime
-                        .insert_live_source_blocking(&mut self.playback, input, frame.clone())
+                        .insert_live_source_blocking(
+                            self.playback
+                                .as_mut()
+                                .expect("the video realizer holds the playback"),
+                            input,
+                            frame.clone(),
+                        )
                         .map_err(|error| {
                             AppFailure(format!("native still input {input} cannot start: {error}"))
                         })?;
