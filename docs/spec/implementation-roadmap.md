@@ -4128,13 +4128,14 @@ reference renderer with exact pixel tests. A typed scoreboard covers team
 names, abbreviations, scores, a featured player, the period, and a 24-second
 shot clock, with basketball, football, hockey, and soccer presets, atomic
 revision-checked action batches, saturating increment/decrement shortcuts,
-and a frame-exact count-up or count-down game clock whose expiry is reported
-once; changed values publish onto template fields in one scene revision, and
-a strict key/value parser maps external data onto actions. Remaining gaps:
+per-team rosters with duplicate-number and capacity checks, and a frame-exact
+count-up or count-down game clock whose expiry is reported once; changed
+values publish onto template fields in one scene revision, and a strict
+key/value parser maps external data onto actions. Remaining gaps:
 crawls are runtime overlays outside template z-order and the project schema,
 with fixed directions and no per-item styling, logos, or easing; the
-scoreboard has two teams, a fixed 24-second shot clock, no rosters, tenths,
-or persistence; and there are no feed transports, shortcut
+scoreboard has two teams, a fixed 24-second shot clock, and no tenths or
+persistence; and there are no feed transports, shortcut
 or control-surface wiring, or engine output. `GX-003` remains planned.
 
 Current implementation boundary for item 2: `fm-titles` provides a designer

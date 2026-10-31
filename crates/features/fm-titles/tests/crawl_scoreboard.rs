@@ -9,10 +9,10 @@ use fm_titles::{
     Alignment, AssetCatalog, Bounds, ClockDirection, ClockFormat, Color, Crawl, CrawlConfig,
     CrawlError, CrawlLayer, CrawlMeasure, CrawlMode, CrawlSegment, CrawlSegmentKind, CrawlSpeed,
     Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldValue, FontCrawlMeasure,
-    FontStyle, GameClockConfig, HorizontalAlignment, MAX_CRAWL_ITEMS, Player, ReferenceRenderer,
-    Scoreboard, ScoreboardAction, ScoreboardBinding, ScoreboardError, ScoreboardEvent,
-    ScoreboardPreset, ScoreboardRules, Style, TeamSide, TeamState, TemplateId, TitleId, TitleScene,
-    TitleTemplate, UpdateError, VerticalAlignment, actions_from_external,
+    FontStyle, GameClockConfig, HorizontalAlignment, MAX_CRAWL_ITEMS, MAX_ROSTER_PLAYERS, Player,
+    ReferenceRenderer, Scoreboard, ScoreboardAction, ScoreboardBinding, ScoreboardError,
+    ScoreboardEvent, ScoreboardPreset, ScoreboardRules, Style, TeamSide, TeamState, TemplateId,
+    TitleId, TitleScene, TitleTemplate, UpdateError, VerticalAlignment, actions_from_external,
 };
 use fm_types::FrameRate;
 use std::fs;
@@ -917,6 +917,169 @@ fn the_shot_clock_counts_down_and_reports_its_expiry_once() {
         .unwrap();
     assert_eq!(outcome.revision, 2);
     assert_eq!(board.shot_clock().value_ms(620), 14_000);
+}
+
+#[test]
+fn rosters_add_select_and_remove_players_atomically() {
+    let mut board = board(GameClockConfig {
+        direction: ClockDirection::CountDown,
+        format: ClockFormat::MinutesSeconds,
+        frame_rate: FrameRate::new(30, 1).unwrap(),
+        initial_ms: 90_000,
+        limit_ms: None,
+    });
+    let jane = Player {
+        number: Some(23),
+        name: "Jane Doe".into(),
+    };
+    let sam = Player {
+        number: Some(7),
+        name: "Sam Roe".into(),
+    };
+    let outcome = board
+        .apply(
+            0,
+            0,
+            &[
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Home,
+                    player: jane.clone(),
+                },
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Home,
+                    player: sam.clone(),
+                },
+                ScoreboardAction::SelectRosterPlayer {
+                    side: TeamSide::Home,
+                    index: Some(1),
+                },
+            ],
+        )
+        .unwrap();
+    assert_eq!(outcome.revision, 1);
+    assert_eq!(
+        board.team(TeamSide::Home).roster,
+        vec![jane.clone(), sam.clone()]
+    );
+    assert_eq!(board.team(TeamSide::Home).player, Some(sam.clone()));
+
+    // A duplicate jersey number is refused and the batch changes nothing.
+    let before = board.clone();
+    assert_eq!(
+        board.apply(
+            1,
+            1,
+            &[ScoreboardAction::AddRosterPlayer {
+                side: TeamSide::Home,
+                player: Player {
+                    number: Some(23),
+                    name: "Other".into(),
+                },
+            }],
+        ),
+        Err(ScoreboardError::DuplicateRosterPlayer {
+            side: TeamSide::Home,
+            player: "23 Other".into(),
+        })
+    );
+    assert_eq!(board, before);
+
+    // Removing the featured player clears the featured slot; bad indices fail.
+    assert_eq!(
+        board.apply(
+            1,
+            2,
+            &[ScoreboardAction::RemoveRosterPlayer {
+                side: TeamSide::Home,
+                index: 9,
+            }],
+        ),
+        Err(ScoreboardError::RosterIndexOutOfRange {
+            side: TeamSide::Home,
+            index: 9,
+            len: 2,
+        })
+    );
+    board
+        .apply(
+            1,
+            2,
+            &[ScoreboardAction::RemoveRosterPlayer {
+                side: TeamSide::Home,
+                index: 1,
+            }],
+        )
+        .unwrap();
+    assert_eq!(board.team(TeamSide::Home).roster, vec![jane]);
+    assert_eq!(board.team(TeamSide::Home).player, None);
+
+    // Selecting by index and clearing from the external feed.
+    board
+        .apply_external(
+            2,
+            3,
+            &[("home.roster.select", "0"), ("away.roster.add", "9 Alex")],
+        )
+        .unwrap();
+    assert_eq!(
+        board.team(TeamSide::Home).player.as_ref().unwrap().number,
+        Some(23)
+    );
+    assert_eq!(board.team(TeamSide::Away).roster.len(), 1);
+    board
+        .apply_external(3, 4, &[("home.roster.select", "")])
+        .unwrap();
+    assert_eq!(board.team(TeamSide::Home).player, None);
+    assert_eq!(
+        actions_from_external(&[("home.roster.add", "  ")]),
+        Err(ScoreboardError::InvalidExternalValue { index: 0 })
+    );
+    assert_eq!(
+        actions_from_external(&[("home.roster.select", "x")]),
+        Err(ScoreboardError::InvalidExternalValue { index: 0 })
+    );
+
+    // A full roster is refused.
+    let mut full = TeamState::new("Home", "HOM");
+    for number in 0..u16::try_from(MAX_ROSTER_PLAYERS).unwrap() {
+        full.roster.push(Player {
+            number: Some(number),
+            name: format!("Player {number}"),
+        });
+    }
+    let mut board = Scoreboard::new(
+        full,
+        TeamState::new("Away", "AWY"),
+        ScoreboardRules {
+            max_score: 99,
+            max_period: 4,
+        },
+        GameClockConfig {
+            direction: ClockDirection::CountDown,
+            format: ClockFormat::MinutesSeconds,
+            frame_rate: FrameRate::new(30, 1).unwrap(),
+            initial_ms: 90_000,
+            limit_ms: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        board.apply(
+            0,
+            0,
+            &[ScoreboardAction::AddRosterPlayer {
+                side: TeamSide::Home,
+                player: Player {
+                    number: Some(99),
+                    name: "Overflow".into(),
+                },
+            }],
+        ),
+        Err(ScoreboardError::RosterFull {
+            side: TeamSide::Home,
+            maximum: MAX_ROSTER_PLAYERS,
+        })
+    );
 }
 
 #[test]

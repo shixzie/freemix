@@ -2,11 +2,12 @@
 //! title template fields.
 //!
 //! A [`Scoreboard`] holds two teams (name, abbreviation, score, featured
-//! player), a period, and a [`GameClock`]. Operators change it with
-//! [`ScoreboardAction`]s applied as one atomic, revision-checked batch at an
-//! engine frame index: either every action applies or none does. Score and
-//! period *adjustments* (the increment/decrement shortcuts) saturate at their
-//! bounds and report it; explicit *sets* outside the bounds are refused.
+//! player, and a bounded roster), a period, and a [`GameClock`]. Operators
+//! change it with [`ScoreboardAction`]s applied as one atomic, revision-checked
+//! batch at an engine frame index: either every action applies or none does.
+//! Score and period *adjustments* (the increment/decrement shortcuts) saturate
+//! at their bounds and report it; explicit *sets* outside the bounds are
+//! refused.
 //!
 //! # Clock
 //!
@@ -43,6 +44,8 @@ use fm_types::FrameRate;
 
 /// Maximum characters in a team name, abbreviation, or player name.
 pub const MAX_SCOREBOARD_TEXT_CHARS: usize = 64;
+/// Maximum players on one team's roster.
+pub const MAX_ROSTER_PLAYERS: usize = 32;
 /// Maximum actions in one batch, and entries in one external update.
 pub const MAX_SCOREBOARD_ACTIONS: usize = 64;
 /// Largest clock value accepted, in milliseconds (100 hours).
@@ -78,6 +81,8 @@ pub struct TeamState {
     pub name: String,
     pub abbreviation: String,
     pub score: u32,
+    /// Players available to feature, in addition to the featured `player`.
+    pub roster: Vec<Player>,
     pub player: Option<Player>,
 }
 
@@ -88,9 +93,20 @@ impl TeamState {
             name: name.into(),
             abbreviation: abbreviation.into(),
             score: 0,
+            roster: Vec::new(),
             player: None,
         }
     }
+}
+
+fn duplicate_roster_player(roster: &[Player], player: &Player) -> bool {
+    roster
+        .iter()
+        .any(|entry| match (entry.number, player.number) {
+            (Some(a), Some(b)) => a == b,
+            (None, None) => entry.name == player.name,
+            _ => false,
+        })
 }
 
 /// Inclusive bounds: scores are `0..=max_score`, periods `1..=max_period`.
@@ -391,6 +407,23 @@ pub enum ScoreboardAction {
         side: TeamSide,
         player: Option<Player>,
     },
+    /// Appends a player to the roster; refused for a duplicate jersey number
+    /// (or duplicate name for unnumbered players) or a full roster.
+    AddRosterPlayer {
+        side: TeamSide,
+        player: Player,
+    },
+    /// Removes the roster entry at `index`, clearing the featured player if it
+    /// was that entry.
+    RemoveRosterPlayer {
+        side: TeamSide,
+        index: usize,
+    },
+    /// Features the roster entry at `index`; `None` clears the featured player.
+    SelectRosterPlayer {
+        side: TeamSide,
+        index: Option<usize>,
+    },
     /// Saturates at `1..=max_period`.
     AdjustPeriod {
         delta: i32,
@@ -459,6 +492,19 @@ pub enum ScoreboardError {
         maximum: usize,
     },
     ControlCharacter,
+    RosterFull {
+        side: TeamSide,
+        maximum: usize,
+    },
+    DuplicateRosterPlayer {
+        side: TeamSide,
+        player: String,
+    },
+    RosterIndexOutOfRange {
+        side: TeamSide,
+        index: usize,
+        len: usize,
+    },
     ClockOutOfRange {
         value_ms: u64,
         maximum: u64,
@@ -502,6 +548,18 @@ impl fmt::Display for ScoreboardError {
             }
             Self::ControlCharacter => {
                 formatter.write_str("scoreboard text contains a control character")
+            }
+            Self::RosterFull { side, maximum } => {
+                write!(formatter, "{side:?} roster is full at {maximum} players")
+            }
+            Self::DuplicateRosterPlayer { side, player } => {
+                write!(formatter, "{side:?} roster already contains {player}")
+            }
+            Self::RosterIndexOutOfRange { side, index, len } => {
+                write!(
+                    formatter,
+                    "{side:?} roster index {index} is outside 0..{len}"
+                )
             }
             Self::ClockOutOfRange { value_ms, maximum } => {
                 write!(formatter, "clock value {value_ms}ms exceeds {maximum}ms")
@@ -570,6 +628,21 @@ impl Scoreboard {
             check_text(&team.abbreviation)?;
             if let Some(player) = &team.player {
                 check_text(&player.name)?;
+            }
+            if team.roster.len() > MAX_ROSTER_PLAYERS {
+                return Err(ScoreboardError::RosterFull {
+                    side,
+                    maximum: MAX_ROSTER_PLAYERS,
+                });
+            }
+            for (index, player) in team.roster.iter().enumerate() {
+                check_text(&player.name)?;
+                if duplicate_roster_player(&team.roster[..index], player) {
+                    return Err(ScoreboardError::DuplicateRosterPlayer {
+                        side,
+                        player: player.display(),
+                    });
+                }
             }
             if team.score > rules.max_score {
                 return Err(ScoreboardError::ScoreOutOfRange {
@@ -797,6 +870,50 @@ impl Scoreboard {
                 }
                 self.team_mut(*side).player.clone_from(player);
             }
+            ScoreboardAction::AddRosterPlayer { side, player } => {
+                check_text(&player.name)?;
+                let team = self.team_mut(*side);
+                if team.roster.len() >= MAX_ROSTER_PLAYERS {
+                    return Err(ScoreboardError::RosterFull {
+                        side: *side,
+                        maximum: MAX_ROSTER_PLAYERS,
+                    });
+                }
+                if duplicate_roster_player(&team.roster, player) {
+                    return Err(ScoreboardError::DuplicateRosterPlayer {
+                        side: *side,
+                        player: player.display(),
+                    });
+                }
+                team.roster.push(player.clone());
+            }
+            ScoreboardAction::RemoveRosterPlayer { side, index } => {
+                let team = self.team_mut(*side);
+                if *index >= team.roster.len() {
+                    return Err(ScoreboardError::RosterIndexOutOfRange {
+                        side: *side,
+                        index: *index,
+                        len: team.roster.len(),
+                    });
+                }
+                let removed = team.roster.remove(*index);
+                if team.player.as_ref() == Some(&removed) {
+                    team.player = None;
+                }
+            }
+            ScoreboardAction::SelectRosterPlayer { side, index } => {
+                let team = self.team_mut(*side);
+                team.player = match index {
+                    None => None,
+                    Some(index) => Some(team.roster.get(*index).cloned().ok_or(
+                        ScoreboardError::RosterIndexOutOfRange {
+                            side: *side,
+                            index: *index,
+                            len: team.roster.len(),
+                        },
+                    )?),
+                };
+            }
             ScoreboardAction::AdjustPeriod { delta } => {
                 let wanted = i64::from(self.period) + i64::from(*delta);
                 let clamped = wanted.clamp(1, i64::from(max_period));
@@ -912,6 +1029,9 @@ fn check_text(text: &str) -> Result<(), ScoreboardError> {
 /// | `<side>.score` | decimal `u32` | [`ScoreboardAction::SetScore`] |
 /// | `<side>.score.delta` | signed decimal | [`ScoreboardAction::AdjustScore`] |
 /// | `<side>.player` | `""`, `name`, or `number name` | [`ScoreboardAction::SetPlayer`] |
+/// | `<side>.roster.add` | `name` or `number name` | [`ScoreboardAction::AddRosterPlayer`] |
+/// | `<side>.roster.remove` | decimal index | [`ScoreboardAction::RemoveRosterPlayer`] |
+/// | `<side>.roster.select` | decimal index or `""` to clear | [`ScoreboardAction::SelectRosterPlayer`] |
 /// | `period` | decimal `u16` | [`ScoreboardAction::SetPeriod`] |
 /// | `clock.ms` | decimal `u64` | [`ScoreboardAction::SetClock`] |
 /// | `clock.running` | `true` / `false` | start / stop |
@@ -976,6 +1096,22 @@ fn external_action(
         (Some(side), "player") => ScoreboardAction::SetPlayer {
             side,
             player: parse_player(&text()?),
+        },
+        (Some(side), "roster.add") => ScoreboardAction::AddRosterPlayer {
+            side,
+            player: parse_player(&text()?).ok_or(invalid)?,
+        },
+        (Some(side), "roster.remove") => ScoreboardAction::RemoveRosterPlayer {
+            side,
+            index: parse_unsigned(value).ok_or(invalid)?,
+        },
+        (Some(side), "roster.select") => ScoreboardAction::SelectRosterPlayer {
+            side,
+            index: if value.is_empty() {
+                None
+            } else {
+                Some(parse_unsigned(value).ok_or(invalid)?)
+            },
         },
         (None, "period") => ScoreboardAction::SetPeriod {
             period: parse_unsigned(value).ok_or(invalid)?,

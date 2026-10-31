@@ -138,7 +138,7 @@ pub use runtime::{
     evaluate_ticker_position,
 };
 pub use scoreboard::{
-    GameClock, GameClockConfig, MAX_GAME_CLOCK_MS, MAX_SCOREBOARD_ACTIONS,
+    GameClock, GameClockConfig, MAX_GAME_CLOCK_MS, MAX_ROSTER_PLAYERS, MAX_SCOREBOARD_ACTIONS,
     MAX_SCOREBOARD_TEXT_CHARS, Player, Scoreboard, ScoreboardAction, ScoreboardBinding,
     ScoreboardError, ScoreboardEvent, ScoreboardOutcome, ScoreboardPreset, ScoreboardRules,
     TeamSide, TeamState, actions_from_external,
