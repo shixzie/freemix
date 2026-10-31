@@ -456,6 +456,31 @@ impl std::fmt::Display for ScoreboardDocumentError {
 
 impl std::error::Error for ScoreboardDocumentError {}
 
+/// Why a preview-state document could not be stored on a project.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PreviewDocumentError {
+    UnknownInput(InputId),
+    /// The input exists but is not a title.
+    NotATitle(InputId),
+    Empty,
+    TooLarge { maximum: usize },
+}
+
+impl std::fmt::Display for PreviewDocumentError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownInput(input) => write!(formatter, "unknown input {input}"),
+            Self::NotATitle(input) => write!(formatter, "input {input} is not a title"),
+            Self::Empty => formatter.write_str("preview document is empty"),
+            Self::TooLarge { maximum } => {
+                write!(formatter, "preview document exceeds {maximum} bytes")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PreviewDocumentError {}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AddSceneLayerError {
     UnknownScene(SceneId),
@@ -967,6 +992,13 @@ pub const MAX_SCOREBOARDS: usize = 256;
 /// `fm_titles::MAX_SCOREBOARD_DOCUMENT_BYTES`.
 pub const MAX_SCOREBOARD_DOCUMENT_BYTES: usize = 256 * 1024;
 
+/// Maximum stored preview-state documents on one project (GX-005).
+pub const MAX_PREVIEW_STATES: usize = 256;
+
+/// Maximum bytes of one canonical preview-state document (GX-005),
+/// matching `fm_data::MAX_PREVIEW_DOCUMENT_BYTES`.
+pub const MAX_PREVIEW_DOCUMENT_BYTES: usize = 256 * 1024;
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
 
@@ -1046,6 +1078,9 @@ pub struct Project {
     /// The show's named production clocks (SW-013, schema 106), in
     /// definition order.
     production_clocks: Vec<fm_types::ProjectClock>,
+    /// Each title input's canonical preview-state document (GX-005, schema
+    /// 106), by input. Staged data-binding values, not live title values.
+    previews: BTreeMap<InputId, String>,
 }
 
 impl Project {
@@ -1099,6 +1134,7 @@ impl Project {
             alert_rules: Vec::new(),
             scoreboards: BTreeMap::new(),
             production_clocks: Vec::new(),
+            previews: BTreeMap::new(),
         }
     }
 
@@ -2058,6 +2094,64 @@ impl Project {
         self.production_clocks = clocks;
     }
 
+    /// Every title input's canonical preview-state document (GX-005, schema
+    /// 106), ascending by input. Staged data-binding values, not live title
+    /// values.
+    #[must_use]
+    pub const fn preview_documents(&self) -> &BTreeMap<InputId, String> {
+        &self.previews
+    }
+
+    /// One title input's canonical preview-state document, if stored.
+    #[must_use]
+    pub fn preview_document(&self, input: InputId) -> Option<&str> {
+        self.previews.get(&input).map(String::as_str)
+    }
+
+    /// Stores `document` as `input`'s preview state, replacing any previous
+    /// one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PreviewDocumentError::UnknownInput`] when `input` does not
+    /// exist, [`PreviewDocumentError::NotATitle`] when it is not a title
+    /// input, and [`PreviewDocumentError::TooLarge`] past the document
+    /// bound. Nothing changes on error.
+    pub fn set_preview_document(
+        &mut self,
+        input: InputId,
+        document: String,
+    ) -> Result<(), PreviewDocumentError> {
+        let Some(candidate) = self.inputs.iter().find(|candidate| candidate.id == input) else {
+            return Err(PreviewDocumentError::UnknownInput(input));
+        };
+        if !matches!(candidate.kind, InputKind::Title(_)) {
+            return Err(PreviewDocumentError::NotATitle(input));
+        }
+        if document.len() > MAX_PREVIEW_DOCUMENT_BYTES {
+            return Err(PreviewDocumentError::TooLarge {
+                maximum: MAX_PREVIEW_DOCUMENT_BYTES,
+            });
+        }
+        if document.is_empty() {
+            return Err(PreviewDocumentError::Empty);
+        }
+        self.previews.insert(input, document);
+        Ok(())
+    }
+
+    /// Removes `input`'s preview state, returning the stored document.
+    pub fn remove_preview_document(&mut self, input: InputId) -> Option<String> {
+        self.previews.remove(&input)
+    }
+
+    /// Replaces every preview-state document without checking them;
+    /// [`Project::validate`] reports one on a non-title input or past the
+    /// bound. Documents are parsed by the persistence layer.
+    pub fn restore_previews(&mut self, documents: BTreeMap<InputId, String>) {
+        self.previews = documents;
+    }
+
     /// Every screen capture input's desktop restore token (IN-011, schema
     /// 72), by input: what a Wayland desktop's screen sharing dialog last
     /// granted, so the same screen or window is shared again without
@@ -2524,6 +2618,7 @@ impl Project {
         self.media_lists.remove(&input);
         self.title_timelines.remove(&input);
         self.scoreboards.remove(&input);
+        self.previews.remove(&input);
         self.screen_capture_restore_tokens.remove(&input);
         Ok(())
     }

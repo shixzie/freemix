@@ -102,6 +102,7 @@ struct ProjectDto {
     title_timelines: std::collections::BTreeMap<fm_types::InputId, fm_model::TitleTimeline>,
     scoreboards: std::collections::BTreeMap<fm_types::InputId, String>,
     production_clocks: Vec<fm_types::ProjectClock>,
+    previews: std::collections::BTreeMap<fm_types::InputId, String>,
     screen_capture_restore_tokens: Vec<(fm_types::InputId, String)>,
 }
 
@@ -179,6 +180,7 @@ impl ProjectDto {
             title_timelines: super::title_timeline::parse_title_timelines(&mut object)?,
             scoreboards: super::scoreboard::parse_scoreboards(&mut object)?,
             production_clocks: super::production_clock::parse_production_clocks(&mut object)?,
+            previews: super::preview::parse_previews(&mut object)?,
             screen_capture_restore_tokens:
                 super::screen_capture_tokens::parse_screen_capture_restore_tokens(&mut object)?,
         };
@@ -333,6 +335,7 @@ impl ProjectDto {
         project.restore_scoreboards(self.scoreboards);
         // Names, values, and formats are reported by project validation.
         project.restore_production_clocks(self.production_clocks);
+        project.restore_previews(self.previews);
         // A token of an unknown or other input, or an unusable token, is
         // reported by project validation.
         for (input, token) in self.screen_capture_restore_tokens {

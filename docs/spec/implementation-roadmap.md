@@ -4859,8 +4859,10 @@ prints each mapped field's current and new value without saving. Remaining gaps:
 no daemon, protocol command, or UI preview drives a mapped row; there is no
 time-zone database or localization; image URIs are never fetched; and
 preview state is in memory only. `GX-005` remains planned. Preview state now
-round-trips through a strict, versioned text document (`PreviewSnapshot`),
-but it is not yet stored in a project or shown by a UI.
+round-trips through a strict, versioned text document (`PreviewSnapshot`) and
+persists per title input in `project.json` (schema 106), strictly parsed and
+canonicalized on load, but no protocol command or UI stages, inspects, or
+commits it yet.
 
 Current implementation boundary for item 5: `fm-playback` provides a
 fixture-backed `ListPlayer` that advances once per monotonic engine frame tick
