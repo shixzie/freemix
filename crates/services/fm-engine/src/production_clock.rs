@@ -2,6 +2,7 @@
 //! (SW-013).
 
 use core::fmt;
+use std::collections::BTreeMap;
 
 use fm_clock::production::{
     ClockName, ClockNameError, ClockValue, ClockValueError, DurationFormat, OverrunPolicy,
@@ -10,7 +11,7 @@ use fm_clock::production::{
     TimeZone, TimerConfig, TimerDirection, ZoneError,
 };
 use fm_types::{
-    FrameRate, ProjectClock, ProjectClockDirection, ProjectClockKind, ProjectClockOverrun,
+    FrameRate, InputId, ProjectClock, ProjectClockDirection, ProjectClockKind, ProjectClockOverrun,
     ProjectDurationFormat, ProjectSessionKind, ProjectTimeFormat, RateError,
 };
 
@@ -74,6 +75,25 @@ impl From<TimerError> for EngineProductionClockError {
     }
 }
 
+/// The media input each media-remaining clock follows, by clock name.
+#[must_use]
+pub fn media_clock_inputs(definitions: &[ProjectClock]) -> BTreeMap<ClockName, InputId> {
+    definitions
+        .iter()
+        .filter_map(|definition| {
+            let ProjectClockKind::MediaRemaining {
+                input: Some(input), ..
+            } = &definition.kind
+            else {
+                return None;
+            };
+            ClockName::new(&definition.name)
+                .ok()
+                .map(|name| (name, *input))
+        })
+        .collect()
+}
+
 /// Builds the live registry from `definitions`, skipping invalid entries.
 ///
 /// Definitions that reach an engine are validated by the project model; a
@@ -133,7 +153,7 @@ pub fn production_clock_from_definition(
             TimeZone::parse_posix(zone)?,
             time_format(*format),
         )),
-        ProjectClockKind::MediaRemaining { format } => {
+        ProjectClockKind::MediaRemaining { input: _, format } => {
             Ok(ProductionClock::media_remaining(duration_format(*format)?))
         }
         ProjectClockKind::Session { kind, format } => Ok(ProductionClock::session(

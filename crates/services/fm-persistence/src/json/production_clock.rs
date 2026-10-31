@@ -69,8 +69,13 @@ fn write_clock(output: &mut String, clock: &ProjectClock) {
             output.push_str(", \"format\": ");
             write_time_format(output, *format);
         }
-        ProjectClockKind::MediaRemaining { format } => {
-            output.push_str(", \"kind\": \"media_remaining\", \"format\": ");
+        ProjectClockKind::MediaRemaining { input, format } => {
+            output.push_str(", \"kind\": \"media_remaining\", \"media_input\": ");
+            match input {
+                Some(input) => write!(output, "{input}").expect("writing to a string cannot fail"),
+                None => output.push_str("null"),
+            }
+            output.push_str(", \"format\": ");
             write_duration_format(output, *format);
         }
         ProjectClockKind::Session { kind, format } => {
@@ -185,9 +190,20 @@ fn parse_clock(value: Value) -> Result<ProjectClock, DecodeError> {
             let format = parse_time_format(clock.take("format")?)?;
             ProjectClockKind::TimeOfDay { zone: text, format }
         }
-        "media_remaining" => ProjectClockKind::MediaRemaining {
-            format: parse_duration_format(clock.take("format")?)?,
-        },
+        "media_remaining" => {
+            let input = match clock.take("media_input")? {
+                Value::Null => None,
+                Value::Number(value) => Some(fm_types::InputId::new(
+                    core::num::NonZeroU128::new(value)
+                        .ok_or_else(|| syntax("media_input must be a nonzero id"))?,
+                )),
+                _ => return Err(syntax("media_input must be a nonzero id or null")),
+            };
+            ProjectClockKind::MediaRemaining {
+                input,
+                format: parse_duration_format(clock.take("format")?)?,
+            }
+        }
         "session" => {
             let session_text = clock.string("session")?;
             let kind = ProjectSessionKind::from_token(&session_text)

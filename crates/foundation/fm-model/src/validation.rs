@@ -407,6 +407,19 @@ fn validate_production_clocks(project: &Project, errors: &mut Vec<ValidationErro
             kind: ValidationErrorKind::OutOfRange,
         });
     }
+    for clock in project.production_clocks() {
+        if let fm_types::ProjectClockKind::MediaRemaining {
+            input: Some(input), ..
+        } = &clock.kind
+            && !project.inputs().iter().any(|candidate| candidate.id == *input)
+        {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(*input)),
+                field: "production_clocks.media_input",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Input(*input)),
+            });
+        }
+    }
 }
 
 fn validate_crawls(project: &Project, errors: &mut Vec<ValidationError>) {

@@ -8,7 +8,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use fm_model::{Project, ProjectSettings};
+use fm_model::{Input, InputKind, Project, ProjectSettings};
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoreError, StoredProject};
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, PixelFormat, ProjectClock,
@@ -64,6 +64,15 @@ fn project() -> Project {
             },
         },
     );
+    project.add_input(Input {
+        id: fm_types::InputId::new(NonZeroU128::new(1).unwrap()),
+        name: "Clip".into(),
+        kind: InputKind::Media {
+            asset_uri: "asset://clip.mp4".into(),
+            playback: fm_model::MediaPlaybackSettings::default(),
+        },
+        required_capabilities: Vec::new(),
+    });
     project
         .set_production_clocks(vec![
             ProjectClock {
@@ -86,6 +95,7 @@ fn project() -> Project {
             ProjectClock {
                 name: "Media".into(),
                 kind: ProjectClockKind::MediaRemaining {
+                    input: Some(fm_types::InputId::new(NonZeroU128::new(1).unwrap())),
                     format: ProjectDurationFormat::HoursMinutesSecondsFrames {
                         numerator: 30,
                         denominator: 1,

@@ -4606,6 +4606,7 @@ fn parse_clock_add(
     let mut limit = None;
     let mut overrun = fm_types::ProjectClockOverrun::StopAtTarget;
     let mut format = fm_types::ProjectDurationFormat::MinutesSeconds;
+    let mut media_input = None;
     let mut session = fm_types::ProjectSessionKind::Stream;
     while let Some(option) = arguments.next() {
         match option.as_str() {
@@ -4630,6 +4631,9 @@ fn parse_clock_add(
                     field: "time format (hours_24, hours_24_minutes, hours_12, hours_12_minutes, date, or rfc3339)",
                     value,
                 })?;
+            }
+            "--input" => {
+                media_input = Some(number(&required(&mut arguments, "media input")?, "media input")?);
             }
             "--preset" => preset = clock_value(&mut arguments, "preset")?,
             "--direction" => {
@@ -4665,6 +4669,12 @@ fn parse_clock_add(
         }
     }
     let name = name.ok_or(ArgsError::MissingValue("--name"))?;
+    if media_input.is_some() && kind_token.as_deref() != Some("media-remaining") {
+        return Err(ArgsError::InvalidChoice {
+            field: "--input (only media-remaining clocks follow an input)",
+            value: kind_token.unwrap_or_else(|| "timer".to_owned()),
+        });
+    }
     let kind = match kind_token.as_deref().unwrap_or("timer") {
         "timer" => fm_types::ProjectClockKind::Timer {
             direction,
@@ -4692,7 +4702,19 @@ fn parse_clock_add(
                 format: time_format,
             }
         }
-        "media-remaining" => fm_types::ProjectClockKind::MediaRemaining { format },
+        "media-remaining" => {
+            let input = media_input
+                .map(|id| {
+                    core::num::NonZeroU128::new(id)
+                        .map(fm_types::InputId::new)
+                        .ok_or(ArgsError::InvalidChoice {
+                            field: "media input id (nonzero)",
+                            value: id.to_string(),
+                        })
+                })
+                .transpose()?;
+            fm_types::ProjectClockKind::MediaRemaining { input, format }
+        }
         "session" => fm_types::ProjectClockKind::Session {
             kind: session,
             format,

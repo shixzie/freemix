@@ -1299,6 +1299,8 @@ pub struct Engine {
     /// The live project production clock registry (SW-013). Rebuilt from
     /// the show's definitions on construction and restore.
     production_clocks: fm_clock::production::ProductionClocks,
+    /// The media input each media-remaining clock follows, by clock name.
+    media_clock_inputs: BTreeMap<fm_clock::production::ClockName, InputId>,
     /// Whether a scene clip can be carried to clients (see
     /// [`Self::set_scene_clip_bound`]); `None` bounds nothing.
     scene_clip_bound: Option<crate::SceneClipBound>,
@@ -1326,6 +1328,8 @@ impl Engine {
         let realized_switcher = show.desired_switcher().clone();
         let production_clocks =
             crate::production_clock::registry_from_definitions(show.production_clocks());
+        let media_clock_inputs =
+            crate::production_clock::media_clock_inputs(show.production_clocks());
         Self {
             commands: CommandState::new(show, StateEpoch::new(1)).with_receipt_limit(RECEIPT_LIMIT),
             receipts_recorded: 0,
@@ -1345,6 +1349,7 @@ impl Engine {
             scene_air: BTreeMap::new(),
             title_shown: BTreeMap::new(),
             production_clocks,
+            media_clock_inputs,
             scene_clip_bound: None,
             media: BTreeMap::new(),
             slideshows: BTreeMap::new(),
@@ -1726,6 +1731,39 @@ impl Engine {
         &self.production_clocks
     }
 
+    /// Updates every media-remaining clock from its input's playback.
+    fn update_media_clocks(&mut self) {
+        use fm_clock::production::{ClockCommand, MediaProgress};
+        let entries: Vec<_> = self
+            .media_clock_inputs
+            .iter()
+            .map(|(name, input)| (name.clone(), *input))
+            .collect();
+        for (name, input) in entries {
+            let progress = self.media_status(input).and_then(|status| {
+                let rate = status.source_rate.unwrap_or(self.frame_rate);
+                let position = rational_nanos(
+                    status.position_time.numerator(),
+                    status.position_time.denominator(),
+                )?;
+                let duration = rational_nanos(
+                    u128::from(status.playable_end) * u128::from(rate.denominator()),
+                    u128::from(rate.numerator()),
+                )?;
+                MediaProgress::new(
+                    u64::try_from(position).ok()?,
+                    u64::try_from(duration).ok()?,
+                )
+                .ok()
+            });
+            let _ = self.production_clocks.apply(
+                &name,
+                ClockCommand::UpdateMedia(progress),
+                self.clock.now(),
+            );
+        }
+    }
+
     /// Every live production clock's reading at `at`, in name order.
     #[must_use]
     pub fn production_clock_readings(
@@ -1761,6 +1799,7 @@ impl Engine {
     pub fn restore_production_clocks(&mut self, definitions: &[fm_types::ProjectClock]) {
         self.production_clocks =
             crate::production_clock::registry_from_definitions(definitions);
+        self.media_clock_inputs = crate::production_clock::media_clock_inputs(definitions);
     }
 
     /// Whether any title is playing an In or Out phase on Program or
@@ -3095,6 +3134,7 @@ impl Engine {
             .next_deadline()
             .map_err(|error| EngineError::Tick(fm_scheduler::TickError::Pacing(error)))?;
         self.clock.set(ClockTime::from_nanos(deadline.at_ns))?;
+        self.update_media_clocks();
         let tick = self.scheduler.tick(deadline.at_ns)?;
         self.pending_actions = self.pending_actions.saturating_sub(tick.actions.len());
         if self
@@ -3604,6 +3644,8 @@ impl Engine {
         validate_idle_restore(&show, &realized_switcher, &restore_state, frame_rate)?;
         let production_clocks =
             crate::production_clock::registry_from_definitions(show.production_clocks());
+        let media_clock_inputs =
+            crate::production_clock::media_clock_inputs(show.production_clocks());
         let scheduler = RuntimeScheduler::restore(
             frame_rate,
             0,
@@ -3638,6 +3680,7 @@ impl Engine {
             scene_air: BTreeMap::new(),
             title_shown: BTreeMap::new(),
             production_clocks,
+            media_clock_inputs,
             scene_clip_bound: None,
             media: BTreeMap::new(),
             slideshows: BTreeMap::new(),
@@ -5347,6 +5390,13 @@ fn apply_stinger_mutation(
     }
     events.push(EngineEvent::DesiredSwitcherChanged(command));
     Ok(EngineAcceptance { target_frame })
+}
+
+fn rational_nanos(numerator: u128, denominator: u128) -> Option<u128> {
+    if denominator == 0 {
+        return None;
+    }
+    Some(numerator.checked_mul(1_000_000_000)? / denominator)
 }
 
 #[allow(clippy::too_many_lines)]

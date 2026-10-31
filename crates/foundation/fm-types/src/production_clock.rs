@@ -47,6 +47,8 @@ pub enum ProjectClockKind {
         format: ProjectTimeFormat,
     },
     MediaRemaining {
+        /// The media input this clock follows; `None` leaves it unavailable.
+        input: Option<crate::InputId>,
         format: ProjectDurationFormat,
     },
     Session {
@@ -329,7 +331,9 @@ impl ProjectClockKind {
                 let _ = format;
                 Ok(())
             }
-            Self::MediaRemaining { format } | Self::Session { format, .. } => format.validate(name),
+            Self::MediaRemaining { input: _, format } | Self::Session { format, .. } => {
+                format.validate(name)
+            }
         }
     }
 }

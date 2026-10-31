@@ -5466,7 +5466,8 @@ format controls to callers. The registry now reaches clients as read-only readin
 `freemix-cli remote-diagnostics`). Remaining gaps: there is no control
 command, snapshot record, or UI, so clients and cues cannot start, pause, or
 set a clock; titles still read their own template clocks rather than the
-shared registry; media and session clocks have no engine feed yet; no project-level
+shared registry; a media clock can name an input and follows its playback
+through the engine, while session clocks have no engine feed yet; no project-level
 time zone (each time-of-day clock names its zone); templates cannot show
 media remaining, session, or playlist clocks; designer compositions and
 crawls take no clock source; an IANA `TZif` parser exists

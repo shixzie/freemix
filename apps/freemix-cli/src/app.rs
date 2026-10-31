@@ -6335,8 +6335,13 @@ fn clock_list(path: &Path) -> AppResult<()> {
                 clock.name,
                 format.token()
             ),
-            fm_types::ProjectClockKind::MediaRemaining { format } => {
-                println!("media_remaining {} format={}", clock.name, format.token());
+            fm_types::ProjectClockKind::MediaRemaining { input, format } => {
+                println!(
+                    "media_remaining {} input={} format={}",
+                    clock.name,
+                    input.map_or_else(|| "none".to_owned(), |input| input.to_string()),
+                    format.token()
+                );
             }
             fm_types::ProjectClockKind::Session { kind, format } => println!(
                 "session {} {} format={}",

@@ -7,11 +7,12 @@ use fm_clock::production::{
     ClockCommand, ClockName, ReadingState, TimeReading, UtcInstant,
 };
 use fm_clock::ClockDomainId;
-use fm_engine::{Engine, ShowState};
+use fm_engine::{Engine, EngineMediaSource, ShowState};
 use fm_types::{
     FrameRate, InputId, ProjectClock, ProjectClockDirection, ProjectClockKind,
     ProjectClockOverrun, ProjectDurationFormat, ProjectTimeFormat,
 };
+use fm_model::MediaPlaybackSettings;
 
 fn nonzero(value: u128) -> NonZeroU128 {
     NonZeroU128::new(value).unwrap()
@@ -40,6 +41,13 @@ fn defs() -> Vec<ProjectClock> {
                 format: ProjectTimeFormat::Hours24,
             },
         },
+        ProjectClock {
+            name: "Media".into(),
+            kind: ProjectClockKind::MediaRemaining {
+                input: Some(input(3)),
+                format: ProjectDurationFormat::MinutesSeconds,
+            },
+        },
     ]
 }
 
@@ -49,17 +57,30 @@ fn engine() -> Engine {
         vec![
             (input(1), "Program".into()),
             (input(2), "Preview".into()),
+            (input(3), "Clip".into()),
         ],
         input(1),
         input(2),
     )
     .unwrap();
+    show.set_media_input(input(3), MediaPlaybackSettings::default())
+        .unwrap();
     show.set_production_clocks(defs()).unwrap();
-    Engine::new(
+    let mut engine = Engine::new(
         show,
         FrameRate::new(30, 1).unwrap(),
         ClockDomainId::new(nonzero(100)),
-    )
+    );
+    engine
+        .set_media_source(
+            input(3),
+            Some(EngineMediaSource::synthetic(
+                &MediaPlaybackSettings::default(),
+                FrameRate::new(30, 1).unwrap(),
+            )),
+        )
+        .unwrap();
+    engine
 }
 
 fn name(value: &str) -> ClockName {
@@ -79,7 +100,7 @@ fn reading_at(engine: &Engine, clock: &str) -> fm_clock::production::ClockReadin
 #[test]
 fn timers_run_on_the_engine_clock_and_pause() {
     let mut engine = engine();
-    assert_eq!(engine.production_clock_registry().len(), 2);
+    assert_eq!(engine.production_clock_registry().len(), 3);
     let idle = reading_at(&engine, "Countdown");
     assert_eq!(idle.state, ReadingState::Idle);
     assert_eq!(idle.text, "01:00");
@@ -115,6 +136,17 @@ fn timers_run_on_the_engine_clock_and_pause() {
         )
         .unwrap();
     assert_eq!(reading_at(&engine, "Countdown").text, "00:05");
+}
+
+#[test]
+fn a_media_clock_follows_its_input() {
+    let mut engine = engine();
+    let before = reading_at(&engine, "Media");
+    let _ = engine.tick().unwrap();
+    let after = reading_at(&engine, "Media");
+    assert_eq!(after.state, ReadingState::Live, "{after:?}");
+    assert!(after.value.is_some(), "{after:?}");
+    assert_ne!(before.state, ReadingState::Live);
 }
 
 #[test]
