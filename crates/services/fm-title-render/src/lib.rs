@@ -62,7 +62,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::File;
 use std::io::Read as _;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use fm_clock::ClockTime;
 use fm_clock::production::{TimeReading, UtcInstant};
@@ -239,9 +239,31 @@ impl TitleImages {
 /// Every title template the project's title inputs name, keyed by URI.
 #[derive(Default)]
 pub struct TitleAssets {
-    templates: BTreeMap<String, LoadedTitleTemplate>,
+    templates: RwLock<BTreeMap<String, Arc<LoadedTitleTemplate>>>,
     /// Where image assets load from on demand; `None` loads no image.
     store: Option<ProjectStore>,
+}
+
+/// Loads the stored template `uri` with its fonts and image defaults.
+fn load_template(store: &ProjectStore, uri: &str) -> Option<LoadedTitleTemplate> {
+    let stored = store.load_title_template(uri).ok()?;
+    let mut catalog = AssetCatalog::new();
+    for font in &stored.fonts {
+        let Some(bytes) = read_font(store, &font.asset_uri) else {
+            continue;
+        };
+        // `with_font_bytes` consumes the catalog; parse first so an unusable
+        // font never loses the fonts already loaded.
+        if let Ok(face) = fm_titles::FontFace::from_bytes(bytes) {
+            catalog = catalog.with_font(font.family.clone(), face);
+        }
+    }
+    for field in &stored.template.fields {
+        if let FieldValue::Image(image) = &field.default {
+            catalog = catalog.with_image(image.asset.clone());
+        }
+    }
+    Some(LoadedTitleTemplate::new(stored.template, catalog).with_clocks(stored.clocks))
 }
 
 impl TitleAssets {
@@ -255,40 +277,18 @@ impl TitleAssets {
     /// with its fonts and the names of every image asset its defaults and
     /// the inputs' persisted values reference.
     pub fn load(store: &ProjectStore, project: &Project) -> Self {
-        let mut assets = Self {
-            store: Some(store.clone()),
-            ..Self::default()
-        };
+        let mut templates: BTreeMap<String, LoadedTitleTemplate> = BTreeMap::new();
         for input in project.inputs() {
             let InputKind::Title(title) = &input.kind else {
                 continue;
             };
-            if !assets.templates.contains_key(&title.template_uri) {
-                let Ok(stored) = store.load_title_template(&title.template_uri) else {
+            if !templates.contains_key(&title.template_uri) {
+                let Some(loaded) = load_template(store, &title.template_uri) else {
                     continue;
                 };
-                let mut catalog = AssetCatalog::new();
-                for font in &stored.fonts {
-                    let Some(bytes) = read_font(store, &font.asset_uri) else {
-                        continue;
-                    };
-                    // `with_font_bytes` consumes the catalog; parse first so
-                    // an unusable font never loses the fonts already loaded.
-                    if let Ok(face) = fm_titles::FontFace::from_bytes(bytes) {
-                        catalog = catalog.with_font(font.family.clone(), face);
-                    }
-                }
-                for field in &stored.template.fields {
-                    if let FieldValue::Image(image) = &field.default {
-                        catalog = catalog.with_image(image.asset.clone());
-                    }
-                }
-                assets.templates.insert(
-                    title.template_uri.clone(),
-                    LoadedTitleTemplate::new(stored.template, catalog).with_clocks(stored.clocks),
-                );
+                templates.insert(title.template_uri.clone(), loaded);
             }
-            if let Some(loaded) = assets.templates.get_mut(&title.template_uri) {
+            if let Some(loaded) = templates.get_mut(&title.template_uri) {
                 let images = loaded
                     .images
                     .get_mut()
@@ -301,12 +301,23 @@ impl TitleAssets {
                 }
             }
         }
-        assets
+        Self {
+            templates: RwLock::new(
+                templates
+                    .into_iter()
+                    .map(|(uri, template)| (uri, Arc::new(template)))
+                    .collect(),
+            ),
+            store: Some(store.clone()),
+        }
     }
 
     /// Registers an already loaded template under `uri`.
     pub fn insert(&mut self, uri: impl Into<String>, template: LoadedTitleTemplate) {
-        self.templates.insert(uri.into(), template);
+        self.templates
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(uri.into(), Arc::new(template));
     }
 
     /// Loads image assets on demand from `store`.
@@ -317,8 +328,12 @@ impl TitleAssets {
     }
 
     #[must_use]
-    pub fn template(&self, uri: &str) -> Option<&LoadedTitleTemplate> {
-        self.templates.get(uri)
+    pub fn template(&self, uri: &str) -> Option<Arc<LoadedTitleTemplate>> {
+        self.templates
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(uri)
+            .cloned()
     }
 
     /// Every image field of `title` (its value, or the template default)
@@ -358,26 +373,44 @@ impl TitleAssets {
     }
 
     /// Takes the engine's current templates (keyed by stored template URI)
-    /// for every loaded URI they name, and returns the URIs whose animation
-    /// changed. Cheap when nothing changed: the engine shares each template
+    /// and returns the URIs whose animation changed or whose template was
+    /// loaded for the first time (a title input added while the daemon
+    /// runs). Cheap when nothing changed: the engine shares each template
     /// until an edit replaces it.
     pub fn sync_templates(&self, templates: &[fm_engine::EngineTitleTemplate]) -> Vec<String> {
         let mut changed = Vec::new();
+        let mut loaded = self
+            .templates
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
         for engine in templates {
-            let Some(loaded) = self.templates.get(&*engine.key) else {
+            let uri = &*engine.key;
+            let mut newly_loaded = false;
+            if !loaded.contains_key(uri) {
+                let Some(store) = self.store.as_ref() else {
+                    continue;
+                };
+                let Some(template) = load_template(store, uri) else {
+                    continue;
+                };
+                loaded.insert(uri.to_owned(), Arc::new(template));
+                newly_loaded = true;
+            }
+            let Some(entry) = loaded.get(uri) else {
                 continue;
             };
-            let mut current = loaded
+            let mut current = entry
                 .template
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
-            if Arc::ptr_eq(&current, &engine.template) {
+            let animation_changed = current.animation != engine.template.animation;
+            if Arc::ptr_eq(&current, &engine.template) && !newly_loaded {
                 continue;
             }
-            if current.animation != engine.template.animation {
-                changed.push(engine.key.to_string());
-            }
             *current = Arc::clone(&engine.template);
+            if newly_loaded || animation_changed {
+                changed.push(uri.to_owned());
+            }
         }
         changed
     }
@@ -602,7 +635,7 @@ pub fn render_title_at(
     let loaded = assets.template(&title.template_uri)?;
     render_template_at(
         assets,
-        loaded,
+        &loaded,
         &loaded.current(),
         input,
         title,
@@ -685,7 +718,7 @@ pub fn render_title_output(
     let loaded = assets
         .template(&title.template_uri)
         .ok_or_else(|| TitleRenderError::TemplateNotLoaded(title.template_uri.clone()))?;
-    render_template_output(assets, loaded, &loaded.current(), input, title, time)
+    render_template_output(assets, &loaded, &loaded.current(), input, title, time)
 }
 
 /// [`render_title_output`] with `template` (the loaded template's, or a
@@ -745,7 +778,7 @@ pub fn render_title_preview(
     height: u32,
 ) -> Option<Vec<u8>> {
     let loaded = assets.template(&title.template_uri)?;
-    let frame = render_template_at(assets, loaded, template, input, title, time, width, height)?;
+    let frame = render_template_at(assets, &loaded, template, input, title, time, width, height)?;
     let row_bytes = usize::try_from(frame.width()).ok()?.checked_mul(4)?;
     let mut pixels =
         Vec::with_capacity(row_bytes.checked_mul(usize::try_from(frame.height()).ok()?)?);
@@ -1399,6 +1432,56 @@ mod clock_tests {
         assert_eq!(loaded.clocks, clocks().split_off(2));
         assert!(loaded.uses_take);
         assert!(loaded.time_dependent());
+    }
+
+    #[test]
+    fn a_runtime_added_title_template_loads_when_the_engine_first_names_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProjectStore::new(directory.path().join("show.freemix")).unwrap();
+        // A shape element needs no font, unlike the clock helper's default.
+        let mut shape = element(ElementKind::Rectangle);
+        shape.style.font = None;
+        let runtime = template(shape, Vec::new());
+        let document =
+            fm_persistence::encode_title_template(&fm_persistence::StoredTitleTemplate {
+                template: runtime.clone(),
+                fonts: Vec::new(),
+                clocks: Vec::new(),
+            })
+            .unwrap();
+        let path = store.assets_root().join("titles/runtime.fmtitle");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, document).unwrap();
+
+        // The daemon loaded its assets before the input existed.
+        let assets = TitleAssets::default().with_store(store);
+        let uri = "asset://titles/runtime.fmtitle";
+        assert!(assets.template(uri).is_none());
+        let changed =
+            assets.sync_templates(&[fm_engine::EngineTitleTemplate::new(uri, runtime.clone())]);
+        assert_eq!(changed, vec![uri.to_owned()]);
+        let loaded = assets.template(uri).expect("loaded on first use");
+        assert!(!loaded.time_dependent());
+        let frame = render_title_at(
+            &assets,
+            input(),
+            &TitleInput {
+                template_uri: uri.into(),
+                field_revision: 0,
+                fields: Vec::new(),
+            },
+            at(0, utc(0, 0, 0), None),
+            WIDTH,
+            HEIGHT,
+        )
+        .expect("the runtime template renders");
+        assert_eq!(frame.width(), WIDTH);
+        // The next sync finds the same template and reports nothing.
+        assert!(
+            assets
+                .sync_templates(&[fm_engine::EngineTitleTemplate::new(uri, runtime.clone())])
+                .is_empty()
+        );
     }
 
     // -----------------------------------------------------------------------
