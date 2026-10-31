@@ -97,7 +97,10 @@ impl fmt::Debug for PanickingStage {
 
 impl MasterPluginStage for PanickingStage {
     fn process(&mut self, planes: &mut [Vec<f32>], samples: usize) {
-        if let Some(sample) = planes.first_mut().and_then(|plane| plane.get_mut(..samples)) {
+        if let Some(sample) = planes
+            .first_mut()
+            .and_then(|plane| plane.get_mut(..samples))
+        {
             sample[0] = f32::NAN;
         }
         panic!("plugin render panic");
@@ -126,14 +129,18 @@ fn a_panicking_master_plugin_is_quarantined_and_the_mix_continues() {
     let block = AudioBlock::from_planar(format, vec![vec![0.5_f32; 8]]).unwrap();
     mixer.set_master_plugins(Some(Box::new(PanickingStage)));
 
-    let mixed = mixer.mix(8, &[(id, &block)], None).unwrap();
+    let rendered = mixer.mix(8, &[(id, &block)], None).unwrap();
     assert!(!mixer.has_master_plugins());
     assert!(mixer.master_plugins_quarantined().is_some());
-    assert!(mixed.block.planes()[0].iter().all(|sample| sample.is_finite()));
+    assert!(
+        rendered.block.planes()[0]
+            .iter()
+            .all(|sample| sample.is_finite())
+    );
     // The panicking stage left a NaN in the first sample; the quarantine
     // sanitizes it and leaves the rest of the summed bus alone.
-    assert_eq!(mixed.block.planes()[0][0], 0.0);
-    assert!((mixed.block.planes()[0][1] - 0.5).abs() < 1e-6);
+    assert!(rendered.block.planes()[0][0].abs() < f32::EPSILON);
+    assert!((rendered.block.planes()[0][1] - 0.5).abs() < 1e-6);
 
     let next = mixer.mix(8, &[(id, &block)], None).unwrap();
     assert!((next.block.planes()[0][0] - 0.5).abs() < 1e-6);
