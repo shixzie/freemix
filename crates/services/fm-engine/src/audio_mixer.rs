@@ -99,11 +99,13 @@ impl EngineAudioGroup {
     }
 }
 
-/// One aux bus (AU-002): its name and live fader and mute.
+/// One aux bus (AU-002): its name, live fader and mute, and DSP chain.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineAuxBus {
     pub name: String,
     pub state: EngineAudioGroupState,
+    /// The bus's DSP chain, after its fader and mute.
+    pub dsp: StripDsp,
 }
 
 impl EngineAuxBus {
@@ -114,6 +116,7 @@ impl EngineAuxBus {
         Self {
             name: format!("Bus {}", bus.letter()),
             state: EngineAudioGroupState::default(),
+            dsp: StripDsp::DEFAULT,
         }
     }
 }
@@ -209,6 +212,12 @@ pub enum EngineAudioMixerEdit {
         bus: AuxBusNumber,
         state: EngineAudioGroupState,
     },
+    /// Replaces an aux bus's DSP chain (AU-002). A project edit.
+    SetAuxBusDsp {
+        bus: AuxBusNumber,
+        /// Boxed: a chain is larger than every other command's payload.
+        chain: Box<StripDsp>,
+    },
     /// Makes `output` hear aux bus `bus`, or Master for `None` (AU-002). A
     /// project edit.
     SetOutputAuxBus {
@@ -290,6 +299,7 @@ impl EngineAudioMixerEdit {
             | Self::ResetLoudness { .. }
             | Self::RenameAuxBus { .. }
             | Self::SetAuxBusLevel { .. }
+            | Self::SetAuxBusDsp { .. }
             | Self::SetOutputAuxBus { .. } => None,
         }
     }
@@ -349,6 +359,11 @@ pub enum EngineAudioMixerUpdate {
         bus: AuxBusNumber,
         state: EngineAudioGroupState,
     },
+    /// An aux bus's DSP chain changed (AU-002).
+    AuxBusDsp {
+        bus: AuxBusNumber,
+        chain: Box<StripDsp>,
+    },
     /// An output now hears an aux bus, or Master for `None` (AU-002).
     OutputAuxBus {
         output: OutputId,
@@ -396,6 +411,10 @@ impl EngineAudioMixerUpdate {
             EngineAudioMixerEdit::SetAuxBusLevel { bus, state } => Some(Self::AuxBusLevel {
                 bus: *bus,
                 state: *state,
+            }),
+            EngineAudioMixerEdit::SetAuxBusDsp { bus, chain } => Some(Self::AuxBusDsp {
+                bus: *bus,
+                chain: chain.clone(),
             }),
             EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => Some(Self::OutputAuxBus {
                 output: *output,
@@ -601,6 +620,7 @@ pub(crate) fn apply(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Resul
         EngineAudioMixerEdit::ResetLoudness { target } => loudness_target(state, *target),
         EngineAudioMixerEdit::RenameAuxBus { .. }
         | EngineAudioMixerEdit::SetAuxBusLevel { .. }
+        | EngineAudioMixerEdit::SetAuxBusDsp { .. }
         | EngineAudioMixerEdit::SetOutputAuxBus { .. } => apply_aux(state, edit),
     }
 }
@@ -612,6 +632,18 @@ fn apply_aux(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Result<(), R
             fm_model::validate_audio_group_name(name)
                 .map_err(|error| label_rejection("name", error))?;
             state.aux_bus_mut(*bus).name.clone_from(name);
+            Ok(())
+        }
+        EngineAudioMixerEdit::SetAuxBusDsp { bus, chain } => {
+            chain.validate().map_err(|error| {
+                rejection(
+                    RejectionCode::InvalidCommand,
+                    "chain",
+                    "out_of_range",
+                    error.to_string(),
+                )
+            })?;
+            state.aux_bus_mut(*bus).dsp = **chain;
             Ok(())
         }
         EngineAudioMixerEdit::SetAuxBusLevel { bus, state: level } => {
@@ -743,6 +775,12 @@ pub(crate) fn inverse(
             Some(EngineAudioMixerEdit::RenameAuxBus {
                 bus: *bus,
                 name: state.aux_bus(*bus).name.clone(),
+            })
+        }
+        EngineAudioMixerEdit::SetAuxBusDsp { bus, .. } => {
+            Some(EngineAudioMixerEdit::SetAuxBusDsp {
+                bus: *bus,
+                chain: Box::new(state.aux_bus(*bus).dsp),
             })
         }
         EngineAudioMixerEdit::SetOutputAuxBus { output, .. } => state

@@ -5330,6 +5330,7 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppRes
                     gain_millidb: value.gain.get(),
                     muted: value.muted,
                 },
+                dsp: value.dsp,
             },
         )?;
     }
@@ -5470,6 +5471,7 @@ fn sync_audio_mixer(project: &mut Project, show: &ShowState) -> AppResult<()> {
                     gain: InputGainMilliDb::new(value.state.gain_millidb)
                         .expect("engine aux bus gain is bounded by the model contract"),
                     muted: value.state.muted,
+                    dsp: value.dsp,
                 },
             )
             .map_err(|error| AppFailure(format!("project cannot take aux {bus}: {error}")))?;
