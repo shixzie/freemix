@@ -531,7 +531,29 @@ impl BrowserRenderer for FakeRenderer {
                 y,
             });
         }
-        let text_bytes = match &intent.kind {
+        // The surface zooms the page: a display point maps back to page
+        // space before the intent reaches the page (100 percent is identity).
+        let zoom = u64::from(surface.config.zoom.percent());
+        let page = |value: u32| u32::try_from(u64::from(value) * 100 / zoom).unwrap_or(u32::MAX);
+        let kind = match &intent.kind {
+            InteractionKind::PointerMove { x, y } => InteractionKind::PointerMove {
+                x: page(*x),
+                y: page(*y),
+            },
+            InteractionKind::PointerButton {
+                x,
+                y,
+                button,
+                state,
+            } => InteractionKind::PointerButton {
+                x: page(*x),
+                y: page(*y),
+                button: *button,
+                state: *state,
+            },
+            other => other.clone(),
+        };
+        let text_bytes = match &kind {
             InteractionKind::Text(text) | InteractionKind::Key { code: text, .. } => text.len(),
             _ => 0,
         };
@@ -542,7 +564,10 @@ impl BrowserRenderer for FakeRenderer {
                 self.browser_limits.max_interaction_text_bytes,
             ));
         }
-        surface.interactions.push(intent);
+        surface.interactions.push(InteractionIntent {
+            surface_id: intent.surface_id,
+            kind,
+        });
         Ok(())
     }
 

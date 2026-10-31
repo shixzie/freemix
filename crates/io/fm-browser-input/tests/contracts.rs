@@ -119,6 +119,25 @@ fn in_page_fetches_are_held_to_the_navigation_policy() {
 }
 
 #[test]
+fn zoomed_pointer_events_map_to_page_space() {
+    let mut surface_config = SurfaceConfig::new(VideoDimensions::new(200, 100).unwrap());
+    surface_config.zoom = Zoom::new(200).unwrap();
+    surface_config.interaction = InteractionMode::Enabled;
+    let mut renderer = configured_renderer(surface_config);
+    renderer
+        .interact(InteractionIntent {
+            surface_id: surface(1),
+            kind: InteractionKind::PointerMove { x: 100, y: 50 },
+        })
+        .unwrap();
+    let interactions = renderer.take_interactions(surface(1));
+    assert_eq!(
+        interactions[0].kind,
+        InteractionKind::PointerMove { x: 50, y: 25 }
+    );
+}
+
+#[test]
 fn cookies_are_partitioned_by_profile_and_shared_only_by_profile_id() {
     let mut renderer = renderer();
     renderer.create_browser(browser(1), profile(10)).unwrap();
