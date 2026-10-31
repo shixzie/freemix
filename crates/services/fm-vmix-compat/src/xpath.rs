@@ -16,6 +16,8 @@ pub const MAX_XPATH_STEPS: usize = 16;
 pub const MAX_XPATH_PREDICATES: usize = 4;
 /// Maximum number of union operands in one `XPath` expression.
 pub const MAX_XPATH_PATHS: usize = 4;
+/// Maximum nesting depth of a numeric predicate expression.
+pub const MAX_XPATH_EXPRESSION_DEPTH: usize = 8;
 
 /// Errors from evaluating an `XMLTEXT` `XPath` expression.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,17 +98,53 @@ enum Predicate {
         name: String,
         value: String,
     },
-    /// `[@name <op> N]`: a numeric attribute comparison.
-    AttributeNumber {
-        name: String,
+    /// `[EXPR <op> EXPR]`: a numeric comparison of two bounded
+    /// expressions.
+    Numeric {
+        left: NumExpr,
         comparison: Comparison,
-        value: i64,
+        right: NumExpr,
     },
-    /// `[position() <op> N]`: a numeric position comparison.
-    PositionNumber {
-        comparison: Comparison,
-        value: i64,
-    },
+}
+
+/// A bounded integer expression in a numeric predicate.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum NumExpr {
+    Integer(i64),
+    /// An attribute parsed as an integer.
+    Attribute(String),
+    /// The context node's one-based position in the current node-set.
+    Position,
+    Add(Box<Self>, Box<Self>),
+    Subtract(Box<Self>, Box<Self>),
+    Multiply(Box<Self>, Box<Self>),
+    Divide(Box<Self>, Box<Self>),
+    Modulo(Box<Self>, Box<Self>),
+}
+
+impl NumExpr {
+    fn evaluate(&self, node: &Node, position: i64) -> Option<i64> {
+        match self {
+            Self::Integer(value) => Some(*value),
+            Self::Attribute(name) => node.attribute(name)?.parse().ok(),
+            Self::Position => Some(position),
+            Self::Add(left, right) => left
+                .evaluate(node, position)?
+                .checked_add(right.evaluate(node, position)?),
+            Self::Subtract(left, right) => left
+                .evaluate(node, position)?
+                .checked_sub(right.evaluate(node, position)?),
+            Self::Multiply(left, right) => left
+                .evaluate(node, position)?
+                .checked_mul(right.evaluate(node, position)?),
+            Self::Divide(left, right) => left
+                .evaluate(node, position)?
+                .checked_div(right.evaluate(node, position)?),
+            Self::Modulo(left, right) => left
+                .evaluate(node, position)?
+                .checked_rem(right.evaluate(node, position)?),
+        }
+    }
 }
 
 /// A numeric comparison operator in a predicate.
@@ -450,24 +488,18 @@ fn select<'a>(candidates: impl IntoIterator<Item = &'a Node>, step: &Step) -> Ve
                         .is_some_and(|attribute| attribute.starts_with(value.as_str()))
                 })
                 .collect(),
-            Predicate::AttributeNumber {
-                name,
+            Predicate::Numeric {
+                left,
                 comparison,
-                value,
+                right,
             } => selected
                 .into_iter()
-                .filter(|node| {
-                    node.attribute(name)
-                        .and_then(|attribute| attribute.parse::<i64>().ok())
-                        .is_some_and(|attribute| comparison.holds(attribute, *value))
-                })
-                .collect(),
-            Predicate::PositionNumber { comparison, value } => selected
-                .into_iter()
                 .enumerate()
-                .filter(|(index, _)| {
+                .filter(|(index, node)| {
                     let position = i64::try_from(*index).unwrap_or(i64::MAX).saturating_add(1);
-                    comparison.holds(position, *value)
+                    left.evaluate(node, position)
+                        .zip(right.evaluate(node, position))
+                        .is_some_and(|(left, right)| comparison.holds(left, right))
                 })
                 .map(|(_, node)| node)
                 .collect(),
@@ -740,10 +772,6 @@ impl<'a> Parser<'a> {
         Err(XPathError::Syntax("expected a comparison operator"))
     }
 
-    fn peek_quote(&self) -> bool {
-        matches!(self.bytes.get(self.position), Some(b'\'' | b'"'))
-    }
-
     fn integer(&mut self) -> Result<i64, XPathError> {
         let start = self.position;
         let negative = self.eat(b'-');
@@ -785,22 +813,110 @@ impl<'a> Parser<'a> {
         Ok(name)
     }
 
-    fn predicate(&mut self) -> Result<Predicate, XPathError> {
-        if self.eat(b'@') {
-            let name = self.name()?.to_owned();
-            let comparison = self.comparison()?;
-            // `=` with a quoted literal keeps string equality; a bare
-            // integer compares numerically.
-            if comparison == Comparison::Eq && self.peek_quote() {
-                let value = self.literal()?;
-                return Ok(Predicate::Attribute { name, value });
+    fn skip_whitespace(&mut self) {
+        while self
+            .bytes
+            .get(self.position)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            self.position += 1;
+        }
+    }
+
+    fn string_equality_ahead(&self) -> bool {
+        let mut position = self.position;
+        while self
+            .bytes
+            .get(position)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            position += 1;
+        }
+        if self.bytes.get(position) != Some(&b'=') {
+            return false;
+        }
+        position += 1;
+        while self
+            .bytes
+            .get(position)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            position += 1;
+        }
+        matches!(self.bytes.get(position), Some(b'\'' | b'"'))
+    }
+
+    fn eat_word(&mut self, word: &str) -> bool {
+        let bytes = word.as_bytes();
+        if self.bytes.get(self.position..self.position + bytes.len()) != Some(bytes) {
+            return false;
+        }
+        let end = self.position + bytes.len();
+        if self
+            .bytes
+            .get(end)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+        {
+            return false;
+        }
+        self.position = end;
+        true
+    }
+
+    fn numeric_expression(&mut self) -> Result<NumExpr, XPathError> {
+        self.numeric_sum(0)
+    }
+
+    fn numeric_sum(&mut self, depth: usize) -> Result<NumExpr, XPathError> {
+        let mut left = self.numeric_product(depth)?;
+        loop {
+            self.skip_whitespace();
+            if self.eat(b'+') {
+                let right = self.numeric_product(depth)?;
+                left = NumExpr::Add(Box::new(left), Box::new(right));
+            } else if self.eat(b'-') {
+                let right = self.numeric_product(depth)?;
+                left = NumExpr::Subtract(Box::new(left), Box::new(right));
+            } else {
+                return Ok(left);
             }
-            let value = self.integer()?;
-            return Ok(Predicate::AttributeNumber {
-                name,
-                comparison,
-                value,
-            });
+        }
+    }
+
+    fn numeric_product(&mut self, depth: usize) -> Result<NumExpr, XPathError> {
+        let mut left = self.numeric_primary(depth)?;
+        loop {
+            self.skip_whitespace();
+            if self.eat(b'*') {
+                let right = self.numeric_primary(depth)?;
+                left = NumExpr::Multiply(Box::new(left), Box::new(right));
+            } else if self.eat_word("div") {
+                let right = self.numeric_primary(depth)?;
+                left = NumExpr::Divide(Box::new(left), Box::new(right));
+            } else if self.eat_word("mod") {
+                let right = self.numeric_primary(depth)?;
+                left = NumExpr::Modulo(Box::new(left), Box::new(right));
+            } else {
+                return Ok(left);
+            }
+        }
+    }
+
+    fn numeric_primary(&mut self, depth: usize) -> Result<NumExpr, XPathError> {
+        if depth >= MAX_XPATH_EXPRESSION_DEPTH {
+            return Err(XPathError::TooComplex);
+        }
+        self.skip_whitespace();
+        if self.eat(b'(') {
+            let expression = self.numeric_sum(depth + 1)?;
+            self.skip_whitespace();
+            if !self.eat(b')') {
+                return Err(XPathError::Syntax("expected ')'"));
+            }
+            return Ok(expression);
+        }
+        if self.eat(b'@') {
+            return Ok(NumExpr::Attribute(self.name()?.to_owned()));
         }
         if self.peek_name() == Some("position") {
             self.position += "position".len();
@@ -810,9 +926,27 @@ impl<'a> Parser<'a> {
             if !self.eat(b')') {
                 return Err(XPathError::Syntax("expected ')' after position("));
             }
-            let comparison = self.comparison()?;
-            let value = self.integer()?;
-            return Ok(Predicate::PositionNumber { comparison, value });
+            return Ok(NumExpr::Position);
+        }
+        Ok(NumExpr::Integer(self.integer()?))
+    }
+
+    fn predicate(&mut self) -> Result<Predicate, XPathError> {
+        self.skip_whitespace();
+        let start = self.position;
+        if self.eat(b'@') {
+            let name = self.name()?.to_owned();
+            if self.string_equality_ahead() {
+                self.skip_whitespace();
+                if !self.eat(b'=') {
+                    return Err(XPathError::Syntax("expected '=' in attribute predicate"));
+                }
+                self.skip_whitespace();
+                let value = self.literal()?;
+                self.skip_whitespace();
+                return Ok(Predicate::Attribute { name, value });
+            }
+            self.position = start;
         }
         if let Some(name) = self.peek_name() {
             let kind = match name {
@@ -853,21 +987,25 @@ impl<'a> Parser<'a> {
                 });
             }
         }
-        let start = self.position;
-        while self
-            .bytes
-            .get(self.position)
-            .is_some_and(u8::is_ascii_digit)
-        {
-            self.position += 1;
+        let left = self.numeric_expression()?;
+        self.skip_whitespace();
+        if self.at_end() || self.bytes.get(self.position) == Some(&b']') {
+            if let NumExpr::Integer(value) = &left {
+                return usize::try_from(*value)
+                    .ok()
+                    .filter(|position| *position >= 1)
+                    .map(Predicate::Position)
+                    .ok_or(XPathError::Syntax("a position is one-based"));
+            }
+            return Err(XPathError::Syntax("expected a comparison"));
         }
-        self.source[start..self.position]
-            .parse::<usize>()
-            .ok()
-            .filter(|position| *position >= 1)
-            .map(Predicate::Position)
-            .ok_or(XPathError::Syntax(
-                "expected a one-based position or attribute predicate",
-            ))
+        let comparison = self.comparison()?;
+        let right = self.numeric_expression()?;
+        self.skip_whitespace();
+        Ok(Predicate::Numeric {
+            left,
+            comparison,
+            right,
+        })
     }
 }

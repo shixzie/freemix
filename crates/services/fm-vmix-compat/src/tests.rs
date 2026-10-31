@@ -551,12 +551,43 @@ fn xpath_numeric_comparisons_select_nodes() {
         state.xml_text("//input[@number='2']/@title"),
         Ok("News <GT>".into())
     );
+    // Bounded arithmetic: +, -, *, div, mod, and parentheses.
+    assert_eq!(
+        state.xml_text("//input[@number+1=2]/@title"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[@number*2>2]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[position()+1=3]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[@number div 2 = 1]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[@number mod 2 = 1]/@title"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[(1+1)=@number]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert!(matches!(
+        state.xml_text("//input[position() div 0 = 1]/@title"),
+        Err(XPathError::NotFound)
+    ));
     for path in [
         "//input[@number>x]",
         "//input[@number>02]",
         "//input[@number>-0]",
         "//input[position()]",
         "//input[@number]",
+        "//input[1+]/@title",
+        "//input[(1+1]/@title",
     ] {
         assert!(
             matches!(state.xml_text(path), Err(XPathError::Syntax(_))),

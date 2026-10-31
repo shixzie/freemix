@@ -6382,10 +6382,11 @@ streaming verbs. A nonblocking `VmixTcpServer` now binds a listener, accepts bou
 sessions, reads capped lines, writes responses and subscription events, and
 calls a caller-supplied translation executor. Remaining gaps: no daemon
 runs the server yet, a partial function and state-document surface, XPath
-lacks arithmetic (it supports unions of up to four paths, numeric attribute
-and `position()` comparisons, the child, descendant, self, parent, ancestor,
-and sibling axes, a final `text()` step, and `contains`/`starts-with`
-attribute predicates), a partial ACTS set, no authentication, and no byte
+supports a bounded subset (unions of up to four paths, integer arithmetic
+and numeric attribute or `position()` comparisons, the child, descendant,
+self, parent, ancestor, and sibling axes, a final `text()` step, and
+`contains`/`starts-with` attribute predicates) but not the full language,
+a partial ACTS set, no authentication, and no byte
 comparison
 against a real vMix 29 instance. `RC-009` remains planned.
 
