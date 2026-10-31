@@ -294,6 +294,16 @@ impl NativeSlides {
             }
         }
     }
+    /// Bytes of uploaded slide textures, for the daemon's accounting.
+    pub(crate) fn retained_bytes(&self) -> u64 {
+        self.uploaded.iter().fold(0_u64, |total, slide| {
+            let texture = slide.frame.texture();
+            let bytes = u64::from(texture.width())
+                .saturating_mul(u64::from(texture.height()))
+                .saturating_mul(8);
+            total.saturating_add(bytes)
+        })
+    }
 }
 
 /// The fade opacity of `mix` basis points.

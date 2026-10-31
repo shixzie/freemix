@@ -3288,6 +3288,7 @@ impl NativeDaemon {
             audio_sink_dropped: telemetry.audio_sink_dropped,
             audio_source_stalls: telemetry.audio_source_stalls,
             audio_retained_bytes: telemetry.audio_retained_bytes,
+            slideshow_retained_bytes: self.slides.retained_bytes(),
             recorder_outstanding_pairs: telemetry.recorder_outstanding_pairs,
             recorder_retained_bytes: telemetry.recorder_retained_bytes,
             stream_enqueued_pairs: telemetry.stream_enqueued_pairs_total,

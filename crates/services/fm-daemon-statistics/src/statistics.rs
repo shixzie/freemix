@@ -101,6 +101,8 @@ pub mod names {
     pub const AUDIO_SOURCE_STALLS: &str = "audio.source_stalls_total";
     /// Bytes of audio the master mix retains.
     pub const AUDIO_RETAINED_BYTES: &str = "audio.retained_bytes";
+    /// Bytes of uploaded slideshow slide textures.
+    pub const SLIDESHOW_RETAINED_BYTES: &str = "slideshow.retained_bytes";
     /// A/V pairs queued across the running recorders.
     pub const RECORDER_OUTSTANDING_PAIRS: &str = "recorder.outstanding_pairs";
     /// Bytes queued across the running recorders.
@@ -485,6 +487,8 @@ pub struct NativeStatisticsSample {
     pub audio_sink_dropped: u64,
     pub audio_source_stalls: u64,
     pub audio_retained_bytes: u64,
+    /// Bytes of uploaded slideshow textures, outside the media registry.
+    pub slideshow_retained_bytes: u64,
     pub recorder_outstanding_pairs: u64,
     pub recorder_retained_bytes: u64,
     pub stream_enqueued_pairs: u64,
@@ -610,6 +614,7 @@ impl DaemonStatistics {
             (names::AUDIO_SINK_DROPPED, MetricDescriptor::Counter),
             (names::AUDIO_SOURCE_STALLS, MetricDescriptor::Counter),
             (names::AUDIO_RETAINED_BYTES, MetricDescriptor::Gauge),
+            (names::SLIDESHOW_RETAINED_BYTES, MetricDescriptor::Gauge),
             (names::RECORDER_OUTSTANDING_PAIRS, MetricDescriptor::Gauge),
             (names::RECORDER_RETAINED_BYTES, MetricDescriptor::Gauge),
             (names::STREAM_ENQUEUED_PAIRS, MetricDescriptor::Counter),
@@ -1037,6 +1042,11 @@ impl DaemonStatistics {
             names::AUDIO_RETAINED_BYTES,
             at,
             gauge_value(native.audio_retained_bytes),
+        );
+        self.gauge(
+            names::SLIDESHOW_RETAINED_BYTES,
+            at,
+            gauge_value(native.slideshow_retained_bytes),
         );
         self.gauge(
             names::RECORDER_OUTSTANDING_PAIRS,
