@@ -704,7 +704,7 @@ fn title_design_check_validates_a_designer_document() {
 /// A `.fmtitle` source document with two fields and no font: a number and a
 /// color.
 const ROW_TITLE_SOURCE: &str = r##"{
-  "schema_version": 104,
+  "schema_version": 105,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -758,12 +758,7 @@ fn title_apply_row_writes_a_mapped_row_into_the_project() {
 
     let row = root.path("row.json");
     fs::write(&row, r##"{"Score": "12", "Bar color": "#ABCDEF"}"##).unwrap();
-    let out = assert_success(&run(&[
-        "title-apply-row",
-        text(&show),
-        "9",
-        text(&row),
-    ]));
+    let out = assert_success(&run(&["title-apply-row", text(&show), "9", text(&row)]));
     assert_eq!(
         out.lines().last(),
         Some("title-apply-row: input=9 fields=2 revision=1")
@@ -794,11 +789,7 @@ fn title_apply_row_writes_a_mapped_row_into_the_project() {
     );
 
     // --keep-live applies the fields that mapped and keeps the failed one.
-    fs::write(
-        &row,
-        r##"{"Score": "twelve", "Bar color": "#010203"}"##,
-    )
-    .unwrap();
+    fs::write(&row, r##"{"Score": "twelve", "Bar color": "#010203"}"##).unwrap();
     let out = assert_success(&run(&[
         "title-apply-row",
         text(&show),
@@ -866,10 +857,7 @@ fn input_media_list_import_appends_playlist_files() {
         text(&playlist),
     ]));
     assert!(out.contains("media-list-import:"), "{out}");
-    assert_eq!(
-        out.lines().last(),
-        Some("input=9 items=3 added=2")
-    );
+    assert_eq!(out.lines().last(), Some("input=9 items=3 added=2"));
     let loaded = load(&show);
     let list = loaded.project().media_list(input(9)).unwrap();
     assert_eq!(list.items.len(), 3);
@@ -879,19 +867,18 @@ fn input_media_list_import_appends_playlist_files() {
     assert_eq!(list.active, 1);
     for item in &list.items[1..] {
         let key = item.asset_uri.strip_prefix("asset://").unwrap();
-        assert!(show.join("assets").join(key).is_file(), "{}", item.asset_uri);
+        assert!(
+            show.join("assets").join(key).is_file(),
+            "{}",
+            item.asset_uri
+        );
     }
 
     // A missing entry refuses the whole import before anything is copied.
     let manifest = fs::read(show.join("project.json")).unwrap();
     fs::write(&playlist, "missing.mp4\n").unwrap();
     assert_failure_contains(
-        &run(&[
-            "input-media-list-import",
-            text(&show),
-            "9",
-            text(&playlist),
-        ]),
+        &run(&["input-media-list-import", text(&show), "9", text(&playlist)]),
         "not a file",
     );
     assert_eq!(fs::read(show.join("project.json")).unwrap(), manifest);
@@ -930,7 +917,9 @@ fn title_design_import_flattens_a_design_into_a_title_input() {
         "Score bug",
     ]));
     assert!(
-        out.starts_with("title-design-import: template asset://titles/Score bug.fmtitle copied bytes="),
+        out.starts_with(
+            "title-design-import: template asset://titles/Score bug.fmtitle copied bytes="
+        ),
         "{out}"
     );
     let loaded = load(&show);
@@ -949,7 +938,9 @@ fn title_design_import_flattens_a_design_into_a_title_input() {
         "Score bug"
     );
     let store = ProjectStore::new(&show).unwrap();
-    let stored = store.load_title_template("asset://titles/Score bug.fmtitle").unwrap();
+    let stored = store
+        .load_title_template("asset://titles/Score bug.fmtitle")
+        .unwrap();
     assert_eq!(stored.template.fields.len(), 1);
     assert!(stored.template.elements.is_empty());
     assert_eq!(store.validate_titles(&loaded), Vec::new());

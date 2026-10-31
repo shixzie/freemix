@@ -2502,12 +2502,14 @@ fn ready_over(model: &ClientModel, operator: bool) -> StudioUiState {
                 bypassed: false,
                 latency_frames: 0,
                 state: (-12_000_i32).to_le_bytes().to_vec(),
+                parameters: Vec::new(),
             },
             fm_protocol::PluginChainSlot {
                 plugin: "freemix.reference.polarity".into(),
                 bypassed: true,
                 latency_frames: 2,
                 state: Vec::new(),
+                parameters: Vec::new(),
             },
         ],
     });

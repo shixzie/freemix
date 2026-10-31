@@ -16,7 +16,7 @@ use fm_protocol::{
     AudioDspTarget, AudioGroupStatus, AudioMixerOperation, AudioMixerStatus, AudioMonitorStatus,
     AudioPluginStatusMessage, AudioPluginStatusRequest, AudioStripDspStateMessage,
     AudioStripSendStateMessage, CommandPayload, EventPayload, InputAudioLabel, PluginChainSlot,
-    ServerIdentity, WireInputId, WireOutputId,
+    PluginParameter, ServerIdentity, WireInputId, WireOutputId,
 };
 use fm_types::strip_dsp::StripDspTarget;
 
@@ -129,6 +129,11 @@ fn engine_plugin_chain(slots: &[PluginChainSlot]) -> PluginChain {
                 .store_snapshot(snapshot)
                 .expect("the snapshot names the slot's plugin");
         }
+        for parameter in &slot.parameters {
+            engine_slot
+                .set_parameter(&parameter.name, parameter.value())
+                .expect("the codec bounds a slot's parameters");
+        }
         chain
             .push(engine_slot)
             .expect("the codec bounds a chain's slots and identifiers");
@@ -148,6 +153,10 @@ fn wire_plugin_chain(chain: &PluginChain) -> Vec<PluginChainSlot> {
             state: slot
                 .snapshot()
                 .map_or_else(Vec::new, |snapshot| snapshot.data().to_vec()),
+            parameters: slot
+                .parameters()
+                .map(|(name, value)| PluginParameter::new(name, value))
+                .collect(),
         })
         .collect()
 }

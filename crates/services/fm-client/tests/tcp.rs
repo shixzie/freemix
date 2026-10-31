@@ -2622,6 +2622,7 @@ fn audio_plugin_status_requests_round_trip() {
             bypassed: true,
             latency_frames: 3,
             state: (-12_000_i32).to_le_bytes().to_vec(),
+            parameters: Vec::new(),
         }],
     };
 

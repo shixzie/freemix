@@ -12,6 +12,7 @@
 //! version) and refuses a chain this module would not accept.
 
 use core::fmt;
+use std::collections::BTreeMap;
 
 use crate::base64url;
 
@@ -23,6 +24,10 @@ pub const MAX_PLUGIN_ID_BYTES: usize = 128;
 pub const MAX_PLUGIN_STATE_BYTES: usize = 64 * 1024;
 /// Most frames of latency one slot may report.
 pub const MAX_PLUGIN_LATENCY_FRAMES: u32 = 60_000;
+/// Most named parameters one slot may hold.
+pub const MAX_PLUGIN_PARAMETERS: usize = 64;
+/// Longest plugin parameter name, in bytes.
+pub const MAX_PLUGIN_PARAMETER_NAME_BYTES: usize = 64;
 
 /// One plugin's place in a persisted chain.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,6 +36,8 @@ pub struct PluginSlotState {
     bypassed: bool,
     latency_frames: u32,
     state: Vec<u8>,
+    /// Parameter values, stored as `f32` bit patterns so a slot stays `Eq`.
+    parameters: BTreeMap<String, u32>,
 }
 
 impl PluginSlotState {
@@ -42,6 +49,7 @@ impl PluginSlotState {
             bypassed: false,
             latency_frames: 0,
             state: Vec::new(),
+            parameters: BTreeMap::new(),
         }
     }
 
@@ -122,6 +130,56 @@ impl PluginSlotState {
             return Err(PluginChainStateError { field: "state" });
         }
         self.set_state(state)
+    }
+
+    /// Every named parameter value, in name order.
+    pub fn parameters(&self) -> impl Iterator<Item = (&str, f32)> {
+        self.parameters
+            .iter()
+            .map(|(name, bits)| (name.as_str(), f32::from_bits(*bits)))
+    }
+
+    /// Parameter `name`, if set.
+    #[must_use]
+    pub fn parameter(&self, name: &str) -> Option<f32> {
+        self.parameters.get(name).map(|bits| f32::from_bits(*bits))
+    }
+
+    /// How many parameters the slot holds.
+    #[must_use]
+    pub fn parameter_count(&self) -> usize {
+        self.parameters.len()
+    }
+
+    /// Sets parameter `name` to `value`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PluginChainStateError`] for an empty or malformed name, a
+    /// non-finite value, or a new name above [`MAX_PLUGIN_PARAMETERS`].
+    pub fn set_parameter(&mut self, name: &str, value: f32) -> Result<(), PluginChainStateError> {
+        if !plugin_parameter_name_is_valid(name) {
+            return Err(PluginChainStateError { field: "parameter" });
+        }
+        if !value.is_finite() {
+            return Err(PluginChainStateError {
+                field: "parameter_value",
+            });
+        }
+        if !self.parameters.contains_key(name) && self.parameters.len() >= MAX_PLUGIN_PARAMETERS {
+            return Err(PluginChainStateError {
+                field: "parameters",
+            });
+        }
+        self.parameters.insert(name.to_owned(), value.to_bits());
+        Ok(())
+    }
+
+    /// Removes parameter `name`, returning its value.
+    pub fn clear_parameter(&mut self, name: &str) -> Option<f32> {
+        self.parameters
+            .remove(name)
+            .map(f32::from_bits)
     }
 }
 
@@ -222,9 +280,30 @@ impl PluginChainState {
             if slot.state.len() > MAX_PLUGIN_STATE_BYTES {
                 return Err(PluginChainStateError { field: "state" });
             }
+            if slot.parameters.len() > MAX_PLUGIN_PARAMETERS {
+                return Err(PluginChainStateError {
+                    field: "parameters",
+                });
+            }
+            for (name, bits) in &slot.parameters {
+                if !plugin_parameter_name_is_valid(name) || !f32::from_bits(*bits).is_finite() {
+                    return Err(PluginChainStateError { field: "parameter" });
+                }
+            }
         }
         Ok(())
     }
+}
+
+/// Whether `name` is a usable persisted plugin parameter name:
+/// `[A-Za-z0-9._-]`, 1 through [`MAX_PLUGIN_PARAMETER_NAME_BYTES`] bytes.
+#[must_use]
+pub fn plugin_parameter_name_is_valid(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_PLUGIN_PARAMETER_NAME_BYTES
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 /// Whether `plugin` is a usable persisted plugin identifier:
@@ -282,6 +361,32 @@ mod tests {
             assert!(PluginChainState::from_slots(vec![PluginSlotState::new(bad)]).is_err());
         }
         assert!(plugin_id_is_valid("freemix.reference.trim-v2_A"));
+    }
+
+    #[test]
+    fn slot_parameters_are_bounded_and_round_trip() {
+        let mut slot = PluginSlotState::new("freemix.reference.gain");
+        slot.set_parameter("gain", -6.0).unwrap();
+        slot.set_parameter("mix", 0.5).unwrap();
+        assert_eq!(slot.parameter("gain"), Some(-6.0));
+        assert_eq!(slot.parameter("missing"), None);
+        assert_eq!(slot.parameter_count(), 2);
+        assert_eq!(
+            slot.parameters().collect::<Vec<_>>(),
+            vec![("gain", -6.0), ("mix", 0.5)]
+        );
+        assert!(slot.set_parameter("", 1.0).is_err());
+        assert!(slot.set_parameter("has space", 1.0).is_err());
+        assert!(slot.set_parameter("nan", f32::NAN).is_err());
+        assert!(slot.set_parameter("infinite", f32::INFINITY).is_err());
+        for index in 0..MAX_PLUGIN_PARAMETERS - 2 {
+            slot.set_parameter(&format!("p{index}"), 1.0).unwrap();
+        }
+        assert!(slot.set_parameter("one.too.many", 1.0).is_err());
+        assert_eq!(slot.clear_parameter("mix"), Some(0.5));
+        assert_eq!(slot.clear_parameter("mix"), None);
+        let chain = PluginChainState::from_slots(vec![slot]).unwrap();
+        assert_eq!(chain.slots()[0].parameter("gain"), Some(-6.0));
     }
 
     #[test]

@@ -92,8 +92,9 @@ fn title_input(project: &fm_model::Project, input: InputId) -> AppResult<(&str, 
 }
 
 fn read_row(path: &Path) -> AppResult<BTreeMap<String, DataValue>> {
-    let bytes = fs::read(path)
-        .map_err(|error| AppFailure(format!("row {} could not be read: {error}", path.display())))?;
+    let bytes = fs::read(path).map_err(|error| {
+        AppFailure(format!("row {} could not be read: {error}", path.display()))
+    })?;
     let row = parse_json(&bytes, &ParseLimits::default())
         .map_err(|error| AppFailure(format!("row {}: {error}", path.display())))?;
     let DataValue::Object(row) = row else {

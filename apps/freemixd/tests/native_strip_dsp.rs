@@ -782,6 +782,7 @@ fn native_daemon_renders_a_strip_plugin_chain() {
         bypassed: false,
         latency_frames: 0,
         state: (-12_000_i32).to_le_bytes().to_vec(),
+        parameters: Vec::new(),
     };
     client.accept(CommandPayload::AudioMixer(
         AudioMixerOperation::SetPluginChain {
@@ -847,6 +848,7 @@ fn native_daemon_renders_a_strip_plugin_chain() {
                 bypassed: false,
                 latency_frames: 0,
                 state: (-12_000_i32).to_le_bytes().to_vec(),
+                parameters: Vec::new(),
             }],
         },
     ));
@@ -873,6 +875,7 @@ fn native_daemon_renders_a_strip_plugin_chain() {
                 bypassed: false,
                 latency_frames: 0,
                 state: Vec::new(),
+                parameters: Vec::new(),
             }],
         },
     ));

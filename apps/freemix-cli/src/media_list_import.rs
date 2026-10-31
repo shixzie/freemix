@@ -11,9 +11,7 @@ use std::{fs, path::Path};
 use fm_model::{MAX_MEDIA_LIST_ITEM_ID, MAX_MEDIA_LIST_ITEMS, MediaListItem};
 use fm_persistence::ProjectStore;
 
-use crate::app::{
-    AppFailure, AppResult, input_id, inspect_engine, load_stored_project, mutate,
-};
+use crate::app::{AppFailure, AppResult, input_id, inspect_engine, load_stored_project, mutate};
 
 /// Imports `playlist` into media list `input` of the bundle at `path`.
 pub fn import(path: &Path, input: u128, playlist: &Path) -> AppResult<()> {

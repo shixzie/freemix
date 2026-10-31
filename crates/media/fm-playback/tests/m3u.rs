@@ -1,13 +1,14 @@
 //! Bounded M3U media-list parser tests (IN-006).
 
 use fm_playback::{
-    MAX_M3U_BYTES, MAX_M3U_ENTRIES, MAX_M3U_PATH_BYTES, MAX_M3U_TITLE_BYTES, M3uEntry, M3uError,
+    M3uEntry, M3uError, MAX_M3U_BYTES, MAX_M3U_ENTRIES, MAX_M3U_PATH_BYTES, MAX_M3U_TITLE_BYTES,
     parse_m3u,
 };
 
 #[test]
 fn parses_a_plain_file_list_with_comments_and_blank_lines() {
-    let entries = parse_m3u(b"\n#EXTM3U\nfirst.mp4\n\n  folder/second.mkv  \r\nthird.wav\n").unwrap();
+    let entries =
+        parse_m3u(b"\n#EXTM3U\nfirst.mp4\n\n  folder/second.mkv  \r\nthird.wav\n").unwrap();
     assert_eq!(
         entries,
         vec![
@@ -39,8 +40,7 @@ fn extinf_titles_attach_to_the_next_path_and_a_bom_is_ignored() {
 
 #[test]
 fn extinf_attributes_before_the_comma_are_ignored() {
-    let entries =
-        parse_m3u(b"#EXTINF:-1 tvg-id=\"news\",News at nine\nnews.mp4\n").unwrap();
+    let entries = parse_m3u(b"#EXTINF:-1 tvg-id=\"news\",News at nine\nnews.mp4\n").unwrap();
     assert_eq!(entries[0].title.as_deref(), Some("News at nine"));
 }
 

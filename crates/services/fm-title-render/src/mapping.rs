@@ -83,7 +83,9 @@ pub fn apply_title_mapping_to_fields(
     report: &TitleMappingReport,
 ) -> Result<u64, TitleMappingError> {
     let updates = mapping_updates(template, report)?;
-    fields.update(expected_revision, &updates).map_err(Into::into)
+    fields
+        .update(expected_revision, &updates)
+        .map_err(Into::into)
 }
 
 fn mapping_updates(

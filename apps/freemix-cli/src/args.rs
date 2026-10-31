@@ -5721,7 +5721,8 @@ fn parse_remote_audio_plugin_chain(
     })
 }
 
-/// The shared `[<plugin>[:<bypass>][:<latency>[:<state-hex>]] ...]` slots.
+/// The shared `[<plugin>[=<name>=<value>,...][:<bypass>][:<latency>
+/// [:<state-hex>]] ...]` slots.
 fn plugin_slots(
     arguments: impl Iterator<Item = String>,
 ) -> Result<Vec<fm_protocol::PluginChainSlot>, ArgsError> {
@@ -5729,7 +5730,10 @@ fn plugin_slots(
     let mut plugins = std::collections::BTreeSet::new();
     for entry in arguments {
         let fields: Vec<&str> = entry.split(':').collect();
-        let plugin = fields[0];
+        let (plugin, parameters) = match fields[0].split_once('=') {
+            Some((plugin, parameters)) => (plugin, plugin_parameters(Some(parameters))?),
+            None => (fields[0], Vec::new()),
+        };
         let rest = &fields[1..];
         if !fm_protocol::PluginChainSlot::plugin_id_is_valid(plugin) {
             return Err(ArgsError::InvalidChoice {
@@ -5780,6 +5784,7 @@ fn plugin_slots(
             bypassed,
             latency_frames,
             state,
+            parameters,
         });
     }
     if slots.len() > fm_protocol::MAX_PROTOCOL_PLUGIN_SLOTS {
@@ -5789,6 +5794,51 @@ fn plugin_slots(
         });
     }
     Ok(slots)
+}
+
+/// Parses `name=value,name=value` plugin parameter values, sorted by name.
+fn plugin_parameters(value: Option<&str>) -> Result<Vec<fm_protocol::PluginParameter>, ArgsError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let mut parameters = Vec::new();
+    for entry in value.split(',') {
+        let Some((name, text)) = entry.split_once('=') else {
+            return Err(ArgsError::InvalidChoice {
+                field: "plugin parameter (expected name=value)",
+                value: entry.to_owned(),
+            });
+        };
+        if !fm_protocol::PluginParameter::name_is_valid(name)
+            || parameters
+                .iter()
+                .any(|parameter: &fm_protocol::PluginParameter| parameter.name == name)
+        {
+            return Err(ArgsError::InvalidChoice {
+                field: "plugin parameter",
+                value: name.to_owned(),
+            });
+        }
+        let parsed: f32 = text.parse().map_err(|_| ArgsError::InvalidChoice {
+            field: "plugin parameter value",
+            value: text.to_owned(),
+        })?;
+        if !parsed.is_finite() {
+            return Err(ArgsError::InvalidChoice {
+                field: "plugin parameter value",
+                value: text.to_owned(),
+            });
+        }
+        parameters.push(fm_protocol::PluginParameter::new(name, parsed));
+    }
+    if parameters.len() > fm_protocol::MAX_PLUGIN_PARAMETERS {
+        return Err(ArgsError::InvalidChoice {
+            field: "plugin parameters",
+            value: format!("{} values", parameters.len()),
+        });
+    }
+    parameters.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(parameters)
 }
 
 /// `state-hex`: an even number of hexadecimal digits.
@@ -12218,7 +12268,7 @@ mod tests {
         assert_eq!(
             parse_chain(&[
                 "freemix.reference.trim:0:0:20d1ffff",
-                "freemix.reference.polarity:1:2",
+                "freemix.reference.polarity=amount=0.5:1:2",
             ]),
             Ok(Command::RemoteAudioPluginChain {
                 address: "127.0.0.1:9123".parse().unwrap(),
@@ -12229,12 +12279,14 @@ mod tests {
                         bypassed: false,
                         latency_frames: 0,
                         state: vec![0x20, 0xd1, 0xff, 0xff],
+                        parameters: Vec::new(),
                     },
                     PluginChainSlot {
                         plugin: "freemix.reference.polarity".to_owned(),
                         bypassed: true,
                         latency_frames: 2,
                         state: Vec::new(),
+                        parameters: vec![fm_protocol::PluginParameter::new("amount", 0.5)],
                     },
                 ],
             })
@@ -12252,6 +12304,9 @@ mod tests {
             &["freemix.reference.trim:2"][..],
             &["freemix.reference.trim:0:0:xyz"][..],
             &["freemix.reference.trim:0:0:abc"][..],
+            &["freemix.reference.trim=bad name=1"][..],
+            &["freemix.reference.trim=amount=nan"][..],
+            &["freemix.reference.trim=a=1,a=2"][..],
             &["freemix.reference.trim", "freemix.reference.trim"][..],
             &["a", "b", "c", "d", "e", "f", "g", "h", "i"][..],
         ] {
@@ -12288,6 +12343,7 @@ mod tests {
                     bypassed: true,
                     latency_frames: 7,
                     state: vec![0x20, 0xd1],
+                    parameters: Vec::new(),
                 }],
             })
         );

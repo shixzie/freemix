@@ -240,7 +240,7 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
     );
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 104"));
+    assert!(text.contains("\"schema_version\": 105"));
     assert!(text.contains(
         "{\"input\": 10, \"gain_milli_db\": 0, \"balance_basis_points\": 0, \"pan_basis_points\": -2500, \"delay_samples\": 0, \"muted\": false, \"soloed\": false, \"follow_video\": true, \"sends\": \"M,A@-6000p,C@0\", \"label\": \"Host \\\"mic\\\" 1\", \"group\": 2, \"dsp\": null, \"plugins\": null}"
     ), "{text}");
@@ -594,6 +594,7 @@ fn plugin_chains_round_trip_exactly_and_strictly() {
     trim.set_bypassed(true);
     trim.set_latency(12).unwrap();
     trim.set_state([0_u8, 255, 1, 2]).unwrap();
+    trim.set_parameter("amount", 0.5).unwrap();
     let mut expected = project();
     expected
         .set_input_audio_plugins(host, PluginChainState::from_slots(vec![trim]).unwrap())
@@ -627,46 +628,58 @@ fn plugin_chains_round_trip_exactly_and_strictly() {
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
     assert!(
         text.contains(
-            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg\"}]"
+            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg\", \"parameters\": [{\"name\": \"amount\", \"value_bits\": 1056964608}]}]"
         ),
         "{text}"
     );
     assert!(
         text.contains(
-            "\"master_audio_plugins\": [{\"plugin\": \"freemix.reference.gain\", \"bypassed\": false, \"latency_frames\": 0, \"state\": \"\"}]"
+            "\"master_audio_plugins\": [{\"plugin\": \"freemix.reference.gain\", \"bypassed\": false, \"latency_frames\": 0, \"state\": \"\", \"parameters\": []}]"
         ),
         "{text}"
     );
     assert!(text.contains("\"plugins\": null}"), "{text}");
 
-    let plugins = "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg\"}]";
-    let master = "\"master_audio_plugins\": [{\"plugin\": \"freemix.reference.gain\", \"bypassed\": false, \"latency_frames\": 0, \"state\": \"\"}]";
+    let plugins = "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg\", \"parameters\": [{\"name\": \"amount\", \"value_bits\": 1056964608}]}]";
+    let master = "\"master_audio_plugins\": [{\"plugin\": \"freemix.reference.gain\", \"bypassed\": false, \"latency_frames\": 0, \"state\": \"\", \"parameters\": []}]";
     for (from, to) in [
         (plugins, "\"plugins\": []"),
         (
             plugins,
-            "\"plugins\": [{\"plugin\": \"bad plugin\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg\"}]",
+            "\"plugins\": [{\"plugin\": \"bad plugin\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg\", \"parameters\": []}]",
         ),
         (
             plugins,
-            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 60001, \"state\": \"AP8BAg\"}]",
+            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 60001, \"state\": \"AP8BAg\", \"parameters\": []}]",
         ),
         (
             plugins,
-            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg=\"}]",
+            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg=\", \"parameters\": []}]",
         ),
         (
             plugins,
-            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg\", \"extra\": 1}]",
+            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg\", \"parameters\": []}, \"extra\": 1]",
         ),
         (
             plugins,
-            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12}]",
+            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg\"}]",
+        ),
+        (
+            plugins,
+            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg\", \"parameters\": [{\"name\": \"bad name\", \"value_bits\": 1}]}]",
+        ),
+        (
+            plugins,
+            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg\", \"parameters\": [{\"name\": \"amount\", \"value_bits\": 2139095040}]}]",
+        ),
+        (
+            plugins,
+            "\"plugins\": [{\"plugin\": \"freemix.reference.trim\", \"bypassed\": true, \"latency_frames\": 12, \"state\": \"AP8BAg\", \"parameters\": [{\"name\": \"amount\", \"value_bits\": 1056964608}, {\"name\": \"amount\", \"value_bits\": 1056964608}]}]",
         ),
         (master, "\"master_audio_plugins\": []"),
         (
             master,
-            "\"master_audio_plugins\": [{\"plugin\": \"freemix.reference.gain\", \"bypassed\": false, \"latency_frames\": 0, \"state\": \"\", \"extra\": 1}]",
+            "\"master_audio_plugins\": [{\"plugin\": \"freemix.reference.gain\", \"bypassed\": false, \"latency_frames\": 0, \"state\": \"\", \"parameters\": [], \"extra\": 1}]",
         ),
     ] {
         let invalid = text.replacen(from, to, 1);

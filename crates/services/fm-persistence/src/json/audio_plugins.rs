@@ -7,20 +7,24 @@
 //!
 //! ```text
 //! [{"plugin": "freemix.reference.trim", "bypassed": false,
-//!   "latency_frames": 0, "state": "AP8BAg"},
+//!   "latency_frames": 0, "state": "AP8BAg",
+//!   "parameters": [{"name": "gain", "value_bits": 1065353216}]},
 //!  {"plugin": "freemix.reference.gain", "bypassed": true,
-//!   "latency_frames": 12, "state": ""}]
+//!   "latency_frames": 12, "state": "", "parameters": []}]
 //! ```
 //!
 //! Every field is required, `plugin` is `[A-Za-z0-9._-]` and unique in the
-//! chain, `latency_frames` is at most the plugin API bound, and `state` is
-//! canonical unpadded base64url carrying at most 64 KiB. An empty chain is
-//! written as `null` only, so the encoding is canonical.
+//! chain, `latency_frames` is at most the plugin API bound, `state` is
+//! canonical unpadded base64url carrying at most 64 KiB, and `parameters`
+//! holds at most [`MAX_PLUGIN_PARAMETERS`] sorted `[A-Za-z0-9._-]` names with
+//! finite `f32` values carried exactly as their bit patterns. An empty chain
+//! is written as `null` only, so the encoding is canonical.
 
 use core::fmt::Write as _;
 
 use fm_types::audio_plugins::{
-    MAX_PLUGIN_CHAIN_SLOTS, PluginChainState, PluginSlotState, plugin_id_is_valid,
+    MAX_PLUGIN_CHAIN_SLOTS, MAX_PLUGIN_PARAMETERS, PluginChainState, PluginSlotState,
+    plugin_id_is_valid, plugin_parameter_name_is_valid,
 };
 
 use super::{DecodeError, Object, escape_string, parse_array, parse_optional, syntax};
@@ -40,12 +44,22 @@ pub(crate) fn write_plugin_chain(output: &mut String, chain: &PluginChainState) 
         escape_string(output, slot.plugin());
         write!(
             output,
-            "\", \"bypassed\": {}, \"latency_frames\": {}, \"state\": \"{}\"}}",
+            "\", \"bypassed\": {}, \"latency_frames\": {}, \"state\": \"{}\", \"parameters\": [",
             slot.is_bypassed(),
             slot.latency_frames(),
             slot.state_code()
         )
         .expect("writing to a string cannot fail");
+        for (index, (name, value)) in slot.parameters().enumerate() {
+            if index != 0 {
+                output.push_str(", ");
+            }
+            output.push_str("{\"name\": \"");
+            escape_string(output, name);
+            write!(output, "\", \"value_bits\": {}}}", value.to_bits())
+                .expect("writing to a string cannot fail");
+        }
+        output.push_str("]}");
     }
     output.push(']');
 }
@@ -70,6 +84,36 @@ pub(crate) fn parse_plugin_chain(
             state
                 .set_state_code(&slot.string("state")?)
                 .map_err(|error| syntax(format!("{context}: {error}")))?;
+            let parameters = parse_array(slot.take("parameters")?, context, |value| {
+                let mut parameter = Object::new(value, context)?;
+                let name = parameter.string("name")?;
+                if !plugin_parameter_name_is_valid(&name) {
+                    return Err(syntax(format!("{context}: invalid plugin parameter name")));
+                }
+                let bits = parameter.u32("value_bits")?;
+                if !f32::from_bits(bits).is_finite() {
+                    return Err(syntax(format!("{context}: non-finite plugin parameter")));
+                }
+                parameter.finish()?;
+                Ok((name, bits))
+            })?;
+            if parameters.len() > MAX_PLUGIN_PARAMETERS {
+                return Err(syntax(format!(
+                    "{context} holds more than {MAX_PLUGIN_PARAMETERS} parameters"
+                )));
+            }
+            let mut seen: Vec<String> = Vec::with_capacity(parameters.len());
+            for (name, bits) in parameters {
+                if seen.iter().any(|existing| existing == &name) {
+                    return Err(syntax(format!(
+                        "{context}: duplicate plugin parameter `{name}`"
+                    )));
+                }
+                state
+                    .set_parameter(&name, f32::from_bits(bits))
+                    .map_err(|error| syntax(format!("{context}: {error}")))?;
+                seen.push(name);
+            }
             slot.finish()?;
             Ok(state)
         })

@@ -5092,6 +5092,11 @@ fn model_plugin_chain(
                 .set_state(snapshot.data().to_vec())
                 .map_err(|error| AppFailure(format!("plugin chain: {error}")))?;
         }
+        for (name, value) in slot.parameters() {
+            model
+                .set_parameter(name, value)
+                .map_err(|error| AppFailure(format!("plugin chain: {error}")))?;
+        }
         state
             .push(model)
             .map_err(|error| AppFailure(format!("plugin chain: {error}")))?;
@@ -5128,6 +5133,11 @@ fn engine_plugin_chain(
                 AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin()))
             })?;
         }
+        for (name, value) in slot.parameters() {
+            engine_slot.set_parameter(name, value).map_err(|error| {
+                AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin()))
+            })?;
+        }
         chain.push(engine_slot).map_err(|error| {
             AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin()))
         })?;
@@ -5149,6 +5159,13 @@ fn local_plugin_chain(
         model.set_state(slot.state.clone()).map_err(|error| {
             AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin))
         })?;
+        for parameter in &slot.parameters {
+            model
+                .set_parameter(&parameter.name, parameter.value())
+                .map_err(|error| {
+                    AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin))
+                })?;
+        }
         state.push(model).map_err(|error| {
             AppFailure(format!("plugin slot {} is invalid: {error}", slot.plugin))
         })?;
@@ -5477,6 +5494,10 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
                         state: slot
                             .snapshot()
                             .map_or_else(Vec::new, |snapshot| snapshot.data().to_vec()),
+                        parameters: slot
+                            .parameters()
+                            .map(|(name, value)| fm_protocol::PluginParameter::new(name, value))
+                            .collect(),
                     })
                     .collect(),
             }

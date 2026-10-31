@@ -5,8 +5,8 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.147 / schema 104 (2026-10-31,
-at `e6d00d05`). Every parity row is still `planned` (or `blocked`); these are
+(2026-10-19); items refreshed through protocol 2.148 / schema 105 (2026-10-31,
+at `7e139b72`). Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
 frame loop) is ranked separately in [Structural work before more
@@ -249,10 +249,12 @@ there come before any new breadth below.
     (with the built-in reference processors) in `audio_plugin_status`, so
     Studio shows what is installed. A plugin slot now keeps up to 64
     bounded, finite parameter values at the API level (name-addressed, in
-    name order), though they are not yet persisted or carried on the wire.
-    Remaining: parameters for plugins beyond the reference set (the slot
-    holds them, nothing applies them), and a real sandboxed plugin in the
-    chain (see the Phase 8 boundary).
+    name order); they persist in `project.json` (schema 105) and travel on
+    the wire as exact `f32` bit patterns (Protocol 2.148), strictly
+    validated and canonically ordered in both forms. Remaining: nothing
+    applies those values to a plugin yet (the reference processors read
+    their opaque state), and a real sandboxed plugin in the chain (see the
+    Phase 8 boundary).
 15. **MIDI and controller surfaces (`RC-005`).** Studio reads ALSA raw MIDI
     ports on Linux, `CoreMIDI` on macOS, and `WinMM` on Windows, and binds
     notes, controls, and NRPN/RPN parameters to console actions, with LED

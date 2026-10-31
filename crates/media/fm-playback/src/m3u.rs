@@ -74,7 +74,10 @@ impl fmt::Display for M3uError {
                 "playlist title on line {line} is {bytes} bytes, maximum is {MAX_M3U_TITLE_BYTES}"
             ),
             Self::ControlCharacter { line } => {
-                write!(formatter, "playlist line {line} contains a control character")
+                write!(
+                    formatter,
+                    "playlist line {line} contains a control character"
+                )
             }
             Self::UrlUnsupported { line } => write!(
                 formatter,

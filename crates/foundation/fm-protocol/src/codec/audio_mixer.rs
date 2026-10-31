@@ -1086,12 +1086,36 @@ pub(super) fn encode_plugin_slots(slots: &[crate::PluginChainSlot]) -> Result<St
         if slot.state.len() > crate::MAX_PLUGIN_STATE_BYTES {
             return Err(invalid("plugins", slot.state.len().to_string()));
         }
+        if slot.parameters.len() > crate::MAX_PLUGIN_PARAMETERS {
+            return Err(invalid("plugins", slot.parameters.len().to_string()));
+        }
+        let mut parameters = String::new();
+        let mut previous: Option<&str> = None;
+        for parameter in &slot.parameters {
+            if !crate::PluginParameter::name_is_valid(&parameter.name) {
+                return Err(invalid("plugins", parameter.name.clone()));
+            }
+            if previous.is_some_and(|name| name >= parameter.name.as_str()) {
+                return Err(invalid("plugins", parameter.name.clone()));
+            }
+            if !parameter.value().is_finite() {
+                return Err(invalid("plugins", parameter.name.clone()));
+            }
+            if !parameters.is_empty() {
+                parameters.push(';');
+            }
+            parameters.push_str(&parameter.name);
+            parameters.push('=');
+            parameters.push_str(&parameter.value_bits.to_string());
+            previous = Some(&parameter.name);
+        }
         encoded.push(format!(
-            "{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}",
             slot.plugin,
             u8::from(slot.bypassed),
             slot.latency_frames,
-            crate::monitor_image::base64url_encode(&slot.state)
+            crate::monitor_image::base64url_encode(&slot.state),
+            parameters
         ));
     }
     Ok(encoded.join(","))
@@ -1110,7 +1134,7 @@ pub(super) fn decode_plugin_slots(value: &str) -> Result<Vec<crate::PluginChainS
     let mut slots = Vec::with_capacity(entries.len());
     for entry in entries {
         let fields: Vec<&str> = entry.split(':').collect();
-        let [plugin, bypassed, latency, state] = fields[..] else {
+        let [plugin, bypassed, latency, state, parameters] = fields[..] else {
             return Err(invalid("plugins", entry.to_owned()));
         };
         if !crate::PluginChainSlot::plugin_id_is_valid(plugin) || !ids.insert(plugin) {
@@ -1134,11 +1158,40 @@ pub(super) fn decode_plugin_slots(value: &str) -> Result<Vec<crate::PluginChainS
         if state.len() > crate::MAX_PLUGIN_STATE_BYTES {
             return Err(invalid("plugins", entry.to_owned()));
         }
+        let mut parsed = Vec::new();
+        if !parameters.is_empty() {
+            let mut previous: Option<&str> = None;
+            for parameter in parameters.split(';') {
+                if parsed.len() >= crate::MAX_PLUGIN_PARAMETERS {
+                    return Err(invalid("plugins", entry.to_owned()));
+                }
+                let Some((name, bits)) = parameter.split_once('=') else {
+                    return Err(invalid("plugins", entry.to_owned()));
+                };
+                if !crate::PluginParameter::name_is_valid(name)
+                    || previous.is_some_and(|previous| previous >= name)
+                {
+                    return Err(invalid("plugins", entry.to_owned()));
+                }
+                let value_bits: u32 = bits
+                    .parse()
+                    .map_err(|_| invalid("plugins", entry.to_owned()))?;
+                if bits != value_bits.to_string() || !f32::from_bits(value_bits).is_finite() {
+                    return Err(invalid("plugins", entry.to_owned()));
+                }
+                parsed.push(crate::PluginParameter {
+                    name: name.to_owned(),
+                    value_bits,
+                });
+                previous = Some(name);
+            }
+        }
         slots.push(crate::PluginChainSlot {
             plugin: plugin.to_owned(),
             bypassed,
             latency_frames,
             state,
+            parameters: parsed,
         });
     }
     Ok(slots)

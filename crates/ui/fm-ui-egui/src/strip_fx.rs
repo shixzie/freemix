@@ -609,6 +609,7 @@ fn draw_plugins(
                                 bypassed: false,
                                 latency_frames: 0,
                                 state: Vec::new(),
+                                parameters: Vec::new(),
                             });
                             send_plugin_chain(target, slots, intents);
                         }

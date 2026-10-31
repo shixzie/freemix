@@ -537,6 +537,11 @@ pub(crate) fn engine_plugin_chain(
                 .store_snapshot(snapshot)
                 .map_err(|error| AppFailure(format!("project plugin state is invalid: {error}")))?;
         }
+        for (name, value) in slot.parameters() {
+            engine_slot.set_parameter(name, value).map_err(|error| {
+                AppFailure(format!("project plugin parameter is invalid: {error}"))
+            })?;
+        }
         chain
             .push(engine_slot)
             .map_err(|error| AppFailure(format!("project plugin chain is invalid: {error}")))?;
@@ -558,6 +563,11 @@ pub(crate) fn model_plugin_chain(
         if let Some(snapshot) = slot.snapshot() {
             model
                 .set_state(snapshot.data().to_vec())
+                .map_err(|error| AppFailure(format!("plugin chain is invalid: {error}")))?;
+        }
+        for (name, value) in slot.parameters() {
+            model
+                .set_parameter(name, value)
                 .map_err(|error| AppFailure(format!("plugin chain is invalid: {error}")))?;
         }
         state

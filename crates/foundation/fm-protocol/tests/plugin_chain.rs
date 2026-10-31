@@ -3,8 +3,8 @@
 
 use fm_protocol::{
     AudioDspTarget, AudioMixerOperation, CommandMessage, CommandPayload, EventCursor, EventMessage,
-    EventPayload, PluginChainSlot, ProtocolVersion, WireInputId, WireMessage, decode_line,
-    encode_line,
+    EventPayload, PluginChainSlot, PluginParameter, ProtocolVersion, WireInputId, WireMessage,
+    decode_line, encode_line,
 };
 
 fn input(value: u128) -> WireInputId {
@@ -70,6 +70,7 @@ fn trim(milli_db: i32) -> PluginChainSlot {
         bypassed: false,
         latency_frames: 0,
         state: milli_db.to_le_bytes().to_vec(),
+        parameters: Vec::new(),
     }
 }
 
@@ -84,6 +85,7 @@ fn plugin_chains_round_trip_exactly() {
                 bypassed: true,
                 latency_frames: 2,
                 state: Vec::new(),
+                parameters: vec![PluginParameter::new("amount", 0.5)],
             },
         ],
     };
@@ -92,9 +94,9 @@ fn plugin_chains_round_trip_exactly() {
     assert_eq!(
         line,
         format!(
-            "command\tprotocol=2.147\tid=a\tidempotency_key=k\tpayload=audio_plugin_chain\t\
-             target=7\tplugins=freemix.reference.trim%3A0%3A0%3A{state}%2C\
-             freemix.reference.polarity%3A1%3A2%3A\n"
+            "command\tprotocol=2.148\tid=a\tidempotency_key=k\tpayload=audio_plugin_chain\t\
+             target=7\tplugins=freemix.reference.trim%3A0%3A0%3A{state}%3A%2C\
+             freemix.reference.polarity%3A1%3A2%3A%3Aamount%3D1056964608\n"
         )
     );
     let line = round_trip(&event(EventPayload::AudioMixerChanged(operation.clone())));
@@ -118,34 +120,51 @@ fn plugin_chains_round_trip_exactly() {
 
 #[test]
 fn malformed_plugin_chains_are_refused() {
-    let prefix = "command\tprotocol=2.147\tid=a\tidempotency_key=k\tpayload=audio_plugin_chain";
-    let good = format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:0:");
+    let prefix = "command\tprotocol=2.148\tid=a\tidempotency_key=k\tpayload=audio_plugin_chain";
+    let good = format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:0::");
     assert!(decode_line(&format!("{good}\n")).is_ok());
     for fields in [
         // Missing target or plugins; an unknown target or plugin id.
-        format!("{prefix}\tplugins=freemix.reference.trim:0:0:"),
+        format!("{prefix}\tplugins=freemix.reference.trim:0:0::"),
         format!("{prefix}\ttarget=7"),
         format!("{prefix}\ttarget=0\tplugins="),
         format!("{prefix}\ttarget=x\tplugins="),
-        format!("{prefix}\ttarget=7\tplugins=bad id:0:0:"),
-        format!("{prefix}\ttarget=7\tplugins=bad/id:0:0:"),
+        format!("{prefix}\ttarget=7\tplugins=bad id:0:0::"),
+        format!("{prefix}\ttarget=7\tplugins=bad/id:0:0::"),
         // Nine slots, a duplicate slot, a wrong part count, a bad flag, a
         // non-canonical latency, an over-long latency, and bad base64.
         format!(
             "{prefix}\ttarget=7\tplugins={}",
             (0..9)
-                .map(|index| format!("plugin{index}:0:0:"))
+                .map(|index| format!("plugin{index}:0:0::"))
                 .collect::<Vec<_>>()
                 .join(",")
         ),
         format!(
-            "{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:0:,freemix.reference.trim:0:0:"
+            "{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:0::,freemix.reference.trim:0:0::"
         ),
         format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:0"),
-        format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:2:0:"),
-        format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:00:"),
-        format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:60001:"),
-        format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:0:!"),
+        format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:2:0::"),
+        format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:00::"),
+        format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:60001::"),
+        format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:0:!:"),
+        // Parameters: a bad name, duplicates, out of order, a non-canonical
+        // value, a non-finite value, a missing pair, and too many values.
+        format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:0::bad name=1"),
+        format!(
+            "{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:0::amount=1065353216;amount=1065353216"
+        ),
+        format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:0::b=1;a=2"),
+        format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:0::amount=01065353216"),
+        format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:0::amount=2139095040"),
+        format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:0::amount"),
+        format!(
+            "{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:0::{}",
+            (0..65)
+                .map(|index| format!("p{index}=1065353216"))
+                .collect::<Vec<_>>()
+                .join(";")
+        ),
         // An unknown field.
         format!("{prefix}\ttarget=7\tplugins=\tx=1"),
     ] {
@@ -159,8 +178,10 @@ fn malformed_plugin_chains_are_refused() {
     ));
     assert!(!PluginChainSlot::plugin_id_is_valid(""));
     assert!(!PluginChainSlot::plugin_id_is_valid("a:b"));
+    assert!(PluginParameter::name_is_valid("gain_db"));
+    assert!(!PluginParameter::name_is_valid("has space"));
     assert_eq!(
-        ProtocolVersion::new(2, 147),
+        ProtocolVersion::new(2, 148),
         fm_protocol::CURRENT_PROTOCOL_VERSION
     );
 }
@@ -200,7 +221,7 @@ fn plugin_status_requests_and_answers_round_trip() {
             "audio_plugin_status\tengine_id=e\tproject_id=p\tstate_epoch=1\tlog_id=l\t\
              request_id=plugin-status-7\ttarget=7\t\
              available=freemix.reference.trim%2Cfreemix.reference.polarity\t\
-             plugins=freemix.reference.trim%3A0%3A0%3A{state}\n"
+             plugins=freemix.reference.trim%3A0%3A0%3A{state}%3A\n"
         )
     );
 

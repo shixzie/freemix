@@ -518,6 +518,46 @@ pub const MAX_PLUGIN_LATENCY_FRAMES: u32 = 60_000;
 /// Largest opaque plugin state one slot carries, in bytes (2.128).
 pub const MAX_PLUGIN_STATE_BYTES: usize = 64 * 1024;
 
+/// Most named parameters one plugin slot carries (2.148).
+pub const MAX_PLUGIN_PARAMETERS: usize = 64;
+/// Longest plugin parameter name, in bytes (2.148).
+pub const MAX_PLUGIN_PARAMETER_NAME_BYTES: usize = 64;
+
+/// One named plugin parameter value, carried exactly as its `f32` bits
+/// (2.148).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PluginParameter {
+    /// `[A-Za-z0-9._-]` and unique in the slot.
+    pub name: String,
+    /// The value's `f32` bit pattern; it is always finite.
+    pub value_bits: u32,
+}
+
+impl PluginParameter {
+    #[must_use]
+    pub fn new(name: impl Into<String>, value: f32) -> Self {
+        Self {
+            name: name.into(),
+            value_bits: value.to_bits(),
+        }
+    }
+
+    #[must_use]
+    pub fn value(&self) -> f32 {
+        f32::from_bits(self.value_bits)
+    }
+
+    /// Whether `name` is a usable wire parameter name.
+    #[must_use]
+    pub fn name_is_valid(name: &str) -> bool {
+        !name.is_empty()
+            && name.len() <= MAX_PLUGIN_PARAMETER_NAME_BYTES
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    }
+}
+
 /// One plugin's place in a chain, on the wire (2.128, AU-006).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PluginChainSlot {
@@ -527,6 +567,8 @@ pub struct PluginChainSlot {
     pub latency_frames: u32,
     /// Opaque plugin state, empty when it has none.
     pub state: Vec<u8>,
+    /// Named parameters, strictly sorted by name (2.148).
+    pub parameters: Vec<PluginParameter>,
 }
 
 impl PluginChainSlot {
