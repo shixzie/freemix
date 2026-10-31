@@ -398,3 +398,36 @@ fn a_misshapen_aux_target_is_refused_before_anything_renders() {
     );
     assert_level(&master, 7.0, 7.0);
 }
+
+/// AU-002: an aux bus DSP chain processes that bus after its fader and
+/// leaves Master and the other buses alone.
+#[test]
+fn an_aux_bus_dsp_chain_processes_only_that_bus() {
+    let id = input(1);
+    let mut mixer = mixer(&[(id, audible())]);
+    mixer
+        .set_aux_send(id, MixBus::A, send(0.0, SendTap::PostFader))
+        .unwrap();
+    let plain = render(&mut mixer, &[(id, (0.5, 0.25))], &[id]).unwrap();
+    assert_level(plain.bus(MixBus::A), 0.5, 0.25);
+
+    let mut dsp = fm_types::strip_dsp::StripDsp::DEFAULT;
+    dsp.invert_polarity = true;
+    mixer.set_aux_dsp(MixBus::A, &dsp).unwrap();
+    assert!(mixer.aux_dsp(MixBus::A).is_some());
+    let inverted = render(&mut mixer, &[(id, (0.5, 0.25))], &[id]).unwrap();
+    assert_level(inverted.bus(MixBus::A), -0.5, -0.25);
+    assert_level(&inverted.master, 0.5, 0.25);
+    assert_level(inverted.bus(MixBus::B), 0.0, 0.0);
+
+    mixer
+        .set_aux_dsp(MixBus::A, &fm_types::strip_dsp::StripDsp::DEFAULT)
+        .unwrap();
+    // A chain change crossfades from the next sample; let the short glide
+    // finish before checking the restored bus.
+    for _ in 0..8 {
+        let _ = render(&mut mixer, &[(id, (0.5, 0.25))], &[id]).unwrap();
+    }
+    let restored = render(&mut mixer, &[(id, (0.5, 0.25))], &[id]).unwrap();
+    assert_level(restored.bus(MixBus::A), 0.5, 0.25);
+}

@@ -2668,10 +2668,12 @@ shows its level meter, and chooses which bus each project output hears,
 with English and Spanish help; the CLI does the same from the shell. The
 native daemon meters all seven buses on the wire (Protocol 2.120): each
 lossy `audio_meters` record carries every bus's channels, and the
-simulated daemon reports none. Remaining gaps:
-`BusMatrix` bus processing, mix-minus feeds, and device or network
-destinations are not wired; the legacy project audio bus graph and each
-output's `audio_source` are unchanged. `AU-002` remains planned.
+simulated daemon reports none. The live `MasterMixer` now gives each aux bus an optional DSP chain,
+processed after its fader and mute and before its meters. Remaining gaps:
+wiring that chain through the model, engine, protocol, and Studio/CLI,
+mix-minus feeds, and device or network destinations; the legacy project
+audio bus graph and each output's `audio_source` are unchanged. `AU-002`
+remains planned.
 
 Current implementation boundary for multichannel audio (`AU-003`): `fm-audio`
 provides a 1–16 channel layout catalog (1.0, 2.0, 2.1, 5.1, 7.1, and 16
