@@ -3842,6 +3842,8 @@ messages! {
     ReelClipTrimInHover => t("Frames kept before the event's in mark"),
     ReelClipTrimOutHover => t("Frames kept after the event's out mark"),
     ReelClipSpeedHover => t("Playback speed of this clip"),
+    ReelClipReverse => t("Reverse"),
+    ReelClipReverseHover => t("Play this clip backward, from its last trimmed frame to its first; reverse clips carry no clip audio"),
     ReelClipDissolve => t("Dissolve"),
     ReelClipDissolveHover => t("Frames this clip dissolves in over the end of the clip before; 0 cuts"),
     ReelReasonFirstClipCuts => t("the first clip always cuts in"),

@@ -47,12 +47,13 @@ pub(crate) fn write_reels(output: &mut String, project: &fm_model::Project) {
             write!(
                 output,
                 "{{\"event\": {}, \"angle\": {}, \"trim_in\": {}, \"trim_out\": {}, \
-                 \"speed\": {}, \"dissolve\": {}}}",
+                 \"speed\": {}, \"reverse\": {}, \"dissolve\": {}}}",
                 clip.event,
                 clip.angle,
                 clip.trim_in_frames,
                 clip.trim_out_frames,
                 clip.speed_percent,
+                clip.reverse,
                 clip.dissolve_frames
             )
             .expect("writing to a string cannot fail");
@@ -122,6 +123,7 @@ fn parse_clip(value: Value) -> Result<ReelClip, DecodeError> {
     let trim_in_frames = clip.u32("trim_in")?;
     let trim_out_frames = clip.u32("trim_out")?;
     let speed_percent = clip.u8("speed")?;
+    let reverse = clip.boolean("reverse")?;
     let dissolve_frames = clip.u32("dissolve")?;
     clip.finish()?;
     Ok(ReelClip {
@@ -130,6 +132,7 @@ fn parse_clip(value: Value) -> Result<ReelClip, DecodeError> {
         trim_in_frames,
         trim_out_frames,
         speed_percent,
+        reverse,
         dissolve_frames,
     })
 }

@@ -6488,12 +6488,12 @@ fn reel_destination(value: String) -> Result<String, ArgsError> {
 }
 
 /// The `--clips` list (OR-013): 1 to [`fm_protocol::MAX_REEL_CLIPS`]
-/// `<event>/<angle>/<trim-in>/<trim-out>/<speed>[/<dissolve>]` records,
+/// `<event>/<angle>/<trim-in>/<trim-out>/<speed>[r][/<dissolve>]` records,
 /// comma separated. Each event and angle is nonzero, each trim is at most
 /// [`fm_protocol::MAX_REEL_TRIM_FRAMES`], each speed is 25, 50, 75, or 100
-/// percent, and `dissolve` (frames, 0 or absent for a cut) is at most
-/// [`fm_protocol::MAX_REEL_DISSOLVE_FRAMES`] and absent or 0 on the first
-/// clip.
+/// percent (`r` plays the clip backward), and `dissolve` (frames, 0 or
+/// absent for a cut) is at most [`fm_protocol::MAX_REEL_DISSOLVE_FRAMES`]
+/// and absent or 0 on the first clip.
 fn reel_clips(value: &str) -> Result<Vec<fm_protocol::ReelClip>, ArgsError> {
     let mut clips = Vec::new();
     for record in value.split(',') {
@@ -6506,6 +6506,10 @@ fn reel_clips(value: &str) -> Result<Vec<fm_protocol::ReelClip>, ArgsError> {
                 (event, angle, trim_in, trim_out, speed, Some(dissolve))
             }
             _ => return Err(ArgsError::InvalidReelClip(record.to_owned())),
+        };
+        let (speed, reverse) = match speed.strip_suffix('r') {
+            Some(forward_speed) => (forward_speed, true),
+            None => (*speed, false),
         };
         let event: u32 = number(event, "reel clip event")?;
         if event == 0 {
@@ -6547,6 +6551,7 @@ fn reel_clips(value: &str) -> Result<Vec<fm_protocol::ReelClip>, ArgsError> {
             trim_in_frames: trim_in,
             trim_out_frames: trim_out,
             speed_percent: speed,
+            reverse,
             dissolve_frames: dissolve,
         });
     }
@@ -12200,6 +12205,7 @@ mod tests {
             trim_in_frames: trim_in,
             trim_out_frames: trim_out,
             speed_percent: speed,
+            reverse: false,
             dissolve_frames: 0,
         };
         let spec = Box::new(fm_protocol::ReelSpec {

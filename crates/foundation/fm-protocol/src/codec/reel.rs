@@ -4,8 +4,9 @@
 //! `reel_changed` carries `reel`, `name`, and `clips` (and, on the event,
 //! optional `total_frames` and `error`); `clips` is a comma-separated list of
 //! 1 to [`crate::MAX_REEL_CLIPS`]
-//! `<event>:<angle>:<trim in>:<trim out>:<speed>:<dissolve>` records, the
-//! first clip's `dissolve` 0. A reel with a music bed also carries
+//! `<event>:<angle>:<trim in>:<trim out>:<speed>:<reverse 0|1>:<dissolve>`
+//! records, the first clip's `dissolve` 0. A reel with a music bed also
+//! carries
 //! `music`, `<level>:<duck>:<path>` (the path last, raw). A `reel_status`
 //! carries two `;`-separated lists whose names, errors, destinations, and
 //! failures are percent-escaped inside their record and escaped again with
@@ -39,6 +40,14 @@ fn parse_number<T: TryFrom<u64>>(field: &'static str, value: &str) -> Result<T, 
     parse_canonical_u64(value)
         .and_then(|value| T::try_from(value).ok())
         .ok_or_else(|| invalid(field, value))
+}
+
+fn parse_flag(field: &'static str, value: &str) -> Result<bool, CodecError> {
+    match value {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        _ => Err(invalid(field, value)),
+    }
 }
 
 fn parse_input(field: &'static str, value: &str) -> Result<crate::WireInputId, CodecError> {
@@ -167,12 +176,13 @@ fn decode_optional_music(fields: &mut dyn FieldSource) -> Result<Option<ReelMusi
 fn encode_clip(clip: &ReelClip) -> Result<String, CodecError> {
     check_clip("clips", clip)?;
     Ok(format!(
-        "{}:{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}:{}",
         clip.event,
         clip.angle,
         clip.trim_in_frames,
         clip.trim_out_frames,
         clip.speed_percent,
+        u8::from(clip.reverse),
         clip.dissolve_frames
     ))
 }
@@ -196,7 +206,7 @@ fn decode_clips(value: &str) -> Result<Vec<ReelClip>, CodecError> {
     let clips = entries
         .into_iter()
         .map(|entry| {
-            let [event, angle, trim_in, trim_out, speed, dissolve] =
+            let [event, angle, trim_in, trim_out, speed, reverse, dissolve] =
                 entry.split(':').collect::<Vec<_>>()[..]
             else {
                 return Err(invalid("clips", entry));
@@ -207,6 +217,7 @@ fn decode_clips(value: &str) -> Result<Vec<ReelClip>, CodecError> {
                 trim_in_frames: parse_number("clips", trim_in)?,
                 trim_out_frames: parse_number("clips", trim_out)?,
                 speed_percent: parse_number("clips", speed)?,
+                reverse: parse_flag("clips", reverse)?,
                 dissolve_frames: parse_number("clips", dissolve)?,
             };
             check_clip("clips", &clip)?;

@@ -314,6 +314,7 @@ pub(crate) fn compile(
             trim_out_nanos: frames_in_nanos(rate, clip.trim_out_frames),
             speed: ReelSpeed::new(u32::from(speed.percent()), 100)
                 .map_err(|_| EngineReelError::InvalidSpeed(clip.speed_percent))?,
+            reverse: clip.reverse,
             transition_in: match clip.dissolve_frames {
                 0 => ReelTransition::Cut,
                 frames => ReelTransition::Dissolve { frames },
@@ -362,7 +363,8 @@ pub(crate) fn resolve_chunk(
                             frame: index,
                             weight_num: layer.plan.weight.numerator,
                             weight_den: layer.plan.weight.denominator,
-                            full_speed: layer.plan.speed.is_real_time(),
+                            full_speed: layer.plan.speed.is_real_time()
+                                && !layer.plan.reverse,
                         })
                     })
                     .collect::<Result<Vec<_>, EngineReelError>>()?;

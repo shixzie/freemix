@@ -2743,6 +2743,7 @@ pub(crate) fn reel_status() -> fm_protocol::ReelStatusMessage {
         trim_in_frames: trim_in,
         trim_out_frames: trim_out,
         speed_percent: speed,
+        reverse: false,
         dissolve_frames: 0,
     };
     let reel = |id, name: &str, clips, total_frames, error: Option<&str>| ReelStatus {

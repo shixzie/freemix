@@ -98,7 +98,7 @@ fn config(text: &str) -> DisplayOutputConfig {
 
 #[test]
 fn schema_40_starts_without_display_outputs_and_bounds_slots() {
-    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 95);
+    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 96);
     assert_eq!(MAX_DISPLAY_OUTPUTS, 2);
     assert_eq!(DisplayOutputSlot::new(0), None);
     assert_eq!(DisplayOutputSlot::new(3), None);

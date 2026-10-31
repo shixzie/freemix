@@ -169,6 +169,7 @@ fn clip(id: u128, event: u128, angle: u128) -> ReelClipSpec {
         trim_in_nanos: 0,
         trim_out_nanos: 0,
         speed: ReelSpeed::REAL_TIME,
+        reverse: false,
         transition_in: ReelTransition::Cut,
         program_audio: false,
     }
@@ -836,4 +837,30 @@ fn export_never_references_pruned_media() {
             error: ReplayError::ObservationUnavailable(camera(1)),
         }
     );
+}
+
+#[test]
+fn a_reverse_clip_plays_its_trimmed_range_backward() {
+    let mut reel = HighlightReel::new(ReelFrameRate::new(50, 1).unwrap());
+    reel.push(ReelClipSpec {
+        reverse: true,
+        ..clip(1, 1, 1)
+    })
+    .unwrap();
+    let compiled = reel.compile(&events()).unwrap();
+    let clips = compiled.clips();
+    assert!(clips[0].reverse);
+    // The clip keeps the same frame count; only its source times run from
+    // the range's last frame toward its first.
+    assert_eq!(clips[0].frame_count, 50);
+    let first = compiled.layers_at(0).unwrap()[0].target;
+    let second = compiled.layers_at(1).unwrap()[0].target;
+    let last = compiled.layers_at(49).unwrap()[0].target;
+    assert!(first > second && second > last);
+    assert_eq!(first, ts(SECOND - 1));
+    assert_eq!(last, ts(FRAME - 1));
+    assert_eq!(compiled.layers_at(50), Err(ReelError::FrameOutOfRange {
+        frame: 50,
+        total: 50,
+    }));
 }

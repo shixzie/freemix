@@ -4352,6 +4352,7 @@ mod tests {
             trim_in_frames: fm_protocol::MAX_REEL_TRIM_FRAMES,
             trim_out_frames: fm_protocol::MAX_REEL_TRIM_FRAMES,
             speed_percent: 100,
+            reverse: false,
             dissolve_frames: 0,
         };
         let reels = (1..=u64::try_from(fm_protocol::MAX_REELS).unwrap())
@@ -4401,6 +4402,7 @@ mod tests {
                         trim_in_frames: 0,
                         trim_out_frames: 0,
                         speed_percent: 100,
+                        reverse: false,
                         dissolve_frames: 0,
                     }],
                     music: None,

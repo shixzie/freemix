@@ -10816,6 +10816,13 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReelClipSpeedHover,
         t("Velocidad de reproducción de este clip"),
     ),
+    (Msg::ReelClipReverse, t("Invertir")),
+    (
+        Msg::ReelClipReverseHover,
+        t(
+            "Reproduce este clip al revés, desde su último fotograma recortado hasta el primero; los clips invertidos no llevan audio",
+        ),
+    ),
     (Msg::ReelClipDissolve, t("Fundido")),
     (
         Msg::ReelClipDissolveHover,

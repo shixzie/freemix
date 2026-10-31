@@ -7020,6 +7020,7 @@ mod tests {
                 trim_in_frames: 0,
                 trim_out_frames: 0,
                 speed_percent: 100,
+                reverse: false,
                 dissolve_frames: 0,
             }],
             music: None,

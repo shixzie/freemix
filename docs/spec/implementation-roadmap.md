@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.135 / schema 95 (2026-10-31,
+(2026-10-19); items refreshed through protocol 2.136 / schema 96 (2026-10-31,
 at `efee1ebf`). Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -6001,8 +6001,11 @@ and silent once the file ends; an export keeps the bed it was accepted
 with, and an unreadable bed fails it `music:open` (the native test mixes a
 mono 44.1 kHz bed under a real-time clip and a slow-motion one and hears it
 ducked, alone, and faded). Studio's reel editor sets the bed and its two
-levels, and `reel-set --music` does in the CLI. Remaining gaps: clips play
-forward only; and nothing is certified.
+levels, and `reel-set --music` does in the CLI. A clip can now play its
+trimmed range backward (Protocol 2.136, schema 96): the compiled timeline
+walks from the range's last frame to its first, Studio's clip row has a
+Reverse toggle, and `--clips` appends `r` to the speed; reverse clips
+carry no clip audio. Remaining: nothing is certified.
 `OR-013` remains planned.
 
 Current end-to-end slice for items 1, 3, and 4: the show persists replay

@@ -133,7 +133,7 @@ const TURNED: &str = "\"geometry\": {\"translation_x\": -40, \"translation_y\": 
 
 #[test]
 fn free_rotation_and_anchor_round_trip_exactly() {
-    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 95);
+    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 96);
     let temp = TestDirectory::new("round-trip");
     let store = temp.store("show.freemix");
     let expected = stored(project());

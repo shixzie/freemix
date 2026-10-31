@@ -196,6 +196,8 @@ pub struct ReelClipSpec {
     /// Nanoseconds trimmed before the event mark-out.
     pub trim_out_nanos: u64,
     pub speed: ReelSpeed,
+    /// Plays the trimmed range backward, from its last frame to its first.
+    pub reverse: bool,
     /// Transition from the previous clip; the first clip must use a cut.
     pub transition_in: ReelTransition,
     /// Clip carries program audio, so a music bed ducks under it.
@@ -360,6 +362,7 @@ impl HighlightReel {
                 angle: spec.angle,
                 source,
                 speed: spec.speed,
+                reverse: spec.reverse,
                 output_start,
                 frame_count,
                 transition_in_frames: transition,
@@ -392,6 +395,8 @@ pub struct CompiledClip {
     /// Trimmed half-open source range on the synchronized timeline.
     pub source: TimelineRange,
     pub speed: ReelSpeed,
+    /// Whether the clip plays its trimmed range backward.
+    pub reverse: bool,
     /// First output frame of the clip, including its incoming transition.
     pub output_start: u64,
     pub frame_count: u64,
@@ -407,7 +412,8 @@ impl CompiledClip {
     }
 
     /// Exact synchronized source time for a clip-local output frame:
-    /// `source.start + floor(local * frame_duration * speed)`.
+    /// `source.start + floor(local * frame_duration * speed)` forward, or
+    /// from the range's last frame backward for a reverse clip.
     #[must_use]
     pub fn source_time(&self, local_frame: u64, rate: ReelFrameRate) -> NormalizedTimestamp {
         let offset = u128::from(local_frame)
@@ -416,9 +422,15 @@ impl CompiledClip {
             * u128::from(self.speed.numerator)
             / (u128::from(rate.numerator) * u128::from(self.speed.denominator));
         let offset = i128::try_from(offset).unwrap_or(i128::MAX);
-        let time = i128::from(self.source.start.as_nanos())
-            .saturating_add(offset)
-            .min(i128::from(self.source.end.as_nanos()) - 1);
+        let time = if self.reverse {
+            let last = i128::from(self.source.end.as_nanos()).saturating_sub(1);
+            last.saturating_sub(offset)
+                .max(i128::from(self.source.start.as_nanos()))
+        } else {
+            i128::from(self.source.start.as_nanos())
+                .saturating_add(offset)
+                .min(i128::from(self.source.end.as_nanos()) - 1)
+        };
         NormalizedTimestamp::from_nanos(i64::try_from(time).unwrap_or(i64::MAX))
     }
 }
@@ -436,6 +448,8 @@ pub struct ReelLayerPlan {
     pub weight: MixWeight,
     /// The clip's playback speed.
     pub speed: ReelSpeed,
+    /// Whether the clip plays its trimmed range backward.
+    pub reverse: bool,
 }
 
 /// One layer resolved to an exact recorded frame and segment.
@@ -568,6 +582,7 @@ impl CompiledReel {
             target: clip.source_time(local_frame, self.frame_rate),
             weight,
             speed: clip.speed,
+            reverse: clip.reverse,
         }
     }
 

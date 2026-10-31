@@ -189,6 +189,7 @@ const fn clip_from(event: &ReplayEventStatus, angle: InputId) -> ReelClip {
         trim_in_frames: 0,
         trim_out_frames: 0,
         speed_percent: 100,
+        reverse: false,
         dissolve_frames: 0,
     }
 }
@@ -1883,6 +1884,22 @@ fn draw_clip(
             })
             .response
             .on_hover_text(l.text(Msg::ReelClipSpeedHover));
+        let mut reverse = clip.reverse;
+        if ui
+            .add_enabled(
+                edit.is_none(),
+                egui::Checkbox::new(&mut reverse, l.text(Msg::ReelClipReverse)),
+            )
+            .hint(l.text(Msg::ReelClipReverseHover), reason)
+            .changed()
+            && reverse != clip.reverse
+        {
+            let mut updated = clip;
+            updated.reverse = reverse;
+            if let Some(operation) = set_clip(reel, index, updated) {
+                intents.push(StudioIntent::Reel(operation));
+            }
+        }
         ui.label(caption(l.text(Msg::ReelClipDissolve)))
             .on_hover_text(l.text(Msg::ReelClipDissolveHover));
         // The first clip always cuts in.
@@ -2377,6 +2394,7 @@ mod tests {
                 trim_in_frames: 0,
                 trim_out_frames: 0,
                 speed_percent: 100,
+                reverse: false,
                 dissolve_frames: 0,
             }]
         );
