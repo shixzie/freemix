@@ -766,6 +766,7 @@ fn decode_command_payload(
         | "audio_loudness_reset"
         | "audio_aux_bus_name"
         | "audio_aux_bus_level"
+        | "audio_aux_bus_dsp"
         | "audio_output_bus"
         | "audio_plugin_chain") => CommandPayload::AudioMixer(
             super::audio_mixer::decode_operation(mixer, fields)?

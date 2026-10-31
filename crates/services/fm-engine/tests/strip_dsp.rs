@@ -210,6 +210,64 @@ fn a_knob_drag_folds_into_one_undo_step() {
 }
 
 #[test]
+fn an_aux_bus_chain_is_undoable_and_folds_a_drag() {
+    let mut engine = engine();
+    let bus = fm_model::AuxBusNumber::from_letter('C').unwrap();
+    let target = StripDspTarget::Aux(bus);
+    let music = StripDspPreset::Music.chain();
+    let command = set(target, music, None);
+    assert_eq!(command.kind(), EngineCommandKind::ProjectEdit);
+    accept(&mut engine, "aux", command);
+    assert_eq!(engine.show().aux_bus(bus).dsp, music);
+    let frame = engine.tick().unwrap();
+    assert_eq!(
+        frame.audio_mixer_updates,
+        vec![EngineAudioMixerUpdate::StripDsp {
+            target,
+            chain: music,
+        }]
+    );
+
+    // A drag on the bus folds into one undo step like a strip's.
+    let token = NonZeroU64::new(91).unwrap();
+    let mut chain = music;
+    chain.compressor.enabled = true;
+    for (step, threshold) in [-18_000, -24_000].into_iter().enumerate() {
+        chain.compressor.threshold_millidb = threshold;
+        accept(
+            &mut engine,
+            &format!("aux-drag-{step}"),
+            set(
+                target,
+                chain,
+                Some(GradeGesture {
+                    token,
+                    continues: step != 0,
+                }),
+            ),
+        );
+    }
+    assert_eq!(engine.undo_entries().len(), 2);
+    history(&mut engine, "undo-aux-drag", true);
+    assert_eq!(engine.show().aux_bus(bus).dsp, music);
+    history(&mut engine, "undo-aux", true);
+    assert_eq!(
+        engine.show().aux_bus(bus).dsp,
+        fm_types::strip_dsp::StripDsp::DEFAULT
+    );
+    history(&mut engine, "redo-aux", false);
+    assert_eq!(engine.show().aux_bus(bus).dsp, music);
+
+    // An aux bus has no loudness meter: the reset is accepted and changes
+    // nothing.
+    accept(
+        &mut engine,
+        "aux-loudness",
+        EngineCommand::AudioMixer(EngineAudioMixerEdit::ResetLoudness { target }),
+    );
+}
+
+#[test]
 fn padlocks_and_bounds_refuse_chains() {
     let mut engine = engine();
     accept(

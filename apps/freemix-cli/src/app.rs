@@ -5220,6 +5220,9 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
                     fm_types::strip_dsp::StripDspTarget::Master => {
                         fm_protocol::AudioDspTarget::Master
                     }
+                    fm_types::strip_dsp::StripDspTarget::Aux(bus) => {
+                        fm_protocol::AudioDspTarget::Aux(bus)
+                    }
                     fm_types::strip_dsp::StripDspTarget::Input(input) => {
                         fm_protocol::AudioDspTarget::Input(fm_protocol::WireInputId::from_domain(
                             input,
@@ -5255,6 +5258,9 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
                     fm_types::strip_dsp::StripDspTarget::Master => {
                         fm_protocol::AudioDspTarget::Master
                     }
+                    fm_types::strip_dsp::StripDspTarget::Aux(bus) => {
+                        fm_protocol::AudioDspTarget::Aux(bus)
+                    }
                     fm_types::strip_dsp::StripDspTarget::Input(input) => {
                         fm_protocol::AudioDspTarget::Input(fm_protocol::WireInputId::from_domain(
                             input,
@@ -5268,6 +5274,9 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
                 target: match target {
                     fm_types::strip_dsp::StripDspTarget::Master => {
                         fm_protocol::AudioDspTarget::Master
+                    }
+                    fm_types::strip_dsp::StripDspTarget::Aux(bus) => {
+                        fm_protocol::AudioDspTarget::Aux(bus)
                     }
                     fm_types::strip_dsp::StripDspTarget::Input(input) => {
                         fm_protocol::AudioDspTarget::Input(fm_protocol::WireInputId::from_domain(

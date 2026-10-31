@@ -666,11 +666,13 @@ impl fmt::Display for StripDspError {
 
 impl std::error::Error for StripDspError {}
 
-/// Which chain an edit targets: one input's strip or the Master bus.
+/// Which chain an edit targets: one input's strip, the Master bus, or an
+/// aux bus (2.133).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum StripDspTarget {
     Master,
     Input(crate::InputId),
+    Aux(crate::audio_bus::AuxBusNumber),
 }
 
 /// A starting chain an operator loads onto a strip.

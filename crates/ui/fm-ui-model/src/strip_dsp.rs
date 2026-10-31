@@ -34,6 +34,7 @@ pub const fn wire_target(target: StripDspTarget) -> AudioDspTarget {
     match target {
         StripDspTarget::Master => AudioDspTarget::Master,
         StripDspTarget::Input(input) => AudioDspTarget::Input(WireInputId::from_domain(input)),
+        StripDspTarget::Aux(bus) => AudioDspTarget::Aux(bus),
     }
 }
 

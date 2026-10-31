@@ -100,13 +100,15 @@ pub const MAX_AUDIO_STRIP_DSP_STATES: u16 = 256;
 /// strip whose sends are not the plain enable mask (2.130).
 pub const MAX_AUDIO_SEND_STATES: u16 = 256;
 
-/// The chain a DSP edit or gain-reduction meter names (2.75).
+/// The chain a DSP edit or gain-reduction meter names (2.75, aux buses 2.133).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum AudioDspTarget {
     /// The Master bus (`master`).
     Master,
     /// One input's strip (its decimal id).
     Input(WireInputId),
+    /// One aux bus (`aux:a` through `aux:g`).
+    Aux(AuxBusNumber),
 }
 
 /// Largest gain reduction a dynamics meter reports, in millidecibels.
@@ -267,6 +269,8 @@ pub struct AuxBusStatus {
     pub name: String,
     pub gain_millidb: i32,
     pub muted: bool,
+    /// The bus's DSP chain, after its fader and mute (2.133).
+    pub dsp: StripDsp,
 }
 
 impl AuxBusStatus {
@@ -277,6 +281,7 @@ impl AuxBusStatus {
             name: format!("Bus {}", bus.letter()),
             gain_millidb: 0,
             muted: false,
+            dsp: StripDsp::DEFAULT,
         }
     }
 }
@@ -423,13 +428,14 @@ impl AudioMixerStatus {
                 }
             }
             // Membership lives in the strip records, an output's bus in its
-            // output status, and aux bus chains in the show; a loudness reset
-            // changes no status (2.92).
+            // output status, and a loudness reset changes no status (2.92).
             AudioMixerOperation::SetGroup { .. }
             | AudioMixerOperation::ResetLoudness { .. }
             | AudioMixerOperation::SetOutputBus { .. }
-            | AudioMixerOperation::SetPluginChain { .. }
-            | AudioMixerOperation::SetAuxBusDsp { .. } => {}
+            | AudioMixerOperation::SetPluginChain { .. } => {}
+            AudioMixerOperation::SetAuxBusDsp { bus, chain } => {
+                self.aux_buses[bus.index()].dsp = **chain;
+            }
             AudioMixerOperation::RenameGroup { group, name } => {
                 if audio_group_is_valid(*group) {
                     self.groups[usize::from(*group) - 1].name.clone_from(name);
@@ -467,11 +473,11 @@ impl AudioMixerStatus {
                 self.monitor.gain_millidb = *gain_millidb;
                 self.monitor.muted = *muted;
             }
-            AudioMixerOperation::SetStripDsp { target, chain, .. } => {
-                if *target == AudioDspTarget::Master {
-                    self.master_dsp = **chain;
-                }
-            }
+            AudioMixerOperation::SetStripDsp { target, chain, .. } => match target {
+                AudioDspTarget::Master => self.master_dsp = **chain,
+                AudioDspTarget::Aux(bus) => self.aux_buses[bus.index()].dsp = **chain,
+                AudioDspTarget::Input(_) => {}
+            },
             AudioMixerOperation::RenameAuxBus { bus, name } => {
                 self.aux_buses[bus.index()].name.clone_from(name);
             }
@@ -587,7 +593,9 @@ pub enum AudioMixerOperation {
         gain_millidb: i32,
         muted: bool,
     },
-    /// Replaces an aux bus's DSP chain (AU-002, 2.132).
+    /// Replaces an aux bus's DSP chain (AU-002, 2.132). A whole-chain set
+    /// for presets, the CLI, and the Web pages; the FX editor sends
+    /// `SetStripDsp` with an aux target so a drag folds into one undo step.
     SetAuxBusDsp {
         bus: AuxBusNumber,
         chain: Box<StripDsp>,

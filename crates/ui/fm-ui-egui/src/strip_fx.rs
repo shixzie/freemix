@@ -163,6 +163,15 @@ fn kind_name(l: Locale, kind: EqBandKind) -> &'static str {
 fn target_name(l: Locale, state: &StudioUiState, target: StripDspTarget) -> String {
     match target {
         StripDspTarget::Master => l.text(Msg::FxMasterName).to_owned(),
+        StripDspTarget::Aux(bus) => state.view.as_ref().map_or_else(
+            || {
+                l.format(
+                    Msg::BusMixerBus,
+                    &[("bus", Arg::Str(&bus.letter().to_string()))],
+                )
+            },
+            |view| view.audio_mixer.aux_buses[bus.index()].name.clone(),
+        ),
         StripDspTarget::Input(input) => state.view.as_ref().map_or_else(
             || input.get().to_string(),
             |view| {
@@ -180,7 +189,7 @@ fn target_name(l: Locale, state: &StudioUiState, target: StripDspTarget) -> Stri
 /// Whether `target` still names a chain of the replicated show.
 fn target_exists(state: &StudioUiState, target: StripDspTarget) -> bool {
     match target {
-        StripDspTarget::Master => state.view.is_some(),
+        StripDspTarget::Master | StripDspTarget::Aux(_) => state.view.is_some(),
         StripDspTarget::Input(input) => state
             .view
             .as_ref()
@@ -288,8 +297,12 @@ impl StudioShell {
                             .max_height(body_height)
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
-                                draw_plugins(ui, state, target, (enabled, reason), intents);
-                                ui.separator();
+                                // A plugin chain targets strips and Master;
+                                // an aux bus carries only its DSP chain.
+                                if !matches!(target, StripDspTarget::Aux(_)) {
+                                    draw_plugins(ui, state, target, (enabled, reason), intents);
+                                    ui.separator();
+                                }
                                 draw_curve(ui, &mut chain, (enabled, reason));
                                 ui.add_space(6.0);
                                 draw_bands(ui, &mut chain, (enabled, reason));
@@ -455,6 +468,7 @@ fn plugin_status_request_id(target: StripDspTarget) -> String {
     match target {
         StripDspTarget::Master => "plugin-status-master".to_owned(),
         StripDspTarget::Input(input) => format!("plugin-status-{input}"),
+        StripDspTarget::Aux(bus) => format!("plugin-status-aux-{}", bus.letter()),
     }
 }
 

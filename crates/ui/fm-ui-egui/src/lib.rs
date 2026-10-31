@@ -2546,7 +2546,11 @@ impl StudioShell {
         self.draw_help_windows(ui.ctx(), state);
         self.draw_preferences_window(ui.ctx());
         self.draw_key_profiles_window(ui.ctx());
-        mixer::draw_bus_mixer_window(&mut self.bus_mixer_open, ui.ctx(), state, &mut intents);
+        if let Some(target) =
+            mixer::draw_bus_mixer_window(&mut self.bus_mixer_open, ui.ctx(), state, &mut intents)
+        {
+            self.strip_fx.open(target);
+        }
         self.draw_display_outputs_dialog(ui.ctx(), state, &mut intents);
         self.draw_live_lan_window(ui.ctx(), state, &mut intents);
         self.draw_web_access_window(ui.ctx(), state, &mut intents);

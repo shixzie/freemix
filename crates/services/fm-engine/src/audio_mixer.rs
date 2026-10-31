@@ -282,11 +282,11 @@ impl EngineAudioMixerEdit {
                 ..
             } => Some(*input),
             Self::SetStripDsp {
-                target: StripDspTarget::Master,
+                target: StripDspTarget::Master | StripDspTarget::Aux(_),
                 ..
             }
             | Self::SetPluginChain {
-                target: StripDspTarget::Master,
+                target: StripDspTarget::Master | StripDspTarget::Aux(_),
                 ..
             }
             | Self::RenameGroup { .. }
@@ -517,6 +517,13 @@ fn apply_plugin_chain(
             state.set_input_audio_plugins(input, chain.clone());
             Ok(())
         }
+        // Aux buses carry a DSP chain but no plugin chain.
+        StripDspTarget::Aux(_) => Err(rejection(
+            RejectionCode::InvalidCommand,
+            "target",
+            "unsupported_target",
+            "an aux bus carries no plugin chain".to_owned(),
+        )),
     }
 }
 
@@ -614,6 +621,7 @@ pub(crate) fn apply(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Resul
                 StripDspTarget::Input(input) => state
                     .set_input_audio_dsp(input, **chain)
                     .map_err(|_| unknown_input(input))?,
+                StripDspTarget::Aux(bus) => state.aux_bus_mut(bus).dsp = **chain,
             }
             Ok(())
         }
@@ -681,10 +689,11 @@ fn apply_aux(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Result<(), R
     }
 }
 
-/// Validates a loudness reset's target: Master, or an input of the show.
+/// Validates a loudness reset's target: Master, an input of the show, or an
+/// aux bus (which reports no loudness).
 fn loudness_target(state: &ShowState, target: StripDspTarget) -> Result<(), Rejection> {
     match target {
-        StripDspTarget::Master => Ok(()),
+        StripDspTarget::Master | StripDspTarget::Aux(_) => Ok(()),
         StripDspTarget::Input(input) if state.inputs().contains(&input) => Ok(()),
         StripDspTarget::Input(input) => Err(unknown_input(input)),
     }
@@ -745,6 +754,11 @@ pub(crate) fn inverse(
                 chain: Box::new(*state.master_audio_dsp()),
                 gesture: None,
             }),
+            StripDspTarget::Aux(bus) => Some(EngineAudioMixerEdit::SetStripDsp {
+                target: *target,
+                chain: Box::new(state.aux_bus(bus).dsp),
+                gesture: None,
+            }),
             StripDspTarget::Input(input) => {
                 state
                     .inputs()
@@ -770,6 +784,9 @@ pub(crate) fn inverse(
                         chain: Box::new(state.input_audio_plugins(input).clone()),
                     })
             }
+            // An aux bus carries no plugin chain, so such an edit never
+            // reaches the history.
+            StripDspTarget::Aux(_) => None,
         },
         EngineAudioMixerEdit::RenameAuxBus { bus, .. } => {
             Some(EngineAudioMixerEdit::RenameAuxBus {

@@ -1484,7 +1484,7 @@ impl ProjectState {
         &self.audio_mixer.master_dsp
     }
 
-    /// Returns the DSP chain `target` names (Protocol 2.75).
+    /// Returns the DSP chain `target` names (Protocol 2.75; aux buses 2.133).
     #[must_use]
     pub fn audio_dsp(
         &self,
@@ -1493,6 +1493,9 @@ impl ProjectState {
         match target {
             fm_types::strip_dsp::StripDspTarget::Master => self.audio_mixer.master_dsp,
             fm_types::strip_dsp::StripDspTarget::Input(input) => self.input_audio_dsp(input),
+            fm_types::strip_dsp::StripDspTarget::Aux(bus) => {
+                self.audio_mixer.aux_buses[bus.index()].dsp
+            }
         }
     }
 
@@ -5994,12 +5997,14 @@ fn validate_audio_mixer_change(
         fm_protocol::AudioMixerOperation::SetStripDsp { target, chain, .. } => {
             chain.validate().is_ok()
                 && match target {
-                    fm_protocol::AudioDspTarget::Master => true,
+                    fm_protocol::AudioDspTarget::Master | fm_protocol::AudioDspTarget::Aux(_) => {
+                        true
+                    }
                     fm_protocol::AudioDspTarget::Input(input) => known(input),
                 }
         }
         fm_protocol::AudioMixerOperation::ResetLoudness { target } => match target {
-            fm_protocol::AudioDspTarget::Master => true,
+            fm_protocol::AudioDspTarget::Master | fm_protocol::AudioDspTarget::Aux(_) => true,
             fm_protocol::AudioDspTarget::Input(input) => known(input),
         },
         fm_protocol::AudioMixerOperation::RenameAuxBus { name, .. } => {
@@ -6014,6 +6019,8 @@ fn validate_audio_mixer_change(
             let target_known = match target {
                 fm_protocol::AudioDspTarget::Master => true,
                 fm_protocol::AudioDspTarget::Input(input) => known(input),
+                // Aux buses carry no plugin chain.
+                fm_protocol::AudioDspTarget::Aux(_) => false,
             };
             let mut ids = std::collections::BTreeSet::new();
             target_known

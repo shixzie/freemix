@@ -28,6 +28,7 @@ pub(super) const fn dsp_target(target: AudioDspTarget) -> StripDspTarget {
     match target {
         AudioDspTarget::Master => StripDspTarget::Master,
         AudioDspTarget::Input(input) => StripDspTarget::Input(input.to_domain()),
+        AudioDspTarget::Aux(bus) => StripDspTarget::Aux(bus),
     }
 }
 
@@ -37,6 +38,7 @@ pub(super) const fn wire_dsp_target(target: StripDspTarget) -> AudioDspTarget {
     match target {
         StripDspTarget::Master => AudioDspTarget::Master,
         StripDspTarget::Input(input) => AudioDspTarget::Input(WireInputId::from_domain(input)),
+        StripDspTarget::Aux(bus) => AudioDspTarget::Aux(bus),
     }
 }
 
@@ -94,8 +96,10 @@ pub(super) fn plugin_status(
 ) -> AudioPluginStatusMessage {
     let target = dsp_target(request.target);
     let chain = match target {
-        StripDspTarget::Master => engine.show().master_audio_plugins(),
-        StripDspTarget::Input(input) => engine.show().input_audio_plugins(input),
+        StripDspTarget::Master => engine.show().master_audio_plugins().clone(),
+        StripDspTarget::Input(input) => engine.show().input_audio_plugins(input).clone(),
+        // Aux buses carry a DSP chain but no plugin chain.
+        StripDspTarget::Aux(_) => fm_plugin_host_api::PluginChain::default(),
     };
     AudioPluginStatusMessage {
         server: authority.clone(),
@@ -105,7 +109,7 @@ pub(super) fn plugin_status(
             .iter()
             .map(|plugin| (*plugin).to_owned())
             .collect(),
-        slots: wire_plugin_chain(chain),
+        slots: wire_plugin_chain(&chain),
     }
 }
 
@@ -444,6 +448,7 @@ pub(super) fn wire_status(show: &ShowState) -> AudioMixerStatus {
             name: bus.name,
             gain_millidb: bus.state.gain_millidb,
             muted: bus.state.muted,
+            dsp: bus.dsp,
         }),
     }
 }

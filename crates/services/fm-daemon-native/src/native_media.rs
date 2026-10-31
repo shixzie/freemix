@@ -1161,6 +1161,9 @@ impl NativeProjectPlan {
     ) -> Result<(), NativeMasterError> {
         match target {
             fm_types::strip_dsp::StripDspTarget::Master => self.master_audio_dsp = chain,
+            fm_types::strip_dsp::StripDspTarget::Aux(bus) => {
+                self.aux_bus_dsp[bus.index()] = (!chain.is_default()).then_some(chain);
+            }
             fm_types::strip_dsp::StripDspTarget::Input(input) => {
                 if !self.audio_strips.contains_key(&input) {
                     return Err(NativeMasterError::MissingAudioRoute { input });
@@ -4452,6 +4455,8 @@ impl NativeMasterRuntime {
                     );
                 }
             }
+            // An aux bus carries a DSP chain but no plugin chain.
+            fm_types::strip_dsp::StripDspTarget::Aux(_) => {}
         }
         Ok(())
     }
@@ -4480,6 +4485,8 @@ impl NativeMasterRuntime {
             self.reset_loudness(match target {
                 fm_types::strip_dsp::StripDspTarget::Master => None,
                 fm_types::strip_dsp::StripDspTarget::Input(input) => Some(input),
+                // An aux bus reports no loudness.
+                fm_types::strip_dsp::StripDspTarget::Aux(_) => return Ok(()),
             });
             return Ok(());
         }
@@ -4538,6 +4545,9 @@ impl NativeMasterRuntime {
                         if master {
                             mixer.set_master_dsp(chain)?;
                         }
+                    }
+                    fm_types::strip_dsp::StripDspTarget::Aux(bus) => {
+                        mixer.set_aux_dsp(native_aux_bus(bus), chain)?;
                     }
                     fm_types::strip_dsp::StripDspTarget::Input(input) => {
                         if mixer.input_state(input).is_some() {

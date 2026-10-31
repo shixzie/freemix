@@ -15,7 +15,7 @@ use fm_protocol::{
 };
 use fm_types::strip_dsp::{STRIP_DSP_CODE_LEN, StripDsp, StripDspPreset};
 
-const PREFIX: &str = "command\tprotocol=2.132\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.133\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -181,7 +181,7 @@ fn mixer() -> AudioMixerStatus {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 132));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 133));
 }
 
 #[test]
@@ -955,6 +955,57 @@ fn strip_dsp_commands_are_strict() {
 }
 
 #[test]
+fn aux_chain_commands_name_their_bus_strictly() {
+    let music = StripDspPreset::Music.chain();
+    let line = round_trip(&command(CommandPayload::AudioMixer(
+        AudioMixerOperation::SetStripDsp {
+            target: fm_protocol::AudioDspTarget::Aux(bus('C')),
+            chain: Box::new(music),
+            gesture: Some(gesture(9, false)),
+        },
+    )));
+    assert_eq!(
+        line,
+        format!(
+            "{PREFIX}\tpayload=audio_strip_dsp\ttarget=aux%3Ac\tchain={}\tgesture=9\tcontinues=false\n",
+            music.code()
+        )
+    );
+    // The whole-chain form keeps its own payload for presets and the CLI.
+    let line = round_trip(&command(CommandPayload::AudioMixer(
+        AudioMixerOperation::SetAuxBusDsp {
+            bus: bus('C'),
+            chain: Box::new(music),
+        },
+    )));
+    assert_eq!(
+        line,
+        format!(
+            "{PREFIX}\tpayload=audio_aux_bus_dsp\tbus=C\tchain={}\n",
+            music.code()
+        )
+    );
+    // The status follows an accepted aux chain set.
+    let mut status = mixer();
+    status.apply(&AudioMixerOperation::SetStripDsp {
+        target: fm_protocol::AudioDspTarget::Aux(bus('C')),
+        chain: Box::new(music),
+        gesture: None,
+    });
+    assert_eq!(status.aux_buses[2].dsp, music);
+    for bad in ["aux:", "aux:CC", "aux:1", "aux:h", "AUX:c", "Aux:c"] {
+        assert!(
+            decode_line(&format!(
+                "{PREFIX}\tpayload=audio_strip_dsp\ttarget={bad}\tchain={}\n",
+                music.code()
+            ))
+            .is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
 fn strip_dsp_state_records_and_snapshot_fields_round_trip_strictly() {
     let music = StripDspPreset::Music.chain();
     let record = WireMessage::AudioStripDspState(fm_protocol::AudioStripDspStateMessage {
@@ -1208,10 +1259,12 @@ fn strip_sends_ride_the_strip_command_and_snapshot_tuples_strictly() {
 #[test]
 fn snapshot_carries_aux_buses_and_output_buses_strictly() {
     let mut status = mixer();
+    let chain = fm_types::strip_dsp::StripDspPreset::Music.chain();
     status.aux_buses[1] = fm_protocol::AuxBusStatus {
         name: "Stage, left".into(),
         gain_millidb: -3_000,
         muted: true,
+        dsp: chain,
     };
     let mut message = snapshot(status, Vec::new());
     let WireMessage::Snapshot(snapshot) = &mut message else {
@@ -1220,7 +1273,12 @@ fn snapshot_carries_aux_buses_and_output_buses_strictly() {
     snapshot.outputs[0].aux_bus = Some(bus('B'));
     let line = round_trip(&message);
     assert!(
-        line.contains("\taudio_aux_buses=Bus%2520A%7E0%7E0%2CStage%252C%2520left%7E-3000%7E1%2CBus%2520C%7E0%7E0%2CBus%2520D%7E0%7E0%2CBus%2520E%7E0%7E0%2CBus%2520F%7E0%7E0%2CBus%2520G%7E0%7E0\tfade_to_black"),
+        line.contains(&format!(
+            "\taudio_aux_buses=Bus%2520A%7E0%7E0%2CStage%252C%2520left%7E-3000%7E1%7E{}\
+             %2CBus%2520C%7E0%7E0%2CBus%2520D%7E0%7E0%2CBus%2520E%7E0%7E0%2CBus%2520F%7E0%7E0\
+             %2CBus%2520G%7E0%7E0\tfade_to_black",
+            chain.code()
+        )),
         "{line}"
     );
     assert!(

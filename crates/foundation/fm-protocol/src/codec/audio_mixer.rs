@@ -211,12 +211,19 @@ fn encode_aux_buses(buses: &[AuxBusStatus; AUX_BUS_COUNT]) -> Result<String, Cod
                 return Err(invalid("audio_aux_buses", bus.name.clone()));
             }
             check_gain("audio_aux_buses", bus.gain_millidb)?;
-            Ok(format!(
+            let mut encoded = format!(
                 "{}~{}~{}",
                 escape_bounded(&bus.name)?,
                 bus.gain_millidb,
                 u8::from(bus.muted)
-            ))
+            );
+            // The chain follows only when the bus has one, so a show with
+            // every bus flat keeps the line short.
+            if bus.dsp != StripDsp::DEFAULT {
+                encoded.push('~');
+                encoded.push_str(&encode_chain("audio_aux_buses", &bus.dsp)?);
+            }
+            Ok(encoded)
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|buses| buses.join(","))
@@ -228,8 +235,12 @@ fn decode_aux_buses(value: &str) -> Result<[AuxBusStatus; AUX_BUS_COUNT], CodecE
         .split(',')
         .map(|entry| {
             let parts: Vec<&str> = entry.split('~').collect();
-            let [name, gain, muted] = parts.as_slice() else {
-                return Err(invalid("audio_aux_buses", entry));
+            let (name, gain, muted, dsp) = match parts.as_slice() {
+                [name, gain, muted] => (*name, *gain, *muted, StripDsp::DEFAULT),
+                [name, gain, muted, dsp] => {
+                    (*name, *gain, *muted, decode_chain("audio_aux_buses", dsp)?)
+                }
+                _ => return Err(invalid("audio_aux_buses", entry)),
             };
             let name = unescape(name)?;
             if !audio_label_is_valid(&name, false) {
@@ -239,6 +250,7 @@ fn decode_aux_buses(value: &str) -> Result<[AuxBusStatus; AUX_BUS_COUNT], CodecE
                 name,
                 gain_millidb: parse_gain("audio_aux_buses", gain)?,
                 muted: parse_flag("audio_aux_buses", muted)?,
+                dsp,
             })
         })
         .take(AUX_BUS_COUNT + 1)
@@ -531,11 +543,12 @@ pub(super) fn decode_chain(field: &'static str, value: &str) -> Result<StripDsp,
     StripDsp::from_code(value).map_err(|_| invalid(field, value))
 }
 
-/// Encodes a DSP target: `master` or a canonical input id.
+/// Encodes a DSP target: `master`, a canonical input id, or `aux:a`..`aux:g`.
 pub(super) fn encode_target(target: AudioDspTarget) -> String {
     match target {
         AudioDspTarget::Master => "master".to_owned(),
         AudioDspTarget::Input(input) => input.to_string(),
+        AudioDspTarget::Aux(bus) => format!("aux:{}", bus.letter().to_ascii_lowercase()),
     }
 }
 
@@ -546,6 +559,15 @@ pub(super) fn decode_target(
 ) -> Result<AudioDspTarget, CodecError> {
     if value == "master" {
         return Ok(AudioDspTarget::Master);
+    }
+    if let Some(letter) = value.strip_prefix("aux:") {
+        let mut letters = letter.chars();
+        return match (letters.next(), letters.next()) {
+            (Some(letter), None) => AuxBusNumber::from_letter(letter.to_ascii_uppercase()),
+            _ => None,
+        }
+        .map(AudioDspTarget::Aux)
+        .ok_or_else(|| invalid(field, value));
     }
     parse_canonical_input(value)
         .map(AudioDspTarget::Input)

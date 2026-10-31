@@ -742,6 +742,8 @@ impl SimulatedAudioPlane {
                 .and_then(|index| self.input_loudness.get_mut(index))
                 .map(LoudnessMeter::reset_measurement)
                 .is_some(),
+            // An aux bus reports no loudness.
+            StripDspTarget::Aux(_) => false,
         }
     }
 

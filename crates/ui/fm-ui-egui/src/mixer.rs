@@ -3109,11 +3109,12 @@ pub(crate) fn draw_bus_mixer_window(
     context: &egui::Context,
     state: &StudioUiState,
     intents: &mut Vec<StudioIntent>,
-) {
+) -> Option<StripDspTarget> {
     if !*open {
-        return;
+        return None;
     }
     let l = l10n::locale(context);
+    let mut fx = None;
     // A floating, non-modal window: the operator keeps the console and the
     // Program monitor in reach while riding a bus fader.
     egui::Window::new(l.text(Msg::BusMixerTitle))
@@ -3124,12 +3125,18 @@ pub(crate) fn draw_bus_mixer_window(
         .default_width(520.0)
         .show(context, |ui| {
             ui.set_width(520.0);
-            draw_bus_mixer_contents(ui, state, intents);
+            draw_bus_mixer_contents(ui, state, intents, &mut fx);
         });
+    fx
 }
 
 #[allow(clippy::too_many_lines)] // one row per bus, then the outputs
-fn draw_bus_mixer_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec<StudioIntent>) {
+fn draw_bus_mixer_contents(
+    ui: &mut Ui,
+    state: &StudioUiState,
+    intents: &mut Vec<StudioIntent>,
+    fx: &mut Option<StripDspTarget>,
+) {
     let l = l10n::locale(ui.ctx());
     let Some(view) = &state.view else {
         crate::theme::empty_state(
@@ -3211,6 +3218,15 @@ fn draw_bus_mixer_contents(ui: &mut Ui, state: &StudioUiState, intents: &mut Vec
                     .map(|aux| aux.channels.as_slice())
             });
             bus_meter(ui, channels, 56.0, 14.0);
+            let open_target = *fx;
+            if fx_key(
+                ui,
+                open_target == Some(StripDspTarget::Aux(number)),
+                l.text(Msg::FxKeyHover),
+                40.0,
+            ) {
+                *fx = Some(StripDspTarget::Aux(number));
+            }
         });
         ui.horizontal(|ui| {
             ui.label(caption(l.text(Msg::BusMixerDsp)));

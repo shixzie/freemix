@@ -329,8 +329,7 @@ impl NoteParser {
                         99 | 98 => {
                             let shift = if number == 99 { 7 } else { 0 };
                             let mask = if number == 99 { 0x007F } else { 0x3F80 };
-                            parameter.nrpn =
-                                (parameter.nrpn & mask) | (u16::from(value) << shift);
+                            parameter.nrpn = (parameter.nrpn & mask) | (u16::from(value) << shift);
                             parameter.selected = Some(MidiControlKind::Nrpn);
                             continue;
                         }
@@ -556,7 +555,10 @@ mod feedback_tests {
             trigger: MidiTrigger::new(MidiControlKind::Rpn, 1, 0).unwrap(),
             value: 127,
         };
-        assert_eq!(feedback_bytes(rpn), [0xB0, 101, 0, 0xB0, 100, 0, 0xB0, 6, 127]);
+        assert_eq!(
+            feedback_bytes(rpn),
+            [0xB0, 101, 0, 0xB0, 100, 0, 0xB0, 6, 127]
+        );
     }
 }
 
