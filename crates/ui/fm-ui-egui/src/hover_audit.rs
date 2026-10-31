@@ -5238,6 +5238,18 @@ fn failed(findings: &Findings) -> bool {
 /// every control whose help is missing, unexplained, too long, or
 /// untranslated.
 pub fn check(language: Language) {
+    // Building one console per audited configuration gives `scenes` a frame
+    // larger than a test thread's default stack, so the audit gets its own.
+    std::thread::Builder::new()
+        .name("hover-audit".into())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(move || check_inner(language))
+        .expect("the hover audit thread starts")
+        .join()
+        .expect("the hover audit does not panic");
+}
+
+fn check_inner(language: Language) {
     let (findings, controls) = audit(language, scenes(language));
     dump("hover", language, &controls);
     println!("{}", report(language, &findings));
