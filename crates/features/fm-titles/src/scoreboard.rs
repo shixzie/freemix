@@ -1474,3 +1474,388 @@ fn parse_player(value: &str) -> Option<Player> {
         name: value.to_owned(),
     })
 }
+
+/// Largest scoreboard document, in bytes.
+pub const MAX_SCOREBOARD_DOCUMENT_BYTES: usize = 256 * 1024;
+
+/// Why a scoreboard document is invalid.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ScoreboardDocumentError {
+    TooLarge { maximum: usize },
+    Version { found: String },
+    Line { index: usize },
+    Invalid { error: ScoreboardError },
+}
+
+impl fmt::Display for ScoreboardDocumentError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLarge { maximum } => {
+                write!(formatter, "scoreboard document exceeds {maximum} bytes")
+            }
+            Self::Version { found } => {
+                write!(formatter, "scoreboard document version {found:?} is not 1")
+            }
+            Self::Line { index } => write!(formatter, "scoreboard line {index} is malformed"),
+            Self::Invalid { error } => write!(formatter, "scoreboard state is invalid: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for ScoreboardDocumentError {}
+
+/// Encodes `text` as `x` followed by its UTF-8 bytes in lowercase hex.
+fn encode_scoreboard_text(text: &str) -> String {
+    use fmt::Write as _;
+    let mut output = String::from("x");
+    for byte in text.bytes() {
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
+fn decode_scoreboard_text(token: &str) -> Option<String> {
+    let hex = token.strip_prefix('x')?;
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for chunk in hex.as_bytes().chunks(2) {
+        let pair = std::str::from_utf8(chunk).ok()?;
+        bytes.push(u8::from_str_radix(pair, 16).ok()?);
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn format_optional_u64(value: Option<u64>) -> String {
+    value.map_or_else(|| "none".to_owned(), |value| value.to_string())
+}
+
+fn format_optional_frame(value: Option<u64>) -> String {
+    value.map_or_else(|| "-".to_owned(), |value| value.to_string())
+}
+
+fn parse_optional_u64(token: &str) -> Option<Option<u64>> {
+    if token == "none" {
+        return Some(None);
+    }
+    parse_scoreboard_unsigned(token).map(Some)
+}
+
+fn parse_optional_frame(token: &str) -> Option<Option<u64>> {
+    if token == "-" {
+        return Some(None);
+    }
+    parse_scoreboard_unsigned(token).map(Some)
+}
+
+fn parse_scoreboard_unsigned<T: core::str::FromStr>(token: &str) -> Option<T> {
+    if token.is_empty() || !token.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    token.parse().ok()
+}
+
+fn format_direction(direction: ClockDirection) -> &'static str {
+    match direction {
+        ClockDirection::CountUp => "count_up",
+        ClockDirection::CountDown => "count_down",
+    }
+}
+
+fn parse_direction(token: &str) -> Option<ClockDirection> {
+    match token {
+        "count_up" => Some(ClockDirection::CountUp),
+        "count_down" => Some(ClockDirection::CountDown),
+        _ => None,
+    }
+}
+
+fn format_clock_format(format: ClockFormat) -> &'static str {
+    match format {
+        ClockFormat::MinutesSeconds => "minutes_seconds",
+        ClockFormat::MinutesSecondsTenths => "minutes_seconds_tenths",
+        ClockFormat::HoursMinutesSeconds => "hours_minutes_seconds",
+        ClockFormat::HoursMinutesSecondsTenths => "hours_minutes_seconds_tenths",
+    }
+}
+
+fn parse_clock_format(token: &str) -> Option<ClockFormat> {
+    match token {
+        "minutes_seconds" => Some(ClockFormat::MinutesSeconds),
+        "minutes_seconds_tenths" => Some(ClockFormat::MinutesSecondsTenths),
+        "hours_minutes_seconds" => Some(ClockFormat::HoursMinutesSeconds),
+        "hours_minutes_seconds_tenths" => Some(ClockFormat::HoursMinutesSecondsTenths),
+        _ => None,
+    }
+}
+
+fn format_scoreboard_player(player: Option<&Player>) -> String {
+    let Some(player) = player else {
+        return "none".to_owned();
+    };
+    format!(
+        "p:{}:{}",
+        format_optional_frame(player.number.map(u64::from)),
+        encode_scoreboard_text(&player.name)
+    )
+}
+
+fn parse_scoreboard_player(token: &str) -> Option<Option<Player>> {
+    if token == "none" {
+        return Some(None);
+    }
+    let rest = token.strip_prefix("p:")?;
+    let (number, name) = rest.split_once(':')?;
+    let number = parse_optional_frame(number)?
+        .map(u16::try_from)
+        .transpose()
+        .ok()?;
+    let name = decode_scoreboard_text(name)?;
+    Some(Some(Player { number, name }))
+}
+
+fn write_scoreboard_clock(output: &mut String, prefix: &str, clock: Option<&GameClockSnapshot>) {
+    use fmt::Write as _;
+    let Some(clock) = clock else {
+        let _ = writeln!(output, "{prefix} none");
+        return;
+    };
+    let _ = writeln!(
+        output,
+        "{prefix} {} {} {} {} {} {} {} {} {} {} {}",
+        format_direction(clock.config.direction),
+        format_clock_format(clock.config.format),
+        clock.config.frame_rate.numerator(),
+        clock.config.frame_rate.denominator(),
+        clock.config.initial_ms,
+        format_optional_u64(clock.config.limit_ms),
+        clock.base_ms,
+        clock.accumulated_frames,
+        format_optional_frame(clock.running_since),
+        format_optional_frame(clock.expired_at),
+        clock.expiry_pending,
+    );
+}
+
+fn parse_scoreboard_clock(tokens: &[String]) -> Option<Option<GameClockSnapshot>> {
+    if tokens.len() == 1 && tokens[0] == "none" {
+        return Some(None);
+    }
+    if tokens.len() != 11 {
+        return None;
+    }
+    let direction = parse_direction(&tokens[0])?;
+    let format = parse_clock_format(&tokens[1])?;
+    let frame_rate = FrameRate::new(
+        parse_scoreboard_unsigned(&tokens[2])?,
+        parse_scoreboard_unsigned(&tokens[3])?,
+    )
+    .ok()?;
+    Some(Some(GameClockSnapshot {
+        config: GameClockConfig {
+            direction,
+            format,
+            frame_rate,
+            initial_ms: parse_scoreboard_unsigned(&tokens[4])?,
+            limit_ms: parse_optional_u64(&tokens[5])?,
+        },
+        base_ms: parse_scoreboard_unsigned(&tokens[6])?,
+        accumulated_frames: parse_scoreboard_unsigned(&tokens[7])?,
+        running_since: parse_optional_frame(&tokens[8])?,
+        expired_at: parse_optional_frame(&tokens[9])?,
+        expiry_pending: match tokens[10].as_str() {
+            "true" => true,
+            "false" => false,
+            _ => return None,
+        },
+    }))
+}
+
+fn write_scoreboard_team(output: &mut String, prefix: &str, team: &TeamState) {
+    use fmt::Write as _;
+    let _ = writeln!(
+        output,
+        "{prefix} {} {} {} {} {}",
+        encode_scoreboard_text(&team.name),
+        encode_scoreboard_text(&team.abbreviation),
+        team.score,
+        format_scoreboard_player(team.player.as_ref()),
+        team.roster.len(),
+    );
+}
+
+impl ScoreboardSnapshot {
+    /// Serializes this snapshot as a strict, versioned text document.
+    #[must_use]
+    pub fn to_document(&self) -> String {
+        use fmt::Write as _;
+        let mut output = String::from("freemix-scoreboard 1\n");
+        let _ = writeln!(
+            output,
+            "rules {} {} {}",
+            self.rules.max_score,
+            self.rules.max_period,
+            format_optional_u64(self.rules.shot_clock_ms),
+        );
+        let _ = writeln!(output, "period {}", self.period);
+        let _ = writeln!(output, "revision {}", self.revision);
+        let _ = writeln!(output, "last_frame {}", self.last_frame);
+        write_scoreboard_team(&mut output, "home", &self.home);
+        for player in &self.home.roster {
+            let _ = writeln!(
+                output,
+                "home-roster {} {}",
+                format_optional_frame(player.number.map(u64::from)),
+                encode_scoreboard_text(&player.name),
+            );
+        }
+        write_scoreboard_team(&mut output, "away", &self.away);
+        for player in &self.away.roster {
+            let _ = writeln!(
+                output,
+                "away-roster {} {}",
+                format_optional_frame(player.number.map(u64::from)),
+                encode_scoreboard_text(&player.name),
+            );
+        }
+        write_scoreboard_clock(&mut output, "clock", Some(&self.clock));
+        write_scoreboard_clock(&mut output, "shot", self.shot_clock.as_ref());
+        output
+    }
+
+    /// Parses a strict scoreboard document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScoreboardDocumentError`] for an oversized, malformed, or
+    /// out-of-contract document without accepting a partial result.
+    pub fn from_document(text: &str) -> Result<Self, ScoreboardDocumentError> {
+        if text.len() > MAX_SCOREBOARD_DOCUMENT_BYTES {
+            return Err(ScoreboardDocumentError::TooLarge {
+                maximum: MAX_SCOREBOARD_DOCUMENT_BYTES,
+            });
+        }
+        let mut lines = text.lines().enumerate();
+        let Some((_, header)) = lines.next() else {
+            return Err(ScoreboardDocumentError::Line { index: 1 });
+        };
+        if header != "freemix-scoreboard 1" {
+            return Err(ScoreboardDocumentError::Version {
+                found: header.to_owned(),
+            });
+        }
+        let mut next =
+            |expected: &str, index: &mut usize| -> Result<Vec<String>, ScoreboardDocumentError> {
+                let Some((line_index, line)) = lines.next() else {
+                    return Err(ScoreboardDocumentError::Line {
+                        index: line_index_after(*index),
+                    });
+                };
+                *index = line_index + 2;
+                let mut parts = line.split(' ').map(str::to_owned);
+                if parts.next().as_deref() != Some(expected) {
+                    return Err(ScoreboardDocumentError::Line {
+                        index: line_index + 1,
+                    });
+                }
+                Ok(parts.collect())
+            };
+        let mut index = 1_usize;
+        let rules = next("rules", &mut index)?;
+        if rules.len() != 3 {
+            return Err(ScoreboardDocumentError::Line { index: 2 });
+        }
+        let rules = ScoreboardRules {
+            max_score: parse_scoreboard_unsigned::<u32>(&rules[0])
+                .ok_or(ScoreboardDocumentError::Line { index: 2 })?,
+            max_period: parse_scoreboard_unsigned::<u16>(&rules[1])
+                .ok_or(ScoreboardDocumentError::Line { index: 2 })?,
+            shot_clock_ms: parse_optional_u64(&rules[2])
+                .ok_or(ScoreboardDocumentError::Line { index: 2 })?,
+        };
+        let period: u16 = single_value(&mut next("period", &mut index)?)
+            .and_then(|value| parse_scoreboard_unsigned(&value))
+            .ok_or(ScoreboardDocumentError::Line { index: 3 })?;
+        let revision: u64 = single_value(&mut next("revision", &mut index)?)
+            .and_then(|value| parse_scoreboard_unsigned(&value))
+            .ok_or(ScoreboardDocumentError::Line { index: 4 })?;
+        let last_frame: u64 = single_value(&mut next("last_frame", &mut index)?)
+            .and_then(|value| parse_scoreboard_unsigned(&value))
+            .ok_or(ScoreboardDocumentError::Line { index: 5 })?;
+        let mut teams = Vec::new();
+        for side in [TeamSide::Home, TeamSide::Away] {
+            let (prefix, roster_prefix) = match side {
+                TeamSide::Home => ("home", "home-roster"),
+                TeamSide::Away => ("away", "away-roster"),
+            };
+            let fields = next(prefix, &mut index)?;
+            if fields.len() != 5 {
+                return Err(ScoreboardDocumentError::Line { index });
+            }
+            let name = decode_scoreboard_text(&fields[0])
+                .ok_or(ScoreboardDocumentError::Line { index })?;
+            let abbreviation = decode_scoreboard_text(&fields[1])
+                .ok_or(ScoreboardDocumentError::Line { index })?;
+            let score: u32 = parse_scoreboard_unsigned(&fields[2])
+                .ok_or(ScoreboardDocumentError::Line { index })?;
+            let player = parse_scoreboard_player(&fields[3])
+                .ok_or(ScoreboardDocumentError::Line { index })?;
+            let roster_count: usize = parse_scoreboard_unsigned(&fields[4])
+                .ok_or(ScoreboardDocumentError::Line { index })?;
+            if roster_count > MAX_ROSTER_PLAYERS {
+                return Err(ScoreboardDocumentError::Line { index });
+            }
+            let mut roster = Vec::with_capacity(roster_count);
+            for _ in 0..roster_count {
+                let fields = next(roster_prefix, &mut index)?;
+                if fields.len() != 2 {
+                    return Err(ScoreboardDocumentError::Line { index });
+                }
+                let number = parse_optional_frame(&fields[0])
+                    .and_then(|number| number.map(u16::try_from).transpose().ok())
+                    .ok_or(ScoreboardDocumentError::Line { index })?;
+                let name = decode_scoreboard_text(&fields[1])
+                    .ok_or(ScoreboardDocumentError::Line { index })?;
+                roster.push(Player { number, name });
+            }
+            teams.push(TeamState {
+                name,
+                abbreviation,
+                score,
+                roster,
+                player,
+            });
+        }
+        let clock = next("clock", &mut index)?;
+        let clock = parse_scoreboard_clock(&clock)
+            .flatten()
+            .ok_or(ScoreboardDocumentError::Line { index })?;
+        let shot_clock = parse_scoreboard_clock(&next("shot", &mut index)?)
+            .ok_or(ScoreboardDocumentError::Line { index })?;
+        if lines.next().is_some() {
+            return Err(ScoreboardDocumentError::Line { index: index + 1 });
+        }
+        let snapshot = Self {
+            rules,
+            home: teams.remove(0),
+            away: teams.remove(0),
+            period,
+            clock,
+            shot_clock,
+            revision,
+            last_frame,
+        };
+        Scoreboard::restore(snapshot.clone())
+            .map_err(|error| ScoreboardDocumentError::Invalid { error })?;
+        Ok(snapshot)
+    }
+}
+
+fn single_value(fields: &mut Vec<String>) -> Option<String> {
+    (fields.len() == 1).then(|| fields.remove(0))
+}
+
+fn line_index_after(index: usize) -> usize {
+    index.saturating_add(1)
+}

@@ -11,9 +11,9 @@ use fm_titles::{
     CrawlSpeed, Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldValue,
     FontCrawlMeasure, FontStyle, GameClockConfig, HorizontalAlignment, MAX_CRAWL_ITEMS,
     MAX_ROSTER_PLAYERS, Player, ReferenceRenderer, Scoreboard, ScoreboardAction, ScoreboardBinding,
-    ScoreboardError, ScoreboardEvent, ScoreboardPreset, ScoreboardRules, Style, TeamSide,
-    TeamState, TemplateId, TitleId, TitleScene, TitleTemplate, UpdateError, VerticalAlignment,
-    actions_from_external,
+    ScoreboardError, ScoreboardEvent, ScoreboardPreset, ScoreboardRules, ScoreboardSnapshot, Style,
+    TeamSide, TeamState, TemplateId, TitleId, TitleScene, TitleTemplate, UpdateError,
+    VerticalAlignment, actions_from_external,
 };
 use fm_types::FrameRate;
 use std::fs;
@@ -1477,6 +1477,55 @@ fn a_roster_can_be_replaced_atomically() {
         })
     );
     assert_eq!(board, before);
+}
+
+#[test]
+fn scoreboard_documents_round_trip_strictly() {
+    let mut board = board(GameClockConfig {
+        direction: ClockDirection::CountDown,
+        format: ClockFormat::MinutesSecondsTenths,
+        frame_rate: FrameRate::new(30, 1).unwrap(),
+        initial_ms: 90_000,
+        limit_ms: None,
+    });
+    board
+        .apply(
+            0,
+            0,
+            &[
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Home,
+                    player: Player {
+                        number: Some(23),
+                        name: "Jane Doe".into(),
+                    },
+                },
+                ScoreboardAction::SelectRosterPlayer {
+                    side: TeamSide::Home,
+                    index: Some(0),
+                },
+                ScoreboardAction::SetShotClockDuration { value_ms: 30_000 },
+                ScoreboardAction::StartClock,
+            ],
+        )
+        .unwrap();
+    board.advance(10).unwrap();
+    let snapshot = board.snapshot();
+    let document = snapshot.to_document();
+    assert_eq!(
+        ScoreboardSnapshot::from_document(&document),
+        Ok(snapshot.clone())
+    );
+    let restored =
+        Scoreboard::restore(ScoreboardSnapshot::from_document(&document).unwrap()).unwrap();
+    assert_eq!(restored, board);
+    for text in [
+        "freemix-scoreboard 2\n",
+        "freemix-scoreboard 1\nrules 99 4 none\nperiod 1\nrevision 0\nlast_frame 0\nhome x486f6d65 x484f4d 0 none 0\naway x41777979 x415759 0 none 0\nclock none\nshot none\nextra\n",
+        "freemix-scoreboard 1\nrules 99 4 none\nperiod 1\nrevision 0\nlast_frame 0\nhome x486f6d65 x484f4d 0 none 1\naway x41777979 x415759 0 none 0\nclock none\nshot none\n",
+    ] {
+        assert!(ScoreboardSnapshot::from_document(text).is_err(), "{text:?}");
+    }
 }
 
 #[test]
