@@ -433,6 +433,21 @@ per week of work; items 1 and 2 land before any new feature breadth.
    `fm-daemon-journal` (recovery and checkpoints), and an arguments crate,
    as mechanical moves with no behaviour change, verified by the 43 daemon
    test targets. Target: no file over 5k lines, `main.rs` under 1k.
+
+   **Progress (2026-10-31).** The journal and durable document pages, the
+   command-line arguments and web settings, the web gateway, the native
+   media runtime and overlay layout, and the shared renderers (grades,
+   stills, the CPU scene reference, title rendering, and the simulated
+   monitor tap) are now the library crates `fm-daemon-journal`,
+   `fm-daemon-arguments`, `fm-daemon-web`, `fm-daemon-native`,
+   `fm-overlay-layout`, and `fm-daemon-render`. The binary's 12.7k-line
+   unit-test module moved to `tests.rs`, so `main.rs` is 16.5k lines and
+   `apps/freemixd/src` 77.5k, down from 157k. `xtask deps check` allows a
+   service crate to depend on the simulation composition root, which the
+   extracted daemon libraries need. What remains is the pass loop and peer
+   scheduler (`sessions.rs`), the `NativeDaemon` composition, and the
+   runtime consumers; `main.rs` still owns the `NativeDaemon` type and its
+   command window.
 3. **Burn down panics on the frame path.** Add `clippy::unwrap_used` and
    `expect_used` as warnings for `freemixd` only and convert the realizer's
    sites first into typed errors routed through `output_failure`; a panic
