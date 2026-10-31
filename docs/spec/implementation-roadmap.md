@@ -5501,8 +5501,12 @@ the parameter select followed by the data entry. A Linux host also reads
 X-keys-style HID button panels from `/dev/input`: the panel's name and key
 code identify a button, Learn binds it to a console action, and the
 bindings are saved with the key profile as
-`keymap.hid.<len>:<device>.<code> = <action>`. Remaining gaps: no UDP
-transport; the bindings drive console
+`keymap.hid.<len>:<device>.<code> = <action>`. `fm-automation` now has a
+bounded nonblocking UDP OSC endpoint (`OscUdpTransport`): it decodes
+strictly with the codec limits, drops and counts malformed datagrams, refuses
+oversized sends, and keeps send/receive counters. Remaining gaps: nothing
+binds that endpoint to a running daemon or Studio's OSC listener yet; the
+bindings drive console
 actions (and so reach `freemixd` through them) but are not persisted in the
 project; HID panels are not read on macOS or Windows; and MIDI 2.0 and GPIO
 or network tally adapters are absent.

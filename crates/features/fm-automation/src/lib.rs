@@ -17,6 +17,7 @@ mod intent;
 mod macros;
 mod midi;
 mod osc;
+mod osc_transport;
 mod playlist;
 mod playlist_codec;
 mod schedule;
@@ -65,6 +66,9 @@ pub use macros::{
 pub use midi::{
     MAX_MIDI_SYSEX_BYTES, MIDI_14BIT_MAX, MIDI_PITCH_BEND_CENTER, MidiChannel, MidiControlDecoder,
     MidiError, MidiMessage, MidiParser, MidiRealTime, SysExPolicy,
+};
+pub use osc_transport::{
+    OscDatagram, OscReceive, OscSendError, OscTransportCounters, OscUdpTransport,
 };
 pub use osc::{
     MAX_OSC_PACKET_BYTES, OSC_TIME_TAG_IMMEDIATE, OscArg, OscBundle, OscError, OscLimits,
