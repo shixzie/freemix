@@ -229,6 +229,9 @@ fn function_dispatch_requires_completion_in_order() {
         Ok(TcpReply::Dispatch(Translation::Compat(
             CompatIntent::Fade {
                 input: Some(id(4)),
+                effect: fm_protocol::TransitionFavoriteEffect::Mix(
+                    fm_protocol::AutoTransitionKind::Fade,
+                ),
                 duration_millis: 500,
             }
         )))

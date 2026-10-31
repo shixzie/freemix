@@ -143,6 +143,9 @@ pub struct CompatState {
     /// The configured transition duration in milliseconds (`Fade` without
     /// `Duration` uses it; vMix's default is 500).
     pub transition_millis: u32,
+    /// The configured transition effect (`Fade` uses it; vMix's default is
+    /// a fade).
+    pub transition_effect: fm_protocol::TransitionFavoriteEffect,
 }
 
 impl CompatState {
@@ -180,6 +183,9 @@ impl CompatState {
             recording: false,
             streaming: false,
             transition_millis: DEFAULT_TRANSITION_MILLIS,
+            transition_effect: fm_protocol::TransitionFavoriteEffect::Mix(
+                fm_protocol::AutoTransitionKind::Fade,
+            ),
         })
     }
 
@@ -340,11 +346,17 @@ pub enum CompatIntent {
     /// Fade using vMix's millisecond duration, optionally to a selected input.
     Fade {
         input: Option<WireInputId>,
+        effect: fm_protocol::TransitionFavoriteEffect,
         duration_millis: u32,
     },
     /// Configure the duration `Fade` uses when its request omits one; the
     /// dispatcher stores it on the compatibility state.
     SetTransitionDuration { millis: u32 },
+    /// Configure the effect `Fade` uses; the dispatcher stores it on the
+    /// compatibility state.
+    SetTransitionEffect {
+        effect: fm_protocol::TransitionFavoriteEffect,
+    },
     /// Toggle a one-based overlay channel for an input on the main mix.
     ToggleOverlay { channel: u8, input: WireInputId },
     /// Set one title field.
@@ -577,9 +589,30 @@ fn translate(
             let input = optional(parameters, "Input")
                 .map(|reference| state.resolve_input(reference))
                 .transpose()?;
+            let effect = state.transition_effect;
+            if effect == fm_protocol::TransitionFavoriteEffect::Cut {
+                return Ok(
+                    input.map_or(Translation::Protocol(CommandPayload::Cut), |input| {
+                        Translation::Compat(CompatIntent::CutTo { input })
+                    }),
+                );
+            }
             Ok(Translation::Compat(CompatIntent::Fade {
                 input,
+                effect,
                 duration_millis,
+            }))
+        }
+        "SetTransitionEffect" => {
+            allowed(parameters, &["Function", "Value"])?;
+            let effect = parse_transition_effect(required(parameters, "Value")?).ok_or(
+                ParseError::InvalidParameter {
+                    parameter: "Value",
+                    reason: "unknown transition effect",
+                },
+            )?;
+            Ok(Translation::Compat(CompatIntent::SetTransitionEffect {
+                effect,
             }))
         }
         "SetTransitionDuration" => {
@@ -941,6 +974,32 @@ fn allowed(parameters: &[(String, String)], names: &[&str]) -> Result<(), ParseE
 
 fn is_main_mix(parameters: &[(String, String)]) -> bool {
     optional(parameters, "Mix").is_none_or(|mix| mix == "0")
+}
+
+fn parse_transition_effect(value: &str) -> Option<fm_protocol::TransitionFavoriteEffect> {
+    use fm_protocol::{AutoTransitionKind, TransitionFavoriteEffect};
+    let normalized: String = value
+        .chars()
+        .filter(|character| !matches!(character, ' ' | '_' | '-'))
+        .flat_map(char::to_lowercase)
+        .collect();
+    Some(match normalized.as_str() {
+        "cut" => TransitionFavoriteEffect::Cut,
+        "fade" => TransitionFavoriteEffect::Mix(AutoTransitionKind::Fade),
+        "alphafade" | "alpha" => TransitionFavoriteEffect::Mix(AutoTransitionKind::AlphaFade),
+        "wipe" => TransitionFavoriteEffect::Mix(AutoTransitionKind::Wipe),
+        "verticalwipe" => TransitionFavoriteEffect::Mix(AutoTransitionKind::VerticalWipe),
+        "slide" => TransitionFavoriteEffect::Mix(AutoTransitionKind::Slide),
+        "verticalslide" => TransitionFavoriteEffect::Mix(AutoTransitionKind::VerticalSlide),
+        "zoom" => TransitionFavoriteEffect::Mix(AutoTransitionKind::Zoom),
+        "fly" => TransitionFavoriteEffect::Mix(AutoTransitionKind::Fly),
+        "flyrotate" => TransitionFavoriteEffect::Mix(AutoTransitionKind::FlyRotate),
+        "cube" => TransitionFavoriteEffect::Mix(AutoTransitionKind::Cube),
+        "cubezoom" => TransitionFavoriteEffect::Mix(AutoTransitionKind::CubeZoom),
+        "crosszoom" => TransitionFavoriteEffect::Mix(AutoTransitionKind::CrossZoom),
+        "merge" => TransitionFavoriteEffect::Mix(AutoTransitionKind::Merge),
+        _ => return None,
+    })
 }
 
 fn parse_u32(

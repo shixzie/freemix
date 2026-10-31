@@ -92,6 +92,9 @@ fn every_mapped_command_has_stable_output() {
             "Function=Fade&Duration=1000",
             Translation::Compat(CompatIntent::Fade {
                 input: None,
+                effect: fm_protocol::TransitionFavoriteEffect::Mix(
+                    fm_protocol::AutoTransitionKind::Fade,
+                ),
                 duration_millis: 1000,
             }),
         ),
@@ -99,6 +102,9 @@ fn every_mapped_command_has_stable_output() {
             "Function=Fade&Duration=250&Input=Camera+%26+One",
             Translation::Compat(CompatIntent::Fade {
                 input: Some(id(1)),
+                effect: fm_protocol::TransitionFavoriteEffect::Mix(
+                    fm_protocol::AutoTransitionKind::Fade,
+                ),
                 duration_millis: 250,
             }),
         ),
@@ -194,6 +200,9 @@ fn malformed_unknown_and_unsupported_are_distinct() {
         parse_http_query("Function=Fade", &state),
         Ok(Translation::Compat(CompatIntent::Fade {
             input: None,
+            effect: fm_protocol::TransitionFavoriteEffect::Mix(
+                fm_protocol::AutoTransitionKind::Fade,
+            ),
             duration_millis: 500,
         }))
     );
@@ -202,6 +211,37 @@ fn malformed_unknown_and_unsupported_are_distinct() {
         Ok(Translation::Compat(CompatIntent::SetTransitionDuration {
             millis: 1200,
         }))
+    );
+    assert_eq!(
+        parse_http_query("Function=SetTransitionEffect&Value=Zoom", &state),
+        Ok(Translation::Compat(CompatIntent::SetTransitionEffect {
+            effect: fm_protocol::TransitionFavoriteEffect::Mix(
+                fm_protocol::AutoTransitionKind::Zoom,
+            ),
+        }))
+    );
+    let mut zoomed = state.clone();
+    zoomed.transition_effect =
+        fm_protocol::TransitionFavoriteEffect::Mix(fm_protocol::AutoTransitionKind::Zoom);
+    assert_eq!(
+        parse_http_query("Function=Fade&Duration=300", &zoomed),
+        Ok(Translation::Compat(CompatIntent::Fade {
+            input: None,
+            effect: fm_protocol::TransitionFavoriteEffect::Mix(
+                fm_protocol::AutoTransitionKind::Zoom,
+            ),
+            duration_millis: 300,
+        }))
+    );
+    let mut cut = state.clone();
+    cut.transition_effect = fm_protocol::TransitionFavoriteEffect::Cut;
+    assert_eq!(
+        parse_http_query("Function=Fade&Input=2", &cut),
+        Ok(Translation::Compat(CompatIntent::CutTo { input: id(2) }))
+    );
+    assert_eq!(
+        parse_http_query("Function=Fade", &cut),
+        Ok(Translation::Protocol(CommandPayload::Cut))
     );
     assert_eq!(
         parse_http_query("Function=Cut&Function=Fade", &state),
