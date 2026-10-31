@@ -15,12 +15,14 @@ pub use fm_types::audio_bus::{
 
 use crate::InputGainMilliDb;
 
-/// One aux bus's name, fader, and mute.
+/// One aux bus's name, fader, mute, and DSP chain.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuxBus {
     pub name: String,
     pub gain: InputGainMilliDb,
     pub muted: bool,
+    /// The bus's DSP chain (AU-002), after its fader and mute.
+    pub dsp: fm_types::strip_dsp::StripDsp,
 }
 
 impl AuxBus {
@@ -32,6 +34,7 @@ impl AuxBus {
             name: format!("Bus {}", number.letter()),
             gain: InputGainMilliDb::UNITY,
             muted: false,
+            dsp: fm_types::strip_dsp::StripDsp::DEFAULT,
         }
     }
 }
@@ -61,6 +64,11 @@ impl AuxBuses {
 
     pub fn set(&mut self, bus: AuxBusNumber, value: AuxBus) {
         self.0[bus.index()] = value;
+    }
+
+    /// Replaces only `bus`'s DSP chain.
+    pub fn set_dsp(&mut self, bus: AuxBusNumber, dsp: fm_types::strip_dsp::StripDsp) {
+        self.0[bus.index()].dsp = dsp;
     }
 
     /// Every bus with its number, bus A first.

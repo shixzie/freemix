@@ -121,6 +121,13 @@ fn validate_aux_buses(project: &Project, errors: &mut Vec<ValidationError>) {
                 },
             });
         }
+        if bus.dsp.validate().is_err() {
+            errors.push(ValidationError {
+                entity: None,
+                field: "aux_buses.dsp",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
     }
     for &output in project.output_aux_buses().keys() {
         if !project

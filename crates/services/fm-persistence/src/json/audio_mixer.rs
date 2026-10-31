@@ -78,11 +78,13 @@ pub(crate) fn write_audio_mixer(output: &mut String, project: &fm_model::Project
         escape_string(output, &bus.name);
         write!(
             output,
-            "\", \"gain_milli_db\": {}, \"muted\": {}}}",
+            "\", \"gain_milli_db\": {}, \"muted\": {}, \"dsp\": ",
             bus.gain.get(),
             bus.muted
         )
         .expect("writing to a string cannot fail");
+        super::strip_dsp::write_strip_dsp(output, &bus.dsp);
+        output.push('}');
     }
     output.push_str("\n    ],\n    \"output_aux_buses\": [");
     for (index, (id, bus)) in project.output_aux_buses().iter().enumerate() {
@@ -239,8 +241,14 @@ pub(crate) fn parse_aux_buses(object: &mut Object) -> Result<AuxBuses, DecodeErr
             ))
         })?;
         let muted = object.boolean("muted")?;
+        let dsp = super::strip_dsp::parse_strip_dsp(object.take("dsp")?, "aux bus DSP")?;
         object.finish()?;
-        Ok(AuxBus { name, gain, muted })
+        Ok(AuxBus {
+            name,
+            gain,
+            muted,
+            dsp,
+        })
     })?;
     let buses: [AuxBus; AUX_BUS_COUNT] = buses
         .try_into()

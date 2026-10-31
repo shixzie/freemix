@@ -933,7 +933,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(92);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(93);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1388,6 +1388,21 @@ impl Project {
     /// Replaces every aux bus; names are reported by [`Self::validate`].
     pub fn restore_aux_buses(&mut self, buses: crate::AuxBuses) {
         self.aux_buses = buses;
+    }
+
+    /// The DSP chain of aux bus `bus` (AU-002).
+    #[must_use]
+    pub const fn aux_bus_dsp(&self, bus: crate::AuxBusNumber) -> &fm_types::strip_dsp::StripDsp {
+        &self.aux_buses.get(bus).dsp
+    }
+
+    /// Restores aux bus `bus`'s DSP chain (persistence and replay).
+    pub fn set_aux_bus_dsp(
+        &mut self,
+        bus: crate::AuxBusNumber,
+        dsp: fm_types::strip_dsp::StripDsp,
+    ) {
+        self.aux_buses.set_dsp(bus, dsp);
     }
 
     /// The outputs that hear an aux bus instead of Master (AU-002, schema
