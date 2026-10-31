@@ -133,12 +133,30 @@ impl Comparison {
     }
 }
 
+/// A location step's axis.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Axis {
+    /// `/` (and the implicit leading step): children.
+    Child,
+    /// `//`: descendants.
+    Descendant,
+    /// `self::`: the context node.
+    SelfAxis,
+    /// `parent::`: the context node's parent.
+    Parent,
+    /// `ancestor::`: every ancestor, nearest first.
+    Ancestor,
+    /// `following-sibling::`: later siblings, in document order.
+    FollowingSibling,
+    /// `preceding-sibling::`: earlier siblings, in document order.
+    PrecedingSibling,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct Step {
     /// `None` is the `*` wildcard.
     name: Option<String>,
-    /// `//`: select descendants instead of children.
-    descendant: bool,
+    axis: Axis,
     predicates: Vec<Predicate>,
 }
 
@@ -172,9 +190,10 @@ impl CompatState {
         let paths = parse_expression(xpath)?;
         let document = self.document();
         let order = document_order(&document);
+        let parents = parent_map(&document);
         let mut best: Option<(usize, usize, &Node, Option<&str>)> = None;
         for (index, path) in paths.iter().enumerate() {
-            let Some((node, attribute)) = select_path(&document, path) else {
+            let Some((node, attribute)) = select_path(&document, path, &parents) else {
                 continue;
             };
             let position = order
@@ -277,27 +296,29 @@ impl CompatState {
     }
 }
 
-fn select_path<'a>(document: &'a Node, path: &Path) -> Option<(&'a Node, Option<&'a str>)> {
+fn select_path<'a>(
+    document: &'a Node,
+    path: &Path,
+    parents: &std::collections::HashMap<*const Node, &'a Node>,
+) -> Option<(&'a Node, Option<&'a str>)> {
     let (root_step, rest) = path.steps.split_first()?;
-    let mut context: Vec<&Node> = if root_step.descendant {
-        let mut all = Vec::new();
-        collect_descendants(document, &mut all);
-        select(all, root_step)
-    } else {
-        select(std::iter::once(document), root_step)
+    let mut context = match root_step.axis {
+        // The path root is the document itself; a leading child step
+        // matches it as the old evaluator did.
+        Axis::Child | Axis::SelfAxis => select(std::iter::once(document), root_step),
+        Axis::Descendant => {
+            let mut all = Vec::new();
+            collect_descendants(document, &mut all);
+            select(all, root_step)
+        }
+        _ => Vec::new(),
     };
     for step in rest {
-        let mut next = Vec::new();
+        let mut candidates = Vec::new();
         for node in context {
-            if step.descendant {
-                let mut all = Vec::new();
-                collect_descendants(node, &mut all);
-                next.extend(select(all, step));
-            } else {
-                next.extend(select(node.children.iter(), step));
-            }
+            candidates.extend(step_candidates(node, step, parents));
         }
-        context = next;
+        context = select(candidates, step);
     }
     match &path.attribute {
         Some(attribute) => context
@@ -305,6 +326,73 @@ fn select_path<'a>(document: &'a Node, path: &Path) -> Option<(&'a Node, Option<
             .find_map(|node| node.attribute(attribute).map(|value| (*node, Some(value)))),
         None => context.first().map(|node| (*node, None)),
     }
+}
+
+/// The nodes one step selects from `node` along its axis.
+fn step_candidates<'a>(
+    node: &'a Node,
+    step: &Step,
+    parents: &std::collections::HashMap<*const Node, &'a Node>,
+) -> Vec<&'a Node> {
+    match step.axis {
+        Axis::Child => node.children.iter().collect(),
+        Axis::Descendant => {
+            let mut all = Vec::new();
+            collect_descendants(node, &mut all);
+            all
+        }
+        Axis::SelfAxis => vec![node],
+        Axis::Parent => parents
+            .get(&(node as *const Node))
+            .copied()
+            .into_iter()
+            .collect(),
+        Axis::Ancestor => {
+            let mut ancestors = Vec::new();
+            let mut current = node;
+            while let Some(parent) = parents.get(&(current as *const Node)).copied() {
+                ancestors.push(parent);
+                current = parent;
+            }
+            ancestors
+        }
+        Axis::FollowingSibling => sibling_candidates(node, parents, true),
+        Axis::PrecedingSibling => sibling_candidates(node, parents, false),
+    }
+}
+
+fn sibling_candidates<'a>(
+    node: &'a Node,
+    parents: &std::collections::HashMap<*const Node, &'a Node>,
+    following: bool,
+) -> Vec<&'a Node> {
+    let Some(parent) = parents.get(&(node as *const Node)).copied() else {
+        return Vec::new();
+    };
+    let Some(index) = parent
+        .children
+        .iter()
+        .position(|child| std::ptr::eq(child, node))
+    else {
+        return Vec::new();
+    };
+    if following {
+        parent.children[index + 1..].iter().collect()
+    } else {
+        parent.children[..index].iter().collect()
+    }
+}
+
+fn parent_map(document: &Node) -> std::collections::HashMap<*const Node, &Node> {
+    fn visit<'a>(node: &'a Node, map: &mut std::collections::HashMap<*const Node, &'a Node>) {
+        for child in &node.children {
+            map.insert(child as *const Node, node);
+            visit(child, map);
+        }
+    }
+    let mut map = std::collections::HashMap::new();
+    visit(document, &mut map);
+    map
 }
 
 /// Every node's document-order index, for choosing a union's first node.
@@ -455,12 +543,16 @@ fn parse_path(xpath: &str) -> Result<Path, XPathError> {
         position: 0,
     };
     parser.eat(b'/');
-    let mut descendant = parser.eat(b'/');
+    let mut axis = if parser.eat(b'/') {
+        Axis::Descendant
+    } else {
+        Axis::Child
+    };
     let mut steps = Vec::new();
     let mut attribute = None;
     loop {
         if parser.eat(b'@') {
-            if descendant {
+            if axis == Axis::Descendant {
                 return Err(XPathError::Syntax("attribute after '//' is not supported"));
             }
             attribute = Some(parser.name()?.to_owned());
@@ -490,6 +582,14 @@ fn parse_path(xpath: &str) -> Result<Path, XPathError> {
             }
             parser.position = start;
         }
+        if let Some(explicit) = parser.axis() {
+            if axis == Axis::Descendant {
+                return Err(XPathError::Syntax(
+                    "an explicit axis after '//' is not supported",
+                ));
+            }
+            axis = explicit;
+        }
         let name = if parser.eat(b'*') {
             None
         } else {
@@ -507,7 +607,7 @@ fn parse_path(xpath: &str) -> Result<Path, XPathError> {
         }
         steps.push(Step {
             name,
-            descendant,
+            axis,
             predicates,
         });
         if parser.at_end() {
@@ -519,7 +619,11 @@ fn parse_path(xpath: &str) -> Result<Path, XPathError> {
         if parser.at_end() {
             return Err(XPathError::Syntax("trailing '/'"));
         }
-        descendant = parser.eat(b'/');
+        axis = if parser.eat(b'/') {
+            Axis::Descendant
+        } else {
+            Axis::Child
+        };
     }
     if steps.is_empty() {
         return Err(XPathError::Syntax("expected an element step"));
@@ -562,6 +666,29 @@ impl<'a> Parser<'a> {
             return None;
         }
         Some(&self.source[self.position..position])
+    }
+
+    /// Eats an explicit `axis::` prefix, if one of the supported axes
+    /// starts here.
+    fn axis(&mut self) -> Option<Axis> {
+        let name = self.peek_name()?;
+        let axis = match name {
+            "child" => Axis::Child,
+            "descendant" => Axis::Descendant,
+            "self" => Axis::SelfAxis,
+            "parent" => Axis::Parent,
+            "ancestor" => Axis::Ancestor,
+            "following-sibling" => Axis::FollowingSibling,
+            "preceding-sibling" => Axis::PrecedingSibling,
+            _ => return None,
+        };
+        let after = self.position + name.len();
+        if self.source[after..].starts_with("::") {
+            self.position = after + 2;
+            Some(axis)
+        } else {
+            None
+        }
     }
 
     fn literal(&mut self) -> Result<String, XPathError> {

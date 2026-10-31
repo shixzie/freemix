@@ -547,6 +547,43 @@ fn xpath_numeric_comparisons_select_nodes() {
 }
 
 #[test]
+fn xpath_axes_select_parents_ancestors_and_siblings() {
+    let state = state();
+    assert_eq!(
+        state.xml_text("//input/parent::inputs/input[1]/@title"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("//input/self::input[2]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[2]/ancestor::vmix/version"),
+        Ok("29<&\"'".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[1]/following-sibling::input[1]/@title"),
+        Ok("News <GT>".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[3]/preceding-sibling::input[1]/@title"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("//input/child::text[1]"),
+        Ok("A < B & C > D 'ok' \"yes\"".into())
+    );
+    assert!(matches!(
+        state.xml_text("//parent::vmix"),
+        Err(XPathError::Syntax(_))
+    ));
+    assert!(matches!(
+        state.xml_text("//input/following::input"),
+        Err(XPathError::Syntax(_))
+    ));
+}
+
+#[test]
 fn set_volume_translates_the_percentage() {
     let state = state();
     assert_eq!(
