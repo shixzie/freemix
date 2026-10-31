@@ -173,6 +173,9 @@ struct Source {
     /// The page count, title, and notes, or why the asset cannot be read.
     probe: Result<DocumentInfo, DocumentError>,
     renderable: Arc<Mutex<Renderable>>,
+    /// Set when the input naming this source goes away, so an in-flight
+    /// conversion stops instead of finishing into a dropped cache entry.
+    cancelled: Arc<AtomicBool>,
 }
 
 impl Source {
@@ -180,6 +183,7 @@ impl Source {
         Self {
             probe: Err(error.clone()),
             renderable: Arc::new(Mutex::new(Renderable::Failed(error))),
+            cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -388,9 +392,19 @@ impl DocumentPages {
         Some(rendered)
     }
 
-    /// Forgets every asset no input names any more.
+    /// Forgets every asset no input names any more, stopping their
+    /// conversions.
     fn retain(&self, uris: &BTreeSet<&str>) {
         let mut inner = lock(&self.inner);
+        let stopped: Vec<_> = inner
+            .sources
+            .iter()
+            .filter(|(uri, _)| !uris.contains(uri.as_str()))
+            .filter_map(|(_, cell)| cell.get().map(|source| Arc::clone(&source.cancelled)))
+            .collect();
+        for cancelled in stopped {
+            cancelled.store(true, Ordering::Release);
+        }
         inner.sources.retain(|uri, _| uris.contains(uri.as_str()));
         inner
             .failures
@@ -430,6 +444,7 @@ impl DocumentPages {
                 Ok(pdf) => Source {
                     probe: Ok(pdf.info()),
                     renderable: Arc::new(Mutex::new(Renderable::Ready(Pdf::new(pdf)))),
+                    cancelled: Arc::new(AtomicBool::new(false)),
                 },
                 Err(error) => Source::failed(error),
             };
@@ -441,20 +456,30 @@ impl DocumentPages {
                 renderable: Arc::new(Mutex::new(Renderable::Failed(
                     DocumentError::ConverterUnavailable,
                 ))),
+                cancelled: Arc::new(AtomicBool::new(false)),
             };
         };
         let renderable = Arc::new(Mutex::new(Renderable::Converting));
         let slot = Arc::clone(&renderable);
         let changed = Arc::clone(&self.changed);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&cancelled);
         let asset = uri.to_owned();
         let spawned = thread::Builder::new()
             .name("freemixd-document-convert".into())
             .spawn(move || {
-                let pdf_bytes = converter
-                    .convert(format, &bytes, DEFAULT_CONVERSION_TIMEOUT)
-                    .and_then(PdfDocument::open);
-                let result = match pdf_bytes {
+                let converted = converter.convert_cancellable(
+                    format,
+                    &bytes,
+                    DEFAULT_CONVERSION_TIMEOUT,
+                    Some(&stop),
+                );
+                let result = match converted.and_then(PdfDocument::open) {
                     Ok(pdf) => Renderable::Ready(Pdf::new(pdf)),
+                    Err(DocumentError::ConversionCancelled) => {
+                        *lock(&slot) = Renderable::Failed(DocumentError::ConversionCancelled);
+                        return;
+                    }
                     Err(error) => {
                         eprintln!(
                             "FREEMIXD_DOCUMENT\tv=1\tasset={asset}\tconversion=failed\terror={error}"
@@ -470,7 +495,11 @@ impl DocumentPages {
                 "the conversion thread could not start".into(),
             ));
         }
-        Source { probe, renderable }
+        Source {
+            probe,
+            renderable,
+            cancelled,
+        }
     }
 
     /// Reads a document asset, bounded by [`MAX_DOCUMENT_BYTES`].
@@ -858,6 +887,45 @@ mod tests {
             Some("Welcome everyone.")
         );
         assert!(pages.render("asset://talk.pptx", 0, 16, 9).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removing_a_converting_input_stops_its_conversion() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let slides = [SampleSlide {
+            notes: None,
+            hidden: false,
+        }];
+        let root = bundle(&[(
+            "talk.odp",
+            fm_presentations::sample::odp(Some("Talk"), &slides),
+        )]);
+        let started = root.path().join("started");
+        let script = root.path().join("soffice");
+        fs::write(
+            &script,
+            format!("#!/bin/sh\necho yes > '{}'\nsleep 30\n", started.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        let pages = DocumentPages::new(root.path(), Some(OfficeConverter::with_program(&script)));
+        let _ = pages.take_changed();
+        assert_eq!(
+            pages.report("asset://talk.odp").state,
+            DocumentState::Converting
+        );
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !started.exists() {
+            assert!(Instant::now() < deadline, "the converter never started");
+            thread::sleep(Duration::from_millis(10));
+        }
+        // The input went away while its presentation was converting: the
+        // converter is stopped and no completion is published.
+        pages.retain(&BTreeSet::new());
+        thread::sleep(Duration::from_millis(300));
+        assert!(!pages.take_changed(), "a cancelled conversion published");
     }
 
     #[cfg(unix)]

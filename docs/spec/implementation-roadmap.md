@@ -5233,9 +5233,9 @@ a server) and document-aware
 PowerPoint rendering without LibreOffice (no slide builds, transitions, or
 embedded media; a converted deck shows its final slide state), Keynote needs
 a PDF export, scripts, OSC, and the console's slide keys step pages, the
-simulated scene composer does not draw a document used as a Scene layer,
-and conversion is not cancelled when the input is removed (it finishes or
-times out). `IN-014` remains planned.
+simulated scene composer does not draw a document used as a Scene layer;
+removing the input now cancels a running conversion. `IN-014` remains
+planned.
 
 Deferred fault reasons (Protocol 2.63, schema 57): a script part that fails
 after a wait, and a cue action refused when its wait ends, now keep what a

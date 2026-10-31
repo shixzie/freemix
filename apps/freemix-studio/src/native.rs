@@ -6801,6 +6801,7 @@ mod tests {
             id: 7,
             input: WireInputId::new(NonZeroU128::new(2).unwrap()),
             duration_frames: 250,
+            follow_media: false,
             transition: PlaylistTransitionKind::Fade,
             transition_frames: 12,
             enabled: true,
