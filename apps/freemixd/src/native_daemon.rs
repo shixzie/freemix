@@ -2668,12 +2668,8 @@ impl NativeDaemon {
                 continue;
             };
             let fit = status.config.fit;
-            let listing = control.slideshow_listing(slideshow.input);
-            if let Some(next) = usize::try_from(slideshow.page.index)
-                .ok()
-                .and_then(|index| listing.get((index + 1) % listing.len().max(1)))
-            {
-                ahead.push((std::sync::Arc::clone(&next.asset_uri), fit));
+            if let Some(next) = &status.next {
+                ahead.push((std::sync::Arc::clone(next), fit));
             }
             frames.push((slideshow.clone(), fit));
         }

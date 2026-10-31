@@ -5337,9 +5337,9 @@ Remaining gaps:
 - portable bundle export copies a slideshow folder's pictures, the asset
   audit resolves the folder itself, and relink finds and imports a same-named
   folder with pictures;
-- native Ken Burns crops are whole source pixels and a random order's next
-  slide is prefetched approximately; the slideshow textures are reported as
-  a statistics gauge rather than inside the media registry's accounting;
+- native Ken Burns crops are whole source pixels; the slideshow textures are
+  reported as a statistics gauge rather than inside the media registry's
+  accounting;
 - animated GIF and WebP show their first frame; there are no solid colour
   or bars changes here (`IN-010` remains separate);
 - no Windows or macOS native run has been exercised (the code is portable

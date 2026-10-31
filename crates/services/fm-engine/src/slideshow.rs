@@ -173,6 +173,9 @@ pub struct EngineSlideshowStatus {
     pub config: SlideshowConfig,
     pub page: SlideshowPage,
     pub label: String,
+    /// The asset URI the next auto-advance or Next steps to, in the
+    /// slideshow's seeded play order; `None` at the end without Loop.
+    pub next: Option<Arc<str>>,
     pub generation: u64,
 }
 
@@ -512,6 +515,12 @@ impl SlideshowRuntime {
             config: config.clone(),
             page,
             label,
+            next: self
+                .show
+                .as_ref()
+                .and_then(fm_playback::Slideshow::peek_next)
+                .and_then(|id| self.meta.get(&id))
+                .map(|slide| Arc::clone(&slide.asset_uri)),
             generation: self.generation,
         }
     }
