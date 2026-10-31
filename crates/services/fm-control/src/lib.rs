@@ -1562,6 +1562,13 @@ impl<A: AuthorizationHook> ControlService<A> {
         self.engine.set_installed_audio_plugins(plugins);
     }
 
+    /// Every realized Program change since the engine started (OR-015),
+    /// oldest first.
+    #[must_use]
+    pub fn as_run(&self) -> &[fm_engine::EngineAsRunEntry] {
+        self.engine.as_run()
+    }
+
     /// Moves whenever any audio plugin chain changed (AU-006).
     #[must_use]
     pub const fn audio_plugin_generation(&self) -> u64 {

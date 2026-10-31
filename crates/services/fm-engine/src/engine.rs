@@ -1120,6 +1120,22 @@ pub struct FrameResult {
     pub runtime_generation: RuntimeGeneration,
 }
 
+/// One realized Program change the engine keeps for the daemon's as-run log
+/// (OR-015).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EngineAsRunEntry {
+    /// The frame the change was realized on.
+    pub frame: u64,
+    /// The input that went to Program.
+    pub input: InputId,
+    /// Its name when the change was realized.
+    pub name: String,
+}
+
+/// Most realized Program changes the engine keeps for the as-run log; older
+/// entries drop first.
+pub const MAX_AS_RUN_ENTRIES: usize = 4_096;
+
 impl FrameResult {
     /// This frame's Fade-to-Black interval as `output` shows it: the shared
     /// interval when Fade to Black affects the output, otherwise live.
@@ -1295,6 +1311,9 @@ pub struct Engine {
     /// The audio plugin identifiers this daemon can install (AU-006): the
     /// built-in reference processors plus every scanned plugin.
     installed_audio_plugins: Vec<String>,
+    /// Every realized Program change since the engine started (OR-015),
+    /// oldest first, at most [`MAX_AS_RUN_ENTRIES`].
+    as_run: Vec<EngineAsRunEntry>,
 }
 
 impl Engine {
@@ -1328,6 +1347,7 @@ impl Engine {
                 .iter()
                 .map(|plugin| (*plugin).to_owned())
                 .collect(),
+            as_run: Vec::new(),
         }
     }
 
@@ -3103,8 +3123,21 @@ impl Engine {
             self.frame_rate,
         );
         for event in self.realized_switcher.advance_frame_events() {
-            if matches!(event, SwitcherEvent::ProgramChanged { .. }) {
+            if let SwitcherEvent::ProgramChanged { program, .. } = &event {
                 self.transition_in_flight = None;
+                if self.as_run.len() >= MAX_AS_RUN_ENTRIES {
+                    self.as_run.remove(0);
+                }
+                self.as_run.push(EngineAsRunEntry {
+                    frame,
+                    input: *program,
+                    name: self
+                        .commands
+                        .state()
+                        .input_name(*program)
+                        .unwrap_or_default()
+                        .to_owned(),
+                });
             }
             events.push(event);
         }
@@ -3326,6 +3359,13 @@ impl Engine {
         &self.installed_audio_plugins
     }
 
+    /// Every realized Program change since the engine started (OR-015),
+    /// oldest first, at most [`MAX_AS_RUN_ENTRIES`].
+    #[must_use]
+    pub fn as_run(&self) -> &[EngineAsRunEntry] {
+        &self.as_run
+    }
+
     /// Replaces the list of audio plugin identifiers this daemon can
     /// install, as a scanned plugin catalog reports them (AU-006).
     pub fn set_installed_audio_plugins(&mut self, mut plugins: Vec<String>) {
@@ -3544,6 +3584,7 @@ impl Engine {
                 .iter()
                 .map(|plugin| (*plugin).to_owned())
                 .collect(),
+            as_run: Vec::new(),
         })
     }
 }

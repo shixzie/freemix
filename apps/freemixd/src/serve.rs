@@ -623,6 +623,7 @@ pub(crate) fn serve_inner(
         &process_shutdown,
         once,
         web_gateway.as_ref(),
+        store.root(),
     );
     process_shutdown.status.begin_draining();
     let gateway_result = web_gateway.map(web::WebGateway::shutdown);

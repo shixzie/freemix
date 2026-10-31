@@ -912,6 +912,11 @@ pub enum Command {
     Scenes {
         path: PathBuf,
     },
+    /// `as-run <project>`: print the daemon's as-run log beside the project
+    /// (OR-015).
+    AsRun {
+        path: PathBuf,
+    },
     AssetAudit {
         path: PathBuf,
     },
@@ -2333,6 +2338,11 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let path = required_path(&mut arguments, "project path")?;
             reject_extra(&mut arguments)?;
             Ok(Command::Scenes { path })
+        }
+        "as-run" => {
+            let path = required_path(&mut arguments, "project path")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::AsRun { path })
         }
         "asset-audit" => {
             let path = required_path(&mut arguments, "project path")?;

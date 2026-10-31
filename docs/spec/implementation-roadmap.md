@@ -4904,7 +4904,10 @@ length), although an end trigger of the on-air media input advances a playing
 playlist with a journaled `next`; no stinger
 transitions; no enable/disable, loop change, or list editing while the
 playlist runs; no scheduled starts from Studio; no per-entry hard starts or
-calendar recurrence; no vMix API or as-run log. `OR-015` remains planned.
+calendar recurrence; no vMix API. The daemon now appends every realized
+Program change to `as-run.log` beside the bundle (wall clock, engine frame,
+input, and name), and `freemix-cli as-run` prints it. `OR-015` remains
+planned.
 
 Current implementation boundary for item 5 programmed GO (`RC-017`): the
 operator cue list is implemented end to end (schema 48, Protocol 2.51). A

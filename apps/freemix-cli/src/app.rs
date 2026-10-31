@@ -876,6 +876,7 @@ pub fn run(command: Command) -> AppResult<()> {
             let stored = inspect_stored_project(&path)?;
             print_scenes(stored.project());
         }
+        Command::AsRun { path } => print_as_run(&path)?,
         Command::AssetAudit { path } => audit_assets(&path)?,
         Command::AudioStrip {
             path,
@@ -6458,6 +6459,15 @@ fn format_layer_mask(mask: Option<RectMask>) -> String {
             )
         },
     )
+}
+
+/// Prints the daemon's as-run log beside the project bundle (OR-015).
+fn print_as_run(path: &Path) -> AppResult<()> {
+    let log = path.join("as-run.log");
+    let text = fs::read_to_string(&log)
+        .map_err(|error| AppFailure(format!("cannot read {}: {error}", log.display())))?;
+    print!("{text}");
+    Ok(())
 }
 
 /// Renders one layer's ordered effects as `name(parameter,...)` entries joined

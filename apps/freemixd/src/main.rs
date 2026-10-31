@@ -153,6 +153,10 @@ mod command_window;
 #[allow(unused_imports, clippy::wildcard_imports)]
 // the test module names these through its parent glob
 use command_window::*;
+mod as_run;
+#[allow(unused_imports, clippy::wildcard_imports)]
+// the test module names these through its parent glob
+use as_run::*;
 mod serve;
 #[allow(unused_imports, clippy::wildcard_imports)]
 // the test module names these through its parent glob

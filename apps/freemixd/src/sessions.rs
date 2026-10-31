@@ -787,6 +787,7 @@ pub(super) fn run(
     process_shutdown: &ProcessShutdown,
     once: bool,
     web: Option<&WebGateway>,
+    as_run_root: &std::path::Path,
 ) -> AppResult<DaemonShutdownReason> {
     let handshake_timeout =
         Duration::from_millis(server.config().session_limits.heartbeat_timeout_ms);
@@ -854,6 +855,7 @@ pub(super) fn run(
         )),
         replay_pacer: std::cell::RefCell::new(ReplayStatusPacer::default()),
         reel_pacer: std::cell::RefCell::new(ReelStatusPacer::default()),
+        as_run: std::cell::RefCell::new(crate::as_run::AsRunLog::new(as_run_root)),
     };
     let mut native = native;
     // Only the native pacer realizes idle frames between commands, so only
@@ -1702,6 +1704,11 @@ pub(super) fn run(
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }
+        // The as-run log follows every realized Program change (OR-015).
+        runtime
+            .as_run
+            .borrow_mut()
+            .sync(control.borrow().as_run());
         thread::sleep(CLIENT_READ_POLL_INTERVAL);
     }
 }
@@ -2132,6 +2139,8 @@ struct Runtime<'a> {
     replay_pacer: std::cell::RefCell<ReplayStatusPacer>,
     /// Paces `reel_status` (OR-013).
     reel_pacer: std::cell::RefCell<ReelStatusPacer>,
+    /// Writes every realized Program change beside the project (OR-015).
+    as_run: std::cell::RefCell<crate::as_run::AsRunLog>,
 }
 
 impl Runtime<'_> {
