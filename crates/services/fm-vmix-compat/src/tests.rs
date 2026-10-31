@@ -449,6 +449,46 @@ fn xpath_functions_select_attribute_matches_and_text_values() {
 }
 
 #[test]
+fn xpath_unions_pick_the_first_node_in_document_order() {
+    let state = state();
+    // The second operand names an earlier node, so document order wins
+    // over operand order.
+    assert_eq!(
+        state.xml_text("//input[2]/@title | //input[1]/@title"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("//missing | /vmix/version"),
+        Ok("29<&\"'".into())
+    );
+    assert_eq!(
+        state.xml_text("/vmix/overlays | /vmix/version"),
+        Ok("29<&\"'".into())
+    );
+    // A `|` inside a quoted literal does not split the expression.
+    assert_eq!(
+        state.xml_text("//text[@name='Headline\"'] | //missing"),
+        Ok("A < B & C > D 'ok' \"yes\"".into())
+    );
+    assert!(matches!(
+        state.xml_text("//missing | //missing"),
+        Err(XPathError::NotFound)
+    ));
+    assert!(matches!(
+        state.xml_text("//input[1] |"),
+        Err(XPathError::Syntax(_))
+    ));
+    assert!(matches!(
+        state.xml_text("| //input[1]"),
+        Err(XPathError::Syntax(_))
+    ));
+    assert!(matches!(
+        state.xml_text("//a | //b | //c | //d | //e"),
+        Err(XPathError::TooComplex)
+    ));
+}
+
+#[test]
 fn set_volume_translates_the_percentage() {
     let state = state();
     assert_eq!(

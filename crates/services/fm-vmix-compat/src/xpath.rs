@@ -14,6 +14,8 @@ pub const MAX_XPATH_BYTES: usize = 1_024;
 pub const MAX_XPATH_STEPS: usize = 16;
 /// Maximum number of predicates on one location step.
 pub const MAX_XPATH_PREDICATES: usize = 4;
+/// Maximum number of union operands in one `XPath` expression.
+pub const MAX_XPATH_PATHS: usize = 4;
 
 /// Errors from evaluating an `XMLTEXT` `XPath` expression.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -112,8 +114,10 @@ impl CompatState {
     /// [`MAX_XPATH_PREDICATES`] predicates of the form `[N]` (one-based
     /// position), `[@name='value']` (single or double quotes, exact match),
     /// `[contains(@name,'value')]`, or `[starts-with(@name,'value')]`, an
-    /// optional final `text()` step, and an optional final `@name` attribute
-    /// step. Element values follow `XPath` string-value semantics, so
+    /// optional final `text()` step, an optional final `@name` attribute
+    /// step, and up to [`MAX_XPATH_PATHS`] location paths joined by `|`
+    /// (a union, whose first node in document order is used).
+    /// Element values follow `XPath` string-value semantics, so
     /// an `input` element yields its title followed by its text field values.
     ///
     /// # Errors
@@ -121,9 +125,36 @@ impl CompatState {
     /// Returns [`XPathError`] for empty, over-limit, unsupported, or
     /// non-matching expressions.
     pub fn xml_text(&self, xpath: &str) -> Result<String, XPathError> {
-        let path = parse_path(xpath)?;
+        let paths = parse_expression(xpath)?;
         let document = self.document();
-        evaluate(&document, &path).ok_or(XPathError::NotFound)
+        let order = document_order(&document);
+        let mut best: Option<(usize, usize, &Node, Option<&str>)> = None;
+        for (index, path) in paths.iter().enumerate() {
+            let Some((node, attribute)) = select_path(&document, path) else {
+                continue;
+            };
+            let position = order
+                .get(&(node as *const Node))
+                .copied()
+                .unwrap_or(usize::MAX);
+            if best
+                .as_ref()
+                .is_none_or(|(best_position, best_index, _, _)| {
+                    (position, index) < (*best_position, *best_index)
+                })
+            {
+                best = Some((position, index, node, attribute));
+            }
+        }
+        let (_, _, node, attribute) = best.ok_or(XPathError::NotFound)?;
+        match attribute {
+            Some(value) => Ok(value.to_owned()),
+            None => {
+                let mut value = String::new();
+                node.string_value(&mut value);
+                Ok(value)
+            }
+        }
     }
 
     fn document(&self) -> Node {
@@ -202,7 +233,7 @@ impl CompatState {
     }
 }
 
-fn evaluate(document: &Node, path: &Path) -> Option<String> {
+fn select_path<'a>(document: &'a Node, path: &Path) -> Option<(&'a Node, Option<&'a str>)> {
     let (root_step, rest) = path.steps.split_first()?;
     let mut context: Vec<&Node> = if root_step.descendant {
         let mut all = Vec::new();
@@ -227,14 +258,28 @@ fn evaluate(document: &Node, path: &Path) -> Option<String> {
     match &path.attribute {
         Some(attribute) => context
             .iter()
-            .find_map(|node| node.attribute(attribute))
-            .map(str::to_owned),
-        None => context.first().map(|node| {
-            let mut value = String::new();
-            node.string_value(&mut value);
-            value
-        }),
+            .find_map(|node| node.attribute(attribute).map(|value| (*node, Some(value)))),
+        None => context.first().map(|node| (*node, None)),
     }
+}
+
+/// Every node's document-order index, for choosing a union's first node.
+fn document_order(document: &Node) -> std::collections::HashMap<*const Node, usize> {
+    fn visit(
+        node: &Node,
+        next: &mut usize,
+        order: &mut std::collections::HashMap<*const Node, usize>,
+    ) {
+        order.insert(node as *const Node, *next);
+        *next += 1;
+        for child in &node.children {
+            visit(child, next, order);
+        }
+    }
+    let mut order = std::collections::HashMap::new();
+    let mut next = 0;
+    visit(document, &mut next, &mut order);
+    order
 }
 
 fn collect_descendants<'a>(node: &'a Node, output: &mut Vec<&'a Node>) {
@@ -276,6 +321,60 @@ fn select<'a>(candidates: impl IntoIterator<Item = &'a Node>, step: &Step) -> Ve
         };
     }
     selected
+}
+
+/// Splits an expression into its union operands and parses each one.
+/// `|` inside a quoted literal or a predicate/bracket does not split.
+fn parse_expression(xpath: &str) -> Result<Vec<Path>, XPathError> {
+    if xpath.len() > MAX_XPATH_BYTES {
+        return Err(XPathError::TooLong);
+    }
+    if xpath.is_empty() {
+        return Err(XPathError::Empty);
+    }
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut quote: Option<u8> = None;
+    let mut depth = 0_usize;
+    for (index, byte) in xpath.bytes().enumerate() {
+        match quote {
+            Some(open) => {
+                if byte == open {
+                    quote = None;
+                }
+            }
+            None => match byte {
+                b'\'' | b'"' => quote = Some(byte),
+                b'[' | b'(' => depth += 1,
+                b']' | b')' => depth = depth.saturating_sub(1),
+                b'|' if depth == 0 => {
+                    segments.push(&xpath[start..index]);
+                    start = index + 1;
+                }
+                _ => {}
+            },
+        }
+    }
+    if quote.is_some() {
+        return Err(XPathError::Syntax("unterminated literal"));
+    }
+    if depth != 0 {
+        return Err(XPathError::Syntax("unbalanced bracket"));
+    }
+    segments.push(&xpath[start..]);
+    if segments.len() > MAX_XPATH_PATHS {
+        return Err(XPathError::TooComplex);
+    }
+    segments
+        .into_iter()
+        .map(|segment| {
+            let segment = segment.trim();
+            if segment.is_empty() {
+                return Err(XPathError::Syntax("empty union operand"));
+            }
+            parse_path(segment)
+        })
+        .collect()
 }
 
 fn parse_path(xpath: &str) -> Result<Path, XPathError> {
