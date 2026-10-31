@@ -633,3 +633,24 @@ fn recent_projects_record_list_prune_and_remove() {
     fs::write(&recent, b"{\"contract\":\"other\"}").unwrap();
     assert!(!run(&["recent-projects", text(&recent)]).status.success());
 }
+
+#[test]
+fn settings_export_and_import_preview_the_project() {
+    let root = TempRoot::new();
+    let show = root.path("show.freemix");
+    new_project(&show, "Settings show");
+    let export = root.path("settings.json");
+    let out = assert_success(&run(&["settings-export", text(&show), text(&export)]));
+    assert_eq!(out.trim(), "settings-export: 7 entries");
+    let json = fs::read_to_string(&export).unwrap();
+    assert!(
+        json.contains("\"contract\": \"freemix.settings-export\""),
+        "{json}"
+    );
+    assert!(json.contains("\"format.frame_rate.numerator\""), "{json}");
+    let preview = assert_success(&run(&["settings-import", text(&show), text(&export)]));
+    assert_eq!(
+        preview.trim(),
+        "settings-import: 0 added, 0 changed, 0 removed; nothing applied"
+    );
+}
