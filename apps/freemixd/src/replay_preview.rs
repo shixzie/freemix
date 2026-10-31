@@ -1,9 +1,9 @@
 //! Exact Replay multiview snapshots (OR-014).
 //!
 //! A `replay_preview_request` asks the authority for one Replay input's
-//! multiview at its player's current position: up to eight recorded angles
-//! of the cued event, each decoded from its exact segment frame and composed
-//! in an adaptive grid. A native daemon decodes the picture out of the
+//! multiview at its player's current position: the input and its linked A/B
+//! partner, then up to eight recorded angles of the cued event, each decoded
+//! from its exact segment frame and composed in an adaptive grid. A native daemon decodes the picture out of the
 //! segment files off the session loop; a simulated daemon draws one dark
 //! cell per angle because it has no segment media. The answer is one
 //! four-channel QOI stream of straight RGBA8 pixels at the requested size
@@ -24,8 +24,8 @@ use fm_video::ImageFrame;
 
 use crate::title_preview::refusal;
 
-/// Most angles one preview composes.
-const MAX_PREVIEW_TILES: usize = 8;
+/// Most tiles one preview composes: eight angles plus channels A and B.
+const MAX_PREVIEW_TILES: usize = 10;
 
 /// The grid columns for `tiles`: one angle fills the canvas, two to four
 /// make a 2x2 quad, and more make a four-column grid (eight angles are
@@ -109,9 +109,9 @@ impl ReplayPreviewJob {
         ))
     }
 
-    /// The adaptive grid: the angles in row-major order, each scaled into its
-    /// cell; empty cells stay black and an angle with no decoded picture gets
-    /// a dark tinted cell.
+    /// The adaptive grid: the channel tiles first, then the angles, each
+    /// scaled into its cell; empty cells stay black and a source with no
+    /// decoded picture gets a dark tinted cell.
     fn composite(&self, format: Option<PreviewVideoFormat>) -> Vec<u8> {
         let width = usize::from(self.width);
         let height = usize::from(self.height);
@@ -119,10 +119,16 @@ impl ReplayPreviewJob {
         for pixel in pixels.as_chunks_mut::<4>().0 {
             pixel[3] = u8::MAX;
         }
-        let tiles = self.multiview.tiles.len().min(MAX_PREVIEW_TILES);
-        let columns = preview_columns(tiles);
-        let rows = tiles.div_ceil(columns);
-        for (index, tile) in self.multiview.tiles.iter().take(tiles).enumerate() {
+        let tiles: Vec<&EngineReplayTile> = self
+            .multiview
+            .channels
+            .iter()
+            .chain(self.multiview.tiles.iter())
+            .take(MAX_PREVIEW_TILES)
+            .collect();
+        let columns = preview_columns(tiles.len());
+        let rows = tiles.len().div_ceil(columns);
+        for (index, tile) in tiles.into_iter().enumerate() {
             let (column, row) = (index % columns, index / columns);
             let left = column * width / columns;
             let top = row * height / rows;
@@ -250,6 +256,7 @@ mod tests {
                 input: input(9),
                 event: 1,
                 source_frame: 0,
+                channels: Vec::new(),
                 tiles,
             },
         };

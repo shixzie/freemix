@@ -1505,6 +1505,8 @@ fn a_multiview_lists_all_eight_recorded_angles() {
     settle(&mut engine);
     let multiview = engine.replay_multiview(input(9)).expect("a cued player");
     assert_eq!(multiview.event, 1);
+    assert_eq!(multiview.channels.len(), 1);
+    assert_eq!(multiview.channels[0].angle, input(1));
     assert_eq!(multiview.tiles.len(), 8);
     for (index, tile) in multiview.tiles.iter().enumerate() {
         assert_eq!(tile.angle, input(u128::try_from(index + 1).unwrap()));

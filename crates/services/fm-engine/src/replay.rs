@@ -323,6 +323,9 @@ pub struct EngineReplayMultiview {
     pub input: InputId,
     pub event: u32,
     pub source_frame: u64,
+    /// The Replay input itself, then its linked A/B partner when it has one:
+    /// each channel's own angle and position at this instant.
+    pub channels: Vec<EngineReplayTile>,
     /// Up to [`MAX_MULTIVIEW_ANGLES`] angles, in the event's source order.
     pub tiles: Vec<EngineReplayTile>,
 }
@@ -2186,15 +2189,23 @@ impl ReplayRuntime {
     }
 
     /// The up-to-eight-angle view of Replay input `input` at its player's
-    /// current position, or `None` when nothing is cued on it (OR-014).
+    /// current position, with the player and its linked A/B partner as the
+    /// first channel tiles, or `None` when nothing is cued on it (OR-014).
     pub(crate) fn multiview(&self, input: InputId) -> Option<EngineReplayMultiview> {
         let player = self.players.get(&input)?;
+        let linked = player.linked;
         let event = player
             .event
             .and_then(|id| self.store.event_frames.get(&id).map(|stored| (id, stored)))?;
         let (id, stored) = event;
         let source_frame =
             (stored.in_frame + player.position / 4).min(stored.out_frame.saturating_sub(1));
+        let mut channels: Vec<EngineReplayTile> = self.channel_tile(input).into_iter().collect();
+        if let Some(linked) = linked
+            && linked != input
+        {
+            channels.extend(self.channel_tile(linked));
+        }
         let tiles = stored
             .angles
             .iter()
@@ -2209,7 +2220,27 @@ impl ReplayRuntime {
             input,
             event: id,
             source_frame,
+            channels,
             tiles,
+        })
+    }
+
+    /// One Replay input's own tile: the angle it shows at its own position.
+    fn channel_tile(&self, input: InputId) -> Option<EngineReplayTile> {
+        let player = self.players.get(&input)?;
+        let event = player
+            .event
+            .and_then(|id| self.store.event_frames.get(&id))?;
+        let source_frame =
+            (event.in_frame + player.position / 4).min(event.out_frame.saturating_sub(1));
+        let angle = player
+            .angle
+            .filter(|angle| event.angles.contains(angle))
+            .or_else(|| event.angles.first().copied())?;
+        Some(EngineReplayTile {
+            angle,
+            source_frame,
+            location: self.locate(angle, source_frame),
         })
     }
 
