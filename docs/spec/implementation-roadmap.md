@@ -284,6 +284,17 @@ per week of work; items 1 and 2 land before any new feature breadth.
    wall-clock bounds; the frame loop's own CPU time and startup stalls are
    still checked there).
 
+   **First stage (landed).** The Preview composite and its monitor tap are
+   deferred out of the frame: a due composite becomes a
+   `native_realizer::NativePreviewJob` in a one-slot latest-wins queue, and
+   after the pass's peer work `service_deferred_preview` renders it only when
+   at least 2 ms remain before the next Program deadline; otherwise the job
+   stays queued and a display that shows Preview keeps its last picture.
+   This removes the composite from between Program and its deadline without
+   a thread yet, and establishes the bounded latest-wins handoff the
+   realizer thread will consume. The native display, Preview-tap,
+   transition, and pacing suites stay green.
+
    **Split plan.** The bounded channel carries a `NativeFrameJob` (the
    engine's `FrameResult`, which is plain data, plus the plan deltas the
    media side applies) to a `NativeRealizer` thread that owns `runtime`
@@ -1151,9 +1162,12 @@ Remaining gaps: presentation is SDR-only and winit exposes no HDR capability,
 so `hdr=auto` reports `sdr-capability-unknown` or `sdr-presenter-limited`
 rather than driving HDR; window placement happens on one event-loop thread
 polled every 500 ms rather than on platform hot-plug notifications; the
-Preview composite is rendered on the realization thread rather than off the
-Program critical path; and no multi-monitor hardware, Windows, or macOS
-evidence has been recorded. `OR-011` remains planned.
+Preview composite now runs after the pass's peer work in the slack before the
+next Program deadline (a one-slot latest-wins job, at most one frame late)
+rather than between Program and that deadline, though it still runs on the
+realization thread until the media-thread split lands; and no multi-monitor
+hardware, Windows, or macOS evidence has been recorded. `OR-011` remains
+planned.
 
 Exit: a useful offline/file-based switcher, with no engine dependency on UI
 lifecycle.

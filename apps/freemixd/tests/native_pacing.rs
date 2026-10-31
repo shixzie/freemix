@@ -707,7 +707,7 @@ fn recorder_and_stream_startup_never_make_program_frames_late() {
         .enumerate()
         .filter(|&(index, frame)| {
             !contended(frame)
-                && !(software && index == 0)
+                && (!software || index != 0)
                 && frame.realize >= if index == 0 { cold_bound } else { bound }
         })
         .map(|(index, frame)| (index, frame.realize))

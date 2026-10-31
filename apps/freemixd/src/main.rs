@@ -129,6 +129,8 @@ mod native_live_lan;
 #[cfg(feature = "native-media")]
 mod native_portal_capture;
 #[cfg(feature = "native-media")]
+mod native_realizer;
+#[cfg(feature = "native-media")]
 mod native_reel;
 #[cfg(feature = "native-media")]
 mod native_replay;
@@ -838,6 +840,10 @@ struct NativeDaemon {
     /// The Preview composite, rendered only while a display output shows
     /// Preview and on the Preview monitor tap's due frames.
     latest_preview: Option<NativeTexture>,
+    /// The newest Preview composite waiting for slack after a pass's peer
+    /// work, so it never sits between Program and the next frame deadline.
+    /// One slot: a newer frame replaces an older one.
+    pending_preview: native_realizer::NativePreviewQueue,
     /// Whether the last Preview composite failed (reported once per run of
     /// failures).
     preview_failed: bool,
@@ -5407,6 +5413,7 @@ impl NativeDaemon {
             display_sync: display_outputs::DisplayOutputSync::default(),
             display_pacing: display_outputs::PresentationPacing::default(),
             latest_preview: None,
+            pending_preview: native_realizer::NativePreviewQueue::new(),
             preview_failed: false,
             live_lan: None,
             replay: None,
@@ -5638,6 +5645,40 @@ impl NativeDaemon {
                 self.preview_failed = true;
                 self.latest_preview = None;
             }
+        }
+    }
+
+    /// A composite that would not finish this margin before the next Program
+    /// deadline waits for the next pass.
+    const PREVIEW_SLACK: Duration = Duration::from_millis(2);
+
+    /// Renders the deferred Preview composite when the pass has slack before
+    /// its next Program frame: the composite and its monitor tap never sit
+    /// between Program and that frame's deadline. A loop without slack keeps
+    /// the newest deferred frame for the next pass; a newer frame replaces it.
+    fn service_deferred_preview(&mut self) {
+        let Some(job) = self.pending_preview.take() else {
+            return;
+        };
+        let Ok(deadline) = self.next_deadline() else {
+            return;
+        };
+        // A composite that would not finish a comfortable margin before the
+        // next frame waits instead; Program's deadline wins.
+        if Instant::now() + Self::PREVIEW_SLACK >= deadline {
+            self.pending_preview.requeue(job);
+            return;
+        }
+        self.render_display_preview(Some(job.frame), job.preview);
+        if let Some(tap_frame) = job.tap_frame {
+            self.monitor.capture(
+                MonitorTap::Preview,
+                &self.runtime,
+                self.latest_preview.as_ref(),
+                tap_frame,
+                job.preview,
+                &mut self.telemetry,
+            );
         }
     }
 
@@ -7687,19 +7728,22 @@ impl NativeDaemon {
             due => due,
         };
         if preview_composite_due(shows_preview, display_due, preview_tap_frame.is_some()) {
-            self.render_display_preview(preview_source, preview);
+            // The composite waits for the pass's slack (see
+            // `service_deferred_preview`): a display that shows Preview keeps
+            // its last picture for a frame rather than delaying Program.
+            if let Some(frame) = preview_source {
+                self.pending_preview
+                    .submit(native_realizer::NativePreviewJob {
+                        frame,
+                        preview,
+                        tap_frame: preview_tap_frame,
+                    });
+            }
         } else if !shows_preview {
             self.latest_preview = None;
+            self.pending_preview.clear();
         }
-        if let Some(frame) = preview_tap_frame {
-            self.monitor.capture(
-                MonitorTap::Preview,
-                &self.runtime,
-                self.latest_preview.as_ref(),
-                frame,
-                preview,
-                &mut self.telemetry,
-            );
+        if preview_tap_frame.is_some() {
             self.monitor
                 .preview_pacing
                 .presented(started, Instant::now());
@@ -9136,6 +9180,9 @@ impl NativeDaemon {
 
     #[allow(clippy::unused_self)]
     fn advance_recordings(&mut self) {}
+
+    #[allow(clippy::unused_self)]
+    fn service_deferred_preview(&mut self) {}
 
     #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
     fn start_and_prime_configured_recorders(

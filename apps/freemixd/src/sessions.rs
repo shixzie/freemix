@@ -1658,6 +1658,11 @@ pub(super) fn run(
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
             return Ok(shutdown_for_reason(reason, &mut peers, control));
         }
+        // Preview's composite and tap use the slack left after this pass's
+        // peer work, never the slot before the next Program frame.
+        if let Some(native) = native.as_deref_mut() {
+            native.service_deferred_preview();
+        }
         thread::sleep(CLIENT_READ_POLL_INTERVAL);
     }
 }
