@@ -13,6 +13,9 @@
 //!   state is one little-endian `i32` in millidB (absent means 0 dBFS),
 //!   bounded to `-60_000..=0`.
 //!
+//! A slot's named parameter overrides its opaque state: `gain_millidb` for the
+//! trim and `threshold_millidb` for the soft clipper, as exact whole millidB.
+//!
 //! A rack is built from one [`PluginChain`]; bypassed slots are skipped,
 //! unknown plugin identifiers are refused, and [`ReferenceRack::latency_frames`]
 //! reports the chain's effective latency for a caller that delays parallel
@@ -35,6 +38,10 @@ pub const REFERENCE_TRIM: &str = "freemix.reference.trim";
 pub const REFERENCE_POLARITY: &str = "freemix.reference.polarity";
 /// The stable identifier of the reference soft clipper.
 pub const REFERENCE_SOFTCLIP: &str = "freemix.reference.softclip";
+/// The trim's named gain parameter, in millidB.
+pub const PARAMETER_TRIM_GAIN_MILLIDB: &str = "gain_millidb";
+/// The soft clipper's named threshold parameter, in millidB.
+pub const PARAMETER_SOFTCLIP_THRESHOLD_MILLIDB: &str = "threshold_millidb";
 
 /// Every plugin identifier this build renders.
 pub const REFERENCE_PLUGINS: [&str; 3] = [REFERENCE_TRIM, REFERENCE_POLARITY, REFERENCE_SOFTCLIP];
@@ -215,7 +222,17 @@ impl ReferenceRack {
 fn build(slot: &PluginSlot) -> Result<Box<dyn Processor>, ReferenceError> {
     match slot.plugin().as_str() {
         REFERENCE_TRIM => {
-            let milli_db = state_i32(slot, MIN_REFERENCE_TRIM_MILLIDB, MAX_REFERENCE_TRIM_MILLIDB)?;
+            let milli_db = match parameter_i32(
+                slot,
+                PARAMETER_TRIM_GAIN_MILLIDB,
+                MIN_REFERENCE_TRIM_MILLIDB,
+                MAX_REFERENCE_TRIM_MILLIDB,
+            )? {
+                Some(value) => value,
+                None => {
+                    state_i32(slot, MIN_REFERENCE_TRIM_MILLIDB, MAX_REFERENCE_TRIM_MILLIDB)?
+                }
+            };
             #[allow(clippy::cast_precision_loss)]
             let gain = 10_f32.powf(milli_db as f32 / 20_000.0);
             Ok(Box::new(Trim { gain }))
@@ -225,7 +242,15 @@ fn build(slot: &PluginSlot) -> Result<Box<dyn Processor>, ReferenceError> {
             Ok(Box::new(Polarity))
         }
         REFERENCE_SOFTCLIP => {
-            let milli_db = state_i32(slot, MIN_REFERENCE_CLIP_MILLIDB, MAX_REFERENCE_CLIP_MILLIDB)?;
+            let milli_db = match parameter_i32(
+                slot,
+                PARAMETER_SOFTCLIP_THRESHOLD_MILLIDB,
+                MIN_REFERENCE_CLIP_MILLIDB,
+                MAX_REFERENCE_CLIP_MILLIDB,
+            )? {
+                Some(value) => value,
+                None => state_i32(slot, MIN_REFERENCE_CLIP_MILLIDB, MAX_REFERENCE_CLIP_MILLIDB)?,
+            };
             #[allow(clippy::cast_precision_loss)]
             let threshold = 10_f32.powf(milli_db as f32 / 20_000.0);
             Ok(Box::new(SoftClip { threshold }))
@@ -241,6 +266,35 @@ fn refuse_state(slot: &PluginSlot) -> Result<(), ReferenceError> {
         }
         _ => Ok(()),
     }
+}
+
+/// A named whole-millidB parameter, when the slot carries it.
+fn parameter_i32(
+    slot: &PluginSlot,
+    parameter: &'static str,
+    minimum: i32,
+    maximum: i32,
+) -> Result<Option<i32>, ReferenceError> {
+    let Some(value) = slot.parameter(parameter) else {
+        return Ok(None);
+    };
+    if !value.is_finite() || value.fract() != 0.0 {
+        return Err(ReferenceError::InvalidParameter {
+            plugin: slot.plugin().clone(),
+            parameter,
+        });
+    }
+    let numeric = f64::from(value);
+    if numeric < f64::from(minimum) || numeric > f64::from(maximum) {
+        return Err(ReferenceError::InvalidParameter {
+            plugin: slot.plugin().clone(),
+            parameter,
+        });
+    }
+    // The value is finite, integral, and inside `minimum..=maximum`, so the
+    // conversion cannot truncate.
+    #[allow(clippy::cast_possible_truncation)]
+    Ok(Some(value as i32))
 }
 
 fn state_i32(slot: &PluginSlot, minimum: i32, maximum: i32) -> Result<i32, ReferenceError> {
@@ -272,6 +326,12 @@ pub enum ReferenceError {
     UnsupportedPlugin(PluginId),
     /// The plugin's state is not its configuration.
     InvalidState(PluginId),
+    /// A named parameter is not a finite whole value in the processor's
+    /// range.
+    InvalidParameter {
+        plugin: PluginId,
+        parameter: &'static str,
+    },
     /// The sample rate is not finite and positive.
     InvalidSampleRate,
 }
@@ -285,9 +345,97 @@ impl fmt::Display for ReferenceError {
             Self::InvalidState(plugin) => {
                 write!(formatter, "plugin {plugin} holds an invalid state")
             }
+            Self::InvalidParameter { plugin, parameter } => {
+                write!(formatter, "plugin {plugin} parameter {parameter} is invalid")
+            }
             Self::InvalidSampleRate => write!(formatter, "the sample rate is not positive"),
         }
     }
 }
 
 impl std::error::Error for ReferenceError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{PluginChain, PluginSlot, ProtocolLimits, StateSnapshot, StateVersion};
+
+    fn built(slot: PluginSlot) -> ReferenceRack {
+        let mut chain = PluginChain::new();
+        chain.push(slot).unwrap();
+        ReferenceRack::new(&chain, 48_000.0).unwrap()
+    }
+
+    fn process(rack: &mut ReferenceRack, sample: f32) -> f32 {
+        let mut planes = vec![vec![sample]];
+        rack.process(&mut planes, 1);
+        planes[0][0]
+    }
+
+    #[test]
+    fn named_parameters_drive_the_trim_and_override_state() {
+        let expected = 10_f32.powf(-6000.0 / 20_000.0);
+
+        let mut trim = PluginSlot::new(PluginId::new(REFERENCE_TRIM));
+        trim.set_parameter(PARAMETER_TRIM_GAIN_MILLIDB, -6000.0)
+            .unwrap();
+        let mut rack = built(trim);
+        assert!((process(&mut rack, 1.0) - expected).abs() < 1e-5);
+
+        // The opaque state still configures a slot without a parameter.
+        let mut trim = PluginSlot::new(PluginId::new(REFERENCE_TRIM));
+        let snapshot = StateSnapshot::new(
+            PluginId::new(REFERENCE_TRIM),
+            StateVersion::new(0),
+            state_bytes(-6000),
+            &ProtocolLimits::default(),
+        )
+        .unwrap();
+        trim.store_snapshot(snapshot).unwrap();
+        let mut rack = built(trim);
+        assert!((process(&mut rack, 1.0) - expected).abs() < 1e-5);
+
+        // A named parameter wins over a conflicting state.
+        let mut trim = PluginSlot::new(PluginId::new(REFERENCE_TRIM));
+        let snapshot = StateSnapshot::new(
+            PluginId::new(REFERENCE_TRIM),
+            StateVersion::new(0),
+            state_bytes(-12_000),
+            &ProtocolLimits::default(),
+        )
+        .unwrap();
+        trim.store_snapshot(snapshot).unwrap();
+        trim.set_parameter(PARAMETER_TRIM_GAIN_MILLIDB, 0.0)
+            .unwrap();
+        let mut rack = built(trim);
+        assert!((process(&mut rack, 1.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn invalid_named_parameters_are_refused() {
+        for value in [24_001.0, -96_001.0, 0.5] {
+            let mut trim = PluginSlot::new(PluginId::new(REFERENCE_TRIM));
+            trim.set_parameter(PARAMETER_TRIM_GAIN_MILLIDB, value)
+                .unwrap();
+            let mut chain = PluginChain::new();
+            chain.push(trim).unwrap();
+            assert_eq!(
+                ReferenceRack::new(&chain, 48_000.0).unwrap_err(),
+                ReferenceError::InvalidParameter {
+                    plugin: PluginId::new(REFERENCE_TRIM),
+                    parameter: PARAMETER_TRIM_GAIN_MILLIDB,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn softclip_reads_its_named_threshold() {
+        let mut slot = PluginSlot::new(PluginId::new(REFERENCE_SOFTCLIP));
+        slot.set_parameter(PARAMETER_SOFTCLIP_THRESHOLD_MILLIDB, -6000.0)
+            .unwrap();
+        let mut rack = built(slot);
+        let output = process(&mut rack, 1.0);
+        assert!(output > 0.0 && output < 1.0, "{output}");
+    }
+}

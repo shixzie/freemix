@@ -251,10 +251,12 @@ there come before any new breadth below.
     bounded, finite parameter values at the API level (name-addressed, in
     name order); they persist in `project.json` (schema 105) and travel on
     the wire as exact `f32` bit patterns (Protocol 2.148), strictly
-    validated and canonically ordered in both forms. Remaining: nothing
-    applies those values to a plugin yet (the reference processors read
-    their opaque state), and a real sandboxed plugin in the chain (see the
-    Phase 8 boundary).
+    validated and canonically ordered in both forms. The reference trim and
+    soft clipper read their named `gain_millidb` and `threshold_millidb`
+    parameters as whole millidB when present, falling back to their opaque
+    state; parameters for plugins beyond the reference set are still stored
+    without an effect, and a real sandboxed plugin in the chain is still
+    absent (see the Phase 8 boundary).
 15. **MIDI and controller surfaces (`RC-005`).** Studio reads ALSA raw MIDI
     ports on Linux, `CoreMIDI` on macOS, and `WinMM` on Windows, and binds
     notes, controls, and NRPN/RPN parameters to console actions, with LED
