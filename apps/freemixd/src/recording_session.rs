@@ -20,10 +20,12 @@
 //! While a segment records, [`RemainingTimeWatch`] samples the active
 //! directory's free space every few seconds and reports a
 //! `FREEMIXD_RECORDER_REMAINING` record each time the estimated remaining
-//! recording time crosses 30, 10, or 2 minutes, hysteretically, and again
-//! when it clears. Every live session holds an advisory lock on its name, so
-//! startup recovery reports a session another daemon is still recording as
-//! `status=locked` and leaves its files alone.
+//! recording time crosses the configured thresholds (30, 10, and 2 minutes
+//! by default; `FREEMIXD_RECORDER_REMAINING_MINUTES` takes a descending,
+//! comma-separated list), hysteretically, and again when it clears. Every
+//! live session holds an advisory lock on its name, so startup recovery
+//! reports a session another daemon is still recording as `status=locked`
+//! and leaves its files alone.
 //!
 //! Every record this module renders is path-free apart from the session name,
 //! which is the operator's own file stem.
@@ -62,16 +64,49 @@ const PREFLIGHT_MINIMUM: Duration = Duration::from_mins(5);
 const DEFAULT_AUDIO_BITS_PER_CHANNEL: u64 = 64_000;
 /// libx264 bits per pixel assumed when the slot keeps the encoder default.
 const DEFAULT_VIDEO_MILLIBITS_PER_PIXEL: u64 = 150;
-/// Remaining recording times whose crossing is reported while recording.
+/// Remaining recording times whose crossing is reported while recording,
+/// unless [`REMAINING_THRESHOLDS_ENV`] overrides them.
 const REMAINING_THRESHOLDS: [Duration; 3] = [
     Duration::from_mins(30),
     Duration::from_mins(10),
     Duration::from_mins(2),
 ];
+/// Environment variable naming the remaining-time warning thresholds, in
+/// whole minutes, descending and comma separated (1 through 1440 each, at
+/// most [`fm_record::MAX_REMAINING_THRESHOLDS`]). An invalid list keeps the
+/// defaults.
+pub(crate) const REMAINING_THRESHOLDS_ENV: &str = "FREEMIXD_RECORDER_REMAINING_MINUTES";
 /// How far above a crossed threshold remaining time must climb to clear it.
 const REMAINING_CLEAR_MARGIN: Duration = Duration::from_mins(1);
 /// Spacing of the free-space samples behind remaining-time records.
 const REMAINING_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// The configured remaining-time thresholds, or [`REMAINING_THRESHOLDS`]
+/// when the environment names none or an invalid list.
+fn configured_remaining_thresholds() -> Vec<Duration> {
+    std::env::var(REMAINING_THRESHOLDS_ENV)
+        .ok()
+        .and_then(|value| parse_remaining_thresholds(&value))
+        .unwrap_or_else(|| REMAINING_THRESHOLDS.to_vec())
+}
+
+/// Parses `minutes` as a descending, unique, comma-separated list of whole
+/// minutes in `1..=1440`, at most [`fm_record::MAX_REMAINING_THRESHOLDS`].
+fn parse_remaining_thresholds(minutes: &str) -> Option<Vec<Duration>> {
+    let minutes: Vec<u64> = minutes
+        .split(',')
+        .map(str::trim)
+        .map(|token| token.parse::<u64>().ok())
+        .collect::<Option<Vec<u64>>>()?;
+    if minutes.is_empty()
+        || minutes.len() > fm_record::MAX_REMAINING_THRESHOLDS
+        || minutes.iter().any(|minutes| !(1..=1_440).contains(minutes))
+        || minutes.windows(2).any(|pair| pair[0] <= pair[1])
+    {
+        return None;
+    }
+    Some(minutes.into_iter().map(Duration::from_mins).collect())
+}
 
 /// Segment storage used for every native recording session: plain files,
 /// with free space measured through the daemon's own probe.
@@ -594,14 +629,20 @@ pub(crate) struct RemainingTimeWatch {
 
 impl Default for RemainingTimeWatch {
     fn default() -> Self {
-        Self {
-            alarm: RemainingTimeAlarm::new(&REMAINING_THRESHOLDS, REMAINING_CLEAR_MARGIN),
-            sampled_at: None,
-        }
+        Self::with_thresholds(configured_remaining_thresholds(), REMAINING_CLEAR_MARGIN)
     }
 }
 
 impl RemainingTimeWatch {
+    /// A watch reporting crossings of `thresholds` (sorted and bounded by
+    /// [`RemainingTimeAlarm`]) that clear by `clear_margin`.
+    fn with_thresholds(thresholds: Vec<Duration>, clear_margin: Duration) -> Self {
+        Self {
+            alarm: RemainingTimeAlarm::new(&thresholds, clear_margin),
+            sampled_at: None,
+        }
+    }
+
     /// Samples the active directory's free space at most every
     /// [`REMAINING_SAMPLE_INTERVAL`] and returns a
     /// `FREEMIXD_RECORDER_REMAINING` record when the estimated remaining time
@@ -1508,6 +1549,64 @@ mod tests {
         assert!(eased.contains("\tstate=low\tthreshold_s=600\tprevious_threshold_s=120\t"));
         let cleared = sample(7_200).unwrap();
         assert!(cleared.contains("\tstate=normal\tthreshold_s=none\tprevious_threshold_s=600\t"));
+    }
+
+    #[test]
+    fn remaining_thresholds_parse_and_reject_bad_lists() {
+        assert_eq!(
+            parse_remaining_thresholds("30,10,2"),
+            Some(vec![
+                Duration::from_mins(30),
+                Duration::from_mins(10),
+                Duration::from_mins(2),
+            ])
+        );
+        assert_eq!(
+            parse_remaining_thresholds(" 60 , 15 "),
+            Some(vec![Duration::from_mins(60), Duration::from_mins(15)])
+        );
+        for bad in [
+            "",
+            "0",
+            "10,30",
+            "30,30",
+            "30,10,0",
+            "30,x",
+            "1441",
+            "30,10,2,1,1,1,1,1,1",
+        ] {
+            assert_eq!(parse_remaining_thresholds(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn remaining_time_watch_honours_configured_thresholds() {
+        let reserve = SpaceThresholds::default().reserve_bytes;
+        let free = |seconds: u64| reserve + seconds * 1_000_000;
+        let mut watch = RemainingTimeWatch::with_thresholds(
+            vec![Duration::from_mins(5)],
+            Duration::from_mins(1),
+        );
+        assert_eq!(
+            watch.observe_sample(1, "program", 1, free(600), 8_000_000),
+            None
+        );
+        let low = watch
+            .observe_sample(1, "program", 1, free(240), 8_000_000)
+            .unwrap();
+        assert!(low.contains("\tthreshold_s=300\t"), "{low}");
+        assert_eq!(
+            watch.observe_sample(1, "program", 1, free(330), 8_000_000),
+            None,
+            "inside the clear margin"
+        );
+        let cleared = watch
+            .observe_sample(1, "program", 1, free(1_200), 8_000_000)
+            .unwrap();
+        assert!(
+            cleared.contains("\tstate=normal\tthreshold_s=none\t"),
+            "{cleared}"
+        );
     }
 
     #[test]
