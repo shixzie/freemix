@@ -24,6 +24,7 @@ native-media = [
     "dep:fm-replay",
     "dep:fm-scheduler",
     "fm-color/native-wgpu",
+    "fm-daemon-render/native-media",
     "fm-compositor/native-wgpu",
     "fm-gpu/native-wgpu",
     "fm-title-render/images",
@@ -42,6 +43,7 @@ fm-control = { path = "../../crates/services/fm-control" }
 fm-daemon-arguments = { path = "../../crates/services/fm-daemon-arguments" }
 fm-daemon-journal = { path = "../../crates/services/fm-daemon-journal" }
 fm-daemon-native = { path = "../../crates/services/fm-daemon-native", optional = true }
+fm-daemon-render = { path = "../../crates/services/fm-daemon-render" }
 fm-daemon-web = { path = "../../crates/services/fm-daemon-web" }
 fm-engine = { path = "../../crates/services/fm-engine" }
 fm-frame = { path = "../../crates/media/fm-frame" }

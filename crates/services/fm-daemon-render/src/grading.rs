@@ -22,10 +22,7 @@ use fm_persistence::ProjectStore;
 /// record. A LUT that does not load is reported on stderr and left out: its
 /// grades bypass the LUT stage (and a journal replay that re-imports it
 /// restores it), exactly as a missing LUT renders offline.
-pub(crate) fn load_grade_luts(
-    store: &ProjectStore,
-    project: &Project,
-) -> BTreeMap<LutId, EngineLut> {
+pub fn load_grade_luts(store: &ProjectStore, project: &Project) -> BTreeMap<LutId, EngineLut> {
     project
         .luts()
         .iter()
@@ -44,7 +41,7 @@ pub(crate) fn load_grade_luts(
 
 /// Compiled grades of one show, cached per durable revision.
 #[derive(Default)]
-pub(crate) struct GradeCache {
+pub struct GradeCache {
     compiled: Option<(u64, Arc<CompiledProjectGrades>)>,
 }
 
@@ -53,7 +50,7 @@ impl GradeCache {
     /// compiling only when the revision changed, and the same shared grades
     /// as before when the compiled result did not change. A grade that cannot compile (never produced by an
     /// accepted edit) renders ungraded.
-    pub(crate) fn at(&mut self, control: &ControlService<Policy>) -> Arc<CompiledProjectGrades> {
+    pub fn at(&mut self, control: &ControlService<Policy>) -> Arc<CompiledProjectGrades> {
         let revision = control.snapshot().snapshot.revision;
         if let Some((cached, grades)) = &self.compiled
             && *cached == revision

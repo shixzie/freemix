@@ -1733,6 +1733,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "fm-daemon-render"
+version = "0.1.0"
+dependencies = [
+ "fm-auth",
+ "fm-codec-image",
+ "fm-compositor",
+ "fm-control",
+ "fm-daemon-journal",
+ "fm-engine",
+ "fm-frame",
+ "fm-grade",
+ "fm-model",
+ "fm-overlay-layout",
+ "fm-persistence",
+ "fm-protocol",
+ "fm-sim",
+ "fm-switcher",
+ "fm-title-render",
+ "fm-titles",
+ "fm-types",
+ "fm-video",
+ "tempfile",
+]
+
+[[package]]
 name = "fm-daemon-web"
 version = "0.1.0"
 dependencies = [
@@ -2357,6 +2382,7 @@ dependencies = [
  "fm-daemon-arguments",
  "fm-daemon-journal",
  "fm-daemon-native",
+ "fm-daemon-render",
  "fm-daemon-web",
  "fm-engine",
  "fm-frame",

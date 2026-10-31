@@ -1,0 +1,36 @@
+[package]
+name = "fm-daemon-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+# The optional image support of the shared title renderer.
+native-media = ["fm-title-render/images"]
+
+[dependencies]
+fm-auth = { path = "../fm-auth" }
+fm-codec-image = { path = "../../io/fm-codec-image" }
+fm-compositor = { path = "../../gpu/fm-compositor" }
+fm-control = { path = "../fm-control" }
+fm-daemon-journal = { path = "../fm-daemon-journal" }
+fm-engine = { path = "../fm-engine" }
+fm-frame = { path = "../../media/fm-frame" }
+fm-model = { path = "../../foundation/fm-model" }
+fm-overlay-layout = { path = "../fm-overlay-layout" }
+fm-persistence = { path = "../fm-persistence" }
+fm-protocol = { path = "../../foundation/fm-protocol" }
+fm-sim = { path = "../../media/fm-sim" }
+fm-switcher = { path = "../../features/fm-switcher" }
+fm-titles = { path = "../../features/fm-titles" }
+fm-title-render = { path = "../fm-title-render" }
+fm-types = { path = "../../foundation/fm-types" }
+fm-video = { path = "../../media/fm-video" }
+
+[dev-dependencies]
+fm-grade = { path = "../../foundation/fm-grade" }
+tempfile = "3.20"
+
+[lints]
+workspace = true

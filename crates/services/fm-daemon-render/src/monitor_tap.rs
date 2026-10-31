@@ -74,30 +74,25 @@ use fm_switcher::{OverlayBorderPreset, OverlayPositionPreset};
 use fm_titles::{AnimSample, TitleAir};
 use fm_types::{InputId, VideoDimensions};
 
-use crate::documents::DocumentPages;
 use crate::grading::GradeCache;
 use crate::scene_render;
 use crate::stills::{SlidesShown, StillPictures};
 use crate::title_render::{self, TitleAssets, TitleKey};
+use fm_daemon_journal::documents::DocumentPages;
 
 /// The order taps render within one cadence step: the cheap, latency-visible
 /// Preview first, so it is never queued behind a Program Scene composition.
 const MONITOR_TAP_ORDER: [MonitorTap; 2] = [MonitorTap::Preview, MonitorTap::Program];
 
 /// Steady simulated monitor cadence (5 fps).
-pub(crate) const SIMULATED_MONITOR_INTERVAL: Duration = Duration::from_millis(200);
+pub const SIMULATED_MONITOR_INTERVAL: Duration = Duration::from_millis(200);
 /// Smallest gap between two simulated frames, even after a state change.
-pub(crate) const SIMULATED_MONITOR_MIN_GAP: Duration = Duration::from_millis(50);
+pub const SIMULATED_MONITOR_MIN_GAP: Duration = Duration::from_millis(50);
 
 /// Scales `width`x`height` down (never up) to fit `max_width`x`max_height`
 /// while preserving aspect ratio. The scaled side is floored and every side
 /// is at least one pixel. Returns `None` for an empty source.
-pub(crate) fn fit_within(
-    width: u32,
-    height: u32,
-    max_width: u16,
-    max_height: u16,
-) -> Option<(u16, u16)> {
+pub fn fit_within(width: u32, height: u32, max_width: u16, max_height: u16) -> Option<(u16, u16)> {
     if width == 0 || height == 0 || max_width == 0 || max_height == 0 {
         return None;
     }
@@ -117,7 +112,7 @@ pub(crate) fn fit_within(
 }
 
 /// Fits project dimensions to the protocol's monitor frame cap.
-pub(crate) fn fit_monitor(width: u32, height: u32) -> Option<(u16, u16)> {
+pub fn fit_monitor(width: u32, height: u32) -> Option<(u16, u16)> {
     fit_within(
         width,
         height,
@@ -129,7 +124,7 @@ pub(crate) fn fit_monitor(width: u32, height: u32) -> Option<(u16, u16)> {
 /// Encodes every part of one frame into one contiguous byte buffer of wire
 /// lines. Returns `None` when there are no parts or any part fails to encode,
 /// so a partially encodable group is never published.
-pub(crate) fn encode_group(messages: Vec<MonitorFrameMessage>) -> Option<Vec<u8>> {
+pub fn encode_group(messages: Vec<MonitorFrameMessage>) -> Option<Vec<u8>> {
     if messages.is_empty() {
         return None;
     }
@@ -142,24 +137,21 @@ pub(crate) fn encode_group(messages: Vec<MonitorFrameMessage>) -> Option<Vec<u8>
 }
 
 /// One frame's pixel source and identity, ready to encode.
-pub(crate) struct MonitorPicture<'a> {
-    pub(crate) tap: MonitorTap,
-    pub(crate) sequence: u64,
-    pub(crate) frame: u64,
-    pub(crate) input: InputId,
-    pub(crate) origin: MonitorFrameOrigin,
-    pub(crate) width: u16,
-    pub(crate) height: u16,
-    pub(crate) pixels: &'a [u8],
-    pub(crate) stride: usize,
-    pub(crate) bytes_per_pixel: usize,
+pub struct MonitorPicture<'a> {
+    pub tap: MonitorTap,
+    pub sequence: u64,
+    pub frame: u64,
+    pub input: InputId,
+    pub origin: MonitorFrameOrigin,
+    pub width: u16,
+    pub height: u16,
+    pub pixels: &'a [u8],
+    pub stride: usize,
+    pub bytes_per_pixel: usize,
 }
 
 /// QOI-encodes one picture and returns its atomic `monitor_frame` group.
-pub(crate) fn encode_picture(
-    server: &ServerIdentity,
-    picture: &MonitorPicture<'_>,
-) -> Option<Vec<u8>> {
+pub fn encode_picture(server: &ServerIdentity, picture: &MonitorPicture<'_>) -> Option<Vec<u8>> {
     let qoi = encode_qoi_rgb(
         picture.width,
         picture.height,
@@ -183,11 +175,11 @@ pub(crate) fn encode_picture(
 
 /// One realized active overlay the Program tap composites, in channel order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct RealizedOverlay {
-    pub(crate) source: InputId,
-    pub(crate) opacity: u8,
-    pub(crate) position: OverlayPositionPreset,
-    pub(crate) border: OverlayBorderPreset,
+pub struct RealizedOverlay {
+    pub source: InputId,
+    pub opacity: u8,
+    pub position: OverlayPositionPreset,
+    pub border: OverlayBorderPreset,
 }
 
 impl RealizedOverlay {
@@ -218,35 +210,35 @@ impl RealizedOverlay {
 
 /// The realized state a simulated monitor frame depicts.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RealizedMonitorState {
-    pub(crate) revision: u64,
-    pub(crate) frame: u64,
-    pub(crate) program: InputId,
-    pub(crate) preview: InputId,
+pub struct RealizedMonitorState {
+    pub revision: u64,
+    pub frame: u64,
+    pub program: InputId,
+    pub preview: InputId,
     /// Every realized active overlay, in channel order (lowest channel
     /// composites first, so the highest channel is on top).
-    pub(crate) overlays: Vec<RealizedOverlay>,
+    pub overlays: Vec<RealizedOverlay>,
     /// The animation pose of every title a title take put on air, or that
     /// plays its In or Out phase on Program or Preview (GX-001), ascending
     /// by input; any other title renders its Hold pose.
-    pub(crate) titles: Vec<(InputId, AnimSample)>,
+    pub titles: Vec<(InputId, AnimSample)>,
     /// The frame each title input shown on Program, an overlay channel, or
     /// Preview started its timeline on, ascending by input: the engine's
     /// own dating, so tickers and clocks count from the take exactly as
     /// journal replay reproduces it (GX-001).
-    pub(crate) shown: Vec<(InputId, u64)>,
+    pub shown: Vec<(InputId, u64)>,
     /// The animation pose of every Scene input mid or after an In or Out
     /// phase on Program or Preview (GX-011 stage 5), ascending by input;
     /// any other scene renders its Hold pose.
-    pub(crate) scenes: Vec<(InputId, AnimSample)>,
+    pub scenes: Vec<(InputId, AnimSample)>,
     /// The In or Out phase each of those titles is in (where it started and
     /// how long it plays), ascending by input. The simulated engine realizes
     /// a whole phase within the take or off-air command, so `titles` already
     /// holds; the tap replays a phase it saw start over the following wall
     /// time (see [`SimulatedMonitorTap::replay_titles`]).
-    pub(crate) airs: Vec<(InputId, TitleAir)>,
+    pub airs: Vec<(InputId, TitleAir)>,
     /// What every slideshow input shows, ascending by input (IN-009).
-    pub(crate) slideshows: Vec<(InputId, SlidesShown)>,
+    pub slideshows: Vec<(InputId, SlidesShown)>,
 }
 
 /// The realized fields whose change publishes a frame immediately.
@@ -261,7 +253,7 @@ type ChangeKey = (
 );
 
 impl RealizedMonitorState {
-    pub(crate) fn from_control(control: &ControlService<Policy>) -> Self {
+    pub fn from_control(control: &ControlService<Policy>) -> Self {
         let snapshot = &control.snapshot().snapshot;
         Self {
             revision: snapshot.revision,
@@ -385,7 +377,7 @@ struct OverlaySource {
 /// Renders realized Preview and Program from simulated inputs on a bounded
 /// wall-clock cadence while at least one eligible peer wants frames.
 #[derive(Default)]
-pub(crate) struct SimulatedMonitorTap {
+pub struct SimulatedMonitorTap {
     /// Every simulated input at the fitted monitor size; scenes compose
     /// from these same sources.
     pipeline: Option<SimulatedPipeline>,
@@ -426,7 +418,7 @@ pub(crate) struct SimulatedMonitorTap {
 
 impl SimulatedMonitorTap {
     /// A tap rendering title inputs from `titles`.
-    pub(crate) fn with_titles(titles: Arc<TitleAssets>) -> Self {
+    pub fn with_titles(titles: Arc<TitleAssets>) -> Self {
         Self {
             titles,
             ..Self::default()
@@ -434,7 +426,7 @@ impl SimulatedMonitorTap {
     }
 
     /// This tap, rendering document inputs from `documents` (IN-014).
-    pub(crate) fn with_documents(self, documents: Arc<DocumentPages>) -> Self {
+    pub fn with_documents(self, documents: Arc<DocumentPages>) -> Self {
         Self { documents, ..self }
     }
 
@@ -442,7 +434,7 @@ impl SimulatedMonitorTap {
     /// state by value so tests can build it inline.
     #[cfg(test)]
     #[allow(clippy::needless_pass_by_value)]
-    pub(crate) fn poll_state(
+    pub fn poll_state(
         &mut self,
         state: RealizedMonitorState,
         project: &Project,
@@ -463,7 +455,7 @@ impl SimulatedMonitorTap {
     /// Preview renders and is emitted before Program, so a slow Program
     /// Scene composition never holds back the Preview picture of the same
     /// step.
-    pub(crate) fn poll_state_into(
+    pub fn poll_state_into(
         &mut self,
         state: &RealizedMonitorState,
         project: &Project,
@@ -591,7 +583,7 @@ impl SimulatedMonitorTap {
                 pipeline.width(),
                 pipeline.height(),
             )?;
-            let picture = crate::documents::page_over_black(&page)?;
+            let picture = fm_daemon_journal::documents::page_over_black(&page)?;
             return match self.grades.input(input) {
                 Some(grade) => fm_compositor::apply_grade(&picture, grade).ok(),
                 None => Some(picture),
@@ -962,7 +954,7 @@ fn composite_overlays(
 type MonitorWork = Option<(RealizedMonitorState, Arc<MonitorProject>)>;
 
 /// The project a realized state depicts and its compiled grades.
-pub(crate) struct MonitorProject {
+pub struct MonitorProject {
     project: Project,
     grades: Arc<CompiledProjectGrades>,
 }
@@ -1008,7 +1000,7 @@ impl WorkerShared {
 /// silence as a dead connection and reconnects. The session loop only
 /// publishes the latest realized state (latest wins) and collects whichever
 /// encoded groups are already finished.
-pub(crate) struct SimulatedMonitorWorker {
+pub struct SimulatedMonitorWorker {
     shared: Arc<WorkerShared>,
     worker: Option<JoinHandle<()>>,
     project: Option<(u64, Arc<MonitorProject>)>,
@@ -1032,7 +1024,7 @@ impl SimulatedMonitorWorker {
     /// # Errors
     ///
     /// Returns the operating system error when the thread cannot start.
-    pub(crate) fn spawn(
+    pub fn spawn(
         server: ServerIdentity,
         titles: Arc<TitleAssets>,
         documents: Arc<DocumentPages>,
@@ -1075,7 +1067,7 @@ impl SimulatedMonitorWorker {
     /// Publishes the current realized state when it changed and returns the
     /// encoded groups the worker has finished since the last call. Never
     /// waits for a composition.
-    pub(crate) fn poll(
+    pub fn poll(
         &mut self,
         control: &ControlService<Policy>,
         project: &Project,

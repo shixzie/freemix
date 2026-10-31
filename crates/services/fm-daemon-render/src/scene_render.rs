@@ -52,13 +52,13 @@ use fm_types::{InputId, SceneId};
 
 /// Deepest chain of nested scenes below the composed scene (the composed
 /// scene alone is depth 0), as the compositor's flatten planner bounds it.
-pub(crate) const MAX_NESTED_SCENE_DEPTH: usize = FlattenLimits::DEFAULT_MAX_DEPTH;
+pub const MAX_NESTED_SCENE_DEPTH: usize = FlattenLimits::DEFAULT_MAX_DEPTH;
 
 /// Most distinct nested scenes one composition draws, each composed once.
-pub(crate) const MAX_NESTED_SCENES: usize = FlattenLimits::DEFAULT_MAX_SCENES;
+pub const MAX_NESTED_SCENES: usize = FlattenLimits::DEFAULT_MAX_SCENES;
 
 /// Where a composed scene's leaf (non-scene) pictures come from.
-pub(crate) trait SceneSources {
+pub trait SceneSources {
     /// Whether leaf input `input` can be drawn at all. Decided per input,
     /// independent of the grid, so a layer too thin to cover a pixel still
     /// refuses a scene whose source cannot be drawn.
@@ -93,7 +93,7 @@ impl SceneSources for SimulatedPipeline {
 }
 
 /// Returns the scene a Scene input depicts, or `None` for any other input.
-pub(crate) fn scene_of_input(project: &Project, input: InputId) -> Option<SceneId> {
+pub fn scene_of_input(project: &Project, input: InputId) -> Option<SceneId> {
     project
         .inputs()
         .iter()
@@ -117,7 +117,7 @@ pub(crate) fn scene_of_input(project: &Project, input: InputId) -> Option<SceneI
 /// layer covers the same monitor pixels it would after composing at the
 /// project size and downscaling; a layer too thin to cover any monitor pixel
 /// is skipped, as downscaling would have dropped it.
-pub(crate) fn render_scene(
+pub fn render_scene(
     project: &Project,
     input: InputId,
     pipeline: &SimulatedPipeline,
@@ -149,7 +149,7 @@ pub(crate) fn render_scene(
 /// when given, grades the layers as [`render_scene`] describes and, with
 /// `shown_by`, the composed picture with that Scene input's grade.
 #[allow(clippy::too_many_arguments)] // one composition: scene, grid, time, grades
-pub(crate) fn render_scene_model(
+pub fn render_scene_model(
     project: &Project,
     scene: &fm_model::Scene,
     sources: &dyn SceneSources,
@@ -183,7 +183,7 @@ pub(crate) fn render_scene_model(
 /// as the compositor grades a premultiplied layer: straightened (rounded),
 /// graded, and premultiplied again, alpha unchanged. Opaque pixels are
 /// graded exactly as they are.
-pub(crate) fn grade_premultiplied(
+pub fn grade_premultiplied(
     image: &ImageFrame,
     grade: &fm_compositor::CompiledGrade,
 ) -> Option<ImageFrame> {
@@ -218,7 +218,7 @@ pub(crate) fn grade_premultiplied(
 /// Composes at the project size and downscales: the reference the monitor
 /// path is compared against, and what it replaced.
 #[cfg(test)]
-pub(crate) fn render_scene_at_project_size(
+pub fn render_scene_at_project_size(
     project: &Project,
     scene: SceneId,
     project_pipeline: &SimulatedPipeline,
@@ -249,11 +249,7 @@ pub(crate) fn render_scene_at_project_size(
 /// A pipeline at exactly `width`x`height` holding every simulated input of
 /// `project` (as the monitor tap builds its own), or `None` when the size
 /// cannot form a picture.
-pub(crate) fn simulated_pipeline(
-    project: &Project,
-    width: u32,
-    height: u32,
-) -> Option<SimulatedPipeline> {
+pub fn simulated_pipeline(project: &Project, width: u32, height: u32) -> Option<SimulatedPipeline> {
     let mut pipeline = SimulatedPipeline::new(width, height).ok()?;
     for input in project.inputs() {
         let InputKind::Simulated(simulated) = &input.kind else {

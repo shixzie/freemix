@@ -40,7 +40,7 @@ use fm_types::still::{
 use fm_types::{InputId, OutputScaling, VideoDimensions};
 
 /// How often every folder slideshow's folder is listed again.
-pub(crate) const FOLDER_POLL: Duration = Duration::from_secs(2);
+pub const FOLDER_POLL: Duration = Duration::from_secs(2);
 /// Most decoded pictures one [`StillPictures`] keeps.
 const MAX_CACHED_PICTURES: usize = 12;
 
@@ -50,7 +50,7 @@ fn still_clock_domain() -> ClockDomainId {
 }
 
 /// The timing of a retained still frame.
-pub(crate) fn still_timing(clock_domain: ClockDomainId) -> Option<MediaTiming> {
+pub fn still_timing(clock_domain: ClockDomainId) -> Option<MediaTiming> {
     let time_base = TimeBase::new(1, 1_000_000_000).ok()?;
     MediaTiming::new(
         OriginalTimestamp::new(MediaTimestamp::new(0), time_base),
@@ -69,7 +69,7 @@ pub(crate) fn still_timing(clock_domain: ClockDomainId) -> Option<MediaTiming> {
 ///
 /// `source_missing` when the file cannot be read, `unsupported` when it does
 /// not decode.
-pub(crate) fn decode_picture_file(
+pub fn decode_picture_file(
     path: &Path,
     output: VideoDimensions,
     fit: OutputScaling,
@@ -97,7 +97,7 @@ pub(crate) fn decode_picture_file(
 ///
 /// `source_missing` when the URI is not a valid asset URI, the file is
 /// missing or not a regular file, or it resolves outside the assets.
-pub(crate) fn resolve_picture_path(
+pub fn resolve_picture_path(
     assets_root: &Path,
     asset_uri: &str,
 ) -> Result<std::path::PathBuf, EngineMediaFault> {
@@ -119,7 +119,7 @@ pub(crate) fn resolve_picture_path(
 /// [`MAX_SLIDESHOW_SLIDES`]. Only regular files with a picture extension
 /// count (never a link or a folder); a missing folder lists nothing.
 #[must_use]
-pub(crate) fn list_folder(assets_root: &Path, folder_uri: &str) -> Vec<EngineSlide> {
+pub fn list_folder(assets_root: &Path, folder_uri: &str) -> Vec<EngineSlide> {
     if !asset_uri_is_valid(folder_uri, MAX_IMAGE_URI_BYTES) {
         return Vec::new();
     }
@@ -157,7 +157,7 @@ pub(crate) fn list_folder(assets_root: &Path, folder_uri: &str) -> Vec<EngineSli
 
 /// Follows every folder slideshow's folder; see the module documentation.
 #[derive(Debug, Default)]
-pub(crate) struct SlideshowFolders {
+pub struct SlideshowFolders {
     /// The revision and instant of the last full listing.
     listed: Option<(u64, Instant)>,
 }
@@ -165,12 +165,7 @@ pub(crate) struct SlideshowFolders {
 impl SlideshowFolders {
     /// Lists the folders when the project changed or [`FOLDER_POLL`]
     /// passed, and installs each changed listing.
-    pub(crate) fn poll(
-        &mut self,
-        control: &mut ControlService<Policy>,
-        assets_root: &Path,
-        now: Instant,
-    ) {
+    pub fn poll(&mut self, control: &mut ControlService<Policy>, assets_root: &Path, now: Instant) {
         let revision = control.snapshot().snapshot.revision;
         let due = self.listed.is_none_or(|(listed, at)| {
             listed != revision || now.saturating_duration_since(at) >= FOLDER_POLL
@@ -198,18 +193,18 @@ impl SlideshowFolders {
 /// What one slideshow input shows: its incoming slide over its outgoing
 /// one, the incoming mix, and the fit both are placed with.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct SlidesShown {
-    pub(crate) incoming: Option<(Arc<str>, EngineSlideCrop)>,
-    pub(crate) outgoing: Option<(Arc<str>, EngineSlideCrop)>,
+pub struct SlidesShown {
+    pub incoming: Option<(Arc<str>, EngineSlideCrop)>,
+    pub outgoing: Option<(Arc<str>, EngineSlideCrop)>,
     /// The incoming slide's opacity, in basis points.
-    pub(crate) mix: u16,
-    pub(crate) fit: OutputScaling,
+    pub mix: u16,
+    pub fit: OutputScaling,
 }
 
 impl SlidesShown {
     /// What `input` showed on the last realized frame, or `None` before its
     /// first frame or with nothing listed.
-    pub(crate) fn of(control: &ControlService<Policy>, input: InputId) -> Option<Self> {
+    pub fn of(control: &ControlService<Policy>, input: InputId) -> Option<Self> {
         let status = control.slideshow_status(input)?;
         let (incoming, outgoing, mix) = control.slideshow_shown(input)?;
         let slide =
@@ -223,7 +218,7 @@ impl SlidesShown {
     }
 
     /// Every slideshow input's pictures, ascending by input.
-    pub(crate) fn all(control: &ControlService<Policy>) -> Vec<(InputId, Self)> {
+    pub fn all(control: &ControlService<Policy>) -> Vec<(InputId, Self)> {
         control
             .slideshow_statuses()
             .into_iter()
@@ -245,14 +240,14 @@ struct PictureKey {
 /// file that does not decode is remembered as `None` so it is not decoded
 /// again on every step.
 #[derive(Default)]
-pub(crate) struct StillPictures {
+pub struct StillPictures {
     entries: Vec<(PictureKey, Option<Arc<ImageFrame>>)>,
 }
 
 impl StillPictures {
     /// The picture of `asset_uri` placed with `fit` in a `width`x`height`
     /// raster (straight alpha), decoding it on a miss.
-    pub(crate) fn picture(
+    pub fn picture(
         &mut self,
         store: &ProjectStore,
         asset_uri: &Arc<str>,
@@ -280,7 +275,7 @@ impl StillPictures {
     }
 
     /// An image input's picture over black at `size`.
-    pub(crate) fn image(
+    pub fn image(
         &mut self,
         store: &ProjectStore,
         asset_uri: &str,
@@ -293,7 +288,7 @@ impl StillPictures {
 
     /// A slideshow's incoming slide over its outgoing one, over black, at
     /// `size`. Black while nothing is listed.
-    pub(crate) fn slides(
+    pub fn slides(
         &mut self,
         store: &ProjectStore,
         shown: &SlidesShown,
@@ -347,7 +342,7 @@ fn decode_picture(
 /// Draws straight-alpha `layers` (a picture, the part of it shown, and its
 /// opacity in basis points), bottom first, over opaque black at `size`.
 /// Each layer's crop is scaled to the whole raster (Ken Burns).
-pub(crate) fn compose_slides(
+pub fn compose_slides(
     (width, height): (u32, u32),
     layers: &[(&Arc<ImageFrame>, EngineSlideCrop, u16)],
 ) -> Option<ImageFrame> {

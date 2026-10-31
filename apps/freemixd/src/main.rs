@@ -41,6 +41,7 @@ use fm_control::{
     ResumeDecision,
 };
 use fm_daemon_arguments::{Command, RECORDER_SLOTS, parse_args, print_help};
+use fm_daemon_render::{grading, monitor_tap, scene_render, stills, title_render};
 #[cfg(feature = "native-media")]
 use fm_engine::FrameResult;
 use fm_engine::{
@@ -105,7 +106,6 @@ mod desktop_windows;
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 mod disk;
 use fm_daemon_journal::documents;
-mod grading;
 mod hls_server;
 mod input_thumbnails;
 use fm_daemon_journal as journal;
@@ -114,7 +114,6 @@ mod latest_record;
 mod live_lan;
 mod media_clock;
 mod media_lengths;
-mod monitor_tap;
 #[cfg(feature = "native-media")]
 mod native_audio_realizer;
 #[cfg(feature = "native-media")]
@@ -174,20 +173,17 @@ mod recorder_status;
 mod recording_session;
 mod replay_preview;
 mod scene_preview;
-mod scene_render;
 mod screen_capture_targets;
 #[cfg(feature = "native-media")]
 mod source_wait;
 mod statistics;
 mod status_listener;
-mod stills;
 #[cfg(feature = "native-media")]
 mod stinger_mutation;
 #[cfg(feature = "native-media")]
 mod stream_transport;
 mod system_audio_devices;
 mod title_preview;
-mod title_render;
 use fm_daemon_web as web;
 
 use hls_server::{HlsRoots, HlsServer};
