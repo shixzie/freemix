@@ -365,3 +365,27 @@ fn media_transport_verbs_translate_exactly() {
         assert!(parse_http_query(query, &state).is_err(), "{query}");
     }
 }
+
+#[test]
+fn overlay_in_and_off_translate_exactly() {
+    let state = state();
+    let channel = fm_protocol::WireOverlayChannelId::new(3).unwrap();
+    assert_eq!(
+        parse_http_query("Function=OverlayInput3In&Input=2", &state),
+        Ok(Translation::Protocol(CommandPayload::TakeOverlay {
+            channel,
+            source: id(2),
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=OverlayInput3Off", &state),
+        Ok(Translation::Protocol(CommandPayload::OverlayOff {
+            channel
+        }))
+    );
+    assert!(matches!(
+        parse_http_query("Function=OverlayInput3In&Input=2&Mix=1", &state),
+        Ok(Translation::Unsupported(_))
+    ));
+    assert!(parse_http_query("Function=OverlayInput3Off&Input=2", &state).is_err());
+}

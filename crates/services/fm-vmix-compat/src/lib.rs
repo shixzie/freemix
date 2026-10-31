@@ -612,6 +612,43 @@ fn translate(
             }))
         }
         _ => {
+            if let Some(channel) = overlay_channel_with_suffix(function, "In") {
+                allowed(parameters, &["Function", "Input", "Mix"])?;
+                if !is_main_mix(parameters) {
+                    return Ok(unsupported(
+                        function,
+                        "only the main mix (0) is represented",
+                    ));
+                }
+                let channel = fm_protocol::WireOverlayChannelId::new(channel).ok_or(
+                    ParseError::InvalidParameter {
+                        parameter: "Function",
+                        reason: "overlay channel is outside 1..=8",
+                    },
+                )?;
+                return Ok(Translation::Protocol(CommandPayload::TakeOverlay {
+                    channel,
+                    source: state.resolve_input(required(parameters, "Input")?)?,
+                }));
+            }
+            if let Some(channel) = overlay_channel_with_suffix(function, "Off") {
+                allowed(parameters, &["Function", "Mix"])?;
+                if !is_main_mix(parameters) {
+                    return Ok(unsupported(
+                        function,
+                        "only the main mix (0) is represented",
+                    ));
+                }
+                let channel = fm_protocol::WireOverlayChannelId::new(channel).ok_or(
+                    ParseError::InvalidParameter {
+                        parameter: "Function",
+                        reason: "overlay channel is outside 1..=8",
+                    },
+                )?;
+                return Ok(Translation::Protocol(CommandPayload::OverlayOff {
+                    channel,
+                }));
+            }
             if let Some(channel) = overlay_channel(function) {
                 allowed(parameters, &["Function", "Input", "Mix"])?;
                 if !is_main_mix(parameters) {
@@ -806,6 +843,15 @@ fn parse_usize(value: &str, parameter: &'static str) -> Result<usize, ParseError
         parameter,
         reason: "expected a zero-based unsigned integer",
     })
+}
+
+fn overlay_channel_with_suffix(function: &str, suffix: &str) -> Option<u8> {
+    let rest = function.strip_prefix("OverlayInput")?;
+    let number = rest.strip_suffix(suffix)?;
+    number
+        .parse::<u8>()
+        .ok()
+        .filter(|channel| (1..=8).contains(channel))
 }
 
 fn overlay_channel(function: &str) -> Option<u8> {
