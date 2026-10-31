@@ -4765,8 +4765,11 @@ value limits fail with located errors. A row cursor navigates with stop or
 wrap edges, stays valid across refresh, and selects by exact key. A validated
 title mapper coerces values onto text, number, color, and image fields with
 explicit rounding and color rules, fallbacks, optional fields, and per-field
-diagnostics. Remaining gaps: no XML/XPath, RSS, HTML-table, spreadsheet,
-Google Sheets, chat, or database adapters, no real HTTP or file polling, and
+diagnostics. `fm-data` also provides a bounded file polling source that
+re-reads one CSV or JSON file at a caller interval and emits only when its
+length or modification time changes. Remaining gaps: no XML/XPath, RSS,
+HTML-table, spreadsheet,
+Google Sheets, chat, or database adapters, no real network polling, and
 mapped values do not yet feed `fm-titles` templates, the project schema, or
 ticker updates. Item 4 remains incomplete and `GX-004` remains planned.
 

@@ -7,6 +7,7 @@
 mod adapters;
 mod bind;
 mod cache;
+mod file;
 mod format;
 mod mapping;
 mod parse;
@@ -27,6 +28,7 @@ pub use bind::{
     ImageUriPolicy, RowBindingError, TruthyRule, VisibilityError, VisibilityRule,
 };
 pub use cache::{BoundedCache, CacheError, Clock, ManualClock};
+pub use file::{FileFormat, FilePollingSource, MAX_FILE_SOURCE_BYTES};
 pub use format::{
     DateInput, DatePattern, DateTimeFormat, DecimalRounding, FormatError, NumberFormat, SignStyle,
     Timestamp, UtcOffset,
