@@ -2740,9 +2740,10 @@ JSON contract names them `left_rear_surround`, `right_rear_surround`, and
 Remaining gaps: the daemon uses the standard downmix matrices only for pushed media and
 stream audio, and nothing reaches persisted strips, protocol, or Studio; streaming
 outputs refuse 7.1 and discrete layouts; there is no device ancillary-data
-extraction, composite downmix, or hardware evidence, while 5.1 folds to
-stereo with either the BS.775 Lo/Ro matrix or the Dolby Surround Lt/Rt
-matrix (the 90° surround phase shift is not modelled). Project
+extraction or hardware evidence, while 5.1 folds to stereo with either the
+BS.775 Lo/Ro matrix or the Dolby Surround Lt/Rt matrix (the 90° surround
+phase shift is not modelled), and to mono as the composite of the stereo
+fold. Project
 settings now accept every channel layout the model holds, 1 through 16.
 `AU-003` remains planned.
 

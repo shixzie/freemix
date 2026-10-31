@@ -684,8 +684,10 @@ impl GainMatrix {
     /// * 7.1 → 5.1: `L R C LFE` pass at unity; `Ls' = g·Ls + g·Lrs`,
     ///   `Rs' = g·Rs + g·Rrs` (`0.5` each when normalized).
     /// * 2.0 → 1.0: `M = 0.5·L + 0.5·R` (already normalized).
+    /// * 5.1 → 1.0 (composite): the 5.1 → stereo fold then `0.5·(L + R)`:
+    ///   `M = 0.5·L + 0.5·R + g·C + (g/2)·Ls + (g/2)·Rs + k·LFE`.
     ///
-    /// `options.lfe` only affects 5.1 → 2.0.
+    /// `options.lfe` only affects 5.1 output mixes.
     ///
     /// # Errors
     ///
@@ -733,6 +735,21 @@ impl GainMatrix {
             }
             (StandardLayout::Stereo, StandardLayout::Mono) => {
                 let table = [(0, 0, 0.5), (1, 0, 0.5)];
+                routes[..table.len()].copy_from_slice(&table);
+                table.len()
+            }
+            // The composite of the BS.775 5.1 → stereo fold and 0.5·(L+R):
+            // `M = 0.5·L + 0.5·R + g·C + (g/2)·Ls + (g/2)·Rs + k·LFE`.
+            (StandardLayout::FivePointOne, StandardLayout::Mono) => {
+                let k = options.lfe.coefficient();
+                let table = [
+                    (0, 0, 0.5),
+                    (1, 0, 0.5),
+                    (2, 0, G),
+                    (3, 0, k),
+                    (4, 0, 0.5 * G),
+                    (5, 0, 0.5 * G),
+                ];
                 routes[..table.len()].copy_from_slice(&table);
                 table.len()
             }
