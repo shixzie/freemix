@@ -722,6 +722,17 @@ impl StudioApp {
                     self.enqueue_osc_fire(intent, selected);
                     continue;
                 }
+                // A page step names its paged input by 1-based bank position
+                // (IN-014); an absent input is refused like a malformed fire.
+                OscAction::Page(number, navigation) => {
+                    match osc_input(&self.state, number) {
+                        Some(input) => {
+                            self.enqueue_intent(StudioIntent::PageNavigate { input, navigation });
+                        }
+                        None => self.osc_rejected = self.osc_rejected.saturating_add(1),
+                    }
+                    continue;
+                }
                 OscAction::SelectPreview(number) => ExternalStudioAction::SelectPreview(number),
                 OscAction::Cut => ExternalStudioAction::Cut,
                 OscAction::Fade => ExternalStudioAction::Fade,

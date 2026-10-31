@@ -53,6 +53,9 @@ pub(crate) enum OscAction {
     /// optional `f` argument after it, the control's value from 0.0 to 1.0
     /// (RC-004 dynamic values).
     User(OscName, OscSelected, Option<fm_protocol::FireValue>),
+    /// `/freemix/page/<input>/<next|previous|first|last|goto/<page>>`: steps
+    /// the paged input at that 1-based bank position (IN-014).
+    Page(core::num::NonZeroU32, fm_protocol::PagedNavigation),
 }
 
 /// The input an OSC fire selects (RC-004): its 1-based number in the
@@ -394,6 +397,9 @@ fn decode(datagram: &[u8]) -> Result<OscAction, ()> {
             _ => Err(()),
         };
     }
+    if let Some(page) = address.strip_prefix("/freemix/page/") {
+        return decode_page(page, types, end, datagram);
+    }
 
     match address {
         "/freemix/switcher/cut" => Ok(OscAction::Cut),
@@ -415,6 +421,37 @@ fn decode(datagram: &[u8]) -> Result<OscAction, ()> {
         "/freemix/cue/disarm" => Ok(OscAction::Cue(CueKey::Disarm, None)),
         _ => Err(()),
     }
+}
+
+/// `/freemix/page/<input>/<direction>` or `.../goto/<page>` (IN-014): the
+/// paged input at a 1-based bank position and the step. Goto takes a
+/// zero-based page number in the address itself, so the datagram carries no
+/// arguments.
+fn decode_page(path: &str, types: &str, end: usize, datagram: &[u8]) -> Result<OscAction, ()> {
+    if types != "," || end != datagram.len() {
+        return Err(());
+    }
+    let (number, step) = path.split_once('/').ok_or(())?;
+    let input = number
+        .parse::<u32>()
+        .ok()
+        .and_then(core::num::NonZeroU32::new)
+        .ok_or(())?;
+    let navigation = match step {
+        "next" => fm_protocol::PagedNavigation::Next,
+        "previous" => fm_protocol::PagedNavigation::Previous,
+        "first" => fm_protocol::PagedNavigation::First,
+        "last" => fm_protocol::PagedNavigation::Last,
+        _ => {
+            let page = step
+                .strip_prefix("goto/")
+                .and_then(|page| page.parse::<u32>().ok())
+                .filter(|page| *page < fm_protocol::MAX_PAGED_PAGES)
+                .ok_or(())?;
+            fm_protocol::PagedNavigation::Goto(page)
+        }
+    };
+    Ok(OscAction::Page(input, navigation))
 }
 
 fn padded_string(datagram: &[u8], start: usize) -> Result<(&str, usize), ()> {
@@ -626,6 +663,68 @@ mod tests {
         for (address, action) in cases {
             assert_eq!(decode(&message(address)), Ok(action));
         }
+        // IN-014: `/freemix/page/<input>/<step>` steps a paged input; a
+        // goto names its zero-based page in the address and takes no
+        // argument.
+        for (address, action) in [
+            (
+                "/freemix/page/3/next",
+                OscAction::Page(
+                    core::num::NonZeroU32::new(3).unwrap(),
+                    fm_protocol::PagedNavigation::Next,
+                ),
+            ),
+            (
+                "/freemix/page/12/previous",
+                OscAction::Page(
+                    core::num::NonZeroU32::new(12).unwrap(),
+                    fm_protocol::PagedNavigation::Previous,
+                ),
+            ),
+            (
+                "/freemix/page/1/first",
+                OscAction::Page(
+                    core::num::NonZeroU32::new(1).unwrap(),
+                    fm_protocol::PagedNavigation::First,
+                ),
+            ),
+            (
+                "/freemix/page/8/last",
+                OscAction::Page(
+                    core::num::NonZeroU32::new(8).unwrap(),
+                    fm_protocol::PagedNavigation::Last,
+                ),
+            ),
+            (
+                "/freemix/page/2/goto/7",
+                OscAction::Page(
+                    core::num::NonZeroU32::new(2).unwrap(),
+                    fm_protocol::PagedNavigation::Goto(7),
+                ),
+            ),
+        ] {
+            assert_eq!(decode(&message(address)), Ok(action));
+        }
+        for address in [
+            "/freemix/page/0/next",
+            "/freemix/page/3",
+            "/freemix/page/3/",
+            "/freemix/page/3/Next",
+            "/freemix/page/3/goto",
+            "/freemix/page/3/goto/10000",
+            "/freemix/page/3/goto/-1",
+            "/freemix/page/3/next/1",
+        ] {
+            assert_eq!(decode(&message(address)), Err(()), "{address}");
+        }
+        assert_eq!(
+            decode(&with_types(
+                "/freemix/page/3/next",
+                ",i",
+                &1_i32.to_be_bytes()
+            )),
+            Err(())
+        );
     }
 
     /// RC-004: `/freemix/user/<name>` names a project shortcut by its OSC

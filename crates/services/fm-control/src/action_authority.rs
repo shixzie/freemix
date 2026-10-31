@@ -176,7 +176,12 @@ pub const fn verb_class(verb: Verb) -> CommandClass {
         | Verb::Play
         | Verb::Pause
         | Verb::Seek
-        | Verb::Restart => CommandClass::Transition,
+        | Verb::Restart
+        | Verb::PageNext
+        | Verb::PagePrevious
+        | Verb::PageFirst
+        | Verb::PageLast
+        | Verb::PageGoto => CommandClass::Transition,
     }
 }
 
