@@ -5671,9 +5671,11 @@ The operator page now draws each strip's share of Program as a peak bar
 (green, amber past -6 dBFS, red past -1 dBFS) from the Web meter record,
 which carries the first 32 inputs' meters (no wire change; the page's
 parser is checked under Node.js against the Rust codec's record). The tally
-page draws a small per-input peak bar from those same meters.
-Remaining gaps: the tally's bars have no per-session opt-out, and the
-simulated daemon sends no meters or realized recorder
+page draws a small per-input peak bar from those same meters; a tally
+session opened with `#meters=off` keeps the bars off for that session
+(remembered in session storage; `on` turns them back on), so a wall mount
+can show its tally without the per-input audio.
+Remaining gaps: the simulated daemon sends no meters or realized recorder
 state.
 
 Readable output failures (Protocol 2.67, no schema change): a stream

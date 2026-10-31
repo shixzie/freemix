@@ -448,6 +448,13 @@
   let pairFingerprint = formatFingerprint(params.get("fp"));
   if (params.has("role")) store.setItem("freemix.tally.role", params.get("role"));
   if (params.has("input")) store.setItem("freemix.tally.input", params.get("input"));
+  // Per-session opt-out from the per-input audio bars (RC-014): a
+  // `#meters=off` link turns them off for this session; `on` turns them
+  // back on. The choice survives reloads of this session only.
+  if (params.has("meters")) {
+    store.setItem("freemix.tally.meters", params.get("meters") === "off" ? "off" : "on");
+  }
+  const inputMeters = store.getItem("freemix.tally.meters") !== "off";
   // Never leave a pairing code in the address bar or history.
   history.replaceState(null, "", location.pathname + location.search);
   // A pairing link opened in a tab already showing this page changes only
@@ -1438,7 +1445,7 @@
       }
       const meter = document.createElement("i");
       meter.className = "meter";
-      button.append(meter);
+      if (inputMeters) button.append(meter);
       button.addEventListener("click", () => {
         selected = input.id;
         choosing = false;
@@ -1453,6 +1460,7 @@
 
   // Per-input audio tally from the newest `audio_meters` `inputs`.
   function paintInputMeters() {
+    if (!inputMeters) return;
     const live = link.phase === "live";
     const fresh = live && telemetry.metersAt > 0 && Date.now() - telemetry.metersAt < METER_STALE_MS;
     for (const button of ui.board.children) {
