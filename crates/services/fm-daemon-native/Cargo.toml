@@ -15,6 +15,7 @@ fm-engine = { path = "../fm-engine" }
 fm-frame = { path = "../../media/fm-frame" }
 fm-gpu = { path = "../../gpu/fm-gpu", features = ["native-wgpu"] }
 fm-model = { path = "../../foundation/fm-model" }
+fm-overlay-layout = { path = "../../services/fm-overlay-layout" }
 fm-plugin-host-api = { path = "../../features/fm-plugin-host-api" }
 fm-scheduler = { path = "../../media/fm-scheduler" }
 fm-sim = { path = "../../media/fm-sim" }

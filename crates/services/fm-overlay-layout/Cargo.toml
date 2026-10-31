@@ -1,0 +1,14 @@
+[package]
+name = "fm-overlay-layout"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fm-compositor = { path = "../../gpu/fm-compositor" }
+fm-switcher = { path = "../../features/fm-switcher" }
+fm-types = { path = "../../foundation/fm-types" }
+
+[lints]
+workspace = true

@@ -1513,6 +1513,7 @@ const fn dependency_allowed(source: Layer, target: Layer) -> bool {
                 | Layer::Io
                 | Layer::Feature
                 | Layer::Service
+                | Layer::SimulationComposition
         ),
         Layer::Ui => matches!(target, Layer::Foundation | Layer::Ui),
         Layer::App => !matches!(target, Layer::App | Layer::Tool),

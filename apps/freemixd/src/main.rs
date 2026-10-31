@@ -9289,15 +9289,6 @@ impl NativeDaemon {
     }
 
     #[allow(clippy::unused_self)]
-    fn tick_if_due(
-        &mut self,
-        _control: &mut ControlService<Policy>,
-        _server: &ServerIdentity,
-    ) -> AppResult<()> {
-        Err(AppFailure("native-media support was not compiled in".into()).into())
-    }
-
-    #[allow(clippy::unused_self)]
     fn take_audio_meters(&mut self) -> Option<AudioMetersMessage> {
         None
     }
@@ -9349,6 +9340,24 @@ impl NativeDaemon {
     }
 
     #[allow(clippy::unused_self)]
+    fn begin_frame_if_due(
+        &mut self,
+        _control: &mut ControlService<Policy>,
+        _server: &ServerIdentity,
+    ) -> AppResult<()> {
+        Err(AppFailure("native-media support was not compiled in".into()).into())
+    }
+
+    #[allow(clippy::unused_self)]
+    fn finish_frame(
+        &mut self,
+        _control: &mut ControlService<Policy>,
+        _server: &ServerIdentity,
+    ) -> AppResult<Vec<RuntimeEventMessage>> {
+        Err(AppFailure("native-media support was not compiled in".into()).into())
+    }
+
+    #[allow(clippy::unused_self)]
     fn wait_and_tick(
         &mut self,
         _control: &mut ControlService<Policy>,
@@ -9381,12 +9390,21 @@ impl NativeDaemon {
     #[allow(clippy::unused_self)]
     fn advance_recordings(&mut self) {}
 
-    #[allow(clippy::unused_self, clippy::unused_variables)]
-    fn service_deferred_preview(&mut self, server: &ServerIdentity) -> AppResult<()> {
+    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+    fn service_deferred_preview(&mut self, _server: &ServerIdentity) -> AppResult<()> {
         Ok(())
     }
 
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self, dead_code)]
+    fn tick_if_due(
+        &mut self,
+        _control: &mut ControlService<Policy>,
+        _server: &ServerIdentity,
+    ) -> AppResult<()> {
+        Err(AppFailure("native-media support was not compiled in".into()).into())
+    }
+
+    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
     fn poll_deferred_preview(&mut self) -> AppResult<()> {
         Ok(())
     }
@@ -13322,6 +13340,7 @@ struct GroupOutcome {
 /// daemon, as it does for one command; no member of the group was made
 /// durable or answered then.
 #[allow(clippy::too_many_lines)]
+#[cfg_attr(not(feature = "native-media"), allow(unused_mut))]
 fn execute_command_group(
     control: &SharedControl,
     store: &dyn DurableStore,

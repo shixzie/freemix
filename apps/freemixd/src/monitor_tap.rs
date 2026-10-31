@@ -60,9 +60,9 @@ use fm_compositor::{
     compile_scene, execute_cpu,
 };
 use fm_control::ControlService;
-use fm_daemon_native::overlay_layout::{overlay_border_width, overlay_transform};
 use fm_engine::CompiledProjectGrades;
 use fm_model::{InputKind, Project, SimulatedVideo};
+use fm_overlay_layout::{overlay_border_width, overlay_transform};
 use fm_protocol::{
     MAX_MONITOR_FRAME_HEIGHT, MAX_MONITOR_FRAME_WIDTH, MonitorFrameMessage, MonitorFrameOrigin,
     MonitorTap, OverlayBorderPreset as WireOverlayBorder,

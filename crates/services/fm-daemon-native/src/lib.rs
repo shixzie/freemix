@@ -4,4 +4,3 @@
 //! Extracted from `freemixd` as a mechanical move.
 
 pub mod native_media;
-pub mod overlay_layout;

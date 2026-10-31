@@ -75,7 +75,7 @@ use fm_types::{
     AudioFormat, FrameRate, InputId, OutputId, SampleFormat, SceneId, TimeBase, VideoDimensions,
 };
 
-use crate::overlay_layout::{overlay_border_width, overlay_transform};
+use fm_overlay_layout::{overlay_border_width, overlay_transform};
 
 const RGBA16_FLOAT_BYTES_PER_PIXEL: u64 = 8;
 const NATIVE_PROJECT_IN_FLIGHT_SLOTS: usize = 1;

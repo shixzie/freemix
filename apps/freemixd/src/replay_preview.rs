@@ -40,6 +40,7 @@ const fn preview_columns(tiles: usize) -> usize {
 
 /// The picture size and rate of the show, for decoding replay segments.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 pub(crate) struct PreviewVideoFormat {
     pub(crate) width: u32,
     pub(crate) height: u32,

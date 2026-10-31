@@ -51,6 +51,7 @@ fm-io-linux = { path = "../../crates/io/fm-io-linux", optional = true }
 fm-io-network = { path = "../../crates/io/fm-io-network", optional = true }
 fm-io-omt = { path = "../../crates/io/fm-io-omt", optional = true }
 fm-observability = { path = "../../crates/services/fm-observability" }
+fm-overlay-layout = { path = "../../crates/services/fm-overlay-layout" }
 fm-scheduler = { path = "../../crates/media/fm-scheduler", optional = true }
 fm-sim = { path = "../../crates/media/fm-sim" }
 fm-model = { path = "../../crates/foundation/fm-model" }

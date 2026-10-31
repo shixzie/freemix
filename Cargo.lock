@@ -1721,6 +1721,7 @@ dependencies = [
  "fm-gpu",
  "fm-grade",
  "fm-model",
+ "fm-overlay-layout",
  "fm-persistence",
  "fm-plugin-host-api",
  "fm-scheduler",
@@ -1923,6 +1924,15 @@ name = "fm-observability"
 version = "0.1.0"
 dependencies = [
  "fm-capabilities",
+]
+
+[[package]]
+name = "fm-overlay-layout"
+version = "0.1.0"
+dependencies = [
+ "fm-compositor",
+ "fm-switcher",
+ "fm-types",
 ]
 
 [[package]]
@@ -2359,6 +2369,7 @@ dependencies = [
  "fm-io-omt",
  "fm-model",
  "fm-observability",
+ "fm-overlay-layout",
  "fm-persistence",
  "fm-plugin-host-api",
  "fm-presentations",
