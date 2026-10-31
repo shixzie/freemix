@@ -56,6 +56,12 @@ pub enum PlaylistIntent {
     Start {
         from: Option<u64>,
     },
+    /// Starts `after_frames` frames after the command, from `from` or else
+    /// the first enabled entry (a scheduled start).
+    StartAfter {
+        from: Option<u64>,
+        after_frames: u64,
+    },
     Stop,
     Pause,
     Resume,
@@ -827,7 +833,31 @@ impl PlaylistPanel {
 
         draw_status_card(ui, playlist, phase, rate, now_frame, &names, edit, intents);
         ui.add_space(4.0);
-        draw_transport(ui, &transport_availability(playlist, control), intents);
+        // A scheduled start: seconds from now before the first entry airs.
+        let delay_id = ui.make_persistent_id("playlist-start-in-seconds");
+        let mut start_in_seconds: u32 = ui.data(|data| data.get_temp(delay_id)).unwrap_or(0);
+        ui.horizontal(|ui| {
+            ui.label(field_label(l.text(Msg::PlaylistStartIn)));
+            let response = ui.add_enabled(
+                edit.is_none(),
+                egui::DragValue::new(&mut start_in_seconds)
+                    .range(0..=3600)
+                    .speed(1.0)
+                    .suffix(" s"),
+            );
+            response.hint(l.text(Msg::PlaylistStartInHover), edit.unwrap_or(""));
+        });
+        ui.data_mut(|data| data.insert_temp(delay_id, start_in_seconds));
+        #[allow(clippy::cast_possible_truncation)]
+        let start_after_frames = u64::from(start_in_seconds)
+            .saturating_mul(u64::from(rate.numerator()))
+            / u64::from(rate.denominator()).max(1);
+        draw_transport(
+            ui,
+            &transport_availability(playlist, control),
+            start_after_frames,
+            intents,
+        );
         ui.add_space(6.0);
 
         if playlist.entries.is_empty() {
@@ -1107,7 +1137,12 @@ type TransportKey<'a> = (
 );
 
 /// Start, Stop, Pause/Resume, Previous, and Next keys.
-fn draw_transport(ui: &mut Ui, transport: &TransportAvailability, intents: &mut Vec<StudioIntent>) {
+fn draw_transport(
+    ui: &mut Ui,
+    transport: &TransportAvailability,
+    start_after_frames: u64,
+    intents: &mut Vec<StudioIntent>,
+) {
     let l = l10n::locale(ui.ctx());
     let resume = transport.pause_resume == Ok(PlaylistIntent::Resume);
     let keys: [TransportKey<'_>; 5] = [
@@ -1158,7 +1193,7 @@ fn draw_transport(ui: &mut Ui, transport: &TransportAvailability, intents: &mut 
         let width = ((ui.available_width() - 4.0 * (keys.len() - 1) as f32) / keys.len() as f32)
             .floor()
             .max(48.0);
-        for (result, label, hover, tone) in keys {
+        for (index, (result, label, hover, tone)) in keys.into_iter().enumerate() {
             let enabled = result.is_ok();
             // A fixed width keeps the five keys inside the panel; longer
             // words truncate with the full label in the tooltip.
@@ -1178,7 +1213,16 @@ fn draw_transport(ui: &mut Ui, transport: &TransportAvailability, intents: &mut 
             if response.clicked()
                 && let Ok(intent) = result
             {
-                intents.push(StudioIntent::Playlist(intent.clone()));
+                // The start key schedules when a delay is set.
+                let intent = if index == 0 && start_after_frames > 0 {
+                    PlaylistIntent::StartAfter {
+                        from: None,
+                        after_frames: start_after_frames,
+                    }
+                } else {
+                    intent.clone()
+                };
+                intents.push(StudioIntent::Playlist(intent));
             }
         }
     });

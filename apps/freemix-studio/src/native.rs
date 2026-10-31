@@ -3313,6 +3313,10 @@ fn playlist_payload(intent: PlaylistIntent) -> CommandPayload {
             at: PlaylistStart::Now,
             from,
         },
+        PlaylistIntent::StartAfter { from, after_frames } => PlaylistOperation::Start {
+            at: PlaylistStart::AfterFrames(after_frames),
+            from,
+        },
         PlaylistIntent::Stop => PlaylistOperation::Stop,
         PlaylistIntent::Pause => PlaylistOperation::Pause,
         PlaylistIntent::Resume => PlaylistOperation::Resume,
@@ -6816,6 +6820,16 @@ mod tests {
                 PlaylistOperation::Start {
                     at: PlaylistStart::Now,
                     from: Some(7),
+                },
+            ),
+            (
+                PlaylistIntent::StartAfter {
+                    from: None,
+                    after_frames: 90,
+                },
+                PlaylistOperation::Start {
+                    at: PlaylistStart::AfterFrames(90),
+                    from: None,
                 },
             ),
             (PlaylistIntent::Stop, PlaylistOperation::Stop),

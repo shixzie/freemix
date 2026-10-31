@@ -1454,6 +1454,8 @@ messages! {
     PlaylistLoopOneHover => t("Repeat the on-air entry"),
     PlaylistStart => t("Start"),
     PlaylistStartHover => t("Start the playlist from its first enabled entry now"),
+    PlaylistStartIn => t("Start in"),
+    PlaylistStartInHover => t("Seconds from now before the first entry airs; zero starts now"),
     PlaylistStop => t("Stop"),
     PlaylistStopHover => t("Stop the playlist; Program keeps its current source"),
     PlaylistPause => t("Pause"),

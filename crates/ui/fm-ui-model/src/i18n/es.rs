@@ -3496,6 +3496,11 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::PlaylistStartHover,
         t("Iniciar la lista ahora desde su primer elemento activo"),
     ),
+    (Msg::PlaylistStartIn, t("Empezar en")),
+    (
+        Msg::PlaylistStartInHover,
+        t("Segundos desde ahora antes de que suene la primera entrada; cero empieza ya"),
+    ),
     (Msg::PlaylistStop, t("Detener")),
     (
         Msg::PlaylistStopHover,

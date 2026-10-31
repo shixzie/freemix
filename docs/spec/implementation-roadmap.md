@@ -4913,8 +4913,8 @@ length), although an end trigger of the on-air media input advances a playing
 playlist with a journaled `next`; no stinger
 transitions; enable/disable, loop changes, and list edits apply while the
 playlist runs, keeping the on-air entry's timing (an edit that removes or
-disables the on-air entry is refused); no scheduled starts from Studio; no
-per-entry hard starts or
+disables the on-air entry is refused); Studio's Start in field schedules a
+start a chosen number of seconds ahead; no per-entry hard starts or
 calendar recurrence; no vMix API. The daemon now appends every realized
 Program change to `as-run.log` beside the bundle (wall clock, engine frame,
 input, and name), and `freemix-cli as-run` prints it. `OR-015` remains
