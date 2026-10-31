@@ -5239,7 +5239,9 @@ source…) with a path or `asset://` URI, and the cue editor's page actions
 list documents next to slideshows. `freemix-cli` adds `input-page` and
 `input-pages` for saved projects (`remote-page-navigate` steps a document on
 a server) and document-aware
-`project-import-media` and `input-import-batch`. Remaining gaps: no
+`project-import-media` and `input-import-batch`. A document, image, or
+slideshow input used as a Scene layer draws its current page or picture in
+the simulated monitor too. Remaining gaps: no
 PowerPoint rendering without LibreOffice (no slide builds, transitions, or
 embedded media; a converted deck shows its final slide state) and Keynote
 needs a PDF export; removing the input cancels a running conversion.

@@ -346,17 +346,21 @@ struct ComposedScene {
 }
 
 /// Scene leaf sources the simulated monitor draws: the simulated pipeline's
-/// own inputs and document inputs, whose current page is a straight-alpha
-/// picture transparent outside the page (IN-014).
+/// own inputs, document inputs, whose current page is a straight-alpha
+/// picture transparent outside the page (IN-014), and image and slideshow
+/// inputs, rendered ahead at the composition size.
 struct MonitorSceneSources<'a> {
     pipeline: &'a SimulatedPipeline,
     documents: &'a DocumentPages,
     project: &'a Project,
+    stills: &'a BTreeMap<InputId, ImageFrame>,
 }
 
 impl scene_render::SceneSources for MonitorSceneSources<'_> {
     fn draws(&self, input: &fm_model::Input) -> bool {
-        self.pipeline.draws(input) || self.project.document(input.id).is_some()
+        self.pipeline.draws(input)
+            || self.project.document(input.id).is_some()
+            || self.stills.contains_key(&input.id)
     }
 
     fn leaf(
@@ -366,6 +370,9 @@ impl scene_render::SceneSources for MonitorSceneSources<'_> {
         width: u32,
         height: u32,
     ) -> Option<ImageFrame> {
+        if let Some(picture) = self.stills.get(&input.id) {
+            return Some(picture.clone());
+        }
         if let Some(document) = self.project.document(input.id) {
             let page = self
                 .documents
@@ -669,6 +676,24 @@ impl SimulatedMonitorTap {
         }
     }
 
+    /// Returns every image or slideshow input's picture at the fitted
+    /// monitor size for a scene layer to draw; cached by [`StillPictures`].
+    fn still_leaf_pictures(
+        &mut self,
+        state: &RealizedMonitorState,
+        project: &Project,
+    ) -> BTreeMap<InputId, ImageFrame> {
+        let mut pictures = BTreeMap::new();
+        for input in project.inputs() {
+            if matches!(input.kind, InputKind::Image(_) | InputKind::Slideshow(_))
+                && let Some(picture) = self.still_picture(input.id, state, project)
+            {
+                pictures.insert(input.id, picture);
+            }
+        }
+        pictures
+    }
+
     /// Returns the scene picture of `input` at the fitted size, composing it
     /// only when no cached composition matches the realized revision, frame
     /// cursor, and input. Every tap and overlay showing it shares one
@@ -695,6 +720,7 @@ impl SimulatedMonitorTap {
         {
             self.compositions += 1;
         }
+        let stills = self.still_leaf_pictures(state, project);
         let image = self
             .pipeline
             .as_ref()
@@ -703,6 +729,7 @@ impl SimulatedMonitorTap {
                     pipeline,
                     documents: &self.documents,
                     project,
+                    stills: &stills,
                 };
                 scene_render::render_scene_with_sources(
                     project,
