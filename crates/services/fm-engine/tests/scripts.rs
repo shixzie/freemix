@@ -975,34 +975,42 @@ fn runs_due_on_the_same_frame_resume_together() {
 fn the_waiting_runs_are_bounded() {
     let mut engine = engine();
     let bound = fm_model::MAX_SCRIPT_RUNS as u64;
-    for script in 1..=bound + 2 {
-        let source = if script == bound + 2 {
-            "preview 2"
-        } else {
-            "wait 100\ncut 2"
-        };
+    let queued_bound = fm_model::MAX_QUEUED_SCRIPT_RUNS as u64;
+    // Sixteen scripts is the project bound, exactly eight running and eight
+    // queued behind them.
+    for script in 1..=bound + queued_bound {
         accepted(&submit(
             &mut engine,
             &format!("set-{script}"),
-            set(script, source),
+            set(script, "wait 100\ncut 2"),
         ));
     }
     for script in 1..=bound {
         accepted(&submit(&mut engine, &format!("run-{script}"), run(script)));
     }
-    let (code, reason, message) = refusal(&submit(&mut engine, "run-over", run(bound + 1)));
-    assert_eq!(code, RejectionCode::ResourceExhausted);
-    assert_eq!(reason, Some(RefusalReason::bounds("script_runs", bound)));
-    assert!(message.contains("stop one first"), "{message}");
-    assert_eq!(engine.show().script_run().runs.len() as u64, bound);
-    accepted(&submit(&mut engine, "run-quick", run(bound + 2)));
-    // A stop makes room.
+    for script in bound + 1..=bound + queued_bound {
+        accepted(&submit(&mut engine, &format!("run-{script}"), run(script)));
+    }
+    let runs = engine.show().script_run().clone();
+    assert_eq!(runs.runs.len() as u64, bound);
+    assert_eq!(runs.queued.len() as u64, queued_bound);
+    assert_eq!(runs.queued[0].script, bound + 1);
+    // A stop frees an active slot and promotes the oldest queued run; the
+    // stopped script can run again, queueing behind the rest.
     accepted(&submit(&mut engine, "stop-3", stop(vec![3])));
-    accepted(&submit(&mut engine, "run-over-again", run(bound + 1)));
-    assert_eq!(
-        engine.show().script_run().run_of(bound + 1).unwrap().run,
-        bound + 1
-    );
+    let runs = engine.show().script_run().clone();
+    assert_eq!(runs.runs.len() as u64, bound);
+    assert_eq!(runs.queued.len() as u64, queued_bound - 1);
+    assert!(runs.runs.iter().any(|run| run.script == bound + 1));
+    assert_eq!(runs.queued[0].script, bound + 2);
+    accepted(&submit(&mut engine, "rerun-3", run(3)));
+    let runs = engine.show().script_run().clone();
+    assert_eq!(runs.runs.len() as u64, bound);
+    assert_eq!(runs.queued.len() as u64, queued_bound);
+    assert_eq!(runs.queued.last().map(|run| run.script), Some(3));
+    // Stop all ends queued runs too.
+    accepted(&submit(&mut engine, "stop-all", stop(Vec::new())));
+    assert!(engine.show().script_run().is_empty());
 }
 
 /// A part that fails faults its own run only; a stop ends one run or

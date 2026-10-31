@@ -97,7 +97,7 @@ fn parse_failure(token: &str) -> Result<FailureKind, DecodeError> {
     })
 }
 
-/// Writes `,\n    "script_runs": {...}` (schema 60).
+/// Writes `,\n    "script_runs": {...}` (schema 60; a queue since 103).
 pub(crate) fn write_script_run(output: &mut String, state: &ScriptRunState) {
     write!(
         output,
@@ -106,6 +106,13 @@ pub(crate) fn write_script_run(output: &mut String, state: &ScriptRunState) {
     )
     .expect("writing to a string cannot fail");
     for (index, run) in state.runs.iter().enumerate() {
+        if index != 0 {
+            output.push_str(", ");
+        }
+        write_run(output, run);
+    }
+    output.push_str("], \"queued\": [");
+    for (index, run) in state.queued.iter().enumerate() {
         if index != 0 {
             output.push_str(", ");
         }
@@ -217,11 +224,13 @@ fn write_run(output: &mut String, run: &ScriptRun) {
     .expect("writing to a string cannot fail");
 }
 
-/// Parses `"script_runs"` from the project object (schema 60).
+/// Parses `"script_runs"` from the project object (schema 60; a queue
+/// since 103).
 pub(crate) fn parse_script_run(object: &mut Object) -> Result<ScriptRunState, DecodeError> {
     let mut object = Object::new(object.take("script_runs")?, "script runs")?;
     let last_run = object.u64("last_run")?;
     let runs = parse_array(object.take("runs")?, "script runs", parse_run)?;
+    let queued = parse_array(object.take("queued")?, "queued script runs", parse_run)?;
     let faults = parse_array(object.take("faults")?, "script faults", |value| {
         let mut fault = Object::new(value, "script fault")?;
         let parsed = ScriptFault {
@@ -239,6 +248,7 @@ pub(crate) fn parse_script_run(object: &mut Object) -> Result<ScriptRunState, De
     Ok(ScriptRunState {
         last_run,
         runs,
+        queued,
         faults,
     })
 }

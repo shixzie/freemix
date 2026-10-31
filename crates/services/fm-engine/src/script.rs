@@ -711,6 +711,9 @@ fn run_alone(
                 state: suspension.state.clone(),
             },
         );
+    } else if matches!(entry, Entry::Resume(_)) {
+        // The active run ended: the oldest queued run takes its slot.
+        runs.promote_queued();
     }
     let event = EngineEvent::ScriptRan {
         script,
@@ -757,23 +760,10 @@ pub(crate) fn plan(
         )
         .with_reason(RefusalReason::ScriptRunning { script }));
     }
-    let (outcome, plan) = run_alone(engine, script, Entry::Start, target_frame)?;
+    let (outcome, mut plan) = run_alone(engine, script, Entry::Start, target_frame)?;
     let waits = outcome.report.suspension.is_some();
     if let Some(rejection) = outcome.failure(script) {
         return Err(rejection);
-    }
-    if waits && runs.runs.len() >= fm_model::MAX_SCRIPT_RUNS {
-        return Err(Rejection::new(
-            RejectionCode::ResourceExhausted,
-            format!(
-                "{} script runs already wait; stop one first",
-                fm_model::MAX_SCRIPT_RUNS
-            ),
-        )
-        .with_reason(RefusalReason::bounds(
-            "script_runs",
-            fm_model::MAX_SCRIPT_RUNS as u64,
-        )));
     }
     // A run id is never reused: once the last one is issued (only a
     // hand-edited project gets there), no run may wait again.
@@ -783,6 +773,30 @@ pub(crate) fn plan(
             "the show has issued every script run id; no run can wait",
         )
         .with_reason(RefusalReason::bounds("last_run", u64::MAX)));
+    }
+    if waits && runs.runs.len() >= fm_model::MAX_SCRIPT_RUNS {
+        if runs.queued.len() >= fm_model::MAX_QUEUED_SCRIPT_RUNS {
+            return Err(Rejection::new(
+                RejectionCode::ResourceExhausted,
+                format!(
+                    "{} script runs already wait and {} are queued; stop one first",
+                    fm_model::MAX_SCRIPT_RUNS,
+                    fm_model::MAX_QUEUED_SCRIPT_RUNS
+                ),
+            )
+            .with_reason(RefusalReason::bounds(
+                "script_run_queue",
+                fm_model::MAX_QUEUED_SCRIPT_RUNS as u64,
+            )));
+        }
+        // The first part applied; the run waits in the queue until an
+        // active run ends and frees its slot.
+        let slot = plan.show.script_run_mut();
+        if let Some(index) = slot.runs.iter().position(|run| run.script == script) {
+            let run = slot.runs.remove(index);
+            let at = slot.queued.partition_point(|queued| queued.run < run.run);
+            slot.queued.insert(at, run);
+        }
     }
     Ok(plan)
 }
@@ -856,6 +870,8 @@ pub(crate) fn plan_resume(
             detail,
         },
     );
+    // A faulted active run frees its slot for the oldest queued run.
+    runs.promote_queued();
     Ok(CuePlan {
         show: Box::new(show),
         event: EngineEvent::ScriptRunChanged {
@@ -895,6 +911,7 @@ pub(crate) fn plan_stop(
         let scripts = current.scripts();
         let slot = show.script_run_mut();
         slot.runs.clear();
+        slot.queued.clear();
         slot.faults.clear();
         EngineEvent::ScriptRunsStopped { scripts, frame }
     } else {
@@ -916,8 +933,11 @@ pub(crate) fn plan_stop(
         let slot = show.script_run_mut();
         for run in runs {
             slot.runs.retain(|found| found.run != *run);
+            slot.queued.retain(|found| found.run != *run);
             slot.faults.retain(|fault| fault.run != *run);
         }
+        // A stopped active run frees its slot for the oldest queued run.
+        while slot.promote_queued() {}
         if let [script] = scripts.as_slice() {
             EngineEvent::ScriptRunChanged {
                 script: *script,

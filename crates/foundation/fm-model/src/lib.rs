@@ -122,10 +122,11 @@ pub use scene_animation::{
 };
 pub use scene_layer_edit::{SceneLayerChange, SceneLayerEditError, check_scene_layer};
 pub use script::{
-    MAX_SCRIPT_NAME_BYTES, MAX_SCRIPT_RUNS, MAX_SCRIPT_SOURCE_BYTES, MAX_SCRIPT_WAIT_SECONDS,
-    MAX_SCRIPT_WAITS, MAX_SCRIPTS, Script, ScriptError, ScriptFault, ScriptRun, ScriptRunState,
-    script_limits, script_name_is_valid, script_source_is_valid, script_wait_frames, script_waits,
-    validate_script_definition, validate_script_run, validate_scripts,
+    MAX_QUEUED_SCRIPT_RUNS, MAX_SCRIPT_NAME_BYTES, MAX_SCRIPT_RUNS, MAX_SCRIPT_SOURCE_BYTES,
+    MAX_SCRIPT_WAIT_SECONDS, MAX_SCRIPT_WAITS, MAX_SCRIPTS, Script, ScriptError, ScriptFault,
+    ScriptRun, ScriptRunState, script_limits, script_name_is_valid, script_source_is_valid,
+    script_wait_frames, script_waits, validate_script_definition, validate_script_run,
+    validate_scripts,
 };
 pub use shortcut::{
     MAX_SHORTCUT_ACTIONS, MAX_SHORTCUT_KEY_BYTES, MAX_SHORTCUT_NAME_BYTES, MAX_SHORTCUT_OSC_BYTES,

@@ -58,6 +58,7 @@ fn several_runs_of_different_scripts_wait_together() {
     let state = ScriptRunState {
         last_run: 5,
         runs: vec![run(1, 3), run(4, 1)],
+        queued: Vec::new(),
         faults: vec![fault(5, 2)],
     };
     assert!(check(&state, &scripts));
@@ -76,9 +77,53 @@ fn several_runs_of_different_scripts_wait_together() {
     let full = ScriptRunState {
         last_run: MAX_SCRIPT_RUNS as u64,
         runs: (1..=MAX_SCRIPT_RUNS as u64).map(|id| run(id, id)).collect(),
+        queued: Vec::new(),
         faults: Vec::new(),
     };
     assert!(check(&full, &scripts));
+}
+
+#[test]
+fn queued_runs_validate_and_promote_in_order() {
+    let scripts = scripts(12);
+    let state = ScriptRunState {
+        last_run: 6,
+        runs: vec![run(1, 1), run(2, 2)],
+        queued: vec![run(3, 3), run(4, 4)],
+        faults: Vec::new(),
+    };
+    assert!(check(&state, &scripts));
+    assert_eq!(state.run_of(4).map(|found| found.run), Some(4));
+    assert_eq!(state.scripts(), vec![1, 2, 3, 4]);
+    // One script cannot be both active and queued.
+    let both = ScriptRunState {
+        queued: vec![run(3, 1)],
+        ..state.clone()
+    };
+    assert!(!check(&both, &scripts));
+    // The queue is bounded.
+    let too_many = ScriptRunState {
+        last_run: 11,
+        runs: vec![run(1, 1), run(2, 2)],
+        queued: (3..=11).map(|id| run(id, id)).collect(),
+        faults: Vec::new(),
+    };
+    assert!(!check(&too_many, &scripts));
+    // Promotion takes the oldest queued run into the active set.
+    let mut promoted = state;
+    assert!(promoted.promote_queued());
+    assert_eq!(
+        promoted.runs.iter().map(|run| run.run).collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    assert_eq!(
+        promoted
+            .queued
+            .iter()
+            .map(|run| run.run)
+            .collect::<Vec<_>>(),
+        vec![4]
+    );
 }
 
 #[test]
@@ -87,12 +132,14 @@ fn a_run_list_out_of_shape_is_invalid() {
     let valid = ScriptRunState {
         last_run: 3,
         runs: vec![run(1, 1), run(2, 2)],
+        queued: Vec::new(),
         faults: vec![fault(3, 3)],
     };
     assert!(check(&valid, &scripts));
     let too_many = ScriptRunState {
         last_run: 9,
         runs: (1..=9).map(|id| run(id, id)).collect(),
+        queued: Vec::new(),
         faults: Vec::new(),
     };
     let broken = [
@@ -112,6 +159,7 @@ fn a_run_list_out_of_shape_is_invalid() {
         },
         // The same run id twice, also across a run and a fault.
         ScriptRunState {
+            queued: Vec::new(),
             faults: vec![fault(2, 3)],
             ..valid.clone()
         },
@@ -121,11 +169,13 @@ fn a_run_list_out_of_shape_is_invalid() {
             ..valid.clone()
         },
         ScriptRunState {
+            queued: Vec::new(),
             faults: vec![fault(3, 2)],
             ..valid.clone()
         },
         // An unknown script.
         ScriptRunState {
+            queued: Vec::new(),
             faults: vec![fault(3, 11)],
             ..valid.clone()
         },

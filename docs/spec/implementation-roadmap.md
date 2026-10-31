@@ -5192,19 +5192,22 @@ never reused. Design choice: a second run of a script that already waits is
 refused `script_running` rather than allowed, because two runs of one source
 act on the same titles and inputs and would fight; the operator stops the
 first (or the script finishes) and runs it again. A run that would wait
-while 8 do is refused `bounds_exceeded:script_runs:8`. Each run is
+while 8 do is queued behind them (schema 103), oldest first, and promoted
+when an active run ends; the project's 16-script bound caps the queue at
+8, and a stop ends queued runs too. Each run is
 authorized on its own, as before. The cue clock still drives every run as
 list `0` (the earliest due, the lowest id on a tie); runs due on the same
 frame resume on that frame together, the later advance joining the frame
-the first holds. A failed part faults its own run only, and each script
+the first holds; queued runs never resume until promoted. A failed part
+faults its own run only, and each script
 keeps its own fault. `script_stop runs=<run>[,<run>...]` ends the selected
 runs or clears their faults (Protocol 2.146); `script_stop` alone ends every
 run and clears every fault (`script_runs_stopped`). Wire `run` states name
 the run id and, while waiting, the line of the `wait` (the run's current
-step). Studio's Scripts window lists every active run with its own Stop (or
+step); a queued run reports the same waiting state. Studio's Scripts window
+lists every active run with its own Stop (or
 Clear), a checkbox selecting it for Stop selected runs, and Stop all runs;
 the CLI's `script-stop` takes `--run`, repeatable or comma separated.
-Remaining gap: runs cannot be queued behind the bound.
 
 Document inputs (`IN-014`, Protocol 2.77, schema 66): a PDF or a
 presentation is an input shown one page at a time. Renderer choice: `hayro`,

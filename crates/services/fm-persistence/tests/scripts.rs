@@ -104,13 +104,13 @@ fn scripts_round_trip_exactly_and_strictly() {
     assert_eq!(store.load().unwrap().project(), &expected);
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 102"));
+    assert!(text.contains("\"schema_version\": 103"));
     assert!(
         text.contains(
             ",\n    \"scripts\": [\n      {\"id\": 3, \"name\": \"Open \\\"show\\\"\", \"source\": \
              \"# open\\npreview 2\\r\\n\\ttransition fade, 25\\ntitle_text \\\"Lower\\\", 1, \
              \\\"a\\\\\\\\b\\\"\"},\n      {\"id\": 1, \"name\": \"Draft\", \"source\": \"if \
-             program ==\\n\"}\n    ],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null, \"transition\": \"cut\"}\n  },"
+             program ==\\n\"}\n    ],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"queued\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null, \"transition\": \"cut\"}\n  },"
         ),
         "{text}"
     );
@@ -118,7 +118,7 @@ fn scripts_round_trip_exactly_and_strictly() {
     // An empty script list is written as an empty array.
     store.save(&stored(project()).unwrap()).unwrap();
     let empty = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(empty.contains(",\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null, \"transition\": \"cut\"}\n  },"), "{empty}");
+    assert!(empty.contains(",\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"queued\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null, \"transition\": \"cut\"}\n  },"), "{empty}");
 
     store.save(&stored(expected).unwrap()).unwrap();
     for (from, to) in [
@@ -289,6 +289,7 @@ fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
                 },
             },
         ],
+        queued: Vec::new(),
         faults: Vec::new(),
     });
     store.save(&stored(expected.clone()).unwrap()).unwrap();
@@ -303,7 +304,7 @@ fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
              \"instructions\": 11, \"actions\": 0, \"waits\": 1, \"wait_frames\": 25}, {\"run\": 7, \
              \"script\": 3, \"started_frame\": 60, \"due_frame\": 65, \"path\": [{\"statement\": 0, \
              \"branch\": 0}], \"variables\": [], \"instructions\": 1, \"actions\": 0, \"waits\": 1, \
-             \"wait_frames\": 5}], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null, \"transition\": \"cut\"}\n  },"
+             \"wait_frames\": 5}], \"queued\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null, \"transition\": \"cut\"}\n  },"
         ),
         "{text}"
     );
@@ -363,6 +364,7 @@ fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
     faulted.set_script_run(ScriptRunState {
         last_run: 7,
         runs: Vec::new(),
+        queued: Vec::new(),
         faults: vec![ScriptFault {
             run: 5,
             script: 2,
@@ -380,7 +382,7 @@ fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
     assert!(
         text.contains(
-            "\"script_runs\": {\"last_run\": 7, \"runs\": [], \"faults\": [{\"run\": 5, \
+            "\"script_runs\": {\"last_run\": 7, \"runs\": [], \"queued\": [], \"faults\": [{\"run\": 5, \
              \"script\": 2, \"frame\": 90, \"failure\": \"wait_frames\", \"line\": 5, \"column\": 3, \
              \"reason\": null, \"message\": \"wait frame budget exceeded\"}]}"
         ),
@@ -399,6 +401,7 @@ fn a_waiting_run_and_a_fault_round_trip_exactly_and_strictly() {
     faulted.set_script_run(ScriptRunState {
         last_run: 7,
         runs: Vec::new(),
+        queued: Vec::new(),
         faults: vec![ScriptFault {
             run: 5,
             script: 2,
