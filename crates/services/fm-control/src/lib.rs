@@ -2116,6 +2116,30 @@ impl<A: AuthorizationHook> ControlService<A> {
         self.engine.show().input_lifecycle(input)
     }
 
+    /// Input health counts for statistics (RC-015): total inputs, offline
+    /// inputs (closed, or a media source that is not open), and failed
+    /// inputs (a latched media fault).
+    #[must_use]
+    pub fn input_health(&self) -> (u64, u64, u64) {
+        let show = self.engine.show();
+        let total = u64::try_from(show.inputs().len()).unwrap_or(u64::MAX);
+        let mut offline = 0_u64;
+        let mut failed = 0_u64;
+        for &input in show.inputs() {
+            if let Some(status) = self.engine.media_status(input) {
+                if status.fault.is_some() {
+                    failed = failed.saturating_add(1);
+                }
+                if !status.available {
+                    offline = offline.saturating_add(1);
+                }
+            } else if show.input_lifecycle(input).closed {
+                offline = offline.saturating_add(1);
+            }
+        }
+        (total, offline.min(total), failed.min(total))
+    }
+
     /// The engine's current model of scene `scene` (layers and animation,
     /// as live scene layer and animation edits left them).
     #[must_use]

@@ -154,6 +154,12 @@ pub mod names {
     pub const CONTROL_SUBSCRIBERS: &str = "control.subscribers";
     /// The control plane's current revision.
     pub const CONTROL_REVISION: &str = "control.revision";
+    /// Inputs in the show.
+    pub const INPUT_TOTAL: &str = "input.total";
+    /// Inputs that are closed, or media inputs whose source is not open.
+    pub const INPUT_OFFLINE: &str = "input.offline";
+    /// Inputs whose media source latched a fault.
+    pub const INPUT_FAILED: &str = "input.failed";
 }
 
 /// The most recent alert notifications kept for clients.
@@ -503,6 +509,12 @@ pub struct NativeStatisticsSample {
 pub struct ControlSample {
     pub subscribers: u64,
     pub revision: u64,
+    /// Inputs in the show.
+    pub inputs_total: u64,
+    /// Inputs that are closed, or media inputs whose source is not open.
+    pub inputs_offline: u64,
+    /// Inputs whose media source latched a fault.
+    pub inputs_failed: u64,
 }
 
 const MONITOR_TAPS: [&str; 2] = ["program", "preview"];
@@ -622,6 +634,9 @@ impl DaemonStatistics {
             (names::ENCODER_QUEUE_UTILIZATION, MetricDescriptor::Gauge),
             (names::CONTROL_SUBSCRIBERS, MetricDescriptor::Gauge),
             (names::CONTROL_REVISION, MetricDescriptor::Gauge),
+            (names::INPUT_TOTAL, MetricDescriptor::Gauge),
+            (names::INPUT_OFFLINE, MetricDescriptor::Gauge),
+            (names::INPUT_FAILED, MetricDescriptor::Gauge),
         ];
         for (name, descriptor) in descriptors {
             registry
@@ -936,6 +951,13 @@ impl DaemonStatistics {
             gauge_value(control.subscribers),
         );
         self.gauge(names::CONTROL_REVISION, at, gauge_value(control.revision));
+        self.gauge(names::INPUT_TOTAL, at, gauge_value(control.inputs_total));
+        self.gauge(
+            names::INPUT_OFFLINE,
+            at,
+            gauge_value(control.inputs_offline),
+        );
+        self.gauge(names::INPUT_FAILED, at, gauge_value(control.inputs_failed));
         if let Some(native) = native {
             self.record_native(at, &native);
         }
@@ -1983,6 +2005,9 @@ mod tests {
             ControlSample {
                 subscribers: 3,
                 revision: 42,
+                inputs_total: 5,
+                inputs_offline: 2,
+                inputs_failed: 1,
             },
             None,
             Some(0.125),
@@ -1994,6 +2019,9 @@ mod tests {
         assert_eq!(statistics.value(names::GPU_UTILIZATION), None);
         assert_eq!(statistics.value(names::CONTROL_SUBSCRIBERS), Some(3.0));
         assert_eq!(statistics.value(names::CONTROL_REVISION), Some(42.0));
+        assert_eq!(statistics.value(names::INPUT_TOTAL), Some(5.0));
+        assert_eq!(statistics.value(names::INPUT_OFFLINE), Some(2.0));
+        assert_eq!(statistics.value(names::INPUT_FAILED), Some(1.0));
         assert_eq!(statistics.value(names::FRAMES_REALIZED), None);
         assert_eq!(statistics.value(names::DISK_FREE_BYTES), None);
         assert_eq!(statistics.errors(), 0);

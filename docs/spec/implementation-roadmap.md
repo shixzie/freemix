@@ -3892,7 +3892,7 @@ window edits them under each rule in natural units, and `freemix-cli`
 prints and changes them with `remote-alert-rules` and `remote-alert-rule`
 (type, persistence, codec, engine undo, statistics, and process tests).
 Remaining
-gaps: no input-health or
+gaps: input total, offline, and failed counts are sampled; there is no
 hardware-encoder session sampling, and the simulated daemon has no network,
 sync, or encoder readings (an unsupported reading stays unknown rather than
 zero); a show changes each rule's thresholds, hold, severity, and switch but

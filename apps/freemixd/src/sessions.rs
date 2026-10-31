@@ -1568,9 +1568,13 @@ pub(super) fn run(
         let now = Instant::now();
         if runtime.statistics.borrow().due(now) {
             let diagnostics = control.borrow().diagnostics();
+            let (inputs_total, inputs_offline, inputs_failed) = control.borrow().input_health();
             let sample = crate::statistics::ControlSample {
                 subscribers: u64::try_from(diagnostics.subscriber_count).unwrap_or(u64::MAX),
                 revision: diagnostics.current_revision,
+                inputs_total,
+                inputs_offline,
+                inputs_failed,
             };
             let native_sample = native
                 .as_deref_mut()
