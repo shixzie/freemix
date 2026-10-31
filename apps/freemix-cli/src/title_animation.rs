@@ -26,7 +26,7 @@ use fm_titles::{
 use fm_types::InputId;
 
 use crate::{
-    app::{AppFailure, AppResult, inspect_stored_project, load_stored_project, write_title_ppm},
+    app::{AppFailure, AppResult, inspect_stored_project, load_stored_project, write_title_frame},
     args::TitlePhase,
 };
 
@@ -252,7 +252,7 @@ pub fn render_frame(
     };
     let rendered = render_title_output(&assets, id, &title, time)
         .map_err(|error| AppFailure(error.to_string()))?;
-    write_title_ppm(output, &rendered.frame)?;
+    write_title_frame(output, &rendered.frame)?;
     println!(
         "title-render-frame: input {input} phase={} frame={frame} {}x{} to {}",
         phase_name(title_phase),

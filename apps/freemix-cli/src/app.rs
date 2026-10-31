@@ -1,7 +1,7 @@
 use std::{
     error::Error,
     fs::{self, File, OpenOptions},
-    io,
+    io::{self, Write as _},
     num::NonZeroU128,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -6601,7 +6601,7 @@ fn render(path: &Path, output: &Path, width: u32, height: u32) -> AppResult<()> 
             None => mixed,
         }
     };
-    write_ppm_atomic(output, |file| write_ppm(&frame, file))?;
+    write_title_frame(output, &frame)?;
     println!(
         "rendered {}x{} Program input {} to {}",
         width,
@@ -6619,9 +6619,19 @@ fn is_scene_input(project: &Project, input: InputId) -> bool {
         .any(|candidate| candidate.id == input && matches!(candidate.kind, InputKind::Scene { .. }))
 }
 
-/// Writes a rendered title frame as a binary PPM, atomically.
-pub(crate) fn write_title_ppm(output: &Path, frame: &ImageFrame) -> io::Result<()> {
-    write_ppm_atomic(output, |file| write_ppm(frame, file))
+/// Writes a rendered frame atomically as an RGBA8 PNG when `output` ends in
+/// `.png`, otherwise as a binary PPM.
+pub(crate) fn write_title_frame(output: &Path, frame: &ImageFrame) -> io::Result<()> {
+    if output
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("png"))
+    {
+        let png = fm_video::encode_png_rgba8(frame)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        write_ppm_atomic(output, |file| file.write_all(&png))
+    } else {
+        write_ppm_atomic(output, |file| write_ppm(frame, file))
+    }
 }
 
 fn write_ppm_atomic(
@@ -7311,7 +7321,7 @@ Usage:
   freemix-cli title-animation-stretch <show.freemix> <asset://titles/...fmtitle> --phase in|out --frames <n>
       Sets a phase to n frames, scaling every key of the phase
       proportionally (frames rounded half up).
-  freemix-cli title-render-frame <show.freemix> <title-input-id> --phase in|out --frame <f> [--at <YYYY-MM-DDTHH:MM:SSZ>] <out.ppm>
+  freemix-cli title-render-frame <show.freemix> <title-input-id> --phase in|out --frame <f> [--at <YYYY-MM-DDTHH:MM:SSZ>] <out.ppm|out.png>
       Renders the title input's field values at frame f of the phase, at
       the template canvas size, with the bundle's fonts and decoded PNG or
       JPEG images, exactly as freemixd draws it. Production clocks read the
@@ -7331,7 +7341,7 @@ Usage:
   freemix-cli scene-animation-stretch <show.freemix> <scene-id> --phase in|out --frames <n>
       Sets a scene animation phase to n frames, scaling every key of the
       phase proportionally (frames rounded half up).
-  freemix-cli scene-render-frame <show.freemix> <scene-id> --phase in|hold|out [--frame <f>] <out.ppm> [--width <px>] [--height <px>]
+  freemix-cli scene-render-frame <show.freemix> <scene-id> --phase in|hold|out [--frame <f>] <out.ppm|out.png> [--width <px>] [--height <px>]
       Renders the scene posed at frame f of the In or Out phase (or held
       at the In end, which takes no --frame) from the simulated sources,
       composed at the project canvas and scaled like render.
@@ -7854,7 +7864,7 @@ fn render_transition_frame(
             mix_end_numerator: numerator,
         },
     )?;
-    write_ppm_atomic(output, |file| write_ppm(&frame, file))?;
+    write_title_frame(output, &frame)?;
     println!(
         "rendered {}x{} {} {numerator}/{denominator} from input {from} to input {to} to {}",
         width,

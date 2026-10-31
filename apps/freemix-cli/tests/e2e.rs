@@ -5336,6 +5336,11 @@ fn title_render_frame_draws_decoded_images() {
     let (report, drawn) = render("logo.ppm");
     assert!(!report.contains("placeholder image"), "{report}");
     assert_eq!(drawn, image_golden());
+    let (report, png) = render("logo.png");
+    assert!(!report.contains("placeholder image"), "{report}");
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(u32::from_be_bytes(png[16..20].try_into().unwrap()), 16);
+    assert_eq!(u32::from_be_bytes(png[20..24].try_into().unwrap()), 8);
 
     // An image that no longer resolves keeps the placeholder and is named.
     fs::remove_file(images.join("logo.png")).unwrap();

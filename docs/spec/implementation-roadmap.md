@@ -3104,8 +3104,10 @@ most two frames, and resumes live with output timestamps of
 `max(map(source_pts), last_output_pts + d)` on a grid anchored at the first
 source timestamp, so output never regresses. A std-only PNG encoder writes
 exact RGBA8 and RGBA16 stills with stored DEFLATE blocks, CRC32, and Adler32,
-checked by golden bytes and a structural decoder. Remaining gaps: no engine,
-scheduler, simulator, protocol, daemon, or UI calls either piece; timestamps
+checked by golden bytes and a structural decoder. The CLI's title, scene, and
+program render commands write an RGBA8 PNG when the output path ends in
+`.png` (binary PPM otherwise). Remaining gaps: no engine, scheduler,
+simulator, protocol, daemon, or UI calls the freeze controller; timestamps
 are bare ticks rather than `fm-frame` timing types; audio and clock-domain
 conversion are absent; and stills carry no color metadata or compression.
 `SW-016` remains planned.
