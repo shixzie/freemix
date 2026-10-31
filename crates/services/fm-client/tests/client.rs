@@ -2119,6 +2119,7 @@ mod playlists {
                 follow_media: false,
                 transition: PlaylistTransitionKind::Fade,
                 transition_frames: 15,
+                stinger_slot: None,
                 enabled: true,
             }],
             state: PlaylistRunState::Playing {

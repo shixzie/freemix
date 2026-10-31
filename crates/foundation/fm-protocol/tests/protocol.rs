@@ -2966,7 +2966,7 @@ fn edit_history_and_padlock_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.143\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.144\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -2975,7 +2975,7 @@ fn edit_history_and_padlock_commands_are_exact() {
 
 #[test]
 fn edit_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.143\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.144\tid=a\tidempotency_key=k";
     for (tail, expected) in [
         (
             "\tpayload=undo\texpected_edit=0",
@@ -3300,7 +3300,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
         assert_eq!(
             encoded,
             format!(
-                "command\tprotocol=2.143\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                "command\tprotocol=2.144\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
             )
         );
         assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -3310,7 +3310,7 @@ fn protocol_2_23_input_catalogue_commands_are_exact() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn input_catalogue_commands_reject_out_of_contract_records() {
-    let prefix = "command\tprotocol=2.143\tid=a\tidempotency_key=k";
+    let prefix = "command\tprotocol=2.144\tid=a\tidempotency_key=k";
     let invalid = |field: &'static str, value: &str| CodecError::InvalidField {
         field,
         value: value.to_owned(),
@@ -3498,7 +3498,7 @@ mod titles {
         WireTitleFieldId,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.143\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.144\tid=a\tidempotency_key=k";
 
     fn field(value: u128) -> WireTitleFieldId {
         WireTitleFieldId::new(NonZeroU128::new(value).unwrap())
@@ -3546,7 +3546,7 @@ mod titles {
 
     #[test]
     fn protocol_2_24_title_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 143));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 144));
         let cases = [
             (
                 CommandPayload::SetTitleFields {
@@ -3600,7 +3600,7 @@ mod titles {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.143\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.144\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -4464,7 +4464,7 @@ mod playlists {
         PlaylistRunState, PlaylistStart, PlaylistStateMessage, PlaylistTransitionKind,
     };
 
-    const PREFIX: &str = "command\tprotocol=2.143\tid=a\tidempotency_key=k";
+    const PREFIX: &str = "command\tprotocol=2.144\tid=a\tidempotency_key=k";
     const EVENT: &str = "event\tengine_id=engine-a\tstate_epoch=7\tlog_id=log-a\trevision=1842";
     const HISTORY: &str = "\tundo_depth=0\tredo_depth=0\n";
 
@@ -4482,6 +4482,7 @@ mod playlists {
             follow_media: false,
             transition,
             transition_frames,
+            stinger_slot: None,
             enabled: true,
         }
     }
@@ -4497,7 +4498,7 @@ mod playlists {
         ]
     }
 
-    const SAMPLE_ENTRIES_WIRE: &str = "1%3A42%3A90%3Acut%3A0%3A1%3A0%2C18446744073709551615%3A7%3A3600%3Aalpha_fade%3A3600%3A0%3A0%2C3%3A8%3A10%3Awipe%3A1%3A1%3A0";
+    const SAMPLE_ENTRIES_WIRE: &str = "1%3A42%3A90%3Acut%3A0%3A1%3A0%3A-%2C18446744073709551615%3A7%3A3600%3Aalpha_fade%3A3600%3A0%3A0%3A-%2C3%3A8%3A10%3Awipe%3A1%3A1%3A0%3A-";
 
     fn control(operation: PlaylistOperation) -> CommandPayload {
         CommandPayload::PlaylistControl { operation }
@@ -4505,7 +4506,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_25_playlist_commands_are_exact() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 143));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 144));
         let cases = [
             (
                 CommandPayload::SetPlaylist {
@@ -4577,7 +4578,7 @@ mod playlists {
             assert_eq!(
                 encoded,
                 format!(
-                    "command\tprotocol=2.143\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
+                    "command\tprotocol=2.144\tid=01K%3Atest\tidempotency_key=operator-7%3A01K{tail}"
                 )
             );
             assert_eq!(decode_line(&encoded).unwrap(), message);
@@ -4607,44 +4608,44 @@ mod playlists {
             // Zero duration, a cut with frames, a fade without frames or
             // longer than its entry, an unknown kind, and a duplicate id.
             (
-                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A0%3Acut%3A0%3A1%3A0",
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A0%3Acut%3A0%3A1%3A0%3A-",
                 invalid("entries", "1"),
             ),
             (
-                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Acut%3A1%3A1%3A0",
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Acut%3A1%3A1%3A0%3A-",
                 invalid("entries", "1"),
             ),
             (
-                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Afade%3A0%3A1%3A0",
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Afade%3A0%3A1%3A0%3A-",
                 invalid("entries", "1"),
             ),
             (
-                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Afade%3A6%3A1%3A0",
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Afade%3A6%3A1%3A0%3A-",
                 invalid("entries", "1"),
             ),
             (
-                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5000%3Afade%3A3601%3A1%3A0",
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5000%3Afade%3A3601%3A1%3A0%3A-",
                 invalid("entries", "1"),
             ),
             (
-                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Astinger%3A2%3A1%3A0",
-                invalid("entries", "1:2:5:stinger:2:1:0"),
-            ),
-            (
-                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Acut%3A0%3A1%3A0%2C1%3A3%3A5%3Acut%3A0%3A1%3A0",
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Astinger%3A2%3A1%3A0%3A-",
                 invalid("entries", "1"),
             ),
             (
-                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Acut%3A0%3Ayes%3A0",
-                invalid("entries", "1:2:5:cut:0:yes:0"),
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Acut%3A0%3A1%3A0%3A-%2C1%3A3%3A5%3Acut%3A0%3A1%3A0%3A-",
+                invalid("entries", "1"),
             ),
             (
-                "\tpayload=playlist_set\tloop=off\tentries=1%3A0%3A5%3Acut%3A0%3A1%3A0",
-                invalid("entries", "1:0:5:cut:0:1:0"),
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Acut%3A0%3Ayes%3A0%3A-",
+                invalid("entries", "1:2:5:cut:0:yes:0:-"),
             ),
             (
-                "\tpayload=playlist_set\tloop=off\tentries=01%3A2%3A5%3Acut%3A0%3A1%3A0",
-                invalid("entries", "01:2:5:cut:0:1:0"),
+                "\tpayload=playlist_set\tloop=off\tentries=1%3A0%3A5%3Acut%3A0%3A1%3A0%3A-",
+                invalid("entries", "1:0:5:cut:0:1:0:-"),
+            ),
+            (
+                "\tpayload=playlist_set\tloop=off\tentries=01%3A2%3A5%3Acut%3A0%3A1%3A0%3A-",
+                invalid("entries", "01:2:5:cut:0:1:0:-"),
             ),
             (
                 "\tpayload=playlist_set\tloop=off\tentries=1%3A2%3A5%3Acut%3A0",
@@ -4750,6 +4751,7 @@ mod playlists {
                 follow_media: false,
                 transition: PlaylistTransitionKind::AlphaFade,
                 transition_frames: fm_protocol::MAX_PLAYLIST_TRANSITION_FRAMES,
+                stinger_slot: None,
                 enabled: false,
             })
             .collect()
@@ -4877,7 +4879,7 @@ mod playlists {
 
     #[test]
     fn protocol_2_26_playlist_state_is_exact_and_strict() {
-        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 143));
+        assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 144));
         let message = playlist_state(
             sample_entries(),
             PlaylistRunState::Playing {
@@ -4922,7 +4924,7 @@ mod playlists {
                 },
             ),
             (
-                valid.replace("entries=", "entries=1%3A2%3A0%3Acut%3A0%3A1%3A0"),
+                valid.replace("entries=", "entries=1%3A2%3A0%3Acut%3A0%3A1%3A0%3A-"),
                 CodecError::InvalidField {
                     field: "entries",
                     value: "1".to_owned(),

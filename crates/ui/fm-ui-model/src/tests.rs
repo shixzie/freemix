@@ -2592,6 +2592,7 @@ fn playlist_changed_replicates_the_playlist_and_desired_selection() {
         follow_media: false,
         transition: fm_protocol::PlaylistTransitionKind::Fade,
         transition_frames: 5,
+        stinger_slot: None,
         enabled: true,
     };
     let message = |revision: u64, entry_input: u128| EventMessage {
@@ -2672,6 +2673,7 @@ fn an_announced_playlist_state_completes_the_snapshot() {
             follow_media: false,
             transition: PlaylistTransitionKind::Cut,
             transition_frames: 0,
+            stinger_slot: None,
             enabled: true,
         }],
         state: PlaylistRunState::Paused {

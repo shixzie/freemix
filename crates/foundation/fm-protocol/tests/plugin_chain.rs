@@ -92,7 +92,7 @@ fn plugin_chains_round_trip_exactly() {
     assert_eq!(
         line,
         format!(
-            "command\tprotocol=2.143\tid=a\tidempotency_key=k\tpayload=audio_plugin_chain\t\
+            "command\tprotocol=2.144\tid=a\tidempotency_key=k\tpayload=audio_plugin_chain\t\
              target=7\tplugins=freemix.reference.trim%3A0%3A0%3A{state}%2C\
              freemix.reference.polarity%3A1%3A2%3A\n"
         )
@@ -118,7 +118,7 @@ fn plugin_chains_round_trip_exactly() {
 
 #[test]
 fn malformed_plugin_chains_are_refused() {
-    let prefix = "command\tprotocol=2.143\tid=a\tidempotency_key=k\tpayload=audio_plugin_chain";
+    let prefix = "command\tprotocol=2.144\tid=a\tidempotency_key=k\tpayload=audio_plugin_chain";
     let good = format!("{prefix}\ttarget=7\tplugins=freemix.reference.trim:0:0:");
     assert!(decode_line(&format!("{good}\n")).is_ok());
     for fields in [
@@ -160,7 +160,7 @@ fn malformed_plugin_chains_are_refused() {
     assert!(!PluginChainSlot::plugin_id_is_valid(""));
     assert!(!PluginChainSlot::plugin_id_is_valid("a:b"));
     assert_eq!(
-        ProtocolVersion::new(2, 143),
+        ProtocolVersion::new(2, 144),
         fm_protocol::CURRENT_PROTOCOL_VERSION
     );
 }

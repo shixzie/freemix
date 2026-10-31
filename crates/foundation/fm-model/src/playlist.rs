@@ -30,8 +30,8 @@ pub enum PlaylistLoop {
     One,
 }
 
-/// Program transitions a playlist entry may request. Stingers are excluded
-/// because a playlist entry does not name a Stinger slot.
+/// Program transitions a playlist entry may request. A Stinger names the
+/// slot it takes.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum PlaylistTransitionKind {
     Cut,
@@ -40,21 +40,25 @@ pub enum PlaylistTransitionKind {
     Wipe,
     Slide,
     Zoom,
+    Stinger,
 }
 
 /// The transition that brings an entry on air. A cut has zero frames; every
 /// other kind has between one and [`MAX_PLAYLIST_TRANSITION_FRAMES`] frames
-/// and no more than the entry's duration.
+/// and no more than the entry's duration. A Stinger names its slot
+/// (`1..=8`); no other kind has one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PlaylistTransition {
     pub kind: PlaylistTransitionKind,
     pub duration_frames: u32,
+    pub stinger_slot: Option<u8>,
 }
 
 impl PlaylistTransition {
     pub const CUT: Self = Self {
         kind: PlaylistTransitionKind::Cut,
         duration_frames: 0,
+        stinger_slot: None,
     };
 }
 
@@ -177,15 +181,26 @@ pub fn validate_playlist_entries(entries: &[PlaylistEntry]) -> Result<(), Playli
             return Err(PlaylistEntryError::InvalidDuration(entry.id));
         }
         let frames = entry.transition.duration_frames;
+        let slot_valid = entry
+            .transition
+            .stinger_slot
+            .is_none_or(|slot| (1..=8).contains(&slot));
         let valid = match entry.transition.kind {
-            PlaylistTransitionKind::Cut => frames == 0,
+            PlaylistTransitionKind::Cut => frames == 0 && entry.transition.stinger_slot.is_none(),
+            PlaylistTransitionKind::Stinger => {
+                frames != 0
+                    && frames <= MAX_PLAYLIST_TRANSITION_FRAMES
+                    && u64::from(frames) <= entry.duration_frames
+                    && entry.transition.stinger_slot.is_some()
+            }
             _ => {
                 frames != 0
                     && frames <= MAX_PLAYLIST_TRANSITION_FRAMES
                     && u64::from(frames) <= entry.duration_frames
+                    && entry.transition.stinger_slot.is_none()
             }
         };
-        if !valid {
+        if !valid || !slot_valid {
             return Err(PlaylistEntryError::InvalidTransition(entry.id));
         }
     }

@@ -388,29 +388,41 @@ pub const fn transition_label(kind: PlaylistTransitionKind) -> &'static str {
         PlaylistTransitionKind::Wipe => Msg::TransitionWipe.en(),
         PlaylistTransitionKind::Slide => Msg::TransitionSlide.en(),
         PlaylistTransitionKind::Zoom => Msg::TransitionZoom.en(),
+        PlaylistTransitionKind::Stinger => Msg::TransitionStingerName.en(),
     }
 }
 
-const TRANSITIONS: [PlaylistTransitionKind; 6] = [
+const TRANSITIONS: [PlaylistTransitionKind; 7] = [
     PlaylistTransitionKind::Cut,
     PlaylistTransitionKind::Fade,
     PlaylistTransitionKind::AlphaFade,
     PlaylistTransitionKind::Wipe,
     PlaylistTransitionKind::Slide,
     PlaylistTransitionKind::Zoom,
+    PlaylistTransitionKind::Stinger,
 ];
 
 /// `Cut`, or `Fade 15 fr`, in the console language.
 #[must_use]
 pub fn entry_transition_text(l: Locale, entry: &PlaylistEntrySpec) -> String {
-    let name = l.tr(transition_label(entry.transition));
+    let name = if entry.transition == PlaylistTransitionKind::Stinger {
+        l.format(
+            Msg::TransitionStinger,
+            &[(
+                "slot",
+                Arg::Count(u64::from(entry.stinger_slot.unwrap_or(1))),
+            )],
+        )
+    } else {
+        l.tr(transition_label(entry.transition)).to_owned()
+    };
     if entry.transition == PlaylistTransitionKind::Cut {
-        name.to_owned()
+        name
     } else {
         l.format(
             Msg::PlaylistTransitionFrames,
             &[
-                ("transition", Arg::Str(name)),
+                ("transition", Arg::Str(&name)),
                 ("frames", Arg::Count(u64::from(entry.transition_frames))),
             ],
         )
@@ -617,6 +629,8 @@ pub struct EntryForm {
     pub transition: PlaylistTransitionKind,
     /// Transition frames for every kind but Cut.
     pub transition_frames: u32,
+    /// The Stinger slot (`1..=8`) a Stinger transition takes.
+    pub stinger_slot: u8,
     pub enabled: bool,
 }
 
@@ -632,6 +646,7 @@ impl EntryForm {
             follow_media: false,
             transition: PlaylistTransitionKind::Cut,
             transition_frames: u32::try_from(fps.div_ceil(2)).unwrap_or(15),
+            stinger_slot: 1,
             enabled: true,
         }
     }
@@ -651,6 +666,7 @@ impl EntryForm {
             } else {
                 entry.transition_frames
             },
+            stinger_slot: entry.stinger_slot.unwrap_or(1),
             enabled: entry.enabled,
         }
     }
@@ -675,6 +691,8 @@ impl EntryForm {
                 self.transition_frames,
                 duration_frames,
             ),
+            stinger_slot: (self.transition == PlaylistTransitionKind::Stinger)
+                .then_some(self.stinger_slot),
             enabled: self.enabled,
         })
     }
@@ -1676,6 +1694,11 @@ fn draw_entry_form(
                         l.text(Msg::PlaylistTransitionFramesHover),
                         Msg::PlaylistReasonCutHasNoLength.en(),
                     );
+                    if form.transition == PlaylistTransitionKind::Stinger {
+                        ui.label(field_label(l.text(Msg::PlaylistStingerSlot)));
+                        ui.add(egui::DragValue::new(&mut form.stinger_slot).range(1..=8))
+                            .on_hover_text(l.text(Msg::PlaylistStingerSlotHover));
+                    }
                 });
                 ui.end_row();
             });
@@ -1791,6 +1814,7 @@ mod tests {
                 PlaylistTransitionKind::Cut
             },
             transition_frames: if id.is_multiple_of(2) { 12 } else { 0 },
+            stinger_slot: None,
             enabled,
         }
     }

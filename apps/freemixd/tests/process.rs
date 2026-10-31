@@ -8296,6 +8296,7 @@ fn playlist_clock_takes_entries_on_their_frames_and_survives_kill_and_recovery()
             follow_media: false,
             transition: PlaylistTransitionKind::Cut,
             transition_frames: 0,
+            stinger_slot: None,
             enabled: true,
         },
         PlaylistEntrySpec {
@@ -8305,6 +8306,7 @@ fn playlist_clock_takes_entries_on_their_frames_and_survives_kill_and_recovery()
             follow_media: false,
             transition: PlaylistTransitionKind::Fade,
             transition_frames: 5,
+            stinger_slot: None,
             enabled: true,
         },
     ];
@@ -8502,6 +8504,7 @@ fn simulated_playlist_pause_holds_the_wall_clock_position_across_recovery() {
                 follow_media: false,
                 transition: PlaylistTransitionKind::Slide,
                 transition_frames: 24,
+                stinger_slot: None,
                 enabled: true,
             }],
         },

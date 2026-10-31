@@ -7337,6 +7337,7 @@ fn playlist_clock_cuts_program_on_scheduled_frames_under_native_pacing() {
                 follow_media: false,
                 transition: PlaylistTransitionKind::Cut,
                 transition_frames: 0,
+                stinger_slot: None,
                 enabled: true,
             },
             PlaylistEntrySpec {
@@ -7346,6 +7347,7 @@ fn playlist_clock_cuts_program_on_scheduled_frames_under_native_pacing() {
                 follow_media: false,
                 transition: PlaylistTransitionKind::Fade,
                 transition_frames: 5,
+                stinger_slot: None,
                 enabled: true,
             },
         ];
@@ -7502,6 +7504,7 @@ fn a_late_native_playlist_advance_replays_on_the_frame_it_ran() {
                         follow_media: false,
                         transition: PlaylistTransitionKind::Cut,
                         transition_frames: 0,
+                        stinger_slot: None,
                         enabled: true,
                     }],
                 },
@@ -7850,6 +7853,7 @@ fn idle_progress_markers_replay_past_the_last_command_and_fold_into_the_manifest
                         follow_media: false,
                         transition: PlaylistTransitionKind::Cut,
                         transition_frames: 0,
+                        stinger_slot: None,
                         enabled: true,
                     }],
                 },
@@ -8074,6 +8078,7 @@ fn playlist_clock_waits_for_a_new_revision_after_a_final_refusal() {
                         follow_media: false,
                         transition: PlaylistTransitionKind::Cut,
                         transition_frames: 0,
+                        stinger_slot: None,
                         enabled: true,
                     }],
                 },
@@ -9167,6 +9172,7 @@ fn cue_clock_retries_an_advance_refused_by_a_held_playlist_take() {
                         follow_media: false,
                         transition: PlaylistTransitionKind::Cut,
                         transition_frames: 0,
+                        stinger_slot: None,
                         enabled: true,
                     })
                     .to_vec(),
@@ -9431,6 +9437,7 @@ fn playlist_commands(frames: u64, at: fm_protocol::PlaylistStart) -> [CommandMes
                         follow_media: false,
                         transition: PlaylistTransitionKind::Cut,
                         transition_frames: 0,
+                        stinger_slot: None,
                         enabled: true,
                     })
                     .to_vec(),

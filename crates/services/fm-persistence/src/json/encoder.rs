@@ -159,11 +159,16 @@ fn write_playlist(output: &mut String, playlist: &Playlist) {
             PlaylistTransitionKind::Wipe => "wipe",
             PlaylistTransitionKind::Slide => "slide",
             PlaylistTransitionKind::Zoom => "zoom",
+            PlaylistTransitionKind::Stinger => "stinger",
         };
+        let slot = entry
+            .transition
+            .stinger_slot
+            .map_or_else(String::new, |slot| format!(", \"stinger_slot\": {slot}"));
         write!(
             output,
             "{{\"id\": {}, \"input\": {}, \"duration_frames\": {}, \"follow_media\": {}, \"transition\": \
-             {{\"kind\": \"{kind}\", \"duration_frames\": {}}}, \"enabled\": {}}}",
+             {{\"kind\": \"{kind}\", \"duration_frames\": {}{slot}}}, \"enabled\": {}}}",
             entry.id,
             entry.input,
             entry.duration_frames,

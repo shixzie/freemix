@@ -49,6 +49,17 @@ fn domain_entry(entry: &PlaylistEntrySpec) -> PlaylistEntry {
         WireTransitionKind::Wipe => PlaylistTransitionKind::Wipe,
         WireTransitionKind::Slide => PlaylistTransitionKind::Slide,
         WireTransitionKind::Zoom => PlaylistTransitionKind::Zoom,
+        WireTransitionKind::Stinger => PlaylistTransitionKind::Stinger,
+    };
+    let transition = if kind == PlaylistTransitionKind::Stinger {
+        PlaylistTransition::stinger(
+            entry
+                .stinger_slot
+                .expect("an accepted wire Stinger names its slot"),
+            u64::from(entry.transition_frames),
+        )
+    } else {
+        PlaylistTransition::new(kind, u64::from(entry.transition_frames))
     };
     PlaylistEntry::new(
         PlaylistEntryId::new(entry.id),
@@ -57,10 +68,7 @@ fn domain_entry(entry: &PlaylistEntrySpec) -> PlaylistEntry {
             ms: entry.duration_frames,
         },
     )
-    .with_transition(PlaylistTransition::new(
-        kind,
-        u64::from(entry.transition_frames),
-    ))
+    .with_transition(transition)
     .with_enabled(entry.enabled)
 }
 
@@ -142,9 +150,7 @@ fn wire_entry(entry: &PlaylistEntry) -> PlaylistEntrySpec {
         PlaylistTransitionKind::Wipe => WireTransitionKind::Wipe,
         PlaylistTransitionKind::Slide => WireTransitionKind::Slide,
         PlaylistTransitionKind::Zoom => WireTransitionKind::Zoom,
-        PlaylistTransitionKind::Stinger => {
-            unreachable!("the engine refuses stinger playlist transitions")
-        }
+        PlaylistTransitionKind::Stinger => WireTransitionKind::Stinger,
     };
     PlaylistEntrySpec {
         id: entry.id.get(),
@@ -157,6 +163,7 @@ fn wire_entry(entry: &PlaylistEntry) -> PlaylistEntrySpec {
         transition,
         transition_frames: u32::try_from(entry.transition.duration_ms)
             .expect("engine playlist transitions are bounded"),
+        stinger_slot: entry.transition.stinger_slot,
         enabled: entry.enabled,
     }
 }

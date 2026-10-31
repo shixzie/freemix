@@ -387,6 +387,7 @@ fn native_playlist_clock_cuts_program_on_scheduled_frames_and_survives_sigkill()
             follow_media: false,
             transition: PlaylistTransitionKind::Cut,
             transition_frames: 0,
+            stinger_slot: None,
             enabled: true,
         },
         PlaylistEntrySpec {
@@ -396,6 +397,7 @@ fn native_playlist_clock_cuts_program_on_scheduled_frames_and_survives_sigkill()
             follow_media: false,
             transition: PlaylistTransitionKind::Cut,
             transition_frames: 0,
+            stinger_slot: None,
             enabled: true,
         },
     ];
@@ -544,6 +546,7 @@ fn native_idle_progress_survives_sigkill_through_the_progress_marker() {
                 follow_media: false,
                 transition: PlaylistTransitionKind::Cut,
                 transition_frames: 0,
+                stinger_slot: None,
                 enabled: true,
             }],
         },

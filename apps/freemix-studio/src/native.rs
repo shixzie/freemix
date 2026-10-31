@@ -6804,6 +6804,7 @@ mod tests {
             follow_media: false,
             transition: PlaylistTransitionKind::Fade,
             transition_frames: 12,
+            stinger_slot: None,
             enabled: true,
         }];
         assert_eq!(

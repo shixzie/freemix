@@ -7245,7 +7245,7 @@ fn threshold(field: &'static str, value: String) -> Result<f64, ArgsError> {
 
 /// `remote-alert-rule <address> <rule> [--on|--off] [--severity <severity>]
 /// [--fires-at <value>] [--clears-at <value>] [--hold <seconds>] | --defaults
-/// [--key <key>] [--expect <revision>]` (RC-015, Protocol 2.143).
+/// [--key <key>] [--expect <revision>]` (RC-015, Protocol 2.144).
 fn parse_remote_alert_rule(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<Command, ArgsError> {
@@ -8967,6 +8967,7 @@ fn playlist_entries(value: &str) -> Result<Vec<fm_protocol::PlaylistEntrySpec>, 
                 transition_frames,
                 enabled,
                 follow_media,
+                stinger_slot,
             ] = parts[..]
             else {
                 return Err(invalid());
@@ -8987,9 +8988,19 @@ fn playlist_entries(value: &str) -> Result<Vec<fm_protocol::PlaylistEntrySpec>, 
                     "wipe" => PlaylistTransitionKind::Wipe,
                     "slide" => PlaylistTransitionKind::Slide,
                     "zoom" => PlaylistTransitionKind::Zoom,
+                    "stinger" => PlaylistTransitionKind::Stinger,
                     _ => return Err(invalid()),
                 },
                 transition_frames: transition_frames.parse().map_err(|_| invalid())?,
+                stinger_slot: match stinger_slot {
+                    "-" => None,
+                    slot => Some(
+                        slot.parse::<u8>()
+                            .ok()
+                            .filter(|slot| (1..=8).contains(slot))
+                            .ok_or_else(invalid)?,
+                    ),
+                },
                 enabled: match enabled {
                     "0" => false,
                     "1" => true,
@@ -11770,7 +11781,7 @@ mod tests {
                 "127.0.0.1:9123",
                 "set",
                 "all",
-                "1:2:250:cut:0:1:0,2:3:100:fade:12:0:0",
+                "1:2:250:cut:0:1:0:-,2:3:100:fade:12:0:0:-",
             ])),
             playlist(
                 CommandPayload::SetPlaylist {
@@ -11783,6 +11794,7 @@ mod tests {
                             follow_media: false,
                             transition: PlaylistTransitionKind::Cut,
                             transition_frames: 0,
+                            stinger_slot: None,
                             enabled: true,
                         },
                         PlaylistEntrySpec {
@@ -11792,6 +11804,7 @@ mod tests {
                             follow_media: false,
                             transition: PlaylistTransitionKind::Fade,
                             transition_frames: 12,
+                            stinger_slot: None,
                             enabled: false,
                         },
                     ],

@@ -1223,9 +1223,21 @@ fn parse_playlist_entry(value: Value) -> Result<PlaylistEntry, DecodeError> {
         "wipe" => PlaylistTransitionKind::Wipe,
         "slide" => PlaylistTransitionKind::Slide,
         "zoom" => PlaylistTransitionKind::Zoom,
+        "stinger" => PlaylistTransitionKind::Stinger,
         value => return Err(unknown_enum("playlist transition kind", value)),
     };
     let transition_frames = transition.u32("duration_frames")?;
+    let stinger_slot = match kind {
+        PlaylistTransitionKind::Stinger => Some(transition.u8("stinger_slot")?),
+        _ => {
+            if transition.take_optional("stinger_slot").is_some() {
+                return Err(syntax(
+                    "a playlist transition that is not a Stinger has no stinger slot",
+                ));
+            }
+            None
+        }
+    };
     transition.finish()?;
     let enabled = object.boolean("enabled")?;
     object.finish()?;
@@ -1237,6 +1249,7 @@ fn parse_playlist_entry(value: Value) -> Result<PlaylistEntry, DecodeError> {
         transition: PlaylistTransition {
             kind,
             duration_frames: transition_frames,
+            stinger_slot,
         },
         enabled,
     })

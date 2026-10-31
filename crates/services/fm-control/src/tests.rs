@@ -3804,6 +3804,7 @@ mod playlists {
                     follow_media: false,
                     transition: PlaylistTransitionKind::Cut,
                     transition_frames: 0,
+                    stinger_slot: None,
                     enabled: true,
                 },
                 PlaylistEntrySpec {
@@ -3813,6 +3814,7 @@ mod playlists {
                     follow_media: false,
                     transition: PlaylistTransitionKind::Fade,
                     transition_frames: 4,
+                    stinger_slot: None,
                     enabled: true,
                 },
             ],

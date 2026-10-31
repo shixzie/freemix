@@ -626,6 +626,7 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
         follow_media: false,
         transition,
         transition_frames,
+        stinger_slot: None,
         enabled,
     };
     model

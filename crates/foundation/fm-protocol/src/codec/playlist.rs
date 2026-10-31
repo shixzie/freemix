@@ -3,10 +3,11 @@
 //! * `loop` is `off`, `all`, or `one`.
 //! * `entries` is a comma-separated list (at most [`MAX_PLAYLIST_ENTRIES`])
 //!   of
-//!   `<id>:<input>:<duration frames>:<transition>:<transition frames>:<0|1>:<follow_media>`
-//!   where `<transition>` is `cut`, `fade`, `alpha_fade`, `wipe`, `slide`, or
-//!   `zoom`, the sixth item is the enabled flag, and the last says whether
-//!   the entry follows its input's media length. Identifiers are unique.
+//!   `<id>:<input>:<duration frames>:<transition>:<transition frames>:<0|1>:<follow_media>:<slot|->`
+//!   where `<transition>` is `cut`, `fade`, `alpha_fade`, `wipe`, `slide`,
+//!   `zoom`, or `stinger`, the sixth item is the enabled flag, the seventh
+//!   says whether the entry follows its input's media length, and the last
+//!   names a Stinger's slot (`1..=8`) or `-`. Identifiers are unique.
 //! * `state` is `stopped`, `armed:<start frame>:<from|->`,
 //!   `playing:<entry>:<take>:<cycle>:<started frame>`,
 //!   `paused:<entry>:<take>:<cycle>:<elapsed frames>`, or
@@ -45,11 +46,22 @@ pub(super) fn validate_playlist_entries(entries: &[PlaylistEntrySpec]) -> Result
             return Err(invalid());
         }
         let valid_transition = match entry.transition {
-            PlaylistTransitionKind::Cut => entry.transition_frames == 0,
+            PlaylistTransitionKind::Cut => {
+                entry.transition_frames == 0 && entry.stinger_slot.is_none()
+            }
+            PlaylistTransitionKind::Stinger => {
+                entry.transition_frames != 0
+                    && entry.transition_frames <= MAX_PLAYLIST_TRANSITION_FRAMES
+                    && u64::from(entry.transition_frames) <= entry.duration_frames
+                    && entry
+                        .stinger_slot
+                        .is_some_and(|slot| (1..=8).contains(&slot))
+            }
             _ => {
                 entry.transition_frames != 0
                     && entry.transition_frames <= MAX_PLAYLIST_TRANSITION_FRAMES
                     && u64::from(entry.transition_frames) <= entry.duration_frames
+                    && entry.stinger_slot.is_none()
             }
         };
         if !valid_transition {
@@ -67,6 +79,7 @@ const fn transition_name(kind: PlaylistTransitionKind) -> &'static str {
         PlaylistTransitionKind::Wipe => "wipe",
         PlaylistTransitionKind::Slide => "slide",
         PlaylistTransitionKind::Zoom => "zoom",
+        PlaylistTransitionKind::Stinger => "stinger",
     }
 }
 
@@ -78,6 +91,7 @@ fn parse_transition(value: &str) -> Option<PlaylistTransitionKind> {
         "wipe" => PlaylistTransitionKind::Wipe,
         "slide" => PlaylistTransitionKind::Slide,
         "zoom" => PlaylistTransitionKind::Zoom,
+        "stinger" => PlaylistTransitionKind::Stinger,
         _ => return None,
     })
 }
@@ -89,14 +103,17 @@ pub(super) fn encode_playlist_entries(entries: &[PlaylistEntrySpec]) -> Result<S
         .iter()
         .map(|entry| {
             format!(
-                "{}:{}:{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}:{}",
                 entry.id,
                 entry.input,
                 entry.duration_frames,
                 transition_name(entry.transition),
                 entry.transition_frames,
                 u8::from(entry.enabled),
-                u8::from(entry.follow_media)
+                u8::from(entry.follow_media),
+                entry
+                    .stinger_slot
+                    .map_or_else(|| "-".to_owned(), |slot| slot.to_string())
             )
         })
         .collect::<Vec<_>>()
@@ -127,6 +144,7 @@ pub(super) fn decode_playlist_entries(value: &str) -> Result<Vec<PlaylistEntrySp
                 frames,
                 enabled,
                 follow_media,
+                slot,
             ] = parts[..]
             else {
                 return Err(invalid());
@@ -139,6 +157,15 @@ pub(super) fn decode_playlist_entries(value: &str) -> Result<Vec<PlaylistEntrySp
                 transition_frames: parse_canonical_u64(frames)
                     .and_then(|frames| u32::try_from(frames).ok())
                     .ok_or_else(invalid)?,
+                stinger_slot: match slot {
+                    "-" => None,
+                    slot => Some(
+                        slot.parse::<u8>()
+                            .ok()
+                            .filter(|slot| (1..=8).contains(slot))
+                            .ok_or_else(invalid)?,
+                    ),
+                },
                 enabled: match enabled {
                     "0" => false,
                     "1" => true,

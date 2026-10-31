@@ -540,6 +540,7 @@ fn a_media_end_trigger_advances_the_playlist_it_airs_on_and_replays_after_restar
             follow_media: false,
             transition: PlaylistTransitionKind::Cut,
             transition_frames: 0,
+            stinger_slot: None,
             enabled: true,
         },
         PlaylistEntrySpec {
@@ -549,6 +550,7 @@ fn a_media_end_trigger_advances_the_playlist_it_airs_on_and_replays_after_restar
             follow_media: false,
             transition: PlaylistTransitionKind::Cut,
             transition_frames: 0,
+            stinger_slot: None,
             enabled: true,
         },
     ];

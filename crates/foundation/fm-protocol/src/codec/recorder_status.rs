@@ -4,7 +4,7 @@
 //! `failure` an [`crate::OutputFailure`] token (Protocol 2.67), empty unless
 //! `state` is `failed`, the free bytes on the slot's output filesystem when
 //! the daemon samples them (Protocol 2.140), and the estimated seconds of
-//! recording left at the configured bitrate (Protocol 2.143).
+//! recording left at the configured bitrate (Protocol 2.144).
 
 use crate::{
     CodecError, MAX_RECORDER_STATUS_SAMPLES, OutputFailure, RecorderRealizedState,

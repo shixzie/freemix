@@ -2376,11 +2376,13 @@ pub enum PlaylistTransitionKind {
     Wipe,
     Slide,
     Zoom,
+    Stinger,
 }
 
 /// One playlist row. Durations are in frames; a cut has zero transition
 /// frames and every other kind between one and
-/// [`MAX_PLAYLIST_TRANSITION_FRAMES`], no longer than the entry.
+/// [`MAX_PLAYLIST_TRANSITION_FRAMES`], no longer than the entry. A Stinger
+/// names its slot (`1..=8`); no other kind has one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PlaylistEntrySpec {
     pub id: u64,
@@ -2391,6 +2393,7 @@ pub struct PlaylistEntrySpec {
     pub follow_media: bool,
     pub transition: PlaylistTransitionKind,
     pub transition_frames: u32,
+    pub stinger_slot: Option<u8>,
     pub enabled: bool,
 }
 

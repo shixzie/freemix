@@ -91,22 +91,40 @@ pub enum PlaylistTransitionKind {
 }
 
 /// The transition that brings an entry on air. A cut has zero duration;
-/// every other kind needs a nonzero duration no longer than the entry.
+/// every other kind needs a nonzero duration no longer than the entry. A
+/// Stinger names its slot; no other kind has one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PlaylistTransition {
     pub kind: PlaylistTransitionKind,
     pub duration_ms: u64,
+    /// The Stinger slot (`1..=8`) a Stinger transition takes.
+    pub stinger_slot: Option<u8>,
 }
 
 impl PlaylistTransition {
     pub const CUT: Self = Self {
         kind: PlaylistTransitionKind::Cut,
         duration_ms: 0,
+        stinger_slot: None,
     };
 
     #[must_use]
     pub const fn new(kind: PlaylistTransitionKind, duration_ms: u64) -> Self {
-        Self { kind, duration_ms }
+        Self {
+            kind,
+            duration_ms,
+            stinger_slot: None,
+        }
+    }
+
+    /// A Stinger transition from `slot` lasting `duration_ms`.
+    #[must_use]
+    pub const fn stinger(slot: u8, duration_ms: u64) -> Self {
+        Self {
+            kind: PlaylistTransitionKind::Stinger,
+            duration_ms,
+            stinger_slot: Some(slot),
+        }
     }
 }
 
@@ -1014,8 +1032,19 @@ fn validate_entries(entries: &[PlaylistEntry]) -> Result<(), PlaylistError> {
         }
         let transition = entry.transition;
         let valid = match transition.kind {
-            PlaylistTransitionKind::Cut => transition.duration_ms == 0,
-            _ => (1..=MAX_PLAYLIST_ENTRY_MS).contains(&transition.duration_ms),
+            PlaylistTransitionKind::Cut => {
+                transition.duration_ms == 0 && transition.stinger_slot.is_none()
+            }
+            PlaylistTransitionKind::Stinger => {
+                (1..=MAX_PLAYLIST_ENTRY_MS).contains(&transition.duration_ms)
+                    && transition
+                        .stinger_slot
+                        .is_some_and(|slot| (1..=8).contains(&slot))
+            }
+            _ => {
+                (1..=MAX_PLAYLIST_ENTRY_MS).contains(&transition.duration_ms)
+                    && transition.stinger_slot.is_none()
+            }
         };
         if !valid {
             return Err(PlaylistError::InvalidTransition(entry.id));
