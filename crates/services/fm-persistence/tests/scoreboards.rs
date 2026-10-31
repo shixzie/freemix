@@ -9,9 +9,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use fm_model::{
-    Input, InputKind, Project, ProjectSettings, TitleInput,
-};
+use fm_model::{Input, InputKind, Project, ProjectSettings, TitleInput};
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoreError, StoredProject};
 use fm_titles::{
     ClockDirection, ClockFormat, GameClockConfig, Player, Scoreboard, ScoreboardPreset, TeamState,
@@ -186,11 +184,7 @@ fn scoreboard_documents_round_trip_exactly_and_strictly() {
 #[test]
 fn a_scoreboard_must_name_a_title_input() {
     let mut project = project();
-    project
-        .restore_scoreboards(std::collections::BTreeMap::from([(
-            input(9),
-            document(),
-        )]));
+    project.restore_scoreboards(std::collections::BTreeMap::from([(input(9), document())]));
     assert!(stored(project).is_err());
 
     // An existing title accepts a document; a non-title input and an unknown

@@ -3,17 +3,15 @@
 
 use core::num::NonZeroU128;
 
-use fm_clock::production::{
-    ClockCommand, ClockName, ReadingState, TimeReading, UtcInstant,
-};
 use fm_clock::ClockDomainId;
+use fm_clock::production::{ClockCommand, ClockName, ReadingState, TimeReading, UtcInstant};
 use fm_engine::{Engine, EngineMediaSource, ShowState};
-use fm_types::{
-    FrameRate, InputId, ProjectClock, ProjectClockDirection, ProjectClockKind,
-    ProjectClockOverrun, ProjectDurationFormat, ProjectSessionKind, ProjectTimeFormat,
-};
 use fm_model::MediaPlaybackSettings;
 use fm_switcher::RecorderSlot;
+use fm_types::{
+    FrameRate, InputId, ProjectClock, ProjectClockDirection, ProjectClockKind, ProjectClockOverrun,
+    ProjectDurationFormat, ProjectSessionKind, ProjectTimeFormat,
+};
 
 fn nonzero(value: u128) -> NonZeroU128 {
     NonZeroU128::new(value).unwrap()
@@ -143,7 +141,9 @@ fn timers_run_on_the_engine_clock_and_pause() {
     engine
         .control_production_clock(
             "Countdown",
-            ClockCommand::SetValue(fm_clock::production::ClockValue::from_nanos(5_000_000_000).unwrap()),
+            ClockCommand::SetValue(
+                fm_clock::production::ClockValue::from_nanos(5_000_000_000).unwrap(),
+            ),
         )
         .unwrap();
     assert_eq!(reading_at(&engine, "Countdown").text, "00:05");
@@ -163,9 +163,15 @@ fn a_media_clock_follows_its_input() {
 #[test]
 fn a_recording_session_clock_runs_while_recording() {
     let mut engine = engine();
-    assert_eq!(reading_at(&engine, "Recording").state, ReadingState::Stopped);
+    assert_eq!(
+        reading_at(&engine, "Recording").state,
+        ReadingState::Stopped
+    );
     engine.tick().unwrap();
-    assert_eq!(reading_at(&engine, "Recording").state, ReadingState::Running);
+    assert_eq!(
+        reading_at(&engine, "Recording").state,
+        ReadingState::Running
+    );
 }
 
 #[test]

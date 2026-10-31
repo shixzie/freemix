@@ -622,7 +622,11 @@ fn apply_adds_a_keyless_hls_stream_target() {
     let mut snapshot = current();
     snapshot = with(snapshot, "stream_targets.41.name", text("Archive"));
     snapshot = with(snapshot, "stream_targets.41.protocol", text("hls"));
-    snapshot = with(snapshot, "stream_targets.41.endpoint", text("/archive/live"));
+    snapshot = with(
+        snapshot,
+        "stream_targets.41.endpoint",
+        text("/archive/live"),
+    );
     snapshot = with(
         snapshot,
         "stream_targets.41.output",
@@ -697,10 +701,7 @@ fn apply_adds_a_keyed_stream_target_with_a_supplied_key() {
 
 #[test]
 fn apply_removes_a_stream_target_absent_from_the_snapshot() {
-    let snapshot = without_entity(
-        &current(),
-        entity(SettingsSection::StreamTargets, Some(40)),
-    );
+    let snapshot = without_entity(&current(), entity(SettingsSection::StreamTargets, Some(40)));
     let mut project = project();
     snapshot.apply_exported(&mut project).unwrap();
     assert!(project.stream_targets().is_empty());
@@ -708,10 +709,7 @@ fn apply_removes_a_stream_target_absent_from_the_snapshot() {
 
 #[test]
 fn apply_removes_an_output_and_bus_after_the_stream_target_that_uses_them() {
-    let mut snapshot = without_entity(
-        &current(),
-        entity(SettingsSection::StreamTargets, Some(40)),
-    );
+    let mut snapshot = without_entity(&current(), entity(SettingsSection::StreamTargets, Some(40)));
     snapshot = without_entity(&snapshot, entity(SettingsSection::Outputs, Some(30)));
     snapshot = without_entity(&snapshot, entity(SettingsSection::AudioBuses, Some(20)));
     let mut project = project();

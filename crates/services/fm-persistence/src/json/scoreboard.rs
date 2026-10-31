@@ -29,7 +29,8 @@ pub(crate) fn write_scoreboards(output: &mut String, project: &Project) {
     output.push_str(",\n    \"scoreboards\": [");
     for (index, (input, document)) in documents.iter().enumerate() {
         output.push_str(if index == 0 { "\n      " } else { ",\n      " });
-        write!(output, "{{\"input\": {input}, \"document\": \"").expect("writing to a string cannot fail");
+        write!(output, "{{\"input\": {input}, \"document\": \"")
+            .expect("writing to a string cannot fail");
         escape_string(output, document);
         output.push_str("\"}");
     }

@@ -1136,7 +1136,8 @@ impl CrawlSnapshot {
                 output,
                 "item {} {} {} {}",
                 encode_crawl_text(&item.text),
-                item.fill.map_or_else(|| "none".to_owned(), write_crawl_color),
+                item.fill
+                    .map_or_else(|| "none".to_owned(), write_crawl_color),
                 item.logo
                     .as_ref()
                     .map_or_else(|| "none".to_owned(), |logo| encode_crawl_text(&logo.asset)),
@@ -1209,9 +1210,8 @@ impl CrawlSnapshot {
         if rate.len() != 2 {
             return Err(CrawlDocumentError::Line { index });
         }
-        let frame_rate =
-            FrameRate::new(parse_u32(rate[0], index)?, parse_u32(rate[1], index)?)
-                .map_err(|_| CrawlDocumentError::Line { index })?;
+        let frame_rate = FrameRate::new(parse_u32(rate[0], index)?, parse_u32(rate[1], index)?)
+            .map_err(|_| CrawlDocumentError::Line { index })?;
         let start_frame = parse_u64(single(&next!("start_frame"), index)?, index)?;
         let separator = decode_crawl_text(single(&next!("separator"), index)?, index)?;
         let gap_px = parse_u32(single(&next!("gap"), index)?, index)?;
@@ -1376,7 +1376,10 @@ fn decode_crawl_text(token: &str, index: usize) -> Result<String, CrawlDocumentE
 }
 
 fn write_crawl_color(color: Color) -> String {
-    format!("#{:02x}{:02x}{:02x}{:02x}", color.r, color.g, color.b, color.a)
+    format!(
+        "#{:02x}{:02x}{:02x}{:02x}",
+        color.r, color.g, color.b, color.a
+    )
 }
 
 fn parse_crawl_color(text: &str, index: usize) -> Result<Color, CrawlDocumentError> {

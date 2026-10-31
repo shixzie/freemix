@@ -9,10 +9,10 @@ mod control_mapping;
 mod domain;
 mod fake;
 mod queue;
+mod virtual_input;
 mod visca;
 mod visca_ip;
 mod visca_ip_transport;
-mod virtual_input;
 mod visca_udp_adapter;
 
 pub use adapter::{AdapterError, CommandOutcome, PtzAdapter};
@@ -25,6 +25,12 @@ pub use domain::{
 };
 pub use fake::{FakeViscaAdapter, FakeViscaCamera};
 pub use queue::{CoalescingQueue, PushOutcome, QueueError, QueuedIntent};
+pub use virtual_input::{
+    MAX_PRESET_THUMBNAIL_BYTES, MAX_PRESET_VIRTUAL_INPUT_DOCUMENT_BYTES,
+    MAX_PRESET_VIRTUAL_INPUT_NAME_BYTES, MAX_PRESET_VIRTUAL_INPUTS, PresetSwitch,
+    PresetSwitchError, PresetVirtualInput, PresetVirtualInputDocumentError,
+    PresetVirtualInputError, PresetVirtualInputs,
+};
 pub use visca::{
     FocusMode, PresetAction, VISCA_MAX_LENS_SPEED, VISCA_MAX_MESSAGE_LEN, VISCA_MAX_PAN_SPEED,
     VISCA_MAX_PRESET, VISCA_MAX_TILT_SPEED, VISCA_TERMINATOR, ViscaAddress, ViscaCommand,
@@ -37,12 +43,7 @@ pub use visca_ip::{
 };
 pub use visca_ip_transport::{
     DEFAULT_VISCA_ATTEMPTS, DEFAULT_VISCA_SEQUENCE_RESETS, DEFAULT_VISCA_TIMEOUT,
-    MAX_VISCA_IP_DATAGRAM, VISCA_IP_DEFAULT_PORT, ViscaUdpConfig, ViscaUdpCounters,
-    ViscaUdpError, ViscaUdpTransport,
+    MAX_VISCA_IP_DATAGRAM, VISCA_IP_DEFAULT_PORT, ViscaUdpConfig, ViscaUdpCounters, ViscaUdpError,
+    ViscaUdpTransport,
 };
 pub use visca_udp_adapter::{ViscaUdpAdapter, ViscaUdpCamera};
-pub use virtual_input::{
-    MAX_PRESET_THUMBNAIL_BYTES, MAX_PRESET_VIRTUAL_INPUTS, MAX_PRESET_VIRTUAL_INPUT_DOCUMENT_BYTES,
-    MAX_PRESET_VIRTUAL_INPUT_NAME_BYTES, PresetSwitch, PresetSwitchError, PresetVirtualInput,
-    PresetVirtualInputDocumentError, PresetVirtualInputError, PresetVirtualInputs,
-};

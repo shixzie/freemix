@@ -165,12 +165,8 @@ fn a_preview_must_name_a_title_input() {
     assert!(stored(project).is_err());
 
     let mut project = self::project();
-    assert!(project
-        .set_preview_document(input(2), document())
-        .is_err());
-    assert!(project
-        .set_preview_document(input(3), document())
-        .is_ok());
+    assert!(project.set_preview_document(input(2), document()).is_err());
+    assert!(project.set_preview_document(input(3), document()).is_ok());
     assert_eq!(project.preview_documents().len(), 1);
 
     // Removing the title drops its preview.

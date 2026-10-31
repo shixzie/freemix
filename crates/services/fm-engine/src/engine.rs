@@ -1302,7 +1302,10 @@ pub struct Engine {
     /// The media input each media-remaining clock follows, by clock name.
     media_clock_inputs: BTreeMap<fm_clock::production::ClockName, InputId>,
     /// The session clocks a project defines, by name and followed source.
-    session_clocks: Vec<(fm_clock::production::ClockName, fm_types::ProjectSessionKind)>,
+    session_clocks: Vec<(
+        fm_clock::production::ClockName,
+        fm_types::ProjectSessionKind,
+    )>,
     /// Whether each session clock's source was active on the previous frame.
     session_clock_states: BTreeMap<fm_clock::production::ClockName, bool>,
     /// Whether a scene clip can be carried to clients (see
@@ -1757,11 +1760,8 @@ impl Engine {
                     u128::from(status.playable_end) * u128::from(rate.denominator()),
                     u128::from(rate.numerator()),
                 )?;
-                MediaProgress::new(
-                    u64::try_from(position).ok()?,
-                    u64::try_from(duration).ok()?,
-                )
-                .ok()
+                MediaProgress::new(u64::try_from(position).ok()?, u64::try_from(duration).ok()?)
+                    .ok()
             });
             let _ = self.production_clocks.apply(
                 &name,
@@ -1842,8 +1842,7 @@ impl Engine {
     /// every live value (SW-013). Called after a project edit changes the
     /// show's clock definitions.
     pub fn restore_production_clocks(&mut self, definitions: &[fm_types::ProjectClock]) {
-        self.production_clocks =
-            crate::production_clock::registry_from_definitions(definitions);
+        self.production_clocks = crate::production_clock::registry_from_definitions(definitions);
         self.media_clock_inputs = crate::production_clock::media_clock_inputs(definitions);
         self.session_clocks = crate::production_clock::session_clocks(definitions);
         self.session_clock_states.clear();

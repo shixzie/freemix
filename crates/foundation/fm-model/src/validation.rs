@@ -412,7 +412,10 @@ fn validate_production_clocks(project: &Project, errors: &mut Vec<ValidationErro
         if let fm_types::ProjectClockKind::MediaRemaining {
             input: Some(input), ..
         } = &clock.kind
-            && !project.inputs().iter().any(|candidate| candidate.id == *input)
+            && !project
+                .inputs()
+                .iter()
+                .any(|candidate| candidate.id == *input)
         {
             errors.push(ValidationError {
                 entity: Some(EntityRef::Input(*input)),

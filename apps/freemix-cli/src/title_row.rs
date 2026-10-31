@@ -216,9 +216,9 @@ fn mapped_field_value(value: &fm_data::TitleFieldValue) -> fm_titles::FieldValue
     match value {
         fm_data::TitleFieldValue::Text(text) => fm_titles::FieldValue::Text(text.clone()),
         fm_data::TitleFieldValue::Number(number) => fm_titles::FieldValue::Number(*number),
-        fm_data::TitleFieldValue::Color(color) => fm_titles::FieldValue::Color(
-            fm_titles::Color::new(color.r, color.g, color.b, color.a),
-        ),
+        fm_data::TitleFieldValue::Color(color) => {
+            fm_titles::FieldValue::Color(fm_titles::Color::new(color.r, color.g, color.b, color.a))
+        }
         fm_data::TitleFieldValue::Image(asset) => {
             fm_titles::FieldValue::Image(fm_titles::ImageSource::new(asset.clone()))
         }

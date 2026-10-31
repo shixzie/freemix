@@ -27,7 +27,8 @@ pub(crate) fn write_crawls(output: &mut String, project: &Project) {
     output.push_str(",\n    \"crawls\": [");
     for (index, (input, document)) in documents.iter().enumerate() {
         output.push_str(if index == 0 { "\n      " } else { ",\n      " });
-        write!(output, "{{\"input\": {input}, \"document\": \"").expect("writing to a string cannot fail");
+        write!(output, "{{\"input\": {input}, \"document\": \"")
+            .expect("writing to a string cannot fail");
         escape_string(output, document);
         output.push_str("\"}");
     }
@@ -35,9 +36,7 @@ pub(crate) fn write_crawls(output: &mut String, project: &Project) {
 }
 
 /// Parses `"crawls"` from the project object; an absent map is empty.
-pub(crate) fn parse_crawls(
-    object: &mut Object,
-) -> Result<BTreeMap<InputId, String>, DecodeError> {
+pub(crate) fn parse_crawls(object: &mut Object) -> Result<BTreeMap<InputId, String>, DecodeError> {
     let Some(value) = object.take_optional("crawls") else {
         return Ok(BTreeMap::new());
     };

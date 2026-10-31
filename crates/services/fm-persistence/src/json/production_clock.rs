@@ -17,9 +17,8 @@ use core::fmt::Write as _;
 
 use fm_model::Project;
 use fm_types::{
-    MAX_PROJECT_CLOCKS, ProjectClock, ProjectClockDirection, ProjectClockKind,
-    ProjectClockOverrun, ProjectDurationFormat, ProjectSessionKind, ProjectTimeFormat,
-    validate_project_clocks,
+    MAX_PROJECT_CLOCKS, ProjectClock, ProjectClockDirection, ProjectClockKind, ProjectClockOverrun,
+    ProjectDurationFormat, ProjectSessionKind, ProjectTimeFormat, validate_project_clocks,
 };
 
 use super::{DecodeError, Object, Value, parse_array, syntax, unknown_enum};
@@ -59,8 +58,12 @@ fn write_clock(output: &mut String, clock: &ProjectClock) {
                 Some(limit) => write!(output, "{limit}").expect("writing to a string cannot fail"),
                 None => output.push_str("null"),
             }
-            write!(output, ", \"overrun\": \"{}\", \"format\": ", overrun.token())
-                .expect("writing to a string cannot fail");
+            write!(
+                output,
+                ", \"overrun\": \"{}\", \"format\": ",
+                overrun.token()
+            )
+            .expect("writing to a string cannot fail");
             write_duration_format(output, *format);
         }
         ProjectClockKind::TimeOfDay { zone, format } => {
@@ -243,8 +246,8 @@ fn parse_time_format(value: Value) -> Result<ProjectTimeFormat, DecodeError> {
         return Err(syntax("this clock needs a time_of_day format"));
     }
     let preset = format.string("preset")?;
-    let parsed =
-        ProjectTimeFormat::from_token(&preset).ok_or_else(|| unknown_enum("time preset", &preset))?;
+    let parsed = ProjectTimeFormat::from_token(&preset)
+        .ok_or_else(|| unknown_enum("time preset", &preset))?;
     format.finish()?;
     Ok(parsed)
 }

@@ -17,9 +17,7 @@ mod server;
 mod tcp;
 mod xpath;
 
-pub use server::{
-    MAX_TCP_WRITE_BUFFER_BYTES, VmixServerError, VmixTcpServer,
-};
+pub use server::{MAX_TCP_WRITE_BUFFER_BYTES, VmixServerError, VmixTcpServer};
 pub use tcp::{
     MAX_TCP_MESSAGE_BYTES, MAX_TCP_SESSIONS, SubscriptionTopic, TcpEvent, TcpHub, TcpReply,
     TcpRequest, TcpRequestError, TcpSession, TcpSessionError, TcpSessionId, parse_tcp_request,

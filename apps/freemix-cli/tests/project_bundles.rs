@@ -1109,10 +1109,7 @@ fn input_media_list_item_edits_title_and_marks() {
         .success()
     );
     let after = load(&show);
-    assert_eq!(
-        after.project().media_list(input(9)),
-        Some(&before_list)
-    );
+    assert_eq!(after.project().media_list(input(9)), Some(&before_list));
 }
 
 #[test]
@@ -1165,7 +1162,10 @@ fn settings_import_apply_updates_format_and_restart_only() {
         fm_types::VideoDimensions::new(1_280, 720).unwrap()
     );
     assert_eq!(settings.video.frame_rate, settings.frame_rate);
-    assert_eq!(loaded.project().restart_policy(), fm_model::RestartPolicy::Always);
+    assert_eq!(
+        loaded.project().restart_policy(),
+        fm_model::RestartPolicy::Always
+    );
 
     // Audio bus names are applied too.
     let first_export = root.path("settings-2.json");
@@ -1184,14 +1184,21 @@ fn settings_import_apply_updates_format_and_restart_only() {
         text(&changed_path),
         "--apply",
     ]));
-    assert!(out.contains("0 added, 1 changed, 0 removed; applied"), "{out}");
+    assert!(
+        out.contains("0 added, 1 changed, 0 removed; applied"),
+        "{out}"
+    );
     let loaded = load(&show);
     assert_eq!(loaded.project().audio_buses()[0].name, "Clean feed");
 
     // A stream-target change is not applied yet, and refuses the whole
     // import before anything is saved.
     let second_export = root.path("settings-3.json");
-    assert_success(&run(&["settings-export", text(&show), text(&second_export)]));
+    assert_success(&run(&[
+        "settings-export",
+        text(&show),
+        text(&second_export),
+    ]));
     let json = fs::read_to_string(&second_export).unwrap();
     let changed = json.replace(
         "\n  }\n}\n",

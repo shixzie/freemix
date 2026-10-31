@@ -6,9 +6,8 @@ use std::collections::BTreeMap;
 
 use fm_clock::production::{
     ClockName, ClockNameError, ClockValue, ClockValueError, DurationFormat, OverrunPolicy,
-    TimerError,
     ProductionClock, ProductionClockError, ProductionClocks, SessionKind, TimeOfDayFormat,
-    TimeZone, TimerConfig, TimerDirection, ZoneError,
+    TimeZone, TimerConfig, TimerDirection, TimerError, ZoneError,
 };
 use fm_types::{
     FrameRate, InputId, ProjectClock, ProjectClockDirection, ProjectClockKind, ProjectClockOverrun,
@@ -96,9 +95,7 @@ pub fn media_clock_inputs(definitions: &[ProjectClock]) -> BTreeMap<ClockName, I
 
 /// The session clocks a project defines, by name and followed source.
 #[must_use]
-pub fn session_clocks(
-    definitions: &[ProjectClock],
-) -> Vec<(ClockName, ProjectSessionKind)> {
+pub fn session_clocks(definitions: &[ProjectClock]) -> Vec<(ClockName, ProjectSessionKind)> {
     definitions
         .iter()
         .filter_map(|definition| {
@@ -192,9 +189,13 @@ fn duration_format(format: ProjectDurationFormat) -> Result<DurationFormat, Rate
         ProjectDurationFormat::HoursMinutesSeconds => DurationFormat::HoursMinutesSeconds,
         ProjectDurationFormat::MinutesSeconds => DurationFormat::MinutesSeconds,
         ProjectDurationFormat::Seconds => DurationFormat::Seconds,
-        ProjectDurationFormat::HoursMinutesSecondsTenths => DurationFormat::HoursMinutesSecondsTenths,
+        ProjectDurationFormat::HoursMinutesSecondsTenths => {
+            DurationFormat::HoursMinutesSecondsTenths
+        }
         ProjectDurationFormat::MinutesSecondsTenths => DurationFormat::MinutesSecondsTenths,
-        ProjectDurationFormat::HoursMinutesSecondsMillis => DurationFormat::HoursMinutesSecondsMillis,
+        ProjectDurationFormat::HoursMinutesSecondsMillis => {
+            DurationFormat::HoursMinutesSecondsMillis
+        }
         ProjectDurationFormat::HoursMinutesSecondsFrames {
             numerator,
             denominator,

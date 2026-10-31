@@ -213,7 +213,11 @@ impl ViscaUdpTransport {
     /// # Errors
     ///
     /// Returns a framing or send error.
-    pub fn send(&mut self, payload_type: ViscaIpPayloadType, payload: Vec<u8>) -> Result<u32, ViscaUdpError> {
+    pub fn send(
+        &mut self,
+        payload_type: ViscaIpPayloadType,
+        payload: Vec<u8>,
+    ) -> Result<u32, ViscaUdpError> {
         let packet = self.sequencer.wrap(payload_type, payload);
         let bytes = packet.encode()?;
         self.socket.send(&bytes)?;
@@ -247,7 +251,8 @@ impl ViscaUdpTransport {
                 Exchange::Reply(reply) => return Ok(reply),
                 Exchange::SequenceNumberError => {
                     if resets >= self.config.sequence_resets {
-                        self.counters.sequence_resets = self.counters.sequence_resets.saturating_add(1);
+                        self.counters.sequence_resets =
+                            self.counters.sequence_resets.saturating_add(1);
                         return Err(ViscaUdpError::SequenceUnresolved);
                     }
                     resets += 1;
@@ -263,11 +268,7 @@ impl ViscaUdpTransport {
     fn resync(&mut self) -> Result<(), ViscaUdpError> {
         let reset = self.sequencer.reset();
         let bytes = reset.encode()?;
-        match self.exchange(
-            &bytes,
-            reset.sequence,
-            ViscaIpPayloadType::ControlReply,
-        )? {
+        match self.exchange(&bytes, reset.sequence, ViscaIpPayloadType::ControlReply)? {
             Exchange::Reply(reply)
                 if ViscaIpControl::decode(reply.payload_type, &reply.payload)
                     == Some(ViscaIpControl::ResetAck) =>
@@ -526,7 +527,10 @@ mod tests {
             let (len, source) = server.recv_from(&mut buffer).unwrap();
             let reset = ViscaIpPacket::decode(&buffer[..len]).unwrap();
             assert_eq!(reset.payload_type, ViscaIpPayloadType::ControlCommand);
-            assert_eq!(ViscaIpControl::decode(reset.payload_type, &reset.payload), Some(ViscaIpControl::Reset));
+            assert_eq!(
+                ViscaIpControl::decode(reset.payload_type, &reset.payload),
+                Some(ViscaIpControl::Reset)
+            );
             server
                 .send_to(
                     &ViscaIpPacket {

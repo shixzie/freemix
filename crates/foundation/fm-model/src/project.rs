@@ -438,7 +438,9 @@ pub enum ScoreboardDocumentError {
     /// The input exists but is not a title.
     NotATitle(InputId),
     Empty,
-    TooLarge { maximum: usize },
+    TooLarge {
+        maximum: usize,
+    },
 }
 
 impl std::fmt::Display for ScoreboardDocumentError {
@@ -463,7 +465,9 @@ pub enum PreviewDocumentError {
     /// The input exists but is not a title.
     NotATitle(InputId),
     Empty,
-    TooLarge { maximum: usize },
+    TooLarge {
+        maximum: usize,
+    },
 }
 
 impl std::fmt::Display for PreviewDocumentError {
@@ -488,7 +492,9 @@ pub enum ProjectCrawlError {
     /// The input exists but is not a title.
     NotATitle(InputId),
     Empty,
-    TooLarge { maximum: usize },
+    TooLarge {
+        maximum: usize,
+    },
 }
 
 impl std::fmt::Display for ProjectCrawlError {
@@ -1253,10 +1259,7 @@ impl Project {
     ///
     /// Returns the project's validation errors, leaving the project
     /// unchanged.
-    pub fn set_settings(
-        &mut self,
-        settings: ProjectSettings,
-    ) -> Result<(), Vec<ValidationError>> {
+    pub fn set_settings(&mut self, settings: ProjectSettings) -> Result<(), Vec<ValidationError>> {
         let mut candidate = self.clone();
         candidate.settings = settings;
         candidate.validate()?;

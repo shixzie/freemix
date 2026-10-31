@@ -9,11 +9,11 @@ use fm_titles::{
     Alignment, AssetCatalog, Bounds, ClockDirection, ClockFormat, Color, Crawl, CrawlConfig,
     CrawlError, CrawlItem, CrawlLayer, CrawlLogo, CrawlMeasure, CrawlMode, CrawlSegment,
     CrawlSegmentKind, CrawlSpeed, Element, ElementId, ElementKind, FieldDefinition, FieldId,
-    FieldValue, FontCrawlMeasure, FontStyle, GameClockConfig, HorizontalAlignment,
-    MAX_CRAWL_ITEMS, MAX_CRAWL_LOGO_WIDTH, MAX_ROSTER_PLAYERS, Player, ReferenceRenderer,
-    Scoreboard, ScoreboardAction, ScoreboardBinding, ScoreboardError, ScoreboardEvent,
-    ScoreboardPreset, ScoreboardRules, ScoreboardSnapshot, Style, TeamSide, TeamState, TemplateId,
-    TitleId, TitleScene, TitleTemplate, UpdateError, VerticalAlignment, actions_from_external,
+    FieldValue, FontCrawlMeasure, FontStyle, GameClockConfig, HorizontalAlignment, MAX_CRAWL_ITEMS,
+    MAX_CRAWL_LOGO_WIDTH, MAX_ROSTER_PLAYERS, Player, ReferenceRenderer, Scoreboard,
+    ScoreboardAction, ScoreboardBinding, ScoreboardError, ScoreboardEvent, ScoreboardPreset,
+    ScoreboardRules, ScoreboardSnapshot, Style, TeamSide, TeamState, TemplateId, TitleId,
+    TitleScene, TitleTemplate, UpdateError, VerticalAlignment, actions_from_external,
 };
 use fm_types::FrameRate;
 use std::fs;

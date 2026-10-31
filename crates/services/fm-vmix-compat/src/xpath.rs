@@ -471,7 +471,9 @@ impl<'a> Parser<'a> {
                 }
                 let value = self.literal()?;
                 if !self.eat(b')') {
-                    return Err(XPathError::Syntax("expected ')' after a function predicate"));
+                    return Err(XPathError::Syntax(
+                        "expected ')' after a function predicate",
+                    ));
                 }
                 return Ok(if contains {
                     Predicate::AttributeContains {

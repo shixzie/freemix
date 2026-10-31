@@ -238,9 +238,7 @@ impl ProjectStore {
                 AssetResolveError::AssetsRootUnavailable(_)
                 | AssetResolveError::AssetUnavailable(_),
             ) => Some(AssetAuditReason::MissingAsset),
-            Err(AssetResolveError::OutsideAssetsRoot) => {
-                Some(AssetAuditReason::OutsideAssetsRoot)
-            }
+            Err(AssetResolveError::OutsideAssetsRoot) => Some(AssetAuditReason::OutsideAssetsRoot),
             Err(AssetResolveError::NotRegularFile) => Some(AssetAuditReason::NotRegularFile),
         }
     }

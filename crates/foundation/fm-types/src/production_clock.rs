@@ -237,7 +237,10 @@ impl fmt::Display for ProjectClockError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TooMany { count, maximum } => {
-                write!(formatter, "{count} clocks are defined, maximum is {maximum}")
+                write!(
+                    formatter,
+                    "{count} clocks are defined, maximum is {maximum}"
+                )
             }
             Self::InvalidName(name) => write!(
                 formatter,
@@ -288,7 +291,10 @@ pub fn validate_project_clocks(clocks: &[ProjectClock]) -> Result<(), ProjectClo
         {
             return Err(ProjectClockError::InvalidName(name.clone()));
         }
-        if clocks[..index].iter().any(|previous| previous.name == *name) {
+        if clocks[..index]
+            .iter()
+            .any(|previous| previous.name == *name)
+        {
             return Err(ProjectClockError::DuplicateName(name.clone()));
         }
         clock.kind.validate(name)?;

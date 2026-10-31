@@ -177,9 +177,7 @@ impl PluginSlotState {
 
     /// Removes parameter `name`, returning its value.
     pub fn clear_parameter(&mut self, name: &str) -> Option<f32> {
-        self.parameters
-            .remove(name)
-            .map(f32::from_bits)
+        self.parameters.remove(name).map(f32::from_bits)
     }
 }
 

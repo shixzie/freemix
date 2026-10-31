@@ -313,10 +313,8 @@ fn operations_edits_and_input_removal_respect_the_playlist() {
         "stinger",
         set_playlist(
             vec![
-                entry(1, 2, 10).with_transition(PlaylistTransition::new(
-                    PlaylistTransitionKind::Stinger,
-                    5,
-                )),
+                entry(1, 2, 10)
+                    .with_transition(PlaylistTransition::new(PlaylistTransitionKind::Stinger, 5)),
             ],
             LoopMode::Off,
         ),

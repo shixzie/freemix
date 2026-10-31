@@ -182,24 +182,17 @@ fn crawl_documents_round_trip_exactly_and_strictly() {
 #[test]
 fn a_crawl_must_name_a_title_input() {
     let mut project = project();
-    project.restore_crawls(std::collections::BTreeMap::from([(
-        input(9),
-        document(),
-    )]));
+    project.restore_crawls(std::collections::BTreeMap::from([(input(9), document())]));
     assert!(stored(project).is_err());
 
     let mut project = self::project();
     assert!(project.set_crawl_document(input(9), document()).is_err());
-    project
-        .set_crawl_document(input(3), document())
-        .unwrap();
+    project.set_crawl_document(input(3), document()).unwrap();
     assert_eq!(project.crawl_documents().len(), 1);
     assert!(project.remove_crawl_document(input(3)).is_some());
 
     // Removing the title drops its crawl.
-    project
-        .set_crawl_document(input(3), document())
-        .unwrap();
+    project.set_crawl_document(input(3), document()).unwrap();
     project.remove_input(input(3)).unwrap();
     assert!(project.crawl_documents().is_empty());
     stored(project).unwrap();

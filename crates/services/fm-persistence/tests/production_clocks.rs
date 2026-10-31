@@ -12,9 +12,9 @@ use fm_model::{Input, InputKind, Project, ProjectSettings};
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoreError, StoredProject};
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, PixelFormat, ProjectClock,
-    ProjectClockDirection, ProjectClockKind, ProjectClockOverrun, ProjectDurationFormat,
-    ProjectId, ProjectSessionKind, ProjectTimeFormat, SampleFormat, SampleRate, ScanMode,
-    VideoDimensions, VideoFormat,
+    ProjectClockDirection, ProjectClockKind, ProjectClockOverrun, ProjectDurationFormat, ProjectId,
+    ProjectSessionKind, ProjectTimeFormat, SampleFormat, SampleRate, ScanMode, VideoDimensions,
+    VideoFormat,
 };
 
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);

@@ -10,9 +10,7 @@ use std::{
 
 use fm_model::{Project, ProjectSettings};
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoreError, StoredProject};
-use fm_ptz::{
-    CameraId, PresetId, PresetVirtualInput, PresetVirtualInputId, PresetVirtualInputs,
-};
+use fm_ptz::{CameraId, PresetId, PresetVirtualInput, PresetVirtualInputId, PresetVirtualInputs};
 use fm_types::{
     AudioFormat, ChannelLayout, ColorMetadata, FrameRate, PixelFormat, ProjectId, SampleFormat,
     SampleRate, ScanMode, VideoDimensions, VideoFormat,
@@ -122,7 +120,10 @@ fn ptz_presets_round_trip_exactly_and_strictly() {
 
     let escaped = canonical.replace('\n', "\\n");
     for (from, to) in [
-        ("\"ptz_presets\": \"freemix-ptz-presets 1", "\"ptz_presets\": \"freemix-ptz-presets 2"),
+        (
+            "\"ptz_presets\": \"freemix-ptz-presets 1",
+            "\"ptz_presets\": \"freemix-ptz-presets 2",
+        ),
         ("\\ncount 2", "\\ncount 1"),
         ("\\ncount 2", "\\ncount 3"),
         ("\\npreset x63616d2d62", "\\npreset x63616d2d60"),
@@ -144,9 +145,11 @@ fn ptz_presets_round_trip_exactly_and_strictly() {
 fn the_model_refuses_empty_and_oversized_documents() {
     let mut project = project();
     assert!(project.set_ptz_presets_document(String::new()).is_err());
-    assert!(project
-        .set_ptz_presets_document("x".repeat(256 * 1024 + 1))
-        .is_err());
+    assert!(
+        project
+            .set_ptz_presets_document("x".repeat(256 * 1024 + 1))
+            .is_err()
+    );
     assert!(project.set_ptz_presets_document(document()).is_ok());
     assert!(project.remove_ptz_presets_document().is_some());
     assert!(project.ptz_presets_document().is_none());

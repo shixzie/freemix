@@ -229,9 +229,7 @@ fn build(slot: &PluginSlot) -> Result<Box<dyn Processor>, ReferenceError> {
                 MAX_REFERENCE_TRIM_MILLIDB,
             )? {
                 Some(value) => value,
-                None => {
-                    state_i32(slot, MIN_REFERENCE_TRIM_MILLIDB, MAX_REFERENCE_TRIM_MILLIDB)?
-                }
+                None => state_i32(slot, MIN_REFERENCE_TRIM_MILLIDB, MAX_REFERENCE_TRIM_MILLIDB)?,
             };
             #[allow(clippy::cast_precision_loss)]
             let gain = 10_f32.powf(milli_db as f32 / 20_000.0);
@@ -346,7 +344,10 @@ impl fmt::Display for ReferenceError {
                 write!(formatter, "plugin {plugin} holds an invalid state")
             }
             Self::InvalidParameter { plugin, parameter } => {
-                write!(formatter, "plugin {plugin} parameter {parameter} is invalid")
+                write!(
+                    formatter,
+                    "plugin {plugin} parameter {parameter} is invalid"
+                )
             }
             Self::InvalidSampleRate => write!(formatter, "the sample rate is not positive"),
         }

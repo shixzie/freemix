@@ -11,22 +11,15 @@
 //! transport's message in `last_error`; `begin_recovery` and
 //! `complete_recovery` drive the observable reconnect lifecycle.
 
-use std::{
-    collections::BTreeMap,
-    io,
-    net::SocketAddr,
-};
+use std::{collections::BTreeMap, io, net::SocketAddr};
 
-use crate::visca::{
-    ViscaAddress, ViscaEncodeError, ViscaMoveSpeeds, visca_commands_for_intent,
-};
+use crate::visca::{ViscaAddress, ViscaEncodeError, ViscaMoveSpeeds, visca_commands_for_intent};
 use crate::visca_ip::ViscaIpPayloadType;
 use crate::visca_ip_transport::{ViscaUdpConfig, ViscaUdpError, ViscaUdpTransport};
 use crate::{
-    AdapterError, Axis, CameraCapabilities, CameraDescriptor, CameraId,
-    CameraPosition, CommandOutcome, ConnectionState, DisconnectReason, MovementId, MovementKind,
-    MovementState, Preset, PresetId, PtzAdapter, PtzIntent, RecoveryTelemetry, RelativeMove,
-    Telemetry,
+    AdapterError, Axis, CameraCapabilities, CameraDescriptor, CameraId, CameraPosition,
+    CommandOutcome, ConnectionState, DisconnectReason, MovementId, MovementKind, MovementState,
+    Preset, PresetId, PtzAdapter, PtzIntent, RecoveryTelemetry, RelativeMove, Telemetry,
 };
 
 /// One camera's UDP endpoint, identity, and capabilities.
@@ -72,11 +65,7 @@ impl ViscaUdpAdapter {
                     format!("camera {} is configured twice", camera.id),
                 ));
             }
-            let transport = ViscaUdpTransport::bind(
-                ("0.0.0.0", 0),
-                camera.address,
-                config,
-            )?;
+            let transport = ViscaUdpTransport::bind(("0.0.0.0", 0), camera.address, config)?;
             let position = camera.initial_position.clamped(&camera.capabilities);
             bound.insert(
                 camera.id.clone(),
@@ -112,10 +101,7 @@ impl ViscaUdpAdapter {
     /// # Errors
     ///
     /// Returns a socket bind or address-resolution error.
-    pub fn bind_one(
-        camera: ViscaUdpCamera,
-        config: ViscaUdpConfig,
-    ) -> io::Result<Self> {
+    pub fn bind_one(camera: ViscaUdpCamera, config: ViscaUdpConfig) -> io::Result<Self> {
         Self::bind([camera], config)
     }
 
@@ -195,7 +181,11 @@ impl ViscaUdpAdapter {
         }
     }
 
-    fn send(camera_id: &CameraId, camera: &mut CameraState, bytes: &[u8]) -> Result<(), AdapterError> {
+    fn send(
+        camera_id: &CameraId,
+        camera: &mut CameraState,
+        bytes: &[u8],
+    ) -> Result<(), AdapterError> {
         match camera
             .transport
             .transact(ViscaIpPayloadType::Command, bytes)
@@ -451,9 +441,9 @@ fn apply_relative(position: &mut CameraPosition, movement: RelativeMove) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AbsoluteMove, ContinuousMove, ContinuousSource};
     use crate::visca::{ViscaCommand, ViscaMoveSpeeds};
     use crate::visca_ip::ViscaIpPacket;
+    use crate::{AbsoluteMove, ContinuousMove, ContinuousSource};
     use std::{
         net::UdpSocket,
         sync::{
@@ -466,9 +456,7 @@ mod tests {
     };
 
     fn capabilities() -> CameraCapabilities {
-        let limits = |min, max| {
-            crate::AxisLimits::new(min, max).unwrap()
-        };
+        let limits = |min, max| crate::AxisLimits::new(min, max).unwrap();
         CameraCapabilities {
             pan: crate::AxisCapabilities::new(limits(-2_448, 2_448), 24).unwrap(),
             tilt: crate::AxisCapabilities::new(limits(-432, 1_296), 20).unwrap(),
@@ -628,10 +616,7 @@ mod tests {
             .execute(&cid(1), PtzIntent::RecallPreset(PresetId::new(3)))
             .unwrap();
         assert_eq!(recalled.telemetry.position.pan, 100);
-        assert_eq!(
-            adapter.presets(&cid(1)).unwrap()[0].name,
-            "Wide"
-        );
+        assert_eq!(adapter.presets(&cid(1)).unwrap()[0].name, "Wide");
 
         stop.store(true, Ordering::Release);
         worker.join().unwrap();

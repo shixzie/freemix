@@ -16,7 +16,9 @@ use std::{
     net::{SocketAddr, TcpListener, TcpStream, ToSocketAddrs},
 };
 
-use crate::{CompatState, MAX_TCP_LINE_BYTES, TcpHub, TcpReply, TcpSessionError, TcpSessionId, Translation};
+use crate::{
+    CompatState, MAX_TCP_LINE_BYTES, TcpHub, TcpReply, TcpSessionError, TcpSessionId, Translation,
+};
 
 /// Most response bytes buffered for one slow connection before it is
 /// dropped instead of growing without bound.
@@ -165,7 +167,9 @@ impl VmixTcpServer {
                     Ok(bytes) => {
                         connection.read.extend_from_slice(&buffer[..bytes]);
                         if connection.read.len() > MAX_TCP_LINE_BYTES * 4 {
-                            connection.write.extend_from_slice(b"ERROR Line too long\r\n");
+                            connection
+                                .write
+                                .extend_from_slice(b"ERROR Line too long\r\n");
                             connection.close_after_write = true;
                             break;
                         }
@@ -181,12 +185,16 @@ impl VmixTcpServer {
             while let Some(newline) = connection.read.iter().position(|byte| *byte == b'\n') {
                 let mut line = connection.read.drain(..=newline).collect::<Vec<_>>();
                 if line.len() > MAX_TCP_LINE_BYTES + 2 {
-                    connection.write.extend_from_slice(b"ERROR Line too long\r\n");
+                    connection
+                        .write
+                        .extend_from_slice(b"ERROR Line too long\r\n");
                     connection.close_after_write = true;
                     break;
                 }
                 let Ok(text) = std::str::from_utf8(&line) else {
-                    connection.write.extend_from_slice(b"ERROR Invalid encoding\r\n");
+                    connection
+                        .write
+                        .extend_from_slice(b"ERROR Invalid encoding\r\n");
                     connection.close_after_write = true;
                     break;
                 };
@@ -306,11 +314,7 @@ mod tests {
                     "Camera",
                     "Camera",
                 ),
-                CompatInput::new(
-                    WireInputId::new(NonZeroU128::new(2).unwrap()),
-                    "News",
-                    "GT",
-                ),
+                CompatInput::new(WireInputId::new(NonZeroU128::new(2).unwrap()), "News", "GT"),
             ],
             WireInputId::new(NonZeroU128::new(1).unwrap()),
             WireInputId::new(NonZeroU128::new(2).unwrap()),
@@ -326,7 +330,9 @@ mod tests {
         let mut client = client(address);
         let executed = std::cell::RefCell::new(Vec::new());
         let mut execute = |state: &mut CompatState, translation: Translation| {
-            if let Translation::Protocol(fm_protocol::CommandPayload::SelectPreview { input }) = translation {
+            if let Translation::Protocol(fm_protocol::CommandPayload::SelectPreview { input }) =
+                translation
+            {
                 state.preview = input;
                 executed.borrow_mut().push(translation);
                 Ok(())
@@ -346,7 +352,10 @@ mod tests {
         let subscribed = read_line(&mut client);
         let function = read_line(&mut client);
         assert!(version.starts_with("VERSION OK "), "{version:?}");
-        assert!(subscribed.starts_with("SUBSCRIBE OK TALLY"), "{subscribed:?}");
+        assert!(
+            subscribed.starts_with("SUBSCRIBE OK TALLY"),
+            "{subscribed:?}"
+        );
         assert_eq!(function, "FUNCTION OK Completed\r\n");
         assert_eq!(executed.borrow().len(), 1);
         assert_eq!(state.preview.get().get(), 1);

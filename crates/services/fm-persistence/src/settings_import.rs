@@ -633,7 +633,10 @@ impl fmt::Display for SettingsApplyError {
                 write!(formatter, "setting `{key}` was refused: {reason}")
             }
             Self::Project(errors) => {
-                write!(formatter, "project rejected the imported settings: {errors:?}")
+                write!(
+                    formatter,
+                    "project rejected the imported settings: {errors:?}"
+                )
             }
         }
     }
@@ -690,14 +693,15 @@ impl SettingsSnapshot {
     }
 }
 
-fn setting_integer(
-    snapshot: &SettingsSnapshot,
-    key: &str,
-) -> Result<i64, SettingsApplyError> {
+fn setting_integer(snapshot: &SettingsSnapshot, key: &str) -> Result<i64, SettingsApplyError> {
     match snapshot.get_path(key) {
         Some(SettingValue::Integer(value)) => Ok(*value),
-        Some(_) => Err(SettingsApplyError::Invalid { key: key.to_owned() }),
-        None => Err(SettingsApplyError::Missing { key: key.to_owned() }),
+        Some(_) => Err(SettingsApplyError::Invalid {
+            key: key.to_owned(),
+        }),
+        None => Err(SettingsApplyError::Missing {
+            key: key.to_owned(),
+        }),
     }
 }
 
@@ -707,8 +711,12 @@ fn setting_text<'a>(
 ) -> Result<&'a str, SettingsApplyError> {
     match snapshot.get_path(key) {
         Some(SettingValue::Text(value)) => Ok(value.as_str()),
-        Some(_) => Err(SettingsApplyError::Invalid { key: key.to_owned() }),
-        None => Err(SettingsApplyError::Missing { key: key.to_owned() }),
+        Some(_) => Err(SettingsApplyError::Invalid {
+            key: key.to_owned(),
+        }),
+        None => Err(SettingsApplyError::Missing {
+            key: key.to_owned(),
+        }),
     }
 }
 
@@ -719,13 +727,19 @@ fn setting_reference(
 ) -> Result<SettingReference, SettingsApplyError> {
     match snapshot.get_path(key) {
         Some(SettingValue::Reference(reference)) if reference.kind == kind => Ok(*reference),
-        Some(_) => Err(SettingsApplyError::Invalid { key: key.to_owned() }),
-        None => Err(SettingsApplyError::Missing { key: key.to_owned() }),
+        Some(_) => Err(SettingsApplyError::Invalid {
+            key: key.to_owned(),
+        }),
+        None => Err(SettingsApplyError::Missing {
+            key: key.to_owned(),
+        }),
     }
 }
 
 fn bounded_u32(value: i64, key: &str) -> Result<u32, SettingsApplyError> {
-    u32::try_from(value).map_err(|_| SettingsApplyError::Invalid { key: key.to_owned() })
+    u32::try_from(value).map_err(|_| SettingsApplyError::Invalid {
+        key: key.to_owned(),
+    })
 }
 
 fn apply_format(
@@ -752,10 +766,9 @@ fn apply_format(
         setting_integer(snapshot, "format.video.height")?,
         "format.video.height",
     )?;
-    let dimensions =
-        VideoDimensions::new(width, height).ok_or(SettingsApplyError::Invalid {
-            key: "format.video.width".to_owned(),
-        })?;
+    let dimensions = VideoDimensions::new(width, height).ok_or(SettingsApplyError::Invalid {
+        key: "format.video.width".to_owned(),
+    })?;
     let sample_rate = SampleRate::new(bounded_u32(
         setting_integer(snapshot, "format.audio.sample_rate_hz")?,
         "format.audio.sample_rate_hz",
@@ -763,13 +776,12 @@ fn apply_format(
     .ok_or(SettingsApplyError::Invalid {
         key: "format.audio.sample_rate_hz".to_owned(),
     })?;
-    let channel_count =
-        usize::try_from(setting_integer(snapshot, "format.audio.channel_count")?)
-            .ok()
-            .filter(|count| (1..=ChannelLayout::MAX_CHANNELS).contains(count))
-            .ok_or(SettingsApplyError::Invalid {
-                key: "format.audio.channel_count".to_owned(),
-            })?;
+    let channel_count = usize::try_from(setting_integer(snapshot, "format.audio.channel_count")?)
+        .ok()
+        .filter(|count| (1..=ChannelLayout::MAX_CHANNELS).contains(count))
+        .ok_or(SettingsApplyError::Invalid {
+            key: "format.audio.channel_count".to_owned(),
+        })?;
 
     let current = project.settings().clone();
     let channels = if channel_count == current.audio.channels.channels().len() {
@@ -816,17 +828,14 @@ fn apply_restart(
         "never" => RestartPolicy::Never,
         "always" => RestartPolicy::Always,
         "on_failure" => {
-            let attempts = u8::try_from(setting_integer(
-                snapshot,
-                "restart_policy.max_attempts",
-            )?)
-            .ok()
-            .filter(|attempts| {
-                *attempts > 0 && *attempts <= RestartPolicy::MAX_RESTART_ATTEMPTS
-            })
-            .ok_or(SettingsApplyError::Invalid {
-                key: "restart_policy.max_attempts".to_owned(),
-            })?;
+            let attempts = u8::try_from(setting_integer(snapshot, "restart_policy.max_attempts")?)
+                .ok()
+                .filter(|attempts| {
+                    *attempts > 0 && *attempts <= RestartPolicy::MAX_RESTART_ATTEMPTS
+                })
+                .ok_or(SettingsApplyError::Invalid {
+                    key: "restart_policy.max_attempts".to_owned(),
+                })?;
             RestartPolicy::OnFailure {
                 max_attempts: attempts,
             }
@@ -863,7 +872,11 @@ fn apply_audio_buses(
                 key: format!("{key}.name"),
             })?
             .to_owned();
-        if project.audio_buses().iter().any(|candidate| candidate.id == bus) {
+        if project
+            .audio_buses()
+            .iter()
+            .any(|candidate| candidate.id == bus)
+        {
             project
                 .rename_audio_bus(bus, name)
                 .map_err(|error| SettingsApplyError::Model {
@@ -925,7 +938,11 @@ fn apply_outputs(
             .id,
         );
         let startup = startup_policy(snapshot, &format!("{key}.startup"))?;
-        if project.outputs().iter().any(|candidate| candidate.id == output) {
+        if project
+            .outputs()
+            .iter()
+            .any(|candidate| candidate.id == output)
+        {
             project
                 .rename_output(output, name)
                 .map_err(|error| SettingsApplyError::Model {
@@ -1102,13 +1119,13 @@ fn apply_existing_stream_target(
         key: format!("{key}.endpoint"),
     })?;
     let backup = match snapshot.get_path(&format!("{key}.backup_endpoint")) {
-        Some(SettingValue::Text(text)) => {
-            Some(StreamEndpoint::parse_for(target.protocol(), text).map_err(|_| {
+        Some(SettingValue::Text(text)) => Some(
+            StreamEndpoint::parse_for(target.protocol(), text).map_err(|_| {
                 SettingsApplyError::Invalid {
                     key: format!("{key}.backup_endpoint"),
                 }
-            })?)
-        }
+            })?,
+        ),
         Some(_) => {
             return Err(SettingsApplyError::Invalid {
                 key: format!("{key}.backup_endpoint"),
@@ -1187,10 +1204,12 @@ fn add_stream_target(
                     .to_owned(),
             }
         })?;
-        Some(StreamKey::parse(text).map_err(|error| SettingsApplyError::Model {
-            key: key.to_owned(),
-            reason: error.to_string(),
-        })?)
+        Some(
+            StreamKey::parse(text).map_err(|error| SettingsApplyError::Model {
+                key: key.to_owned(),
+                reason: error.to_string(),
+            })?,
+        )
     } else {
         None
     };
@@ -1247,6 +1266,8 @@ fn startup_policy(
     match setting_text(snapshot, key)? {
         "stopped" => Ok(StartupPolicy::Stopped),
         "reconcile_desired_state" => Ok(StartupPolicy::ReconcileDesiredState),
-        _ => Err(SettingsApplyError::Invalid { key: key.to_owned() }),
+        _ => Err(SettingsApplyError::Invalid {
+            key: key.to_owned(),
+        }),
     }
 }

@@ -98,7 +98,10 @@ impl fmt::Display for PresetVirtualInputError {
             Self::Unknown(id) => write!(formatter, "unknown preset virtual input {id}"),
             Self::InvalidName(id) => write!(formatter, "preset virtual input {id} has no name"),
             Self::InvalidThumbnail(id) => {
-                write!(formatter, "preset virtual input {id} has an invalid thumbnail")
+                write!(
+                    formatter,
+                    "preset virtual input {id} has an invalid thumbnail"
+                )
             }
             Self::Disabled(id) => write!(formatter, "preset virtual input {id} is disabled"),
         }
@@ -160,12 +163,8 @@ impl PresetVirtualInputs {
     ///
     /// Returns [`PresetVirtualInputError::TooMany`] past the bound (an
     /// existing id may still be replaced) or an invalid name/thumbnail.
-    pub fn insert(
-        &mut self,
-        input: PresetVirtualInput,
-    ) -> Result<(), PresetVirtualInputError> {
-        if !self.entries.contains_key(&input.id)
-            && self.entries.len() >= MAX_PRESET_VIRTUAL_INPUTS
+    pub fn insert(&mut self, input: PresetVirtualInput) -> Result<(), PresetVirtualInputError> {
+        if !self.entries.contains_key(&input.id) && self.entries.len() >= MAX_PRESET_VIRTUAL_INPUTS
         {
             return Err(PresetVirtualInputError::TooMany);
         }
@@ -235,10 +234,16 @@ impl fmt::Display for PresetVirtualInputDocumentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TooLarge { maximum } => {
-                write!(formatter, "preset virtual-input document exceeds {maximum} bytes")
+                write!(
+                    formatter,
+                    "preset virtual-input document exceeds {maximum} bytes"
+                )
             }
             Self::Version { found } => {
-                write!(formatter, "preset virtual-input document version {found:?} is not 1")
+                write!(
+                    formatter,
+                    "preset virtual-input document version {found:?} is not 1"
+                )
             }
             Self::Line { index } => {
                 write!(formatter, "preset virtual-input line {index} is malformed")
@@ -255,8 +260,10 @@ impl PresetVirtualInputs {
     #[must_use]
     pub fn to_document(&self) -> String {
         use core::fmt::Write as _;
-        let mut output = String::from("freemix-ptz-presets 1
-");
+        let mut output = String::from(
+            "freemix-ptz-presets 1
+",
+        );
         let _ = writeln!(output, "count {}", self.entries.len());
         for input in self.entries.values() {
             let _ = writeln!(
@@ -282,9 +289,7 @@ impl PresetVirtualInputs {
     /// Returns [`PresetVirtualInputDocumentError`] for an oversized,
     /// malformed, or out-of-contract document without accepting a partial
     /// result.
-    pub fn from_document(
-        document: &str,
-    ) -> Result<Self, PresetVirtualInputDocumentError> {
+    pub fn from_document(document: &str) -> Result<Self, PresetVirtualInputDocumentError> {
         if document.len() > MAX_PRESET_VIRTUAL_INPUT_DOCUMENT_BYTES {
             return Err(PresetVirtualInputDocumentError::TooLarge {
                 maximum: MAX_PRESET_VIRTUAL_INPUT_DOCUMENT_BYTES,
@@ -447,7 +452,10 @@ mod tests {
             .unwrap();
         assert_eq!(inputs.len(), 2);
         assert_eq!(
-            inputs.list().map(|input| input.name.as_str()).collect::<Vec<_>>(),
+            inputs
+                .list()
+                .map(|input| input.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["Wide", "Close"]
         );
         let switch = inputs.switch(&id("cam-b", 2)).unwrap();
@@ -465,16 +473,20 @@ mod tests {
             Err(PresetVirtualInputError::Unknown(id("cam-z", 9)))
         );
 
-        assert!(inputs
-            .insert(PresetVirtualInput::new(id("cam-a", 3)))
-            .is_err());
-        assert!(inputs
-            .insert(
-                PresetVirtualInput::new(id("cam-a", 3))
-                    .with_name("x")
-                    .with_thumbnail("bad\nthumbnail")
-            )
-            .is_err());
+        assert!(
+            inputs
+                .insert(PresetVirtualInput::new(id("cam-a", 3)))
+                .is_err()
+        );
+        assert!(
+            inputs
+                .insert(
+                    PresetVirtualInput::new(id("cam-a", 3))
+                        .with_name("x")
+                        .with_thumbnail("bad\nthumbnail")
+                )
+                .is_err()
+        );
         assert_eq!(inputs.remove(&id("cam-a", 1)).unwrap().name, "Wide");
         assert_eq!(inputs.len(), 1);
     }
@@ -501,7 +513,10 @@ mod tests {
             .unwrap();
         inputs.insert(entry("cam-b", 2, "Close")).unwrap();
         let document = inputs.to_document();
-        assert_eq!(PresetVirtualInputs::from_document(&document).unwrap(), inputs);
+        assert_eq!(
+            PresetVirtualInputs::from_document(&document).unwrap(),
+            inputs
+        );
         for malformed in [
             document.replacen("freemix-ptz-presets 1", "freemix-ptz-presets 2", 1),
             document.replacen("count 2", "count 1", 1),
@@ -522,10 +537,8 @@ mod tests {
         use crate::{FakeViscaAdapter, FakeViscaCamera, PresetId, PtzAdapter, PtzIntent};
         let mut inputs = PresetVirtualInputs::new();
         inputs.insert(entry("cam-a", 3, "Wide")).unwrap();
-        let mut adapter = FakeViscaAdapter::new([FakeViscaCamera::new(
-            CameraId::new("cam-a").unwrap(),
-            "Cam",
-        )]);
+        let mut adapter =
+            FakeViscaAdapter::new([FakeViscaCamera::new(CameraId::new("cam-a").unwrap(), "Cam")]);
         adapter
             .execute(
                 &CameraId::new("cam-a").unwrap(),
@@ -535,18 +548,14 @@ mod tests {
                 },
             )
             .unwrap();
-        let outcome = inputs
-            .switch_camera(&id("cam-a", 3), &mut adapter)
-            .unwrap();
-        assert_eq!(
-            outcome.applied,
-            PtzIntent::RecallPreset(PresetId::new(3))
-        );
+        let outcome = inputs.switch_camera(&id("cam-a", 3), &mut adapter).unwrap();
+        assert_eq!(outcome.applied, PtzIntent::RecallPreset(PresetId::new(3)));
         inputs.set_enabled(&id("cam-a", 3), false).unwrap();
         assert!(matches!(
             inputs.switch_camera(&id("cam-a", 3), &mut adapter),
-            Err(PresetSwitchError::Input(PresetVirtualInputError::Disabled(_)))
+            Err(PresetSwitchError::Input(PresetVirtualInputError::Disabled(
+                _
+            )))
         ));
     }
-
 }
