@@ -7,6 +7,7 @@
 //! audio-track selection, and growing-file live edges); `fm-codec-ffmpeg`
 //! drives it over real files.
 
+mod bank;
 mod clip;
 mod image_folder;
 mod image_sequence;
@@ -17,6 +18,7 @@ mod slideshow;
 mod transport;
 mod types;
 
+pub use bank::{ListGoBank, ListGoBankError, MAX_GO_BANK_INPUTS};
 pub use clip::{
     ClipError, ClipLibrary, CodecError, EncodedClip, FixtureClip, FrameCodec, LibraryError,
     PlaybackClip,

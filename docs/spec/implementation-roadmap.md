@@ -4836,9 +4836,10 @@ durations that trim or hold, and a seeded deterministic shuffle per loop cycle.
 Programmed GO (Play, Next, Previous, First, Stop) lands at an absolute or
 relative frame, is idempotent by ID, and records executed, ignored, or
 cancelled outcomes under explicit item, pending, and history limits. Remaining
-gaps: no daemon, protocol, persistence, or vMix API wiring, no cross-input GO
-bank, no M3U or file-list import, no transitions or variable speed between
-items, and no real-media acceptance. `IN-006` and `OR-015` remain planned.
+gaps: no daemon, protocol, persistence, or vMix API wiring; a cross-input
+`ListGoBank` model exists but nothing drives it; no M3U or file-list import,
+no transitions or variable speed between items, and no real-media
+acceptance. `IN-006` and `OR-015` remain planned.
 
 Current implementation boundary for item 5 Media List inputs (`IN-006`): a
 list input is a media input whose source is its active item's file, plus a
@@ -4895,7 +4896,8 @@ items (`input-media-list-options`, `input-media-list-item`); `fm-vmix-compat`
 translates vMix's `NextItem`, `PreviousItem`, `SelectIndex`, `NextPicture`,
 and `PreviousPicture` verbs onto page navigation and `Play`, `Pause`, `Stop`,
 and `PlayPause` onto media transport (no vMix HTTP/TCP server is
-wired yet); no cross-input GO bank, and Linux-only native evidence. The generic
+wired yet); a cross-input `ListGoBank` model exists but no daemon calls it,
+and Linux-only native evidence. The generic
 `page_navigate` step and the cue `page` action drive a list too: a page step
 naming a media list is rewritten to the list's own `navigate` (same
 next/previous/first/last/goto tokens, but Next and Previous wrap under Loop
