@@ -162,11 +162,12 @@ fn write_playlist(output: &mut String, playlist: &Playlist) {
         };
         write!(
             output,
-            "{{\"id\": {}, \"input\": {}, \"duration_frames\": {}, \"transition\": \
+            "{{\"id\": {}, \"input\": {}, \"duration_frames\": {}, \"follow_media\": {}, \"transition\": \
              {{\"kind\": \"{kind}\", \"duration_frames\": {}}}, \"enabled\": {}}}",
             entry.id,
             entry.input,
             entry.duration_frames,
+            entry.follow_media,
             entry.transition.duration_frames,
             entry.enabled
         )

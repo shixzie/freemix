@@ -4931,9 +4931,9 @@ persistence worker, off the frame loop; simulated pacing anchors to the wall clo
 boundary becomes pending, so it is approximate across commands and the catch-up frames
 render synchronously, and controls such as Pause or Next execute at the
 lagging frame cursor, so Studio's countdown is approximate on the simulated
-daemon; fixed entry durations only (an entry does not follow its media
-length), although an end trigger of the on-air media input advances a playing
-playlist with a journaled `next`; no stinger
+daemon; entries hold a fixed duration or follow their input's media length
+(Protocol 2.143, schema 100), and an end trigger of the on-air media input
+advances a playing playlist with a journaled `next`; no stinger
 transitions; enable/disable, loop changes, and list edits apply while the
 playlist runs, keeping the on-air entry's timing (an edit that removes or
 disables the on-air entry is refused); Studio's Start in field schedules a

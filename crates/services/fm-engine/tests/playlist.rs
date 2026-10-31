@@ -354,7 +354,7 @@ fn operations_edits_and_input_removal_respect_the_playlist() {
     let edit = submit(
         &mut engine,
         "edit-live",
-        set_playlist(vec![entry(1, 2, 10)], LoopMode::Off),
+        set_playlist(vec![entry(2, 3, 10)], LoopMode::Off),
     );
     assert_eq!(rejected(&edit), RejectionCode::Conflict);
 

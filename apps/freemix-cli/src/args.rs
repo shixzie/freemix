@@ -7245,7 +7245,7 @@ fn threshold(field: &'static str, value: String) -> Result<f64, ArgsError> {
 
 /// `remote-alert-rule <address> <rule> [--on|--off] [--severity <severity>]
 /// [--fires-at <value>] [--clears-at <value>] [--hold <seconds>] | --defaults
-/// [--key <key>] [--expect <revision>]` (RC-015, Protocol 2.142).
+/// [--key <key>] [--expect <revision>]` (RC-015, Protocol 2.143).
 fn parse_remote_alert_rule(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<Command, ArgsError> {
@@ -8959,7 +8959,16 @@ fn playlist_entries(value: &str) -> Result<Vec<fm_protocol::PlaylistEntrySpec>, 
                 value: item.to_owned(),
             };
             let parts: Vec<_> = item.split(':').collect();
-            let [id, input, frames, transition, transition_frames, enabled] = parts[..] else {
+            let [
+                id,
+                input,
+                frames,
+                transition,
+                transition_frames,
+                enabled,
+                follow_media,
+            ] = parts[..]
+            else {
                 return Err(invalid());
             };
             Ok(fm_protocol::PlaylistEntrySpec {
@@ -8982,6 +8991,11 @@ fn playlist_entries(value: &str) -> Result<Vec<fm_protocol::PlaylistEntrySpec>, 
                 },
                 transition_frames: transition_frames.parse().map_err(|_| invalid())?,
                 enabled: match enabled {
+                    "0" => false,
+                    "1" => true,
+                    _ => return Err(invalid()),
+                },
+                follow_media: match follow_media {
                     "0" => false,
                     "1" => true,
                     _ => return Err(invalid()),
@@ -11756,7 +11770,7 @@ mod tests {
                 "127.0.0.1:9123",
                 "set",
                 "all",
-                "1:2:250:cut:0:1,2:3:100:fade:12:0",
+                "1:2:250:cut:0:1:0,2:3:100:fade:12:0:0",
             ])),
             playlist(
                 CommandPayload::SetPlaylist {
@@ -11766,6 +11780,7 @@ mod tests {
                             id: 1,
                             input: wire(2),
                             duration_frames: 250,
+                            follow_media: false,
                             transition: PlaylistTransitionKind::Cut,
                             transition_frames: 0,
                             enabled: true,
@@ -11774,6 +11789,7 @@ mod tests {
                             id: 2,
                             input: wire(3),
                             duration_frames: 100,
+                            follow_media: false,
                             transition: PlaylistTransitionKind::Fade,
                             transition_frames: 12,
                             enabled: false,

@@ -612,6 +612,8 @@ pub struct EntryForm {
     pub input: Option<InputId>,
     /// Duration text as typed (see [`parse_duration`]).
     pub duration: String,
+    /// Follow the input's media length instead of the typed duration.
+    pub follow_media: bool,
     pub transition: PlaylistTransitionKind,
     /// Transition frames for every kind but Cut.
     pub transition_frames: u32,
@@ -627,6 +629,7 @@ impl EntryForm {
             editing: None,
             input: None,
             duration: timecode(10 * fps, rate),
+            follow_media: false,
             transition: PlaylistTransitionKind::Cut,
             transition_frames: u32::try_from(fps.div_ceil(2)).unwrap_or(15),
             enabled: true,
@@ -641,6 +644,7 @@ impl EntryForm {
             editing: Some(entry.id),
             input: Some(entry.input.to_domain()),
             duration: timecode(entry.duration_frames, rate),
+            follow_media: entry.follow_media,
             transition: entry.transition,
             transition_frames: if entry.transition == PlaylistTransitionKind::Cut {
                 defaults.transition_frames
@@ -664,6 +668,7 @@ impl EntryForm {
             id,
             input: WireInputId::from_domain(input),
             duration_frames,
+            follow_media: self.follow_media,
             transition: self.transition,
             transition_frames: transition_frames_for(
                 self.transition,
@@ -1284,7 +1289,11 @@ fn draw_entry_row(ui: &mut Ui, row: &EntryRow<'_>) -> RowClick {
             row.take.as_ref().err().copied().unwrap_or(""),
         );
     let transition = entry_transition_text(l, row.entry);
-    let duration = timecode(row.entry.duration_frames, row.rate);
+    let duration = if row.entry.follow_media {
+        l.text(Msg::PlaylistFollowsMedia).to_owned()
+    } else {
+        timecode(row.entry.duration_frames, row.rate)
+    };
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
         let (accent, fill) = match row.role {
@@ -1626,6 +1635,14 @@ fn draw_entry_form(
                 submit = duration.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
                 ui.end_row();
 
+                ui.label(field_label(l.text(Msg::PlaylistFollowMedia)));
+                ui.add(egui::Checkbox::new(
+                    &mut form.follow_media,
+                    l.text(Msg::PlaylistFollowMedia),
+                ))
+                .on_hover_text(l.text(Msg::PlaylistFollowMediaHover));
+                ui.end_row();
+
                 ui.label(field_label(l.text(Msg::TransitionSection)));
                 ui.horizontal(|ui| {
                     ComboBox::from_id_salt("studio-playlist-transition")
@@ -1767,6 +1784,7 @@ mod tests {
             id,
             input: WireInputId::from_domain(input(input_value)),
             duration_frames: duration,
+            follow_media: false,
             transition: if id.is_multiple_of(2) {
                 PlaylistTransitionKind::Fade
             } else {

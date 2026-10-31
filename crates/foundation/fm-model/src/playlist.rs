@@ -65,7 +65,12 @@ pub struct PlaylistEntry {
     pub id: u64,
     pub input: InputId,
     /// Frames the entry stays on Program, including its incoming transition.
+    /// Also the fallback when [`Self::follow_media`] is set but the input has
+    /// no known media length.
     pub duration_frames: u64,
+    /// Whether the entry follows the input's own media length instead of
+    /// [`Self::duration_frames`]; the media's end advances the playlist.
+    pub follow_media: bool,
     pub transition: PlaylistTransition,
     pub enabled: bool,
 }

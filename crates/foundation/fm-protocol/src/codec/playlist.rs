@@ -2,9 +2,11 @@
 //!
 //! * `loop` is `off`, `all`, or `one`.
 //! * `entries` is a comma-separated list (at most [`MAX_PLAYLIST_ENTRIES`])
-//!   of `<id>:<input>:<duration frames>:<transition>:<transition frames>:<0|1>`
+//!   of
+//!   `<id>:<input>:<duration frames>:<transition>:<transition frames>:<0|1>:<follow_media>`
 //!   where `<transition>` is `cut`, `fade`, `alpha_fade`, `wipe`, `slide`, or
-//!   `zoom`, and the last item is the enabled flag. Identifiers are unique.
+//!   `zoom`, the sixth item is the enabled flag, and the last says whether
+//!   the entry follows its input's media length. Identifiers are unique.
 //! * `state` is `stopped`, `armed:<start frame>:<from|->`,
 //!   `playing:<entry>:<take>:<cycle>:<started frame>`,
 //!   `paused:<entry>:<take>:<cycle>:<elapsed frames>`, or
@@ -87,13 +89,14 @@ pub(super) fn encode_playlist_entries(entries: &[PlaylistEntrySpec]) -> Result<S
         .iter()
         .map(|entry| {
             format!(
-                "{}:{}:{}:{}:{}:{}",
+                "{}:{}:{}:{}:{}:{}:{}",
                 entry.id,
                 entry.input,
                 entry.duration_frames,
                 transition_name(entry.transition),
                 entry.transition_frames,
-                u8::from(entry.enabled)
+                u8::from(entry.enabled),
+                u8::from(entry.follow_media)
             )
         })
         .collect::<Vec<_>>()
@@ -116,7 +119,16 @@ pub(super) fn decode_playlist_entries(value: &str) -> Result<Vec<PlaylistEntrySp
                 value: item.to_owned(),
             };
             let parts: Vec<_> = item.split(':').collect();
-            let [id, input, duration, transition, frames, enabled] = parts[..] else {
+            let [
+                id,
+                input,
+                duration,
+                transition,
+                frames,
+                enabled,
+                follow_media,
+            ] = parts[..]
+            else {
                 return Err(invalid());
             };
             Ok(PlaylistEntrySpec {
@@ -128,6 +140,11 @@ pub(super) fn decode_playlist_entries(value: &str) -> Result<Vec<PlaylistEntrySp
                     .and_then(|frames| u32::try_from(frames).ok())
                     .ok_or_else(invalid)?,
                 enabled: match enabled {
+                    "0" => false,
+                    "1" => true,
+                    _ => return Err(invalid()),
+                },
+                follow_media: match follow_media {
                     "0" => false,
                     "1" => true,
                     _ => return Err(invalid()),

@@ -353,8 +353,12 @@ pub fn playlist_from_model(model: &fm_model::Playlist) -> Result<Playlist, Playl
             PlaylistEntry::new(
                 PlaylistEntryId::new(entry.id),
                 entry.input,
-                EntryDuration::Fixed {
-                    ms: entry.duration_frames,
+                if entry.follow_media {
+                    EntryDuration::Media { length_ms: None }
+                } else {
+                    EntryDuration::Fixed {
+                        ms: entry.duration_frames,
+                    }
                 },
             )
             .with_transition(PlaylistTransition::new(
@@ -430,7 +434,8 @@ pub fn playlist_to_model(playlist: &Playlist) -> fm_model::Playlist {
                 duration_frames: entry
                     .duration
                     .known_ms()
-                    .expect("engine playlist entries have fixed durations"),
+                    .unwrap_or_else(|| u64::from(entry.transition.duration_ms).max(1)),
+                follow_media: matches!(entry.duration, EntryDuration::Media { .. }),
                 transition: fm_model::PlaylistTransition {
                     kind: model_transition_kind(entry.transition.kind),
                     duration_frames: u32::try_from(entry.transition.duration_ms)

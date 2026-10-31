@@ -3562,6 +3562,14 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::PlaylistDurationHover,
         t("HH:MM:SS:FF, MM:SS o segundos. Intro añade el elemento o actualiza el seleccionado"),
     ),
+    (Msg::PlaylistFollowMedia, t("Seguir la duración del medio")),
+    (
+        Msg::PlaylistFollowMediaHover,
+        t(
+            "Permanecer al aire hasta que termine el medio de la entrada, en lugar de una duración fija; la duración de arriba es el respaldo",
+        ),
+    ),
+    (Msg::PlaylistFollowsMedia, t("duración del medio")),
     (Msg::PlaylistFramesLabel, t("Fotogramas")),
     (Msg::PlaylistAdd, t("Añadir")),
     (

@@ -623,6 +623,7 @@ fn model_with(variant: Variant, shortcuts: Vec<fm_protocol::ShortcutStatus>) -> 
         id,
         input: wire(source),
         duration_frames: 250,
+        follow_media: false,
         transition,
         transition_frames,
         enabled,

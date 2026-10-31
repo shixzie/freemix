@@ -660,7 +660,7 @@ fn hls_stream_destination_round_trips_with_a_null_key_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 99"));
+    assert!(encoded.contains("\"schema_version\": 100"));
     assert!(encoded.contains("\"protocol\": \"hls\""));
     assert!(encoded.contains("\"endpoint\": \"/var/lib/freemix/live\""));
     assert!(encoded.contains("\"backup_endpoint\": null"));
@@ -730,7 +730,7 @@ fn hls_stream_ladder_round_trips_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 99"));
+    assert!(encoded.contains("\"schema_version\": 100"));
     // The ladder is written as an inline array of rung objects, in list order
     // and with exactly the authored fields.
     assert!(
@@ -886,7 +886,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // boolean value and the manifest must carry the current schema version.
     store.save(&stored_rich_project()).unwrap();
     let valid = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(valid.contains("\"schema_version\": 99"));
+    assert!(valid.contains("\"schema_version\": 100"));
     for malformed in [
         valid.replacen(",\n        \"running\": true", "", 1),
         valid.replacen("\"running\": true", "\"running\": \"true\"", 1),
@@ -902,7 +902,7 @@ fn stream_target_running_state_round_trips_and_is_required_at_the_current_schema
     // An older manifest is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        valid.replacen("\"schema_version\": 99", "\"schema_version\": 21", 1),
+        valid.replacen("\"schema_version\": 100", "\"schema_version\": 21", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -1404,7 +1404,7 @@ fn scene_layer_effects_round_trip_in_order_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 99"));
+    assert!(encoded.contains("\"schema_version\": 100"));
     // Every layer writes the field explicitly in layer order: the plain layer
     // as an empty array, the effected layer as inline ordered descriptors.
     assert!(
@@ -1972,7 +1972,7 @@ fn alias_and_mix_feed_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 99"));
+    assert!(encoded.contains("\"schema_version\": 100"));
     assert!(encoded.contains(
         "{\"type\": \"alias\", \"target\": 1, \"crop\": {\"x\": 10, \"y\": 20, \"width\": 640, \
          \"height\": 360}}"
@@ -2065,7 +2065,7 @@ fn edit_locks_round_trip_exactly_and_are_strict_at_the_current_schema() {
     .unwrap();
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 99"));
+    assert!(encoded.contains("\"schema_version\": 100"));
     let locks = "\"edit_locks\": {\"project\": true, \"inputs\": [18446744073709551716, 18446744073709551718]}";
     assert!(
         encoded.contains(&format!(
@@ -2208,7 +2208,7 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
 
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 99,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 100,\n"));
     let title = "{\"type\": \"title\", \"template_uri\": \"asset://titles/lower-third.fmtitle\", \
          \"field_revision\": 3, \"fields\": [{\"id\": 1, \"type\": \"text\", \"value\": \
          \"Jane \\\"JD\\\" Doe\", \"revision\": 0}, {\"id\": 2, \"type\": \"number\", \"value\": -4, \
@@ -2303,7 +2303,7 @@ fn title_inputs_round_trip_exactly_at_the_current_schema() {
     // The previous schema is refused outright; no migration path exists.
     fs::write(
         store.manifest_path(),
-        encoded.replacen("\"schema_version\": 99", "\"schema_version\": 26", 1),
+        encoded.replacen("\"schema_version\": 100", "\"schema_version\": 26", 1),
     )
     .unwrap();
     let error = store.load().unwrap_err();
@@ -2436,6 +2436,7 @@ fn playlist_project(state: fm_model::PlaylistRunState) -> StoredProject {
                 id: 7,
                 input: input_id(high),
                 duration_frames: 90,
+                follow_media: false,
                 transition: PlaylistTransition::CUT,
                 enabled: true,
             },
@@ -2443,6 +2444,7 @@ fn playlist_project(state: fm_model::PlaylistRunState) -> StoredProject {
                 id: u64::MAX,
                 input: input_id(high + 3),
                 duration_frames: 45,
+                follow_media: false,
                 transition: PlaylistTransition {
                     kind: PlaylistTransitionKind::AlphaFade,
                     duration_frames: 12,
@@ -2507,8 +2509,8 @@ fn playlist_round_trips_every_state_exactly_and_is_strict_at_the_current_schema(
     });
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 99"));
-    let playlist = "\"playlist\": {\"loop\": \"all\", \"entries\": [{\"id\": 7, \"input\": 18446744073709551716, \"duration_frames\": 90, \"transition\": {\"kind\": \"cut\", \"duration_frames\": 0}, \"enabled\": true}, {\"id\": 18446744073709551615, \"input\": 18446744073709551719, \"duration_frames\": 45, \"transition\": {\"kind\": \"alpha_fade\", \"duration_frames\": 12}, \"enabled\": false}], \"state\": {\"type\": \"playing\", \"entry\": 7, \"take\": 3, \"cycle\": 1, \"started_frame\": 300}, \"next_take\": 4, \"observed_frame\": 321}";
+    assert!(encoded.contains("\"schema_version\": 100"));
+    let playlist = "\"playlist\": {\"loop\": \"all\", \"entries\": [{\"id\": 7, \"input\": 18446744073709551716, \"duration_frames\": 90, \"follow_media\": false, \"transition\": {\"kind\": \"cut\", \"duration_frames\": 0}, \"enabled\": true}, {\"id\": 18446744073709551615, \"input\": 18446744073709551719, \"duration_frames\": 45, \"follow_media\": false, \"transition\": {\"kind\": \"alpha_fade\", \"duration_frames\": 12}, \"enabled\": false}], \"state\": {\"type\": \"playing\", \"entry\": 7, \"take\": 3, \"cycle\": 1, \"started_frame\": 300}, \"next_take\": 4, \"observed_frame\": 321}";
     assert!(
         encoded.contains(&format!(
             "    {playlist},\n    \"cue_lists\": [],\n    \"luts\": [],"
@@ -2808,7 +2810,7 @@ fn capture_inputs_round_trip_exactly_and_reject_malformed_values() {
         Some(("decklink:1", &settings))
     );
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 99"));
+    assert!(encoded.contains("\"schema_version\": 100"));
     let object = "{\"type\": \"device\", \"stable_key\": \"decklink:1\", \"capture\": {\"format\": \"1920x1080@30000/1001:yuyv:tff\", \"audio\": \"alsa:hw:CARD=C920,DEV=0\", \"loss\": \"black\"}}";
     assert!(encoded.contains(object), "{encoded}");
 
@@ -2909,7 +2911,7 @@ fn system_audio_inputs_round_trip_exactly_and_reject_malformed_values() {
         .kind;
     assert_eq!(*kind, InputKind::SystemAudio(config));
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.contains("\"schema_version\": 99"));
+    assert!(encoded.contains("\"schema_version\": 100"));
     let object = "{\"type\": \"system_audio\", \"backend\": \"pulse\", \"device\": \"alsa_output.pci-0000_00_1f.3.analog-stereo.monitor\"}";
     assert!(encoded.contains(object), "{encoded}");
 

@@ -53,7 +53,7 @@ use crate::json::{Object, SyntaxError, escape_string};
 
 /// The project schema version preset files carry; any other is refused.
 /// The project store checks it equals its current schema.
-pub const SCHEMA_VERSION: u32 = 99;
+pub const SCHEMA_VERSION: u32 = 100;
 /// Longest grade name, in bytes (the project grade library bound).
 pub const MAX_GRADE_NAME_BYTES: usize = 128;
 /// Longest LUT name, in bytes (the project LUT bound).

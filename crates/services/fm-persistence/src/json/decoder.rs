@@ -1214,6 +1214,7 @@ fn parse_playlist_entry(value: Value) -> Result<PlaylistEntry, DecodeError> {
     let id = object.u64("id")?;
     let input = InputId::new(object.nonzero_u128("input")?);
     let duration_frames = object.u64("duration_frames")?;
+    let follow_media = object.boolean("follow_media")?;
     let mut transition = Object::new(object.take("transition")?, "playlist transition")?;
     let kind = match transition.string("kind")?.as_str() {
         "cut" => PlaylistTransitionKind::Cut,
@@ -1232,6 +1233,7 @@ fn parse_playlist_entry(value: Value) -> Result<PlaylistEntry, DecodeError> {
         id,
         input,
         duration_frames,
+        follow_media,
         transition: PlaylistTransition {
             kind,
             duration_frames: transition_frames,

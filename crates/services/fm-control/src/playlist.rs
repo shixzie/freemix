@@ -152,7 +152,8 @@ fn wire_entry(entry: &PlaylistEntry) -> PlaylistEntrySpec {
         duration_frames: entry
             .duration
             .known_ms()
-            .expect("engine playlist durations are fixed"),
+            .unwrap_or_else(|| u64::from(entry.transition.duration_ms).max(1)),
+        follow_media: matches!(entry.duration, EntryDuration::Media { .. }),
         transition,
         transition_frames: u32::try_from(entry.transition.duration_ms)
             .expect("engine playlist transitions are bounded"),

@@ -2386,6 +2386,9 @@ pub struct PlaylistEntrySpec {
     pub id: u64,
     pub input: WireInputId,
     pub duration_frames: u64,
+    /// Whether the entry follows the input's media length; `duration_frames`
+    /// is then the fallback when the length is unknown.
+    pub follow_media: bool,
     pub transition: PlaylistTransitionKind,
     pub transition_frames: u32,
     pub enabled: bool,
