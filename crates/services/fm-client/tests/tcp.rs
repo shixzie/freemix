@@ -1552,6 +1552,7 @@ fn diagnostics_wait_assembles_monitor_frames() {
             subscriber_limit: 4,
             subscriber_queue_limit: 8,
             source_sync: Vec::new(),
+            production_clocks: Vec::new(),
             health: fm_protocol::DaemonHealth::default(),
         }));
         peer.send_all(&records);
@@ -1596,6 +1597,7 @@ fn diagnostics_wait_reconciles_results_answered_before_it() {
                 subscriber_limit: 4,
                 subscriber_queue_limit: 8,
                 source_sync: Vec::new(),
+                production_clocks: Vec::new(),
                 health: fm_protocol::DaemonHealth::default(),
             }),
         ]);

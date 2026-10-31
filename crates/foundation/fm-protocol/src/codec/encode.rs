@@ -3721,6 +3721,10 @@ fn encode_diagnostics_response(
     for (name, value) in super::health::encode(&message.health)? {
         record.field_string(name, value)?;
     }
+    record.field_string(
+        "production_clocks",
+        crate::production_clock::encode_statuses(&message.production_clocks)?,
+    )?;
     Ok(())
 }
 

@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.148 / schema 106 (2026-10-31,
+(2026-10-19); items refreshed through protocol 2.149 / schema 106 (2026-10-31,
 at `7e139b72`). Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -5459,10 +5459,12 @@ load; `freemix-cli clock-add`, `clock-remove`, and `clock-list` author them
 offline. The engine builds a live `fm-clock` registry from those definitions
 on start and restore, advances timers on its monotonic frame clock, and
 exposes the readings plus start, pause, reset, set, adjust, preset, zone, and
-format controls to callers. Remaining gaps: the registry is not yet on the
-control protocol, so clients, Studio, the Web pages, and cues cannot read or
-drive it; titles still read their own template clocks rather than the shared
-registry; media and session clocks have no engine feed yet; no project-level
+format controls to callers. The registry now reaches clients as read-only readings in
+`diagnostics_response` (Protocol 2.149, printed by
+`freemix-cli remote-diagnostics`). Remaining gaps: there is no control
+command, snapshot record, or UI, so clients and cues cannot start, pause, or
+set a clock; titles still read their own template clocks rather than the
+shared registry; media and session clocks have no engine feed yet; no project-level
 time zone (each time-of-day clock names its zone); templates cannot show
 media remaining, session, or playlist clocks; designer compositions and
 crawls take no clock source; an IANA `TZif` parser exists

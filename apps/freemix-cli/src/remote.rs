@@ -2267,6 +2267,18 @@ fn print_diagnostics(response: &DiagnosticsResponse) {
     for sample in &response.source_sync {
         println!("{}", format_source_sync(sample));
     }
+    for clock in &response.production_clocks {
+        println!(
+            "Clock(name={}, kind={}, state={}, text={}, value_ms={}, expired={}, zone={})",
+            clock.name,
+            clock.kind.token(),
+            clock.state.token(),
+            clock.text,
+            clock.value_ms.map_or_else(|| "-".to_owned(), |value| value.to_string()),
+            clock.expired,
+            clock.zone.as_deref().unwrap_or("-"),
+        );
+    }
     for line in format_health(&response.health) {
         println!("{line}");
     }

@@ -2623,6 +2623,75 @@ impl<A: AuthorizationHook> ControlService<A> {
         }
     }
 
+    /// Every project production clock's reading at `wall` (SW-013).
+    #[must_use]
+    pub fn production_clock_statuses(
+        &self,
+        wall: fm_clock::production::UtcInstant,
+    ) -> Vec<fm_protocol::ProductionClockStatus> {
+        let at = fm_clock::production::TimeReading::new(self.engine.clock_time(), wall);
+        self.engine
+            .production_clock_readings(at)
+            .into_iter()
+            .map(|reading| fm_protocol::ProductionClockStatus {
+                name: reading.name.as_str().to_owned(),
+                kind: match reading.kind {
+                    fm_clock::production::ClockKind::Timer => {
+                        fm_protocol::ProductionClockKind::Timer
+                    }
+                    fm_clock::production::ClockKind::TimeOfDay => {
+                        fm_protocol::ProductionClockKind::TimeOfDay
+                    }
+                    fm_clock::production::ClockKind::MediaRemaining => {
+                        fm_protocol::ProductionClockKind::MediaRemaining
+                    }
+                    fm_clock::production::ClockKind::Session(
+                        fm_clock::production::SessionKind::Stream,
+                    ) => fm_protocol::ProductionClockKind::Stream,
+                    fm_clock::production::ClockKind::Session(
+                        fm_clock::production::SessionKind::Recording,
+                    ) => fm_protocol::ProductionClockKind::Recording,
+                    fm_clock::production::ClockKind::Session(
+                        fm_clock::production::SessionKind::Replay,
+                    ) => fm_protocol::ProductionClockKind::Replay,
+                    fm_clock::production::ClockKind::Session(
+                        fm_clock::production::SessionKind::MultiCorder,
+                    ) => fm_protocol::ProductionClockKind::MultiCorder,
+                    fm_clock::production::ClockKind::Session(
+                        fm_clock::production::SessionKind::External,
+                    ) => fm_protocol::ProductionClockKind::External,
+                },
+                state: match reading.state {
+                    fm_clock::production::ReadingState::Idle => {
+                        fm_protocol::ProductionClockState::Idle
+                    }
+                    fm_clock::production::ReadingState::Running => {
+                        fm_protocol::ProductionClockState::Running
+                    }
+                    fm_clock::production::ReadingState::Paused => {
+                        fm_protocol::ProductionClockState::Paused
+                    }
+                    fm_clock::production::ReadingState::Expired => {
+                        fm_protocol::ProductionClockState::Expired
+                    }
+                    fm_clock::production::ReadingState::Stopped => {
+                        fm_protocol::ProductionClockState::Stopped
+                    }
+                    fm_clock::production::ReadingState::Live => {
+                        fm_protocol::ProductionClockState::Live
+                    }
+                    fm_clock::production::ReadingState::Unavailable => {
+                        fm_protocol::ProductionClockState::Unavailable
+                    }
+                },
+                text: reading.text,
+                value_ms: reading.value.map(fm_clock::production::ClockValue::as_millis),
+                expired: reading.expired,
+                zone: reading.zone,
+            })
+            .collect()
+    }
+
     /// Creates a bounded live-event subscription.
     ///
     /// # Errors

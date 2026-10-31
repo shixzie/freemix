@@ -4146,6 +4146,9 @@ fn decode_diagnostics_response(fields: &mut Fields) -> Result<DiagnosticsRespons
             &fields.required("source_sync")?,
         )?,
         health: decode_health(fields)?,
+        production_clocks: crate::production_clock::decode_statuses(
+            &fields.required("production_clocks")?,
+        )?,
     })
 }
 

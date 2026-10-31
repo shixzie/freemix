@@ -3438,6 +3438,9 @@ pub struct DiagnosticsResponse {
     /// The daemon's latest health sample (Protocol 2.100): utilization and
     /// alerts.
     pub health: crate::DaemonHealth,
+    /// Every project production clock's reading (SW-013, Protocol 2.149), in
+    /// strictly ascending name order.
+    pub production_clocks: Vec<crate::ProductionClockStatus>,
 }
 
 // A snapshot is sent once per (re)connection, so its inline size is not worth

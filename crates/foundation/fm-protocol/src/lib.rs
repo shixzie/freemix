@@ -17,6 +17,7 @@ mod monitor_image;
 mod network_stream;
 mod output_failure;
 mod paged;
+mod production_clock;
 mod recorder_status;
 mod reel;
 mod replay;
@@ -210,6 +211,11 @@ pub use paged::{
     PagedPageAnswer, PagedPageContent, PagedPageKey, PagedPageMessage, PagedPageRequest,
     PagedStateMessage, PagedStatus, bounded_paged_text, decode_paged_page, paged_notes_valid,
     paged_thumbnail_size_valid,
+};
+pub use production_clock::{
+    MAX_PRODUCTION_CLOCK_NAME_BYTES, MAX_PRODUCTION_CLOCK_STATUSES,
+    MAX_PRODUCTION_CLOCK_TEXT_BYTES, MAX_PRODUCTION_CLOCK_ZONE_BYTES, ProductionClockKind,
+    ProductionClockState, ProductionClockStatus, decode_statuses, encode_statuses,
 };
 pub use recorder_status::{
     MAX_RECORDER_STATUS_SAMPLES, RecorderRealizedState, RecorderStatusMessage, RecorderStatusSample,

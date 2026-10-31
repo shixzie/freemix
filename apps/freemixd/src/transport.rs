@@ -171,6 +171,15 @@ pub(crate) fn diagnostics_response(
     health: fm_protocol::DaemonHealth,
 ) -> AppResult<DiagnosticsResponse> {
     let diagnostics = control.borrow().diagnostics();
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let wall = fm_clock::production::UtcInstant::new(
+        i64::try_from(wall.as_secs()).unwrap_or(i64::MAX),
+        wall.subsec_nanos(),
+    )
+    .unwrap_or(fm_clock::production::UtcInstant::UNIX_EPOCH);
+    let production_clocks = control.borrow().production_clock_statuses(wall);
     Ok(DiagnosticsResponse {
         protocol: request.protocol,
         request_id: request.request_id,
@@ -183,6 +192,7 @@ pub(crate) fn diagnostics_response(
         subscriber_limit: u32::try_from(diagnostics.limits.max_subscribers)?,
         subscriber_queue_limit: u32::try_from(diagnostics.limits.subscriber_queue)?,
         source_sync,
+        production_clocks,
         health,
     })
 }

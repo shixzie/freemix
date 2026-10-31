@@ -139,7 +139,7 @@ fn free_rotation_and_anchor_round_trip_exactly() {
     let expected = stored(project());
     store.save(&expected).unwrap();
     let encoded = fs::read_to_string(store.manifest_path()).unwrap();
-    assert!(encoded.starts_with("{\n  \"schema_version\": 105,\n"));
+    assert!(encoded.starts_with("{\n  \"schema_version\": 106,\n"));
     assert!(encoded.contains(TURNED), "{encoded}");
     // An unturned layer anchored at its centre spells out the defaults.
     assert!(

@@ -92,6 +92,7 @@ fn diagnostics(health: DaemonHealth) -> WireMessage {
         subscriber_limit: 16,
         subscriber_queue_limit: 64,
         source_sync: Vec::new(),
+        production_clocks: Vec::new(),
         health,
     })
 }
@@ -208,7 +209,7 @@ fn diagnostics_response_carries_the_health_fields() {
     let line = encode_line(&full).unwrap();
     assert!(
         line.ends_with(&format!(
-            "\tsource_sync=\tuptime_ms=60000\tcpu_permille=925\tgpu_permille=0\talerts={ALERTS}\tnotifications={NOTIFICATIONS}\tsilences=\n"
+            "\tsource_sync=\tuptime_ms=60000\tcpu_permille=925\tgpu_permille=0\talerts={ALERTS}\tnotifications={NOTIFICATIONS}\tsilences=\tproduction_clocks=\n"
         )),
         "{line}"
     );
@@ -216,7 +217,7 @@ fn diagnostics_response_carries_the_health_fields() {
     let quiet = diagnostics(DaemonHealth::default());
     let line = encode_line(&quiet).unwrap();
     assert!(
-        line.ends_with("\tsource_sync=\tuptime_ms=0\talerts=\tnotifications=\tsilences=\n"),
+        line.ends_with("\tsource_sync=\tuptime_ms=0\talerts=\tnotifications=\tsilences=\tproduction_clocks=\n"),
         "{line}"
     );
     assert_eq!(decode_line(&line).unwrap(), quiet);
@@ -347,7 +348,7 @@ fn health_status_and_diagnostics_carry_the_new_alert_rules() {
     let line = encode_line(&full).unwrap();
     assert!(
         line.ends_with(&format!(
-            "\tsource_sync=\tuptime_ms=64000\tcpu_permille=500\talerts={NEW_ALERTS}\tnotifications={NEW_NOTIFICATIONS}\tsilences=\n"
+            "\tsource_sync=\tuptime_ms=64000\tcpu_permille=500\talerts={NEW_ALERTS}\tnotifications={NEW_NOTIFICATIONS}\tsilences=\tproduction_clocks=\n"
         )),
         "{line}"
     );
@@ -382,7 +383,7 @@ fn alerts_carry_one_entry_per_rule_up_to_nine() {
 
 #[test]
 fn protocol_is_current() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 147));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 149));
 }
 
 /// Protocol 2.109: an acknowledged alert carries its end, silences are

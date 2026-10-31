@@ -58,7 +58,7 @@ const ENTRY: &str = "7%3Acapture%3Arunning%3A44100%3A48000%3A-12345%3A12001%3A81
 
 #[test]
 fn source_sync_status_is_exact() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 147));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 149));
     let stream = SourceSyncSample {
         kind: SourceSyncKind::Stream,
         state: SourceClockState::Priming,
@@ -228,6 +228,7 @@ fn diagnostics_response_carries_the_source_sync_samples() {
             subscriber_limit: 16,
             subscriber_queue_limit: 64,
             source_sync,
+            production_clocks: Vec::new(),
             health: fm_protocol::DaemonHealth::default(),
         })
     };
@@ -235,7 +236,7 @@ fn diagnostics_response_carries_the_source_sync_samples() {
     let line = encode_line(&empty).unwrap();
     assert!(
         line.ends_with(
-            "\tsubscriber_queue_limit=64\tsource_sync=\tuptime_ms=0\talerts=\tnotifications=\tsilences=\n"
+            "\tsubscriber_queue_limit=64\tsource_sync=\tuptime_ms=0\talerts=\tnotifications=\tsilences=\tproduction_clocks=\n"
         ),
         "{line}"
     );
