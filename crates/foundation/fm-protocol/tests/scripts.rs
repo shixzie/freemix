@@ -20,7 +20,7 @@ use fm_protocol::{
     encode_refusal_reason,
 };
 
-const PREFIX: &str = "command\tprotocol=2.146\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.147\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
@@ -83,7 +83,7 @@ fn spec() -> ScriptSpec {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 146));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 147));
 }
 
 #[test]
@@ -541,7 +541,7 @@ fn faulted_runs_carry_the_refusal_reason_and_a_bounded_message() {
     }
 }
 
-/// Protocol 2.69 several runs wait at once; Protocol 2.146 lets
+/// Protocol 2.69 several runs wait at once; Protocol 2.147 lets
 /// `script_stop` name a selection of them (one run is a selection of one),
 /// or without `runs` stop them all. `script_runs_stopped` names the
 /// scripts a stop idled, exactly and strictly.

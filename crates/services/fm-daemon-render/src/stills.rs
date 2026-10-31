@@ -34,8 +34,8 @@ use fm_persistence::ProjectStore;
 use fm_protocol::WireStillSource;
 use fm_sim::ImageFrame;
 use fm_types::still::{
-    MAX_IMAGE_URI_BYTES, MAX_SLIDESHOW_SLIDES, SlideshowSource, asset_uri_is_valid,
-    is_image_file_name,
+    MAX_IMAGE_URI_BYTES, MAX_SLIDESHOW_SLIDES, SlideTransitionStyle, SlideshowSource,
+    asset_uri_is_valid, is_image_file_name,
 };
 use fm_types::{InputId, OutputScaling, VideoDimensions};
 
@@ -198,6 +198,8 @@ pub struct SlidesShown {
     pub outgoing: Option<(Arc<str>, EngineSlideCrop)>,
     /// The incoming slide's opacity, in basis points.
     pub mix: u16,
+    /// The transition bringing the incoming slide in.
+    pub transition: SlideTransitionStyle,
     pub fit: OutputScaling,
 }
 
@@ -213,6 +215,7 @@ impl SlidesShown {
             incoming: slide(incoming),
             outgoing: slide(outgoing),
             mix,
+            transition: status.config.transition,
             fit: status.config.fit,
         })
     }
@@ -302,19 +305,32 @@ impl StillPictures {
             .incoming
             .as_ref()
             .and_then(|(uri, crop)| Some((self.picture(store, uri, shown.fit, size)?, *crop)));
-        let mut layers = Vec::with_capacity(2);
-        if let Some((picture, crop)) = &outgoing {
-            layers.push((picture, *crop, 10_000));
+        if outgoing.is_none() {
+            let layers = incoming
+                .iter()
+                .map(|(picture, crop)| (picture, *crop, 10_000))
+                .collect::<Vec<_>>();
+            return compose_slides(size, &layers);
         }
-        if let Some((picture, crop)) = &incoming {
-            let mix = if outgoing.is_some() {
-                shown.mix
-            } else {
-                10_000
-            };
-            layers.push((picture, *crop, mix));
+        match shown.transition {
+            SlideTransitionStyle::Cut | SlideTransitionStyle::Fade => {
+                let mut layers = Vec::with_capacity(2);
+                if let Some((picture, crop)) = &outgoing {
+                    layers.push((picture, *crop, 10_000));
+                }
+                if let Some((picture, crop)) = &incoming {
+                    layers.push((picture, *crop, shown.mix));
+                }
+                compose_slides(size, &layers)
+            }
+            SlideTransitionStyle::Wipe | SlideTransitionStyle::Slide => compose_slide_transition(
+                size,
+                outgoing.as_ref().map(|(picture, crop)| (picture, *crop)),
+                incoming.as_ref().map(|(picture, crop)| (picture, *crop)),
+                shown.transition,
+                shown.mix,
+            ),
         }
-        compose_slides(size, &layers)
     }
 }
 
@@ -379,12 +395,85 @@ pub fn compose_slides(
     ImageFrame::new(width, height, stride, pixels).ok()
 }
 
+/// A wipe or slide transition between two slides over black at `size`:
+/// `mix` is the incoming slide's progress in basis points. A wipe reveals
+/// the incoming picture from its left edge; a slide moves it in from the
+/// right while pushing the outgoing one off the left.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn compose_slide_transition(
+    (width, height): (u32, u32),
+    outgoing: Option<(&Arc<ImageFrame>, EngineSlideCrop)>,
+    incoming: Option<(&Arc<ImageFrame>, EngineSlideCrop)>,
+    transition: SlideTransitionStyle,
+    mix: u16,
+) -> Option<ImageFrame> {
+    let stride = usize::try_from(width).ok()?.checked_mul(4)?;
+    let rows = usize::try_from(height).ok()?;
+    let mut pixels = vec![0_u8; stride.checked_mul(rows)?];
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        pixel[3] = u8::MAX;
+    }
+    let progress = f64::from(mix.min(10_000)) / 10_000.0;
+    let width_f = f64::from(width);
+    let height_f = f64::from(height);
+    let draw = |pixels: &mut [u8],
+                picture: &ImageFrame,
+                crop: EngineSlideCrop,
+                offset: f64,
+                visible: f64| {
+        let [x, y, crop_width, crop_height] = crop.fractions();
+        let (source_width, source_height) = (picture.width(), picture.height());
+        for row in 0..height {
+            let v = y + (f64::from(row) + 0.5) / height_f * crop_height;
+            let source_row = scaled(v, source_height);
+            for column in 0..width {
+                let local = f64::from(column) - offset;
+                if local < 0.0 || local >= width_f || local / width_f >= visible {
+                    continue;
+                }
+                let u = x + (local + 0.5) / width_f * crop_width;
+                let Some(source) = picture.pixel(scaled(u, source_width), source_row) else {
+                    continue;
+                };
+                let alpha = f64::from(source.a) / 255.0;
+                let at = row as usize * stride + column as usize * 4;
+                for (channel, value) in pixels[at..at + 3]
+                    .iter_mut()
+                    .zip([source.r, source.g, source.b])
+                {
+                    let blended = f64::from(*channel) * (1.0 - alpha) + f64::from(value) * alpha;
+                    *channel = channel_byte(blended);
+                }
+            }
+        }
+    };
+    match transition {
+        SlideTransitionStyle::Wipe => {
+            if let Some((picture, crop)) = outgoing {
+                draw(&mut pixels, picture, crop, 0.0, 1.0);
+            }
+            if let Some((picture, crop)) = incoming {
+                draw(&mut pixels, picture, crop, 0.0, progress);
+            }
+        }
+        SlideTransitionStyle::Slide => {
+            if let Some((picture, crop)) = outgoing {
+                draw(&mut pixels, picture, crop, -progress * width_f, 1.0);
+            }
+            if let Some((picture, crop)) = incoming {
+                draw(&mut pixels, picture, crop, (1.0 - progress) * width_f, 1.0);
+            }
+        }
+        SlideTransitionStyle::Cut | SlideTransitionStyle::Fade => {}
+    }
+    ImageFrame::new(width, height, stride, pixels).ok()
+}
+
 /// A blended channel value as a byte, rounded and clamped.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn channel_byte(value: f64) -> u8 {
     value.round().clamp(0.0, 255.0) as u8
 }
-
 /// The pixel a normalized coordinate falls in, clamped to the picture.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn scaled(fraction: f64, extent: u32) -> u32 {
@@ -492,6 +581,54 @@ mod tests {
             compose_slides((4, 2), &[(&transparent, EngineSlideCrop::FULL, 10_000)]).unwrap();
         let pixel = frame.pixel(0, 0).unwrap();
         assert_eq!((pixel.r, pixel.g, pixel.b, pixel.a), (0, 0, 0, 255));
+    }
+
+    #[test]
+    fn a_wipe_and_a_slide_transition_split_the_two_slides_exactly() {
+        let red = picture(4, 2, [255, 0, 0, 255]);
+        let blue = picture(4, 2, [0, 0, 255, 255]);
+        let wipe = compose_slide_transition(
+            (4, 2),
+            Some((&red, EngineSlideCrop::FULL)),
+            Some((&blue, EngineSlideCrop::FULL)),
+            SlideTransitionStyle::Wipe,
+            5_000,
+        )
+        .unwrap();
+        for (column, expected) in [
+            (0, [0, 0, 255, 255]),
+            (1, [0, 0, 255, 255]),
+            (2, [255, 0, 0, 255]),
+            (3, [255, 0, 0, 255]),
+        ] {
+            let pixel = wipe.pixel(column, 0).unwrap();
+            assert_eq!(
+                [pixel.r, pixel.g, pixel.b, pixel.a],
+                expected,
+                "wipe column {column}"
+            );
+        }
+        let slide = compose_slide_transition(
+            (4, 2),
+            Some((&red, EngineSlideCrop::FULL)),
+            Some((&blue, EngineSlideCrop::FULL)),
+            SlideTransitionStyle::Slide,
+            5_000,
+        )
+        .unwrap();
+        for (column, expected) in [
+            (0, [255, 0, 0, 255]),
+            (1, [255, 0, 0, 255]),
+            (2, [0, 0, 255, 255]),
+            (3, [0, 0, 255, 255]),
+        ] {
+            let pixel = slide.pixel(column, 0).unwrap();
+            assert_eq!(
+                [pixel.r, pixel.g, pixel.b, pixel.a],
+                expected,
+                "slide column {column}"
+            );
+        }
     }
 
     #[test]

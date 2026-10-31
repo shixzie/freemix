@@ -535,6 +535,7 @@ fn midi_value_cell(
     }
     if ui
         .add_enabled(bound.is_some(), Button::new(l.text(Msg::MidiUnbind)))
+        .hint(l.text(Msg::MidiUnbindHover), Msg::MidiReasonUnbound.en())
         .clicked()
     {
         midi.unbind_value(target);

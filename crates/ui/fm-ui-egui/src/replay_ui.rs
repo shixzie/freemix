@@ -901,6 +901,7 @@ fn draw_transition(
             .show_ui(ui, |ui| {
                 if ui
                     .selectable_label(current.is_cut(), l.text(Msg::TransitionCut))
+                    .on_hover_text(l.text(Msg::ReplayTransitionHover))
                     .clicked()
                     && !current.is_cut()
                 {
@@ -908,6 +909,7 @@ fn draw_transition(
                 }
                 if ui
                     .selectable_label(!current.is_cut(), l.text(Msg::TransitionFade))
+                    .on_hover_text(l.text(Msg::ReplayTransitionHover))
                     .clicked()
                     && current.is_cut()
                 {
@@ -1276,6 +1278,10 @@ fn draw_player(
                 for rate in [1_000, 2_000, 4_000, 8_000, 16_000] {
                     if ui
                         .selectable_label(shuttle_rate == rate, format!("{}x", rate / 1_000))
+                        .on_hover_text(l.format(
+                            Msg::ReplayShuttleRateHover,
+                            &[("rate", Arg::Count(u64::try_from(rate / 1_000).unwrap_or(1)))],
+                        ))
                         .clicked()
                     {
                         shuttle_rate = rate;

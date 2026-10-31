@@ -33,22 +33,22 @@ fn replay_preview_requests_round_trip_and_are_bounded() {
     let line = encode_line(&request).unwrap();
     assert_eq!(
         line,
-        "replay_preview_request\tprotocol=2.146\trequest_id=replay-preview-3\tinput=7\t\
+        "replay_preview_request\tprotocol=2.147\trequest_id=replay-preview-3\tinput=7\t\
          width=320\theight=180\n"
     );
     assert_eq!(encode_line(&decode_line(&line).unwrap()).unwrap(), line);
 
     for fields in [
         // Missing, zero, oversized, or non-canonical dimensions.
-        "replay_preview_request\tprotocol=2.146\trequest_id=p\tinput=7\theight=180",
-        "replay_preview_request\tprotocol=2.146\trequest_id=p\tinput=7\twidth=0\theight=180",
-        "replay_preview_request\tprotocol=2.146\trequest_id=p\tinput=7\twidth=641\theight=180",
-        "replay_preview_request\tprotocol=2.146\trequest_id=p\tinput=7\twidth=320\theight=361",
-        "replay_preview_request\tprotocol=2.146\trequest_id=p\tinput=7\twidth=0320\theight=180",
+        "replay_preview_request\tprotocol=2.147\trequest_id=p\tinput=7\theight=180",
+        "replay_preview_request\tprotocol=2.147\trequest_id=p\tinput=7\twidth=0\theight=180",
+        "replay_preview_request\tprotocol=2.147\trequest_id=p\tinput=7\twidth=641\theight=180",
+        "replay_preview_request\tprotocol=2.147\trequest_id=p\tinput=7\twidth=320\theight=361",
+        "replay_preview_request\tprotocol=2.147\trequest_id=p\tinput=7\twidth=0320\theight=180",
         // A blank or missing request id, and an old protocol.
-        "replay_preview_request\tprotocol=2.146\trequest_id=\tinput=7\twidth=320\theight=180",
+        "replay_preview_request\tprotocol=2.147\trequest_id=\tinput=7\twidth=320\theight=180",
         // An unknown field.
-        "replay_preview_request\tprotocol=2.146\trequest_id=p\tinput=7\twidth=320\theight=180\tx=1",
+        "replay_preview_request\tprotocol=2.147\trequest_id=p\tinput=7\twidth=320\theight=180\tx=1",
     ] {
         assert!(decode_line(&format!("{fields}\n")).is_err(), "{fields}");
     }

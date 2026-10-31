@@ -1960,7 +1960,7 @@ pub enum ScriptCommand {
     /// Stops the runs paused at a wait in `runs`, or clears their failed
     /// runs' reports; with no run, stops every run and clears every report
     /// (`script_stop`, Protocol 2.62; `--run` since 2.69; a selection since
-    /// 2.146). `--run` may repeat or take a comma-separated list.
+    /// 2.147). `--run` may repeat or take a comma-separated list.
     Stop {
         runs: Vec<u64>,
     },
@@ -7246,7 +7246,7 @@ fn threshold(field: &'static str, value: String) -> Result<f64, ArgsError> {
 
 /// `remote-alert-rule <address> <rule> [--on|--off] [--severity <severity>]
 /// [--fires-at <value>] [--clears-at <value>] [--hold <seconds>] | --defaults
-/// [--key <key>] [--expect <revision>]` (RC-015, Protocol 2.146).
+/// [--key <key>] [--expect <revision>]` (RC-015, Protocol 2.147).
 fn parse_remote_alert_rule(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<Command, ArgsError> {

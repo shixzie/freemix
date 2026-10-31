@@ -14,7 +14,7 @@
 //! | [`crate::CommandPayload::SetScript`] | `script_set` | `script` (nonzero), `name`, `source` (lowercase hex of its UTF-8 bytes), optional `position` (2.79, below `MAX_SCRIPTS`) |
 //! | [`crate::CommandPayload::RemoveScript`] | `script_remove` | `script` |
 //! | [`crate::CommandPayload::RunScript`] | `script_run` | `script` |
-//! | [`crate::CommandPayload::StopScript`] | `script_stop` | optional `runs` (Protocol 2.62; `run` since 2.69; a selection since 2.146) |
+//! | [`crate::CommandPayload::StopScript`] | `script_stop` | optional `runs` (Protocol 2.62; `run` since 2.69; a selection since 2.147) |
 //! | [`crate::EventPayload::ScriptChanged`] | `script_changed` | `script`, `name`, `source` |
 //! | [`crate::EventPayload::ScriptRemoved`] | `script_removed` | `script` |
 //! | [`crate::EventPayload::ScriptRan`] | `script_ran` | `script`, `frame`, `actions`, `instructions`, `run` (Protocol 2.62), and the desired show state of `cue_run_changed` |

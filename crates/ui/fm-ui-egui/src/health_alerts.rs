@@ -206,7 +206,8 @@ fn draw_setting(
             .selected_text(l.text(severity_label(severity)))
             .show_ui(ui, |ui| {
                 for choice in AlertSeverity::ALL {
-                    ui.selectable_value(&mut severity, choice, l.text(severity_label(choice)));
+                    ui.selectable_value(&mut severity, choice, l.text(severity_label(choice)))
+                        .on_hover_text(l.text(Msg::HealthRuleSeverityHover));
                 }
             });
         picker

@@ -9813,9 +9813,19 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::StFadeHover,
         t("Cada diapositiva se funde sobre la anterior"),
     ),
+    (Msg::StWipe, t("BARRIDO AL SIGUIENTE")),
+    (
+        Msg::StWipeHover,
+        t("Cada diapositiva entra barriendo desde la izquierda sobre la anterior"),
+    ),
+    (Msg::StSlide, t("DESLIZAR AL SIGUIENTE")),
+    (
+        Msg::StSlideHover,
+        t("Cada diapositiva empuja la anterior fuera por la izquierda"),
+    ),
     (
         Msg::StFadeSecondsHover,
-        t("Cuánto dura el fundido entre diapositivas, en segundos"),
+        t("Cuánto dura la transición entre diapositivas, en segundos"),
     ),
     (Msg::StKenBurns, t("Ken Burns")),
     (

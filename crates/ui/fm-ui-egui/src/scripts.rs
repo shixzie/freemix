@@ -72,7 +72,7 @@ pub enum ScriptIntent {
     /// Stops the runs in `runs` paused at a wait, or clears their failed
     /// runs' reports; with no run, stops every run and clears every report
     /// (`script_stop`, Protocol 2.62; per run since 2.69; a selection since
-    /// 2.146): an operator control, not undoable.
+    /// 2.147): an operator control, not undoable.
     Stop { runs: Vec<u64> },
 }
 

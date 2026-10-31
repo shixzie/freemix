@@ -1896,7 +1896,7 @@ pub enum CommandPayload {
         script: u64,
     },
     /// Ends the waiting script runs in `runs`, or clears their faults
-    /// (Protocol 2.62; a selection since 2.146); with no run, ends every
+    /// (Protocol 2.62; a selection since 2.147); with no run, ends every
     /// waiting run and clears every fault (Protocol 2.69). Wire payload
     /// `script_stop`, optional ascending nonzero `runs` (comma separated).
     StopScript {

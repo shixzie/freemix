@@ -130,7 +130,7 @@ pub(crate) struct SlideshowDraft {
     /// One picture per line, `path | caption` for a caption.
     pub(crate) pictures: String,
     pub(crate) slide_seconds: f64,
-    pub(crate) fade: bool,
+    pub(crate) transition: SlideTransitionStyle,
     pub(crate) fade_seconds: f64,
     pub(crate) ken_burns: bool,
     pub(crate) random: bool,
@@ -154,7 +154,7 @@ impl SlideshowDraft {
             folder: String::new(),
             pictures: String::new(),
             slide_seconds: 5.0,
-            fade: true,
+            transition: SlideTransitionStyle::Fade,
             fade_seconds: 1.0,
             ken_burns: false,
             random: false,
@@ -248,11 +248,7 @@ impl SlideshowDraft {
             slide_frames: self
                 .frames(self.slide_seconds)
                 .min(fm_types::still::MAX_SLIDE_FRAMES),
-            transition: if self.fade {
-                SlideTransitionStyle::Fade
-            } else {
-                SlideTransitionStyle::Cut
-            },
+            transition: self.transition,
             transition_frames: self
                 .frames(self.fade_seconds)
                 .min(fm_types::still::MAX_SLIDE_TRANSITION_FRAMES),
@@ -449,24 +445,26 @@ pub(crate) fn draw_slideshow_form(ui: &mut Ui, l: Locale, draft: &mut SlideshowD
         )
         .on_hover_text(l.text(Msg::StSlideSecondsHover));
     });
-    // The transition keys on their own row, the fade length beside FADE
-    // TO NEXT, so the length never wraps away from the key it belongs to.
+    // The transition keys on their own row, the length beside them, so the
+    // length never wraps away from the key it belongs to.
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::Vec2::new(6.0, 6.0);
-        for (fade, label, hover) in [
-            (false, Msg::StCut, Msg::StCutHover),
-            (true, Msg::StFade, Msg::StFadeHover),
+        for (transition, label, hover) in [
+            (SlideTransitionStyle::Cut, Msg::StCut, Msg::StCutHover),
+            (SlideTransitionStyle::Fade, Msg::StFade, Msg::StFadeHover),
+            (SlideTransitionStyle::Wipe, Msg::StWipe, Msg::StWipeHover),
+            (SlideTransitionStyle::Slide, Msg::StSlide, Msg::StSlideHover),
         ] {
-            let selected = draft.fade == fade;
+            let selected = draft.transition == transition;
             if ui
                 .add(kind_key(l.text(label), selected))
                 .on_hover_text(l.text(hover))
                 .clicked()
             {
-                draft.fade = fade;
+                draft.transition = transition;
             }
         }
-        if draft.fade {
+        if draft.transition != SlideTransitionStyle::Cut {
             ui.add(
                 egui::DragValue::new(&mut draft.fade_seconds)
                     .range(0.1..=MAX_FADE_SECONDS)

@@ -166,17 +166,25 @@ pub enum SlideTransitionStyle {
     /// The two slides cross-fade over the transition frames.
     #[default]
     Fade,
+    /// A vertical edge sweeps the incoming slide in from the left over the
+    /// outgoing one.
+    Wipe,
+    /// The incoming slide enters from the right and pushes the outgoing one
+    /// off the left edge.
+    Slide,
 }
 
 impl SlideTransitionStyle {
-    pub const ALL: [Self; 2] = [Self::Cut, Self::Fade];
+    pub const ALL: [Self; 4] = [Self::Cut, Self::Fade, Self::Wipe, Self::Slide];
 
-    /// `cut` or `fade`.
+    /// `cut`, `fade`, `wipe`, or `slide`.
     #[must_use]
     pub const fn token(self) -> &'static str {
         match self {
             Self::Cut => "cut",
             Self::Fade => "fade",
+            Self::Wipe => "wipe",
+            Self::Slide => "slide",
         }
     }
 
@@ -354,7 +362,9 @@ impl SlideshowConfig {
     pub const fn effective_transition_frames(&self) -> u32 {
         match self.transition {
             SlideTransitionStyle::Cut => 0,
-            SlideTransitionStyle::Fade => self.transition_frames,
+            SlideTransitionStyle::Fade
+            | SlideTransitionStyle::Wipe
+            | SlideTransitionStyle::Slide => self.transition_frames,
         }
     }
 }
@@ -567,6 +577,16 @@ mod tests {
         let mut cut = folder;
         cut.transition = SlideTransitionStyle::Cut;
         assert_eq!(cut.effective_transition_frames(), 0);
+        for style in SlideTransitionStyle::ALL {
+            assert_eq!(SlideTransitionStyle::from_token(style.token()), Some(style));
+        }
+        assert_eq!(SlideTransitionStyle::from_token("spin"), None);
+        let mut wipe = cut.clone();
+        wipe.transition = SlideTransitionStyle::Wipe;
+        assert_eq!(wipe.effective_transition_frames(), wipe.transition_frames);
+        let mut slide = cut;
+        slide.transition = SlideTransitionStyle::Slide;
+        assert_eq!(slide.effective_transition_frames(), slide.transition_frames);
     }
 
     #[test]

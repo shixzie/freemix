@@ -1796,7 +1796,7 @@ fn still_scenes(locale: Locale) -> Vec<Scene> {
                 draft.kind = NewInputKind::Slideshow;
                 draft.slideshow.folder_mode = false;
                 draft.slideshow.pictures = "/photos/one.jpg\nclip.mov".into();
-                draft.slideshow.fade = false;
+                draft.slideshow.transition = fm_protocol::SlideTransitionStyle::Cut;
             }),
             operator.clone(),
         ),

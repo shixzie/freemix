@@ -124,7 +124,7 @@ pub(super) fn state_count_is_valid(count: u16) -> bool {
     usize::from(count) <= MAX_SCRIPTS
 }
 
-/// Encodes the `runs` field of `script_stop` (Protocol 2.146): 1 to
+/// Encodes the `runs` field of `script_stop` (Protocol 2.147): 1 to
 /// [`MAX_SCRIPT_RUNS`] nonzero ids, ascending, comma separated. An empty
 /// list names every run and writes no field.
 pub(super) fn encode_run_list(runs: &[u64]) -> Result<String, CodecError> {

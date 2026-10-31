@@ -157,7 +157,7 @@ fn image_and_slideshow_adds_encode_exactly_and_strictly() {
     for settings in [
         // No frames, an unknown transition, a zero fade, an unknown order.
         LIST.replacen("125", "0", 1),
-        LIST.replacen("fade", "wipe", 1),
+        LIST.replacen("fade", "spin", 1),
         LIST.replacen("%7E12%7E", "%7E0%7E", 1),
         LIST.replacen("random.7", "shuffle", 1),
         // A length prefix that does not match its text.

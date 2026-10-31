@@ -7472,11 +7472,15 @@ fn project_texture<'a>(
 
 /// One slide a slideshow source composes (IN-009): an uploaded picture,
 /// the part of it shown as `[x, y, width, height]` fractions (Ken Burns),
-/// and its opacity.
+/// its opacity, the horizontal destination offset as a fraction of the
+/// frame (a slide transition), and the fraction of the cropped width visible
+/// from its left edge (a wipe).
 pub struct NativeSlideLayer<'a> {
     pub frame: &'a NativeWorkingFrame,
     pub crop: [f64; 4],
     pub opacity: u8,
+    pub offset_fraction: f64,
+    pub visible: f64,
 }
 
 /// The pixel crop `fractions` select of a `width`x`height` picture, at least
@@ -8417,14 +8421,33 @@ impl NativeMediaRuntime {
         let full_frame = Transform::new(0, 0, width, height, CompositorRotation::Deg0);
         let mut sources = Vec::with_capacity(layers.len());
         for (index, layer) in layers.iter().enumerate() {
+            if layer.visible <= 0.0 {
+                continue;
+            }
             let source = SourceId::new(
                 u64::try_from(index + 1).map_err(|_| NativeSourceRenderError::ResourceBounds)?,
             );
             let z = i32::try_from(index).map_err(|_| NativeSourceRenderError::ResourceBounds)?;
             let texture = layer.frame.texture();
-            let crop = slide_crop(layer.crop, texture.width(), texture.height());
+            let visible = layer.visible.clamp(0.0, 1.0);
+            let mut fractions = layer.crop;
+            fractions[2] *= visible;
+            let crop = slide_crop(fractions, texture.width(), texture.height());
+            let layer_width = (f64::from(width) * visible).round() as u32;
+            let offset = (layer.offset_fraction * f64::from(width)).round() as i32;
+            let transform = if (visible - 1.0).abs() < f64::EPSILON && offset == 0 {
+                full_frame
+            } else {
+                Transform::new(
+                    offset,
+                    0,
+                    layer_width.max(1),
+                    height,
+                    CompositorRotation::Deg0,
+                )
+            };
             scene.push_layer(
-                SourceLayer::new(source, z, full_frame)
+                SourceLayer::new(source, z, transform)
                     .with_crop(crop)
                     .with_opacity(layer.opacity),
             );

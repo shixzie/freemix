@@ -18,6 +18,7 @@ use std::thread;
 use fm_color::NativeWorkingFrame;
 use fm_engine::{EngineMediaFault, EngineSlideCrop, EngineSlideshowFrame};
 use fm_frame::CpuVideoFrame;
+use fm_types::still::SlideTransitionStyle;
 use fm_types::{InputId, OutputScaling, VideoDimensions};
 use freemixd::native_media::{
     NativeMediaRuntime, NativeSlideLayer, NativeSourcePlayback, NativeSourceRenderError,
@@ -55,6 +56,7 @@ struct Presented {
     incoming: Option<(SlideKey, EngineSlideCrop)>,
     outgoing: Option<(SlideKey, EngineSlideCrop)>,
     mix: u16,
+    transition: SlideTransitionStyle,
 }
 
 /// Every slideshow source's uploaded slides; see the module documentation.
@@ -117,6 +119,7 @@ impl NativeSlides {
                 incoming: frame.incoming.as_ref().map(key),
                 outgoing: frame.outgoing.as_ref().map(key),
                 mix: frame.mix_basis_points,
+                transition: frame.transition,
             };
             wanted.extend(next.incoming.iter().map(|(key, _)| key.clone()));
             wanted.extend(next.outgoing.iter().map(|(key, _)| key.clone()));
@@ -176,23 +179,43 @@ impl NativeSlides {
                 != next.incoming.as_ref().map(|(key, _)| key)
         });
         let mut layers = Vec::with_capacity(2);
+        let progress = f64::from(next.mix.min(10_000)) / 10_000.0;
+        let has_outgoing = outgoing.is_some();
         if let Some((index, crop)) = outgoing {
+            let (offset_fraction, visible) = match next.transition {
+                SlideTransitionStyle::Slide => (-progress, 1.0),
+                SlideTransitionStyle::Cut
+                | SlideTransitionStyle::Fade
+                | SlideTransitionStyle::Wipe => (0.0, 1.0),
+            };
             layers.push(NativeSlideLayer {
                 frame: &self.uploaded[index].frame,
                 crop: crop.fractions(),
                 opacity: u8::MAX,
+                offset_fraction,
+                visible,
             });
         }
         if let Some((index, crop)) = incoming {
-            let opacity = if outgoing.is_some() {
-                opacity_of(next.mix)
-            } else {
-                u8::MAX
+            let (offset_fraction, visible, opacity) = match next.transition {
+                SlideTransitionStyle::Cut | SlideTransitionStyle::Fade => (
+                    0.0,
+                    1.0,
+                    if has_outgoing {
+                        opacity_of(next.mix)
+                    } else {
+                        u8::MAX
+                    },
+                ),
+                SlideTransitionStyle::Wipe => (0.0, progress, u8::MAX),
+                SlideTransitionStyle::Slide => (1.0 - progress, 1.0, u8::MAX),
             };
             layers.push(NativeSlideLayer {
                 frame: &self.uploaded[index].frame,
                 crop: crop.fractions(),
                 opacity,
+                offset_fraction,
+                visible,
             });
         }
         let picture = incoming

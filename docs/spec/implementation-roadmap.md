@@ -5273,7 +5273,8 @@ Current implementation boundary for still image and slideshow inputs
 - An image input names one picture asset and a fit. A slideshow names an
   asset folder (every picture file directly inside it, in natural name
   order, at most 10,000) or an explicit list of up to 64 pictures with
-  optional captions, a per-slide hold in frames, a cut or a fade, Ken Burns,
+  optional captions, a per-slide hold in frames, a cut, fade, wipe, or
+  slide, Ken Burns,
   ordered or seeded-random order, loop, and auto-advance; a show holds at
   most 8 slideshows. Both persist exactly (schema 63), are undoable adds,
   replaceable sources, and duplicable.
@@ -5323,8 +5324,6 @@ Remaining gaps:
   (read through the paged page worker) but still has no native file or
   folder dialog;
 - captions are metadata and labels only; nothing draws them on the picture;
-- only cut and fade transitions exist; OSC and scripts cannot step slides
-  (console keys bound to Next slide and Previous slide can);
 - a host folder is copied once, so live edits follow the project's copy,
   not the original folder; there is no filesystem watch, only a 2 s rescan;
 - portable bundle export copies a slideshow folder's pictures, the asset

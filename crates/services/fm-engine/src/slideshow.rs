@@ -37,8 +37,8 @@ use fm_playback::{
 use fm_types::InputId;
 use fm_types::paged::PagedNavigation;
 use fm_types::still::{
-    MAX_SLIDE_CAPTION_BYTES, MAX_SLIDESHOW_SLIDES, SlideOrder, SlideshowConfig, SlideshowPage,
-    SlideshowSource, bound_slide_label, slideshow_target,
+    MAX_SLIDE_CAPTION_BYTES, MAX_SLIDESHOW_SLIDES, SlideOrder, SlideTransitionStyle,
+    SlideshowConfig, SlideshowPage, SlideshowSource, bound_slide_label, slideshow_target,
 };
 
 use crate::ShowState;
@@ -154,6 +154,8 @@ pub struct EngineSlideshowFrame {
     pub outgoing: Option<EngineSlideView>,
     /// The incoming slide's weight in basis points (10 000 on a hold).
     pub mix_basis_points: u16,
+    /// The transition bringing the incoming slide in.
+    pub transition: SlideTransitionStyle,
     pub page: SlideshowPage,
     /// The incoming slide's label; empty without slides.
     pub label: String,
@@ -459,6 +461,7 @@ impl SlideshowRuntime {
             incoming,
             outgoing,
             mix_basis_points: mix,
+            transition: config.transition,
             page,
             label,
             generation: self.generation,
