@@ -345,6 +345,38 @@ struct ComposedScene {
     image: Option<Arc<ImageFrame>>,
 }
 
+/// Scene leaf sources the simulated monitor draws: the simulated pipeline's
+/// own inputs and document inputs, whose current page is a straight-alpha
+/// picture transparent outside the page (IN-014).
+struct MonitorSceneSources<'a> {
+    pipeline: &'a SimulatedPipeline,
+    documents: &'a DocumentPages,
+    project: &'a Project,
+}
+
+impl scene_render::SceneSources for MonitorSceneSources<'_> {
+    fn draws(&self, input: &fm_model::Input) -> bool {
+        self.pipeline.draws(input) || self.project.document(input.id).is_some()
+    }
+
+    fn leaf(
+        &self,
+        input: &fm_model::Input,
+        frame_number: u64,
+        width: u32,
+        height: u32,
+    ) -> Option<ImageFrame> {
+        if let Some(document) = self.project.document(input.id) {
+            let page = self
+                .documents
+                .render(&document.asset_uri, document.page, width, height)?;
+            let stride = usize::try_from(page.width).ok()?.checked_mul(4)?;
+            return ImageFrame::new(page.width, page.height, stride, page.pixels.clone()).ok();
+        }
+        self.pipeline.leaf(input, frame_number, width, height)
+    }
+}
+
 /// One title input's most recent render at the fitted monitor size.
 struct RenderedTitle {
     key: TitleKey,
@@ -667,10 +699,16 @@ impl SimulatedMonitorTap {
             .pipeline
             .as_ref()
             .and_then(|pipeline| {
-                scene_render::render_scene(
+                let sources = MonitorSceneSources {
+                    pipeline,
+                    documents: &self.documents,
+                    project,
+                };
+                scene_render::render_scene_with_sources(
                     project,
                     input,
-                    pipeline,
+                    &sources,
+                    (pipeline.width(), pipeline.height()),
                     state.frame,
                     state.scene_pose(input),
                     &self.grades,

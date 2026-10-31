@@ -125,6 +125,29 @@ pub fn render_scene(
     pose: ClipState,
     grades: &CompiledProjectGrades,
 ) -> Option<ImageFrame> {
+    render_scene_with_sources(
+        project,
+        input,
+        pipeline,
+        (pipeline.width(), pipeline.height()),
+        frame_number,
+        pose,
+        grades,
+    )
+}
+
+/// [`render_scene`] with `sources` drawing its leaves at `(width, height)`
+/// (the composition grid): the monitor tap's own adapter also draws
+/// document inputs, which the simulated pipeline cannot.
+pub fn render_scene_with_sources(
+    project: &Project,
+    input: InputId,
+    sources: &dyn SceneSources,
+    (width, height): (u32, u32),
+    frame_number: u64,
+    pose: ClipState,
+    grades: &CompiledProjectGrades,
+) -> Option<ImageFrame> {
     let scene = scene_of_input(project, input)?;
     let model = project
         .scenes()
@@ -133,8 +156,8 @@ pub fn render_scene(
     render_scene_model(
         project,
         model,
-        pipeline,
-        (pipeline.width(), pipeline.height()),
+        sources,
+        (width, height),
         frame_number,
         pose,
         Some(grades),
