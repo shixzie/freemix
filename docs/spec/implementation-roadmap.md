@@ -4747,9 +4747,11 @@ wildcard host allow/deny rules where deny wins, and validates bounded redirect
 chains against loops, HTTPS downgrades, and `file:` targets. Custom CSS is
 accepted only after a lexical scan rejects style breakout, imports, escapes
 outside strings, unsafe functions, and excess external `url()` references,
-which are returned for policy checks. Remaining gaps: no real browser engine,
+which are returned for policy checks. The fake renderer's fixtures may declare
+in-page fetches (`data-fetch`), and navigation refuses a page whose fetches
+the policy would block. Remaining gaps: no real browser engine,
 DNS, or sockets; the fake renderer still navigates through the older policy;
-in-page fetches are not policed; and browser audio, HTML5 media, on-disk
+and browser audio, HTML5 media, on-disk
 profile isolation, refresh-on-activate, and zoomed input translation remain
 contracts or fakes. `IN-013` remains planned.
 

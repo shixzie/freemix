@@ -17,6 +17,8 @@ use crate::{
 
 const DEFAULT_FRAME_DURATION_NANOS: u64 = 33_333_333;
 const DEFAULT_SAMPLE_RATE: u32 = 48_000;
+/// Most in-page fetch URLs one fixture may declare.
+pub const MAX_PAGE_FETCHES: usize = 64;
 
 /// A tiny HTML-like fixture. `data-color="#RRGGBB[AA]"` selects a solid
 /// frame, while `data-audio="0.0,0.5,-0.5"` supplies a repeating mono waveform.
@@ -30,6 +32,9 @@ pub struct HtmlFixture {
     requests: usize,
     response_bytes: usize,
     redirects: usize,
+    /// In-page fetch URLs the fixture declares; the renderer checks each
+    /// against the navigation policy before the page can load.
+    fetches: Vec<String>,
 }
 
 impl HtmlFixture {
@@ -62,6 +67,19 @@ impl HtmlFixture {
                 "data-sample-rate must be a positive u32".to_owned(),
             ));
         }
+        let fetches = attribute(&html, "data-fetch")
+            .map(|value| {
+                value
+                    .split_whitespace()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if fetches.len() > MAX_PAGE_FETCHES {
+            return Err(BrowserError::InvalidFixture(format!(
+                "data-fetch declares at most {MAX_PAGE_FETCHES} URLs"
+            )));
+        }
         let response_bytes = html.len();
         Ok(Self {
             html,
@@ -72,12 +90,19 @@ impl HtmlFixture {
             requests: 1,
             response_bytes,
             redirects: 0,
+            fetches,
         })
     }
 
     #[must_use]
     pub fn html(&self) -> &str {
         &self.html
+    }
+
+    /// The in-page fetch URLs the fixture declares.
+    #[must_use]
+    pub fn fetches(&self) -> &[String] {
+        &self.fetches
     }
 
     #[must_use]
@@ -412,10 +437,16 @@ impl BrowserRenderer for FakeRenderer {
             .fixtures
             .get(url)
             .ok_or_else(|| BrowserError::UnknownFixture(url.to_owned()))?;
+        // Subresources the page fetches are held to the same policy as the
+        // document, so a page cannot reach a scheme or host navigation could
+        // not.
+        for fetch in &fixture.fetches {
+            self.policy.check(fetch)?;
+        }
         let mut budget = NetworkBudget::default();
         budget.consume(
             self.network_limits,
-            fixture.requests,
+            fixture.requests.saturating_add(fixture.fetches.len()),
             fixture.response_bytes,
             fixture.redirects,
         )?;

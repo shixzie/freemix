@@ -4,8 +4,9 @@ use fm_browser_input::fake::{FakeRenderer, HtmlFixture};
 use fm_browser_input::{
     BrowserError, BrowserId, BrowserLimits, BrowserRenderer, ChildLifecycle, ClockDomainId,
     CrashDisposition, InteractionIntent, InteractionKind, InteractionMode, KeyState,
-    NavigationBlockReason, NavigationGrant, NavigationPolicy, NetworkLimitError, NetworkLimits,
-    ProfileId, RestartError, RestartPolicy, SurfaceConfig, SurfaceId, VideoDimensions, Zoom,
+    NavigationBlockReason, NavigationBlocked, NavigationGrant, NavigationPolicy, NetworkLimitError,
+    NetworkLimits, ProfileId, RestartError, RestartPolicy, SurfaceConfig, SurfaceId,
+    VideoDimensions, Zoom,
 };
 
 fn nonzero(value: u128) -> NonZeroU128 {
@@ -90,6 +91,31 @@ fn navigation_blocks_file_ssrf_and_unsupported_schemes_by_default() {
     granted.grant(NavigationGrant::PrivateNetwork);
     granted.check("http://10.0.0.1/").unwrap();
     granted.check("ftp://example.com/file").unwrap();
+}
+
+#[test]
+fn in_page_fetches_are_held_to_the_navigation_policy() {
+    let mut renderer = configured_renderer(config());
+    renderer
+        .register_fixture(
+            "https://example.com/page",
+            HtmlFixture::new(r#"<main data-fetch="file:///tmp/secret.html"></main>"#).unwrap(),
+        )
+        .unwrap();
+    // Without a file grant the page's own fetch is refused before it loads.
+    assert!(matches!(
+        renderer
+            .navigate(surface(1), "https://example.com/page")
+            .unwrap_err(),
+        BrowserError::Navigation(NavigationBlocked {
+            reason: NavigationBlockReason::FileAccess,
+            ..
+        })
+    ));
+    renderer.policy_mut().grant(NavigationGrant::File);
+    renderer
+        .navigate(surface(1), "https://example.com/page")
+        .unwrap();
 }
 
 #[test]
