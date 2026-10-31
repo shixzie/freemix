@@ -15,6 +15,8 @@ use std::collections::BTreeSet;
 use std::fs::{self, File};
 #[cfg(target_os = "linux")]
 use std::io::Read;
+#[cfg(target_os = "linux")]
+use std::path::Path;
 use std::path::PathBuf;
 #[cfg(target_os = "linux")]
 use std::sync::mpsc::SyncSender;
@@ -151,8 +153,7 @@ fn scan(
                 }
                 let path = entry.path();
                 let name = fs::read_to_string(format!("/sys/class/input/{file_name}/device/name"))
-                    .map(|name| name.trim().to_owned())
-                    .unwrap_or_else(|_| file_name.to_owned());
+                    .map_or_else(|_| file_name.to_owned(), |name| name.trim().to_owned());
                 if !is_panel(&name) {
                     continue;
                 }
@@ -165,7 +166,7 @@ fn scan(
                 let repaint = repaint.clone();
                 let _ = thread::Builder::new()
                     .name(format!("freemix-hid-{file_name}"))
-                    .spawn(move || read_panel(path, name, &events, &stop, &repaint));
+                    .spawn(move || read_panel(&path, &name, &events, &stop, &repaint));
             }
         }
         names.sort();
@@ -187,13 +188,13 @@ fn scan(
 
 #[cfg(target_os = "linux")]
 fn read_panel(
-    path: PathBuf,
-    name: String,
+    path: &Path,
+    name: &str,
     events: &SyncSender<HidEvent>,
     stop: &Arc<Mutex<bool>>,
     repaint: &egui::Context,
 ) {
-    let Ok(mut file) = File::open(&path) else {
+    let Ok(mut file) = File::open(path) else {
         return;
     };
     let type_offset = EVENT_BYTES - 8;
@@ -217,7 +218,7 @@ fn read_panel(
         if value != 0 && value != 1 {
             continue;
         }
-        let Some(trigger) = HidTrigger::new(name.clone(), code) else {
+        let Some(trigger) = HidTrigger::new(name.to_owned(), code) else {
             continue;
         };
         if events
