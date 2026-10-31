@@ -11,6 +11,7 @@ mod fake;
 mod queue;
 mod visca;
 mod visca_ip;
+mod visca_ip_transport;
 
 pub use adapter::{AdapterError, CommandOutcome, PtzAdapter};
 pub use control_mapping::{ControlVector, MouseDragMapping, ResponseCurve, SpeedMapping};
@@ -31,4 +32,9 @@ pub use visca::{
 pub use visca_ip::{
     VISCA_IP_HEADER_LEN, ViscaIpControl, ViscaIpError, ViscaIpPacket, ViscaIpPayloadType,
     ViscaIpSequencer,
+};
+pub use visca_ip_transport::{
+    DEFAULT_VISCA_ATTEMPTS, DEFAULT_VISCA_SEQUENCE_RESETS, DEFAULT_VISCA_TIMEOUT,
+    MAX_VISCA_IP_DATAGRAM, VISCA_IP_DEFAULT_PORT, ViscaUdpConfig, ViscaUdpCounters,
+    ViscaUdpError, ViscaUdpTransport,
 };

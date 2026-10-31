@@ -5541,8 +5541,12 @@ commands, inquiries, and replies for pan/tilt, zoom, focus, presets, and
 system control with explicit range errors, translates each PTZ intent into a
 complete drive set so zero components stop prior motion, frames VISCA-over-IP
 payloads and control messages with a wrapping sequencer, and maps joystick and
-mouse input to axis speeds through deadzones and response curves. Remaining
-gaps: no serial or UDP transport, retransmit, timeout, or reply correlation,
+mouse input to axis speeds through deadzones and response curves.
+`ViscaUdpTransport` now provides a connected UDP path with bounded
+retransmission, per-attempt timeouts, reply correlation by sequence, and
+recovery from an abnormal-sequence control reply, with counters. Remaining
+gaps: no serial transport and nothing binds the UDP transport to a camera
+adapter yet,
 no camera adapter or hardware validation, presets are not yet switchable
 virtual inputs with thumbnails, no HID or UI binding, and no ONVIF, Panasonic, or
 digital PTZ. `IN-028` remains planned.
