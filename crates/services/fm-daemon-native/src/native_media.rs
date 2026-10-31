@@ -1915,8 +1915,10 @@ pub struct NativeSourceLimits {
 
 impl NativeSourceLimits {
     pub const DEFAULT_MAX_MEDIA_INPUTS: usize = 64;
-    pub const DEFAULT_MAX_VIDEO_FRAMES_PER_SOURCE: NonZeroU32 =
-        NonZeroU32::new(8).expect("eight is nonzero");
+    pub const DEFAULT_MAX_VIDEO_FRAMES_PER_SOURCE: NonZeroU32 = match NonZeroU32::new(8) {
+        Some(frames) => frames,
+        None => NonZeroU32::MIN,
+    };
     pub const DEFAULT_MAX_RETAINED_RGBA16F_BYTES: u64 = 512 * 1024 * 1024;
 }
 
@@ -2766,8 +2768,8 @@ pub struct NativeAudioLimits {
 impl Default for NativeAudioLimits {
     fn default() -> Self {
         Self {
-            max_blocks_per_source: NonZeroU32::new(32).expect("32 is nonzero"),
-            max_blocks_per_page: NonZeroU32::new(16).expect("16 is nonzero"),
+            max_blocks_per_source: NonZeroU32::new(32).unwrap_or(NonZeroU32::MIN),
+            max_blocks_per_page: NonZeroU32::new(16).unwrap_or(NonZeroU32::MIN),
             max_samples_per_page: 64 * 1024,
             max_retained_blocks: 1024,
             max_retained_samples: 1024 * 1024,
@@ -4471,6 +4473,7 @@ impl NativeMasterRuntime {
     ///
     /// Returns a missing-route or mixer resource-bound failure without changing
     /// any mixer.
+    #[allow(clippy::too_many_lines)] // one arm per realized mixer change
     pub fn apply_audio_mixer_update(
         &mut self,
         update: &fm_engine::EngineAudioMixerUpdate,
@@ -6591,9 +6594,15 @@ fn native_input_state(
 
 /// A bounded millidB fader as a mixer gain.
 fn native_gain(milli_db: i32) -> Result<fm_audio::Gain, NativeMasterError> {
-    let whole_db = i16::try_from(milli_db / 1_000).expect("persisted gain is bounded");
-    let fractional_milli_db =
-        i16::try_from(milli_db % 1_000).expect("persisted gain remainder fits i16");
+    // The model bounds every fader well inside `i16` decibels; a value
+    // outside it clamps rather than panicking.
+    let whole_db =
+        i16::try_from(milli_db / 1_000).unwrap_or(if milli_db < 0 { i16::MIN } else { i16::MAX });
+    let fractional_milli_db = i16::try_from(milli_db % 1_000).unwrap_or(if milli_db % 1_000 < 0 {
+        i16::MIN
+    } else {
+        i16::MAX
+    });
     Ok(fm_audio::Gain::from_db(
         f32::from(whole_db) + f32::from(fractional_milli_db) / 1_000.0,
     )?)
@@ -6614,7 +6623,9 @@ const fn native_solo_mode(mode: fm_model::AudioSoloMode) -> SoloMode {
 
 /// The mixer bus for aux bus `bus` (AU-002).
 fn native_aux_bus(bus: fm_model::AuxBusNumber) -> MixBus {
-    MixBus::from_index(usize::from(bus.get())).expect("aux buses A-G are mixer buses 1-7")
+    // Aux buses are A-G, mixer buses 1-7; Master (0) is the fallback for a
+    // value the model cannot produce.
+    MixBus::from_index(usize::from(bus.get())).unwrap_or(MixBus::Master)
 }
 
 /// Routes `input`'s strip to Master and each aux bus as its sends say, with
@@ -6796,11 +6807,10 @@ fn apply_fade_to_black_audio(planes: &mut [Vec<f32>], samples: usize, frame: Fad
             / denominator;
     let end = f64::from(frame.interval_end().denominator() - frame.interval_end().numerator())
         / f64::from(frame.interval_end().denominator());
-    let steps = f64::from(u32::try_from(samples).expect("native audio sample count is bounded"));
+    let steps = f64::from(u32::try_from(samples).unwrap_or(u32::MAX));
     for plane in planes {
         for (sample, value) in plane[..samples].iter_mut().enumerate() {
-            let step =
-                f64::from(u32::try_from(sample + 1).expect("native audio sample count is bounded"));
+            let step = f64::from(u32::try_from(sample + 1).unwrap_or(u32::MAX));
             let gain = start + (end - start) * (step / steps);
             *value *= gain as f32;
         }
@@ -7163,11 +7173,13 @@ fn validate_timing_values(
                 .ok_or(NativeSourceError::InvalidTimeline { input })?;
         }
     }
-    Ok((
-        offsets,
-        previous_pts.expect("nonempty timestamps"),
-        *sequences.last().expect("nonempty sequences"),
-    ))
+    let Some(last_pts) = previous_pts else {
+        return Err(NativeSourceError::InvalidTimeline { input });
+    };
+    let Some(&last_sequence) = sequences.last() else {
+        return Err(NativeSourceError::InvalidTimeline { input });
+    };
+    Ok((offsets, last_pts, last_sequence))
 }
 
 #[cfg(test)]

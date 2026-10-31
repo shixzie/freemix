@@ -5,6 +5,7 @@
 
 // Public only so the daemon binary can use these items; this crate is not a
 // stable API surface.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![allow(
     clippy::must_use_candidate,
     clippy::missing_errors_doc,

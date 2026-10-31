@@ -529,6 +529,7 @@ fn apply_plugin_chain(
 
 /// Returns a rejection for an unknown input, an unusable label or name, or
 /// an out-of-range group level. The show is unchanged on error.
+#[allow(clippy::too_many_lines)] // one arm per mixer edit
 pub(crate) fn apply(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Result<(), Rejection> {
     match edit {
         EngineAudioMixerEdit::SetPluginChain { target, chain } => {
@@ -702,6 +703,7 @@ fn loudness_target(state: &ShowState, target: StripDspTarget) -> Result<(), Reje
 /// The exact edit that reverts project edit `edit` on `state`, or `None` for
 /// a live group level, solo, monitor level, or loudness reset, or an unknown
 /// input.
+#[allow(clippy::too_many_lines)] // one arm per mixer edit
 pub(crate) fn inverse(
     state: &ShowState,
     edit: &EngineAudioMixerEdit,

@@ -46,7 +46,7 @@ const MAX_CACHED_PICTURES: usize = 12;
 
 /// The clock domain a decoded still's (retained, timeless) frame carries.
 fn still_clock_domain() -> ClockDomainId {
-    ClockDomainId::new(NonZeroU128::new(1).expect("one is nonzero"))
+    ClockDomainId::new(NonZeroU128::MIN)
 }
 
 /// The timing of a retained still frame.
