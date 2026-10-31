@@ -333,6 +333,7 @@ pub(crate) fn start_native_screen_capture(
         native_clock_domain(),
         (dimensions.width(), dimensions.height()),
         settings.audio.sample_rate,
+        u16::try_from(settings.audio.channels.channels().len()).unwrap_or(2),
     );
     // A Wayland desktop shares the targets it granted before again.
     capture.set_restore_tokens(project.screen_capture_restore_tokens().clone());

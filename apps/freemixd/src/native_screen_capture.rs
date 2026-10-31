@@ -248,6 +248,8 @@ pub(crate) struct NativeScreenCapture {
     last_frame: Option<u64>,
     /// A Wayland desktop's portal captures, which replace the listing.
     portal: Option<crate::native_portal_capture::PortalSources>,
+    /// The project's audio channel count; capture audio is decoded to it.
+    channels: u16,
 }
 
 impl NativeScreenCapture {
@@ -259,6 +261,7 @@ impl NativeScreenCapture {
         clock_domain: ClockDomainId,
         dimensions: (u32, u32),
         sample_rate: SampleRate,
+        channels: u16,
     ) -> Self {
         let format = Format {
             rate,
@@ -283,6 +286,7 @@ impl NativeScreenCapture {
                 interval: LIST_INTERVAL,
                 last_frame: None,
                 portal: Some(portal),
+                channels,
             };
         }
         let mut capture = Self {
@@ -293,6 +297,7 @@ impl NativeScreenCapture {
             interval: LIST_INTERVAL,
             last_frame: None,
             portal: None,
+            channels,
         };
         for ScreenCaptureInput {
             input,
@@ -460,7 +465,7 @@ impl NativeScreenCapture {
                         self.format.rate,
                     );
                     config.sample_rate = self.format.sample_rate.hertz();
-                    config.channels = 2;
+                    config.channels = self.channels;
                     match NetworkReceiver::start(config) {
                         Ok(receiver) => {
                             source.receiver = Some(receiver);
@@ -918,6 +923,7 @@ mod tests {
             interval: Duration::from_millis(10),
             last_frame: None,
             portal: None,
+            channels: 2,
         };
         capture.sync(&[(input(), window_config())], |_| closed);
         capture

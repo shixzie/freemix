@@ -2932,7 +2932,8 @@ drift loop (AU-004, reported as a `screen_capture` live source). The input's
 status carries the audio state (`off`, `opening`, `live`, `no_stream` while
 the application plays no stream yet, `unsupported` with the reason, such as
 an OS version without per-application capture, and `failed`) and an
-`audio_error`.
+`audio_error`. The capture child decodes its audio to the project's channel
+layout (up to sixteen channels), not fixed stereo.
 
 - **Linux** (working and tested against a private PulseAudio 16 server):
   system audio is `ffmpeg -f pulse -i @DEFAULT_MONITOR@` as the capture
