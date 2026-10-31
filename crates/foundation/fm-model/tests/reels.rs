@@ -89,7 +89,7 @@ fn ids(project: &Project) -> Vec<u64> {
 
 #[test]
 fn reels_replace_remove_and_restore_in_order() {
-    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 101);
+    assert_eq!(CURRENT_SCHEMA_VERSION.get(), 102);
     let mut project = project();
     assert!(project.reels().is_empty());
     let second = reel(2, "Second", input(1));

@@ -224,7 +224,7 @@ fn reels_round_trip_exactly_and_strictly_in_project_json() {
     // The previous schema is refused outright; no migration path exists.
     fs::write(
         &manifest,
-        text.replacen("\"schema_version\": 101", "\"schema_version\": 89", 1),
+        text.replacen("\"schema_version\": 102", "\"schema_version\": 89", 1),
     )
     .unwrap();
     assert!(matches!(

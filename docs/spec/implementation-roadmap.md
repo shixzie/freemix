@@ -97,9 +97,10 @@ there come before any new breadth below.
    picture of the input up to 640x360 that Studio asks the server for
    (Protocol 2.97), which the CLI's remote auto key now asks for too
    (keeping the layer's matte refinement unless given new options). What
-   remains: key/fill is not tied to paired SDI/OMT fill and key inputs,
-   and mattes are not animatable (they feather since Protocol 2.115,
-   exactly alike on the GPU and the CPU reference).
+   remains: key/fill is not tied to paired SDI/OMT fill and key inputs, and
+   the matte's points animate as scene properties (Protocol 2.145, schema
+   102) only while the layer already has a matte with them (animation never
+   adds a point or changes the invert flag or feather).
 7. **Source clock drift on real devices and other OSes (`AU-004`).** Every
    live source the native daemon ingests (V4L2/ALSA capture, network
    streams, system audio) runs its audio through a drift-correcting
@@ -3080,8 +3081,11 @@ reference; key/fill is not tied to paired SDI or OMT fill and key inputs,
 and a Scene cannot be a key input; garbage mattes feather up to 64 pixels
 to each side (Protocol 2.115, schema 87: an 81-point integer grid per
 pixel, clamped to the layer, so the native compositor matches the CPU
-reference exactly, checked by `native_keys` on llvmpipe) but are not
-animatable; light wrap on a tilted layer
+reference exactly, checked by `native_keys` on llvmpipe), and their points
+animate as sixteen scene-layer properties (Protocol 2.145, schema 102: point
+1 x through point 8 y, normalized `0..=1000`, overriding the static
+coordinate; a track for a point the matte does not have, or one that would
+flatten the polygon, keeps the static matte); light wrap on a tilted layer
 matches the CPU reference only within the bilinear sampling difference.
 `SW-008` remains planned.
 

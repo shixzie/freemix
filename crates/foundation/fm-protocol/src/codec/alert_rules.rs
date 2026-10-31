@@ -1,4 +1,4 @@
-//! Alert rule settings codec (Protocol 2.144, RC-015).
+//! Alert rule settings codec (Protocol 2.145, RC-015).
 //!
 //! * `alert_rule_set` carries `rule` (a rule token), `enabled` (`0|1`),
 //!   `severity` (`info|warning|critical`), `trigger` and `clear` (the reading

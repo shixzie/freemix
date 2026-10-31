@@ -7245,7 +7245,7 @@ fn threshold(field: &'static str, value: String) -> Result<f64, ArgsError> {
 
 /// `remote-alert-rule <address> <rule> [--on|--off] [--severity <severity>]
 /// [--fires-at <value>] [--clears-at <value>] [--hold <seconds>] | --defaults
-/// [--key <key>] [--expect <revision>]` (RC-015, Protocol 2.144).
+/// [--key <key>] [--expect <revision>]` (RC-015, Protocol 2.145).
 fn parse_remote_alert_rule(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<Command, ArgsError> {

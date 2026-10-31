@@ -78,7 +78,7 @@ pub struct RecorderStatusSample {
     /// it (2.140). The output's parent directory is the measured path.
     pub free_bytes: Option<u64>,
     /// Estimated seconds of recording left at the slot's configured bitrate,
-    /// when the daemon samples its free space and knows the rate (2.144).
+    /// when the daemon samples its free space and knows the rate (2.145).
     pub remaining_seconds: Option<u64>,
 }
 

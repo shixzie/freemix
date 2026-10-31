@@ -314,7 +314,25 @@ impl ElementAnimation {
                 Property::CropTop => sampled.crop[1] = scalar.max(0),
                 Property::CropRight => sampled.crop[2] = scalar.max(0),
                 Property::CropBottom => sampled.crop[3] = scalar.max(0),
-                Property::Color => {}
+                // Title elements carry no garbage matte; only scene layers
+                // animate its points.
+                Property::Color
+                | Property::MattePoint1X
+                | Property::MattePoint1Y
+                | Property::MattePoint2X
+                | Property::MattePoint2Y
+                | Property::MattePoint3X
+                | Property::MattePoint3Y
+                | Property::MattePoint4X
+                | Property::MattePoint4Y
+                | Property::MattePoint5X
+                | Property::MattePoint5Y
+                | Property::MattePoint6X
+                | Property::MattePoint6Y
+                | Property::MattePoint7X
+                | Property::MattePoint7Y
+                | Property::MattePoint8X
+                | Property::MattePoint8Y => {}
             }
         }
         sampled

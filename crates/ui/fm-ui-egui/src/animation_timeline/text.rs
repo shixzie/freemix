@@ -5,7 +5,85 @@
 
 use fm_animation::{AnimationPreset, Easing, EasingPreset, Phase, Property, Value};
 use fm_ui_model::animation_editor::{AnimEditorError, AnimLimit, CurveControl, CurvePreset};
-use fm_ui_model::i18n::{Arg, Locale, Msg};
+use fm_ui_model::i18n::{Arg, Language, Locale, Msg};
+
+/// Display names of the sixteen garbage matte coordinates (point 1 x, point
+/// 1 y, point 2 x, ...): only scene layers animate these.
+const MATTE_NAMES: [&str; 16] = [
+    "Matte point 1 X",
+    "Matte point 1 Y",
+    "Matte point 2 X",
+    "Matte point 2 Y",
+    "Matte point 3 X",
+    "Matte point 3 Y",
+    "Matte point 4 X",
+    "Matte point 4 Y",
+    "Matte point 5 X",
+    "Matte point 5 Y",
+    "Matte point 6 X",
+    "Matte point 6 Y",
+    "Matte point 7 X",
+    "Matte point 7 Y",
+    "Matte point 8 X",
+    "Matte point 8 Y",
+];
+
+const MATTE_NAMES_ES: [&str; 16] = [
+    "Punto de máscara 1 X",
+    "Punto de máscara 1 Y",
+    "Punto de máscara 2 X",
+    "Punto de máscara 2 Y",
+    "Punto de máscara 3 X",
+    "Punto de máscara 3 Y",
+    "Punto de máscara 4 X",
+    "Punto de máscara 4 Y",
+    "Punto de máscara 5 X",
+    "Punto de máscara 5 Y",
+    "Punto de máscara 6 X",
+    "Punto de máscara 6 Y",
+    "Punto de máscara 7 X",
+    "Punto de máscara 7 Y",
+    "Punto de máscara 8 X",
+    "Punto de máscara 8 Y",
+];
+
+const MATTE_HOVERS: [&str; 16] = [
+    "X of garbage matte point 1, from 0 at the layer's left edge to 1000 at its right. The layer must already have a matte with that point.",
+    "Y of garbage matte point 1, from 0 at the layer's top edge to 1000 at its bottom. The layer must already have a matte with that point.",
+    "X of garbage matte point 2, from 0 at the layer's left edge to 1000 at its right. The layer must already have a matte with that point.",
+    "Y of garbage matte point 2, from 0 at the layer's top edge to 1000 at its bottom. The layer must already have a matte with that point.",
+    "X of garbage matte point 3, from 0 at the layer's left edge to 1000 at its right. The layer must already have a matte with that point.",
+    "Y of garbage matte point 3, from 0 at the layer's top edge to 1000 at its bottom. The layer must already have a matte with that point.",
+    "X of garbage matte point 4, from 0 at the layer's left edge to 1000 at its right. The layer must already have a matte with that point.",
+    "Y of garbage matte point 4, from 0 at the layer's top edge to 1000 at its bottom. The layer must already have a matte with that point.",
+    "X of garbage matte point 5, from 0 at the layer's left edge to 1000 at its right. The layer must already have a matte with that point.",
+    "Y of garbage matte point 5, from 0 at the layer's top edge to 1000 at its bottom. The layer must already have a matte with that point.",
+    "X of garbage matte point 6, from 0 at the layer's left edge to 1000 at its right. The layer must already have a matte with that point.",
+    "Y of garbage matte point 6, from 0 at the layer's top edge to 1000 at its bottom. The layer must already have a matte with that point.",
+    "X of garbage matte point 7, from 0 at the layer's left edge to 1000 at its right. The layer must already have a matte with that point.",
+    "Y of garbage matte point 7, from 0 at the layer's top edge to 1000 at its bottom. The layer must already have a matte with that point.",
+    "X of garbage matte point 8, from 0 at the layer's left edge to 1000 at its right. The layer must already have a matte with that point.",
+    "Y of garbage matte point 8, from 0 at the layer's top edge to 1000 at its bottom. The layer must already have a matte with that point.",
+];
+
+const MATTE_HOVERS_ES: [&str; 16] = [
+    "X del punto 1 de la máscara de basura, de 0 en el borde izquierdo de la capa a 1000 en el derecho. La capa ya debe tener una máscara con ese punto.",
+    "Y del punto 1 de la máscara de basura, de 0 en el borde superior de la capa a 1000 en el inferior. La capa ya debe tener una máscara con ese punto.",
+    "X del punto 2 de la máscara de basura, de 0 en el borde izquierdo de la capa a 1000 en el derecho. La capa ya debe tener una máscara con ese punto.",
+    "Y del punto 2 de la máscara de basura, de 0 en el borde superior de la capa a 1000 en el inferior. La capa ya debe tener una máscara con ese punto.",
+    "X del punto 3 de la máscara de basura, de 0 en el borde izquierdo de la capa a 1000 en el derecho. La capa ya debe tener una máscara con ese punto.",
+    "Y del punto 3 de la máscara de basura, de 0 en el borde superior de la capa a 1000 en el inferior. La capa ya debe tener una máscara con ese punto.",
+    "X del punto 4 de la máscara de basura, de 0 en el borde izquierdo de la capa a 1000 en el derecho. La capa ya debe tener una máscara con ese punto.",
+    "Y del punto 4 de la máscara de basura, de 0 en el borde superior de la capa a 1000 en el inferior. La capa ya debe tener una máscara con ese punto.",
+    "X del punto 5 de la máscara de basura, de 0 en el borde izquierdo de la capa a 1000 en el derecho. La capa ya debe tener una máscara con ese punto.",
+    "Y del punto 5 de la máscara de basura, de 0 en el borde superior de la capa a 1000 en el inferior. La capa ya debe tener una máscara con ese punto.",
+    "X del punto 6 de la máscara de basura, de 0 en el borde izquierdo de la capa a 1000 en el derecho. La capa ya debe tener una máscara con ese punto.",
+    "Y del punto 6 de la máscara de basura, de 0 en el borde superior de la capa a 1000 en el inferior. La capa ya debe tener una máscara con ese punto.",
+    "X del punto 7 de la máscara de basura, de 0 en el borde izquierdo de la capa a 1000 en el derecho. La capa ya debe tener una máscara con ese punto.",
+    "Y del punto 7 de la máscara de basura, de 0 en el borde superior de la capa a 1000 en el inferior. La capa ya debe tener una máscara con ese punto.",
+    "X del punto 8 de la máscara de basura, de 0 en el borde izquierdo de la capa a 1000 en el derecho. La capa ya debe tener una máscara con ese punto.",
+    "Y del punto 8 de la máscara de basura, de 0 en el borde superior de la capa a 1000 en el inferior. La capa ya debe tener una máscara con ese punto.",
+];
 
 /// The sentence for a core error id in `locale`, or `None` for an unknown
 /// id.
@@ -68,6 +146,12 @@ pub fn phase_hover(locale: Locale, phase: Phase) -> &'static str {
 /// Display name of a property.
 #[must_use]
 pub fn property_name(locale: Locale, property: Property) -> &'static str {
+    if let Some(index) = property.matte_index() {
+        return match locale.language {
+            Language::Spanish => MATTE_NAMES_ES[index],
+            Language::English => MATTE_NAMES[index],
+        };
+    }
     locale.text(match property {
         Property::PositionX => Msg::AnimPropPositionX,
         Property::PositionY => Msg::AnimPropPositionY,
@@ -80,12 +164,19 @@ pub fn property_name(locale: Locale, property: Property) -> &'static str {
         Property::CropRight => Msg::AnimPropCropRight,
         Property::CropBottom => Msg::AnimPropCropBottom,
         Property::Color => Msg::AddInputColour,
+        _ => unreachable!("every matte property has its own name above"),
     })
 }
 
 /// Hover explanation of a property row.
 #[must_use]
 pub fn property_hover(locale: Locale, property: Property) -> &'static str {
+    if let Some(index) = property.matte_index() {
+        return match locale.language {
+            Language::Spanish => MATTE_HOVERS_ES[index],
+            Language::English => MATTE_HOVERS[index],
+        };
+    }
     locale.text(match property {
         Property::PositionX => Msg::AnimPropPositionXHover,
         Property::PositionY => Msg::AnimPropPositionYHover,
@@ -98,12 +189,16 @@ pub fn property_hover(locale: Locale, property: Property) -> &'static str {
         Property::CropRight => Msg::AnimPropCropRightHover,
         Property::CropBottom => Msg::AnimPropCropBottomHover,
         Property::Color => Msg::AnimPropColourHover,
+        _ => unreachable!("every matte property has its own hover above"),
     })
 }
 
 /// Unit suffix and divisor turning a stored scalar into the shown number.
 #[must_use]
 pub const fn property_unit(property: Property) -> (&'static str, f64) {
+    if property.matte_index().is_some() {
+        return ("", 1.0);
+    }
     match property {
         Property::ScaleX | Property::ScaleY => ("%", 100.0),
         Property::Rotation => ("°", 1_000.0),

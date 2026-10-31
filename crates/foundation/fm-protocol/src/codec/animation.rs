@@ -56,6 +56,8 @@ pub(crate) trait ClipTarget: Copy + Ord + core::fmt::Debug {
     const MAX_BYTES: usize;
     fn to_wire(self) -> u128;
     fn from_wire(value: u128) -> Option<Self>;
+    /// Whether a clip of this target may animate `property`.
+    fn allows(property: Property) -> bool;
 }
 
 impl ClipTarget for WireTitleElementId {
@@ -66,6 +68,10 @@ impl ClipTarget for WireTitleElementId {
     }
     fn from_wire(value: u128) -> Option<Self> {
         NonZeroU128::new(value).map(Self::new)
+    }
+    fn allows(property: Property) -> bool {
+        // Title elements carry no garbage matte.
+        property.matte_index().is_none()
     }
 }
 
@@ -78,6 +84,10 @@ impl ClipTarget for MotionTarget {
     }
     fn from_wire(value: u128) -> Option<Self> {
         (value == 1).then_some(Self)
+    }
+    fn allows(property: Property) -> bool {
+        // A motion carries every layered property but colour.
+        property != Property::Color
     }
 }
 
@@ -92,6 +102,11 @@ impl ClipTarget for WireSceneLayerId {
             .ok()
             .and_then(core::num::NonZeroU32::new)
             .map(Self::new)
+    }
+    fn allows(property: Property) -> bool {
+        // Scene layers carry no fill colour; every other property, including
+        // the garbage matte points, is animatable.
+        property != Property::Color
     }
 }
 
@@ -217,6 +232,13 @@ fn clip_bytes<T: ClipTarget>(clip: &Clip<T>) -> Vec<u8> {
 pub(super) fn encode_clip<T: ClipTarget>(clip: &Clip<T>) -> Result<String, CodecError> {
     clip.validate()
         .map_err(|error| invalid_clip(error.to_string()))?;
+    if let Some(track) = clip.tracks().iter().find(|track| !T::allows(track.key.property)) {
+        return Err(invalid_clip(format!(
+            "{} cannot animate {}",
+            track.key.target.to_wire(),
+            track.key.property.id()
+        )));
+    }
     let bytes = clip_bytes(clip);
     if bytes.len() > T::MAX_BYTES {
         return Err(invalid_clip(format!("{} bytes", bytes.len())));
@@ -306,6 +328,9 @@ impl Reader<'_> {
             _ => return None,
         };
         let property = *Property::ALL.get(usize::from(self.byte()?))?;
+        if !T::allows(property) {
+            return None;
+        }
         let count = usize::try_from(self.varint(32)?).ok()?;
         *total_keys = total_keys.checked_add(count)?;
         if count == 0 || count > MAX_TRACK_KEYS || *total_keys > MAX_CLIP_KEYS {

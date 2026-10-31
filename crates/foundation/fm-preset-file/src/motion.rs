@@ -69,6 +69,22 @@ pub const fn property_name(property: Property) -> &'static str {
         Property::CropRight => "crop_right",
         Property::CropBottom => "crop_bottom",
         Property::Color => "color",
+        Property::MattePoint1X => "matte_point_1_x",
+        Property::MattePoint1Y => "matte_point_1_y",
+        Property::MattePoint2X => "matte_point_2_x",
+        Property::MattePoint2Y => "matte_point_2_y",
+        Property::MattePoint3X => "matte_point_3_x",
+        Property::MattePoint3Y => "matte_point_3_y",
+        Property::MattePoint4X => "matte_point_4_x",
+        Property::MattePoint4Y => "matte_point_4_y",
+        Property::MattePoint5X => "matte_point_5_x",
+        Property::MattePoint5Y => "matte_point_5_y",
+        Property::MattePoint6X => "matte_point_6_x",
+        Property::MattePoint6Y => "matte_point_6_y",
+        Property::MattePoint7X => "matte_point_7_x",
+        Property::MattePoint7Y => "matte_point_7_y",
+        Property::MattePoint8X => "matte_point_8_x",
+        Property::MattePoint8Y => "matte_point_8_y",
     }
 }
 

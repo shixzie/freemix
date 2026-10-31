@@ -56,9 +56,11 @@ use fm_animation::{
     AnimationPreset, Clip, ClipError, ClipState, Phase, PresetGeometry, Property, Timebase, Value,
     round_half_up,
 };
-use fm_types::FrameRate;
+use fm_types::{FrameRate, GarbageMatte, MAX_GARBAGE_MATTE_POINTS, MattePoint};
 
-use crate::{CropRect, Layer, LayerAnchor, LayerGeometry, RectMask, Rotation, Scene};
+use crate::{
+    CropRect, Layer, LayerAnchor, LayerGeometry, LayerKey, RectMask, Rotation, Scene,
+};
 
 /// The stable id of one layer within its scene: the target of every scene
 /// animation track. Unique within a scene and kept by every layer edit.
@@ -101,7 +103,7 @@ impl fmt::Display for LayerId {
 pub type SceneClip = Clip<LayerId>;
 
 /// Every property a scene layer animates: all but [`Property::Color`].
-pub const SCENE_ANIMATION_PROPERTIES: [Property; 10] = [
+pub const SCENE_ANIMATION_PROPERTIES: [Property; 10 + MAX_GARBAGE_MATTE_POINTS * 2] = [
     Property::PositionX,
     Property::PositionY,
     Property::ScaleX,
@@ -112,6 +114,22 @@ pub const SCENE_ANIMATION_PROPERTIES: [Property; 10] = [
     Property::CropTop,
     Property::CropRight,
     Property::CropBottom,
+    Property::MattePoint1X,
+    Property::MattePoint1Y,
+    Property::MattePoint2X,
+    Property::MattePoint2Y,
+    Property::MattePoint3X,
+    Property::MattePoint3Y,
+    Property::MattePoint4X,
+    Property::MattePoint4Y,
+    Property::MattePoint5X,
+    Property::MattePoint5Y,
+    Property::MattePoint6X,
+    Property::MattePoint6Y,
+    Property::MattePoint7X,
+    Property::MattePoint7Y,
+    Property::MattePoint8X,
+    Property::MattePoint8Y,
 ];
 
 /// Whether a scene layer can animate `property`.
@@ -377,6 +395,10 @@ pub struct LayerPose {
     pub opacity: i64,
     /// Left, top, right, bottom, in pixels, each at least zero.
     pub crop: [i64; 4],
+    /// Garbage matte point coordinates overridden by animation, alternating
+    /// x and y per point in normalized `0..=1000` units; `None` keeps the
+    /// static coordinate.
+    pub matte: [Option<u16>; MAX_GARBAGE_MATTE_POINTS * 2],
 }
 
 impl LayerPose {
@@ -388,6 +410,7 @@ impl LayerPose {
         rotation: 0,
         opacity: fm_animation::OPACITY_IDENTITY,
         crop: [0; 4],
+        matte: [None; MAX_GARBAGE_MATTE_POINTS * 2],
     };
 
     /// Samples every scene property of `layer`; [`ClipState::Static`] and
@@ -402,6 +425,13 @@ impl LayerPose {
             let Value::Scalar(scalar) = value else {
                 continue;
             };
+            if let Some(index) = property.matte_index() {
+                pose.matte[index] = Some(
+                    u16::try_from(scalar.clamp(0, i64::from(fm_types::GARBAGE_MATTE_UNIT)))
+                        .unwrap_or(0),
+                );
+                continue;
+            }
             match property {
                 Property::PositionX => pose.dx = scalar,
                 Property::PositionY => pose.dy = scalar,
@@ -413,7 +443,7 @@ impl LayerPose {
                 Property::CropTop => pose.crop[1] = scalar.max(0),
                 Property::CropRight => pose.crop[2] = scalar.max(0),
                 Property::CropBottom => pose.crop[3] = scalar.max(0),
-                Property::Color => {}
+                _ => {}
             }
         }
         pose
@@ -585,6 +615,7 @@ pub fn pose_layer(
 #[allow(clippy::too_many_lines)] // one pose, applied in drawing order
 pub fn apply_pose(layer: &Layer, pose: LayerPose, source_width: u32, source_height: u32) -> Layer {
     let mut posed = layer.clone();
+    apply_matte_pose(&mut posed, &pose.matte);
     let hidden = |mut layer: Layer| {
         layer.enabled = false;
         layer
@@ -698,4 +729,45 @@ pub fn apply_pose(layer: &Layer, pose: LayerPose, source_width: u32, source_heig
         }
     }
     posed
+}
+
+/// Replaces the coordinates `matte` names on `layer`'s garbage matte,
+/// keeping its invert flag and feather. A layer without a matte, a track for
+/// a point past the matte's count, or a pose that would flatten the polygon
+/// keeps the static matte.
+fn apply_matte_pose(layer: &mut Layer, matte: &[Option<u16>; MAX_GARBAGE_MATTE_POINTS * 2]) {
+    let Some(key) = &mut layer.key else {
+        return;
+    };
+    let refinement = match key {
+        LayerKey::Chroma(key) => &mut key.refinement,
+        LayerKey::Luma(key) => &mut key.refinement,
+        LayerKey::Fill(key) => &mut key.refinement,
+    };
+    let Some(static_matte) = refinement.garbage_matte else {
+        return;
+    };
+    let mut points = [MattePoint::default(); MAX_GARBAGE_MATTE_POINTS];
+    let len = static_matte.points().len();
+    points[..len].copy_from_slice(static_matte.points());
+    let mut changed = false;
+    for (index, coordinate) in matte.iter().enumerate() {
+        let Some(coordinate) = *coordinate else {
+            continue;
+        };
+        let Some(point) = points.get_mut(index / 2) else {
+            continue;
+        };
+        if index % 2 == 0 {
+            point.x = coordinate;
+        } else {
+            point.y = coordinate;
+        }
+        changed = true;
+    }
+    if changed
+        && let Ok(rebuilt) = GarbageMatte::new(&points[..len], static_matte.invert())
+    {
+        refinement.garbage_matte = rebuilt.with_feather(static_matte.feather()).ok();
+    }
 }

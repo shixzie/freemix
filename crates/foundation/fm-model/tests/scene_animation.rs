@@ -2,14 +2,14 @@
 //! scene-only properties, presets and stretches, and exact integer posing.
 
 use fm_model::{
-    CropRect, Layer, LayerGeometry, LayerId, LayerPose, RectMask, Rotation, Scene, SceneAnimation,
-    SceneAnimationError, SourceRef, apply_pose,
+    ChromaLayerKey, CropRect, KeyRefinement, Layer, LayerGeometry, LayerId, LayerKey, LayerPose,
+    RectMask, Rotation, Scene, SceneAnimation, SceneAnimationError, SourceRef, apply_pose,
     fm_animation::{
-        AnimationPreset, ClipError, ClipPosition, ClipState, Easing, Keyframe, Phase, Property,
-        Rgba, Track, TrackKey, Value,
+        AnimationPreset, Clip, ClipError, ClipPosition, ClipState, Easing, Keyframe, Phase,
+        Property, Rgba, Timebase, Track, TrackKey, Value,
     },
 };
-use fm_types::{InputId, SceneId};
+use fm_types::{FrameRate, GarbageMatte, InputId, MattePoint, SceneId};
 use std::num::NonZeroU128;
 
 fn layer_id(value: u32) -> LayerId {
@@ -268,4 +268,89 @@ fn rotated_crops_offset_the_footprint_by_the_turned_edges() {
         1080,
     );
     assert!(!gone.enabled);
+}
+
+#[test]
+fn garbage_matte_points_animate_and_keep_their_feather_and_invert() {
+    let mut base = layer(3, LayerGeometry::new(0, 0, 400, 200, Rotation::Deg0));
+    let matte = GarbageMatte::new(
+        &[
+            MattePoint::new(100, 100),
+            MattePoint::new(900, 100),
+            MattePoint::new(900, 900),
+            MattePoint::new(100, 900),
+        ],
+        true,
+    )
+    .unwrap()
+    .with_feather(8)
+    .unwrap();
+    base.key = Some(LayerKey::Chroma(ChromaLayerKey {
+        refinement: KeyRefinement {
+            garbage_matte: Some(matte),
+            ..KeyRefinement::NONE
+        },
+        ..ChromaLayerKey::GREEN
+    }));
+    let mut matte_pose = LayerPose::IDENTITY;
+    matte_pose.matte[0] = Some(250);
+    matte_pose.matte[3] = Some(750);
+    let posed = apply_pose(&base, matte_pose, 1920, 1080);
+    let Some(LayerKey::Chroma(key)) = posed.key else {
+        panic!("the key survives posing");
+    };
+    let posed_matte = key.refinement.garbage_matte.expect("the matte survives");
+    assert_eq!(
+        posed_matte.points(),
+        &[
+            MattePoint::new(250, 100),
+            MattePoint::new(900, 750),
+            MattePoint::new(900, 900),
+            MattePoint::new(100, 900),
+        ]
+    );
+    assert_eq!(posed_matte.feather(), 8);
+    assert!(posed_matte.invert());
+    // A track for a point the matte does not have is ignored.
+    let mut extra = LayerPose::IDENTITY;
+    extra.matte[8] = Some(500);
+    let posed = apply_pose(&base, extra, 1920, 1080);
+    let Some(LayerKey::Chroma(key)) = posed.key else {
+        panic!("the key survives posing");
+    };
+    assert_eq!(key.refinement.garbage_matte, Some(matte));
+}
+
+#[test]
+fn matte_coordinates_are_sampled_from_the_scene_clip() {
+    let clip = Clip::from_tracks(
+        Timebase::new(FrameRate::new(30, 1).unwrap()),
+        11,
+        0,
+        vec![
+            Track::new(
+                TrackKey::new(layer_id(3), Phase::In, Property::MattePoint1X),
+                vec![
+                    Keyframe::new(0, Value::Scalar(100), Easing::Linear),
+                    Keyframe::new(10, Value::Scalar(900), Easing::Linear),
+                ],
+            ),
+            Track::new(
+                TrackKey::new(layer_id(3), Phase::In, Property::MattePoint8Y),
+                vec![
+                    Keyframe::new(0, Value::Scalar(0), Easing::Linear),
+                    Keyframe::new(10, Value::Scalar(1_000), Easing::Linear),
+                ],
+            ),
+        ],
+    )
+    .unwrap();
+    let pose = LayerPose::sample(&clip, layer_id(3), ClipState::In(ClipPosition::frame(5)));
+    assert_eq!(pose.matte[0], Some(500));
+    assert_eq!(pose.matte[15], Some(500));
+    assert_eq!(pose.matte[1], None);
+    assert_eq!(
+        Scene::check_animation_clip(&scene(), &clip),
+        Ok(())
+    );
 }
