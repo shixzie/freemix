@@ -3800,6 +3800,7 @@ messages! {
     ReplaySmartTemperature => t("{temperature} °C"),
     ReplaySmartUsed => t("{used}% endurance used"),
     RecorderFreeSpace => t("{free} free"),
+    RecorderRemaining => t("{time} left"),
     ReplayLink => t("LINK"),
     ReplayLinkHover => t("Cue, play, pause, and step this Replay input together with the other Replay input"),
     ReplayUnlink => t("UNLINK"),

@@ -2176,6 +2176,7 @@ fn recorder_status(sequence: u64) -> fm_protocol::RecorderStatusMessage {
             elapsed_ms: sequence * 250,
             failure: None,
             free_bytes: None,
+            remaining_seconds: None,
         }],
     }
 }

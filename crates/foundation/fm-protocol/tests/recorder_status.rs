@@ -30,6 +30,7 @@ fn sample(
         elapsed_ms,
         failure,
         free_bytes: None,
+        remaining_seconds: None,
     }
 }
 
@@ -43,14 +44,14 @@ fn message(samples: Vec<RecorderStatusSample>) -> WireMessage {
 
 #[test]
 fn recorder_status_is_exact() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 140));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 141));
     for (samples, recorders) in [
         (
             vec![
                 sample(1, RecorderRealizedState::Recording, 61_250, None),
                 sample(2, RecorderRealizedState::Unavailable, 0, None),
             ],
-            "1%3Arecording%3A61250%3A%3A-%3B2%3Aunavailable%3A0%3A%3A-",
+            "1%3Arecording%3A61250%3A%3A-%3A-%3B2%3Aunavailable%3A0%3A%3A-%3A-",
         ),
         (
             vec![
@@ -62,7 +63,7 @@ fn recorder_status_is_exact() {
                     Some(OutputFailureCode::DiskFull.into()),
                 ),
             ],
-            "1%3Astarting%3A0%3A%3A-%3B2%3Afailed%3A0%3Adisk_full%3A-",
+            "1%3Astarting%3A0%3A%3A-%3A-%3B2%3Afailed%3A0%3Adisk_full%3A-%3A-",
         ),
         (
             vec![sample(
@@ -73,11 +74,11 @@ fn recorder_status_is_exact() {
                     OutputFailure::new(OutputFailureCode::FfmpegExited).with_exit_status(Some(-9)),
                 ),
             )],
-            "1%3Afailed%3A0%3Affmpeg_exited.-9%3A-",
+            "1%3Afailed%3A0%3Affmpeg_exited.-9%3A-%3A-",
         ),
         (
             vec![sample(2, RecorderRealizedState::Off, 0, None)],
-            "2%3Aoff%3A0%3A%3A-",
+            "2%3Aoff%3A0%3A%3A-%3A-",
         ),
     ] {
         let message = message(samples);

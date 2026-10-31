@@ -3934,8 +3934,10 @@ reports the return, and read-only, missing, or forbidden roots are never
 re-enabled. Native `freemixd` samples the active directory every five seconds
 and emits a hysteretic `FREEMIXD_RECORDER_REMAINING` record when estimated
 remaining time crosses 30, 10, or 2 minutes and when it clears.
-Remaining gaps: the fallback is refused with fullscreen output; the
-remaining-time thresholds are fixed and reach no protocol or UI view; no
+`recorder_status` now carries each slot's free bytes and estimated seconds
+of recording left at its configured bitrate (Protocol 2.141), shown in
+Studio's recording row. Remaining gaps: the fallback is refused with
+fullscreen output; the daemon's own remaining-time thresholds are fixed; no
 daemon test runs two `freemixd` processes against one directory (the lock is
 proven across processes in `fm-record`); repaired files are not
 re-finalized; corrupt mid-file fragments end recovery; and only fragmented MP4

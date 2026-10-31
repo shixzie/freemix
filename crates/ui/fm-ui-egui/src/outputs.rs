@@ -127,6 +127,16 @@ pub(crate) fn recorder_row(
                 &[("free", Arg::Str(&l.bytes(free)))],
             ));
         }
+        if let Some(seconds) = realized.and_then(|sample| sample.remaining_seconds) {
+            detail.push_str(" · ");
+            detail.push_str(&l.format(
+                Msg::RecorderRemaining,
+                &[(
+                    "time",
+                    Arg::Str(&l.seconds_tenths(seconds.saturating_mul(1_000))),
+                )],
+            ));
+        }
         OutputRow {
             status,
             tone: Tone::OnAir,
@@ -844,6 +854,7 @@ mod tests {
             elapsed_ms: 0,
             failure,
             free_bytes: None,
+            remaining_seconds: None,
         };
         let unconfigured = sample(RecorderRealizedState::Unavailable, None);
         let row = recorder_row(Locale::ENGLISH, true, false, false, Some(&unconfigured));

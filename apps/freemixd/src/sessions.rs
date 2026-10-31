@@ -4333,6 +4333,7 @@ mod tests {
                     elapsed_ms: 12_345,
                     failure: None,
                     free_bytes: Some(42_000_000_000),
+                    remaining_seconds: Some(7_000),
                 },
                 fm_protocol::RecorderStatusSample {
                     recorder: fm_protocol::WireRecorderSlot::new(2).unwrap(),
@@ -4340,6 +4341,7 @@ mod tests {
                     elapsed_ms: 0,
                     failure: Some(fm_protocol::OutputFailureCode::FolderNotWritable.into()),
                     free_bytes: None,
+                    remaining_seconds: None,
                 },
             ],
         }

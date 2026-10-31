@@ -311,6 +311,9 @@ pub fn relink(path: &Path, search: Vec<PathBuf>, apply: bool) -> AppResult<()> {
             RelinkResolution::Import { source, bytes } => {
                 format!("import {} bytes={bytes}", source.display())
             }
+            RelinkResolution::ImportFolder { source, bytes } => {
+                format!("import-folder {} bytes={bytes}", source.display())
+            }
             RelinkResolution::Ambiguous { candidates } => format!(
                 "ambiguous candidates=[{}]",
                 candidates

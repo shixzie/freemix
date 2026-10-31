@@ -102,6 +102,10 @@ pub(crate) struct NativeDaemon {
     /// (2.140); `None` for a slot with no configured output or a failed
     /// query.
     pub(crate) recorder_free: [Option<u64>; RECORDER_SLOTS],
+    /// Latest estimated seconds of recording left for each slot, from its
+    /// free space and configured bitrate (2.141); `None` for a slot with no
+    /// output, no known rate, or a failed query.
+    pub(crate) recorder_remaining: [Option<u64>; RECORDER_SLOTS],
     /// When the last disk sample was attempted; `None` makes the first sample
     /// evaluate immediately instead of after one full interval.
     pub(crate) disk_sampled_at: Option<Instant>,
@@ -471,6 +475,7 @@ impl NativeDaemon {
             disk_alert: disk::DiskSpaceAlert::new(),
             disk_free_bytes: None,
             recorder_free: [None; RECORDER_SLOTS],
+            recorder_remaining: [None; RECORDER_SLOTS],
             disk_sampled_at: None,
             local_output_dirs,
             local_output_status: [None; fm_switcher::MAX_STREAM_COUNT],
@@ -1153,6 +1158,17 @@ impl NativeDaemon {
             }
         }
         self.recorder_free = recorder_free;
+        let mut recorder_remaining = [None; RECORDER_SLOTS];
+        for (slot, recorder) in self.recorders.iter().enumerate() {
+            let ProgramRecording::Running(recorder) = recorder else {
+                continue;
+            };
+            if let Some(free) = recorder_free[slot] {
+                recorder_remaining[slot] =
+                    Some(free.saturating_mul(8) / recorder.bitrate_bits_per_second.max(1));
+            }
+        }
+        self.recorder_remaining = recorder_remaining;
         for path in local_ancestors {
             if let Ok(available) = disk::available_bytes(path) {
                 minimum = Some(minimum.map_or(available, |current| current.min(available)));
@@ -1643,8 +1659,13 @@ impl NativeDaemon {
                     }
                 }
             });
-        self.recorder_status
-            .poll(server, views, self.recorder_free, Instant::now())
+        self.recorder_status.poll(
+            server,
+            views,
+            self.recorder_free,
+            self.recorder_remaining,
+            Instant::now(),
+        )
     }
 
     /// Every running live source's drift loop (Protocol 2.76, AU-004), in

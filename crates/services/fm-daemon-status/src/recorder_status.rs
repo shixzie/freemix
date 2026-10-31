@@ -77,13 +77,14 @@ impl RecorderStatusTracker {
         }
     }
 
-    /// The sample `slot` reports for `view` and its output's free bytes at
-    /// `now`.
+    /// The sample `slot` reports for `view`, its output's free bytes, and the
+    /// estimated recording time left at `now`.
     fn sample(
         &mut self,
         slot: usize,
         view: SlotView,
         free_bytes: Option<u64>,
+        remaining_seconds: Option<u64>,
         now: Instant,
     ) -> RecorderStatusSample {
         let status = &mut self.slots[slot];
@@ -133,6 +134,7 @@ impl RecorderStatusTracker {
                     .unwrap_or(OutputFailure::new(OutputFailureCode::Unknown))
             }),
             free_bytes,
+            remaining_seconds,
         }
     }
 
@@ -143,12 +145,15 @@ impl RecorderStatusTracker {
         server: &ServerIdentity,
         views: [SlotView; 2],
         free_bytes: [Option<u64>; 2],
+        remaining_seconds: [Option<u64>; 2],
         now: Instant,
     ) -> Option<RecorderStatusMessage> {
         let samples: Vec<_> = views
             .into_iter()
             .enumerate()
-            .map(|(slot, view)| self.sample(slot, view, free_bytes[slot], now))
+            .map(|(slot, view)| {
+                self.sample(slot, view, free_bytes[slot], remaining_seconds[slot], now)
+            })
             .collect();
         if self
             .built_at
@@ -188,6 +193,7 @@ mod tests {
                 &server(),
                 [SlotView::Settling, SlotView::Unconfigured],
                 [None, None],
+                [None, None],
                 start,
             )
             .unwrap();
@@ -205,6 +211,7 @@ mod tests {
                     &server(),
                     [SlotView::Running, SlotView::Off],
                     [None, None],
+                    [None, None],
                     ready
                 )
                 .is_none()
@@ -214,6 +221,7 @@ mod tests {
             .poll(
                 &server(),
                 [SlotView::Running, SlotView::Off],
+                [None, None],
                 [None, None],
                 later,
             )
@@ -230,6 +238,7 @@ mod tests {
             .poll(
                 &server(),
                 [SlotView::Settling, SlotView::Off],
+                [None, None],
                 [None, None],
                 later + Duration::from_millis(500),
             )
@@ -249,6 +258,7 @@ mod tests {
                     SlotView::Off,
                 ],
                 [None, None],
+                [None, None],
                 failed_at,
             )
             .unwrap();
@@ -263,6 +273,7 @@ mod tests {
             .poll(
                 &server(),
                 [SlotView::Off, SlotView::Off],
+                [None, None],
                 [None, None],
                 failed_at + RECORDER_STATUS_INTERVAL,
             )
@@ -279,6 +290,7 @@ mod tests {
             .poll(
                 &server(),
                 [SlotView::Settling, SlotView::Off],
+                [None, None],
                 [None, None],
                 failed_at + 2 * RECORDER_STATUS_INTERVAL,
             )
