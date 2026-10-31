@@ -2405,6 +2405,59 @@ fn operator_page_strip_dsp_codec_matches_the_rust_codec() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "ok\n");
 }
 
+/// The operator page's aux-bus parser (Protocol 2.133): each snapshot bus
+/// becomes `aux:A`..`aux:G` with its name, gain, mute, and optional chain
+/// code for the page's FX editor (checked under Node.js when on the `PATH`).
+#[test]
+fn operator_page_parses_aux_buses_for_the_fx_editor() {
+    let page = include_str!("../../../crates/services/fm-daemon-web/src/operator.html");
+    let parser = page_aux_bus_parser(page);
+    for outside in ["tr(", "show.", "link.", "ui.", "document", "send("] {
+        assert!(!parser.contains(outside), "the parser uses {outside}");
+    }
+    let script = format!(
+        "{parser}\n\
+         const buses = parseAuxBuses(\"Bus%20A~0~0,Bus%20B~-3000~1~CODE\");\n\
+         const want = [\n\
+           {{ target: \"aux:A\", name: \"Bus A\", gain: \"0\", muted: false, chain: \"\" }},\n\
+           {{ target: \"aux:B\", name: \"Bus B\", gain: \"-3000\", muted: true, chain: \"CODE\" }},\n\
+         ];\n\
+         if (JSON.stringify(buses) !== JSON.stringify(want)) {{\n\
+           console.error(JSON.stringify(buses)); process.exit(1);\n\
+         }}\n\
+         console.log(\"ok\");\n"
+    );
+    if ProcessCommand::new("node")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_err()
+    {
+        eprintln!("node unavailable: the page's aux bus parser check skipped");
+        return;
+    }
+    let directory = TestDirectory::new("aux-bus-parser");
+    let path = directory.0.join("aux.js");
+    fs::write(&path, script).unwrap();
+    let output = ProcessCommand::new("node").arg(&path).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "ok\n");
+}
+
+/// The operator page's aux-bus parser block, which uses nothing else on the
+/// page.
+fn page_aux_bus_parser(page: &str) -> &str {
+    let begin = "  // `name~gain~muted[~chain]`, A through G: the aux buses the snapshot";
+    let start = page.find(begin).expect("aux bus parser begin");
+    let end = page[start..].find("\n  }\n").expect("aux bus parser end") + start + 4;
+    &page[start..end]
+}
+
 /// The operator page's Strip FX gain reduction block (AU-005, Protocol
 /// 2.103), which uses nothing else on the page.
 fn page_fx_gain_reduction(page: &str) -> &str {
@@ -2900,7 +2953,7 @@ fn operator_page_edits_strip_fx_within_the_session_role() {
         "required(record, \"operation\") === \"audio_strip_dsp\"",
         "code === \"revision_conflict\" && !inflight.retried",
         "fxServerCode(target) !== edit.retry.base",
-        "function fxGate(target) { return gate(\"audio\", target === \"master\" ? undefined : target); }",
+        "function fxGate(target) {\n    return gate(\"audio\", target === \"master\" || target.startsWith(\"aux:\") ? undefined : target);\n  }",
         "id=\"fx-panel\"",
     ] {
         assert!(page.contains(source), "{source}");

@@ -361,7 +361,7 @@
 "use strict";
 (() => {
   // Exact current protocol identifier; a daemon on any other one rejects us.
-  const PROTOCOL = "2.130";
+  const PROTOCOL = "2.133";
   const CONTROL_SUBPROTOCOL = "freemix.control.v1";
   const BEARER_SUBPROTOCOL_PREFIX = "freemix.bearer.";
   const HEARTBEAT_INTERVAL_MS = 5000;
@@ -1615,6 +1615,21 @@
       };
     });
   }
+  // `name~gain~muted[~chain]`, A through G: the aux buses the snapshot
+  // carries (Protocol 2.133). `target` names the bus's FX chain.
+  function parseAuxBuses(value) {
+    return (value ? value.split(",") : []).map((item, index) => {
+      const parts = item.split("~");
+      if (parts.length < 3 || parts.length > 4) throw new Error("malformed aux bus");
+      return {
+        target: "aux:" + String.fromCharCode(65 + index),
+        name: decodeURIComponent(parts[0]),
+        gain: parts[1],
+        muted: parts[2] === "1",
+        chain: parts.length === 4 ? parts[3] : "",
+      };
+    });
+  }
   // `1:<desired>,2:<desired>`.
   function parseRecordings(value) {
     const active = [false, false];
@@ -2063,6 +2078,7 @@
         show.ftb = parseFtb(record, "desired_");
         show.realizedFtb = parseFtb(record, "realized_");
         show.strips = parseStrips(required(record, "input_audio_strips"));
+        show.auxBuses = parseAuxBuses(required(record, "audio_aux_buses"));
         fxTakeSnapshot(record);
         show.recordings = parseRecordings(required(record, "recordings"));
         show.streams = parseStreams(required(record, "streams"));
@@ -3440,10 +3456,16 @@
   }
   function fxTargetName(target) {
     if (target === "master") return tr("fxMasterName");
+    if (target.startsWith("aux:")) {
+      const bus = (show.auxBuses || []).find((candidate) => candidate.target === target);
+      return bus ? bus.name : target;
+    }
     const input = show.inputs.find((candidate) => candidate.id === target);
     return input ? input.label : target;
   }
-  function fxGate(target) { return gate("audio", target === "master" ? undefined : target); }
+  function fxGate(target) {
+    return gate("audio", target === "master" || target.startsWith("aux:") ? undefined : target);
+  }
   function fxGestureToken() {
     const [high, low] = crypto.getRandomValues(new Uint32Array(2));
     const token = (BigInt(high) << 32n) | BigInt(low);
@@ -3451,6 +3473,9 @@
   }
   function fxTakeSnapshot(record) {
     fx.chains = new Map([["master", required(record, "audio_master_dsp")]]);
+    for (const bus of show.auxBuses || []) {
+      if (bus.chain) fx.chains.set(bus.target, bus.chain);
+    }
   }
   function fxTakeChain(target, chain) { fx.chains.set(target, chain); }
   // Drops a target's local edit: the page shows the server's chain again.
@@ -3876,7 +3901,8 @@
   const fxPanels = new Map();
   function renderFx(ids) {
     const live = link.phase === "live";
-    const targets = live ? ["master", ...ids] : [];
+    const aux = live ? (show.auxBuses || []).map((bus) => bus.target) : [];
+    const targets = live ? ["master", ...ids, ...aux] : [];
     syncChildren(ui.fxStrips, targets, (target) => {
       const panel = fxPanel(target);
       fxPanels.set(target, panel);
