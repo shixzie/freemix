@@ -5674,9 +5674,10 @@ parser is checked under Node.js against the Rust codec's record). The tally
 page draws a small per-input peak bar from those same meters; a tally
 session opened with `#meters=off` keeps the bars off for that session
 (remembered in session storage; `on` turns them back on), so a wall mount
-can show its tally without the per-input audio.
-Remaining gaps: the simulated daemon sends no meters or realized recorder
-state.
+can show its tally without the per-input audio. The simulated daemon
+publishes meters from its simulated audio plane and reports both recorder
+slots as unavailable, so its pages show realized state instead of only the
+requested badge.
 
 Readable output failures (Protocol 2.67, no schema change): a stream
 destination's or recorder's failure now reaches every client as a stable

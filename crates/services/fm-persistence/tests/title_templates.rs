@@ -771,7 +771,7 @@ fn strict_decoder_refuses_unknown_missing_and_out_of_contract_content() {
         );
         assert!(matches!(
             decode_title_template(&document),
-            Err(TitleTemplateError::UnsupportedSchema { found: f, supported: 101 }) if f == found
+            Err(TitleTemplateError::UnsupportedSchema { found: f, supported: 102 }) if f == found
         ));
     }
 

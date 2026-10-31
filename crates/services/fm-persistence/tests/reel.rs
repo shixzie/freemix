@@ -232,7 +232,7 @@ fn reels_round_trip_exactly_and_strictly_in_project_json() {
         Err(StoreError::Validation(
             ProjectValidationError::UnsupportedSchema {
                 found: 89,
-                supported: 101
+                supported: 102
             }
         ))
     ));

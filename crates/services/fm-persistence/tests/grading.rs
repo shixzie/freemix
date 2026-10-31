@@ -311,7 +311,7 @@ fn schema_45_and_47_manifests_are_refused() {
             Err(StoreError::Validation(
                 ProjectValidationError::UnsupportedSchema {
                     found: f,
-                    supported: 101
+                    supported: 102
                 }
             )) if f == found
         ));

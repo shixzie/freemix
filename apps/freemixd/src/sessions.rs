@@ -31,6 +31,7 @@ use std::{
 
 use fm_auth::Principal;
 use fm_control::{LiveEvent, SubscriberFailureReason, Subscription};
+use fm_daemon_status::recorder_status;
 use fm_persistence::StoredProject;
 use fm_protocol::{
     AudioMetersMessage, ClientType, CommandPayload, CommandResult, ErrorMessage,
@@ -626,6 +627,12 @@ impl Peer {
         self.phase == Phase::Active && (self.audio_meters || self.web_feed.is_some())
     }
 
+    /// Whether this session takes `recorder_status` records: a raw Studio
+    /// session, or a Web page granted the lossy status feed.
+    fn wants_recorder_status(&self) -> bool {
+        self.phase == Phase::Active && (self.recorder_status || self.web_feed.is_some())
+    }
+
     /// Offers a Web peer's feed the Master meters of `web_bytes`.
     fn replace_web_meter(&mut self, web_bytes: &[u8]) {
         if self.phase == Phase::Active
@@ -927,6 +934,10 @@ pub(super) fn run(
         None
     };
     let mut simulated_audio_sequence = 0_u64;
+    // The simulated daemon realizes no recordings, so it reports both slots
+    // as unavailable (RC-014): its pages show realized state instead of only
+    // the requested-state badge.
+    let mut simulated_recorder_status = recorder_status::RecorderStatusTracker::default();
 
     loop {
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
@@ -1541,6 +1552,22 @@ pub(super) fn run(
                 );
                 publish_audio_meters(&mut peers, message);
             }
+        }
+        // The simulated daemon realizes no recordings, so it reports both
+        // slots as unavailable at the bounded interval while a Studio peer or
+        // Web page wants realized recorder state (RC-014): its pages show
+        // "not configured" instead of only the requested-state badge.
+        if native.is_none()
+            && peers.iter().any(Peer::wants_recorder_status)
+            && let Some(status) = simulated_recorder_status.poll(
+                authority,
+                [recorder_status::SlotView::Unconfigured; 2],
+                [None, None],
+                [None, None],
+                Instant::now(),
+            )
+        {
+            publish_recorder_status(&mut peers, status);
         }
         // Both daemons announce their replay recording (OR-012).
         if peers.iter().any(|peer| peer.recorder_status) {
