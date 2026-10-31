@@ -67,6 +67,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_media_lists(project, &mut errors);
     validate_title_timelines(project, &mut errors);
     validate_scoreboards(project, &mut errors);
+    validate_production_clocks(project, &mut errors);
     validate_grading(project, &mut errors);
     validate_animation_presets(project, &mut errors);
     validate_main_mix(project, &mut errors);
@@ -391,6 +392,16 @@ fn validate_playlist(project: &Project, errors: &mut Vec<ValidationError>) {
         errors.push(ValidationError {
             entity: None,
             field: "playlist.next_take",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+}
+
+fn validate_production_clocks(project: &Project, errors: &mut Vec<ValidationError>) {
+    if fm_types::validate_project_clocks(project.production_clocks()).is_err() {
+        errors.push(ValidationError {
+            entity: None,
+            field: "production_clocks",
             kind: ValidationErrorKind::OutOfRange,
         });
     }

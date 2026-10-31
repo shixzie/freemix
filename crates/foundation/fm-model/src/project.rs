@@ -1043,6 +1043,9 @@ pub struct Project {
     /// Each title input's canonical scoreboard document (GX-003, schema
     /// 106), by input. Runtime state the engine owns.
     scoreboards: BTreeMap<InputId, String>,
+    /// The show's named production clocks (SW-013, schema 106), in
+    /// definition order.
+    production_clocks: Vec<fm_types::ProjectClock>,
 }
 
 impl Project {
@@ -1095,6 +1098,7 @@ impl Project {
             reels: Vec::new(),
             alert_rules: Vec::new(),
             scoreboards: BTreeMap::new(),
+            production_clocks: Vec::new(),
         }
     }
 
@@ -2023,6 +2027,35 @@ impl Project {
     /// bound. Documents are parsed by the persistence layer.
     pub fn restore_scoreboards(&mut self, documents: BTreeMap<InputId, String>) {
         self.scoreboards = documents;
+    }
+
+    /// The show's named production clocks (SW-013, schema 106), in
+    /// definition order.
+    #[must_use]
+    pub fn production_clocks(&self) -> &[fm_types::ProjectClock] {
+        &self.production_clocks
+    }
+
+    /// Replaces the production clock definitions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`fm_types::ProjectClockError`] for too many clocks, an
+    /// invalid or duplicate name, an out-of-range value, a countdown limit,
+    /// or an invalid format. Nothing changes on error.
+    pub fn set_production_clocks(
+        &mut self,
+        clocks: Vec<fm_types::ProjectClock>,
+    ) -> Result<(), fm_types::ProjectClockError> {
+        fm_types::validate_project_clocks(&clocks)?;
+        self.production_clocks = clocks;
+        Ok(())
+    }
+
+    /// Replaces the production clocks without checking them;
+    /// [`Project::validate`] reports invalid definitions.
+    pub fn restore_production_clocks(&mut self, clocks: Vec<fm_types::ProjectClock>) {
+        self.production_clocks = clocks;
     }
 
     /// Every screen capture input's desktop restore token (IN-011, schema

@@ -13,6 +13,7 @@ mod input_lifecycle;
 mod live_lan;
 mod media_list;
 mod media_playback;
+mod production_clock;
 mod network_stream;
 mod reel;
 mod replay;
