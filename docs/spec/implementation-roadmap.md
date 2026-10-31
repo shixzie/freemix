@@ -2740,8 +2740,9 @@ JSON contract names them `left_rear_surround`, `right_rear_surround`, and
 `discrete_1`..`discrete_16`; recordings map them to exact ffmpeg layouts
 (7.1 as `FL FR FC LFE BL BR SL SR`, discrete as unspecified-order `{n}C`).
 Remaining gaps: the daemon uses the standard downmix matrices only for pushed media and
-stream audio, and nothing reaches persisted strips, protocol, or Studio; streaming
-outputs refuse 7.1 and discrete layouts; there is no device ancillary-data
+stream audio, and nothing reaches persisted strips, protocol, or Studio; RTMP's
+FLV carries only mono or stereo, while SRT and HLS carry 7.1 and discrete
+layouts as their exact ffmpeg names; there is no device ancillary-data
 extraction or hardware evidence, while 5.1 folds to stereo with either the
 BS.775 Lo/Ro matrix or the Dolby Surround Lt/Rt matrix (the 90° surround
 phase shift is not modelled), and to mono as the composite of the stereo

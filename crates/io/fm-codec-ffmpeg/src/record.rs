@@ -154,6 +154,13 @@ impl RecordFormat {
         &self.channel_layout
     }
 
+    /// The ffmpeg channel-layout descriptor for this format's raw audio,
+    /// exact for mono, stereo, 5.1, 7.1, and discrete layouts.
+    #[must_use]
+    pub const fn ffmpeg_channel_layout(&self) -> &'static str {
+        self.ffmpeg_channel_layout
+    }
+
     #[must_use]
     pub const fn first_sequence(&self) -> SequenceNumber {
         self.first_sequence
