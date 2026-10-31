@@ -451,12 +451,13 @@ per week of work; items 1 and 2 land before any new feature breadth.
    scheduler (`sessions.rs`), the `NativeDaemon` composition, and the
    runtime consumers; `main.rs` still owns the `NativeDaemon` type and its
    command window.
-3. **Burn down panics on the frame path.** `fm-daemon-render` and
-   `fm-daemon-native` now deny `clippy::unwrap_used` and `clippy::expect_used`
-   outside tests, and the realizer's former panic sites return typed errors
-   or clamp a value the model already bounds. Remaining: `freemixd`'s
-   `main.rs` still has startup and composition `expect`s to convert, with a
-   panic on the pass loop ending the show.
+3. **Burn down panics on the frame path.** `fm-daemon-render`,
+   `fm-daemon-native`, and the `freemixd` binary deny
+   `clippy::unwrap_used` and `clippy::expect_used` outside tests. The
+   realizer, the session scheduler's dispatch and outbound paths, and the
+   daemon's state restores now return typed errors or clamp a value the
+   model already bounds; the metric and alert tables name their static
+   invariants in one documented expectation.
 4. ~~**Tier the CI matrix and cache builds.**~~ Landed: `rust-toolchain.toml`
    pins 1.97.0 for local builds and CI, `Swatinem/rust-cache` caches each OS
    target, pull requests run the Linux workspace job only, and macOS and

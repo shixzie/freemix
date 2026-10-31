@@ -116,8 +116,8 @@ impl RecorderStatusTracker {
             _ => 0,
         };
         RecorderStatusSample {
-            recorder: WireRecorderSlot::new(u8::try_from(slot + 1).unwrap_or(u8::MAX))
-                .expect("two recorder slots"),
+            recorder: WireRecorderSlot::new(u8::try_from(slot + 1).unwrap_or(1))
+                .unwrap_or(WireRecorderSlot::FIRST),
             realized,
             elapsed_ms,
             failure: (realized == RecorderRealizedState::Failed).then(|| {

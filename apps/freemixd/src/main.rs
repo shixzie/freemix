@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 use std::{
     cell::{Cell, RefCell},
     convert::Infallible,
@@ -3098,7 +3100,7 @@ fn cue_worker_commands(
         .filter_map(|action| {
             let wire_recorder = |recorder: RecorderSlot| {
                 fm_protocol::WireRecorderSlot::new(recorder.get())
-                    .expect("switcher recorder slots match the wire")
+                    .unwrap_or(fm_protocol::WireRecorderSlot::FIRST)
             };
             let payload = match action {
                 fm_engine::EngineCommand::RecordStart { recorder } => CommandPayload::RecordStart {
@@ -10866,7 +10868,9 @@ fn serve_inner(
             ],
             record_fallback_dir.as_deref(),
         )?;
-        let native = native.as_mut().expect("recording requires native state");
+        let Some(native) = native.as_mut() else {
+            return Err("recording requires the native media runtime".into());
+        };
         native.configure_recordings(
             record_program.clone(),
             record_output,
@@ -11688,7 +11692,7 @@ fn replay_idle_frames(
 /// Both domains cover exactly `1..=2`, so this conversion cannot fail for a
 /// slot the model itself constructed.
 fn switcher_recorder_slot(slot: ModelRecorderSlot) -> RecorderSlot {
-    RecorderSlot::new(slot.get()).expect("model recorder slots are in the switcher range")
+    RecorderSlot::new(slot.get()).unwrap_or(RecorderSlot::ALL[0])
 }
 
 /// The stored template of every title input, keyed by input id.
@@ -12154,8 +12158,12 @@ fn restore_stinger(
     realized: &mut SwitcherState,
     config: StingerConfig,
 ) -> AppResult<()> {
-    let slot = StingerSlotId::new(config.slot.number())
-        .expect("validated model Stinger slots are in the switcher range");
+    let slot = StingerSlotId::new(config.slot.number()).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "a validated Stinger slot is in the switcher range",
+        )
+    })?;
     let descriptor = StingerDescriptor::new(
         config.media_input,
         config.preload,
@@ -12461,8 +12469,8 @@ fn sync_project_audio_mixer(project: &mut fm_model::Project, show: &ShowState) -
             .into_iter()
             .zip(show.audio_groups())
         {
-            let gain = InputGainMilliDb::new(value.state.gain_millidb)
-                .expect("engine group gain is bounded by the model contract");
+            let gain =
+                InputGainMilliDb::new(value.state.gain_millidb).unwrap_or(InputGainMilliDb::UNITY);
             project
                 .set_audio_group(
                     group,
@@ -12489,7 +12497,7 @@ fn sync_project_audio_mixer(project: &mut fm_model::Project, show: &ShowState) -
                 fm_model::AuxBus {
                     name: value.name.clone(),
                     gain: InputGainMilliDb::new(value.state.gain_millidb)
-                        .expect("engine aux bus gain is bounded by the model contract"),
+                        .unwrap_or(InputGainMilliDb::UNITY),
                     muted: value.state.muted,
                     dsp: value.dsp,
                 },
@@ -12510,7 +12518,7 @@ fn sync_project_audio_mixer(project: &mut fm_model::Project, show: &ShowState) -
         .set_audio_monitor_output(fm_model::AudioMonitorOutput {
             device: monitor.device.clone(),
             gain: InputGainMilliDb::new(monitor.state.gain_millidb)
-                .expect("engine monitor gain is bounded by the model contract"),
+                .unwrap_or(InputGainMilliDb::UNITY),
             muted: monitor.state.muted,
         })
         .map_err(|error| AppFailure(format!("project cannot take the monitor output: {error}")))?;
@@ -12534,17 +12542,13 @@ fn sync_project_audio_mixer(project: &mut fm_model::Project, show: &ShowState) -
 
 fn model_audio_strip_state(state: EngineInputAudioStripState) -> InputAudioStripState {
     InputAudioStripState {
-        gain: InputGainMilliDb::new(state.gain_millidb)
-            .expect("engine input audio gain is bounded by the model contract"),
-        balance: InputBalanceBasisPoints::new(state.balance_basis_points)
-            .expect("engine input audio balance is bounded by the model contract"),
-        pan: fm_model::InputPanBasisPoints::new(state.pan_basis_points)
-            .expect("engine input audio pan is bounded by the model contract"),
+        gain: InputGainMilliDb::new(state.gain_millidb).unwrap_or(InputGainMilliDb::UNITY),
+        balance: InputBalanceBasisPoints::new(state.balance_basis_points).unwrap_or_default(),
+        pan: fm_model::InputPanBasisPoints::new(state.pan_basis_points).unwrap_or_default(),
         muted: state.muted,
         soloed: state.soloed,
         follow_video: state.follow_video,
-        delay_samples: InputDelaySamples::new(state.delay_samples)
-            .expect("engine input audio delay is bounded by the model contract"),
+        delay_samples: InputDelaySamples::new(state.delay_samples).unwrap_or_default(),
         sends: state.sends,
     }
 }
@@ -14997,14 +15001,14 @@ fn command_base_ticks(
         | CommandPayload::OverlayOff { channel }
         | CommandPayload::TakeNextOverlay { channel } => {
             let channel =
-                OverlayChannelId::new(channel.number()).expect("wire overlay channels are bounded");
+                OverlayChannelId::new(channel.number()).unwrap_or(OverlayChannelId::ALL[0]);
             prepared.overlay_transition_ticks(channel)
         }
         // A title take realizes its whole In phase, as a fade realizes its
         // whole duration.
         CommandPayload::TakeTitle { input, channel, .. } => {
             let channel =
-                OverlayChannelId::new(channel.number()).expect("wire overlay channels are bounded");
+                OverlayChannelId::new(channel.number()).unwrap_or(OverlayChannelId::ALL[0]);
             prepared.title_take_ticks(input.to_domain(), channel)
         }
         CommandPayload::TitleOffAir { input } => prepared.title_off_air_ticks(input.to_domain()),
@@ -15759,7 +15763,7 @@ fn persisted_overlay(channel: &OverlayChannelState) -> RuntimeOverlayChannel {
         transition: RuntimeOverlayTransition::from_token(
             fm_control::wire_overlay_transition(channel.transition()).token(),
         )
-        .expect("every overlay transition has a persisted token"),
+        .unwrap_or_default(),
         duration_frames: channel.duration_frames(),
         position: persisted_overlay_position(channel.position()),
         border: persisted_overlay_border(channel.border()),
@@ -15812,7 +15816,9 @@ fn restore_overlays(
     for (index, (desired, realized_state)) in
         overlays.desired.iter().zip(&overlays.realized).enumerate()
     {
-        let channel = OverlayChannelId::from_index(index).expect("overlay index is bounded");
+        let Some(channel) = OverlayChannelId::from_index(index) else {
+            continue;
+        };
         restore_overlay(show.desired_switcher_mut(), channel, desired)?;
         restore_overlay(realized, channel, realized_state)?;
     }
@@ -15828,7 +15834,7 @@ fn restore_overlay(
         channel,
         fm_control::domain_overlay_transition(
             fm_protocol::OverlayTransitionKind::from_token(state.transition.token())
-                .expect("every persisted overlay transition has a wire token"),
+                .unwrap_or_default(),
         ),
         state.duration_frames,
     )?;
@@ -15858,11 +15864,15 @@ fn sync_project_stingers(
     desired: &SwitcherState,
     realized: &SwitcherState,
 ) -> AppResult<()> {
-    for number in 1..=u8::try_from(StingerSlotNumber::COUNT)
-        .expect("Stinger slot count fits the operator-facing number")
-    {
-        let model_slot = StingerSlotNumber::new(number).expect("Stinger slot number is bounded");
-        let slot = StingerSlotId::new(number).expect("Stinger slot number is bounded");
+    let Ok(last) = u8::try_from(StingerSlotNumber::COUNT) else {
+        return Ok(());
+    };
+    for number in 1..=last {
+        let (Some(model_slot), Some(slot)) =
+            (StingerSlotNumber::new(number), StingerSlotId::new(number))
+        else {
+            continue;
+        };
         let desired_state = desired.stinger(slot);
         if desired_state != realized.stinger(slot) {
             // Realization has not caught up with the desired slot yet. That
@@ -15907,8 +15917,7 @@ fn sync_project_stingers(
 fn persisted_fade_to_black(state: fm_engine::EngineFadeToBlackState) -> PersistedFadeToBlackState {
     PersistedFadeToBlackState::new(
         state.active,
-        u16::try_from(state.position.numerator())
-            .expect("engine fade-to-black numerator uses the u16 contract"),
+        u16::try_from(state.position.numerator()).unwrap_or(u16::MAX),
     )
 }
 
@@ -15932,14 +15941,19 @@ fn persisted_t_bar(state: TBarState) -> PersistedManualTransitionState {
             clip_frames: state.clip_frames(),
         },
     };
-    PersistedManualTransitionState::new(
+    PersistedManualTransitionState {
         kind,
-        state.from(),
-        state.to(),
-        state.interval_start().basis_points(),
-        state.position().basis_points(),
-    )
-    .expect("engine manual transition positions are bounded")
+        from_id: state.from(),
+        to_id: state.to(),
+        interval_start_basis_points: state
+            .interval_start()
+            .basis_points()
+            .min(PersistedManualTransitionState::MAX_POSITION),
+        position_basis_points: state
+            .position()
+            .basis_points()
+            .min(PersistedManualTransitionState::MAX_POSITION),
+    }
 }
 
 fn restored_t_bar(state: PersistedManualTransitionState) -> AppResult<TBarState> {
@@ -16425,7 +16439,7 @@ fn development_principal() -> AppResult<Principal> {
 }
 
 fn clock_domain() -> ClockDomainId {
-    ClockDomainId::new(NonZeroU128::new(1).expect("one is nonzero"))
+    ClockDomainId::new(NonZeroU128::MIN)
 }
 
 fn required_routing(value: Option<InputId>, field: &'static str) -> AppResult<InputId> {

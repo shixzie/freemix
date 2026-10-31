@@ -307,6 +307,9 @@ impl fmt::Display for WireStingerSlotId {
 pub struct WireRecorderSlot(u8);
 
 impl WireRecorderSlot {
+    /// Recorder slot 1, the first of the two.
+    pub const FIRST: Self = Self(1);
+
     #[must_use]
     pub const fn new(value: u8) -> Option<Self> {
         if value >= 1 && value <= 2 {

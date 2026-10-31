@@ -1282,7 +1282,7 @@ mod tests {
 
     #[test]
     fn cue_lists_shortcuts_and_scripts_reach_a_web_session_without_hidden_values() {
-        let records = [
+        let records = vec![
             WireMessage::CueListState(fm_protocol::CueListStateMessage {
                 revision: 4,
                 frame: 0,

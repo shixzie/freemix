@@ -57,6 +57,17 @@ impl AlertPolicy {
     pub const fn clear(self) -> f64 {
         self.clear
     }
+
+    /// A policy that never fires, for a caller whose thresholds could not
+    /// form a band.
+    #[must_use]
+    pub const fn inert() -> Self {
+        Self {
+            direction: ThresholdDirection::Below,
+            trigger: 0.0,
+            clear: 1.0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

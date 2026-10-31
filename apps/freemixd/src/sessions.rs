@@ -370,6 +370,21 @@ impl LossyRecords {
 }
 
 impl Peer {
+    /// The peer's control session, or a peer error when it has none.
+    fn session(&self) -> Result<&Session, DispatchError> {
+        self.session.as_ref().ok_or(DispatchError::Peer)
+    }
+
+    /// The peer's control session, mutably.
+    fn session_mut(&mut self) -> Result<&mut Session, DispatchError> {
+        self.session.as_mut().ok_or(DispatchError::Peer)
+    }
+
+    /// The server identity the peer was greeted with.
+    fn identity(&self) -> Result<&ServerIdentity, DispatchError> {
+        self.identity.as_ref().ok_or(DispatchError::Peer)
+    }
+
     fn new(
         id: u64,
         transport: Transport,
@@ -929,7 +944,11 @@ pub(super) fn run(
                     // to MAX_WEB_CLIENTS; this check only keeps that bound
                     // local to the scheduler too.
                     WebEvent::Connected(connection) if web_peer_count(&peers) < MAX_WEB_CLIENTS => {
-                        let web_principal = web_principal(&connection.identity, next_peer_id);
+                        let Some(web_principal) = web_principal(&connection.identity, next_peer_id)
+                        else {
+                            connection.cancel.store(true, Ordering::Release);
+                            continue;
+                        };
                         let transport = Transport::Web(WebTransport {
                             inbound: connection.inbound,
                             outbound: connection.outbound,
@@ -1012,7 +1031,9 @@ pub(super) fn run(
                 && peer.held_result.is_none()
                 && matches!(peer.inbound.front(), Some(WireMessage::Heartbeat(_)))
             {
-                let heartbeat = peer.inbound.pop_front().expect("the front is a heartbeat");
+                let Some(heartbeat) = peer.inbound.pop_front() else {
+                    break;
+                };
                 match runtime.dispatch(peer, heartbeat, durable, None) {
                     Ok(()) => {}
                     Err(DispatchError::Peer) => {
@@ -1777,7 +1798,9 @@ fn release_held_results(
         if held.slot.is_some_and(&mut settling) {
             continue;
         }
-        let held = peer.held_result.take().expect("checked above");
+        let Some(held) = peer.held_result.take() else {
+            continue;
+        };
         match peer.queue(&held.message, Accounting::Session) {
             Ok(()) => {}
             Err(refusal) if refusal.transient() => {
@@ -1960,22 +1983,22 @@ fn native_group(
 }
 
 /// The principal of a Web session: the operator's `FREEMIXD_WEB_TOKEN`
-/// holds every role, a paired device only the roles of its pairing.
-fn web_principal(identity: &fm_daemon_web::WebIdentity, peer_id: u64) -> Principal {
-    let session = fm_auth::SessionId::new(format!("web-{peer_id}"))
-        .expect("scheduler web session id is valid");
-    match identity {
+/// holds every role, a paired device only the roles of its pairing; `None`
+/// for an identity whose names the auth grammar refuses.
+fn web_principal(identity: &fm_daemon_web::WebIdentity, peer_id: u64) -> Option<Principal> {
+    let session = fm_auth::SessionId::new(format!("web-{peer_id}")).ok()?;
+    Some(match identity {
         fm_daemon_web::WebIdentity::StaticToken => Principal::authenticated(
-            fm_auth::UserId::new("web-token").expect("stable web user is valid"),
+            fm_auth::UserId::new("web-token").ok()?,
             session,
             [fm_auth::Role::Admin],
         ),
         fm_daemon_web::WebIdentity::Device { id, role } => Principal::authenticated(
-            fm_auth::UserId::new(id.as_str()).expect("device ids are valid user ids"),
+            fm_auth::UserId::new(id.as_str()).ok()?,
             session,
             role.granted_roles().iter().copied(),
         ),
-    }
+    })
 }
 
 fn web_peer_count(peers: &[Peer]) -> usize {
@@ -2187,7 +2210,9 @@ impl Runtime<'_> {
     ) -> Result<(), DispatchError> {
         if let [(index, _)] = group.as_slice() {
             let index = *index;
-            let (_, command) = group.into_iter().next().expect("one command");
+            let Some((_, command)) = group.into_iter().next() else {
+                return Ok(());
+            };
             return match self.dispatch(
                 &mut peers[index],
                 WireMessage::Command(command),
@@ -2204,23 +2229,22 @@ impl Runtime<'_> {
         let simulated = native.is_none();
         let members: Vec<GroupMember> = group
             .iter()
-            .map(|(index, command)| GroupMember {
-                principal: peers[*index].principal.clone(),
-                server: peers[*index]
-                    .identity
-                    .clone()
-                    .expect("active peers have identities"),
-                // A live fire's Preview and Program are the authority's to
-                // bind (RC-004), as for a command executed alone.
-                command: fm_control::client_fire_payload(&command.payload).map_or_else(
-                    || command.clone(),
-                    |payload| fm_protocol::CommandMessage {
-                        payload,
-                        ..command.clone()
-                    },
-                ),
+            .map(|(index, command)| {
+                Ok::<_, DispatchError>(GroupMember {
+                    principal: peers[*index].principal.clone(),
+                    server: peers[*index].identity.clone().ok_or(DispatchError::Peer)?,
+                    // A live fire's Preview and Program are the authority's to
+                    // bind (RC-004), as for a command executed alone.
+                    command: fm_control::client_fire_payload(&command.payload).map_or_else(
+                        || command.clone(),
+                        |payload| fm_protocol::CommandMessage {
+                            payload,
+                            ..command.clone()
+                        },
+                    ),
+                })
             })
-            .collect();
+            .collect::<Result<_, _>>()?;
         // A command holds an in-flight slot of its session from its
         // admission until it completed. A peer with several commands in the
         // group has the slot of its previous one released before the next
@@ -2238,10 +2262,9 @@ impl Runtime<'_> {
             |member, control, staged, now| {
                 let command = &members[member].command;
                 let index = group[member].0;
-                let session = peers[index]
-                    .session
-                    .as_mut()
-                    .expect("active peers have sessions");
+                let Some(session) = peers[index].session.as_mut() else {
+                    return Err(std::io::Error::other("an active peer has no session").into());
+                };
                 if let Some(previous) = holding[index].take() {
                     session.command_completed()?;
                     released[previous] = true;
@@ -2263,19 +2286,18 @@ impl Runtime<'_> {
             if close[*index] {
                 continue;
             }
-            if outcome.admitted
-                && !released[member]
-                && let Err(error) = peer
-                    .session
-                    .as_mut()
-                    .expect("active peers have sessions")
-                    .command_completed()
-            {
-                if is_client_session_termination(&error) {
+            if outcome.admitted && !released[member] {
+                let Some(session) = peer.session.as_mut() else {
                     close[*index] = dropping(peer.id, "dispatch_refused");
                     continue;
+                };
+                if let Err(error) = session.command_completed() {
+                    if is_client_session_termination(&error) {
+                        close[*index] = dropping(peer.id, "dispatch_refused");
+                        continue;
+                    }
+                    return Err(DispatchError::Daemon(error.into()));
                 }
-                return Err(DispatchError::Daemon(error.into()));
             }
             let mut result = outcome.delivery.result;
             if peer.transport.is_web() {
@@ -2309,15 +2331,15 @@ impl Runtime<'_> {
                     peer.reply(WireMessage::CommandResult(refused))?;
                     return Ok(());
                 }
+                let principal = peer.principal.clone();
+                let identity = peer.identity()?.clone();
                 let delivery = execute_session_command(
-                    peer.session.as_mut().expect("active peers have sessions"),
+                    peer.session_mut()?,
                     self.control,
                     self.store,
                     durable,
-                    &peer.principal,
-                    peer.identity
-                        .as_ref()
-                        .expect("active peers have identities"),
+                    &principal,
+                    &identity,
                     &command,
                     native.as_deref_mut(),
                     Some(self.process_shutdown),
@@ -2349,14 +2371,11 @@ impl Runtime<'_> {
                 Ok(())
             }
             WireMessage::Heartbeat(heartbeat) => {
-                let identity = peer
-                    .identity
-                    .as_ref()
-                    .expect("active peers have identities");
+                let identity = peer.identity()?.clone();
                 let message = match record_heartbeat(
-                    peer.session.as_mut().expect("active peers have sessions"),
+                    peer.session_mut()?,
                     self.control,
-                    identity,
+                    &identity,
                     &heartbeat,
                 ) {
                     Ok(received_at_ms) => {
@@ -2375,7 +2394,7 @@ impl Runtime<'_> {
                 let encoded_bytes = encode_line(&WireMessage::DiagnosticsRequest(request.clone()))
                     .map_err(|_| ())?
                     .len();
-                let session = peer.session.as_mut().expect("active peers have sessions");
+                let session = peer.session_mut()?;
                 let response = match session.admit_diagnostics(
                     &request,
                     encoded_bytes,
@@ -2468,8 +2487,9 @@ impl Runtime<'_> {
             // control session holding manage_users may manage it, never a
             // session relayed by the gateway itself.
             WireMessage::WebAccessRequest(request) => {
-                let session = peer.session.as_mut().expect("active peers have sessions");
-                let (refusal, gateway) = if peer.transport.is_web() {
+                let is_web = peer.transport.is_web();
+                let session = peer.session_mut()?;
+                let (refusal, gateway) = if is_web {
                     (Some(fm_protocol::WebAccessRefusal::WebSession), None)
                 } else {
                     match session.admit_web_access(now_millis().map_err(|_| ())?) {
@@ -2523,7 +2543,7 @@ impl Runtime<'_> {
             // application and title, so only a session that may edit the
             // project (and so add a screen capture input) is answered.
             WireMessage::ScreenCaptureTargetsRequest(request) => {
-                let session = peer.session.as_ref().expect("active peers have sessions");
+                let session = peer.session()?;
                 if let Err(error) = session.admit_screen_capture_targets() {
                     let current_revision =
                         Some(self.control.borrow().diagnostics().current_revision);
@@ -2541,7 +2561,7 @@ impl Runtime<'_> {
             // A new pick of a screen capture input's target (IN-011,
             // Protocol 2.85).
             WireMessage::ScreenCapturePickRequest(request) => {
-                let session = peer.session.as_mut().expect("active peers have sessions");
+                let session = peer.session_mut()?;
                 if let Err(error) = session.admit_screen_capture_pick(now_millis().map_err(|_| ())?)
                 {
                     let current_revision =
@@ -2750,7 +2770,7 @@ impl Runtime<'_> {
         request_id: &str,
         admit: impl FnOnce(&Session) -> Result<(), SessionError>,
     ) -> Result<bool, DispatchError> {
-        let session = peer.session.as_ref().expect("active peers have sessions");
+        let session = peer.session()?;
         let Err(error) = admit(session) else {
             return Ok(false);
         };
@@ -2867,7 +2887,7 @@ impl Runtime<'_> {
             return Ok(());
         }
         let encoded_bytes = encode_line(&request.wire()).map_err(|_| ())?.len();
-        let session = peer.session.as_mut().expect("active peers have sessions");
+        let session = peer.session_mut()?;
         let now = now_millis().map_err(|_| ())?;
         let admitted = match request {
             PreviewRequest::Title(request) => {
@@ -2880,10 +2900,7 @@ impl Runtime<'_> {
                 session.admit_replay_preview(request, encoded_bytes, now)
             }
         };
-        let server = peer
-            .identity
-            .as_ref()
-            .expect("active peers have identities");
+        let server = peer.identity()?;
         let prepared = admitted
             .map_err(|error| structured_session_error(&error))
             .and_then(|()| {
@@ -3238,7 +3255,9 @@ impl Runtime<'_> {
             )
             .is_err()
         {
-            let subscription = peer.subscription.take().expect("set above");
+            let Some(subscription) = peer.subscription.take() else {
+                return Err(DispatchError::Peer);
+            };
             self.control.borrow_mut().unsubscribe(subscription.id());
             return Err(DispatchError::Peer);
         }
@@ -3376,12 +3395,10 @@ fn drain_live(
             let message = if let Some(message) = peer.deferred_live.pop_front() {
                 message
             } else {
-                match peer
-                    .subscription
-                    .as_ref()
-                    .expect("active peers have subscriptions")
-                    .try_recv()
-                {
+                let Some(subscription) = peer.subscription.as_ref() else {
+                    break;
+                };
+                match subscription.try_recv() {
                     Ok(LiveEvent::Durable(event)) => match hidden {
                         Some(hidden) if peer.transport.is_web() => {
                             let message = WireMessage::Event(event);
@@ -3461,16 +3478,16 @@ fn write_web_peer(peer: &mut Peer) -> WriteOutcome {
                 if !outbound.front().is_some_and(|record| record.channel_sent) {
                     return WriteOutcome::Failed;
                 }
-                let record = outbound.pop_front().expect("checked above");
-                if record.accounted
-                    && matches!(record.accounting, Accounting::Session)
-                    && session
-                        .as_mut()
-                        .expect("accounted records have sessions")
-                        .outbound_delivered()
-                        .is_err()
-                {
+                let Some(record) = outbound.pop_front() else {
                     return WriteOutcome::Failed;
+                };
+                if record.accounted && matches!(record.accounting, Accounting::Session) {
+                    let Some(session) = session.as_mut() else {
+                        return WriteOutcome::Failed;
+                    };
+                    if session.outbound_delivered().is_err() {
+                        return WriteOutcome::Failed;
+                    }
                 }
                 if record.handshake_response {
                     *handshake_written = true;
@@ -3507,11 +3524,10 @@ fn write_web_peer(peer: &mut Peer) -> WriteOutcome {
             let Ok(now) = now_millis() else {
                 return WriteOutcome::Failed;
             };
-            match session
-                .as_mut()
-                .expect("session accounting has a session")
-                .queue_outbound(bytes.len(), now)
-            {
+            let Some(session) = session.as_mut() else {
+                return WriteOutcome::Failed;
+            };
+            match session.queue_outbound(bytes.len(), now) {
                 Ok(()) => {}
                 // Retryable and never disconnecting: send on a later pass.
                 Err(SessionError::OutboundRateLimited) => break,
@@ -3603,17 +3619,16 @@ fn write_peer_pass(peer: &mut Peer) -> WriteOutcome {
 }
 
 fn finish_outbound(peer: &mut Peer) -> WriteOutcome {
-    let record = peer.outbound.pop_front().expect("written record exists");
-    if record.accounted
-        && matches!(record.accounting, Accounting::Session)
-        && peer
-            .session
-            .as_mut()
-            .expect("accounted records have sessions")
-            .outbound_delivered()
-            .is_err()
-    {
+    let Some(record) = peer.outbound.pop_front() else {
         return WriteOutcome::Failed;
+    };
+    if record.accounted && matches!(record.accounting, Accounting::Session) {
+        let Some(session) = peer.session.as_mut() else {
+            return WriteOutcome::Failed;
+        };
+        if session.outbound_delivered().is_err() {
+            return WriteOutcome::Failed;
+        }
     }
     if record.handshake_response {
         peer.handshake_written = true;

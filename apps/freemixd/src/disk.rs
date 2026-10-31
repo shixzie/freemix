@@ -181,7 +181,7 @@ impl DiskSpaceAlert {
                     DISK_LOW_FREE_BYTES as f64,
                     DISK_CLEAR_FREE_BYTES as f64,
                 )
-                .expect("the free-space constants form a hysteresis band"),
+                .unwrap_or(AlertPolicy::inert()),
             ),
         }
     }
@@ -202,7 +202,7 @@ impl DiskSpaceAlert {
     pub fn observe(&mut self, available_bytes: u64) -> AlertTransition {
         self.alert
             .evaluate(available_bytes as f64)
-            .expect("a byte count converts to a finite f64")
+            .unwrap_or(AlertTransition::None)
     }
 
     /// The current alert state.

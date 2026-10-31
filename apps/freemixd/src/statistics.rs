@@ -40,6 +40,11 @@
 //! native daemon prints at shutdown keeps its own whole-run aggregation and
 //! fields unchanged.
 
+#![expect(
+    clippy::expect_used,
+    reason = "the daemon's metric and alert tables are static and unit-tested"
+)]
+
 use std::time::{Duration, Instant};
 
 use std::collections::VecDeque;
