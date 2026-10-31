@@ -42,7 +42,8 @@
 //! extent of at least one pixel, so walking the tape always makes progress.
 
 use crate::{
-    Alignment, AssetCatalog, Bounds, Color, ElementId, FontFace, FontStyle, MAX_FONT_SIZE_PX,
+    Alignment, AssetCatalog, Bounds, Color, ElementId, FontFace, FontStyle, HorizontalAlignment,
+    MAX_FONT_SIZE_PX, VerticalAlignment,
     font::ScaledFace,
     text::{LaidText, layout_text},
 };
@@ -990,4 +991,406 @@ const fn gcd(mut left: u32, mut right: u32) -> u32 {
         right = remainder;
     }
     left
+}
+
+/// Largest canonical crawl document, in bytes.
+pub const MAX_CRAWL_DOCUMENT_BYTES: usize = 256 * 1024;
+
+/// One crawl item with owned strings, ready to persist.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CrawlItemSnapshot {
+    pub text: String,
+    pub fill: Option<Color>,
+    pub logo: Option<CrawlLogoSnapshot>,
+}
+
+/// One crawl item logo with an owned asset name.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CrawlLogoSnapshot {
+    pub asset: String,
+    pub width_px: u32,
+}
+
+/// A crawl's static configuration and items, ready to persist.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CrawlSnapshot {
+    pub config: CrawlConfig,
+    pub items: Vec<CrawlItemSnapshot>,
+}
+
+/// Why a crawl document is invalid.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CrawlDocumentError {
+    TooLarge { maximum: usize },
+    Version { found: String },
+    Line { index: usize },
+    Invalid(CrawlError),
+}
+
+impl fmt::Display for CrawlDocumentError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLarge { maximum } => {
+                write!(formatter, "crawl document exceeds {maximum} bytes")
+            }
+            Self::Version { found } => {
+                write!(formatter, "crawl document version {found:?} is not 1")
+            }
+            Self::Line { index } => write!(formatter, "crawl line {index} is malformed"),
+            Self::Invalid(error) => write!(formatter, "crawl state is invalid: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for CrawlDocumentError {}
+
+impl CrawlSnapshot {
+    /// Validates the snapshot against the crawl model's bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`CrawlError`] the configuration or items break.
+    pub fn validate(&self) -> Result<(), CrawlDocumentError> {
+        let items: Vec<CrawlItem<'_>> = self
+            .items
+            .iter()
+            .map(|item| CrawlItem {
+                text: &item.text,
+                fill: item.fill,
+                logo: item.logo.as_ref().map(|logo| CrawlLogo {
+                    asset: &logo.asset,
+                    width_px: logo.width_px,
+                }),
+            })
+            .collect();
+        Crawl::new_styled(
+            ElementId::new(core::num::NonZeroU128::MIN),
+            self.config.clone(),
+            &items,
+            &UnitMeasure,
+        )
+        .map(|_| ())
+        .map_err(CrawlDocumentError::Invalid)
+    }
+
+    /// Serializes the snapshot as a strict, versioned text document.
+    #[must_use]
+    pub fn to_document(&self) -> String {
+        use fmt::Write as _;
+        let config = &self.config;
+        let mut output = String::from("freemix-crawl 1\n");
+        let _ = writeln!(
+            output,
+            "mode {}",
+            match config.mode {
+                CrawlMode::Crawl => "crawl",
+                CrawlMode::CrawlRight => "crawl_right",
+                CrawlMode::Roll => "roll",
+                CrawlMode::RollDown => "roll_down",
+            }
+        );
+        let _ = writeln!(
+            output,
+            "bounds {} {} {} {}",
+            config.bounds.x, config.bounds.y, config.bounds.width, config.bounds.height
+        );
+        let _ = writeln!(
+            output,
+            "speed {} {}",
+            config.speed.pixels(),
+            config.speed.seconds()
+        );
+        let _ = writeln!(
+            output,
+            "frame_rate {} {}",
+            config.frame_rate.numerator(),
+            config.frame_rate.denominator()
+        );
+        let _ = writeln!(output, "start_frame {}", config.start_frame);
+        let _ = writeln!(output, "separator {}", encode_crawl_text(&config.separator));
+        let _ = writeln!(output, "gap {}", config.gap_px);
+        let _ = writeln!(
+            output,
+            "font {} {}",
+            encode_crawl_text(&config.font.family),
+            config.font.size_px
+        );
+        let _ = writeln!(output, "fill {}", write_crawl_color(config.fill));
+        let _ = writeln!(
+            output,
+            "background {}",
+            config
+                .background
+                .map_or_else(|| "none".to_owned(), write_crawl_color)
+        );
+        let _ = writeln!(output, "opacity {}", config.opacity);
+        let _ = writeln!(
+            output,
+            "alignment {} {}",
+            horizontal_token(config.alignment.horizontal),
+            vertical_token(config.alignment.vertical)
+        );
+        let _ = writeln!(output, "items {}", self.items.len());
+        for item in &self.items {
+            let _ = writeln!(
+                output,
+                "item {} {} {} {}",
+                encode_crawl_text(&item.text),
+                item.fill.map_or_else(|| "none".to_owned(), write_crawl_color),
+                item.logo
+                    .as_ref()
+                    .map_or_else(|| "none".to_owned(), |logo| encode_crawl_text(&logo.asset)),
+                item.logo.as_ref().map_or(0, |logo| logo.width_px)
+            );
+        }
+        output
+    }
+
+    /// Parses a strict crawl document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CrawlDocumentError`] for an oversized, malformed, or
+    /// out-of-contract document without accepting a partial result.
+    #[allow(clippy::too_many_lines)]
+    pub fn from_document(document: &str) -> Result<Self, CrawlDocumentError> {
+        if document.len() > MAX_CRAWL_DOCUMENT_BYTES {
+            return Err(CrawlDocumentError::TooLarge {
+                maximum: MAX_CRAWL_DOCUMENT_BYTES,
+            });
+        }
+        let mut lines = document.lines().enumerate();
+        let Some((_, header)) = lines.next() else {
+            return Err(CrawlDocumentError::Line { index: 1 });
+        };
+        if header != "freemix-crawl 1" {
+            return Err(CrawlDocumentError::Version {
+                found: header.to_owned(),
+            });
+        }
+        let mut index = 1;
+        macro_rules! next {
+            ($expected:expr) => {{
+                let Some((line_index, line)) = lines.next() else {
+                    return Err(CrawlDocumentError::Line { index: index + 1 });
+                };
+                index = line_index + 2;
+                let mut parts = line.split(' ');
+                if parts.next() != Some($expected) {
+                    return Err(CrawlDocumentError::Line { index });
+                }
+                parts.collect::<Vec<_>>()
+            }};
+        }
+        let mode = match single(&next!("mode"), index)? {
+            "crawl" => CrawlMode::Crawl,
+            "crawl_right" => CrawlMode::CrawlRight,
+            "roll" => CrawlMode::Roll,
+            "roll_down" => CrawlMode::RollDown,
+            _ => return Err(CrawlDocumentError::Line { index }),
+        };
+        let bounds = next!("bounds");
+        if bounds.len() != 4 {
+            return Err(CrawlDocumentError::Line { index });
+        }
+        let bounds = Bounds {
+            x: parse_i32(bounds[0], index)?,
+            y: parse_i32(bounds[1], index)?,
+            width: parse_u32(bounds[2], index)?,
+            height: parse_u32(bounds[3], index)?,
+        };
+        let speed = next!("speed");
+        if speed.len() != 2 {
+            return Err(CrawlDocumentError::Line { index });
+        }
+        let speed = CrawlSpeed::new(parse_u32(speed[0], index)?, parse_u32(speed[1], index)?)
+            .map_err(CrawlDocumentError::Invalid)?;
+        let rate = next!("frame_rate");
+        if rate.len() != 2 {
+            return Err(CrawlDocumentError::Line { index });
+        }
+        let frame_rate =
+            FrameRate::new(parse_u32(rate[0], index)?, parse_u32(rate[1], index)?)
+                .map_err(|_| CrawlDocumentError::Line { index })?;
+        let start_frame = parse_u64(single(&next!("start_frame"), index)?, index)?;
+        let separator = decode_crawl_text(single(&next!("separator"), index)?, index)?;
+        let gap_px = parse_u32(single(&next!("gap"), index)?, index)?;
+        let font = next!("font");
+        if font.len() != 2 {
+            return Err(CrawlDocumentError::Line { index });
+        }
+        let family = decode_crawl_text(font[0], index)?;
+        let size_px = parse_u32(font[1], index)?;
+        let fill = parse_crawl_color(single(&next!("fill"), index)?, index)?;
+        let background = match single(&next!("background"), index)? {
+            "none" => None,
+            text => Some(parse_crawl_color(text, index)?),
+        };
+        let opacity = u8::try_from(parse_u32(single(&next!("opacity"), index)?, index)?)
+            .map_err(|_| CrawlDocumentError::Line { index })?;
+        let alignment = next!("alignment");
+        if alignment.len() != 2 {
+            return Err(CrawlDocumentError::Line { index });
+        }
+        let alignment = Alignment {
+            horizontal: parse_horizontal(alignment[0], index)?,
+            vertical: parse_vertical(alignment[1], index)?,
+        };
+        let count = usize::try_from(parse_u32(single(&next!("items"), index)?, index)?)
+            .map_err(|_| CrawlDocumentError::Line { index })?;
+        if count > MAX_CRAWL_ITEMS {
+            return Err(CrawlDocumentError::Invalid(CrawlError::TooManyItems {
+                count,
+                maximum: MAX_CRAWL_ITEMS,
+            }));
+        }
+        let mut items = Vec::with_capacity(count);
+        for _ in 0..count {
+            let item = next!("item");
+            if item.len() != 4 {
+                return Err(CrawlDocumentError::Line { index });
+            }
+            let text = decode_crawl_text(item[0], index)?;
+            let fill = match item[1] {
+                "none" => None,
+                text => Some(parse_crawl_color(text, index)?),
+            };
+            let logo = match item[2] {
+                "none" => None,
+                asset => Some(CrawlLogoSnapshot {
+                    asset: decode_crawl_text(asset, index)?,
+                    width_px: parse_u32(item[3], index)?,
+                }),
+            };
+            items.push(CrawlItemSnapshot { text, fill, logo });
+        }
+        if lines.next().is_some() {
+            return Err(CrawlDocumentError::Line { index: index + 1 });
+        }
+        let snapshot = Self {
+            config: CrawlConfig {
+                mode,
+                bounds,
+                speed,
+                frame_rate,
+                start_frame,
+                separator,
+                gap_px,
+                font: FontStyle { family, size_px },
+                fill,
+                background,
+                opacity,
+                alignment,
+            },
+            items,
+        };
+        snapshot.validate()?;
+        Ok(snapshot)
+    }
+}
+
+struct UnitMeasure;
+
+impl CrawlMeasure for UnitMeasure {
+    fn measure(&self, _text: &str) -> u32 {
+        1
+    }
+}
+
+fn single<'a>(fields: &'a [&'a str], index: usize) -> Result<&'a str, CrawlDocumentError> {
+    if fields.len() == 1 {
+        Ok(fields[0])
+    } else {
+        Err(CrawlDocumentError::Line { index })
+    }
+}
+
+fn parse_u32(text: &str, index: usize) -> Result<u32, CrawlDocumentError> {
+    text.parse().map_err(|_| CrawlDocumentError::Line { index })
+}
+
+fn parse_i32(text: &str, index: usize) -> Result<i32, CrawlDocumentError> {
+    text.parse().map_err(|_| CrawlDocumentError::Line { index })
+}
+
+fn parse_u64(text: &str, index: usize) -> Result<u64, CrawlDocumentError> {
+    text.parse().map_err(|_| CrawlDocumentError::Line { index })
+}
+
+const fn horizontal_token(alignment: HorizontalAlignment) -> &'static str {
+    match alignment {
+        HorizontalAlignment::Start => "start",
+        HorizontalAlignment::Center => "center",
+        HorizontalAlignment::End => "end",
+    }
+}
+
+const fn vertical_token(alignment: VerticalAlignment) -> &'static str {
+    match alignment {
+        VerticalAlignment::Start => "start",
+        VerticalAlignment::Center => "center",
+        VerticalAlignment::End => "end",
+    }
+}
+
+fn parse_horizontal(text: &str, index: usize) -> Result<HorizontalAlignment, CrawlDocumentError> {
+    match text {
+        "start" => Ok(HorizontalAlignment::Start),
+        "center" => Ok(HorizontalAlignment::Center),
+        "end" => Ok(HorizontalAlignment::End),
+        _ => Err(CrawlDocumentError::Line { index }),
+    }
+}
+
+fn parse_vertical(text: &str, index: usize) -> Result<VerticalAlignment, CrawlDocumentError> {
+    match text {
+        "start" => Ok(VerticalAlignment::Start),
+        "center" => Ok(VerticalAlignment::Center),
+        "end" => Ok(VerticalAlignment::End),
+        _ => Err(CrawlDocumentError::Line { index }),
+    }
+}
+
+fn encode_crawl_text(text: &str) -> String {
+    use fmt::Write as _;
+    let mut output = String::from("x");
+    for byte in text.bytes() {
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
+fn decode_crawl_text(token: &str, index: usize) -> Result<String, CrawlDocumentError> {
+    let Some(hex) = token.strip_prefix('x') else {
+        return Err(CrawlDocumentError::Line { index });
+    };
+    if hex.len() % 2 != 0 {
+        return Err(CrawlDocumentError::Line { index });
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for chunk in hex.as_bytes().chunks(2) {
+        let pair = core::str::from_utf8(chunk).map_err(|_| CrawlDocumentError::Line { index })?;
+        bytes.push(u8::from_str_radix(pair, 16).map_err(|_| CrawlDocumentError::Line { index })?);
+    }
+    String::from_utf8(bytes).map_err(|_| CrawlDocumentError::Line { index })
+}
+
+fn write_crawl_color(color: Color) -> String {
+    format!("#{:02x}{:02x}{:02x}{:02x}", color.r, color.g, color.b, color.a)
+}
+
+fn parse_crawl_color(text: &str, index: usize) -> Result<Color, CrawlDocumentError> {
+    let bytes = text.as_bytes();
+    if bytes.len() != 9 || bytes[0] != b'#' {
+        return Err(CrawlDocumentError::Line { index });
+    }
+    let component = |range: core::ops::Range<usize>| -> Result<u8, CrawlDocumentError> {
+        u8::from_str_radix(&text[range], 16).map_err(|_| CrawlDocumentError::Line { index })
+    };
+    Ok(Color::new(
+        component(1..3)?,
+        component(3..5)?,
+        component(5..7)?,
+        component(7..9)?,
+    ))
 }

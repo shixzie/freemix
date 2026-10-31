@@ -68,6 +68,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_title_timelines(project, &mut errors);
     validate_scoreboards(project, &mut errors);
     validate_previews(project, &mut errors);
+    validate_crawls(project, &mut errors);
     validate_production_clocks(project, &mut errors);
     validate_grading(project, &mut errors);
     validate_animation_presets(project, &mut errors);
@@ -405,6 +406,35 @@ fn validate_production_clocks(project: &Project, errors: &mut Vec<ValidationErro
             field: "production_clocks",
             kind: ValidationErrorKind::OutOfRange,
         });
+    }
+}
+
+fn validate_crawls(project: &Project, errors: &mut Vec<ValidationError>) {
+    if project.crawl_documents().len() > crate::MAX_CRAWLS {
+        errors.push(ValidationError {
+            entity: None,
+            field: "crawls",
+            kind: ValidationErrorKind::OutOfRange,
+        });
+    }
+    for (input, document) in project.crawl_documents() {
+        let is_title = project.inputs().iter().any(|candidate| {
+            candidate.id == *input && matches!(candidate.kind, crate::InputKind::Title(_))
+        });
+        if !is_title {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(*input)),
+                field: "crawls.input",
+                kind: ValidationErrorKind::MissingReference(EntityRef::Input(*input)),
+            });
+        }
+        if document.is_empty() || document.len() > crate::MAX_CRAWL_DOCUMENT_BYTES {
+            errors.push(ValidationError {
+                entity: Some(EntityRef::Input(*input)),
+                field: "crawls.document",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
     }
 }
 

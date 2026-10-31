@@ -481,6 +481,31 @@ impl std::fmt::Display for PreviewDocumentError {
 
 impl std::error::Error for PreviewDocumentError {}
 
+/// Why a crawl document could not be stored on a project.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectCrawlError {
+    UnknownInput(InputId),
+    /// The input exists but is not a title.
+    NotATitle(InputId),
+    Empty,
+    TooLarge { maximum: usize },
+}
+
+impl std::fmt::Display for ProjectCrawlError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownInput(input) => write!(formatter, "unknown input {input}"),
+            Self::NotATitle(input) => write!(formatter, "input {input} is not a title"),
+            Self::Empty => formatter.write_str("crawl document is empty"),
+            Self::TooLarge { maximum } => {
+                write!(formatter, "crawl document exceeds {maximum} bytes")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProjectCrawlError {}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AddSceneLayerError {
     UnknownScene(SceneId),
@@ -999,6 +1024,13 @@ pub const MAX_PREVIEW_STATES: usize = 256;
 /// matching `fm_data::MAX_PREVIEW_DOCUMENT_BYTES`.
 pub const MAX_PREVIEW_DOCUMENT_BYTES: usize = 256 * 1024;
 
+/// Maximum stored crawl documents on one project (GX-003).
+pub const MAX_CRAWLS: usize = 256;
+
+/// Maximum bytes of one canonical crawl document (GX-003), matching
+/// `fm_titles::MAX_CRAWL_DOCUMENT_BYTES`.
+pub const MAX_CRAWL_DOCUMENT_BYTES: usize = 256 * 1024;
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
 
@@ -1081,6 +1113,9 @@ pub struct Project {
     /// Each title input's canonical preview-state document (GX-005, schema
     /// 106), by input. Staged data-binding values, not live title values.
     previews: BTreeMap<InputId, String>,
+    /// Each title input's canonical crawl document (GX-003, schema 106), by
+    /// input.
+    crawls: BTreeMap<InputId, String>,
 }
 
 impl Project {
@@ -1135,6 +1170,7 @@ impl Project {
             scoreboards: BTreeMap::new(),
             production_clocks: Vec::new(),
             previews: BTreeMap::new(),
+            crawls: BTreeMap::new(),
         }
     }
 
@@ -2152,6 +2188,62 @@ impl Project {
         self.previews = documents;
     }
 
+    /// Every title input's canonical crawl document (GX-003, schema 106),
+    /// ascending by input.
+    #[must_use]
+    pub const fn crawl_documents(&self) -> &BTreeMap<InputId, String> {
+        &self.crawls
+    }
+
+    /// One title input's canonical crawl document, if stored.
+    #[must_use]
+    pub fn crawl_document(&self, input: InputId) -> Option<&str> {
+        self.crawls.get(&input).map(String::as_str)
+    }
+
+    /// Stores `document` as `input`'s crawl, replacing any previous one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProjectCrawlError::UnknownInput`] when `input` does not
+    /// exist, [`ProjectCrawlError::NotATitle`] when it is not a title input,
+    /// and [`ProjectCrawlError::TooLarge`] past the document bound. Nothing
+    /// changes on error.
+    pub fn set_crawl_document(
+        &mut self,
+        input: InputId,
+        document: String,
+    ) -> Result<(), ProjectCrawlError> {
+        let Some(candidate) = self.inputs.iter().find(|candidate| candidate.id == input) else {
+            return Err(ProjectCrawlError::UnknownInput(input));
+        };
+        if !matches!(candidate.kind, InputKind::Title(_)) {
+            return Err(ProjectCrawlError::NotATitle(input));
+        }
+        if document.len() > MAX_CRAWL_DOCUMENT_BYTES {
+            return Err(ProjectCrawlError::TooLarge {
+                maximum: MAX_CRAWL_DOCUMENT_BYTES,
+            });
+        }
+        if document.is_empty() {
+            return Err(ProjectCrawlError::Empty);
+        }
+        self.crawls.insert(input, document);
+        Ok(())
+    }
+
+    /// Removes `input`'s crawl, returning the stored document.
+    pub fn remove_crawl_document(&mut self, input: InputId) -> Option<String> {
+        self.crawls.remove(&input)
+    }
+
+    /// Replaces every crawl document without checking them;
+    /// [`Project::validate`] reports one on a non-title input or past the
+    /// bound. Documents are parsed by the persistence layer.
+    pub fn restore_crawls(&mut self, documents: BTreeMap<InputId, String>) {
+        self.crawls = documents;
+    }
+
     /// Every screen capture input's desktop restore token (IN-011, schema
     /// 72), by input: what a Wayland desktop's screen sharing dialog last
     /// granted, so the same screen or window is shared again without
@@ -2619,6 +2711,7 @@ impl Project {
         self.title_timelines.remove(&input);
         self.scoreboards.remove(&input);
         self.previews.remove(&input);
+        self.crawls.remove(&input);
         self.screen_capture_restore_tokens.remove(&input);
         Ok(())
     }

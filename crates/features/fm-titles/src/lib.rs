@@ -97,10 +97,11 @@ pub use animation::{
     AnimSample, AnimationEditError, TitleAnimation, TitleClip, default_title_timebase,
 };
 pub use crawl::{
-    CRAWL_LOGO_GAP_PX, Crawl, CrawlConfig, CrawlError, CrawlItem, CrawlLogo, CrawlMeasure,
-    CrawlMode, CrawlSchedule, CrawlSegment, CrawlSegmentKind, CrawlSpeed, CrawlView,
-    FontCrawlMeasure, MAX_CRAWL_EPOCHS, MAX_CRAWL_GAP_PX, MAX_CRAWL_ITEM_CHARS, MAX_CRAWL_ITEMS,
-    MAX_CRAWL_LOGO_ASSET_BYTES, MAX_CRAWL_LOGO_WIDTH, MAX_CRAWL_SEPARATOR_CHARS,
+    CRAWL_LOGO_GAP_PX, Crawl, CrawlConfig, CrawlDocumentError, CrawlError, CrawlItem,
+    CrawlItemSnapshot, CrawlLogo, CrawlLogoSnapshot, CrawlMeasure, CrawlMode, CrawlSchedule,
+    CrawlSegment, CrawlSegmentKind, CrawlSnapshot, CrawlSpeed, CrawlView, FontCrawlMeasure,
+    MAX_CRAWL_DOCUMENT_BYTES, MAX_CRAWL_EPOCHS, MAX_CRAWL_GAP_PX, MAX_CRAWL_ITEM_CHARS,
+    MAX_CRAWL_ITEMS, MAX_CRAWL_LOGO_ASSET_BYTES, MAX_CRAWL_LOGO_WIDTH, MAX_CRAWL_SEPARATOR_CHARS,
     MAX_CRAWL_VISIBLE_SEGMENTS,
 };
 pub use design::{

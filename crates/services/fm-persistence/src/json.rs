@@ -3,6 +3,7 @@ mod animation_preset;
 mod audio_mixer;
 mod audio_plugins;
 mod capture;
+mod crawl;
 mod cue;
 mod decoder;
 mod display_output;

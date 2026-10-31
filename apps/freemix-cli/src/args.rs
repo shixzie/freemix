@@ -1037,6 +1037,21 @@ pub enum Command {
         path: PathBuf,
         input: u128,
     },
+    /// Validates a crawl document file (GX-003).
+    CrawlCheck {
+        path: PathBuf,
+    },
+    /// Stores a canonical crawl document on a title input (GX-003).
+    CrawlImport {
+        path: PathBuf,
+        input: u128,
+        document: PathBuf,
+    },
+    /// Prints a title input's stored crawl document (GX-003).
+    CrawlExport {
+        path: PathBuf,
+        input: u128,
+    },
     /// `title-design-check <file.fmdesign>`: validate a designer document
     /// (GX-002).
     TitleDesignCheck {
@@ -2543,6 +2558,9 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "scoreboard-check" => parse_scoreboard_check(arguments),
         "scoreboard-import" => parse_scoreboard_import(arguments),
         "scoreboard-export" => parse_scoreboard_export(arguments),
+        "crawl-check" => parse_crawl_check(arguments),
+        "crawl-import" => parse_crawl_import(arguments),
+        "crawl-export" => parse_crawl_export(arguments),
         "title-design-check" => {
             let path = required_path(&mut arguments, "design path")?;
             reject_extra(&mut arguments)?;
@@ -4728,6 +4746,37 @@ fn parse_scoreboard_export(
     let input = number(&required(&mut arguments, "input")?, "input")?;
     reject_extra(&mut arguments)?;
     Ok(Command::ScoreboardExport { path, input })
+}
+
+fn parse_crawl_check(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "crawl document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::CrawlCheck { path })
+}
+
+fn parse_crawl_import(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let document = required_path(&mut arguments, "crawl document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::CrawlImport {
+        path,
+        input,
+        document,
+    })
+}
+
+fn parse_crawl_export(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::CrawlExport { path, input })
 }
 
 fn parse_title_input_add(

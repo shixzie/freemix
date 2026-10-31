@@ -4154,13 +4154,16 @@ values publish onto template fields in one scene revision, and a strict
 key/value parser maps external data onto actions. A strict snapshot
 round-trips the whole operator state and serializes as a versioned text
 document. Remaining gaps:
-crawls are runtime overlays outside template z-order and the project schema,
-with per-item fill and logo images drawn before the text but no easing; the
+crawls are runtime overlays outside template z-order and no easing, although
+a crawl's configuration and items now persist per title input in
+`project.json` (schema 106) as a strict canonical document checked by
+`freemix-cli`'s crawl commands; per-item fill and logo images draw before the
+text; the
 scoreboard has two teams, and its canonical versioned document now persists
 per title input in `project.json` (schema 106), strictly parsed and
-canonicalized on load, and `freemix-cli scoreboard-check`, `scoreboard-import`,
-and `scoreboard-export` validate and move one, but no engine or protocol
-publishes it;
+canonicalized on load, `freemix-cli scoreboard-check`, `scoreboard-import`,
+and `scoreboard-export` validate and move one, and `freemix-cli`'s crawl
+commands do the same for crawls, but no engine or protocol publishes either;
 and there are
 no feed transports, shortcut
 or control-surface wiring, or engine output. `GX-003` remains planned.

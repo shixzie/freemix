@@ -1095,6 +1095,13 @@ pub fn run(command: Command) -> AppResult<()> {
             document,
         } => scoreboard_import(&path, input, &document)?,
         Command::ScoreboardExport { path, input } => scoreboard_export(&path, input)?,
+        Command::CrawlCheck { path } => crawl_check(&path)?,
+        Command::CrawlImport {
+            path,
+            input,
+            document,
+        } => crawl_import(&path, input, &document)?,
+        Command::CrawlExport { path, input } => crawl_export(&path, input)?,
         Command::SettingsImport {
             path,
             input,
@@ -6125,6 +6132,51 @@ fn settings_export(path: &Path, output: &Path) -> AppResult<()> {
     Ok(())
 }
 
+fn crawl_check(path: &Path) -> AppResult<()> {
+    let text = fs::read_to_string(path).map_err(|error| AppFailure(format!("crawl: {error}")))?;
+    let snapshot = fm_titles::CrawlSnapshot::from_document(&text)
+        .map_err(|error| AppFailure(format!("crawl: {error}")))?;
+    println!(
+        "crawl: mode={:?} items={} speed={}px/{}s gap={} font={} {}px",
+        snapshot.config.mode,
+        snapshot.items.len(),
+        snapshot.config.speed.pixels(),
+        snapshot.config.speed.seconds(),
+        snapshot.config.gap_px,
+        snapshot.config.font.family,
+        snapshot.config.font.size_px,
+    );
+    Ok(())
+}
+
+fn crawl_import(path: &Path, input: u128, document: &Path) -> AppResult<()> {
+    let text = fs::read_to_string(document)
+        .map_err(|error| AppFailure(format!("crawl import: {error}")))?;
+    let snapshot = fm_titles::CrawlSnapshot::from_document(&text)
+        .map_err(|error| AppFailure(format!("crawl import: {error}")))?;
+    let canonical = snapshot.to_document();
+    let stored = load_stored_project(path)?;
+    let mut project = stored.project().clone();
+    let input = input_id(input)?;
+    project
+        .set_crawl_document(input, canonical)
+        .map_err(|error| AppFailure(format!("crawl import: {error}")))?;
+    ProjectStore::new(path)?.save(&stored.with_project(project)?)?;
+    println!("crawl-import: {input}");
+    Ok(())
+}
+
+fn crawl_export(path: &Path, input: u128) -> AppResult<()> {
+    let stored = inspect_stored_project(path)?;
+    let input = input_id(input)?;
+    let document = stored
+        .project()
+        .crawl_document(input)
+        .ok_or_else(|| AppFailure(format!("input {input} has no stored crawl")))?;
+    print!("{document}");
+    Ok(())
+}
+
 fn scoreboard_check(path: &Path) -> AppResult<()> {
     let text = fs::read_to_string(path)
         .map_err(|error| AppFailure(format!("scoreboard: {error}")))?;
@@ -7336,6 +7388,9 @@ Usage:
   freemix-cli scoreboard-check <scoreboard.txt>
   freemix-cli scoreboard-import <show.freemix> <title-input> <scoreboard.txt>
   freemix-cli scoreboard-export <show.freemix> <title-input>
+  freemix-cli crawl-check <crawl.txt>
+  freemix-cli crawl-import <show.freemix> <title-input> <crawl.txt>
+  freemix-cli crawl-export <show.freemix> <title-input>
   freemix-cli title-design-check <design.fmdesign>
   freemix-cli title-apply-row <show.freemix> <input-id> <row.json> [--keep-live] [--preview]
   freemix-cli title-design-import <show.freemix> <design.fmdesign> --id <nonzero-input-id> --name <name> [--font <Family=path.ttf>]...
