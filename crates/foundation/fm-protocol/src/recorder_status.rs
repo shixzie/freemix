@@ -74,6 +74,9 @@ pub struct RecorderStatusSample {
     /// Why the slot failed; present exactly when `realized` is
     /// [`RecorderRealizedState::Failed`].
     pub failure: Option<OutputFailure>,
+    /// Free bytes on the slot's output filesystem, when the daemon samples
+    /// it (2.140). The output's parent directory is the measured path.
+    pub free_bytes: Option<u64>,
 }
 
 impl RecorderStatusSample {

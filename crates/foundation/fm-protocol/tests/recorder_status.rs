@@ -29,6 +29,7 @@ fn sample(
         realized,
         elapsed_ms,
         failure,
+        free_bytes: None,
     }
 }
 

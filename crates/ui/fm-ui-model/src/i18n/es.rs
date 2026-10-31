@@ -10668,6 +10668,7 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::ReplaySmartTemperature, t("{temperature} °C")),
     (Msg::ReplaySmartUsed, t("{used}% de resistencia usada")),
+    (Msg::RecorderFreeSpace, t("{free} libres")),
     (Msg::ReplayLink, t("VINCULAR")),
     (
         Msg::ReplayLinkHover,

@@ -77,8 +77,15 @@ impl RecorderStatusTracker {
         }
     }
 
-    /// The sample `slot` reports for `view` at `now`.
-    fn sample(&mut self, slot: usize, view: SlotView, now: Instant) -> RecorderStatusSample {
+    /// The sample `slot` reports for `view` and its output's free bytes at
+    /// `now`.
+    fn sample(
+        &mut self,
+        slot: usize,
+        view: SlotView,
+        free_bytes: Option<u64>,
+        now: Instant,
+    ) -> RecorderStatusSample {
         let status = &mut self.slots[slot];
         let realized = match view {
             SlotView::Unconfigured => {
@@ -125,6 +132,7 @@ impl RecorderStatusTracker {
                     .failure
                     .unwrap_or(OutputFailure::new(OutputFailureCode::Unknown))
             }),
+            free_bytes,
         }
     }
 
@@ -134,12 +142,13 @@ impl RecorderStatusTracker {
         &mut self,
         server: &ServerIdentity,
         views: [SlotView; 2],
+        free_bytes: [Option<u64>; 2],
         now: Instant,
     ) -> Option<RecorderStatusMessage> {
         let samples: Vec<_> = views
             .into_iter()
             .enumerate()
-            .map(|(slot, view)| self.sample(slot, view, now))
+            .map(|(slot, view)| self.sample(slot, view, free_bytes[slot], now))
             .collect();
         if self
             .built_at
@@ -178,6 +187,7 @@ mod tests {
             .poll(
                 &server(),
                 [SlotView::Settling, SlotView::Unconfigured],
+                [None, None],
                 start,
             )
             .unwrap();
@@ -191,12 +201,22 @@ mod tests {
         let ready = start + Duration::from_millis(100);
         assert!(
             tracker
-                .poll(&server(), [SlotView::Running, SlotView::Off], ready)
+                .poll(
+                    &server(),
+                    [SlotView::Running, SlotView::Off],
+                    [None, None],
+                    ready
+                )
                 .is_none()
         );
         let later = ready + Duration::from_millis(1_500);
         let recording = tracker
-            .poll(&server(), [SlotView::Running, SlotView::Off], later)
+            .poll(
+                &server(),
+                [SlotView::Running, SlotView::Off],
+                [None, None],
+                later,
+            )
             .unwrap();
         assert_eq!(recording.sequence, 2);
         assert_eq!(
@@ -210,6 +230,7 @@ mod tests {
             .poll(
                 &server(),
                 [SlotView::Settling, SlotView::Off],
+                [None, None],
                 later + Duration::from_millis(500),
             )
             .unwrap();
@@ -227,6 +248,7 @@ mod tests {
                     SlotView::Failed(OutputFailure::new(OutputFailureCode::CaptureFailed)),
                     SlotView::Off,
                 ],
+                [None, None],
                 failed_at,
             )
             .unwrap();
@@ -241,6 +263,7 @@ mod tests {
             .poll(
                 &server(),
                 [SlotView::Off, SlotView::Off],
+                [None, None],
                 failed_at + RECORDER_STATUS_INTERVAL,
             )
             .unwrap();
@@ -256,6 +279,7 @@ mod tests {
             .poll(
                 &server(),
                 [SlotView::Settling, SlotView::Off],
+                [None, None],
                 failed_at + 2 * RECORDER_STATUS_INTERVAL,
             )
             .unwrap();

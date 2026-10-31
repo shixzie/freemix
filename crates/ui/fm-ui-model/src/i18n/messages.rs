@@ -3797,6 +3797,7 @@ messages! {
     ReplaySmartHover => t("The health the drive holding the replay root reports to the server"),
     ReplaySmartTemperature => t("{temperature} °C"),
     ReplaySmartUsed => t("{used}% endurance used"),
+    RecorderFreeSpace => t("{free} free"),
     ReplayLink => t("LINK"),
     ReplayLinkHover => t("Cue, play, pause, and step this Replay input together with the other Replay input"),
     ReplayUnlink => t("UNLINK"),

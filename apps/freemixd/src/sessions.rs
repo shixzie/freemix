@@ -4332,12 +4332,14 @@ mod tests {
                     realized: fm_protocol::RecorderRealizedState::Recording,
                     elapsed_ms: 12_345,
                     failure: None,
+                    free_bytes: Some(42_000_000_000),
                 },
                 fm_protocol::RecorderStatusSample {
                     recorder: fm_protocol::WireRecorderSlot::new(2).unwrap(),
                     realized: fm_protocol::RecorderRealizedState::Failed,
                     elapsed_ms: 0,
                     failure: Some(fm_protocol::OutputFailureCode::FolderNotWritable.into()),
+                    free_bytes: None,
                 },
             ],
         }
