@@ -230,7 +230,7 @@ impl TlsState {
     }
 
     /// When the served leaf expires, Unix milliseconds.
-    pub(crate) fn not_after_ms(&self) -> u64 {
+    pub fn not_after_ms(&self) -> u64 {
         self.served().info.not_after_ms
     }
 
@@ -523,7 +523,7 @@ mod tests {
     use fm_daemon_arguments::WebTls;
 
     use super::{CERT_FILE, KEY_FILE, load, now_ms, write_private};
-    use crate::web::local_ca::{CA_CERT_FILE, CA_KEY_FILE};
+    use crate::local_ca::{CA_CERT_FILE, CA_KEY_FILE};
     use fm_protocol::{WebCertProblem, WebTrust};
     use rcgen::{CertificateParams, ExtendedKeyUsagePurpose, KeyPair};
 

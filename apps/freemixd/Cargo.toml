@@ -40,6 +40,7 @@ fm-compositor = { path = "../../crates/gpu/fm-compositor" }
 fm-control = { path = "../../crates/services/fm-control" }
 fm-daemon-arguments = { path = "../../crates/services/fm-daemon-arguments" }
 fm-daemon-journal = { path = "../../crates/services/fm-daemon-journal" }
+fm-daemon-web = { path = "../../crates/services/fm-daemon-web" }
 fm-engine = { path = "../../crates/services/fm-engine" }
 fm-frame = { path = "../../crates/media/fm-frame" }
 fm-gpu = { path = "../../crates/gpu/fm-gpu", optional = true }
@@ -70,20 +71,11 @@ getrandom = "0.3"
 # (its `x509-parser` feature reloads the root to sign with), x509-parser to
 # validate certificates before they are served, and ring's SHA-256 for
 # certificate fingerprints and device-token digests.
-rcgen = { version = "0.14.5", default-features = false, features = ["crypto", "ring", "pem", "x509-parser"] }
-x509-parser = { version = "0.18.1", default-features = false, features = ["verify"] }
 # Web gateway reach (RC-007): a pure-Rust mDNS / DNS-SD responder (no async
 # runtime) advertising `_freemix._tcp` and `_https._tcp`, the LAN addresses
 # the certificate names, and the host name the default mDNS name derives
 # from.
-mdns-sd = { version = "0.21.6", default-features = false }
-if-addrs = "0.15.0"
-gethostname = "1.1.0"
-ring = "0.17.14"
-rustls = { version = "0.23.31", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-time = { version = "0.3", default-features = false, features = ["std"] }
 winit = { version = "0.30.13", optional = true, features = ["rwh_06"] }
-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 fm-io-macos = { path = "../../crates/io/fm-io-macos", optional = true }
@@ -95,6 +87,11 @@ signal-hook = "0.3.18"
 ctrlc = "3.4.7"
 
 [dev-dependencies]
+ring = "0.17.14"
+rustls = { version = "0.23.31", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+x509-parser = { version = "0.18.1", default-features = false, features = ["verify"] }
+rcgen = { version = "0.14.5", default-features = false, features = ["crypto", "ring", "pem", "x509-parser"] }
+tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 fm-client = { path = "../../crates/services/fm-client", features = ["std-tcp"] }
 fm-grade = { path = "../../crates/foundation/fm-grade" }
 half = "2.7.1"

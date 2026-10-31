@@ -2031,8 +2031,14 @@ fn pages_word_every_output_failure_like_studio() {
         "../../../crates/ui/fm-ui-model/src/i18n/es.rs"
     ));
     for (name, page) in [
-        ("operator", include_str!("../src/web/operator.html")),
-        ("tally", include_str!("../src/web/tally.html")),
+        (
+            "operator",
+            include_str!("../../../crates/services/fm-daemon-web/src/operator.html"),
+        ),
+        (
+            "tally",
+            include_str!("../../../crates/services/fm-daemon-web/src/tally.html"),
+        ),
     ] {
         for code in fm_protocol::OutputFailureCode::ALL {
             assert!(
@@ -2087,10 +2093,22 @@ fn page_scripts_parse_with_node_when_available() {
     }
     let directory = TestDirectory::new("node-check");
     for (name, page) in [
-        ("tally", include_str!("../src/web/tally.html")),
-        ("operator", include_str!("../src/web/operator.html")),
-        ("titles", include_str!("../src/web/titles.html")),
-        ("live_lan", include_str!("../src/web/live_lan.html")),
+        (
+            "tally",
+            include_str!("../../../crates/services/fm-daemon-web/src/tally.html"),
+        ),
+        (
+            "operator",
+            include_str!("../../../crates/services/fm-daemon-web/src/operator.html"),
+        ),
+        (
+            "titles",
+            include_str!("../../../crates/services/fm-daemon-web/src/titles.html"),
+        ),
+        (
+            "live_lan",
+            include_str!("../../../crates/services/fm-daemon-web/src/live_lan.html"),
+        ),
     ] {
         let scripts: Vec<&str> = page
             .split("<script>")
@@ -2274,7 +2292,7 @@ fn operator_page_strip_dsp_codec_matches_the_rust_codec() {
     use std::fmt::Write as _;
 
     use fm_types::strip_dsp::{STRIP_DSP_CODE_LEN, StripDsp, StripDspPreset};
-    let page = include_str!("../src/web/operator.html");
+    let page = include_str!("../../../crates/services/fm-daemon-web/src/operator.html");
     let codec = page_strip_dsp_codec(page);
     // The block stands alone: it names no other part of the page.
     for outside in ["tr(", "show.", "link.", "ui.", "document", "send("] {
@@ -2410,7 +2428,7 @@ fn operator_page_shows_strip_fx_gain_reduction_from_the_meter_feed() {
     use std::fmt::Write as _;
 
     use fm_protocol::{AudioDspTarget, AudioDynamicsMeter, AudioMetersMessage, ServerIdentity};
-    let page = include_str!("../src/web/operator.html");
+    let page = include_str!("../../../crates/services/fm-daemon-web/src/operator.html");
     for source in [
         "telemetry.dynamics = FX_GR.parse(required(record, \"dynamics\"));",
         "telemetry.dynamics = new Map();",
@@ -2609,7 +2627,7 @@ fn operator_page_reads_daemon_health_like_the_rust_codec() {
         DaemonHealth, HealthAlert, HealthAlertRule, HealthSeverity, HealthSilence,
         HealthStatusMessage,
     };
-    let page = include_str!("../src/web/operator.html");
+    let page = include_str!("../../../crates/services/fm-daemon-web/src/operator.html");
     let block = page_health(page);
     for outside in [
         "tr(",
@@ -2869,7 +2887,7 @@ fn operator_page_edits_strip_fx_within_the_session_role() {
 
     use fm_protocol::{AudioDspTarget, AudioMixerOperation};
     use fm_types::strip_dsp::{StripDsp, StripDspPreset};
-    let page = include_str!("../src/web/operator.html");
+    let page = include_str!("../../../crates/services/fm-daemon-web/src/operator.html");
     for source in [
         "[\"payload\", \"audio_strip_dsp\"], [\"target\", target], [\"chain\", queued.code]",
         "[\"gesture\", queued.gesture.token], [\"continues\", queued.gesture.sent ? \"true\" : \"false\"]",
@@ -4807,7 +4825,7 @@ fn page_input_meters(page: &str) -> &str {
 #[test]
 fn operator_page_reads_strip_meters_like_the_rust_codec() {
     use fm_protocol::{AudioMeterChannel, AudioMetersMessage, InputAudioMeters, WireInputId};
-    let page = include_str!("../src/web/operator.html");
+    let page = include_str!("../../../crates/services/fm-daemon-web/src/operator.html");
     let block = page_input_meters(page);
     for outside in [
         "tr(",

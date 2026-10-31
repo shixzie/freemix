@@ -1664,6 +1664,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "fm-daemon-web"
+version = "0.1.0"
+dependencies = [
+ "fm-auth",
+ "fm-codec-image",
+ "fm-daemon-arguments",
+ "fm-frame",
+ "fm-persistence",
+ "fm-protocol",
+ "fm-titles",
+ "gethostname",
+ "getrandom 0.3.4",
+ "if-addrs",
+ "image",
+ "mdns-sd",
+ "rcgen",
+ "ring",
+ "rustls",
+ "tempfile",
+ "time",
+ "tungstenite",
+ "x509-parser",
+]
+
+[[package]]
 name = "fm-data"
 version = "0.1.0"
 dependencies = [
@@ -2252,6 +2277,7 @@ dependencies = [
  "fm-control",
  "fm-daemon-arguments",
  "fm-daemon-journal",
+ "fm-daemon-web",
  "fm-engine",
  "fm-frame",
  "fm-gpu",
@@ -2278,18 +2304,14 @@ dependencies = [
  "fm-types",
  "fm-video",
  "fs4",
- "gethostname",
  "getrandom 0.3.4",
  "half",
- "if-addrs",
  "image",
- "mdns-sd",
  "rcgen",
  "ring",
  "rustls",
  "signal-hook",
  "tempfile",
- "time",
  "tungstenite",
  "winit",
  "x11rb",

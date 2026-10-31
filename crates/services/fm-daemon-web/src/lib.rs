@@ -1,3 +1,23 @@
+// Public only so the daemon binary can use these items; this crate is not a
+// stable API surface.
+#![allow(
+    clippy::must_use_candidate,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::return_self_not_must_use,
+    clippy::result_unit_err
+)]
+
+//! The daemon's Web gateway: TLS, device pairing, the served pages, the
+//! WebSocket control relay, and mDNS advertisement.
+//!
+//! Extracted from `freemixd` as a mechanical move.
+
+use std::error::Error;
+
+/// A gateway failure whose message is already operator-facing.
+pub type AppResult<T> = Result<T, Box<dyn Error>>;
+
 use std::{
     env,
     net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, UdpSocket},
@@ -13,10 +33,8 @@ use std::{
 
 use fm_protocol::{MAX_LINE_BYTES, WireMessage, decode_line};
 
-use super::AppResult;
-
-pub(crate) use access::{Reach, WebAccess, WebIdentity};
-pub(crate) use fm_daemon_arguments::WebSettings;
+pub use access::{Reach, WebAccess, WebIdentity};
+pub use fm_daemon_arguments::WebSettings;
 
 const PATH: &str = "/v1/control";
 const TOKEN_MIN_BYTES: usize = 32;
@@ -40,7 +58,7 @@ const OUTBOUND_CAPACITY: usize = 32;
 /// gateway thread, so one slow browser never stalls another or the daemon.
 /// An authorized upgrade beyond the bound is refused with
 /// `503 Service Unavailable` and the page retries with backoff.
-pub(super) const MAX_WEB_CLIENTS: usize = 16;
+pub const MAX_WEB_CLIENTS: usize = 16;
 /// Connections still serving a page or completing an upgrade, on top of the
 /// connected clients. Each is bounded by its handshake timeout; a
 /// connection beyond this bound is closed unanswered.
@@ -59,7 +77,7 @@ const TRUST_POLL: Duration = Duration::from_secs(1);
 /// leaf for them).
 const LAN_SCAN: Duration = Duration::from_secs(15);
 
-pub(super) struct WebGateway {
+pub struct WebGateway {
     address: SocketAddr,
     access: Arc<WebAccess>,
     events: Receiver<WebEvent>,
@@ -72,20 +90,20 @@ pub(super) struct WebGateway {
     mdns: Option<mdns::Mdns>,
 }
 
-pub(super) enum WebEvent {
+pub enum WebEvent {
     Connected(WebConnection),
 }
 
-pub(super) struct WebConnection {
-    pub(super) inbound: Receiver<WireMessage>,
-    pub(super) outbound: SyncSender<Vec<u8>>,
-    pub(super) acknowledgements: Receiver<()>,
-    pub(super) cancel: Arc<AtomicBool>,
+pub struct WebConnection {
+    pub inbound: Receiver<WireMessage>,
+    pub outbound: SyncSender<Vec<u8>>,
+    pub acknowledgements: Receiver<()>,
+    pub cancel: Arc<AtomicBool>,
     /// Who the client authenticated as; its session's roles follow.
-    pub(super) identity: WebIdentity,
+    pub identity: WebIdentity,
     /// The client's gateway slot, held until the scheduler drops the session,
     /// so the gateway never admits more clients than the scheduler serves.
-    pub(super) slot: ClientSlot,
+    pub slot: ClientSlot,
 }
 
 /// Subprotocol a browser offers, and the gateway selects, for control.
@@ -395,7 +413,7 @@ impl WebGateway {
     /// # Errors
     ///
     /// Invalid TLS files or token, or an unreadable state directory.
-    pub(super) fn bind(
+    pub fn bind(
         listener: TcpListener,
         settings: &WebSettings,
         assets_root: Option<PathBuf>,
@@ -491,18 +509,18 @@ impl WebGateway {
         })
     }
 
-    pub(super) fn address(&self) -> SocketAddr {
+    pub fn address(&self) -> SocketAddr {
         self.address
     }
 
     /// Pairing and paired devices, shared with the session scheduler.
-    pub(super) fn access(&self) -> &Arc<WebAccess> {
+    pub fn access(&self) -> &Arc<WebAccess> {
         &self.access
     }
 
     /// `FREEMIXD_WEB_TLS` readiness: the URL phones open and the certificate
     /// fingerprint to compare, when TLS is on.
-    pub(super) fn tls_record(&self) -> Option<String> {
+    pub fn tls_record(&self) -> Option<String> {
         let tls = self.access.tls()?;
         let mut record = format!(
             "FREEMIXD_WEB_TLS\tv=1\turl={}\tfingerprint={}\ttrust={}",
@@ -521,11 +539,11 @@ impl WebGateway {
         Some(record)
     }
 
-    pub(super) fn start_accepting(&self) {
+    pub fn start_accepting(&self) {
         self.accepting.store(true, Ordering::Release);
     }
 
-    pub(super) fn try_event(&self) -> Result<Option<WebEvent>, ()> {
+    pub fn try_event(&self) -> Result<Option<WebEvent>, ()> {
         match self.events.try_recv() {
             Ok(event) => Ok(Some(event)),
             Err(TryRecvError::Empty) => Ok(None),
@@ -536,7 +554,7 @@ impl WebGateway {
     /// Stops accepting, then joins the listener, which joins every
     /// connection thread (each ends within its handshake timeout or relay
     /// poll).
-    pub(super) fn shutdown(mut self) -> AppResult<()> {
+    pub fn shutdown(mut self) -> AppResult<()> {
         self.cancel.store(true, Ordering::Release);
         drop(self.mdns.take());
         let maintained = self
@@ -587,7 +605,7 @@ struct Gateway {
 }
 
 /// One of the [`MAX_WEB_CLIENTS`] slots, released when dropped.
-pub(super) struct ClientSlot(Arc<AtomicUsize>);
+pub struct ClientSlot(Arc<AtomicUsize>);
 
 impl ClientSlot {
     fn acquire(clients: &Arc<AtomicUsize>) -> Option<Self> {
@@ -618,7 +636,7 @@ mod mdns;
 mod page;
 mod tls;
 mod worker;
-pub(crate) use worker::peer_group_at;
+pub use worker::peer_group_at;
 use worker::{address_limit, listener_loop};
 
 #[cfg(test)]

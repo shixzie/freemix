@@ -55,8 +55,8 @@ use crate::journal::DurableStore;
 use crate::latest_record::LatestRecord;
 use crate::monitor_tap::SimulatedMonitorWorker;
 use crate::title_render::TitleAssets;
-use crate::web::{ClientSlot, MAX_WEB_CLIENTS, WebEvent, WebGateway};
 use crate::web_feed::{WEB_FEED_MAX_QUEUED, WebFeed, web_meters};
+use fm_daemon_web::{ClientSlot, MAX_WEB_CLIENTS, WebEvent, WebGateway};
 
 /// The most raw TCP control sessions served at once, by the simulated and
 /// the native daemon alike (Studio, CLI and automation peers). A further raw
@@ -1961,16 +1961,16 @@ fn native_group(
 
 /// The principal of a Web session: the operator's `FREEMIXD_WEB_TOKEN`
 /// holds every role, a paired device only the roles of its pairing.
-fn web_principal(identity: &crate::web::WebIdentity, peer_id: u64) -> Principal {
+fn web_principal(identity: &fm_daemon_web::WebIdentity, peer_id: u64) -> Principal {
     let session = fm_auth::SessionId::new(format!("web-{peer_id}"))
         .expect("scheduler web session id is valid");
     match identity {
-        crate::web::WebIdentity::StaticToken => Principal::authenticated(
+        fm_daemon_web::WebIdentity::StaticToken => Principal::authenticated(
             fm_auth::UserId::new("web-token").expect("stable web user is valid"),
             session,
             [fm_auth::Role::Admin],
         ),
-        crate::web::WebIdentity::Device { id, role } => Principal::authenticated(
+        fm_daemon_web::WebIdentity::Device { id, role } => Principal::authenticated(
             fm_auth::UserId::new(id.as_str()).expect("device ids are valid user ids"),
             session,
             role.granted_roles().iter().copied(),
@@ -2073,7 +2073,7 @@ struct Runtime<'a> {
     /// Lists headphone output devices off this loop (Protocol 2.102).
     audio_output_devices: &'a crate::audio_output_devices::AudioOutputDevices,
     /// The web gateway's pairing and devices (Protocol 2.71), when it runs.
-    web_access: Option<&'a std::sync::Arc<crate::web::WebAccess>>,
+    web_access: Option<&'a std::sync::Arc<fm_daemon_web::WebAccess>>,
     /// Answers document page requests off this loop (IN-014).
     document_pages: &'a fm_daemon_journal::documents::PageWorker,
     /// Lists what the server can capture off this loop (IN-011).

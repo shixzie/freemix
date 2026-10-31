@@ -31,7 +31,7 @@ use rcgen::{
 use rustls::pki_types::{CertificateDer, pem::PemObject};
 use x509_parser::{certificate::X509Certificate, extensions::GeneralName, prelude::FromDer};
 
-use super::{AppResult, tls};
+use crate::{AppResult, tls};
 
 /// The root certificate and its key in the state directory.
 pub(super) const CA_CERT_FILE: &str = "web-ca-cert.pem";
@@ -427,7 +427,7 @@ mod tests {
     #[cfg(unix)]
     use super::CA_KEY_FILE;
     use super::{CA_CERT_FILE, LocalCa};
-    use crate::web::certs;
+    use crate::certs;
     use rustls::client::danger::ServerCertVerifier;
     use rustls::pki_types::{CertificateDer, ServerName, UnixTime, pem::PemObject};
     use x509_parser::prelude::FromDer;
@@ -686,12 +686,12 @@ mod tests {
             rcgen::KeyUsagePurpose::DigitalSignature,
         ];
         let root = params.self_signed(&key).unwrap();
-        crate::web::tls::write_private(
+        crate::tls::write_private(
             &directory.path().join(super::CA_KEY_FILE),
             key.serialize_pem().as_bytes(),
         )
         .unwrap();
-        crate::web::tls::write_private(&directory.path().join(CA_CERT_FILE), root.pem().as_bytes())
+        crate::tls::write_private(&directory.path().join(CA_CERT_FILE), root.pem().as_bytes())
             .unwrap();
         let ca = LocalCa::open_or_create(directory.path(), now_ms(), &[]).unwrap();
         assert_eq!(ca.der().as_ref(), root.der().as_ref());

@@ -110,7 +110,7 @@ const PLAYLIST_CONTENT_TYPE: &str = "application/vnd.apple.mpegurl";
 const SEGMENT_CONTENT_TYPE: &str = "video/mp4";
 
 /// The viewer page.
-const PAGE: &str = include_str!("web/live_lan.html");
+const PAGE: &str = include_str!("../../../crates/services/fm-daemon-web/src/live_lan.html");
 
 /// What viewers may watch: the PIN, if any, and how many may watch at once.
 #[derive(Clone, Eq, PartialEq)]

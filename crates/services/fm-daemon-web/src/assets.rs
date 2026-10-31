@@ -607,7 +607,7 @@ mod tests {
         ImageKind, MAX_UPLOAD_BYTES, MAX_UPLOADED_IMAGES, UploadPermit, authorize, image_response,
         list_response, safe_stem, store_upload, upload_head,
     };
-    use crate::web::{WebAccess, http::Request};
+    use crate::{WebAccess, http::Request};
 
     const TOKEN: &[u8] = b"assets-test-token-0123456789abcdef";
 

@@ -1,0 +1,36 @@
+[package]
+name = "fm-daemon-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fm-auth = { path = "../fm-auth" }
+fm-codec-image = { path = "../../io/fm-codec-image" }
+fm-daemon-arguments = { path = "../fm-daemon-arguments" }
+fm-frame = { path = "../../media/fm-frame" }
+fm-persistence = { path = "../fm-persistence" }
+fm-protocol = { path = "../../foundation/fm-protocol" }
+fm-titles = { path = "../../features/fm-titles" }
+# Rustls on the `ring` provider (no aws-lc-rs, so no CMake/NASM toolchain),
+# rcgen for the local root and the leaves it issues, x509-parser to validate
+# certificates before they are served, and ring's SHA-256 for certificate
+# fingerprints and device-token digests.
+rcgen = { version = "0.14.5", default-features = false, features = ["crypto", "ring", "pem", "x509-parser"] }
+x509-parser = { version = "0.18.1", default-features = false, features = ["verify"] }
+mdns-sd = { version = "0.21.6", default-features = false }
+if-addrs = "0.15.0"
+getrandom = "0.3"
+gethostname = "1.1.0"
+ring = "0.17.14"
+rustls = { version = "0.23.31", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+time = { version = "0.3", default-features = false, features = ["std"] }
+tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+tempfile = "3.20"
+
+[lints]
+workspace = true

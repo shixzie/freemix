@@ -188,7 +188,7 @@ mod stream_transport;
 mod system_audio_devices;
 mod title_preview;
 mod title_render;
-mod web;
+use fm_daemon_web as web;
 
 use hls_server::{HlsRoots, HlsServer};
 use journal::{DurableJournal, DurableStore, ReplayedMutations};

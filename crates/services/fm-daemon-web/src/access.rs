@@ -25,7 +25,7 @@ use fm_protocol::{
     WebGatewayStatus, WebPairing, WebTrust,
 };
 
-use super::{AppResult, base64url, tls, tls::TlsState};
+use crate::{AppResult, base64url, tls, tls::TlsState};
 
 /// The paired devices in the state directory.
 pub(super) const DEVICES_FILE: &str = "web-devices.txt";
@@ -39,7 +39,7 @@ const TRACKED_ADDRESSES: usize = 64;
 
 /// Who an authenticated gateway client is.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum WebIdentity {
+pub enum WebIdentity {
     /// The operator's `FREEMIXD_WEB_TOKEN`: every role, as before pairing.
     StaticToken,
     /// A paired device, limited to its role.
@@ -78,7 +78,7 @@ struct State {
 
 /// Where phones reach the gateway; follows the LAN addresses.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct Reach {
+pub struct Reach {
     /// The origin a phone opens, such as `https://192.168.1.20:8443`.
     pub(crate) url: String,
     /// Other origins that reach it (the mDNS name, other addresses).
@@ -88,7 +88,7 @@ pub(crate) struct Reach {
 }
 
 /// Shared by every gateway connection thread and the session scheduler.
-pub(crate) struct WebAccess {
+pub struct WebAccess {
     reach: Mutex<Reach>,
     tls: Option<Arc<TlsState>>,
     static_token: Option<Vec<u8>>,
@@ -282,10 +282,7 @@ impl WebAccess {
     }
 
     /// Carries out one console request (already authorized).
-    pub(crate) fn handle(
-        &self,
-        action: &WebAccessAction,
-    ) -> (Option<WebAccessRefusal>, WebGatewayStatus) {
+    pub fn handle(&self, action: &WebAccessAction) -> (Option<WebAccessRefusal>, WebGatewayStatus) {
         let now = now_ms();
         let mut state = self.lock();
         let refusal = match action {

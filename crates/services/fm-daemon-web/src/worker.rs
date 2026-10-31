@@ -161,7 +161,7 @@ pub(super) fn peer_group(peer: IpAddr) -> IpAddr {
 /// [`peer_group`] for a connection that reached the gateway at `local`: an
 /// on-link IPv6 peer (link-local, or in `local`'s own `/64`) counts as its
 /// own address, since every host of the gateway's LAN shares that `/64`.
-pub(crate) fn peer_group_at(peer: IpAddr, local: Option<IpAddr>) -> IpAddr {
+pub fn peer_group_at(peer: IpAddr, local: Option<IpAddr>) -> IpAddr {
     const PREFIX: u128 = u128::MAX << 64;
     let on_link = |v6: std::net::Ipv6Addr| {
         v6.is_unicast_link_local()
@@ -1042,13 +1042,13 @@ mod tests {
         http::{HeaderMap, HeaderValue, StatusCode, header::SEC_WEBSOCKET_PROTOCOL},
     };
 
-    use super::super::{
-        Gateway, MAX_CONNECTIONS_PER_ADDRESS, MAX_WEB_CLIENTS, WebAccess, WebConnection, WebEvent,
-        base64url,
-    };
     use super::{
         address_limit, authorize_upgrade, listener_loop, peer_group, peer_group_at,
         serve_connection,
+    };
+    use crate::{
+        Gateway, MAX_CONNECTIONS_PER_ADDRESS, MAX_WEB_CLIENTS, WebAccess, WebConnection, WebEvent,
+        base64url,
     };
 
     const TOKEN: &[u8] = b"worker-test-token-0123456789abcdef";
