@@ -1061,3 +1061,77 @@ fn input_media_list_item_edits_title_and_marks() {
         Some(&before_list)
     );
 }
+
+#[test]
+fn settings_import_apply_updates_format_and_restart_only() {
+    let root = TempRoot::new();
+    let show = root.path("apply-settings.freemix");
+    new_project(&show, "Apply settings");
+    assert_success(&run(&["audio-bus-add", text(&show), "1", "Program bus"]));
+    let export = root.path("settings.json");
+    assert_success(&run(&["settings-export", text(&show), text(&export)]));
+    let json = fs::read_to_string(&export).unwrap();
+    let changed = json
+        .replace(
+            "\"format.frame_rate.numerator\": {\"integer\": 60000}",
+            "\"format.frame_rate.numerator\": {\"integer\": 30000}",
+        )
+        .replace(
+            "\"format.video.width\": {\"integer\": 1920}",
+            "\"format.video.width\": {\"integer\": 1280}",
+        )
+        .replace(
+            "\"format.video.height\": {\"integer\": 1080}",
+            "\"format.video.height\": {\"integer\": 720}",
+        )
+        .replace(
+            "\"restart_policy.mode\": {\"text\": \"never\"}",
+            "\"restart_policy.mode\": {\"text\": \"always\"}",
+        );
+    assert_ne!(changed, json);
+    let changed_path = root.path("apply.json");
+    fs::write(&changed_path, changed).unwrap();
+    let out = assert_success(&run(&[
+        "settings-import",
+        text(&show),
+        text(&changed_path),
+        "--apply",
+    ]));
+    assert!(
+        out.contains("settings-import: 0 added, 4 changed, 0 removed; applied"),
+        "{out}"
+    );
+    let loaded = load(&show);
+    let settings = loaded.project().settings();
+    assert_eq!(
+        settings.frame_rate,
+        fm_types::FrameRate::new(30_000, 1_001).unwrap()
+    );
+    assert_eq!(
+        settings.video.dimensions,
+        fm_types::VideoDimensions::new(1_280, 720).unwrap()
+    );
+    assert_eq!(settings.video.frame_rate, settings.frame_rate);
+    assert_eq!(loaded.project().restart_policy(), fm_model::RestartPolicy::Always);
+
+    // A change outside the applied sections refuses the whole import.
+    let first_export = root.path("settings-2.json");
+    assert_success(&run(&["settings-export", text(&show), text(&first_export)]));
+    let json = fs::read_to_string(&first_export).unwrap();
+    let changed = json.replace(
+        "\"audio_buses.1.name\": {\"text\": \"Program bus\"}",
+        "\"audio_buses.1.name\": {\"text\": \"Clean feed\"}",
+    );
+    assert_ne!(changed, json);
+    let changed_path = root.path("bus.json");
+    fs::write(&changed_path, changed).unwrap();
+    let refused = run(&[
+        "settings-import",
+        text(&show),
+        text(&changed_path),
+        "--apply",
+    ]);
+    assert_failure_contains(&refused, "cannot apply audio_buses changes yet");
+    let loaded = load(&show);
+    assert_eq!(loaded.project().audio_buses()[0].name, "Program bus");
+}

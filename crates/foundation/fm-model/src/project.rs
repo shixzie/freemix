@@ -1104,6 +1104,26 @@ impl Project {
         &self.settings
     }
 
+    /// Replaces the project's frame rate, video, and audio format.
+    ///
+    /// The replacement is validated on a clone and applied only when the
+    /// whole project stays valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns the project's validation errors, leaving the project
+    /// unchanged.
+    pub fn set_settings(
+        &mut self,
+        settings: ProjectSettings,
+    ) -> Result<(), Vec<ValidationError>> {
+        let mut candidate = self.clone();
+        candidate.settings = settings;
+        candidate.validate()?;
+        self.settings = candidate.settings;
+        Ok(())
+    }
+
     #[must_use]
     pub fn inputs(&self) -> &[Input] {
         &self.inputs

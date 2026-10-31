@@ -12,7 +12,11 @@ use std::{
     num::NonZeroU128,
 };
 
-use fm_model::Project;
+use fm_model::{Project, ProjectSettings, RestartPolicy};
+use fm_types::{
+    AudioFormat, Channel, ChannelLayout, DiscreteChannel, FrameRate, SampleRate, VideoDimensions,
+    VideoFormat,
+};
 
 use crate::settings_export::{
     EntityKey, ReferenceKind, Secret, SecretSlot, SettingKey, SettingReference, SettingValue,
@@ -602,4 +606,194 @@ impl ImportPlan {
         }
         origins
     }
+}
+
+/// Why a merged settings snapshot could not be applied to a project.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SettingsApplyError {
+    /// A required key is missing from the snapshot.
+    Missing { key: &'static str },
+    /// A key holds the wrong value type or an out-of-range value.
+    Invalid { key: &'static str },
+    /// The project rejected the new format.
+    Project(Vec<fm_model::ValidationError>),
+}
+
+impl fmt::Display for SettingsApplyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Missing { key } => write!(formatter, "settings snapshot has no `{key}`"),
+            Self::Invalid { key } => write!(formatter, "setting `{key}` is not applicable"),
+            Self::Project(errors) => {
+                write!(formatter, "project rejected the imported settings: {errors:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SettingsApplyError {}
+
+impl SettingsSnapshot {
+    /// Applies the `format` and `restart_policy` sections to `project`.
+    ///
+    /// Every other project setting is left untouched. The caller decides
+    /// whether the snapshot's other sections may change (the CLI refuses
+    /// them rather than silently ignoring them).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettingsApplyError`] for a missing or malformed entry, or
+    /// when the project rejects the new format; nothing changes on error.
+    pub fn apply_format_and_restart(
+        &self,
+        project: &mut Project,
+    ) -> Result<(), SettingsApplyError> {
+        let mut candidate = project.clone();
+        apply_format(self, &mut candidate)?;
+        apply_restart(self, &mut candidate)?;
+        *project = candidate;
+        Ok(())
+    }
+}
+
+fn setting_integer(
+    snapshot: &SettingsSnapshot,
+    key: &'static str,
+) -> Result<i64, SettingsApplyError> {
+    match snapshot.get_path(key) {
+        Some(SettingValue::Integer(value)) => Ok(*value),
+        Some(_) => Err(SettingsApplyError::Invalid { key }),
+        None => Err(SettingsApplyError::Missing { key }),
+    }
+}
+
+fn setting_text<'a>(
+    snapshot: &'a SettingsSnapshot,
+    key: &'static str,
+) -> Result<&'a str, SettingsApplyError> {
+    match snapshot.get_path(key) {
+        Some(SettingValue::Text(value)) => Ok(value.as_str()),
+        Some(_) => Err(SettingsApplyError::Invalid { key }),
+        None => Err(SettingsApplyError::Missing { key }),
+    }
+}
+
+fn bounded_u32(value: i64, key: &'static str) -> Result<u32, SettingsApplyError> {
+    u32::try_from(value).map_err(|_| SettingsApplyError::Invalid { key })
+}
+
+fn apply_format(
+    snapshot: &SettingsSnapshot,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    let numerator = bounded_u32(
+        setting_integer(snapshot, "format.frame_rate.numerator")?,
+        "format.frame_rate.numerator",
+    )?;
+    let denominator = bounded_u32(
+        setting_integer(snapshot, "format.frame_rate.denominator")?,
+        "format.frame_rate.denominator",
+    )?;
+    let frame_rate = FrameRate::new(numerator, denominator).map_err(|_| {
+        SettingsApplyError::Invalid {
+            key: "format.frame_rate",
+        }
+    })?;
+    let width = bounded_u32(
+        setting_integer(snapshot, "format.video.width")?,
+        "format.video.width",
+    )?;
+    let height = bounded_u32(
+        setting_integer(snapshot, "format.video.height")?,
+        "format.video.height",
+    )?;
+    let dimensions =
+        VideoDimensions::new(width, height).ok_or(SettingsApplyError::Invalid {
+            key: "format.video.width",
+        })?;
+    let sample_rate = SampleRate::new(bounded_u32(
+        setting_integer(snapshot, "format.audio.sample_rate_hz")?,
+        "format.audio.sample_rate_hz",
+    )?)
+    .ok_or(SettingsApplyError::Invalid {
+        key: "format.audio.sample_rate_hz",
+    })?;
+    let channel_count = usize::try_from(setting_integer(
+        snapshot,
+        "format.audio.channel_count",
+    )?)
+    .ok()
+    .filter(|count| (1..=ChannelLayout::MAX_CHANNELS).contains(count))
+    .ok_or(SettingsApplyError::Invalid {
+        key: "format.audio.channel_count",
+    })?;
+
+    let current = project.settings().clone();
+    let channels = if channel_count == current.audio.channels.channels().len() {
+        current.audio.channels.clone()
+    } else {
+        let labels = (1..=channel_count)
+            .map(|number| {
+                u8::try_from(number)
+                    .ok()
+                    .and_then(DiscreteChannel::new)
+                    .map(Channel::Discrete)
+                    .ok_or(SettingsApplyError::Invalid {
+                        key: "format.audio.channel_count",
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        ChannelLayout::new(labels).ok_or(SettingsApplyError::Invalid {
+            key: "format.audio.channel_count",
+        })?
+    };
+    let settings = ProjectSettings {
+        frame_rate,
+        video: VideoFormat {
+            dimensions,
+            frame_rate,
+            ..current.video
+        },
+        audio: AudioFormat {
+            sample_rate,
+            channels,
+            ..current.audio
+        },
+    };
+    project
+        .set_settings(settings)
+        .map_err(SettingsApplyError::Project)
+}
+
+fn apply_restart(
+    snapshot: &SettingsSnapshot,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    let restart = match setting_text(snapshot, "restart_policy.mode")? {
+        "never" => RestartPolicy::Never,
+        "always" => RestartPolicy::Always,
+        "on_failure" => {
+            let attempts = u8::try_from(setting_integer(
+                snapshot,
+                "restart_policy.max_attempts",
+            )?)
+            .ok()
+            .filter(|attempts| {
+                *attempts > 0 && *attempts <= RestartPolicy::MAX_RESTART_ATTEMPTS
+            })
+            .ok_or(SettingsApplyError::Invalid {
+                key: "restart_policy.max_attempts",
+            })?;
+            RestartPolicy::OnFailure {
+                max_attempts: attempts,
+            }
+        }
+        _ => {
+            return Err(SettingsApplyError::Invalid {
+                key: "restart_policy.mode",
+            });
+        }
+    };
+    project.set_restart_policy(restart);
+    Ok(())
 }

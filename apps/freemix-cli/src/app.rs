@@ -1037,7 +1037,11 @@ pub fn run(command: Command) -> AppResult<()> {
         Command::AsRun { path } => print_as_run(&path)?,
         Command::AssetAudit { path } => audit_assets(&path)?,
         Command::SettingsExport { path, output } => settings_export(&path, &output)?,
-        Command::SettingsImport { path, input } => settings_import(&path, &input)?,
+        Command::SettingsImport {
+            path,
+            input,
+            apply,
+        } => settings_import(&path, &input, apply)?,
         Command::TitleDesignCheck { path } => title_design_check(&path)?,
         Command::TitleApplyRow {
             path,
@@ -6057,8 +6061,12 @@ fn settings_export(path: &Path, output: &Path) -> AppResult<()> {
     Ok(())
 }
 
-fn settings_import(path: &Path, input: &Path) -> AppResult<()> {
-    let stored = inspect_stored_project(path)?;
+fn settings_import(path: &Path, input: &Path, apply: bool) -> AppResult<()> {
+    let stored = if apply {
+        load_stored_project(path)?
+    } else {
+        inspect_stored_project(path)?
+    };
     let current = SettingsSnapshot::from_project(stored.project())
         .map_err(|error| AppFailure(format!("settings import: {error}")))?;
     let inventory = ContentInventory::from_project(stored.project());
@@ -6084,11 +6092,35 @@ fn settings_import(path: &Path, input: &Path) -> AppResult<()> {
     let outcome = plan
         .outcome()
         .map_err(|error| AppFailure(format!("settings import: {error}")))?;
+    if apply {
+        if let Some(change) = preview.changes().iter().find(|change| {
+            change.kind != ChangeKind::Unchanged
+                && !matches!(
+                    change.key.section(),
+                    fm_persistence::SettingsSection::Format
+                        | fm_persistence::SettingsSection::RestartPolicy
+                )
+        }) {
+            return Err(AppFailure(format!(
+                "settings-import: cannot apply {} changes yet (only format and restart_policy); nothing was saved",
+                change.key.section()
+            ))
+            .into());
+        }
+        let mut project = stored.project().clone();
+        outcome
+            .result
+            .apply_format_and_restart(&mut project)
+            .map_err(|error| AppFailure(format!("settings-import: {error}")))?;
+        let configured = stored.with_project(project)?;
+        ProjectStore::new(path)?.save(&configured)?;
+    }
     println!(
-        "settings-import: {} added, {} changed, {} removed; nothing applied",
+        "settings-import: {} added, {} changed, {} removed; {}",
         preview.count(ChangeKind::Added),
         preview.count(ChangeKind::Changed),
         preview.count(ChangeKind::Removed),
+        if apply { "applied" } else { "nothing applied" },
     );
     for key in &outcome.retained_secrets {
         println!("kept-secret {}", key.as_str());
@@ -7100,7 +7132,7 @@ Usage:
   freemix-cli scenes <show.freemix>
   freemix-cli asset-audit <show.freemix>
   freemix-cli settings-export <show.freemix> <settings.json>
-  freemix-cli settings-import <show.freemix> <settings.json>
+  freemix-cli settings-import <show.freemix> <settings.json> [--apply]
   freemix-cli title-design-check <design.fmdesign>
   freemix-cli title-apply-row <show.freemix> <input-id> <row.json> [--keep-live]
   freemix-cli title-design-import <show.freemix> <design.fmdesign> --id <nonzero-input-id> --name <name> [--font <Family=path.ttf>]...

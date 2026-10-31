@@ -986,10 +986,12 @@ pub enum Command {
         output: PathBuf,
     },
     /// `settings-import <project> <file>`: preview an exported settings
-    /// document against the project (RC-013).
+    /// document against the project, or apply its format and restart policy
+    /// with `--apply` (RC-013).
     SettingsImport {
         path: PathBuf,
         input: PathBuf,
+        apply: bool,
     },
     /// `title-design-check <file.fmdesign>`: validate a designer document
     /// (GX-002).
@@ -2456,8 +2458,18 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "settings-import" => {
             let path = required_path(&mut arguments, "project path")?;
             let input = required_path(&mut arguments, "export path")?;
-            reject_extra(&mut arguments)?;
-            Ok(Command::SettingsImport { path, input })
+            let mut apply = false;
+            for option in arguments.by_ref() {
+                match option.as_str() {
+                    "--apply" => apply = true,
+                    _ => return Err(ArgsError::UnknownOption(option)),
+                }
+            }
+            Ok(Command::SettingsImport {
+                path,
+                input,
+                apply,
+            })
         }
         "title-design-check" => {
             let path = required_path(&mut arguments, "design path")?;

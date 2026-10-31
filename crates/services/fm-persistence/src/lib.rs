@@ -81,7 +81,7 @@ pub use settings_export::{
 };
 pub use settings_import::{
     ChangeKind, ChangePreview, ContentInventory, ImportConflict, ImportError, ImportOutcome,
-    ImportPlan, ImportResolutions, KeyChange, MergeStrategy, SectionChoice,
+    ImportPlan, ImportResolutions, KeyChange, MergeStrategy, SectionChoice, SettingsApplyError,
 };
 pub use store::{MAX_MANIFEST_BYTES, ProjectStore, StoreError};
 pub use title_design::{
