@@ -170,6 +170,7 @@ fn save_project(path: &Path) {
             retention_seconds: 10,
             storage_root: None,
             auto_return: None,
+            transition: fm_types::replay::ReplayTransition::CUT,
         })
         .unwrap();
     let stored = StoredProject::from_project_with_complete_runtime_state(

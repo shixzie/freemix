@@ -481,6 +481,7 @@ pub(crate) fn edited_replay(
             .clone()
             .unwrap_or_else(|| settings.storage_root.clone()),
         auto_return: edit.auto_return.unwrap_or(settings.auto_return),
+        transition: edit.transition.unwrap_or(settings.transition),
     })
 }
 
@@ -739,7 +740,7 @@ pub(crate) fn print_reel_export(export: &fm_protocol::ReelExportStatus) {
 /// Prints one `ReplaySettings(...)` line.
 pub(crate) fn print_replay_settings(settings: &fm_protocol::ReplaySettings) {
     println!(
-        "ReplaySettings(sources=[{}], retention_seconds={}, storage_root={}, auto_return={})",
+        "ReplaySettings(sources=[{}], retention_seconds={}, storage_root={}, auto_return={}, transition={})",
         settings
             .sources
             .iter()
@@ -754,6 +755,11 @@ pub(crate) fn print_replay_settings(settings: &fm_protocol::ReplaySettings) {
         settings
             .auto_return
             .map_or_else(|| "off".to_owned(), |frames| frames.to_string()),
+        match settings.transition.kind {
+            fm_types::replay::ReplayTransitionKind::Cut => "cut".to_owned(),
+            fm_types::replay::ReplayTransitionKind::Fade =>
+                format!("fade:{}", settings.transition.duration_frames),
+        },
     );
 }
 

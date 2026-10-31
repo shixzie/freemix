@@ -1956,6 +1956,11 @@ fn validate_replay(project: &Project, errors: &mut Vec<ValidationError>) {
             field: "replay.auto_return",
             kind: ValidationErrorKind::OutOfRange,
         },
+        ReplaySettingsError::Transition => ValidationError {
+            entity: None,
+            field: "replay.transition",
+            kind: ValidationErrorKind::OutOfRange,
+        },
     });
 }
 

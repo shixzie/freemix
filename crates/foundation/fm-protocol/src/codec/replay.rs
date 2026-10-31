@@ -1,6 +1,6 @@
 //! Instant replay codec (OR-012); see [`crate::replay`] for the contract.
 
-use fm_types::replay::ReplaySourceCheck;
+use fm_types::replay::{ReplaySourceCheck, ReplayTransition, ReplayTransitionKind};
 
 use crate::{
     CodecError, MAX_REPLAY_EVENTS, MAX_REPLAY_INPUTS, MAX_REPLAY_PLAYLIST_ENTRIES,
@@ -147,7 +147,29 @@ fn push_settings(settings: &ReplaySettings, push: &mut Push<'_>) -> Result<(), C
     if let Some(frames) = settings.auto_return {
         push("auto_return", frames.to_string())?;
     }
+    push("transition", encode_transition(settings.transition))?;
     Ok(())
+}
+
+fn encode_transition(transition: ReplayTransition) -> String {
+    match transition.kind {
+        ReplayTransitionKind::Cut => "cut".to_owned(),
+        ReplayTransitionKind::Fade => format!("fade:{}", transition.duration_frames),
+    }
+}
+
+fn decode_transition(value: &str) -> Result<ReplayTransition, CodecError> {
+    match value {
+        "cut" => Ok(ReplayTransition::CUT),
+        _ => {
+            let Some(frames) = value.strip_prefix("fade:") else {
+                return Err(invalid("transition", value));
+            };
+            let frames = parse_number("transition", frames)?;
+            ReplayTransition::new(ReplayTransitionKind::Fade, frames)
+                .map_err(|_| invalid("transition", value))
+        }
+    }
 }
 
 fn decode_settings(fields: &mut dyn FieldSource) -> Result<ReplaySettings, CodecError> {
@@ -162,6 +184,7 @@ fn decode_settings(fields: &mut dyn FieldSource) -> Result<ReplaySettings, Codec
             .optional("auto_return")
             .map(|frames| parse_number("auto_return", &frames))
             .transpose()?,
+        transition: decode_transition(&fields.required("transition")?)?,
     };
     check_settings("sources", &settings)?;
     Ok(settings)

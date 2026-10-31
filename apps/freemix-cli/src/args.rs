@@ -6073,6 +6073,9 @@ pub struct ReplayEdit {
     /// the mix's frames (Protocol 2.116).
     #[allow(clippy::option_option)] // keep, off, or a mix
     pub auto_return: Option<Option<u32>>,
+    /// How a Replay take enters Program (`--transition cut|fade:<frames>`,
+    /// Protocol 2.137).
+    pub transition: Option<fm_types::replay::ReplayTransition>,
 }
 
 /// The inputs `--sources` names, in angle order (OR-012): distinct, nonzero,
@@ -6126,6 +6129,26 @@ fn replay_retention(value: &str) -> Result<u32, ArgsError> {
         });
     }
     Ok(u32::from(seconds))
+}
+
+/// The `--transition` a Replay take uses (OR-012, Protocol 2.137): `cut` or
+/// `fade:<frames>`.
+fn replay_transition(value: &str) -> Result<fm_types::replay::ReplayTransition, ArgsError> {
+    if value == "cut" {
+        return Ok(fm_types::replay::ReplayTransition::CUT);
+    }
+    let Some(frames) = value.strip_prefix("fade:") else {
+        return Err(ArgsError::InvalidChoice {
+            field: "replay transition",
+            value: value.to_owned(),
+        });
+    };
+    let frames: u32 = number(frames, "replay transition frames")?;
+    fm_types::replay::ReplayTransition::new(fm_types::replay::ReplayTransitionKind::Fade, frames)
+        .map_err(|_| ArgsError::InvalidChoice {
+            field: "replay transition",
+            value: value.to_owned(),
+        })
 }
 
 /// The `--root` storage directory (OR-012): absolute and within the
@@ -6201,6 +6224,12 @@ fn parse_replay(
                     }
                     Some(frames)
                 });
+            }
+            "--transition" => {
+                edit.transition = Some(replay_transition(&required(
+                    &mut arguments,
+                    "replay transition",
+                )?)?);
             }
             "--default-root" => {
                 if matches!(edit.storage_root, Some(Some(_))) {
@@ -11959,6 +11988,7 @@ mod tests {
                     retention_seconds: Some(30),
                     storage_root: Some(None),
                     auto_return: None,
+                    transition: None,
                 },
                 key: None,
                 expected_revision: None,

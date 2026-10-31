@@ -2620,6 +2620,7 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
             retention_seconds: 600,
             storage_root: None,
             auto_return: None,
+            transition: fm_types::replay::ReplayTransition::CUT,
         },
         root: "/var/lib/freemix/replay".into(),
         live_frame: Some(3_000),

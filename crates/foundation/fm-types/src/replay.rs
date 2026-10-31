@@ -47,6 +47,94 @@ pub const fn replay_step_is_valid(frames: i32) -> bool {
 /// Longest mix back to the live source when a Replay input finishes on
 /// Program (ten seconds at 30 frames per second).
 pub const MAX_REPLAY_AUTO_RETURN_FRAMES: u32 = 300;
+/// Longest transition that takes a Replay input to Program (ten seconds at
+/// 60 frames per second).
+pub const MAX_REPLAY_TRANSITION_FRAMES: u32 = 600;
+
+/// How a Replay input enters Program (OR-012): a cut or a fade.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum ReplayTransitionKind {
+    #[default]
+    Cut,
+    Fade,
+}
+
+impl ReplayTransitionKind {
+    pub const TOKENS: [&'static str; 2] = ["cut", "fade"];
+
+    /// The wire and project token.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Cut => "cut",
+            Self::Fade => "fade",
+        }
+    }
+
+    /// The kind `token` names, or `None`.
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        match token {
+            "cut" => Some(Self::Cut),
+            "fade" => Some(Self::Fade),
+            _ => None,
+        }
+    }
+}
+
+/// The transition a Replay input takes to Program: a cut (`duration_frames`
+/// 0) or a fade of 1 through [`MAX_REPLAY_TRANSITION_FRAMES`].
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ReplayTransition {
+    pub kind: ReplayTransitionKind,
+    pub duration_frames: u32,
+}
+
+impl Default for ReplayTransition {
+    fn default() -> Self {
+        Self::CUT
+    }
+}
+
+impl ReplayTransition {
+    /// A cut: no transition frames.
+    pub const CUT: Self = Self {
+        kind: ReplayTransitionKind::Cut,
+        duration_frames: 0,
+    };
+
+    /// The transition `kind` with `duration_frames`, if usable.
+    ///
+    /// # Errors
+    ///
+    /// A cut must carry no frames; a fade must carry 1 through
+    /// [`MAX_REPLAY_TRANSITION_FRAMES`].
+    pub const fn new(
+        kind: ReplayTransitionKind,
+        duration_frames: u32,
+    ) -> Result<Self, ReplaySettingsError> {
+        match kind {
+            ReplayTransitionKind::Cut if duration_frames != 0 => {
+                Err(ReplaySettingsError::Transition)
+            }
+            ReplayTransitionKind::Fade
+                if duration_frames == 0 || duration_frames > MAX_REPLAY_TRANSITION_FRAMES =>
+            {
+                Err(ReplaySettingsError::Transition)
+            }
+            _ => Ok(Self {
+                kind,
+                duration_frames,
+            }),
+        }
+    }
+
+    /// Whether this is a cut.
+    #[must_use]
+    pub const fn is_cut(self) -> bool {
+        matches!(self.kind, ReplayTransitionKind::Cut)
+    }
+}
 
 /// What a project records for replay and how long it keeps it.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -67,6 +155,8 @@ pub struct ReplaySettings {
     /// [`MAX_REPLAY_AUTO_RETURN_FRAMES`]); `None` leaves the Replay input
     /// on air.
     pub auto_return: Option<u32>,
+    /// How an operator's take of a Replay input enters Program (2.137).
+    pub transition: ReplayTransition,
 }
 
 impl Default for ReplaySettings {
@@ -76,6 +166,7 @@ impl Default for ReplaySettings {
             retention_seconds: DEFAULT_REPLAY_RETENTION_SECONDS,
             storage_root: None,
             auto_return: None,
+            transition: ReplayTransition::CUT,
         }
     }
 }
@@ -99,6 +190,9 @@ pub enum ReplaySettingsError {
     /// The auto return mix is longer than
     /// [`MAX_REPLAY_AUTO_RETURN_FRAMES`].
     AutoReturn,
+    /// The take transition is not a cut with no frames or a fade of at most
+    /// [`MAX_REPLAY_TRANSITION_FRAMES`].
+    Transition,
 }
 
 impl fmt::Display for ReplaySettingsError {
@@ -126,6 +220,11 @@ impl fmt::Display for ReplaySettingsError {
             Self::AutoReturn => write!(
                 formatter,
                 "the replay auto return mixes for at most {MAX_REPLAY_AUTO_RETURN_FRAMES} frames"
+            ),
+            Self::Transition => write!(
+                formatter,
+                "the replay take transition is a cut or a fade of at most \
+                 {MAX_REPLAY_TRANSITION_FRAMES} frames"
             ),
         }
     }
@@ -188,6 +287,7 @@ impl ReplaySettings {
         {
             return Err(ReplaySettingsError::AutoReturn);
         }
+        ReplayTransition::new(self.transition.kind, self.transition.duration_frames)?;
         Ok(())
     }
 }

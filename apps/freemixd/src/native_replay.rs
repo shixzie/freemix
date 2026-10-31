@@ -1685,6 +1685,7 @@ mod tests {
                 retention_seconds: 10,
                 storage_root: Some(root.to_string_lossy().into_owned()),
                 auto_return: None,
+                transition: fm_types::replay::ReplayTransition::CUT,
             }))),
         );
         let format = ReplayFormat {
@@ -1938,6 +1939,7 @@ mod tests {
                 retention_seconds: 10,
                 storage_root: Some(root.to_string_lossy().into_owned()),
                 auto_return: None,
+                transition: fm_types::replay::ReplayTransition::CUT,
             }))),
         );
         // The configure command is realized on the next frame; the restore

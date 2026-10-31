@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.136 / schema 96 (2026-10-31,
+(2026-10-19); items refreshed through protocol 2.137 / schema 97 (2026-10-31,
 at `efee1ebf`). Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -167,9 +167,12 @@ there come before any new breadth below.
     step it a frame each way, and shuttle it at 2x each way, next to the
     marks and capture keys, and the Key profiles window binds a controller's
     transport (channel 1 notes 36–43) to the replay marks, capture,
-    play/pause, stepping, and shuttling in one click. Remaining: the
+    play/pause, stepping, and shuttling in one click. A Replay take now uses
+    the show's configured transition — a cut or a fade of its own length
+    (Protocol 2.137, schema 97), set in Studio's Replay panel and the CLI.
+    Remaining: the
     recorder takes a source's last
-    decoded picture rather than a genlocked one, transitions and the
+    decoded picture rather than a genlocked one, the
     dedicated two-profile replay controllers, and
     certification are absent; Studio's
     Replay panel and the CLI record up to eight inputs and render their angles
@@ -6067,8 +6070,10 @@ be linked for A/B playback (Protocol 2.124), sharing cue, play, pause,
 cue-in, and step while keeping their own angles. A player shuttles at a
 signed rate from -16x to +16x in thousandths of real time (Protocol 2.131,
 `remote-replay-do shuttle`), pausing at either end without auto return, and
-reports its rate and shuttling state on the wire; there is no replay
-transition, multiview, or controller wiring; storage health reaches
+reports its rate and shuttling state on the wire; a Replay take now uses the
+show's configured transition — a cut or a fade of its own length (Protocol
+2.137, schema 97), set in Studio's Replay panel and the CLI — and multiview
+and controller wiring remain; storage health reaches
 Studio and the CLI (Protocol 2.125), but not SMART or `fm-record` low-space
 behavior, and nothing is certified. `OR-012`, `OR-013`, and `OR-014` remain planned.
 

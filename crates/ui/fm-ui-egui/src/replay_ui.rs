@@ -38,6 +38,9 @@ use fm_protocol::{
     ReplayStatusMessage, ReplayStorageLevel, ReplayStorageStatus, reel_export_path_is_valid,
     reel_name_is_valid, replay_event_name_is_valid,
 };
+use fm_types::replay::{
+    MAX_REPLAY_TRANSITION_FRAMES, ReplayTransition, ReplayTransitionKind,
+};
 use fm_types::{FrameRate, InputId};
 
 use crate::console_keymap::ConsoleAction;
@@ -423,10 +426,19 @@ pub(crate) fn with_source(
     }
 }
 
-/// What TAKE does: put the Replay input on Preview, then cut.
+/// What TAKE does: put the Replay input on Preview, then cut or fade in
+/// with the show's configured replay transition (Protocol 2.137).
 #[must_use]
-pub(crate) fn take(input: InputId) -> [StudioIntent; 2] {
-    [StudioIntent::SelectPreview(input), StudioIntent::Cut]
+pub(crate) fn take(input: InputId, transition: ReplayTransition) -> [StudioIntent; 2] {
+    [
+        StudioIntent::SelectPreview(input),
+        match transition.kind {
+            ReplayTransitionKind::Cut => StudioIntent::Cut,
+            ReplayTransitionKind::Fade => StudioIntent::Fade {
+                duration_frames: transition.duration_frames,
+            },
+        },
+    ]
 }
 
 fn frame_rate(state: &StudioUiState) -> FrameRate {
@@ -686,6 +698,7 @@ fn draw_recording(
         }
     });
     draw_auto_return(ui, l, status, block, intents);
+    draw_transition(ui, l, status, intents);
     for source in &status.recorded {
         let input = source.input.to_domain();
         ui.label(caption(l.format(
@@ -749,6 +762,79 @@ fn draw_auto_return(
         }
         if (response.drag_stopped() || response.lost_focus()) && frames != current {
             intents.push(configure(Some(frames)));
+        }
+    });
+}
+
+/// The take transition (Protocol 2.137): a cut or a fade of its own
+/// duration, used when a Replay input is taken to Program.
+fn draw_transition(
+    ui: &mut Ui,
+    l: Locale,
+    status: &ReplayStatusMessage,
+    intents: &mut Vec<StudioIntent>,
+) {
+    let configure = |transition| {
+        StudioIntent::Replay(ReplayOperation::Configure(Box::new(ReplaySettings {
+            transition,
+            ..status.settings.clone()
+        })))
+    };
+    let current = status.settings.transition;
+    ui.horizontal(|ui| {
+        ui.label(l.text(Msg::ReplayTransition))
+            .on_hover_text(l.text(Msg::ReplayTransitionHover));
+        let selected = match current.kind {
+            ReplayTransitionKind::Cut => l.text(Msg::ReplayTransitionCut).to_owned(),
+            ReplayTransitionKind::Fade => l.text(Msg::ReplayTransitionFade).to_owned(),
+        };
+        ComboBox::from_id_salt("studio-replay-transition")
+            .selected_text(selected)
+            .width(90.0)
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(current.is_cut(), l.text(Msg::ReplayTransitionCut))
+                    .clicked()
+                    && !current.is_cut()
+                {
+                    intents.push(configure(ReplayTransition::CUT));
+                }
+                if ui
+                    .selectable_label(!current.is_cut(), l.text(Msg::ReplayTransitionFade))
+                    .clicked()
+                    && current.is_cut()
+                {
+                    intents.push(configure(
+                        ReplayTransition::new(ReplayTransitionKind::Fade, 30)
+                            .expect("30 frames is a usable fade"),
+                    ));
+                }
+            })
+            .response
+            .on_hover_text(l.text(Msg::ReplayTransitionHover));
+        if current.is_cut() {
+            return;
+        }
+        let id = Id::new("studio-replay-transition-frames");
+        let mut frames = ui
+            .data(|data| data.get_temp::<u32>(id))
+            .unwrap_or(current.duration_frames);
+        let response = ui
+            .add(
+                DragValue::new(&mut frames)
+                    .range(1..=MAX_REPLAY_TRANSITION_FRAMES)
+                    .suffix(" fr"),
+            )
+            .on_hover_text(l.text(Msg::ReplayTransitionFramesHover));
+        if response.dragged() || response.has_focus() {
+            ui.data_mut(|data| data.insert_temp(id, frames));
+        } else {
+            ui.data_mut(|data| data.remove::<u32>(id));
+        }
+        if (response.drag_stopped() || response.lost_focus()) && frames != current.duration_frames
+            && let Ok(transition) = ReplayTransition::new(ReplayTransitionKind::Fade, frames)
+        {
+            intents.push(configure(transition));
         }
     });
 }
@@ -1130,7 +1216,7 @@ fn draw_player(
             )
             .clicked()
         {
-            intents.extend(take(input));
+            intents.extend(take(input, status.settings.transition));
         }
     });
     ui.horizontal_wrapped(|ui| {
@@ -2209,6 +2295,7 @@ mod tests {
             retention_seconds: 120,
             storage_root: Some("/srv/replay".to_owned()),
             auto_return: None,
+            transition: fm_types::replay::ReplayTransition::CUT,
         };
         let added = with_source(&settings, input(2), true);
         assert_eq!(added.sources, vec![input(3), input(1), input(2)]);
@@ -2226,10 +2313,22 @@ mod tests {
     }
 
     #[test]
-    fn take_cuts_the_replay_input_to_program() {
+    fn take_uses_the_configured_replay_transition() {
         assert_eq!(
-            take(input(9)),
+            take(input(9), ReplayTransition::CUT),
             [StudioIntent::SelectPreview(input(9)), StudioIntent::Cut]
+        );
+        assert_eq!(
+            take(
+                input(9),
+                ReplayTransition::new(ReplayTransitionKind::Fade, 30).unwrap()
+            ),
+            [
+                StudioIntent::SelectPreview(input(9)),
+                StudioIntent::Fade {
+                    duration_frames: 30
+                }
+            ]
         );
     }
 

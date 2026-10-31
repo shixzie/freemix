@@ -115,6 +115,7 @@ fn settings(sources: &[u128], retention_seconds: u32) -> ReplaySettings {
         retention_seconds,
         storage_root: Some("/srv/replay".to_owned()),
         auto_return: None,
+        transition: fm_types::replay::ReplayTransition::CUT,
     }
 }
 

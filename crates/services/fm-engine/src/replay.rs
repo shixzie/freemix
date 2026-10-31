@@ -2386,6 +2386,7 @@ pub(crate) fn settings_rejection(error: ReplaySettingsError) -> Rejection {
         ReplaySettingsError::Retention => invalid("retention_seconds", "out_of_range", message),
         ReplaySettingsError::StorageRoot => invalid("storage_root", "invalid", message),
         ReplaySettingsError::AutoReturn => invalid("auto_return", "out_of_range", message),
+        ReplaySettingsError::Transition => invalid("transition", "out_of_range", message),
     }
 }
 

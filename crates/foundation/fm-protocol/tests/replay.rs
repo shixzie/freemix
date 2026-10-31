@@ -12,6 +12,7 @@ use fm_protocol::{
     ReplayStorageStatus, ServerIdentity, WireInputId, WireMessage, decode_line, encode_line,
 };
 use fm_types::InputId;
+use fm_types::replay::ReplayTransition;
 
 fn wire(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
@@ -70,13 +71,14 @@ fn operations() -> Vec<(ReplayOperation, &'static str)> {
                 retention_seconds: 600,
                 storage_root: Some("/srv/replay a".to_owned()),
                 auto_return: Some(12),
+                transition: ReplayTransition::CUT,
             })),
             "replay_configure\tsources=3%2C1\tretention_seconds=600\tstorage_root=%2Fsrv%2Freplay%20a\t\
-             auto_return=12",
+             auto_return=12\ttransition=cut",
         ),
         (
             ReplayOperation::Configure(Box::default()),
-            "replay_configure\tsources=\tretention_seconds=600",
+            "replay_configure\tsources=\tretention_seconds=600\ttransition=cut",
         ),
         (ReplayOperation::MarkIn, "replay_mark_in"),
         (ReplayOperation::MarkOut, "replay_mark_out"),
@@ -356,6 +358,7 @@ fn status(request_id: Option<&str>) -> ReplayStatusMessage {
             retention_seconds: 120,
             storage_root: None,
             auto_return: None,
+            transition: ReplayTransition::CUT,
         },
         root: "/var/lib/freemix/replay".to_owned(),
         live_frame: Some(3_000),
@@ -449,7 +452,7 @@ fn status_and_its_request_have_an_exact_wire_form() {
     assert!(
         line.starts_with(
             "replay_status\tengine_id=e\tproject_id=p\tstate_epoch=1\tlog_id=l\tsequence=7\t\
-             feed=recorded\tsources=1%2C2\tretention_seconds=120\t\
+             feed=recorded\tsources=1%2C2\tretention_seconds=120\ttransition=cut\t\
              root=%2Fvar%2Flib%2Ffreemix%2Freplay\tlive_frame=3000\tmark_in=2900\t\
              recorded=1%3A60%3A9000000%3A0%3A3000%3B2%3A0%3A0%3A%3A\t"
         ),

@@ -1,13 +1,15 @@
 //! Replay recording settings in `project.json` (OR-012, schema 82; auto
-//! return since schema 88).
+//! return since schema 88; take transitions since schema 97).
 //!
 //! ```text
 //! "replay": {"sources": [3, 5], "retention_seconds": 600,
-//!            "storage_root": "/srv/replay", "auto_return": 12}
+//!            "storage_root": "/srv/replay", "auto_return": 12,
+//!            "transition": "fade:30"}
 //! ```
 //!
 //! `auto_return` is `null` (a finished Replay input stays on Program) or
-//! the frames of the mix back to the live source (0 cuts).
+//! the frames of the mix back to the live source (0 cuts). `transition` is
+//! `cut` or `fade:<frames>`: how a Replay take enters Program.
 //!
 //! `sources` are the recorded inputs in angle order, `retention_seconds` is
 //! how much of each the server keeps, and `storage_root` is `null` (the
@@ -53,6 +55,15 @@ pub(crate) fn write_replay(output: &mut String, project: &fm_model::Project) {
         Some(frames) => write!(output, "{frames}").expect("writing to a string cannot fail"),
         None => output.push_str("null"),
     }
+    output.push_str(", \"transition\": \"");
+    match settings.transition.kind {
+        fm_types::replay::ReplayTransitionKind::Cut => output.push_str("cut"),
+        fm_types::replay::ReplayTransitionKind::Fade => {
+            write!(output, "fade:{}", settings.transition.duration_frames)
+                .expect("writing to a string cannot fail");
+        }
+    }
+    output.push('"');
     output.push('}');
 }
 
@@ -80,11 +91,28 @@ pub(crate) fn parse_replay(object: &mut Object) -> Result<ReplaySettings, Decode
         };
         u32::try_from(frames).map_err(|_| syntax("replay auto_return is out of range"))
     })?;
+    let transition = replay.string("transition")?;
+    let transition = if transition == "cut" {
+        fm_types::replay::ReplayTransition::CUT
+    } else {
+        let Some(frames) = transition.strip_prefix("fade:") else {
+            return Err(syntax("replay transition must be \"cut\" or \"fade:<frames>\""));
+        };
+        let frames = frames
+            .parse::<u32>()
+            .map_err(|_| syntax("replay transition frames are out of range"))?;
+        fm_types::replay::ReplayTransition::new(
+            fm_types::replay::ReplayTransitionKind::Fade,
+            frames,
+        )
+        .map_err(|_| syntax("replay transition frames are out of range"))?
+    };
     replay.finish()?;
     Ok(ReplaySettings {
         sources,
         retention_seconds,
         storage_root,
         auto_return,
+        transition,
     })
 }

@@ -11008,6 +11008,17 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReplayAutoReturnFramesHover,
         t("Fotogramas del fundido de vuelta a la fuente en directo; 0 corta"),
     ),
+    (Msg::ReplayTransition, t("Transición de entrada")),
+    (
+        Msg::ReplayTransitionHover,
+        t("Cómo entra en Programa una entrada de repetición al tomarla"),
+    ),
+    (Msg::ReplayTransitionCut, t("Corte")),
+    (Msg::ReplayTransitionFade, t("Fundido")),
+    (
+        Msg::ReplayTransitionFramesHover,
+        t("Fotogramas que dura el fundido"),
+    ),
     (Msg::ReplayStepBackHover, t("Un fotograma atrás, en pausa")),
     (
         Msg::ReplayStepForwardHover,

@@ -4537,7 +4537,7 @@ fn local_simulated_solid_input_add_persists_exact_rgba() {
 /// A `.fmtitle` source document that needs no font: a rectangle tinted by a
 /// color field, plus a number field.
 const SHAPE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 96,
+  "schema_version": 97,
   "template": {
     "id": 7,
     "name": "Score bar",
@@ -4777,7 +4777,7 @@ fn title_input_add_imports_the_template_and_adds_default_fields() {
 /// A 16x8 font-free `.fmtitle` source: one opaque red 8x4 rectangle at
 /// (4, 2) and no animation yet.
 const SLIDE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 96,
+  "schema_version": 97,
   "template": {
     "id": 11,
     "name": "Slide",
@@ -5040,7 +5040,7 @@ fn title_animation_presets_retime_and_render_exact_frames() {
 /// a countdown to doors, US Eastern time of day, and a since-take stopwatch,
 /// all drawn with the `Clock Face` font family.
 const CLOCK_TITLE_SOURCE: &str = r##"{
-  "schema_version": 96,
+  "schema_version": 97,
   "template": {
     "id": 9,
     "name": "Clocks",
@@ -5270,7 +5270,7 @@ fn title_input_add_imports_a_production_clock_template_with_its_clock_table() {
 /// that stretches image field 1 nearest-neighbor; its default names
 /// `asset://images/logo.png`.
 const IMAGE_TITLE_SOURCE: &str = r##"{
-  "schema_version": 96,
+  "schema_version": 97,
   "template": {
     "id": 12,
     "name": "Logo",
@@ -5367,7 +5367,7 @@ fn image_golden() -> Vec<u8> {
 /// (0, 0) and the since-take stopwatch `on-air` at (0, 40), both
 /// `minutes_seconds` in the `Clock Face` family, and a 120-frame In phase.
 const CLOCK_RENDER_SOURCE: &str = r##"{
-  "schema_version": 96,
+  "schema_version": 97,
   "template": {
     "id": 13,
     "name": "Clock render",
