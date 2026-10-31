@@ -6014,8 +6014,10 @@ fn validate_audio_mixer_change(
                 && parent.is_none_or(fm_protocol::audio_group_is_valid)
                 && state.audio_mixer.parent_is_acyclic(*group, *parent)
         }
-        fm_protocol::AudioMixerOperation::SetSoloMode { .. } => true,
-        fm_protocol::AudioMixerOperation::SetMonitorDevice { device } => device
+        fm_protocol::AudioMixerOperation::SetSoloMode { .. }
+        | fm_protocol::AudioMixerOperation::SetAuxBusOmt { .. } => true,
+        fm_protocol::AudioMixerOperation::SetMonitorDevice { device }
+        | fm_protocol::AudioMixerOperation::SetAuxBusDevice { device, .. } => device
             .as_deref()
             .is_none_or(fm_protocol::audio_monitor_device_is_valid),
         fm_protocol::AudioMixerOperation::SetMonitorLevel { gain_millidb, .. }
@@ -6039,10 +6041,6 @@ fn validate_audio_mixer_change(
             fm_protocol::audio_label_is_valid(name, false)
         }
         fm_protocol::AudioMixerOperation::SetAuxBusDsp { chain, .. } => chain.validate().is_ok(),
-        fm_protocol::AudioMixerOperation::SetAuxBusDevice { device, .. } => device
-            .as_deref()
-            .is_none_or(fm_protocol::audio_monitor_device_is_valid),
-        fm_protocol::AudioMixerOperation::SetAuxBusOmt { .. } => true,
         fm_protocol::AudioMixerOperation::SetOutputBus { output, .. } => state
             .outputs
             .iter()
@@ -6052,7 +6050,7 @@ fn validate_audio_mixer_change(
                 .outputs
                 .iter()
                 .any(|candidate| candidate.output == output.to_domain())
-                && input.as_ref().is_none_or(|input| known(input))
+                && input.as_ref().is_none_or(&known)
         }
         fm_protocol::AudioMixerOperation::SetPluginChain { target, slots } => {
             let target_known = match target {

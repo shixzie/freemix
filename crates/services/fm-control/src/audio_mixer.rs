@@ -177,6 +177,7 @@ pub(super) const fn wire_solo_mode(mode: AudioSoloMode) -> fm_protocol::AudioSol
 }
 
 /// The engine command for a wire mixer operation.
+#[allow(clippy::too_many_lines)] // one arm per wire mixer operation
 pub(super) fn engine_command(operation: &AudioMixerOperation) -> EngineCommand {
     EngineCommand::AudioMixer(match operation {
         AudioMixerOperation::SetLabel { input, label } => EngineAudioMixerEdit::SetLabel {

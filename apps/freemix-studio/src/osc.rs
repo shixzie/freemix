@@ -327,6 +327,7 @@ fn receive_loop(
     }
 }
 
+#[allow(clippy::too_many_lines)] // one arm per OSC address family
 fn decode(datagram: &[u8]) -> Result<OscAction, ()> {
     let (address, type_offset) = padded_string(datagram, 0)?;
     let (types, end) = padded_string(datagram, type_offset)?;

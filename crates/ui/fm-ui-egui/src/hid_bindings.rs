@@ -256,8 +256,11 @@ mod tests {
             trigger: value.clone(),
             pressed: true,
         };
-        assert_eq!(bindings.presses(&[press.clone()]), [value.clone()]);
-        assert_eq!(bindings.presses(&[press.clone()]), []);
+        assert_eq!(
+            bindings.presses(std::slice::from_ref(&press)),
+            std::slice::from_ref(&value)
+        );
+        assert_eq!(bindings.presses(std::slice::from_ref(&press)), []);
         assert_eq!(
             bindings.presses(&[HidInput {
                 trigger: value.clone(),

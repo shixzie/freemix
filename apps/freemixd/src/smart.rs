@@ -159,12 +159,7 @@ fn run_smartctl(program: &Path, device: &Path) -> Option<Vec<u8>> {
             Ok(None) if started.elapsed() < SMART_TIMEOUT => {
                 std::thread::sleep(Duration::from_millis(20));
             }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            Err(_) => {
+            Ok(None) | Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;

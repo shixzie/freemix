@@ -92,7 +92,7 @@ pub(crate) const RETRY_DELAY: Duration = Duration::from_secs(5);
 /// How often the storage root's free space is sampled, at most.
 const STORAGE_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 /// How often the root drive's SMART status is sampled, at most (OR-014).
-const SMART_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
+const SMART_SAMPLE_INTERVAL: Duration = Duration::from_mins(1);
 /// One-second fragments per segment file.
 const FRAGMENTS_PER_SEGMENT: NonZeroU32 = NonZeroU32::MIN.saturating_add(1);
 /// Frames a run's worker may fall behind before the run ends.
@@ -633,11 +633,10 @@ impl NativeReplay {
         };
         match &mut source.state {
             SourceState::Idle if !self.low_space => self.start(input),
-            SourceState::Idle => {}
             SourceState::Failed { at } if !self.low_space && at.elapsed() >= RETRY_DELAY => {
                 self.start(input);
             }
-            SourceState::Failed { .. } => {}
+            SourceState::Idle | SourceState::Failed { .. } => {}
             SourceState::Running(run) => {
                 let mut failure = None;
                 loop {
@@ -679,6 +678,11 @@ impl NativeReplay {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::ref_option,
+        clippy::needless_pass_by_value
+    )]
     fn catalog(
         session: &Option<PathBuf>,
         host: &mut dyn ReplayHost,
@@ -901,7 +905,7 @@ impl NativeReplay {
                         frames,
                         bytes,
                     }) => {
-                        Self::catalog(&self.session, host, input, run, index, path, frames, bytes)
+                        Self::catalog(&self.session, host, input, run, index, path, frames, bytes);
                     }
                     Ok(RunEvent::Stopped) => {
                         self.sources.get_mut(&input).expect("source").state = SourceState::Idle;
@@ -1069,6 +1073,7 @@ fn parse_manifest_segments(text: &str, session: &Path) -> Vec<RestoredSegment> {
 }
 
 /// Appends one closed segment to its session's manifest.
+#[allow(clippy::too_many_arguments)] // one field per recorded segment
 fn append_segment_manifest(
     session: &Path,
     input: InputId,

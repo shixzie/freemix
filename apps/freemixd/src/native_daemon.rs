@@ -501,10 +501,7 @@ impl NativeDaemon {
                 )
             },
             aux_bus_outputs: std::array::from_fn(|index| {
-                let bus = stored.project().aux_buses().get(
-                    fm_model::AuxBusNumber::new(u8::try_from(index + 1).unwrap())
-                        .expect("aux bus numbers are 1 through 7"),
-                );
+                let bus = stored.project().aux_buses().get(aux_bus_number(index));
                 freemixd::monitor_output::MonitorOutputSlot::new(
                     "ffmpeg".into(),
                     bus.device.clone(),
@@ -3703,4 +3700,12 @@ impl NativeDaemon {
 
     #[allow(clippy::unused_self)]
     pub(crate) fn emit_telemetry(&mut self) {}
+}
+
+/// The aux bus number for zero-based `index`, which `aux_bus_outputs`
+/// iterates over exactly the configured buses.
+#[allow(clippy::expect_used, clippy::unwrap_used)] // the array has exactly seven slots
+fn aux_bus_number(index: usize) -> fm_model::AuxBusNumber {
+    fm_model::AuxBusNumber::new(u8::try_from(index + 1).unwrap())
+        .expect("aux bus numbers are 1 through 7")
 }

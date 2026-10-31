@@ -636,6 +636,7 @@ impl Default for RemainingTimeWatch {
 impl RemainingTimeWatch {
     /// A watch reporting crossings of `thresholds` (sorted and bounded by
     /// [`RemainingTimeAlarm`]) that clear by `clear_margin`.
+    #[allow(clippy::needless_pass_by_value)] // callers hand over a fresh list
     fn with_thresholds(thresholds: Vec<Duration>, clear_margin: Duration) -> Self {
         Self {
             alarm: RemainingTimeAlarm::new(&thresholds, clear_margin),
@@ -1563,7 +1564,7 @@ mod tests {
         );
         assert_eq!(
             parse_remaining_thresholds(" 60 , 15 "),
-            Some(vec![Duration::from_mins(60), Duration::from_mins(15)])
+            Some(vec![Duration::from_hours(1), Duration::from_mins(15)])
         );
         for bad in [
             "",

@@ -506,6 +506,7 @@ fn draw_contents(
 /// script, run id, where it is paused and when its next part runs (or the
 /// frame it failed on), each with its own Stop or Clear, then Stop all
 /// runs. Nothing while every script is idle.
+#[allow(clippy::too_many_lines)] // one row per active run and its stop key
 fn draw_active_runs(
     ui: &mut Ui,
     state: &StudioUiState,

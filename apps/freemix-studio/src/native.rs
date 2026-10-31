@@ -693,6 +693,7 @@ impl StudioApp {
         self.sent_midi_feedback = feedback;
     }
 
+    #[allow(clippy::too_many_lines)] // one arm per OSC action
     fn drain_osc(&mut self) {
         for drained in 1..=OSC_ACTIONS_PER_FRAME {
             let Some(action) = self.osc.as_ref().and_then(|osc| osc.try_recv().ok()) else {

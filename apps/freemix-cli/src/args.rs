@@ -6301,6 +6301,7 @@ fn replay_root(value: String) -> Result<String, ArgsError> {
 }
 
 /// `replay`, `replay-set`, and their `remote-` forms (OR-012).
+#[allow(clippy::too_many_lines)] // one replay subcommand per arm
 fn parse_replay(
     command: &str,
     mut arguments: impl Iterator<Item = String>,

@@ -292,10 +292,10 @@ pub(crate) fn draw_system_audio_form(
     id: &str,
     draft: &mut SystemAudioDraft,
 ) -> bool {
-    let mut rescan = false;
     // While the form stays open, refresh the list every few seconds so a
     // device appearing or going away shows up without the operator asking.
     const RESCAN_SECONDS: f64 = 5.0;
+    let mut rescan = false;
     let refreshed_at = ui.make_persistent_id(format!("{id}-system-audio-refreshed-at"));
     let now = ui.input(|input| input.time);
     let due = ui

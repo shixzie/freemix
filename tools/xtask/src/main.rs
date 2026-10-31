@@ -919,6 +919,7 @@ fn validate_priority_counts(features: &[(&str, &str)], source: &str) -> Result<(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)] // one contract check per feature field
 fn validate_feature(
     feature: &Feature,
     features: &BTreeMap<&str, &Feature>,

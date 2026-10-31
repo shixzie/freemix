@@ -1020,6 +1020,7 @@ impl Scoreboard {
     }
 
     /// Returns whether the action saturated.
+    #[allow(clippy::too_many_lines)] // one arm per scoreboard action
     fn apply_one(
         &mut self,
         frame: u64,
@@ -1569,6 +1570,7 @@ fn format_optional_frame(value: Option<u64>) -> String {
     value.map_or_else(|| "-".to_owned(), |value| value.to_string())
 }
 
+#[allow(clippy::option_option)] // the outer Option is "parsed", the inner is "none"
 fn parse_optional_u64(token: &str) -> Option<Option<u64>> {
     if token == "none" {
         return Some(None);
@@ -1576,6 +1578,7 @@ fn parse_optional_u64(token: &str) -> Option<Option<u64>> {
     parse_scoreboard_unsigned(token).map(Some)
 }
 
+#[allow(clippy::option_option)] // the outer Option is "parsed", the inner is "none"
 fn parse_optional_frame(token: &str) -> Option<Option<u64>> {
     if token == "-" {
         return Some(None);
@@ -1635,6 +1638,7 @@ fn format_scoreboard_player(player: Option<&Player>) -> String {
     )
 }
 
+#[allow(clippy::option_option)] // the outer Option is "parsed", the inner is "no player"
 fn parse_scoreboard_player(token: &str) -> Option<Option<Player>> {
     if token == "none" {
         return Some(None);
@@ -1672,6 +1676,7 @@ fn write_scoreboard_clock(output: &mut String, prefix: &str, clock: Option<&Game
     );
 }
 
+#[allow(clippy::option_option)] // the outer Option is "parsed", the inner is "no clock"
 fn parse_scoreboard_clock(tokens: &[String]) -> Option<Option<GameClockSnapshot>> {
     if tokens.len() == 1 && tokens[0] == "none" {
         return Some(None);
@@ -1764,6 +1769,7 @@ impl ScoreboardSnapshot {
     ///
     /// Returns [`ScoreboardDocumentError`] for an oversized, malformed, or
     /// out-of-contract document without accepting a partial result.
+    #[allow(clippy::too_many_lines)] // one section per document line
     pub fn from_document(text: &str) -> Result<Self, ScoreboardDocumentError> {
         if text.len() > MAX_SCOREBOARD_DOCUMENT_BYTES {
             return Err(ScoreboardDocumentError::TooLarge {

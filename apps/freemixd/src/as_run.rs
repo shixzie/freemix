@@ -2,7 +2,7 @@
 //! beside the project, one tab-separated line per change.
 //!
 //! ```text
-//! 1761860000000	1500	7	Camera 1
+//! 1761860000000    1500    7    Camera 1
 //! ```
 //!
 //! The first field is the wall-clock Unix time in milliseconds, the second

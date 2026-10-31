@@ -1675,6 +1675,7 @@ type StateKeys<'a> = (
 
 /// The intents of a profile action that reads the session's state: an
 /// overlay channel's toggle, or a replay mark or capture.
+#[allow(clippy::too_many_lines)] // one arm per state-reading console action
 fn live_console_intents(state: &StudioUiState, action: ConsoleAction) -> Vec<StudioIntent> {
     let replay = |operation| replay_ui::key_intent(state, operation);
     match action {

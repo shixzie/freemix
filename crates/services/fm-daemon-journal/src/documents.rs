@@ -474,13 +474,13 @@ impl DocumentPages {
         let spawned = thread::Builder::new()
             .name("freemixd-document-convert".into())
             .spawn(move || {
-                let converted = converter.convert_cancellable(
+                let rendered = converter.convert_cancellable(
                     format,
                     &bytes,
                     DEFAULT_CONVERSION_TIMEOUT,
                     Some(&stop),
                 );
-                let result = match converted.and_then(PdfDocument::open) {
+                let result = match rendered.and_then(PdfDocument::open) {
                     Ok(pdf) => Renderable::Ready(Pdf::new(pdf)),
                     Err(DocumentError::ConversionCancelled) => {
                         *lock(&slot) = Renderable::Failed(DocumentError::ConversionCancelled);

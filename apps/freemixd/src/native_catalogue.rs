@@ -1142,9 +1142,9 @@ mod tests {
         assert_eq!(previous(&list), Some(3));
         list.options.shuffle_seed = Some(7);
         let order = list.play_order();
-        let last = *order.last().unwrap();
+        let tail = *order.last().unwrap();
         list.active = order[0];
-        assert_eq!(previous(&list), Some(last));
+        assert_eq!(previous(&list), Some(tail));
     }
 
     /// First goes to the first item of the current cycle's play order, which

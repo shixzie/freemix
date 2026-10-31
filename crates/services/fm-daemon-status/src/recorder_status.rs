@@ -185,6 +185,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one transition per recorder state
     fn slots_report_starting_recording_failed_and_off() {
         let mut tracker = RecorderStatusTracker::default();
         let start = Instant::now();

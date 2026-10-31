@@ -204,10 +204,11 @@ impl ConsoleAction {
             | Self::Take(_)
             | Self::QuickPlay(_)
             | Self::Cut
-            | Self::Overlay(_) => crate::ShortcutGroup::Switching,
+            | Self::Overlay(_)
+            | Self::SlideNext
+            | Self::SlidePrevious => crate::ShortcutGroup::Switching,
             Self::Fade | Self::FadeToBlack | Self::Favorite(_) => crate::ShortcutGroup::Transitions,
             Self::CueGo => crate::ShortcutGroup::Cues,
-            Self::SlideNext | Self::SlidePrevious => crate::ShortcutGroup::Switching,
             Self::ReplayMarkIn
             | Self::ReplayMarkOut
             | Self::ReplayCapture
@@ -430,6 +431,7 @@ impl BuiltinProfile {
 
     /// The profile's keys.
     #[must_use]
+    #[allow(clippy::too_many_lines)] // one binding per console action
     pub fn keymap(self) -> ConsoleKeymap {
         let digit = |n: u8| match n {
             1 => Key::Num1,

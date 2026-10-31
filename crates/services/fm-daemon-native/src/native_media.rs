@@ -5712,14 +5712,11 @@ impl NativeMasterRuntime {
                     .aux_mix_minus_outputs
                     .iter()
                     .position(|candidate| *candidate == output);
-                let source = match feed {
-                    Some(index) => {
-                        &self.scratch.aux_mix_minus[index * channels..(index + 1) * channels]
-                    }
-                    None => {
-                        let start = bus.index() * channels;
-                        &self.scratch.aux[start..start + channels]
-                    }
+                let source = if let Some(index) = feed {
+                    &self.scratch.aux_mix_minus[index * channels..(index + 1) * channels]
+                } else {
+                    let start = bus.index() * channels;
+                    &self.scratch.aux[start..start + channels]
                 };
                 let mut planes: Vec<Vec<f32>> = source
                     .iter()
@@ -8405,6 +8402,7 @@ impl NativeMediaRuntime {
         block_on(self.present_slides(playback, input, layers, picture))
     }
 
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // fitted slide sizes are positive and bounded
     async fn present_slides(
         &self,
         playback: &mut NativeSourcePlayback,
