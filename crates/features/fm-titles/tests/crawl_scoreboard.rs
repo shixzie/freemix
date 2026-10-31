@@ -883,6 +883,42 @@ fn count_up_clock_stops_at_its_limit() {
     assert_eq!(board.clock().display(1_000), "00:00:05");
 }
 
+#[test]
+fn the_shot_clock_counts_down_and_reports_its_expiry_once() {
+    let mut board = board(clock_config(ClockDirection::CountDown, (25, 1), 60_000));
+    let outcome = board
+        .apply(
+            0,
+            10,
+            &[
+                ScoreboardAction::SetShotClock { value_ms: 24_000 },
+                ScoreboardAction::StartShotClock,
+            ],
+        )
+        .unwrap();
+    assert_eq!(outcome.revision, 1);
+    // 24 s at 25 fps is 600 frames, so it expires at frame 610.
+    assert_eq!(board.shot_clock().expiry_frame(), Some(610));
+    assert_eq!(board.shot_clock().value_ms(10), 24_000);
+    assert_eq!(board.shot_clock().display(10), "00:24");
+    assert_eq!(board.advance(609).unwrap(), Vec::new());
+    assert_eq!(
+        board.advance(610).unwrap(),
+        vec![ScoreboardEvent::ShotClockExpired { frame: 610 }]
+    );
+    assert_eq!(board.advance(611).unwrap(), Vec::new());
+    // The external feed re-arms and starts it.
+    let outcome = board
+        .apply_external(
+            1,
+            620,
+            &[("shot_clock.ms", "14000"), ("shot_clock.running", "true")],
+        )
+        .unwrap();
+    assert_eq!(outcome.revision, 2);
+    assert_eq!(board.shot_clock().value_ms(620), 14_000);
+}
+
 fn scoreboard_template() -> TitleTemplate {
     let text = |id, name: &str| FieldDefinition {
         id: field(id),

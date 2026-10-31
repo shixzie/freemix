@@ -4125,16 +4125,17 @@ rational pixels-per-second speed against the frame rate, with separator wrap,
 bounded item lists, and live updates spliced in at the next unseen item so
 visible text never jumps; crawls render above scene elements through the CPU
 reference renderer with exact pixel tests. A typed scoreboard covers team
-names, abbreviations, scores, a featured player, and the period with atomic
+names, abbreviations, scores, a featured player, the period, and a 24-second
+shot clock with atomic
 revision-checked action batches, saturating increment/decrement shortcuts,
 and a frame-exact count-up or count-down game clock whose expiry is reported
 once; changed values publish onto template fields in one scene revision, and
 a strict key/value parser maps external data onto actions. Remaining gaps:
 crawls are runtime overlays outside template z-order and the project schema,
 with fixed directions and no per-item styling, logos, or easing; the
-scoreboard has two teams, no rosters, sport presets, shot clocks, tenths, or
-persistence; and there are no feed transports, shortcut or control-surface
-wiring, or engine output. `GX-003` remains planned.
+scoreboard has two teams, a fixed 24-second shot clock, no rosters, sport
+presets, tenths, or persistence; and there are no feed transports, shortcut
+or control-surface wiring, or engine output. `GX-003` remains planned.
 
 Current implementation boundary for item 2: `fm-titles` provides a designer
 document model with a bounded tree of elements and nested groups whose offsets

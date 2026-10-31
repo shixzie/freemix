@@ -47,6 +47,8 @@ pub const MAX_SCOREBOARD_TEXT_CHARS: usize = 64;
 pub const MAX_SCOREBOARD_ACTIONS: usize = 64;
 /// Largest clock value accepted, in milliseconds (100 hours).
 pub const MAX_GAME_CLOCK_MS: u64 = 100 * 60 * 60 * 1_000;
+/// The shot clock a new scoreboard starts with: 24 seconds, stopped.
+pub const DEFAULT_SHOT_CLOCK_MS: u64 = 24_000;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum TeamSide {
@@ -322,12 +324,21 @@ pub enum ScoreboardAction {
     SetClock {
         value_ms: u64,
     },
+    StartShotClock,
+    StopShotClock,
+    /// Sets the shot clock's value and re-arms its expiry; a running shot
+    /// clock keeps running.
+    SetShotClock {
+        value_ms: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScoreboardEvent {
     /// The clock reached zero (count-down) or its limit (count-up) at `frame`.
     ClockExpired { frame: u64 },
+    /// The shot clock reached zero at `frame`.
+    ShotClockExpired { frame: u64 },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -442,6 +453,7 @@ pub struct ScoreboardBinding {
     pub away_player: Option<FieldId>,
     pub period: Option<FieldId>,
     pub clock: Option<FieldId>,
+    pub shot_clock: Option<FieldId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -450,6 +462,7 @@ pub struct Scoreboard {
     away: TeamState,
     period: u16,
     clock: GameClock,
+    shot_clock: GameClock,
     rules: ScoreboardRules,
     revision: u64,
     last_frame: u64,
@@ -490,6 +503,13 @@ impl Scoreboard {
             away,
             period: 1,
             clock: GameClock::new(clock)?,
+            shot_clock: GameClock::new(GameClockConfig {
+                direction: ClockDirection::CountDown,
+                format: ClockFormat::MinutesSeconds,
+                frame_rate: clock.frame_rate,
+                initial_ms: DEFAULT_SHOT_CLOCK_MS,
+                limit_ms: None,
+            })?,
             rules,
             revision: 0,
             last_frame: 0,
@@ -512,6 +532,12 @@ impl Scoreboard {
     #[must_use]
     pub const fn clock(&self) -> &GameClock {
         &self.clock
+    }
+
+    /// The shot clock: a stopped 24-second count-down by default.
+    #[must_use]
+    pub const fn shot_clock(&self) -> &GameClock {
+        &self.shot_clock
     }
 
     #[must_use]
@@ -556,6 +582,7 @@ impl Scoreboard {
     pub fn advance(&mut self, frame: u64) -> Result<Vec<ScoreboardEvent>, ScoreboardError> {
         self.check_frame(frame)?;
         self.clock.settle(frame);
+        self.shot_clock.settle(frame);
         self.last_frame = frame;
         Ok(self.take_events())
     }
@@ -566,6 +593,12 @@ impl Scoreboard {
             self.clock.expiry_pending = false;
             if let Some(frame) = self.clock.expired_at {
                 events.push(ScoreboardEvent::ClockExpired { frame });
+            }
+        }
+        if self.shot_clock.expiry_pending {
+            self.shot_clock.expiry_pending = false;
+            if let Some(frame) = self.shot_clock.expired_at {
+                events.push(ScoreboardEvent::ShotClockExpired { frame });
             }
         }
         events
@@ -602,6 +635,7 @@ impl Scoreboard {
         }
         let mut next = self.clone();
         next.clock.settle(frame);
+        next.shot_clock.settle(frame);
         next.last_frame = frame;
         let mut saturated = Vec::new();
         for (index, action) in actions.iter().enumerate() {
@@ -700,6 +734,11 @@ impl Scoreboard {
             ScoreboardAction::StartClock => self.clock.start(frame)?,
             ScoreboardAction::StopClock => self.clock.stop(frame),
             ScoreboardAction::SetClock { value_ms } => self.clock.set(frame, *value_ms)?,
+            ScoreboardAction::StartShotClock => self.shot_clock.start(frame)?,
+            ScoreboardAction::StopShotClock => self.shot_clock.stop(frame),
+            ScoreboardAction::SetShotClock { value_ms } => {
+                self.shot_clock.set(frame, *value_ms)?;
+            }
         }
         Ok(false)
     }
@@ -725,6 +764,7 @@ impl Scoreboard {
             (binding.away_abbreviation, self.away.abbreviation.clone()),
             (binding.away_player, player(&self.away)),
             (binding.clock, self.clock.display(frame)),
+            (binding.shot_clock, self.shot_clock.display(frame)),
         ];
         let numbers = [
             (binding.home_score, i64::from(self.home.score)),
@@ -794,6 +834,8 @@ fn check_text(text: &str) -> Result<(), ScoreboardError> {
 /// | `period` | decimal `u16` | [`ScoreboardAction::SetPeriod`] |
 /// | `clock.ms` | decimal `u64` | [`ScoreboardAction::SetClock`] |
 /// | `clock.running` | `true` / `false` | start / stop |
+/// | `shot_clock.ms` | decimal `u64` | [`ScoreboardAction::SetShotClock`] |
+/// | `shot_clock.running` | `true` / `false` | start / stop the shot clock |
 ///
 /// Numbers are plain ASCII decimal (a leading `-` only for deltas); no
 /// whitespace, signs, or separators are tolerated.
@@ -863,6 +905,14 @@ fn external_action(
         (None, "clock.running") => match value {
             "true" => ScoreboardAction::StartClock,
             "false" => ScoreboardAction::StopClock,
+            _ => return Err(invalid),
+        },
+        (None, "shot_clock.ms") => ScoreboardAction::SetShotClock {
+            value_ms: parse_unsigned(value).ok_or(invalid)?,
+        },
+        (None, "shot_clock.running") => match value {
+            "true" => ScoreboardAction::StartShotClock,
+            "false" => ScoreboardAction::StopShotClock,
             _ => return Err(invalid),
         },
         _ => return Err(ScoreboardError::UnknownExternalKey { index }),
