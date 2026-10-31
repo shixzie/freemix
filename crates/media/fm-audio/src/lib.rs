@@ -1529,6 +1529,9 @@ pub struct MasterMixer {
     master_dsp: Option<Box<LiveStripDsp>>,
     /// The Master bus plugin stage (AU-006), after the Master DSP chain.
     master_plugins: Option<Box<dyn MasterPluginStage>>,
+    /// Why the Master plugin stage was quarantined, if it panicked in a
+    /// render.
+    master_plugins_quarantined: Option<String>,
     /// The Master chain as a render found it, restored when the render is
     /// rejected; present exactly when `master_dsp` is.
     master_checkpoint: Option<Box<LiveStripDsp>>,
@@ -1549,6 +1552,7 @@ impl Clone for MasterMixer {
             retained_delay_bytes: self.retained_delay_bytes,
             master_dsp: self.master_dsp.clone(),
             master_plugins: self.master_plugins.clone(),
+            master_plugins_quarantined: self.master_plugins_quarantined.clone(),
             master_checkpoint: self.master_checkpoint.clone(),
             dsp_block_capacity: self.dsp_block_capacity,
             aux: self.aux,
@@ -1568,6 +1572,10 @@ impl fmt::Debug for MasterMixer {
             .field("retained_delay_bytes", &self.retained_delay_bytes)
             .field("master_dsp", &self.master_dsp)
             .field("master_plugins", &self.master_plugins)
+            .field(
+                "master_plugins_quarantined",
+                &self.master_plugins_quarantined,
+            )
             .field("master_checkpoint", &self.master_checkpoint)
             .field("dsp_block_capacity", &self.dsp_block_capacity)
             .field("aux", &self.aux)
@@ -1594,6 +1602,7 @@ impl MasterMixer {
             retained_delay_bytes: 0,
             master_dsp: None,
             master_plugins: None,
+            master_plugins_quarantined: None,
             master_checkpoint: None,
             dsp_block_capacity: DEFAULT_DSP_BLOCK_CAPACITY,
             aux: [GroupStrip::unity(); AUX_BUS_COUNT],
@@ -1703,12 +1712,21 @@ impl MasterMixer {
     /// Replaces the Master bus plugin stage (AU-006); `None` removes it.
     pub fn set_master_plugins(&mut self, stage: Option<Box<dyn MasterPluginStage>>) {
         self.master_plugins = stage;
+        self.master_plugins_quarantined = None;
     }
 
     /// Whether a Master bus plugin stage is installed.
     #[must_use]
     pub fn has_master_plugins(&self) -> bool {
         self.master_plugins.is_some()
+    }
+
+    /// Why the Master plugin stage was quarantined after it panicked during
+    /// a render, if it was. A quarantined stage is removed; the next render
+    /// is clean.
+    #[must_use]
+    pub fn master_plugins_quarantined(&self) -> Option<&str> {
+        self.master_plugins_quarantined.as_deref()
     }
 
     /// The gain reduction `id`'s strip DSP applied during the last render.
@@ -2218,6 +2236,8 @@ impl MasterMixer {
             (None, None) => {}
             _ => self.master_plugins.clone_from(&other.master_plugins),
         }
+        self.master_plugins_quarantined
+            .clone_from(&other.master_plugins_quarantined);
         self.groups = other.groups;
         self.aux = other.aux;
         self.solo_mode = other.solo_mode;
@@ -2834,9 +2854,26 @@ impl MasterMixer {
             validate_finite_sample_prefix(output, samples)?;
             live.process(samples, &mut InPlacePlanes(output));
         }
-        if let Some(stage) = &mut self.master_plugins {
+        if let Some(mut stage) = self.master_plugins.take() {
             validate_finite_sample_prefix(output, samples)?;
-            stage.process(output, samples);
+            // A panicking plugin must not end the show: quarantine it,
+            // discard whatever it left, and keep the summed Program bus.
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                stage.process(output, samples);
+            }));
+            if outcome.is_err() {
+                self.master_plugins_quarantined =
+                    Some("a Master plugin stage panicked during a render".to_owned());
+                for plane in output.iter_mut() {
+                    for sample in &mut plane[..samples] {
+                        if !sample.is_finite() {
+                            *sample = 0.0;
+                        }
+                    }
+                }
+            } else {
+                self.master_plugins = Some(stage);
+            }
         }
         if self.clipping_policy == ClippingPolicy::Clamp {
             for plane in output.iter_mut() {

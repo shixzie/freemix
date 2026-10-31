@@ -85,3 +85,56 @@ fn the_master_stage_processes_before_the_master_meter_and_survives_clone() {
     let cleared = mixer.mix(8, &[(id, &block)], None).unwrap();
     assert!((cleared.block.planes()[0][0] - 0.5).abs() < 1e-6);
 }
+
+#[derive(Clone)]
+struct PanickingStage;
+
+impl fmt::Debug for PanickingStage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PanickingStage")
+    }
+}
+
+impl MasterPluginStage for PanickingStage {
+    fn process(&mut self, planes: &mut [Vec<f32>], samples: usize) {
+        if let Some(sample) = planes.first_mut().and_then(|plane| plane.get_mut(..samples)) {
+            sample[0] = f32::NAN;
+        }
+        panic!("plugin render panic");
+    }
+
+    fn clone_stage(&self) -> Box<dyn MasterPluginStage> {
+        Box::new(self.clone())
+    }
+}
+
+/// AU-006: a plugin stage that panics is quarantined, its partial output is
+/// discarded, and the summed Program bus keeps rendering.
+#[test]
+fn a_panicking_master_plugin_is_quarantined_and_the_mix_continues() {
+    let format = format();
+    let id = input(1);
+    let mut mixer = MasterMixer::new(format.clone()).unwrap();
+    mixer
+        .add_input(
+            id,
+            format.clone(),
+            ChannelMapping::identity(format.channels.clone()).unwrap(),
+            InputState::default(),
+        )
+        .unwrap();
+    let block = AudioBlock::from_planar(format, vec![vec![0.5_f32; 8]]).unwrap();
+    mixer.set_master_plugins(Some(Box::new(PanickingStage)));
+
+    let mixed = mixer.mix(8, &[(id, &block)], None).unwrap();
+    assert!(!mixer.has_master_plugins());
+    assert!(mixer.master_plugins_quarantined().is_some());
+    assert!(mixed.block.planes()[0].iter().all(|sample| sample.is_finite()));
+    // The panicking stage left a NaN in the first sample; the quarantine
+    // sanitizes it and leaves the rest of the summed bus alone.
+    assert_eq!(mixed.block.planes()[0][0], 0.0);
+    assert!((mixed.block.planes()[0][1] - 0.5).abs() < 1e-6);
+
+    let next = mixer.mix(8, &[(id, &block)], None).unwrap();
+    assert!((next.block.planes()[0][0] - 0.5).abs() < 1e-6);
+}
