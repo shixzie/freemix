@@ -159,8 +159,7 @@ mod display_outputs;
 mod playlist_clock;
 mod sessions;
 mod sim_audio;
-mod web_feed;
-use fm_daemon_web::web_titles;
+use fm_daemon_web::{web_feed, web_titles};
 // The network preflight is wired only into the native daemon; every helper
 // still compiles (and is unit-tested) in every build.
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]

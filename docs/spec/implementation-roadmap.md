@@ -445,8 +445,9 @@ per week of work; items 1 and 2 land before any new feature breadth.
    stills, the CPU scene reference, title rendering, and the simulated
    monitor tap), and the daemon's statistics, CPU, and disk helpers are now
    the library crates `fm-daemon-journal`, `fm-daemon-arguments`,
-   `fm-daemon-web`, `fm-daemon-native`, `fm-overlay-layout`,
-   `fm-daemon-render`, and `fm-daemon-statistics`. The binary's 12.7k-line
+   `fm-daemon-web` (which also took the web title bridge), `fm-daemon-native`,
+   `fm-overlay-layout`, `fm-daemon-render`, and `fm-daemon-statistics`. The
+   binary's 12.7k-line
    unit-test module moved to `tests.rs`, so `main.rs` is 16.5k lines and
    `apps/freemixd/src` 77.5k, down from 157k. `xtask deps check` allows a
    service crate to depend on the simulation composition root, which the

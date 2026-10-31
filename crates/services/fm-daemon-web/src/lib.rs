@@ -35,6 +35,7 @@ use fm_protocol::{MAX_LINE_BYTES, WireMessage, decode_line};
 
 pub use access::{Reach, WebAccess, WebIdentity};
 pub use fm_daemon_arguments::WebSettings;
+pub mod web_feed;
 pub mod web_titles;
 
 const PATH: &str = "/v1/control";

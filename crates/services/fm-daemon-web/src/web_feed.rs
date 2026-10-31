@@ -47,13 +47,13 @@ use std::time::{Duration, Instant};
 use fm_protocol::AudioMetersMessage;
 
 /// Shortest spacing of two meter records to one Web peer (about 15 Hz).
-pub(crate) const WEB_METER_INTERVAL: Duration = Duration::from_millis(66);
+pub const WEB_METER_INTERVAL: Duration = Duration::from_millis(66);
 /// Shortest spacing of two `stream_status` or two `recorder_status` records
 /// to one Web peer.
-pub(crate) const WEB_STATUS_INTERVAL: Duration = Duration::from_millis(250);
+pub const WEB_STATUS_INTERVAL: Duration = Duration::from_millis(250);
 /// A feed record is handed over only while at most this many records are
 /// queued for the peer and not yet acknowledged by its relay.
-pub(crate) const WEB_FEED_MAX_QUEUED: usize = 2;
+pub const WEB_FEED_MAX_QUEUED: usize = 2;
 
 /// One kind of feed record.
 #[derive(Default)]
@@ -78,7 +78,7 @@ impl Slot {
 
 /// The latest record of each kind waiting for one Web peer.
 #[derive(Default)]
-pub(crate) struct WebFeed {
+pub struct WebFeed {
     meters: Slot,
     recorders: Slot,
     streams: Slot,
@@ -98,12 +98,12 @@ pub(crate) struct WebFeed {
 }
 
 impl WebFeed {
-    pub(crate) fn offer_meters(&mut self, bytes: Vec<u8>) {
+    pub fn offer_meters(&mut self, bytes: Vec<u8>) {
         self.meters.latest = Some(bytes);
     }
 
     /// Offers the newest `title_phases` record.
-    pub(crate) fn offer_title_phases(&mut self, bytes: Vec<u8>) {
+    pub fn offer_title_phases(&mut self, bytes: Vec<u8>) {
         self.phases.latest = Some(bytes);
     }
 
@@ -111,7 +111,7 @@ impl WebFeed {
     /// parts (or the error its render met), one line each. Parts of an
     /// answer already started are all handed over first, so a page never
     /// sees two answers interleave.
-    pub(crate) fn offer_preview(&mut self, lines: Vec<Vec<u8>>) {
+    pub fn offer_preview(&mut self, lines: Vec<Vec<u8>>) {
         if self.preview.is_empty() {
             self.preview = lines.into();
         } else {
@@ -119,27 +119,27 @@ impl WebFeed {
         }
     }
 
-    pub(crate) fn offer_stream_status(&mut self, bytes: Vec<u8>) {
+    pub fn offer_stream_status(&mut self, bytes: Vec<u8>) {
         self.streams.latest = Some(bytes);
     }
 
-    pub(crate) fn offer_recorder_status(&mut self, bytes: Vec<u8>) {
+    pub fn offer_recorder_status(&mut self, bytes: Vec<u8>) {
         self.recorders.latest = Some(bytes);
     }
 
     /// Offers the newest `source_sync_status` record.
-    pub(crate) fn offer_source_sync_status(&mut self, bytes: Vec<u8>) {
+    pub fn offer_source_sync_status(&mut self, bytes: Vec<u8>) {
         self.sync.latest = Some(bytes);
     }
 
     /// Offers the newest `health_status` sample.
-    pub(crate) fn offer_health_status(&mut self, bytes: Vec<u8>) {
+    pub fn offer_health_status(&mut self, bytes: Vec<u8>) {
         self.health.latest = Some(bytes);
     }
 
     /// Drops a `health_status` sample not handed over yet, before the
     /// answer to the page's alert action is queued behind it.
-    pub(crate) fn discard_health_status(&mut self) {
+    pub fn discard_health_status(&mut self) {
         self.health.latest = None;
     }
 
@@ -148,7 +148,7 @@ impl WebFeed {
     /// then recorders, then streams. A peer that takes records more slowly
     /// than the meter interval therefore still gets every kind in turn
     /// instead of only meters.
-    pub(crate) fn next(&mut self, now: Instant) -> Option<Vec<u8>> {
+    pub fn next(&mut self, now: Instant) -> Option<Vec<u8>> {
         // A preview the page asked for goes first, part after part; its
         // rate is the session's preview rate.
         if self.preview.is_empty()
@@ -180,7 +180,7 @@ impl WebFeed {
 /// 2.94), the lowest input ids first: only strips heard on Program have a
 /// reading, and the cap keeps the record a few kilobytes however many
 /// inputs the show has.
-pub(crate) const WEB_LOUDNESS_INPUTS: usize = 32;
+pub const WEB_LOUDNESS_INPUTS: usize = 32;
 
 /// The Master/Program part of `meters` a Web page shows: the same interval
 /// and Master channels, the per-input meters of the first
@@ -192,7 +192,7 @@ pub(crate) const WEB_LOUDNESS_INPUTS: usize = 32;
 /// reduction (Protocol 2.103) likewise for Master and the first
 /// [`WEB_LOUDNESS_INPUTS`] strips whose chain has a running dynamics stage
 /// (a bypassed chain or one with every dynamics stage off has no entry).
-pub(crate) fn web_meters(meters: &AudioMetersMessage) -> AudioMetersMessage {
+pub fn web_meters(meters: &AudioMetersMessage) -> AudioMetersMessage {
     use fm_protocol::AudioDspTarget;
     let master = meters
         .loudness
