@@ -476,8 +476,6 @@ fn xmltext_errors_are_distinct_and_bounded() {
         assert_eq!(state.xml_text(xpath), Err(XPathError::NotFound), "{xpath}");
     }
     for xpath in [
-        "//input",
-        "vmix//input",
         "vmix/",
         "vmix/inputs/input[0]",
         "vmix/inputs/input[",
@@ -485,7 +483,6 @@ fn xmltext_errors_are_distinct_and_bounded() {
         "vmix/inputs/input[@title='x]",
         "vmix/inputs/input[@title=x]",
         "vmix/@x/y",
-        "vmix/*",
         "vmix/text()",
         "@x",
     ] {
@@ -537,8 +534,8 @@ fn xmltext_responses_stay_single_line() {
         "XMLTEXT ER XPath selected no node\r\n"
     );
     assert_eq!(
-        line(&mut session, "XMLTEXT //input", &state),
-        "XMLTEXT ER unsupported XPath: descendant axis is not supported\r\n"
+        line(&mut session, "XMLTEXT //input[1]/@title", &state),
+        "XMLTEXT OK Camera 1\r\n"
     );
 }
 

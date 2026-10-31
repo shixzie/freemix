@@ -6267,9 +6267,9 @@ SUBSCRIBE/UNSUBSCRIBE for TALLY and ACTS, VERSION, and QUIT. A hub of at most
 function surface now includes list and picture navigation, media transport,
 and overlay in/off verbs in addition to the switcher, title, recording, and
 streaming verbs. Remaining gaps: no sockets or running-server wiring, a
-partial function and state-document surface, no descendant or wildcard XPath,
-a partial ACTS set, no authentication, and no byte comparison against a real
-vMix 29 instance. `RC-009` remains planned.
+partial function and state-document surface, no XPath functions, unions, or
+axes beyond child and descendant, a partial ACTS set, no authentication, and
+no byte comparison against a real vMix 29 instance. `RC-009` remains planned.
 
 Current implementation boundary for item 3 (social moderation): `fm-social`
 provides a deterministic moderation desk over its in-memory aggregator.

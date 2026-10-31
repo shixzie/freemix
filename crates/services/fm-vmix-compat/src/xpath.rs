@@ -87,7 +87,10 @@ enum Predicate {
 
 #[derive(Debug, Eq, PartialEq)]
 struct Step {
-    name: String,
+    /// `None` is the `*` wildcard.
+    name: Option<String>,
+    /// `//`: select descendants instead of children.
+    descendant: bool,
     predicates: Vec<Predicate>,
 }
 
@@ -102,10 +105,11 @@ impl CompatState {
     /// the string value of the first selected node in document order.
     ///
     /// Supported grammar: an optional leading `/`, `/`-separated element name
-    /// steps rooted at `vmix`, each with up to [`MAX_XPATH_PREDICATES`]
-    /// predicates of the form `[N]` (one-based position) or `[@name='value']`
-    /// (single or double quotes, exact match), and an optional final `@name`
-    /// attribute step. Element values follow `XPath` string-value semantics, so
+    /// steps rooted at `vmix` (or `*` for any element), a `//` separator that
+    /// selects descendants instead of children, each step with up to
+    /// [`MAX_XPATH_PREDICATES`] predicates of the form `[N]` (one-based
+    /// position) or `[@name='value']` (single or double quotes, exact match),
+    /// and an optional final `@name` attribute step. Element values follow `XPath` string-value semantics, so
     /// an `input` element yields its title followed by its text field values.
     ///
     /// # Errors
@@ -196,11 +200,23 @@ impl CompatState {
 
 fn evaluate(document: &Node, path: &Path) -> Option<String> {
     let (root_step, rest) = path.steps.split_first()?;
-    let mut context: Vec<&Node> = select(std::slice::from_ref(document), root_step);
+    let mut context: Vec<&Node> = if root_step.descendant {
+        let mut all = Vec::new();
+        collect_descendants(document, &mut all);
+        select(all, root_step)
+    } else {
+        select(std::iter::once(document), root_step)
+    };
     for step in rest {
         let mut next = Vec::new();
         for node in context {
-            next.extend(select(&node.children, step));
+            if step.descendant {
+                let mut all = Vec::new();
+                collect_descendants(node, &mut all);
+                next.extend(select(all, step));
+            } else {
+                next.extend(select(node.children.iter(), step));
+            }
         }
         context = next;
     }
@@ -217,10 +233,17 @@ fn evaluate(document: &Node, path: &Path) -> Option<String> {
     }
 }
 
-fn select<'a>(candidates: &'a [Node], step: &Step) -> Vec<&'a Node> {
+fn collect_descendants<'a>(node: &'a Node, output: &mut Vec<&'a Node>) {
+    for child in &node.children {
+        output.push(child);
+        collect_descendants(child, output);
+    }
+}
+
+fn select<'a>(candidates: impl IntoIterator<Item = &'a Node>, step: &Step) -> Vec<&'a Node> {
     let mut selected: Vec<&Node> = candidates
-        .iter()
-        .filter(|node| node.name == step.name)
+        .into_iter()
+        .filter(|node| step.name.as_deref().is_none_or(|name| node.name == name))
         .collect();
     for predicate in &step.predicates {
         selected = match predicate {
@@ -250,13 +273,14 @@ fn parse_path(xpath: &str) -> Result<Path, XPathError> {
         position: 0,
     };
     parser.eat(b'/');
+    let mut descendant = parser.eat(b'/');
     let mut steps = Vec::new();
     let mut attribute = None;
     loop {
-        if parser.eat(b'/') {
-            return Err(XPathError::Syntax("descendant axis is not supported"));
-        }
         if parser.eat(b'@') {
+            if descendant {
+                return Err(XPathError::Syntax("attribute after '//' is not supported"));
+            }
             attribute = Some(parser.name()?.to_owned());
             if !parser.at_end() {
                 return Err(XPathError::Syntax("attribute must be the final step"));
@@ -266,7 +290,11 @@ fn parse_path(xpath: &str) -> Result<Path, XPathError> {
         if steps.len() == MAX_XPATH_STEPS {
             return Err(XPathError::TooComplex);
         }
-        let name = parser.name()?.to_owned();
+        let name = if parser.eat(b'*') {
+            None
+        } else {
+            Some(parser.name()?.to_owned())
+        };
         let mut predicates = Vec::new();
         while parser.eat(b'[') {
             if predicates.len() == MAX_XPATH_PREDICATES {
@@ -277,7 +305,11 @@ fn parse_path(xpath: &str) -> Result<Path, XPathError> {
                 return Err(XPathError::Syntax("expected ']'"));
             }
         }
-        steps.push(Step { name, predicates });
+        steps.push(Step {
+            name,
+            descendant,
+            predicates,
+        });
         if parser.at_end() {
             break;
         }
@@ -287,6 +319,7 @@ fn parse_path(xpath: &str) -> Result<Path, XPathError> {
         if parser.at_end() {
             return Err(XPathError::Syntax("trailing '/'"));
         }
+        descendant = parser.eat(b'/');
     }
     if steps.is_empty() {
         return Err(XPathError::Syntax("expected an element step"));

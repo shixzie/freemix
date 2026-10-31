@@ -389,3 +389,32 @@ fn overlay_in_and_off_translate_exactly() {
     ));
     assert!(parse_http_query("Function=OverlayInput3Off&Input=2", &state).is_err());
 }
+
+#[test]
+fn xpath_descendant_and_wildcard_steps_select_nodes() {
+    let state = state();
+    assert_eq!(
+        state.xml_text("//input[1]/@title"),
+        Ok("Camera & One".into())
+    );
+    assert_eq!(
+        state.xml_text("/vmix//text[@name='Headline\"']"),
+        Ok("A < B & C > D 'ok' \"yes\"".into())
+    );
+    assert_eq!(
+        state.xml_text("//*[@name='Headline\"']"),
+        Ok("A < B & C > D 'ok' \"yes\"".into())
+    );
+    assert_eq!(
+        state.xml_text("//inputs/input[2]/text[1]/@index"),
+        Ok("0".into())
+    );
+    assert!(matches!(
+        state.xml_text("//missing"),
+        Err(XPathError::NotFound)
+    ));
+    assert!(matches!(
+        state.xml_text("/vmix//@title"),
+        Err(XPathError::Syntax(_))
+    ));
+}
