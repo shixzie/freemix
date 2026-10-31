@@ -963,6 +963,18 @@ pub enum Command {
     AssetAudit {
         path: PathBuf,
     },
+    /// `settings-export <project> <file>`: write the secret-free settings
+    /// export document (RC-013).
+    SettingsExport {
+        path: PathBuf,
+        output: PathBuf,
+    },
+    /// `settings-import <project> <file>`: preview an exported settings
+    /// document against the project (RC-013).
+    SettingsImport {
+        path: PathBuf,
+        input: PathBuf,
+    },
     AudioStrip {
         path: PathBuf,
         input: u128,
@@ -2392,6 +2404,18 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let path = required_path(&mut arguments, "project path")?;
             reject_extra(&mut arguments)?;
             Ok(Command::AssetAudit { path })
+        }
+        "settings-export" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let output = required_path(&mut arguments, "output path")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::SettingsExport { path, output })
+        }
+        "settings-import" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let input = required_path(&mut arguments, "export path")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::SettingsImport { path, input })
         }
         "audio-strip" => parse_audio_strip(arguments),
         mixer @ ("audio-label"

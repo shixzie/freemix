@@ -29,12 +29,12 @@ use fm_model::{
 };
 use fm_persistence::validate_asset_uri;
 use fm_persistence::{
-    FadeToBlackState as PersistedFadeToBlackState, IdempotencyReceipt,
-    ManualTransitionKind as PersistedManualTransitionKind,
-    ManualTransitionState as PersistedManualTransitionState, ProjectPosition, ProjectStore,
-    ReceiptOutcome, RuntimeFadeToBlack, RuntimeManualTransitions, RuntimeOverlayBorder,
-    RuntimeOverlayChannel, RuntimeOverlayPosition, RuntimeOverlayTransition, RuntimeOverlays,
-    RuntimeRouting, StoredProject,
+    ChangeKind, ContentInventory, FadeToBlackState as PersistedFadeToBlackState,
+    IdempotencyReceipt, ImportPlan, ManualTransitionKind as PersistedManualTransitionKind,
+    ManualTransitionState as PersistedManualTransitionState, MergeStrategy, ProjectPosition,
+    ProjectStore, ReceiptOutcome, RuntimeFadeToBlack, RuntimeManualTransitions,
+    RuntimeOverlayBorder, RuntimeOverlayChannel, RuntimeOverlayPosition, RuntimeOverlayTransition,
+    RuntimeOverlays, RuntimeRouting, SettingsSnapshot, StoredProject,
 };
 use fm_sim::{Rgba8, SimulatedPipeline, SimulatedSource, SourcePattern};
 use fm_switcher::{
@@ -1006,6 +1006,8 @@ pub fn run(command: Command) -> AppResult<()> {
         }
         Command::AsRun { path } => print_as_run(&path)?,
         Command::AssetAudit { path } => audit_assets(&path)?,
+        Command::SettingsExport { path, output } => settings_export(&path, &output)?,
+        Command::SettingsImport { path, input } => settings_import(&path, &input)?,
         Command::AudioStrip {
             path,
             input,
@@ -5980,6 +5982,58 @@ fn audit_assets(path: &Path) -> AppResult<()> {
     }
 }
 
+fn settings_export(path: &Path, output: &Path) -> AppResult<()> {
+    let stored = inspect_stored_project(path)?;
+    let snapshot = SettingsSnapshot::from_project(stored.project())
+        .map_err(|error| AppFailure(format!("settings export: {error}")))?;
+    std::fs::write(output, snapshot.to_export_json())
+        .map_err(|error| AppFailure(format!("settings export: {error}")))?;
+    println!("settings-export: {} entries", snapshot.len());
+    Ok(())
+}
+
+fn settings_import(path: &Path, input: &Path) -> AppResult<()> {
+    let stored = inspect_stored_project(path)?;
+    let current = SettingsSnapshot::from_project(stored.project())
+        .map_err(|error| AppFailure(format!("settings import: {error}")))?;
+    let inventory = ContentInventory::from_project(stored.project());
+    let source = std::fs::read_to_string(input)
+        .map_err(|error| AppFailure(format!("settings import: {error}")))?;
+    let plan = ImportPlan::from_export_json(
+        &current,
+        &source,
+        inventory,
+        MergeStrategy::MergePreferIncoming,
+    )
+    .map_err(|error| AppFailure(format!("settings import: {error}")))?;
+    let preview = plan.incoming_preview();
+    for change in preview.changes() {
+        let kind = match change.kind {
+            ChangeKind::Added => "added",
+            ChangeKind::Changed => "changed",
+            ChangeKind::Removed => "removed",
+            ChangeKind::Unchanged => continue,
+        };
+        println!("{kind} {}", change.key.as_str());
+    }
+    let outcome = plan
+        .outcome()
+        .map_err(|error| AppFailure(format!("settings import: {error}")))?;
+    println!(
+        "settings-import: {} added, {} changed, {} removed; nothing applied",
+        preview.count(ChangeKind::Added),
+        preview.count(ChangeKind::Changed),
+        preview.count(ChangeKind::Removed),
+    );
+    for key in &outcome.retained_secrets {
+        println!("kept-secret {}", key.as_str());
+    }
+    for conflict in &outcome.conflicts {
+        println!("conflict {conflict:?}");
+    }
+    Ok(())
+}
+
 fn recover_journal(path: &Path) -> AppResult<()> {
     let store = ProjectStore::new(path)?;
     let scan = store.scan_journal()?;
@@ -6965,6 +7019,8 @@ Usage:
   freemix-cli audio-buses <show.freemix>
   freemix-cli scenes <show.freemix>
   freemix-cli asset-audit <show.freemix>
+  freemix-cli settings-export <show.freemix> <settings.json>
+  freemix-cli settings-import <show.freemix> <settings.json>
   freemix-cli audio-strip <show.freemix> <input> <gain-millidb:-96000..=24000> <balance-bp:-10000..=10000> <muted:on|off> <soloed:on|off> <follow-video:on|off> <delay-samples:0..=48000> [--pan <bp:-10000..=10000>]
   freemix-cli audio-label <show.freemix> <input> <label (empty clears)> [--key <key>] [--expect <revision>]
   freemix-cli audio-group <show.freemix> <input> <1..4|none> [--key <key>] [--expect <revision>]

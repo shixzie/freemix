@@ -4007,9 +4007,11 @@ contract whose secrets serialize only as placeholders, and imports preview
 per-key changes, merge by replace, prefer-incoming, prefer-current, or
 per-section choice, report secret re-entry, unknown references, and ID
 collisions, and apply atomically only when resolved against an unchanged base.
-Applied snapshots are not yet turned into project mutations or engine
-commands, nothing in the daemon, protocol, CLI, or UI calls the planner,
-secrets are excluded rather than separately encrypted. For `SW-017`,
+The CLI now writes the export document (`settings-export`) and previews an
+import against a project (`settings-import`); applied snapshots are still not
+turned into project mutations or engine commands, nothing in the daemon,
+protocol, or UI calls the planner, and secrets are excluded rather than
+separately encrypted. For `SW-017`,
 `fm-engine` classifies commands into undoable project edits (input add,
 remove, rename, and reorder; stinger and overlay settings; grades; title and
 scene animations; scene layers; the playlist, cue lists, and scripts;
