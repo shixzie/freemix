@@ -32,6 +32,8 @@
 //! paused at, and the frame its next part runs on, each with its own Stop
 //! (or Clear for a failed run), and Stop all runs (`script_stop`).
 
+use std::collections::BTreeSet;
+
 use egui::{Button, RichText, ScrollArea, TextEdit, Ui};
 use fm_protocol::{
     MAX_SCRIPT_RUNS, MAX_SCRIPT_SOURCE_BYTES, MAX_SCRIPTS, RefusalReason, ScriptFailureKind,
@@ -67,11 +69,11 @@ pub enum ScriptIntent {
     /// Runs one saved script (`script_run`): an operator control, not
     /// undoable.
     Run { script: u64 },
-    /// Stops paused script run `run`, or clears that failed run's report;
-    /// with no `run`, stops every run and clears every report
-    /// (`script_stop`, Protocol 2.62; per run since 2.69): an operator
-    /// control, not undoable.
-    Stop { run: Option<u64> },
+    /// Stops the runs in `runs` paused at a wait, or clears their failed
+    /// runs' reports; with no run, stops every run and clears every report
+    /// (`script_stop`, Protocol 2.62; per run since 2.69; a selection since
+    /// 2.146): an operator control, not undoable.
+    Stop { runs: Vec<u64> },
 }
 
 /// Where a refused run stopped.
@@ -139,6 +141,8 @@ pub(crate) struct ScriptsWindow {
     pub(crate) open: bool,
     /// The script the draft edits; a new script's id until it is saved.
     pub(crate) selected: Option<u64>,
+    /// The active runs the "Stop selected runs" button acts on.
+    pub(crate) selected_runs: BTreeSet<u64>,
     pub(crate) name: String,
     pub(crate) source: String,
     /// The replicated name and text the draft was loaded from (`None` for
@@ -493,7 +497,7 @@ fn draw_contents(
         row.response.rect.y_range(),
         ui.visuals().widgets.noninteractive.bg_stroke,
     );
-    draw_active_runs(ui, state, scripts, intents);
+    draw_active_runs(ui, state, window, scripts, intents);
     ui.add_space(6.0);
     ui.label(caption(l.text(Msg::ScriptReference)));
 }
@@ -505,11 +509,13 @@ fn draw_contents(
 fn draw_active_runs(
     ui: &mut Ui,
     state: &StudioUiState,
+    window: &mut ScriptsWindow,
     scripts: &[ScriptStatus],
     intents: &mut Vec<StudioIntent>,
 ) {
     let runs = active_runs(state);
     if runs.is_empty() {
+        window.selected_runs.clear();
         return;
     }
     let l = l10n::locale(ui.ctx());
@@ -568,6 +574,18 @@ fn draw_active_runs(
             ),
         };
         ui.horizontal_wrapped(|ui| {
+            let mut selected = window.selected_runs.contains(&id);
+            if ui
+                .checkbox(&mut selected, "")
+                .on_hover_text(l.text(Msg::ScriptSelectRunHover))
+                .changed()
+            {
+                if selected {
+                    window.selected_runs.insert(id);
+                } else {
+                    window.selected_runs.remove(&id);
+                }
+            }
             ui.label(RichText::new(text).color(color))
                 .on_hover_text(l.text(Msg::ScriptActiveRunHover));
             if ui
@@ -575,16 +593,38 @@ fn draw_active_runs(
                 .hint(l.text(button_hover), block.unwrap_or(""))
                 .clicked()
             {
-                intents.push(StudioIntent::Script(ScriptIntent::Stop { run: Some(id) }));
+                intents.push(StudioIntent::Script(ScriptIntent::Stop { runs: vec![id] }));
             }
         });
+    }
+    // A run that ended between records cannot stay selected.
+    window.selected_runs.retain(|run| {
+        runs.iter().any(|(_, status)| match status {
+            ScriptRunStatus::Waiting { run: id, .. } | ScriptRunStatus::Faulted { run: id, .. } => {
+                id == run
+            }
+            ScriptRunStatus::Idle => false,
+        })
+    });
+    let selected: Vec<u64> = window.selected_runs.iter().copied().collect();
+    if ui
+        .add_enabled(
+            block.is_none() && !selected.is_empty(),
+            Button::new(l.text(Msg::ScriptStopSelected)),
+        )
+        .hint(l.text(Msg::ScriptStopSelectedHover), block.unwrap_or(""))
+        .clicked()
+    {
+        intents.push(StudioIntent::Script(ScriptIntent::Stop { runs: selected }));
     }
     if ui
         .add_enabled(block.is_none(), Button::new(l.text(Msg::ScriptStopAll)))
         .hint(l.text(Msg::ScriptStopAllHover), block.unwrap_or(""))
         .clicked()
     {
-        intents.push(StudioIntent::Script(ScriptIntent::Stop { run: None }));
+        intents.push(StudioIntent::Script(ScriptIntent::Stop {
+            runs: Vec::new(),
+        }));
     }
 }
 
@@ -912,7 +952,7 @@ fn draw_run_status(
         .hint(l.text(button_hover), block.unwrap_or(""))
         .clicked()
     {
-        intents.push(StudioIntent::Script(ScriptIntent::Stop { run: Some(run) }));
+        intents.push(StudioIntent::Script(ScriptIntent::Stop { runs: vec![run] }));
     }
 }
 

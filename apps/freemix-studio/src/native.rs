@@ -3280,7 +3280,7 @@ fn script_payload(intent: fm_ui_egui::ScriptIntent) -> CommandPayload {
         },
         fm_ui_egui::ScriptIntent::Remove { script } => CommandPayload::RemoveScript { script },
         fm_ui_egui::ScriptIntent::Run { script } => CommandPayload::RunScript { script },
-        fm_ui_egui::ScriptIntent::Stop { run } => CommandPayload::StopScript { run },
+        fm_ui_egui::ScriptIntent::Stop { runs } => CommandPayload::StopScript { runs },
     }
 }
 

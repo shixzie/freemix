@@ -1957,11 +1957,12 @@ pub enum ScriptCommand {
     Run {
         script: ScriptRef,
     },
-    /// Stops run `run` paused at a wait, or clears its failed run's
-    /// report; with no `run`, stops every run and clears every report
-    /// (`script_stop`, Protocol 2.62; `--run` since 2.69).
+    /// Stops the runs paused at a wait in `runs`, or clears their failed
+    /// runs' reports; with no run, stops every run and clears every report
+    /// (`script_stop`, Protocol 2.62; `--run` since 2.69; a selection since
+    /// 2.146). `--run` may repeat or take a comma-separated list.
     Stop {
-        run: Option<u64>,
+        runs: Vec<u64>,
     },
 }
 
@@ -7245,7 +7246,7 @@ fn threshold(field: &'static str, value: String) -> Result<f64, ArgsError> {
 
 /// `remote-alert-rule <address> <rule> [--on|--off] [--severity <severity>]
 /// [--fires-at <value>] [--clears-at <value>] [--hold <seconds>] | --defaults
-/// [--key <key>] [--expect <revision>]` (RC-015, Protocol 2.145).
+/// [--key <key>] [--expect <revision>]` (RC-015, Protocol 2.146).
 fn parse_remote_alert_rule(
     mut arguments: impl Iterator<Item = String>,
 ) -> Result<Command, ArgsError> {
@@ -8852,20 +8853,31 @@ fn parse_script(
         "script-run" => ScriptCommand::Run {
             script: ScriptRef::parse(required(&mut arguments, "script")?),
         },
-        "script-stop" => ScriptCommand::Stop {
-            run: if arguments.next_if(|argument| argument == "--run").is_some() {
-                let run = number(&required(&mut arguments, "run")?, "run")?;
-                if run == 0 {
-                    return Err(ArgsError::InvalidChoice {
-                        field: "run",
-                        value: "0".to_owned(),
-                    });
+        "script-stop" => {
+            let mut runs = Vec::new();
+            while arguments.next_if(|argument| argument == "--run").is_some() {
+                let value = required(&mut arguments, "run")?;
+                for token in value.split(',') {
+                    let run = number(token, "run")?;
+                    if run == 0 {
+                        return Err(ArgsError::InvalidChoice {
+                            field: "run",
+                            value: "0".to_owned(),
+                        });
+                    }
+                    runs.push(run);
                 }
-                Some(run)
-            } else {
-                None
-            },
-        },
+            }
+            runs.sort_unstable();
+            runs.dedup();
+            if runs.len() > 8 {
+                return Err(ArgsError::InvalidChoice {
+                    field: "runs",
+                    value: format!("{} runs", runs.len()),
+                });
+            }
+            ScriptCommand::Stop { runs }
+        }
         other => return Err(ArgsError::UnknownCommand(other.to_owned())),
     };
     let (key, expected_revision) = command_options(arguments)?;

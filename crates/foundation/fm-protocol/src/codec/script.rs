@@ -8,8 +8,8 @@
 //! does.
 
 use crate::{
-    CodecError, HIDDEN_SCRIPT_SOURCE, MAX_SCRIPTS, ScriptRunStatus, ScriptSpec, ScriptStatus,
-    script_name_is_valid, script_source_is_valid,
+    CodecError, HIDDEN_SCRIPT_SOURCE, MAX_SCRIPT_RUNS, MAX_SCRIPTS, ScriptRunStatus, ScriptSpec,
+    ScriptStatus, script_name_is_valid, script_source_is_valid,
 };
 
 use super::cue::{hex, unhex};
@@ -124,27 +124,38 @@ pub(super) fn state_count_is_valid(count: u16) -> bool {
     usize::from(count) <= MAX_SCRIPTS
 }
 
-/// Refuses run id zero (Protocol 2.69).
-pub(super) fn validate_run_id(run: u64) -> Result<(), CodecError> {
-    if run == 0 {
-        Err(invalid("run", "0"))
-    } else {
-        Ok(())
+/// Encodes the `runs` field of `script_stop` (Protocol 2.146): 1 to
+/// [`MAX_SCRIPT_RUNS`] nonzero ids, ascending, comma separated. An empty
+/// list names every run and writes no field.
+pub(super) fn encode_run_list(runs: &[u64]) -> Result<String, CodecError> {
+    if !run_list_is_valid(runs) {
+        return Err(invalid("runs", format!("{runs:?}")));
     }
+    Ok(runs
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(","))
 }
 
-/// Decodes an optional nonzero `run` field (Protocol 2.69).
-pub(super) fn decode_optional_run_id(
-    fields: &mut dyn FieldSource,
-) -> Result<Option<u64>, CodecError> {
-    fields
-        .optional("run")
-        .map(|value| {
-            parse_canonical_u64(&value)
-                .filter(|run| *run != 0)
-                .ok_or_else(|| invalid("run", value))
-        })
-        .transpose()
+/// Decodes the optional `runs` field of `script_stop` (see
+/// [`encode_run_list`]); absent means every run.
+pub(super) fn decode_run_list(fields: &mut dyn FieldSource) -> Result<Vec<u64>, CodecError> {
+    let Some(value) = fields.optional("runs") else {
+        return Ok(Vec::new());
+    };
+    value
+        .split(',')
+        .map(parse_canonical_u64)
+        .collect::<Option<Vec<u64>>>()
+        .filter(|runs| run_list_is_valid(runs))
+        .ok_or_else(|| invalid("runs", value))
+}
+
+fn run_list_is_valid(runs: &[u64]) -> bool {
+    (1..=MAX_SCRIPT_RUNS).contains(&runs.len())
+        && runs.first().is_some_and(|first| *first != 0)
+        && runs.windows(2).all(|pair| pair[0] < pair[1])
 }
 
 /// Encodes the scripts of `script_runs_stopped` (Protocol 2.69): 1 to

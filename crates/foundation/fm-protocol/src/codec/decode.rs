@@ -841,7 +841,7 @@ fn decode_command_payload(
             value: super::shortcut::decode_fire_value(fields)?,
         },
         "script_stop" => CommandPayload::StopScript {
-            run: super::script::decode_optional_run_id(fields)?,
+            runs: super::script::decode_run_list(fields)?,
         },
         "input_capture_set" => CommandPayload::SetCaptureSettings {
             input: fields.canonical_input("input")?,

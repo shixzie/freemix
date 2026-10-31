@@ -14,7 +14,7 @@
 //! | [`crate::CommandPayload::SetScript`] | `script_set` | `script` (nonzero), `name`, `source` (lowercase hex of its UTF-8 bytes), optional `position` (2.79, below `MAX_SCRIPTS`) |
 //! | [`crate::CommandPayload::RemoveScript`] | `script_remove` | `script` |
 //! | [`crate::CommandPayload::RunScript`] | `script_run` | `script` |
-//! | [`crate::CommandPayload::StopScript`] | `script_stop` | optional `run` (Protocol 2.62; `run` since 2.69) |
+//! | [`crate::CommandPayload::StopScript`] | `script_stop` | optional `runs` (Protocol 2.62; `run` since 2.69; a selection since 2.146) |
 //! | [`crate::EventPayload::ScriptChanged`] | `script_changed` | `script`, `name`, `source` |
 //! | [`crate::EventPayload::ScriptRemoved`] | `script_removed` | `script` |
 //! | [`crate::EventPayload::ScriptRan`] | `script_ran` | `script`, `frame`, `actions`, `instructions`, `run` (Protocol 2.62), and the desired show state of `cue_run_changed` |
@@ -53,9 +53,9 @@
 //! characters or surrounding whitespace.
 //! `script_ran` reports each part that ran (counts cover the whole run so
 //! far) and `script_run_changed` a stop, a cleared fault, or a fault.
-//! `script_stop run=<run>` ends that run or clears its fault, and
-//! `script_stop` alone ends every run and clears every fault
-//! (`script_runs_stopped` names the scripts it idled). A `script_run` of a
+//! `script_stop runs=<run>[,<run>...]` ends the selected runs or clears
+//! their faults, and `script_stop` alone ends every run and clears every
+//! fault (`script_runs_stopped` names the scripts it idled). A `script_run` of a
 //! script already waiting, or an edit or removal of it, is refused with
 //! `script_running:<script>` until then; a run that would wait while
 //! [`MAX_SCRIPT_RUNS`] already do is refused with

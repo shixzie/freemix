@@ -7493,6 +7493,23 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Detener todas las ejecuciones de guion en pausa y borrar todos los informes de ejecuciones fallidas, en todas las consolas; lo que las ejecuciones ya hicieron se mantiene",
         ),
     ),
+    (Msg::ScriptSelectRun, t("Seleccionar esta ejecución")),
+    (
+        Msg::ScriptSelectRunHover,
+        t(
+            "Añadir esta ejecución a la selección sobre la que actúa el botón Detener ejecuciones seleccionadas",
+        ),
+    ),
+    (
+        Msg::ScriptStopSelected,
+        t("Detener ejecuciones seleccionadas"),
+    ),
+    (
+        Msg::ScriptStopSelectedHover,
+        t(
+            "Detener las ejecuciones de guion seleccionadas en pausa y borrar los informes de las ejecuciones fallidas seleccionadas, en todas las consolas; lo que ya hicieron se mantiene",
+        ),
+    ),
     (Msg::MenuScripts, t("Guiones…")),
     (
         Msg::MenuScriptsHover,

@@ -58,7 +58,7 @@ const ENTRY: &str = "7%3Acapture%3Arunning%3A44100%3A48000%3A-12345%3A12001%3A81
 
 #[test]
 fn source_sync_status_is_exact() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 145));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 146));
     let stream = SourceSyncSample {
         kind: SourceSyncKind::Stream,
         state: SourceClockState::Priming,

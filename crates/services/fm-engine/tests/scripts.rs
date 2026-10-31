@@ -392,8 +392,8 @@ fn drive(engine: &mut Engine, frames: u64) -> (Vec<FrameResult>, Vec<EngineComma
     (frames, advances)
 }
 
-fn stop(run: Option<u64>) -> EngineCommand {
-    EngineCommand::StopScript { run }
+fn stop(runs: Vec<u64>) -> EngineCommand {
+    EngineCommand::StopScript { runs }
 }
 
 /// RC-011 waits: a run's parts after a `wait` run on their due frame (the
@@ -505,7 +505,7 @@ fn a_script_runs_once_at_a_time_and_is_frozen_until_it_stops() {
     accepted(&submit(&mut engine, "edit-other", set(2, "cut 4")));
 
     // A stop ends the run on its frame: nothing more of it runs.
-    let outcome = submit(&mut engine, "stop", stop(Some(1)));
+    let outcome = submit(&mut engine, "stop", stop(vec![1]));
     let frame = accepted(&outcome);
     assert!(outcome.events.iter().any(|event| matches!(
         &event.payload,
@@ -522,10 +522,10 @@ fn a_script_runs_once_at_a_time_and_is_frozen_until_it_stops() {
     let (frames, advances) = drive(&mut engine, 60);
     assert_eq!(advances.len(), 0, "{advances:?}");
     assert_eq!(program_changes(&frames), Vec::new());
-    let (code, _, message) = refusal(&submit(&mut engine, "stop-again", stop(None)));
+    let (code, _, message) = refusal(&submit(&mut engine, "stop-again", stop(Vec::new())));
     assert_eq!(code, RejectionCode::Conflict);
     assert!(message.contains("no script is running"), "{message}");
-    let (code, _, message) = refusal(&submit(&mut engine, "stop-1-again", stop(Some(1))));
+    let (code, _, message) = refusal(&submit(&mut engine, "stop-1-again", stop(vec![1])));
     assert_eq!(code, RejectionCode::NotFound);
     assert!(message.contains("no script run 1"), "{message}");
     // A stopped script runs and edits again; a stop is never undone.
@@ -570,7 +570,7 @@ fn a_part_that_fails_on_its_frame_faults_the_run_and_applies_nothing() {
     );
     // The clock never retries a fault; a new run or a stop clears it.
     assert_eq!(engine.cue_advance_frame(), None);
-    accepted(&submit(&mut engine, "stop", stop(Some(1))));
+    accepted(&submit(&mut engine, "stop", stop(vec![1])));
     assert_eq!(
         *engine.show().script_run(),
         fm_model::ScriptRunState {
@@ -628,7 +628,7 @@ fn a_deferred_fault_carries_the_refused_actions_reason() {
     );
 
     // A runtime error refuses no action: the failure's message is kept.
-    accepted(&submit(&mut engine, "stop", stop(None)));
+    accepted(&submit(&mut engine, "stop", stop(Vec::new())));
     accepted(&submit(&mut engine, "set-3", set(1, "wait 3\ncut 1 / 0\n")));
     accepted(&submit(&mut engine, "run-3", run(1)));
     drive(&mut engine, 5);
@@ -997,7 +997,7 @@ fn the_waiting_runs_are_bounded() {
     assert_eq!(engine.show().script_run().runs.len() as u64, bound);
     accepted(&submit(&mut engine, "run-quick", run(bound + 2)));
     // A stop makes room.
-    accepted(&submit(&mut engine, "stop-3", stop(Some(3))));
+    accepted(&submit(&mut engine, "stop-3", stop(vec![3])));
     accepted(&submit(&mut engine, "run-over-again", run(bound + 1)));
     assert_eq!(
         engine.show().script_run().run_of(bound + 1).unwrap().run,
@@ -1031,7 +1031,7 @@ fn a_fault_or_stop_touches_only_its_own_run_until_all_are_stopped() {
     );
 
     // Stop run 3: run 4 still waits and the fault stays.
-    let outcome = submit(&mut engine, "stop-3", stop(Some(3)));
+    let outcome = submit(&mut engine, "stop-3", stop(vec![3]));
     assert!(outcome.events.iter().any(|event| matches!(
         &event.payload,
         EngineEvent::ScriptRunChanged { script: 3, .. }
@@ -1041,13 +1041,13 @@ fn a_fault_or_stop_touches_only_its_own_run_until_all_are_stopped() {
     assert_eq!(runs.run_of(4).map(|run| run.run), Some(4));
     assert!(runs.fault_of(1).is_some());
     // Clearing run 1's fault names its run too.
-    accepted(&submit(&mut engine, "clear-1", stop(Some(1))));
+    accepted(&submit(&mut engine, "clear-1", stop(vec![1])));
     assert_eq!(engine.show().script_run().faults, []);
 
     accepted(&submit(&mut engine, "rerun-3", run(3)));
     accepted(&submit(&mut engine, "rerun-1", run(1)));
     drive(&mut engine, 3);
-    let outcome = submit(&mut engine, "stop-all", stop(None));
+    let outcome = submit(&mut engine, "stop-all", stop(Vec::new()));
     let frame = accepted(&outcome);
     assert!(
         outcome.events.iter().any(|event| matches!(

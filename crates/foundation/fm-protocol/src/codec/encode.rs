@@ -657,11 +657,10 @@ fn encode_command(record: &mut Record, message: &CommandMessage) -> Result<(), C
                 record.field("value", value.get())?;
             }
         }
-        CommandPayload::StopScript { run } => {
+        CommandPayload::StopScript { runs } => {
             record.field("payload", "script_stop")?;
-            if let Some(run) = run {
-                super::script::validate_run_id(*run)?;
-                record.field("run", run)?;
+            if !runs.is_empty() {
+                record.field("runs", super::script::encode_run_list(runs)?)?;
             }
         }
         payload @ (CommandPayload::SetInputGrade { .. }

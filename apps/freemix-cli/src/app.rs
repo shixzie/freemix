@@ -3131,7 +3131,7 @@ pub(crate) fn script_payload(
         } => CommandPayload::RunScript {
             script: resolve(&name)?,
         },
-        ScriptCommand::Stop { run } => CommandPayload::StopScript { run },
+        ScriptCommand::Stop { runs } => CommandPayload::StopScript { runs },
     })
 }
 

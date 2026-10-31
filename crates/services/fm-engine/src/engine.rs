@@ -573,11 +573,12 @@ pub enum EngineCommand {
     RunScript {
         script: u64,
     },
-    /// Ends waiting script run `run`, or clears that run's fault, on the
-    /// command's target frame (RC-011, schema 56); with no `run`, ends every
-    /// waiting run and clears every fault (schema 60). A live operation.
+    /// Ends the waiting script runs in `runs`, or clears their faults, on
+    /// the command's target frame (RC-011, schema 56); with no run, ends
+    /// every waiting run and clears every fault (schema 60). A live
+    /// operation.
     StopScript {
-        run: Option<u64>,
+        runs: Vec<u64>,
     },
     /// Creates or replaces (`Some`) or removes (`None`) user shortcut
     /// `shortcut` (RC-004). A project edit honouring the project padlock,
@@ -2614,8 +2615,8 @@ impl Engine {
             Ok(EngineCommand::RunScript { script }) => {
                 Some(crate::script::plan(self, *script, target_frame))
             }
-            Ok(EngineCommand::StopScript { run }) => {
-                Some(crate::script::plan_stop(self, *run, target_frame))
+            Ok(EngineCommand::StopScript { runs }) => {
+                Some(crate::script::plan_stop(self, runs, target_frame))
             }
             // A shortcut's cue actions are planned the same way (RC-004).
             Ok(EngineCommand::FireShortcut {

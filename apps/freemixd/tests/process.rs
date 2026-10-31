@@ -10256,7 +10256,7 @@ fn a_waiting_script_resumes_on_the_clock_survives_restart_and_stops() {
     admin.send(&command(
         "stop",
         "stop-key",
-        CommandPayload::StopScript { run: Some(1) },
+        CommandPayload::StopScript { runs: vec![1] },
     ));
     assert_eq!(accepted_revision(&mut admin, "stop"), 4);
     match durable_event_at(&mut admin, 4).payload {
@@ -10268,7 +10268,7 @@ fn a_waiting_script_resumes_on_the_clock_survives_restart_and_stops() {
     admin.send(&command(
         "stop-again",
         "stop-again-key",
-        CommandPayload::StopScript { run: None },
+        CommandPayload::StopScript { runs: Vec::new() },
     ));
     assert!(matches!(
         admin.next_result(),
@@ -10443,7 +10443,7 @@ fn two_waiting_scripts_interleave_replay_and_stop_one_or_all() {
     admin.send(&command(
         "stop-2",
         "stop-2-key",
-        CommandPayload::StopScript { run: Some(2) },
+        CommandPayload::StopScript { runs: vec![2] },
     ));
     assert_eq!(accepted_revision(&mut admin, "stop-2"), 7);
     match durable_event_at(&mut admin, 7).payload {
@@ -10460,7 +10460,7 @@ fn two_waiting_scripts_interleave_replay_and_stop_one_or_all() {
     admin.send(&command(
         "stop-all",
         "stop-all-key",
-        CommandPayload::StopScript { run: None },
+        CommandPayload::StopScript { runs: Vec::new() },
     ));
     assert_eq!(accepted_revision(&mut admin, "stop-all"), 8);
     match durable_event_at(&mut admin, 8).payload {

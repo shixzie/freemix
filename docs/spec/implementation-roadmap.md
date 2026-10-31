@@ -5194,14 +5194,14 @@ authorized on its own, as before. The cue clock still drives every run as
 list `0` (the earliest due, the lowest id on a tie); runs due on the same
 frame resume on that frame together, the later advance joining the frame
 the first holds. A failed part faults its own run only, and each script
-keeps its own fault. `script_stop run=<id>` ends one run or clears its
-fault; `script_stop` alone ends every run and clears every fault
-(`script_runs_stopped`). Wire `run` states name the run id and, while
-waiting, the line of the `wait` (the run's current step). Studio's Scripts
-window lists every active run with its own Stop (or Clear) and Stop all
-runs; the CLI's `script-stop` takes `--run`. Remaining gaps: runs cannot be
-queued behind the bound, and a stop of every run is one command, not a
-selection.
+keeps its own fault. `script_stop runs=<run>[,<run>...]` ends the selected
+runs or clears their faults (Protocol 2.146); `script_stop` alone ends every
+run and clears every fault (`script_runs_stopped`). Wire `run` states name
+the run id and, while waiting, the line of the `wait` (the run's current
+step). Studio's Scripts window lists every active run with its own Stop (or
+Clear), a checkbox selecting it for Stop selected runs, and Stop all runs;
+the CLI's `script-stop` takes `--run`, repeatable or comma separated.
+Remaining gap: runs cannot be queued behind the bound.
 
 Document inputs (`IN-014`, Protocol 2.77, schema 66): a PDF or a
 presentation is an input shown one page at a time. Renderer choice: `hayro`,

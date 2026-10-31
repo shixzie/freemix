@@ -20,7 +20,7 @@ use fm_protocol::{
     encode_refusal_reason,
 };
 
-const PREFIX: &str = "command\tprotocol=2.145\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.146\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(NonZeroU128::new(value).unwrap())
@@ -83,7 +83,7 @@ fn spec() -> ScriptSpec {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 145));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 146));
 }
 
 #[test]
@@ -312,7 +312,7 @@ fn script_failures_are_typed_refusals() {
 #[test]
 #[allow(clippy::too_many_lines)] // every run state spelling
 fn script_waits_round_trip_exactly() {
-    let line = round_trip(&command(CommandPayload::StopScript { run: None }));
+    let line = round_trip(&command(CommandPayload::StopScript { runs: Vec::new() }));
     assert_eq!(line, format!("{PREFIX}\tpayload=script_stop\n"));
     let line = round_trip(&command(CommandPayload::CueAdvance { list: 0, frame: 40 }));
     assert_eq!(
@@ -541,19 +541,39 @@ fn faulted_runs_carry_the_refusal_reason_and_a_bounded_message() {
     }
 }
 
-/// Protocol 2.69: several runs wait at once. `script_stop` names one run
-/// or, without `run`, stops them all; `script_runs_stopped` names the
-/// scripts a stop of every run idled, exactly and strictly.
+/// Protocol 2.69 several runs wait at once; Protocol 2.146 lets
+/// `script_stop` name a selection of them (one run is a selection of one),
+/// or without `runs` stop them all. `script_runs_stopped` names the
+/// scripts a stop idled, exactly and strictly.
 #[test]
 fn concurrent_runs_stop_one_or_all_exactly() {
     assert_eq!(fm_protocol::MAX_SCRIPT_RUNS, 8);
-    let line = round_trip(&command(CommandPayload::StopScript { run: Some(17) }));
-    assert_eq!(line, format!("{PREFIX}\tpayload=script_stop\trun=17\n"));
-    for bad in ["run=0", "run=017", "run=x", "run=", "run=-1"] {
+    let line = round_trip(&command(CommandPayload::StopScript { runs: vec![17] }));
+    assert_eq!(line, format!("{PREFIX}\tpayload=script_stop\truns=17\n"));
+    let line = round_trip(&command(CommandPayload::StopScript {
+        runs: vec![1, 4, 17],
+    }));
+    assert_eq!(
+        line,
+        format!("{PREFIX}\tpayload=script_stop\truns=1%2C4%2C17\n")
+    );
+    for bad in [
+        "runs=0",
+        "runs=017",
+        "runs=x",
+        "runs=",
+        "runs=-1",
+        "runs=4,1",
+        "runs=1,1",
+        "runs=1,",
+        "runs=1,0",
+        "runs=1,2,3,4,5,6,7,8,9",
+    ] {
         let broken = format!("{PREFIX}\tpayload=script_stop\t{bad}\n");
         assert!(decode_line(&broken).is_err(), "{bad}");
     }
-    assert!(encode_line(&command(CommandPayload::StopScript { run: Some(0) })).is_err());
+    assert!(encode_line(&command(CommandPayload::StopScript { runs: vec![0] })).is_err());
+    assert!(encode_line(&command(CommandPayload::StopScript { runs: vec![1, 1] })).is_err());
 
     let line = round_trip(&event(EventPayload::ScriptRunsStopped {
         frame: 90,

@@ -867,51 +867,65 @@ pub(crate) fn plan_resume(
     })
 }
 
-/// Plans a [`crate::EngineCommand::StopScript`] for `target_frame`: run
-/// `run` ends (nothing more of it runs) or its fault clears; with no
-/// `run`, every run ends and every fault clears. The ids issued so far
-/// stay issued.
+/// Plans a [`crate::EngineCommand::StopScript`] for `target_frame`: the
+/// runs in `runs` end (nothing more of them runs) or their faults clear;
+/// with no run, every run ends and every fault clears. The ids issued so
+/// far stay issued.
 ///
 /// # Errors
 ///
-/// Refuses a stop of a run that neither waits nor faulted, and a stop of
-/// every run with none waiting and no fault to clear.
+/// Refuses a stop naming a run that neither waits nor faulted (the whole
+/// command changes nothing), and a stop of every run with none waiting and
+/// no fault to clear.
 pub(crate) fn plan_stop(
     engine: &Engine,
-    run: Option<u64>,
+    runs: &[u64],
     target_frame: FrameNumber,
 ) -> Result<CuePlan, Rejection> {
-    let runs = engine.show().script_run();
+    let current = engine.show().script_run();
     let mut show = engine.show().clone();
     let frame = target_frame.get();
-    let event = if let Some(run) = run {
-        let Some(script) = runs.script_of(run) else {
-            return Err(Rejection::new(
-                RejectionCode::NotFound,
-                format!("no script run {run} waits or faulted"),
-            )
-            .with_field(FieldIssue::new(
-                "run",
-                "unknown",
-                "the run already ended; refresh the scripts",
-            )));
-        };
-        let slot = show.script_run_mut();
-        slot.runs.retain(|found| found.run != run);
-        slot.faults.retain(|fault| fault.run != run);
-        EngineEvent::ScriptRunChanged { script, frame }
-    } else {
-        if runs.is_empty() {
+    let event = if runs.is_empty() {
+        if current.is_empty() {
             return Err(Rejection::new(
                 RejectionCode::Conflict,
                 "no script is running",
             ));
         }
-        let scripts = runs.scripts();
+        let scripts = current.scripts();
         let slot = show.script_run_mut();
         slot.runs.clear();
         slot.faults.clear();
         EngineEvent::ScriptRunsStopped { scripts, frame }
+    } else {
+        let mut scripts = Vec::with_capacity(runs.len());
+        for run in runs {
+            let Some(script) = current.script_of(*run) else {
+                return Err(Rejection::new(
+                    RejectionCode::NotFound,
+                    format!("no script run {run} waits or faulted"),
+                )
+                .with_field(FieldIssue::new(
+                    "runs",
+                    "unknown",
+                    "the run already ended; refresh the scripts",
+                )));
+            };
+            scripts.push(script);
+        }
+        let slot = show.script_run_mut();
+        for run in runs {
+            slot.runs.retain(|found| found.run != *run);
+            slot.faults.retain(|fault| fault.run != *run);
+        }
+        if let [script] = scripts.as_slice() {
+            EngineEvent::ScriptRunChanged {
+                script: *script,
+                frame,
+            }
+        } else {
+            EngineEvent::ScriptRunsStopped { scripts, frame }
+        }
     };
     Ok(CuePlan {
         show: Box::new(show),

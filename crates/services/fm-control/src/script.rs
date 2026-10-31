@@ -52,7 +52,7 @@ pub fn script_engine_command(payload: &CommandPayload) -> EngineCommand {
             position: None,
         },
         CommandPayload::RunScript { script } => EngineCommand::RunScript { script: *script },
-        CommandPayload::StopScript { run } => EngineCommand::StopScript { run: *run },
+        CommandPayload::StopScript { runs } => EngineCommand::StopScript { runs: runs.clone() },
         _ => unreachable!("only script commands are delegated"),
     }
 }

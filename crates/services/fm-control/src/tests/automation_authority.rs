@@ -1147,7 +1147,7 @@ fn a_stop_and_a_fault_publish_the_run_state() {
         &mut control,
         &session(),
         "stop",
-        CommandPayload::StopScript { run: Some(1) },
+        CommandPayload::StopScript { runs: vec![1] },
     );
     assert!(
         matches!(
@@ -1269,7 +1269,7 @@ fn concurrent_runs_are_authorized_reported_and_stopped_each() {
         &mut control,
         &session(),
         "stop-2",
-        CommandPayload::StopScript { run: Some(2) },
+        CommandPayload::StopScript { runs: vec![2] },
     );
     assert!(
         matches!(
@@ -1292,7 +1292,7 @@ fn concurrent_runs_are_authorized_reported_and_stopped_each() {
         &mut control,
         &session(),
         "stop-2-again",
-        CommandPayload::StopScript { run: Some(2) },
+        CommandPayload::StopScript { runs: vec![2] },
     );
     assert!(!again.is_accepted());
 
@@ -1309,7 +1309,7 @@ fn concurrent_runs_are_authorized_reported_and_stopped_each() {
         &mut control,
         &session(),
         "stop-all",
-        CommandPayload::StopScript { run: None },
+        CommandPayload::StopScript { runs: Vec::new() },
     );
     assert!(
         matches!(
