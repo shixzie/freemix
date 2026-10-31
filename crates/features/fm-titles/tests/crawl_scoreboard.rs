@@ -920,6 +920,30 @@ fn the_shot_clock_counts_down_and_reports_its_expiry_once() {
 }
 
 #[test]
+fn clock_formats_include_tenths() {
+    let mut config = clock_config(ClockDirection::CountUp, (30, 1), 0);
+    config.format = ClockFormat::MinutesSecondsTenths;
+    let mut count_up = board(config);
+    count_up
+        .apply(0, 0, &[ScoreboardAction::StartClock])
+        .unwrap();
+    assert_eq!(count_up.clock().display(0), "00:00.0");
+    assert_eq!(count_up.clock().display(3), "00:00.1");
+    assert_eq!(count_up.clock().display(30), "00:01.0");
+    assert_eq!(count_up.clock().display(35), "00:01.1");
+
+    let mut config = clock_config(ClockDirection::CountDown, (30, 1), 90_000);
+    config.format = ClockFormat::HoursMinutesSecondsTenths;
+    let mut count_down = board(config);
+    count_down
+        .apply(0, 0, &[ScoreboardAction::StartClock])
+        .unwrap();
+    assert_eq!(count_down.clock().display(0), "00:01:30.0");
+    assert_eq!(count_down.clock().display(30), "00:01:29.0");
+    assert_eq!(count_down.clock().display(33), "00:01:28.9");
+}
+
+#[test]
 fn rosters_add_select_and_remove_players_atomically() {
     let mut board = board(GameClockConfig {
         direction: ClockDirection::CountDown,

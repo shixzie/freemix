@@ -24,7 +24,9 @@ impl ClockDirection {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClockFormat {
     MinutesSeconds,
+    MinutesSecondsTenths,
     HoursMinutesSeconds,
+    HoursMinutesSecondsTenths,
 }
 
 impl ClockFormat {
@@ -32,7 +34,9 @@ impl ClockFormat {
     pub const fn duration_format(self) -> DurationFormat {
         match self {
             Self::MinutesSeconds => DurationFormat::MinutesSeconds,
+            Self::MinutesSecondsTenths => DurationFormat::MinutesSecondsTenths,
             Self::HoursMinutesSeconds => DurationFormat::HoursMinutesSeconds,
+            Self::HoursMinutesSecondsTenths => DurationFormat::HoursMinutesSecondsTenths,
         }
     }
 }

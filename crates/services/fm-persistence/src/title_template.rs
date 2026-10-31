@@ -1559,7 +1559,9 @@ fn write_element_kind(output: &mut String, element: &Element) {
             spec.starts_at_ms,
             match spec.format {
                 ClockFormat::MinutesSeconds => "minutes_seconds",
+                ClockFormat::MinutesSecondsTenths => "minutes_seconds_tenths",
                 ClockFormat::HoursMinutesSeconds => "hours_minutes_seconds",
+                ClockFormat::HoursMinutesSecondsTenths => "hours_minutes_seconds_tenths",
             }
         )
         .expect("writing to a string cannot fail"),
@@ -1988,7 +1990,9 @@ fn parse_kind(value: Value) -> Result<ElementKind, DecodeError> {
             starts_at_ms: object.u64("starts_at_ms")?,
             format: match object.string("format")?.as_str() {
                 "minutes_seconds" => ClockFormat::MinutesSeconds,
+                "minutes_seconds_tenths" => ClockFormat::MinutesSecondsTenths,
                 "hours_minutes_seconds" => ClockFormat::HoursMinutesSeconds,
+                "hours_minutes_seconds_tenths" => ClockFormat::HoursMinutesSecondsTenths,
                 value => return Err(unknown_enum("clock format", value)),
             },
         }),
