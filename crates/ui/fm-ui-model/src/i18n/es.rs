@@ -6230,6 +6230,13 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::MidiControl, t("CC {number} · canal {channel}")),
     (Msg::MidiValues, t("Valores MIDI")),
+    (Msg::MidiReplayTransport, t("Transporte de repetición")),
+    (
+        Msg::MidiReplayTransportHover,
+        t(
+            "Asigna las notas 36–43 del canal 1 a marcar entrada, marcar salida, capturar, reproducir/pausar, paso atrás, paso adelante, retroceso y avance de la repetición",
+        ),
+    ),
     (Msg::MidiValueMonitorLevel, t("Nivel de monitores")),
     (
         Msg::MidiValueLearnHover,

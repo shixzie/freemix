@@ -2327,6 +2327,8 @@ messages! {
     MidiReasonUnbound => t("this action has no MIDI control"),
     MidiControl => t("CC {number} · ch {channel}"),
     MidiValues => t("MIDI values"),
+    MidiReplayTransport => t("Replay transport"),
+    MidiReplayTransportHover => t("Bind channel 1 notes 36–43 to replay mark in, mark out, capture, play/pause, step back, step forward, shuttle back, and shuttle forward"),
     MidiValueMonitorLevel => t("Monitor level"),
     MidiValueLearnHover => t("Bind the next controller this console receives to this value"),
     MidiValueControlHover => t("The controller driving this value; its 0–127 range maps to the value's range"),

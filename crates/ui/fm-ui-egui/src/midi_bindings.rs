@@ -30,6 +30,19 @@ use crate::l10n::{Arg, Locale, Msg};
 
 /// Most MIDI bindings one console keeps.
 pub const MAX_MIDI_BINDINGS: usize = 64;
+/// The replay transport a controller's transport buttons drive, in note
+/// order from channel 1 note 36: mark in, mark out, capture, play/pause,
+/// step back, step forward, shuttle back, and shuttle forward.
+pub const REPLAY_TRANSPORT: [(u16, ConsoleAction); 8] = [
+    (36, ConsoleAction::ReplayMarkIn),
+    (37, ConsoleAction::ReplayMarkOut),
+    (38, ConsoleAction::ReplayCapture),
+    (39, ConsoleAction::ReplayPlayPause),
+    (40, ConsoleAction::ReplayStepBack),
+    (41, ConsoleAction::ReplayStepForward),
+    (42, ConsoleAction::ReplayShuttleBack),
+    (43, ConsoleAction::ReplayShuttleForward),
+];
 const PREFIX: &str = "keymap.midi.";
 const VALUE_PREFIX: &str = "keymap.midi.value.";
 
@@ -234,6 +247,21 @@ impl MidiBindings {
         self.values.remove(&trigger);
         self.bindings.insert(trigger, action);
         true
+    }
+
+    /// Binds channel 1 notes 36 through 43 to the replay transport in note
+    /// order (mark in, mark out, capture, play/pause, step back, step
+    /// forward, shuttle back, shuttle forward), taking each from any other
+    /// action or control. Returns how many bound (fewer only when the
+    /// console's bound is already full).
+    pub fn bind_replay_transport(&mut self) -> usize {
+        REPLAY_TRANSPORT
+            .into_iter()
+            .filter(|(note, action)| {
+                MidiTrigger::new(MidiControlKind::Note, 1, *note)
+                    .is_some_and(|trigger| self.bind(trigger, *action))
+            })
+            .count()
     }
 
     /// The trigger bound to value `target`, if any.
@@ -467,6 +495,31 @@ mod tests {
                 usize::from(number) < MAX_MIDI_BINDINGS
             );
         }
+    }
+
+    #[test]
+    fn the_replay_transport_binds_eight_notes() {
+        let mut bindings = MidiBindings::default();
+        assert_eq!(bindings.bind_replay_transport(), 8);
+        let note = |number| MidiTrigger::new(MidiControlKind::Note, 1, number).unwrap();
+        assert_eq!(bindings.action(note(36)), Some(ConsoleAction::ReplayMarkIn));
+        assert_eq!(
+            bindings.action(note(38)),
+            Some(ConsoleAction::ReplayCapture)
+        );
+        assert_eq!(
+            bindings.action(note(43)),
+            Some(ConsoleAction::ReplayShuttleForward)
+        );
+        // Running it again keeps the same eight bindings, not a copy.
+        assert_eq!(bindings.bind_replay_transport(), 8);
+        assert_eq!(bindings.bindings().count(), 8);
+        // A transport note that other actions held moves to the transport.
+        let mut held = MidiBindings::default();
+        assert!(held.bind(note(36), ConsoleAction::Cut));
+        assert_eq!(held.bind_replay_transport(), 8);
+        assert_eq!(held.action(note(36)), Some(ConsoleAction::ReplayMarkIn));
+        assert_eq!(held.trigger_of(ConsoleAction::Cut), None);
     }
 
     #[test]
