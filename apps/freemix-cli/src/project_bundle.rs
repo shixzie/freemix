@@ -93,6 +93,8 @@ pub const fn audit_reason_name(reason: AssetAuditReason) -> &'static str {
         AssetAuditReason::OutsideAssetsRoot => "outside-assets-root",
         AssetAuditReason::NotRegularFile => "not-regular-file",
         AssetAuditReason::UnreadableTitleTemplate => "unreadable-title-template",
+        AssetAuditReason::UnreadableCrawlDocument => "unreadable-crawl-document",
+        AssetAuditReason::UnreadablePreviewDocument => "unreadable-preview-document",
     }
 }
 

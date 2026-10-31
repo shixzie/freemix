@@ -176,8 +176,73 @@ impl ProjectStore {
                 .into_iter()
                 .map(|(input_id, reason)| AssetAuditIssue { input_id, reason }),
         );
+        issues.extend(self.audit_document_assets(project));
         issues.sort_by_key(|issue| issue.input_id);
         issues
+    }
+
+    /// Audits the logo and image assets a title input's persisted crawl and
+    /// preview documents name.
+    fn audit_document_assets(&self, project: &Project) -> Vec<AssetAuditIssue> {
+        let mut issues = Vec::new();
+        for (input, document) in project.crawl_documents() {
+            match fm_titles::CrawlSnapshot::from_document(document) {
+                Ok(snapshot) => {
+                    for item in &snapshot.items {
+                        let Some(logo) = &item.logo else {
+                            continue;
+                        };
+                        if let Some(reason) = self.audit_uri(&logo.asset) {
+                            issues.push(AssetAuditIssue {
+                                input_id: *input,
+                                reason,
+                            });
+                        }
+                    }
+                }
+                Err(_) => issues.push(AssetAuditIssue {
+                    input_id: *input,
+                    reason: AssetAuditReason::UnreadableCrawlDocument,
+                }),
+            }
+        }
+        for (input, document) in project.preview_documents() {
+            match fm_data::PreviewSnapshot::from_document(document) {
+                Ok(snapshot) => {
+                    for value in snapshot.live.values() {
+                        let fm_data::BoundValue::Image(uri) = value else {
+                            continue;
+                        };
+                        if let Some(reason) = self.audit_uri(uri) {
+                            issues.push(AssetAuditIssue {
+                                input_id: *input,
+                                reason,
+                            });
+                        }
+                    }
+                }
+                Err(_) => issues.push(AssetAuditIssue {
+                    input_id: *input,
+                    reason: AssetAuditReason::UnreadablePreviewDocument,
+                }),
+            }
+        }
+        issues
+    }
+
+    fn audit_uri(&self, uri: &str) -> Option<AssetAuditReason> {
+        match self.resolve_asset_uri(uri) {
+            Ok(_) => None,
+            Err(AssetResolveError::InvalidUri) => Some(AssetAuditReason::InvalidUri),
+            Err(
+                AssetResolveError::AssetsRootUnavailable(_)
+                | AssetResolveError::AssetUnavailable(_),
+            ) => Some(AssetAuditReason::MissingAsset),
+            Err(AssetResolveError::OutsideAssetsRoot) => {
+                Some(AssetAuditReason::OutsideAssetsRoot)
+            }
+            Err(AssetResolveError::NotRegularFile) => Some(AssetAuditReason::NotRegularFile),
+        }
     }
 }
 
@@ -197,6 +262,10 @@ pub enum AssetAuditReason {
     NotRegularFile,
     /// A title template resolves but is not a valid stored template.
     UnreadableTitleTemplate,
+    /// A persisted crawl document does not parse.
+    UnreadableCrawlDocument,
+    /// A persisted preview-state document does not parse.
+    UnreadablePreviewDocument,
 }
 
 /// The distinct asset folders `project`'s folder slideshows show, sorted.

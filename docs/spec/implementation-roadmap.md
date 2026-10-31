@@ -4004,7 +4004,8 @@ runs it. Remaining gaps: the audit covers only the egui Studio console, not
 the web controller, CLI, or daemon messages; it relies on debug-build widget
 info; and only English and Spanish ship, so `RC-018` remains planned.
 
-The current persistence slice audits stored media asset references and
+The current persistence slice audits stored media asset references (and the
+logo and image assets that persisted crawl and preview documents name) and
 provides a secret-free settings export with an import planner (`RC-013`):
 outputs, buses, stream targets, and video/audio settings export as one exact
 contract whose secrets serialize only as placeholders, and imports preview

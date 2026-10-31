@@ -1,8 +1,15 @@
 use std::{
+    collections::BTreeMap,
     fs,
     num::NonZeroU128,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
+};
+
+use fm_data::{BoundValue, PreviewSnapshot, StagePolicy};
+use fm_titles::{
+    Alignment, Bounds, Color, CrawlConfig, CrawlItemSnapshot, CrawlLogoSnapshot, CrawlMode,
+    CrawlSnapshot, CrawlSpeed, FontStyle,
 };
 
 use fm_model::{Input, InputKind, Project, ProjectSettings};
@@ -341,4 +348,146 @@ fn display_messages_do_not_expose_uri_or_filesystem_paths() {
         assert!(!message.contains("secret-path-marker"));
         assert!(!message.contains(temp.0.to_string_lossy().as_ref()));
     }
+}
+
+fn title_input() -> InputKind {
+    InputKind::Title(fm_model::TitleInput {
+        template_uri: "asset://titles/ticker.fmtitle".into(),
+        field_revision: 0,
+        fields: Vec::new(),
+    })
+}
+
+fn crawl_document(logo: Option<&str>) -> String {
+    CrawlSnapshot {
+        config: CrawlConfig {
+            mode: CrawlMode::Crawl,
+            bounds: Bounds {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 100,
+            },
+            speed: CrawlSpeed::new(1, 1).unwrap(),
+            frame_rate: FrameRate::new(30, 1).unwrap(),
+            start_frame: 0,
+            separator: " ".into(),
+            gap_px: 0,
+            font: FontStyle {
+                family: "Inter".into(),
+                size_px: 12,
+            },
+            fill: Color::new(255, 255, 255, 255),
+            background: None,
+            opacity: 255,
+            alignment: Alignment::default(),
+        },
+        items: vec![CrawlItemSnapshot {
+            text: "Item".into(),
+            fill: None,
+            logo: logo.map(|asset| CrawlLogoSnapshot {
+                asset: asset.into(),
+                width_px: 8,
+            }),
+        }],
+    }
+    .to_document()
+}
+
+fn preview_document(image: &str) -> String {
+    PreviewSnapshot {
+        policy: StagePolicy::RequireComplete,
+        revision: 0,
+        live: BTreeMap::from([("image".to_owned(), BoundValue::Image(image.into()))]),
+    }
+    .to_document()
+}
+
+#[test]
+fn a_title_documents_logo_and_image_assets_are_audited() {
+    let temp = TestDirectory::new("document-assets");
+    let store = temp.store();
+    create_asset(&store, "logos/present.png");
+    create_asset(&store, "previews/present.png");
+    let base = stored_project([], (60, InputKind::Color));
+    let mut project = base.project().clone();
+    for (id, name) in [(70, "Crawl"), (71, "Preview")] {
+        project.add_input(Input {
+            id: input_id(id),
+            name: name.into(),
+            kind: title_input(),
+            required_capabilities: Vec::new(),
+        });
+    }
+    project
+        .set_crawl_document(
+            input_id(70),
+            crawl_document(Some("asset://logos/present.png")),
+        )
+        .unwrap();
+    project
+        .set_preview_document(
+            input_id(71),
+            preview_document("asset://previews/present.png"),
+        )
+        .unwrap();
+    let count = |issues: &[AssetAuditIssue], id: u128, reason: AssetAuditReason| {
+        issues
+            .iter()
+            .filter(|issue| issue.input_id == input_id(id) && issue.reason == reason)
+            .count()
+    };
+    let stored = base.with_project(project.clone()).unwrap();
+    let issues = store.audit_assets(&stored);
+    // The title template is missing, but the present logo and image resolve.
+    assert_eq!(
+        count(&issues, 70, AssetAuditReason::MissingAsset),
+        1,
+        "{issues:?}"
+    );
+    assert_eq!(
+        count(&issues, 71, AssetAuditReason::MissingAsset),
+        1,
+        "{issues:?}"
+    );
+
+    project
+        .set_crawl_document(
+            input_id(70),
+            crawl_document(Some("asset://logos/missing.png")),
+        )
+        .unwrap();
+    project
+        .set_preview_document(
+            input_id(71),
+            preview_document("asset://previews/missing.png"),
+        )
+        .unwrap();
+    let stored = base.with_project(project.clone()).unwrap();
+    let issues = store.audit_assets(&stored);
+    assert_eq!(
+        count(&issues, 70, AssetAuditReason::MissingAsset),
+        2,
+        "{issues:?}"
+    );
+    assert_eq!(
+        count(&issues, 71, AssetAuditReason::MissingAsset),
+        2,
+        "{issues:?}"
+    );
+
+    project.restore_crawls(BTreeMap::from([(input_id(70), "bad".into())]));
+    project.restore_previews(BTreeMap::from([(input_id(71), "bad".into())]));
+    let stored = base.with_project(project).unwrap();
+    let issues = store.audit_assets(&stored);
+    assert_eq!(
+        count(&issues, 70, AssetAuditReason::UnreadableCrawlDocument),
+        1,
+        "{issues:?}"
+    );
+    assert_eq!(
+        count(&issues, 71, AssetAuditReason::UnreadablePreviewDocument),
+        1,
+        "{issues:?}"
+    );
 }
