@@ -247,9 +247,12 @@ there come before any new breadth below.
     summed Program bus and the next render is clean. A native daemon now
     scans `<bundle>/plugins/<id>/plugin.ini` manifests and lists their ids
     (with the built-in reference processors) in `audio_plugin_status`, so
-    Studio shows what is installed. Remaining: parameters for plugins
-    beyond the reference set, and a real sandboxed plugin in the chain
-    (see the Phase 8 boundary).
+    Studio shows what is installed. A plugin slot now keeps up to 64
+    bounded, finite parameter values at the API level (name-addressed, in
+    name order), though they are not yet persisted or carried on the wire.
+    Remaining: parameters for plugins beyond the reference set (the slot
+    holds them, nothing applies them), and a real sandboxed plugin in the
+    chain (see the Phase 8 boundary).
 15. **MIDI and controller surfaces (`RC-005`).** Studio reads ALSA raw MIDI
     ports on Linux, `CoreMIDI` on macOS, and `WinMM` on Windows, and binds
     notes, controls, and NRPN/RPN parameters to console actions, with LED
