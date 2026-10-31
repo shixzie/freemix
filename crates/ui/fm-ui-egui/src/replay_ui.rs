@@ -1068,14 +1068,48 @@ fn draw_player(
                 }));
             }
         }
-        // Shuttle: 2x back or forward, pausing at either end (Protocol 2.131).
+        // Shuttle: the chosen rate back or forward, pausing at either end
+        // (Protocol 2.131).
+        let rate_id = Id::new("studio-replay-shuttle-rate");
+        let mut shuttle_rate: i32 = ui
+            .data_mut(|data| *data.get_temp_mut_or_insert_with(rate_id, || 2_000))
+            .clamp(1_000, 16_000);
+        ComboBox::from_id_salt(("studio-replay-shuttle-rate", input))
+            .selected_text(format!("{}x", shuttle_rate / 1_000))
+            .width(54.0)
+            .show_ui(ui, |ui| {
+                for rate in [1_000, 2_000, 4_000, 8_000, 16_000] {
+                    if ui
+                        .selectable_label(shuttle_rate == rate, format!("{}x", rate / 1_000))
+                        .clicked()
+                    {
+                        shuttle_rate = rate;
+                        ui.data_mut(|data| data.insert_temp(rate_id, rate));
+                    }
+                }
+            })
+            .response
+            .on_hover_text(l.format(
+                Msg::ReplayShuttleRateHover,
+                &[(
+                    "rate",
+                    Arg::Count(u64::try_from(shuttle_rate / 1_000).unwrap_or(1)),
+                )],
+            ));
         for (rate, label, hover) in [
-            (-2_000, "◀◀", Msg::ReplayShuttleBackHover),
-            (2_000, "▶▶", Msg::ReplayShuttleForwardHover),
+            (-shuttle_rate, "◀◀", Msg::ReplayShuttleBackHover),
+            (shuttle_rate, "▶▶", Msg::ReplayShuttleForwardHover),
         ] {
+            let text = l.format(
+                hover,
+                &[(
+                    "rate",
+                    Arg::Count(u64::try_from(shuttle_rate / 1_000).unwrap_or(1)),
+                )],
+            );
             if ui
                 .add_enabled(cued_reason.is_none(), key_button(label, None, 32.0))
-                .hint(l.text(hover), reason)
+                .hint(&text, reason)
                 .clicked()
             {
                 intents.push(StudioIntent::Replay(ReplayOperation::Shuttle {

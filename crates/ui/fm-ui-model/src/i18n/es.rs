@@ -10956,12 +10956,22 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         t("Un fotograma adelante, en pausa"),
     ),
     (
+        Msg::ReplayShuttleRate,
+        t("Velocidad de reproducción rápida"),
+    ),
+    (
+        Msg::ReplayShuttleRateHover,
+        t("Velocidad de los botones de reproducción rápida: {rate}x"),
+    ),
+    (
         Msg::ReplayShuttleBackHover,
-        t("Reproducción rápida hacia atrás a 2x, con pausa en el primer fotograma del evento"),
+        t("Reproducción rápida hacia atrás a {rate}x, con pausa en el primer fotograma del evento"),
     ),
     (
         Msg::ReplayShuttleForwardHover,
-        t("Reproducción rápida hacia adelante a 2x, con pausa en el último fotograma del evento"),
+        t(
+            "Reproducción rápida hacia adelante a {rate}x, con pausa en el último fotograma del evento",
+        ),
     ),
     (Msg::ReelMusicSection, t("Música de fondo")),
     (
