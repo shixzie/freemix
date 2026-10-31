@@ -2295,6 +2295,9 @@
       show.shortcuts = show.shortcuts.filter((shortcut) => shortcut.id !== id);
     } else if (name === "audio_mixer_changed" && required(record, "operation") === "audio_strip_dsp") {
       fxTakeChain(required(record, "target"), required(record, "chain"));
+    } else if (name === "audio_mixer_changed" && required(record, "operation") === "audio_aux_bus_dsp") {
+      const bus = required(record, "bus").toLowerCase();
+      fxTakeChain("aux:" + bus, required(record, "chain"));
     } else if (name === "audio_mixer_changed" && required(record, "operation") === "audio_group_solo") {
       // A group solo re-solos its members; resynchronize so a mute never
       // writes back a stale solo.
@@ -3477,7 +3480,13 @@
       if (bus.chain) fx.chains.set(bus.target, bus.chain);
     }
   }
-  function fxTakeChain(target, chain) { fx.chains.set(target, chain); }
+  function fxTakeChain(target, chain) {
+    fx.chains.set(target, chain);
+    if (target.startsWith("aux:")) {
+      const bus = (show.auxBuses || []).find((candidate) => candidate.target === target);
+      if (bus) bus.chain = chain;
+    }
+  }
   // Drops a target's local edit: the page shows the server's chain again.
   function fxDrop(target) {
     const edit = fx.edits.get(target);
