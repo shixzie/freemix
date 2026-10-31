@@ -896,10 +896,7 @@ fn entry_and_transition_validation() {
     );
     assert_eq!(
         Playlist::new(
-            vec![fixed(1, 1_000).with_transition(PlaylistTransition::new(
-                PlaylistTransitionKind::Stinger,
-                1_001
-            ))],
+            vec![fixed(1, 1_000).with_transition(PlaylistTransition::stinger(1, 1_001))],
             cfg
         ),
         Err(PlaylistError::TransitionLongerThanEntry {
