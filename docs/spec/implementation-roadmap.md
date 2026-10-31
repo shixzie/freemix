@@ -4754,9 +4754,10 @@ accepted only after a lexical scan rejects style breakout, imports, escapes
 outside strings, unsafe functions, and excess external `url()` references,
 which are returned for policy checks. The fake renderer's fixtures may declare
 in-page fetches (`data-fetch`), and navigation refuses a page whose fetches
-the policy would block. Remaining gaps: no real browser engine,
-DNS, or sockets; the fake renderer still navigates through the older policy;
-and browser audio, HTML5 media, on-disk
+the policy would block; the renderer now navigates through the full network
+policy (navigation grants, host rules, URL bounds, and redirects). Remaining
+gaps: no real browser engine,
+DNS, or sockets; browser audio, HTML5 media, on-disk
 profile isolation, refresh-on-activate, and zoomed input translation remain
 contracts or fakes. `IN-013` remains planned.
 

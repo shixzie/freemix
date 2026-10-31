@@ -5,8 +5,8 @@ use fm_browser_input::{
     BrowserError, BrowserId, BrowserLimits, BrowserRenderer, ChildLifecycle, ClockDomainId,
     CrashDisposition, InteractionIntent, InteractionKind, InteractionMode, KeyState,
     NavigationBlockReason, NavigationBlocked, NavigationGrant, NavigationPolicy, NetworkLimitError,
-    NetworkLimits, ProfileId, RestartError, RestartPolicy, SurfaceConfig, SurfaceId,
-    VideoDimensions, Zoom,
+    NetworkLimits, NetworkPolicyError, ProfileId, RestartError, RestartPolicy, SurfaceConfig,
+    SurfaceId, VideoDimensions, Zoom,
 };
 
 fn nonzero(value: u128) -> NonZeroU128 {
@@ -107,10 +107,10 @@ fn in_page_fetches_are_held_to_the_navigation_policy() {
         renderer
             .navigate(surface(1), "https://example.com/page")
             .unwrap_err(),
-        BrowserError::Navigation(NavigationBlocked {
+        BrowserError::NetworkPolicy(NetworkPolicyError::Navigation(NavigationBlocked {
             reason: NavigationBlockReason::FileAccess,
             ..
-        })
+        }))
     ));
     renderer.policy_mut().grant(NavigationGrant::File);
     renderer

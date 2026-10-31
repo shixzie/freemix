@@ -10,9 +10,9 @@ use fm_frame::{
 
 use crate::{
     BrowserError, BrowserId, BrowserLimits, BrowserRenderer, BrowserState, ChildLifecycle,
-    ChildSupervisor, CookieJar, CrashDisposition, InteractionIntent, InteractionKind,
-    InteractionMode, NavigationPolicy, NetworkBudget, NetworkLimits, ProfileId, RenderOutput,
-    RestartError, RestartPolicy, SurfaceConfig, SurfaceId, SurfaceSnapshot,
+    ChildSupervisor, CookieJar, CrashDisposition, HostRules, InteractionIntent, InteractionKind,
+    InteractionMode, NavigationPolicy, NetworkBudget, NetworkLimits, NetworkPolicy, ProfileId,
+    RenderOutput, RestartError, RestartPolicy, SurfaceConfig, SurfaceId, SurfaceSnapshot,
 };
 
 const DEFAULT_FRAME_DURATION_NANOS: u64 = 33_333_333;
@@ -144,7 +144,7 @@ struct SurfaceRecord {
 /// A deterministic fake which performs no DNS, network, HTML, or JavaScript work.
 #[derive(Clone, Debug)]
 pub struct FakeRenderer {
-    policy: NavigationPolicy,
+    policy: NetworkPolicy,
     browser_limits: BrowserLimits,
     network_limits: NetworkLimits,
     supervisor: ChildSupervisor,
@@ -158,9 +158,9 @@ pub struct FakeRenderer {
 impl FakeRenderer {
     #[must_use]
     pub fn new(clock_domain: ClockDomainId) -> Self {
-        Self::with_limits(
+        Self::with_network_policy(
             clock_domain,
-            NavigationPolicy::new(),
+            NetworkPolicy::default(),
             BrowserLimits::default(),
             NetworkLimits::default(),
             RestartPolicy::default(),
@@ -171,6 +171,25 @@ impl FakeRenderer {
     pub fn with_limits(
         clock_domain: ClockDomainId,
         policy: NavigationPolicy,
+        browser_limits: BrowserLimits,
+        network_limits: NetworkLimits,
+        restart_policy: RestartPolicy,
+    ) -> Self {
+        Self::with_network_policy(
+            clock_domain,
+            NetworkPolicy::new(policy, HostRules::default()),
+            browser_limits,
+            network_limits,
+            restart_policy,
+        )
+    }
+
+    /// A renderer enforcing `policy`'s navigation grants, host rules, URL
+    /// bounds, and redirect rules.
+    #[must_use]
+    pub fn with_network_policy(
+        clock_domain: ClockDomainId,
+        policy: NetworkPolicy,
         browser_limits: BrowserLimits,
         network_limits: NetworkLimits,
         restart_policy: RestartPolicy,
@@ -192,10 +211,21 @@ impl FakeRenderer {
 
     #[must_use]
     pub const fn policy(&self) -> &NavigationPolicy {
-        &self.policy
+        self.policy.navigation()
     }
 
     pub const fn policy_mut(&mut self) -> &mut NavigationPolicy {
+        self.policy.navigation_mut()
+    }
+
+    /// The full network policy: navigation grants, host rules, and URL
+    /// bounds.
+    #[must_use]
+    pub const fn network_policy(&self) -> &NetworkPolicy {
+        &self.policy
+    }
+
+    pub const fn network_policy_mut(&mut self) -> &mut NetworkPolicy {
         &mut self.policy
     }
 
@@ -432,7 +462,9 @@ impl BrowserRenderer for FakeRenderer {
 
     fn navigate(&mut self, surface_id: SurfaceId, url: &str) -> Result<(), BrowserError> {
         self.ensure_running()?;
-        self.policy.check(url)?;
+        self.policy
+            .check(url)
+            .map_err(BrowserError::NetworkPolicy)?;
         let fixture = self
             .fixtures
             .get(url)
@@ -441,7 +473,9 @@ impl BrowserRenderer for FakeRenderer {
         // document, so a page cannot reach a scheme or host navigation could
         // not.
         for fetch in &fixture.fetches {
-            self.policy.check(fetch)?;
+            self.policy
+                .check(fetch)
+                .map_err(BrowserError::NetworkPolicy)?;
         }
         let mut budget = NetworkBudget::default();
         budget.consume(
