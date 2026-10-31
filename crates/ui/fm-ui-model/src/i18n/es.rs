@@ -6194,6 +6194,8 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
     ),
     (Msg::DesignMatteAddPoint, t("Añadir punto")),
     (Msg::MidiNote, t("Nota {number} · canal {channel}")),
+    (Msg::MidiNrpn, t("NRPN {number} · canal {channel}")),
+    (Msg::MidiRpn, t("RPN {number} · canal {channel}")),
     (Msg::MidiColumn, t("Control MIDI")),
     (Msg::MidiDevices, t("Controladores MIDI: {names}")),
     (

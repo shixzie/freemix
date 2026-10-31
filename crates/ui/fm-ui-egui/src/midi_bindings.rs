@@ -15,10 +15,12 @@
 //! ```text
 //! keymap.midi.note.1.60 = cut
 //! keymap.midi.cc.10.7 = fade
+//! keymap.midi.nrpn.1.1234 = cut
 //! ```
 //!
-//! where the trigger is `note` or `cc`, the channel `1` through `16`, and
-//! the note or controller number `0` through `127`, and the value an
+//! where the trigger is `note`, `cc`, `nrpn`, or `rpn`, the channel `1`
+//! through `16`, and the note or controller number `0` through `127` (`0`
+//! through `16383` for an NRPN or RPN parameter), and the value an
 //! [`ConsoleAction::token`].
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -38,6 +40,10 @@ pub enum MidiControlKind {
     Note,
     /// A control change (a button, knob, or fader).
     Control,
+    /// A non-registered parameter (a 14-bit controller number).
+    Nrpn,
+    /// A registered parameter (a 14-bit controller number).
+    Rpn,
 }
 
 /// One note or controller of one MIDI channel.
@@ -46,16 +52,21 @@ pub struct MidiTrigger {
     pub kind: MidiControlKind,
     /// The channel, `1..=16`.
     pub channel: u8,
-    /// The note or controller number, `0..=127`.
-    pub number: u8,
+    /// The note or controller number: `0..=127` for notes and controls,
+    /// `0..=16383` for NRPN and RPN.
+    pub number: u16,
 }
 
 impl MidiTrigger {
     /// A trigger, or `None` for a channel outside `1..=16` or a number
     /// above 127.
     #[must_use]
-    pub const fn new(kind: MidiControlKind, channel: u8, number: u8) -> Option<Self> {
-        if channel == 0 || channel > 16 || number > 127 {
+    pub const fn new(kind: MidiControlKind, channel: u8, number: u16) -> Option<Self> {
+        let maximum = match kind {
+            MidiControlKind::Note | MidiControlKind::Control => 127,
+            MidiControlKind::Nrpn | MidiControlKind::Rpn => 16_383,
+        };
+        if channel == 0 || channel > 16 || number > maximum {
             return None;
         }
         Some(Self {
@@ -71,6 +82,8 @@ impl MidiTrigger {
         let kind = match self.kind {
             MidiControlKind::Note => "note",
             MidiControlKind::Control => "cc",
+            MidiControlKind::Nrpn => "nrpn",
+            MidiControlKind::Rpn => "rpn",
         };
         format!("{kind}.{}.{}", self.channel, self.number)
     }
@@ -82,13 +95,15 @@ impl MidiTrigger {
         let kind = match parts.next()? {
             "note" => MidiControlKind::Note,
             "cc" => MidiControlKind::Control,
+            "nrpn" => MidiControlKind::Nrpn,
+            "rpn" => MidiControlKind::Rpn,
             _ => return None,
         };
         let number = |text: &str| {
-            let value: u8 = text.parse().ok()?;
+            let value: u16 = text.parse().ok()?;
             (value.to_string() == text).then_some(value)
         };
-        let channel = number(parts.next()?)?;
+        let channel = u8::try_from(number(parts.next()?)?).ok()?;
         let value = number(parts.next()?)?;
         if parts.next().is_some() {
             return None;
@@ -102,6 +117,8 @@ impl MidiTrigger {
         let msg = match self.kind {
             MidiControlKind::Note => Msg::MidiNote,
             MidiControlKind::Control => Msg::MidiControl,
+            MidiControlKind::Nrpn => Msg::MidiNrpn,
+            MidiControlKind::Rpn => Msg::MidiRpn,
         };
         l.format(
             msg,
@@ -282,7 +299,9 @@ impl MidiBindings {
         for input in inputs {
             let down = match input.trigger.kind {
                 MidiControlKind::Note => input.value > 0,
-                MidiControlKind::Control => input.value >= 64,
+                MidiControlKind::Control | MidiControlKind::Nrpn | MidiControlKind::Rpn => {
+                    input.value >= 64
+                }
             };
             if !down {
                 self.held.remove(&input.trigger);
@@ -340,12 +359,16 @@ impl MidiBindings {
 mod tests {
     use super::*;
 
-    fn note(channel: u8, number: u8) -> MidiTrigger {
+    fn note(channel: u8, number: u16) -> MidiTrigger {
         MidiTrigger::new(MidiControlKind::Note, channel, number).unwrap()
     }
 
-    fn cc(channel: u8, number: u8) -> MidiTrigger {
+    fn cc(channel: u8, number: u16) -> MidiTrigger {
         MidiTrigger::new(MidiControlKind::Control, channel, number).unwrap()
+    }
+
+    fn parameter(kind: MidiControlKind, channel: u8, number: u16) -> MidiTrigger {
+        MidiTrigger::new(kind, channel, number).unwrap()
     }
 
     #[test]
@@ -363,6 +386,29 @@ mod tests {
         }
         assert_eq!(note(1, 60).text(Locale::ENGLISH), "Note 60 · ch 1");
         assert_eq!(cc(10, 7).text(Locale::ENGLISH), "CC 7 · ch 10");
+    }
+
+    #[test]
+    fn parameters_use_their_full_fourteen_bits() {
+        let nrpn = parameter(MidiControlKind::Nrpn, 3, 0x1234);
+        let rpn = parameter(MidiControlKind::Rpn, 16, 16_383);
+        assert_eq!(nrpn.token(), "nrpn.3.4660");
+        assert_eq!(rpn.token(), "rpn.16.16383");
+        for trigger in [nrpn, rpn] {
+            assert_eq!(MidiTrigger::from_token(&trigger.token()), Some(trigger));
+        }
+        assert_eq!(nrpn.text(Locale::ENGLISH), "NRPN 4,660 · ch 3");
+        assert_eq!(rpn.text(Locale::ENGLISH), "RPN 16,383 · ch 16");
+        // A note or controller stops at 127; a parameter stops at 16383.
+        assert_eq!(MidiTrigger::new(MidiControlKind::Note, 1, 128), None);
+        assert_eq!(MidiTrigger::new(MidiControlKind::Control, 1, 128), None);
+        assert_eq!(MidiTrigger::new(MidiControlKind::Nrpn, 1, 16_384), None);
+        assert_eq!(MidiTrigger::new(MidiControlKind::Rpn, 1, 16_384), None);
+        assert_eq!(MidiTrigger::new(MidiControlKind::Nrpn, 0, 1), None);
+        assert_eq!(MidiTrigger::new(MidiControlKind::Rpn, 17, 1), None);
+        for bad in ["nrpn.1.16384", "rpn.01.1", "nrpn.1", "nrpn.1.1.1"] {
+            assert_eq!(MidiTrigger::from_token(bad), None, "{bad}");
+        }
     }
 
     #[test]
@@ -415,7 +461,7 @@ mod tests {
         // The console keeps at most 64 bindings.
         let mut full = MidiBindings::default();
         for (number, action) in ConsoleAction::all().into_iter().enumerate() {
-            let number = u8::try_from(number).unwrap();
+            let number = u16::try_from(number).unwrap();
             assert_eq!(
                 full.bind(note(2, number), action),
                 usize::from(number) < MAX_MIDI_BINDINGS

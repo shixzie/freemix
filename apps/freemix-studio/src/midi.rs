@@ -257,16 +257,36 @@ fn scan_midi(sender: &SyncSender<MidiEvent>, stop: &Arc<Mutex<bool>>, repaint: &
     drop(connections);
 }
 
+/// One channel's selected NRPN and RPN parameter numbers.
+#[derive(Clone, Copy, Debug, Default)]
+struct Parameters {
+    /// The 14-bit parameter number the NRPN select controllers last set.
+    nrpn: u16,
+    /// The 14-bit parameter number the RPN select controllers last set.
+    rpn: u16,
+    /// The kind the last parameter select message named.
+    selected: Option<MidiControlKind>,
+}
+
 /// A MIDI 1.0 byte stream's note on, note off, and control change
 /// messages: running status is kept, real-time bytes (`F8`–`FF`) pass
 /// through anywhere, and every other message (`SysEx`, system common,
 /// program change, pressure, pitch bend) is skipped.
+///
+/// An NRPN or RPN is two parameter select controllers (99/98 and 101/100)
+/// followed by a data entry (6); the parser keeps each channel's selected
+/// parameter and reports the data entry as a [`MidiControlKind::Nrpn`] or
+/// [`MidiControlKind::Rpn`] input numbered by that 14-bit parameter. The
+/// data entry's least significant byte (38) is not reported: a press is
+/// the high byte crossing 64, as with any other controller.
 #[derive(Debug, Default)]
 pub(crate) struct NoteParser {
     /// The running channel-voice status, while one is in force.
     status: Option<u8>,
     data: [u8; 2],
     len: usize,
+    /// Each channel's selected NRPN and RPN.
+    parameters: [Parameters; 16],
 }
 
 impl NoteParser {
@@ -298,10 +318,43 @@ impl NoteParser {
             self.len = 0;
             let channel = (status & 0x0F) + 1;
             let [number, value] = self.data;
-            let (kind, value) = match status & 0xF0 {
-                0x80 => (MidiControlKind::Note, 0),
-                0x90 => (MidiControlKind::Note, value),
-                0xB0 => (MidiControlKind::Control, value),
+            let (kind, number, value) = match status & 0xF0 {
+                0x80 => (MidiControlKind::Note, u16::from(number), 0),
+                0x90 => (MidiControlKind::Note, u16::from(number), value),
+                0xB0 => {
+                    let parameter = &mut self.parameters[usize::from(channel - 1)];
+                    match number {
+                        // A parameter select: 99/98 pick an NRPN, 101/100 an
+                        // RPN, the higher byte first.
+                        99 | 98 => {
+                            let shift = if number == 99 { 7 } else { 0 };
+                            let mask = if number == 99 { 0x007F } else { 0x3F80 };
+                            parameter.nrpn =
+                                (parameter.nrpn & mask) | (u16::from(value) << shift);
+                            parameter.selected = Some(MidiControlKind::Nrpn);
+                            continue;
+                        }
+                        101 | 100 => {
+                            let shift = if number == 101 { 7 } else { 0 };
+                            let mask = if number == 101 { 0x007F } else { 0x3F80 };
+                            parameter.rpn = (parameter.rpn & mask) | (u16::from(value) << shift);
+                            parameter.selected = Some(MidiControlKind::Rpn);
+                            continue;
+                        }
+                        // Data entry: the selected parameter's new value. RPN
+                        // 16383 is the null parameter (nothing is selected).
+                        6 => match parameter.selected {
+                            Some(MidiControlKind::Nrpn) => {
+                                (MidiControlKind::Nrpn, parameter.nrpn, value)
+                            }
+                            Some(MidiControlKind::Rpn) if parameter.rpn != 16_383 => {
+                                (MidiControlKind::Rpn, parameter.rpn, value)
+                            }
+                            _ => continue,
+                        },
+                        _ => (MidiControlKind::Control, u16::from(number), value),
+                    }
+                }
                 _ => continue,
             };
             if let Some(trigger) = MidiTrigger::new(kind, channel, number) {
@@ -348,13 +401,35 @@ impl Drop for MidiOutput {
     }
 }
 
-/// The three bytes of a note-on or control-change lamp state.
-fn feedback_bytes(feedback: MidiFeedback) -> [u8; 3] {
-    let status = match feedback.trigger.kind {
-        MidiControlKind::Note => 0x90,
-        MidiControlKind::Control => 0xB0,
-    } | (feedback.trigger.channel - 1);
-    [status, feedback.trigger.number, feedback.value]
+/// The controller bytes that set a bound control's lamp: a note on or
+/// control change, or (for an NRPN or RPN) the parameter select controllers
+/// followed by the data entry.
+fn feedback_bytes(feedback: MidiFeedback) -> Vec<u8> {
+    let channel = (feedback.trigger.channel - 1) & 0x0F;
+    let number = feedback.trigger.number.to_le_bytes()[0];
+    match feedback.trigger.kind {
+        MidiControlKind::Note => vec![0x90 | channel, number, feedback.value],
+        MidiControlKind::Control => vec![0xB0 | channel, number, feedback.value],
+        MidiControlKind::Nrpn | MidiControlKind::Rpn => {
+            let (select, entry) = match feedback.trigger.kind {
+                MidiControlKind::Nrpn => (99, 98),
+                _ => (101, 100),
+            };
+            let high = (feedback.trigger.number >> 7).to_le_bytes()[0];
+            let low = (feedback.trigger.number & 0x7F).to_le_bytes()[0];
+            vec![
+                0xB0 | channel,
+                select,
+                high,
+                0xB0 | channel,
+                entry,
+                low,
+                0xB0 | channel,
+                6,
+                feedback.value,
+            ]
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -465,6 +540,23 @@ mod feedback_tests {
             value: 0,
         };
         assert_eq!(feedback_bytes(control), [0xBF, 7, 0]);
+    }
+
+    #[test]
+    fn feedback_bytes_select_a_parameter_before_its_value() {
+        let nrpn = MidiFeedback {
+            trigger: MidiTrigger::new(MidiControlKind::Nrpn, 3, 0x1234).unwrap(),
+            value: 64,
+        };
+        assert_eq!(
+            feedback_bytes(nrpn),
+            [0xB2, 99, 0x24, 0xB2, 98, 0x34, 0xB2, 6, 64]
+        );
+        let rpn = MidiFeedback {
+            trigger: MidiTrigger::new(MidiControlKind::Rpn, 1, 0).unwrap(),
+            value: 127,
+        };
+        assert_eq!(feedback_bytes(rpn), [0xB0, 101, 0, 0xB0, 100, 0, 0xB0, 6, 127]);
     }
 }
 
@@ -587,6 +679,47 @@ mod parser_tests {
         assert_eq!(
             parser.feed(&[127]),
             [input(MidiControlKind::Control, 3, 7, 127)]
+        );
+    }
+
+    #[test]
+    fn parameter_selects_number_the_data_entry() {
+        let input = |kind, channel, number: u16, value| MidiInput {
+            trigger: MidiTrigger::new(kind, channel, number).unwrap(),
+            value,
+        };
+        let mut parser = NoteParser::default();
+        // NRPN 0x1234 on channel 1, then data entry 100.
+        assert_eq!(
+            parser.feed(&[0xB0, 99, 0x24, 0xB0, 98, 0x34, 0xB0, 6, 100]),
+            [input(MidiControlKind::Nrpn, 1, 0x1234, 100)]
+        );
+        // The selected parameter stays until another select; a data entry
+        // below 64 releases it.
+        assert_eq!(
+            parser.feed(&[0xB0, 6, 10]),
+            [input(MidiControlKind::Nrpn, 1, 0x1234, 10)]
+        );
+        // RPN 0 on another channel; selects are per channel.
+        assert_eq!(
+            parser.feed(&[0xB1, 101, 0, 0xB1, 100, 0, 0xB1, 6, 127]),
+            [input(MidiControlKind::Rpn, 2, 0, 127)]
+        );
+        assert_eq!(
+            parser.feed(&[0xB0, 6, 64]),
+            [input(MidiControlKind::Nrpn, 1, 0x1234, 64)]
+        );
+        // RPN 16383 is the null parameter: its data entry is ignored.
+        assert_eq!(
+            parser.feed(&[0xB1, 101, 127, 0xB1, 100, 127, 0xB1, 6, 100]),
+            Vec::new()
+        );
+        // A data entry with no parameter selected yet is not a parameter.
+        let mut fresh = NoteParser::default();
+        assert_eq!(fresh.feed(&[0xB0, 6, 100]), Vec::new());
+        assert_eq!(
+            fresh.feed(&[0xB0, 7, 100]),
+            [input(MidiControlKind::Control, 1, 7, 100)]
         );
     }
 }

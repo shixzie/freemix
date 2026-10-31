@@ -228,10 +228,9 @@ there come before any new breadth below.
     plugin in the chain (see the Phase 8 boundary).
 15. **MIDI and controller surfaces (`RC-005`).** Studio reads ALSA raw MIDI
     ports on Linux, `CoreMIDI` on macOS, and `WinMM` on Windows, and binds
-    notes and controls to console actions with `fm-automation`'s parser and
-    control map, with LED and motor-fader feedback through the router.
-    Remaining: no HID or X-keys input, no fader or encoder value mapping,
-    no feedback to controller LEDs, and no NRPN/RPN, MIDI 2.0, or GPIO (see
+    notes, controls, and NRPN/RPN parameters to console actions, with LED
+    and motor-fader feedback through the router.
+    Remaining: no HID or X-keys input, and no MIDI 2.0 or GPIO (see
     the Phase 5 boundary).
 
 Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
@@ -5317,11 +5316,15 @@ player's transport light their LEDs, writes going through the raw ALSA port
 on Linux and `midir` on macOS and Windows. A controller bound to a value
 maps its 0–127 range onto that value (the monitor bus level), and the
 console sends the current level back, so a fader or knob is no longer only a
-button and a motor fader follows the console. Remaining gaps: no UDP
+button and a motor fader follows the console. An NRPN or RPN is learned and
+driven by its 14-bit parameter number: the parser keeps each channel's
+selected parameter from the select controllers (99/98 and 101/100), reports
+the data entry (6) as that parameter's press, and sends a lamp state back as
+the parameter select followed by the data entry. Remaining gaps: no UDP
 transport or raw HID parsing; the bindings drive console
 actions (and so reach `freemixd` through them) but are not persisted in the
-project; and NRPN/RPN, MIDI 2.0, and GPIO or network tally adapters are
-absent. `RC-005` and `RC-006` remain planned.
+project; and MIDI 2.0 and GPIO or network tally adapters are absent.
+`RC-005` and `RC-006` remain planned.
 
 Current implementation boundary for item 8 fader feedback (`AU-009`):
 `fm-automation` adds a bounded per-control `ControlCoalescer` that keeps the

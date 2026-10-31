@@ -2311,6 +2311,8 @@ messages! {
     DesignMattePointHover => t("Point {number} of the garbage matte, across (first) and down (second) the cropped layer in percent; drag its numbered dot on the canvas to move it"),
     DesignMatteAddPoint => t("Add point"),
     MidiNote => t("Note {number} · ch {channel}"),
+    MidiNrpn => t("NRPN {number} · ch {channel}"),
+    MidiRpn => t("RPN {number} · ch {channel}"),
     MidiColumn => t("MIDI control"),
     MidiDevices => t("MIDI controllers: {names}"),
     MidiNoDevices => t("No MIDI controller is connected"),
