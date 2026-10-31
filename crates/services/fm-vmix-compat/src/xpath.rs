@@ -115,6 +115,8 @@ enum NumExpr {
     Attribute(String),
     /// The context node's one-based position in the current node-set.
     Position,
+    /// The size of the current node-set.
+    Last,
     Add(Box<Self>, Box<Self>),
     Subtract(Box<Self>, Box<Self>),
     Multiply(Box<Self>, Box<Self>),
@@ -123,26 +125,27 @@ enum NumExpr {
 }
 
 impl NumExpr {
-    fn evaluate(&self, node: &Node, position: i64) -> Option<i64> {
+    fn evaluate(&self, node: &Node, position: i64, last: i64) -> Option<i64> {
         match self {
             Self::Integer(value) => Some(*value),
             Self::Attribute(name) => node.attribute(name)?.parse().ok(),
             Self::Position => Some(position),
+            Self::Last => Some(last),
             Self::Add(left, right) => left
-                .evaluate(node, position)?
-                .checked_add(right.evaluate(node, position)?),
+                .evaluate(node, position, last)?
+                .checked_add(right.evaluate(node, position, last)?),
             Self::Subtract(left, right) => left
-                .evaluate(node, position)?
-                .checked_sub(right.evaluate(node, position)?),
+                .evaluate(node, position, last)?
+                .checked_sub(right.evaluate(node, position, last)?),
             Self::Multiply(left, right) => left
-                .evaluate(node, position)?
-                .checked_mul(right.evaluate(node, position)?),
+                .evaluate(node, position, last)?
+                .checked_mul(right.evaluate(node, position, last)?),
             Self::Divide(left, right) => left
-                .evaluate(node, position)?
-                .checked_div(right.evaluate(node, position)?),
+                .evaluate(node, position, last)?
+                .checked_div(right.evaluate(node, position, last)?),
             Self::Modulo(left, right) => left
-                .evaluate(node, position)?
-                .checked_rem(right.evaluate(node, position)?),
+                .evaluate(node, position, last)?
+                .checked_rem(right.evaluate(node, position, last)?),
         }
     }
 }
@@ -464,6 +467,7 @@ fn select<'a>(candidates: impl IntoIterator<Item = &'a Node>, step: &Step) -> Ve
         .into_iter()
         .filter(|node| step.name.as_deref().is_none_or(|name| node.name == name))
         .collect();
+    let last = i64::try_from(selected.len()).unwrap_or(i64::MAX);
     for predicate in &step.predicates {
         selected = match predicate {
             Predicate::Position(position) => selected
@@ -497,8 +501,8 @@ fn select<'a>(candidates: impl IntoIterator<Item = &'a Node>, step: &Step) -> Ve
                 .enumerate()
                 .filter(|(index, node)| {
                     let position = i64::try_from(*index).unwrap_or(i64::MAX).saturating_add(1);
-                    left.evaluate(node, position)
-                        .zip(right.evaluate(node, position))
+                    left.evaluate(node, position, last)
+                        .zip(right.evaluate(node, position, last))
                         .is_some_and(|(left, right)| comparison.holds(left, right))
                 })
                 .map(|(_, node)| node)
@@ -927,6 +931,16 @@ impl<'a> Parser<'a> {
                 return Err(XPathError::Syntax("expected ')' after position("));
             }
             return Ok(NumExpr::Position);
+        }
+        if self.peek_name() == Some("last") {
+            self.position += "last".len();
+            if !self.eat(b'(') {
+                return Err(XPathError::Syntax("expected '(' after last"));
+            }
+            if !self.eat(b')') {
+                return Err(XPathError::Syntax("expected ')' after last("));
+            }
+            return Ok(NumExpr::Last);
         }
         Ok(NumExpr::Integer(self.integer()?))
     }

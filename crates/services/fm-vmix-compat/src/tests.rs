@@ -620,6 +620,14 @@ fn xpath_numeric_comparisons_select_nodes() {
         state.xml_text("//input[position() div 0 = 1]/@title"),
         Err(XPathError::NotFound)
     ));
+    assert_eq!(
+        state.xml_text("//input[position()=last()]/@title"),
+        Ok("Spare".into())
+    );
+    assert_eq!(
+        state.xml_text("//input[last()-1=@number]/@title"),
+        Ok("News <GT>".into())
+    );
     for path in [
         "//input[@number>x]",
         "//input[@number>02]",
