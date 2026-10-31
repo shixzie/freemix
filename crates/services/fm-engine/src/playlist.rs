@@ -359,6 +359,11 @@ impl std::error::Error for PlaylistRestoreError {}
 ///
 /// Returns a [`PlaylistRestoreError`] for structurally invalid entries or an
 /// inconsistent state.
+///
+/// # Panics
+///
+/// Panics when a Stinger transition accepted by `fm_model` validation has no
+/// slot, which model validation forbids.
 pub fn playlist_from_model(model: &fm_model::Playlist) -> Result<Playlist, PlaylistRestoreError> {
     fm_model::validate_playlist_entries(&model.entries).map_err(PlaylistRestoreError::Entries)?;
     let entries = model
@@ -458,7 +463,7 @@ pub fn playlist_to_model(playlist: &Playlist) -> fm_model::Playlist {
                 duration_frames: entry
                     .duration
                     .known_ms()
-                    .unwrap_or_else(|| u64::from(entry.transition.duration_ms).max(1)),
+                    .unwrap_or_else(|| entry.transition.duration_ms.max(1)),
                 follow_media: matches!(entry.duration, EntryDuration::Media { .. }),
                 transition: fm_model::PlaylistTransition {
                     kind: model_transition_kind(entry.transition.kind),

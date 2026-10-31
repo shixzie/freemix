@@ -54,6 +54,7 @@ use fm_types::OutputId;
 use super::{DecodeError, Object, Value, escape_string, parse_array, parse_optional, syntax};
 
 /// Writes `,\n    "audio_groups": [...]` and the FTB output exclusions.
+#[allow(clippy::too_many_lines)] // one block per mixer section
 pub(crate) fn write_audio_mixer(output: &mut String, project: &fm_model::Project) {
     output.push_str(",\n    \"audio_groups\": [");
     for (index, (_, group)) in project.audio_groups().iter().enumerate() {

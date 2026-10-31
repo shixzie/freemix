@@ -1227,16 +1227,15 @@ fn parse_playlist_entry(value: Value) -> Result<PlaylistEntry, DecodeError> {
         value => return Err(unknown_enum("playlist transition kind", value)),
     };
     let transition_frames = transition.u32("duration_frames")?;
-    let stinger_slot = match kind {
-        PlaylistTransitionKind::Stinger => Some(transition.u8("stinger_slot")?),
-        _ => {
-            if transition.take_optional("stinger_slot").is_some() {
-                return Err(syntax(
-                    "a playlist transition that is not a Stinger has no stinger slot",
-                ));
-            }
-            None
+    let stinger_slot = if kind == PlaylistTransitionKind::Stinger {
+        Some(transition.u8("stinger_slot")?)
+    } else {
+        if transition.take_optional("stinger_slot").is_some() {
+            return Err(syntax(
+                "a playlist transition that is not a Stinger has no stinger slot",
+            ));
         }
+        None
     };
     transition.finish()?;
     let enabled = object.boolean("enabled")?;

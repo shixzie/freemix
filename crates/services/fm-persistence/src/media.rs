@@ -393,6 +393,7 @@ impl ProjectStore {
     /// # Errors
     ///
     /// Returns an I/O error when a search root cannot be read.
+    #[allow(clippy::too_many_lines)] // one candidate group per ranked directory
     pub fn plan_media_relink(
         &self,
         project: &StoredProject,
@@ -514,6 +515,7 @@ impl ProjectStore {
     /// project or its source file changed size, [`BundleError::Collision`]
     /// when the original key is now occupied by different contents, and
     /// validation or I/O errors. Files copied before a failure stay in place.
+    #[allow(clippy::too_many_lines)] // one validation and copy step per entry
     pub fn apply_media_relink(
         &self,
         project: &StoredProject,
