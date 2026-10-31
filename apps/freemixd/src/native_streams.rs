@@ -140,8 +140,12 @@ impl OmtStreamReceiver {
     fn pull(&mut self) -> PulledFrame {
         let mut picture = Picture::Hold;
         let mut audio = Vec::new();
+        let corrupt_before = self.receiver.corrupt_frames();
         for _ in 0..4 {
-            match self.receiver.receive(Some(Duration::from_millis(1))) {
+            match self
+                .receiver
+                .receive_skipping_corrupt(Some(Duration::from_millis(1)))
+            {
                 Ok(Some(OmtFrame::Video(video))) => {
                     if let Some(rgba) = rgba_picture(&video, self.dimensions) {
                         picture = Picture::New(rgba);
@@ -168,6 +172,12 @@ impl OmtStreamReceiver {
                 }
             }
         }
+        // A corrupt payload is dropped but never ends the stream.
+        let skipped = self
+            .receiver
+            .corrupt_frames()
+            .saturating_sub(corrupt_before);
+        self.dropped = self.dropped.saturating_add(skipped);
         PulledFrame { picture, audio }
     }
 

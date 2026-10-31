@@ -10,6 +10,9 @@ use crate::{FrameKind, OmtError};
 /// One connection to an OMT sender.
 pub struct Receiver {
     stream: TcpStream,
+    /// Frames skipped because their payload was corrupt but their length was
+    /// intact.
+    corrupt_frames: u64,
 }
 
 impl Receiver {
@@ -42,7 +45,10 @@ impl Receiver {
 
     fn from_stream(stream: TcpStream) -> Result<Self, OmtError> {
         stream.set_nodelay(true)?;
-        Ok(Self { stream })
+        Ok(Self {
+            stream,
+            corrupt_frames: 0,
+        })
     }
 
     /// The remote sender's address.
@@ -106,6 +112,35 @@ impl Receiver {
         read_frame(&mut self.stream, timeout)
     }
 
+    /// Reads the next frame, skipping a frame whose payload is corrupt while
+    /// its declared length was intact, so one bad frame never ends the
+    /// stream. Length, transport, and header faults stay fatal: the stream
+    /// may no longer be aligned after them.
+    ///
+    /// # Errors
+    ///
+    /// A fatal transport or framing failure.
+    pub fn receive_skipping_corrupt(
+        &mut self,
+        timeout: Option<Duration>,
+    ) -> Result<Option<crate::Frame>, OmtError> {
+        loop {
+            match self.receive(timeout) {
+                Ok(frame) => return Ok(frame),
+                Err(error) if is_corrupt_frame(&error) => {
+                    self.corrupt_frames = self.corrupt_frames.saturating_add(1);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    /// Frames [`Self::receive_skipping_corrupt`] has skipped.
+    #[must_use]
+    pub const fn corrupt_frames(&self) -> u64 {
+        self.corrupt_frames
+    }
+
     /// Reads the next metadata record, `None` on a timeout.
     ///
     /// # Errors
@@ -127,4 +162,17 @@ impl Receiver {
     fn send(&mut self, command: &Command) -> Result<(), OmtError> {
         write_metadata(&mut self.stream, 0, &command.command())
     }
+}
+
+/// Whether a frame payload was fully read and can be skipped without losing
+/// the stream's alignment.
+const fn is_corrupt_frame(error: &OmtError) -> bool {
+    matches!(
+        error,
+        OmtError::Codec(_)
+            | OmtError::Video(_)
+            | OmtError::Audio(_)
+            | OmtError::Metadata(_)
+            | OmtError::Utf8
+    )
 }

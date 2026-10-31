@@ -415,3 +415,39 @@ fn sender_gates_frames_and_combines_tally_quality_and_preview() {
 
     sender.stop();
 }
+
+/// A corrupt payload with an intact declared length is skipped, not fatal:
+/// the receiver stays aligned and reads the next good frame.
+#[test]
+fn a_corrupt_frame_is_skipped_and_the_stream_continues() {
+    use std::io::Write;
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let writer = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut corrupt = Frame::Audio(audio()).encode().unwrap();
+        // The audio extended header starts after the 16-byte frame header;
+        // an unknown codec is a recoverable payload fault.
+        corrupt[16..20].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+        stream.write_all(&corrupt).unwrap();
+        let good = Frame::Metadata(MetadataFrame::new("<ok/>").unwrap())
+            .encode()
+            .unwrap();
+        stream.write_all(&good).unwrap();
+    });
+
+    let mut receiver = Receiver::connect(address).unwrap();
+    let frame = loop {
+        if let Some(frame) = receiver
+            .receive_skipping_corrupt(Some(Duration::from_millis(500)))
+            .unwrap()
+        {
+            break frame;
+        }
+    };
+    assert!(matches!(frame, Frame::Metadata(_)));
+    assert_eq!(receiver.corrupt_frames(), 1);
+    writer.join().unwrap();
+}

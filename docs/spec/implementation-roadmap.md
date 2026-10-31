@@ -191,9 +191,11 @@ there come before any new breadth below.
     FreeMix's own OMT 1.0 implementation: the native daemon reads an
     `omt://` network stream input (Protocol 2.121) and a stream destination
     with `stream_protocol=omt` publishes the Program pair (Protocol 2.122),
-    with `_omt._tcp` DNS-SD advertisement and browsing. Remaining: no
-    discovery catalogue entry is wired into the input catalogue, no
-    VMX-compressed frames, no corrupt-frame recovery, no alpha or tally
+    with `_omt._tcp` DNS-SD advertisement and browsing. A receiver now
+    skips a frame whose payload is corrupt while its declared length is
+    intact, so one bad frame never ends the stream; the skipped frames
+    count as dropped. Remaining: no discovery catalogue entry is wired
+    into the input catalogue, no VMX-compressed frames, no alpha or tally
     round trip proven against another OMT implementation, and no hardware
     certification (see the Phase 8 boundary).
 13. **Aux buses through the show (`AU-002`).** Master plus aux buses A-G
@@ -6026,8 +6028,9 @@ network stream input through the receiver and converts BGRA, UYVY, or NV12
 pictures to program RGBA and stereo audio (Protocol 2.121); a stream
 destination with `stream_protocol=omt` binds an OMT sender and publishes the
 same raw Program pair after converting it to BGRA and planar audio
-(Protocol 2.122); no discovery catalogue entry is wired yet; VMX-compressed
-frames, corrupt-frame recovery, and hardware certification remain. FreeMix's plugin
+(Protocol 2.122); no discovery catalogue entry is wired yet; a corrupt
+payload with an intact declared length is skipped as a dropped frame so the
+stream continues; VMX-compressed frames and hardware certification remain. FreeMix's plugin
 SDK is `fm-plugin-api` with the `fm-plugin-host` sandbox (manifest,
 versioned ABI, capability grants, state snapshots, quarantine); the host API
 now also models an ordered plugin chain (up to eight unique plugins, bypass,
