@@ -364,6 +364,10 @@ impl GameClock {
         }
     }
 
+    fn set_format(&mut self, format: ClockFormat) {
+        self.config.format = format;
+    }
+
     fn set(&mut self, frame: u64, value_ms: u64) -> Result<(), ScoreboardError> {
         check_clock_ms(value_ms)?;
         self.base_ms = value_ms;
@@ -538,6 +542,14 @@ pub enum ScoreboardAction {
     /// value, stopped.
     SetShotClockDuration {
         value_ms: u64,
+    },
+    /// Changes the game clock's display format.
+    SetClockFormat {
+        format: ClockFormat,
+    },
+    /// Changes the shot clock's display format.
+    SetShotClockFormat {
+        format: ClockFormat,
     },
 }
 
@@ -1110,6 +1122,10 @@ impl Scoreboard {
                 }
                 self.period = *period;
             }
+            ScoreboardAction::SetClockFormat { format } => self.clock.set_format(*format),
+            ScoreboardAction::SetShotClockFormat { format } => {
+                self.shot_clock_mut()?.set_format(*format);
+            }
             ScoreboardAction::StartClock => self.clock.start(frame)?,
             ScoreboardAction::StopClock => self.clock.stop(frame),
             ScoreboardAction::SetClock { value_ms } => self.clock.set(frame, *value_ms)?,
@@ -1326,9 +1342,11 @@ fn check_text(text: &str) -> Result<(), ScoreboardError> {
 /// | `<side>.roster.clear` | `true` | [`ScoreboardAction::ClearRoster`] |
 /// | `period` | decimal `u16` | [`ScoreboardAction::SetPeriod`] |
 /// | `clock.ms` | decimal `u64` | [`ScoreboardAction::SetClock`] |
+/// | `clock.format` | `minutes_seconds`, `minutes_seconds_tenths`, `hours_minutes_seconds`, or `hours_minutes_seconds_tenths` | [`ScoreboardAction::SetClockFormat`] |
 /// | `clock.running` | `true` / `false` | start / stop |
 /// | `shot_clock.ms` | decimal `u64` | [`ScoreboardAction::SetShotClock`] |
 /// | `shot_clock.duration` | decimal `u64` | [`ScoreboardAction::SetShotClockDuration`] |
+/// | `shot_clock.format` | a `clock.format` token | [`ScoreboardAction::SetShotClockFormat`] |
 /// | `shot_clock.running` | `true` / `false` | start / stop the shot clock |
 ///
 /// Numbers are plain ASCII decimal (a leading `-` only for deltas); no
@@ -1420,6 +1438,12 @@ fn external_action(
         (None, "clock.ms") => ScoreboardAction::SetClock {
             value_ms: parse_unsigned(value).ok_or(invalid)?,
         },
+        (None, "clock.format") => ScoreboardAction::SetClockFormat {
+            format: parse_clock_format_token(value).ok_or(invalid)?,
+        },
+        (None, "shot_clock.format") => ScoreboardAction::SetShotClockFormat {
+            format: parse_clock_format_token(value).ok_or(invalid)?,
+        },
         (None, "clock.running") => match value {
             "true" => ScoreboardAction::StartClock,
             "false" => ScoreboardAction::StopClock,
@@ -1439,6 +1463,16 @@ fn external_action(
         _ => return Err(ScoreboardError::UnknownExternalKey { index }),
     };
     Ok(action)
+}
+
+fn parse_clock_format_token(value: &str) -> Option<ClockFormat> {
+    match value {
+        "minutes_seconds" => Some(ClockFormat::MinutesSeconds),
+        "minutes_seconds_tenths" => Some(ClockFormat::MinutesSecondsTenths),
+        "hours_minutes_seconds" => Some(ClockFormat::HoursMinutesSeconds),
+        "hours_minutes_seconds_tenths" => Some(ClockFormat::HoursMinutesSecondsTenths),
+        _ => None,
+    }
 }
 
 fn parse_unsigned<T: core::str::FromStr>(value: &str) -> Option<T> {

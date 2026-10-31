@@ -1529,6 +1529,49 @@ fn scoreboard_documents_round_trip_strictly() {
 }
 
 #[test]
+fn clock_formats_can_be_changed_at_runtime() {
+    let mut board = board(GameClockConfig {
+        direction: ClockDirection::CountDown,
+        format: ClockFormat::MinutesSeconds,
+        frame_rate: FrameRate::new(30, 1).unwrap(),
+        initial_ms: 90_000,
+        limit_ms: None,
+    });
+    board
+        .apply(
+            0,
+            0,
+            &[
+                ScoreboardAction::SetClockFormat {
+                    format: ClockFormat::MinutesSecondsTenths,
+                },
+                ScoreboardAction::SetShotClockFormat {
+                    format: ClockFormat::HoursMinutesSecondsTenths,
+                },
+            ],
+        )
+        .unwrap();
+    assert_eq!(board.clock().display(0), "01:30.0");
+    assert_eq!(board.shot_clock().unwrap().display(0), "00:00:24.0");
+    board
+        .apply_external(
+            1,
+            1,
+            &[
+                ("clock.format", "minutes_seconds"),
+                ("shot_clock.format", "minutes_seconds"),
+            ],
+        )
+        .unwrap();
+    assert_eq!(board.clock().display(0), "01:30");
+    assert_eq!(board.shot_clock().unwrap().display(0), "00:24");
+    assert_eq!(
+        actions_from_external(&[("clock.format", "nope")]),
+        Err(ScoreboardError::InvalidExternalValue { index: 0 })
+    );
+}
+
+#[test]
 fn sport_presets_carry_their_rules_and_clocks() {
     let rate = FrameRate::new(25, 1).unwrap();
     let basketball = ScoreboardPreset::Basketball
