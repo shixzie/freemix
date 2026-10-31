@@ -354,6 +354,11 @@ pub enum CompatIntent {
     SetInputVolume { input: WireInputId, percent: u8 },
     /// Mute or unmute one input's audio strip.
     SetInputMuted { input: WireInputId, muted: bool },
+    /// Toggle the primary recorder; the dispatcher reads the current state.
+    ToggleRecording,
+    /// Toggle all streams or one zero-based stream index; the dispatcher
+    /// reads the current state.
+    ToggleStreaming { stream: Option<u16> },
 }
 
 /// A recognized function that this compatibility core cannot preserve.
@@ -609,6 +614,20 @@ fn translate(
             Ok(Translation::Compat(CompatIntent::SetInputVolume {
                 input: state.resolve_input(required(parameters, "Input")?)?,
                 percent,
+            }))
+        }
+        "StartStopRecording" => {
+            allowed(parameters, &["Function"])?;
+            Ok(Translation::Compat(CompatIntent::ToggleRecording))
+        }
+        "StartStopStreaming" => {
+            allowed(parameters, &["Function", "Value"])?;
+            let stream = optional(parameters, "Value")
+                .filter(|value| !value.is_empty())
+                .map(|value| parse_u16(value, "Value"))
+                .transpose()?;
+            Ok(Translation::Compat(CompatIntent::ToggleStreaming {
+                stream,
             }))
         }
         "AudioOn" | "AudioOff" => {
@@ -891,17 +910,11 @@ fn overlay_channel(function: &str) -> Option<u8> {
 }
 
 fn known_unsupported(function: &str) -> bool {
-    matches!(
-        function,
-        "StartStopRecording"
-            | "StartStopStreaming"
-            | "AddInput"
-            | "FadeToBlack"
-            | "OverlayInputAllOff"
-    ) || (function.starts_with("OverlayInput")
-        && ["In", "Last", "Off", "Out", "Zoom"]
-            .iter()
-            .any(|suffix| function.ends_with(suffix)))
+    matches!(function, "AddInput" | "FadeToBlack" | "OverlayInputAllOff")
+        || (function.starts_with("OverlayInput")
+            && ["In", "Last", "Off", "Out", "Zoom"]
+                .iter()
+                .any(|suffix| function.ends_with(suffix)))
 }
 
 fn unsupported(function: &str, reason: &'static str) -> Translation {

@@ -457,3 +457,25 @@ fn audio_on_and_off_translate_to_a_mute_intent() {
     );
     assert!(parse_http_query("Function=AudioOn", &state).is_err());
 }
+
+#[test]
+fn start_stop_verbs_become_toggle_intents() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=StartStopRecording", &state),
+        Ok(Translation::Compat(CompatIntent::ToggleRecording))
+    );
+    assert_eq!(
+        parse_http_query("Function=StartStopStreaming", &state),
+        Ok(Translation::Compat(CompatIntent::ToggleStreaming {
+            stream: None
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=StartStopStreaming&Value=1", &state),
+        Ok(Translation::Compat(CompatIntent::ToggleStreaming {
+            stream: Some(1)
+        }))
+    );
+    assert!(parse_http_query("Function=StartStopRecording&Value=1", &state).is_err());
+}
