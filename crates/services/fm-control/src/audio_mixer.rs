@@ -255,6 +255,10 @@ pub(super) fn engine_command(operation: &AudioMixerOperation) -> EngineCommand {
                 muted: *muted,
             },
         },
+        AudioMixerOperation::SetAuxBusDsp { bus, chain } => EngineAudioMixerEdit::SetAuxBusDsp {
+            bus: *bus,
+            chain: chain.clone(),
+        },
         AudioMixerOperation::SetOutputBus { output, bus } => {
             EngineAudioMixerEdit::SetOutputAuxBus {
                 output: output.to_domain(),
@@ -343,6 +347,10 @@ pub(super) fn wire_operation(edit: &EngineAudioMixerEdit) -> AudioMixerOperation
                 muted: state.muted,
             }
         }
+        EngineAudioMixerEdit::SetAuxBusDsp { bus, chain } => AudioMixerOperation::SetAuxBusDsp {
+            bus: *bus,
+            chain: chain.clone(),
+        },
         EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => {
             AudioMixerOperation::SetOutputBus {
                 output: WireOutputId::from_domain(*output),

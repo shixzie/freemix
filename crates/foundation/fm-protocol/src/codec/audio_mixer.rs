@@ -919,6 +919,10 @@ pub(super) fn encode_operation(
             push("gain_millidb", gain_millidb.to_string())?;
             push("muted", u8::from(*muted).to_string())
         }
+        AudioMixerOperation::SetAuxBusDsp { bus, chain } => {
+            push("bus", bus.letter().to_string())?;
+            push("chain", encode_chain("chain", chain)?)
+        }
         AudioMixerOperation::SetOutputBus { output, bus } => {
             push("output", output.to_string())?;
             push(
@@ -1090,6 +1094,10 @@ pub(super) fn decode_operation(
             bus: parse_bus("bus", &fields.required("bus")?)?,
             gain_millidb: parse_gain("gain_millidb", &fields.required("gain_millidb")?)?,
             muted: parse_flag("muted", &fields.required("muted")?)?,
+        },
+        "audio_aux_bus_dsp" => AudioMixerOperation::SetAuxBusDsp {
+            bus: parse_bus("bus", &fields.required("bus")?)?,
+            chain: Box::new(decode_chain("chain", &fields.required("chain")?)?),
         },
         "audio_plugin_chain" => AudioMixerOperation::SetPluginChain {
             target: decode_target("target", &fields.required("target")?)?,

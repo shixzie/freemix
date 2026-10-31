@@ -5236,6 +5236,9 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
                 muted: state.muted,
             }
         }
+        fm_engine::EngineAudioMixerEdit::SetAuxBusDsp { bus, chain } => {
+            fm_protocol::AudioMixerOperation::SetAuxBusDsp { bus, chain }
+        }
         fm_engine::EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => {
             fm_protocol::AudioMixerOperation::SetOutputBus {
                 output: fm_protocol::WireOutputId::from_domain(output),

@@ -422,12 +422,14 @@ impl AudioMixerStatus {
                     );
                 }
             }
-            // Membership lives in the strip records and an output's bus in its
-            // output status; a loudness reset changes no status (2.92).
+            // Membership lives in the strip records, an output's bus in its
+            // output status, and aux bus chains in the show; a loudness reset
+            // changes no status (2.92).
             AudioMixerOperation::SetGroup { .. }
             | AudioMixerOperation::ResetLoudness { .. }
             | AudioMixerOperation::SetOutputBus { .. }
-            | AudioMixerOperation::SetPluginChain { .. } => {}
+            | AudioMixerOperation::SetPluginChain { .. }
+            | AudioMixerOperation::SetAuxBusDsp { .. } => {}
             AudioMixerOperation::RenameGroup { group, name } => {
                 if audio_group_is_valid(*group) {
                     self.groups[usize::from(*group) - 1].name.clone_from(name);
@@ -585,6 +587,11 @@ pub enum AudioMixerOperation {
         gain_millidb: i32,
         muted: bool,
     },
+    /// Replaces an aux bus's DSP chain (AU-002, 2.132).
+    SetAuxBusDsp {
+        bus: AuxBusNumber,
+        chain: Box<StripDsp>,
+    },
     /// Makes `output` hear aux bus `bus`, or Master for `None` (2.118).
     SetOutputBus {
         output: WireOutputId,
@@ -616,6 +623,7 @@ impl AudioMixerOperation {
             Self::ResetLoudness { .. } => "audio_loudness_reset",
             Self::RenameAuxBus { .. } => "audio_aux_bus_name",
             Self::SetAuxBusLevel { .. } => "audio_aux_bus_level",
+            Self::SetAuxBusDsp { .. } => "audio_aux_bus_dsp",
             Self::SetOutputBus { .. } => "audio_output_bus",
             Self::SetPluginChain { .. } => "audio_plugin_chain",
         }

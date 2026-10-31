@@ -7592,6 +7592,9 @@ impl NativeDaemon {
                     fm_engine::EngineAudioMixerUpdate::AuxBusLevel { bus, state } => {
                         project_plan.set_aux_bus_level(bus, state.gain_millidb, state.muted);
                     }
+                    fm_engine::EngineAudioMixerUpdate::AuxBusDsp { bus, ref chain } => {
+                        project_plan.set_aux_bus_dsp(bus, **chain);
+                    }
                     fm_engine::EngineAudioMixerUpdate::OutputAuxBus { output, bus } => {
                         project_plan.set_output_aux_bus(output, bus);
                     }

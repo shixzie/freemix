@@ -567,6 +567,8 @@ pub struct NativeProjectPlan {
     aux_bus_levels: [(i32, bool); fm_model::AUX_BUS_COUNT],
     /// The outputs that hear an aux bus instead of Master (AU-002).
     output_aux_buses: BTreeMap<OutputId, fm_model::AuxBusNumber>,
+    /// Every aux bus's non-default DSP chain, bus A first (AU-002).
+    aux_bus_dsp: [Option<fm_types::strip_dsp::StripDsp>; fm_model::AUX_BUS_COUNT],
     /// Every strip's non-default DSP chain (AU-005).
     audio_dsp: BTreeMap<InputId, fm_types::strip_dsp::StripDsp>,
     /// The Master bus DSP chain (AU-005).
@@ -958,6 +960,10 @@ impl NativeProjectPlan {
                 (level.gain.get(), level.muted)
             }),
             output_aux_buses: project.output_aux_buses().clone(),
+            aux_bus_dsp: fm_model::AuxBusNumber::ALL.map(|bus| {
+                let dsp = project.aux_buses().get(bus).dsp;
+                (!dsp.is_default()).then_some(dsp)
+            }),
             audio_dsp: project
                 .input_audio_strips()
                 .iter()
@@ -1060,6 +1066,21 @@ impl NativeProjectPlan {
         muted: bool,
     ) {
         self.aux_bus_levels[bus.index()] = (gain_millidb, muted);
+    }
+
+    /// Records aux bus `bus`'s DSP chain (AU-002).
+    pub fn set_aux_bus_dsp(
+        &mut self,
+        bus: fm_model::AuxBusNumber,
+        dsp: fm_types::strip_dsp::StripDsp,
+    ) {
+        self.aux_bus_dsp[bus.index()] = (!dsp.is_default()).then_some(dsp);
+    }
+
+    /// The aux bus's DSP chain (AU-002).
+    #[must_use]
+    pub fn aux_bus_dsp(&self, bus: fm_model::AuxBusNumber) -> fm_types::strip_dsp::StripDsp {
+        self.aux_bus_dsp[bus.index()].unwrap_or(fm_types::strip_dsp::StripDsp::DEFAULT)
     }
 
     /// The aux bus `output` hears, or `None` for Master (AU-002).
@@ -4351,6 +4372,11 @@ impl NativeMasterRuntime {
             mixer.set_aux_bus_state(bus, state, 0)?;
             pending_mixer.set_aux_bus_state(bus, state, 0)?;
         }
+        for bus in fm_model::AuxBusNumber::ALL {
+            let dsp = project.aux_bus_dsp(bus);
+            mixer.set_aux_dsp(native_aux_bus(bus), &dsp)?;
+            pending_mixer.set_aux_dsp(native_aux_bus(bus), &dsp)?;
+        }
         for (input, state, delay) in states {
             let sends = project
                 .audio_strip(input)
@@ -4501,6 +4527,9 @@ impl NativeMasterRuntime {
                         native_group_state(state.gain_millidb, state.muted)?,
                         LIVE_INPUT_GAIN_RAMP_SAMPLES,
                     )?;
+                }
+                fm_engine::EngineAudioMixerUpdate::AuxBusDsp { bus, ref chain } => {
+                    mixer.set_aux_dsp(native_aux_bus(bus), chain)?;
                 }
                 // A chain glides or crossfades from the next rendered sample
                 // (AU-005).

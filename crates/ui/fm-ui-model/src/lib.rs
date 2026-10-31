@@ -6005,6 +6005,7 @@ fn validate_audio_mixer_change(
         fm_protocol::AudioMixerOperation::RenameAuxBus { name, .. } => {
             fm_protocol::audio_label_is_valid(name, false)
         }
+        fm_protocol::AudioMixerOperation::SetAuxBusDsp { chain, .. } => chain.validate().is_ok(),
         fm_protocol::AudioMixerOperation::SetOutputBus { output, .. } => state
             .outputs
             .iter()
