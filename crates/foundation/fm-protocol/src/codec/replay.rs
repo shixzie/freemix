@@ -488,12 +488,14 @@ fn decode_events(value: &str) -> Result<Vec<ReplayEventStatus>, CodecError> {
         .collect()
 }
 
-/// `storage`: `-`, or `<free>:<rate>:<remaining or ->:<level>`.
+/// `storage`: `-`, or `<free>:<rate>:<remaining or ->:<level>`, with the
+/// drive's SMART status appended as `:<health>:<temperature or ->:<used or ->`
+/// when it is known (2.139).
 fn encode_storage(storage: Option<&crate::ReplayStorageStatus>) -> String {
     let Some(storage) = storage else {
         return "-".to_owned();
     };
-    format!(
+    let mut encoded = format!(
         "{}:{}:{}:{}",
         storage.free_bytes,
         storage.bytes_per_second,
@@ -501,16 +503,70 @@ fn encode_storage(storage: Option<&crate::ReplayStorageStatus>) -> String {
             .remaining_seconds
             .map_or_else(|| "-".to_owned(), |seconds| seconds.to_string()),
         storage.level.token()
-    )
+    );
+    if let Some(smart) = storage.smart {
+        encoded.push(':');
+        encoded.push_str(smart.health.token());
+        encoded.push(':');
+        encoded.push_str(
+            &smart
+                .temperature_celsius
+                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+        );
+        encoded.push(':');
+        encoded.push_str(
+            &smart
+                .percentage_used
+                .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+        );
+    }
+    encoded
 }
 
 fn decode_storage(value: &str) -> Result<Option<crate::ReplayStorageStatus>, CodecError> {
     if value == "-" {
         return Ok(None);
     }
-    let [free, rate, remaining, level] = value.split(':').collect::<Vec<_>>()[..] else {
-        return Err(invalid("storage", value));
+    let parts = value.split(':').collect::<Vec<_>>();
+    let (fields, smart) = match parts.as_slice() {
+        [free, rate, remaining, level] => ((*free, *rate, *remaining, *level), None),
+        [free, rate, remaining, level, health, temperature, used] => {
+            let health = crate::ReplaySmartHealth::from_token(health)
+                .ok_or_else(|| invalid("storage", value))?;
+            let temperature_celsius = if *temperature == "-" {
+                None
+            } else {
+                let number: u64 = parse_number("storage", temperature)?;
+                Some(
+                    u16::try_from(number)
+                        .ok()
+                        .filter(|value| *value <= 200)
+                        .ok_or_else(|| invalid("storage", value))?,
+                )
+            };
+            let percentage_used = if *used == "-" {
+                None
+            } else {
+                let number: u64 = parse_number("storage", used)?;
+                Some(
+                    u8::try_from(number)
+                        .ok()
+                        .filter(|value| *value <= 100)
+                        .ok_or_else(|| invalid("storage", value))?,
+                )
+            };
+            (
+                (*free, *rate, *remaining, *level),
+                Some(crate::ReplaySmartStatus {
+                    health,
+                    temperature_celsius,
+                    percentage_used,
+                }),
+            )
+        }
+        _ => return Err(invalid("storage", value)),
     };
+    let (free, rate, remaining, level) = fields;
     let free_bytes = parse_number("storage", free)?;
     let bytes_per_second = parse_number("storage", rate)?;
     let remaining_seconds = if remaining == "-" {
@@ -525,6 +581,7 @@ fn decode_storage(value: &str) -> Result<Option<crate::ReplayStorageStatus>, Cod
         bytes_per_second,
         remaining_seconds,
         level,
+        smart,
     }))
 }
 

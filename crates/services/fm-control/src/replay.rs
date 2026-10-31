@@ -2,12 +2,12 @@
 
 use fm_engine::{
     EngineCommand, EngineEvent, EngineReplayFeed, EngineReplayOperation, EngineReplayPlaylistEntry,
-    EngineReplayStatus, EngineReplayStorageLevel,
+    EngineReplaySmartHealth, EngineReplayStatus, EngineReplayStorageLevel,
 };
 use fm_protocol::{
     CommandPayload, EventPayload, ReplayEventStatus, ReplayFeed, ReplayOperation,
-    ReplayPlayerStatus, ReplayPlaylistEntry, ReplaySourceStatus, ReplayStatusMessage,
-    ServerIdentity, WireInputId,
+    ReplayPlayerStatus, ReplayPlaylistEntry, ReplaySmartHealth, ReplaySmartStatus,
+    ReplaySourceStatus, ReplayStatusMessage, ServerIdentity, WireInputId,
 };
 
 /// The engine operation of a wire replay command.
@@ -244,6 +244,16 @@ pub(super) fn status_message(
                     EngineReplayStorageLevel::Critical => fm_protocol::ReplayStorageLevel::Critical,
                     EngineReplayStorageLevel::Full => fm_protocol::ReplayStorageLevel::Full,
                 },
+                smart: storage.smart.map(|smart| ReplaySmartStatus {
+                    health: match smart.health {
+                        EngineReplaySmartHealth::Passed => ReplaySmartHealth::Passed,
+                        EngineReplaySmartHealth::Warning => ReplaySmartHealth::Warning,
+                        EngineReplaySmartHealth::Failed => ReplaySmartHealth::Failed,
+                        EngineReplaySmartHealth::Unknown => ReplaySmartHealth::Unknown,
+                    },
+                    temperature_celsius: smart.temperature_celsius,
+                    percentage_used: smart.percentage_used,
+                }),
             }),
         players: status
             .players

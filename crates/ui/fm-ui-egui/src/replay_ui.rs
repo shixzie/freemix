@@ -624,6 +624,38 @@ fn draw_storage(ui: &mut Ui, l: Locale, storage: ReplayStorageStatus) {
         ui.label(caption(detail))
             .on_hover_text(l.text(Msg::ReplayStorageHover));
     });
+    // The drive's own SMART verdict, when the daemon samples it (2.139).
+    if let Some(smart) = storage.smart {
+        let (label, tone) = match smart.health {
+            fm_protocol::ReplaySmartHealth::Passed => (Msg::ReplaySmartPassed, Tone::Ready),
+            fm_protocol::ReplaySmartHealth::Warning => (Msg::ReplaySmartWarning, Tone::Pending),
+            fm_protocol::ReplaySmartHealth::Failed => (Msg::ReplaySmartFailed, Tone::Fault),
+            fm_protocol::ReplaySmartHealth::Unknown => (Msg::ReplaySmartUnknown, Tone::Pending),
+        };
+        let mut parts = Vec::new();
+        if let Some(temperature) = smart.temperature_celsius {
+            parts.push(l.format(
+                Msg::ReplaySmartTemperature,
+                &[("temperature", Arg::Str(&temperature.to_string()))],
+            ));
+        }
+        if let Some(used) = smart.percentage_used {
+            parts.push(l.format(
+                Msg::ReplaySmartUsed,
+                &[("used", Arg::Str(&used.to_string()))],
+            ));
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            status_chip(ui, l.text(label), tone, 76.0);
+            if !parts.is_empty() {
+                ui.label(caption(parts.join(" · ")))
+                    .on_hover_text(l.text(Msg::ReplaySmartHover));
+            }
+        })
+        .response
+        .on_hover_text(l.text(Msg::ReplaySmartHover));
+    }
 }
 
 /// The Replay panel body.

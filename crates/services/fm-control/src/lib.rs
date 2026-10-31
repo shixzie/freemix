@@ -1486,6 +1486,12 @@ impl<A: AuthorizationHook> ControlService<A> {
         self.engine.set_replay_storage_free(free);
     }
 
+    /// Records the replay root drive's SMART status, as the media plane
+    /// samples it (OR-014, 2.139).
+    pub fn set_replay_storage_smart(&mut self, smart: Option<fm_engine::EngineReplaySmartStatus>) {
+        self.engine.set_replay_storage_smart(smart);
+    }
+
     /// Reports one recorded replay frame (see [`Engine::replay_observe`]).
     pub fn replay_observe(&mut self, input: InputId, frame: u64, stream_frame: u64) -> bool {
         self.engine.replay_observe(input, frame, stream_frame)

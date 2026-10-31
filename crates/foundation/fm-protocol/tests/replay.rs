@@ -8,8 +8,9 @@ use fm_protocol::{
     CURRENT_PROTOCOL_VERSION, CommandMessage, CommandPayload, EditHistoryStatus, EngineIdentity,
     EventCursor, EventMessage, EventPayload, MAX_REPLAY_PLAYLIST_ENTRIES, ReplayEventStatus,
     ReplayFeed, ReplayOperation, ReplayPlayerStatus, ReplayPlaylistEntry, ReplaySettings,
-    ReplaySourceStatus, ReplaySpeed, ReplayStatusMessage, ReplayStatusRequest, ReplayStorageLevel,
-    ReplayStorageStatus, ServerIdentity, WireInputId, WireMessage, decode_line, encode_line,
+    ReplaySmartHealth, ReplaySmartStatus, ReplaySourceStatus, ReplaySpeed, ReplayStatusMessage,
+    ReplayStatusRequest, ReplayStorageLevel, ReplayStorageStatus, ServerIdentity, WireInputId,
+    WireMessage, decode_line, encode_line,
 };
 use fm_types::InputId;
 use fm_types::replay::ReplayTransition;
@@ -442,6 +443,11 @@ fn status(request_id: Option<&str>) -> ReplayStatusMessage {
             bytes_per_second: 24_000_000,
             remaining_seconds: Some(300),
             level: ReplayStorageLevel::Warning,
+            smart: Some(ReplaySmartStatus {
+                health: ReplaySmartHealth::Warning,
+                temperature_celsius: Some(41),
+                percentage_used: Some(12),
+            }),
         }),
     }
 }
@@ -462,7 +468,7 @@ fn status_and_its_request_have_an_exact_wire_form() {
         line.contains(
             "\tplayers=9%3A1%3A2%3A25%3A1%3A2510%3A1%3A3%2F2%2F100%7C4%2F%2F50%3A10%3A0%3A0%3B\
              10%3A%3A%3A100%3A0%3A%3A%3A%3A9%3A0%3A0\t\
-             storage=7200000000%3A24000000%3A300%3Awarning\n"
+             storage=7200000000%3A24000000%3A300%3Awarning%3Awarning%3A41%3A12\n"
         ),
         "{line}"
     );

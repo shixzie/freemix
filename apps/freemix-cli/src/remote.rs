@@ -784,6 +784,18 @@ pub(crate) fn print_replay(status: &fm_protocol::ReplayStatusMessage) {
             frame(storage.remaining_seconds),
             storage.level.token(),
         );
+        if let Some(smart) = storage.smart {
+            println!(
+                "ReplaySmart(health={}, temperature_celsius={}, percentage_used={})",
+                smart.health.token(),
+                smart
+                    .temperature_celsius
+                    .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+                smart
+                    .percentage_used
+                    .map_or_else(|| "-".to_owned(), |value| value.to_string()),
+            );
+        }
     }
     for source in &status.recorded {
         println!(

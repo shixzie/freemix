@@ -74,6 +74,7 @@ fm-types = { path = "../../crates/foundation/fm-types" }
 fm-video = { path = "../../crates/media/fm-video" }
 fs4 = "0.13"
 getrandom = "0.3"
+serde_json = "1.0"
 # Web gateway TLS (RC-007): rustls on the `ring` provider (no aws-lc-rs, so no
 # CMake/NASM toolchain), rcgen for the local root and the leaves it issues
 # (its `x509-parser` feature reloads the root to sign with), x509-parser to

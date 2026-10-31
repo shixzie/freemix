@@ -317,6 +317,53 @@ impl ReplayStorageLevel {
     }
 }
 
+/// A drive's SMART self-assessment (OR-014, 2.139).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ReplaySmartHealth {
+    Passed,
+    /// The drive reports a failing condition short of an outright failure.
+    Warning,
+    Failed,
+    /// The drive answers but does not report a verdict.
+    Unknown,
+}
+
+impl ReplaySmartHealth {
+    /// Every health token.
+    pub const TOKENS: [&'static str; 4] = ["passed", "warning", "failed", "unknown"];
+
+    /// The wire token.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Warning => "warning",
+            Self::Failed => "failed",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Parses [`Self::token`].
+    #[must_use]
+    pub fn from_token(token: &str) -> Option<Self> {
+        [Self::Passed, Self::Warning, Self::Failed, Self::Unknown]
+            .into_iter()
+            .find(|health| health.token() == token)
+    }
+}
+
+/// The SMART health of the drive holding the replay root, when the daemon
+/// could ask it (OR-014, 2.139).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReplaySmartStatus {
+    pub health: ReplaySmartHealth,
+    /// The drive's current temperature in whole degrees Celsius, when
+    /// reported.
+    pub temperature_celsius: Option<u16>,
+    /// The drive's endurance used, in whole percent, when reported.
+    pub percentage_used: Option<u8>,
+}
+
 /// Free space and the predicted recording time of the replay root (2.125,
 /// OR-014).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -327,6 +374,8 @@ pub struct ReplayStorageStatus {
     /// Seconds of recording left at that rate, when it is nonzero.
     pub remaining_seconds: Option<u64>,
     pub level: ReplayStorageLevel,
+    /// The root drive's SMART health, when the daemon samples it (2.139).
+    pub smart: Option<ReplaySmartStatus>,
 }
 
 /// Lossy, latest-wins replay status (OR-012).

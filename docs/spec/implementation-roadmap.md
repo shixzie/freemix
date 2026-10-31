@@ -178,8 +178,8 @@ there come before any new breadth below.
     certification are absent; Studio's
     Replay panel and the CLI record up to eight inputs and render their angles
     in an adaptive grid (Protocol 2.127), now led by the input and its linked
-    A/B partner as channel tiles; storage health reaches Studio and the CLI (Protocol 2.125),
-    without SMART queries (see the
+    A/B partner as channel tiles; storage health reaches Studio and the CLI (Protocol 2.125,
+    now with the drive's SMART health, Protocol 2.139; see the
     Phase 7 boundary).
 11. **Highlight reels, end to end (`OR-013`).** The show persists up to eight
     reels of up to 64 clips (Protocol 2.107, schema 83), the engine compiles
@@ -5986,8 +5986,10 @@ observed write rate (Protocol 2.125, shown in Studio and the CLI), and a
 root below the recorder's 512 MiB floor pauses recording (`storage:low_space`)
 until a later sample clears it, and a program recorder whose output filesystem
 crosses the same floor stops its segment cleanly with `storage:low_space`
-(reported as a disk-full failure); SMART queries remain; and no storage
-profile is certified. `OR-014` remains planned.
+(reported as a disk-full failure); the daemon samples the root drive's SMART
+verdict, temperature, and endurance used on a worker thread once a minute and
+reports them in the same storage record (Protocol 2.139), shown in Studio and
+the CLI; and no storage profile is certified. `OR-014` remains planned.
 
 Current end-to-end slice for item 7: the show persists up to eight highlight
 reels of up to 64 clips (Protocol 2.107, schema 83); each clip names a captured
@@ -6103,8 +6105,10 @@ reports its rate and shuttling state on the wire; a Replay take now uses the
 show's configured transition — a cut or a fade of its own length (Protocol
 2.137, schema 97), set in Studio's Replay panel and the CLI — and multiview
 and controller wiring remain; storage health reaches
-Studio and the CLI (Protocol 2.125), but not SMART or `fm-record` low-space
-behavior, and nothing is certified. `OR-012`, `OR-013`, and `OR-014` remain planned.
+Studio and the CLI (Protocol 2.125), now with the root drive's SMART health
+on a worker-thread probe (Protocol 2.139) and a program recorder stopping at
+the 512 MiB floor (`storage:low_space`, reported as disk full), and nothing
+is certified. `OR-012`, `OR-013`, and `OR-014` remain planned.
 
 
 Exit: Sports Show scenario passes on certified storage/hardware.

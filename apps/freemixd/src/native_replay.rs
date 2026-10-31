@@ -91,6 +91,8 @@ use crate::source_wait::SourceWait;
 pub(crate) const RETRY_DELAY: Duration = Duration::from_secs(5);
 /// How often the storage root's free space is sampled, at most.
 const STORAGE_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+/// How often the root drive's SMART status is sampled, at most (OR-014).
+const SMART_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
 /// One-second fragments per segment file.
 const FRAGMENTS_PER_SEGMENT: NonZeroU32 = NonZeroU32::MIN.saturating_add(1);
 /// Frames a run's worker may fall behind before the run ends.
@@ -132,6 +134,10 @@ pub(crate) trait ReplayHost {
     /// Records the free bytes on the replay storage root, or `None` when it
     /// cannot be sampled (Protocol 2.125, OR-014).
     fn set_storage_free(&mut self, free: Option<u64>);
+    /// Records the root drive's SMART status, or `None` when the daemon
+    /// cannot ask it (Protocol 2.139, OR-014). A daemon that does not probe
+    /// SMART keeps the default.
+    fn set_storage_smart(&mut self, _smart: Option<fm_engine::EngineReplaySmartStatus>) {}
     /// Catalogs a segment restored from a previous run, observing every
     /// frame it holds so the segment resolves exactly (OR-012).
     #[allow(clippy::too_many_arguments)]
@@ -208,6 +214,10 @@ impl ReplayHost for ControlService<Policy> {
 
     fn set_storage_free(&mut self, free: Option<u64>) {
         self.set_replay_storage_free(free);
+    }
+
+    fn set_storage_smart(&mut self, smart: Option<fm_engine::EngineReplaySmartStatus>) {
+        self.set_replay_storage_smart(smart);
     }
 }
 
@@ -432,6 +442,10 @@ pub(crate) struct NativeReplay {
     restored: bool,
     /// When the storage root was last sampled.
     storage_sample: Option<Instant>,
+    /// When the root drive's SMART status was last sampled (OR-014).
+    smart_sample: Option<Instant>,
+    /// A running SMART probe's result.
+    smart_pending: Option<std::sync::mpsc::Receiver<Option<crate::smart::SmartSample>>>,
     /// The root's free bytes fell below [`Self::min_free_bytes`]; recording
     /// is paused until the next sample clears it (OR-014).
     low_space: bool,
@@ -449,6 +463,8 @@ impl NativeReplay {
             sources: BTreeMap::new(),
             restored: false,
             storage_sample: None,
+            smart_sample: None,
+            smart_pending: None,
             low_space: false,
             min_free_bytes: crate::disk::RECORDING_MINIMUM_FREE_BYTES,
         }
@@ -461,6 +477,11 @@ impl NativeReplay {
         if wanted != self.recording {
             self.end_session();
             self.recording = wanted;
+            // The new root may sit on another drive: forget the old health
+            // and probe the new one on this pass.
+            self.smart_sample = None;
+            self.smart_pending = None;
+            host.set_storage_smart(None);
             if let Some((sources, root)) = self.recording.clone() {
                 self.sources = sources
                     .iter()
@@ -488,6 +509,7 @@ impl NativeReplay {
         // Sample the root before starting or stopping runs: a root below the
         // recorder's floor pauses recording, and a recovered one resumes it.
         self.sample_storage(host);
+        self.sample_smart(host);
         if self.low_space {
             for input in inputs {
                 if matches!(self.sources[&input].state, SourceState::Running(_)) {
@@ -528,6 +550,45 @@ impl NativeReplay {
             .map(|free| free / (1024 * 1024) * (1024 * 1024));
         self.low_space = free.is_some_and(|free| free < self.min_free_bytes);
         host.set_storage_free(free);
+    }
+
+    /// Samples the root drive's SMART status once a minute on a worker
+    /// thread, so a slow `smartctl` never delays a pass, and reports the
+    /// result on the tick it arrives (OR-014, 2.139).
+    fn sample_smart(&mut self, host: &mut dyn ReplayHost) {
+        if let Some(pending) = &self.smart_pending {
+            match pending.try_recv() {
+                Ok(sample) => {
+                    self.smart_pending = None;
+                    host.set_storage_smart(sample.map(engine_smart_status));
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.smart_pending = None;
+                    host.set_storage_smart(None);
+                    return;
+                }
+            }
+        }
+        let Some((_, root)) = &self.recording else {
+            self.smart_sample = None;
+            host.set_storage_smart(None);
+            return;
+        };
+        let now = Instant::now();
+        if self
+            .smart_sample
+            .is_some_and(|last| now.duration_since(last) < SMART_SAMPLE_INTERVAL)
+        {
+            return;
+        }
+        self.smart_sample = Some(now);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let root = root.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(crate::smart::sample(&root));
+        });
+        self.smart_pending = Some(receiver);
     }
 
     /// Records engine frame `frame`: every running source's newest picture
@@ -876,6 +937,20 @@ impl Drop for NativeReplay {
         // segment they did not close is not in the manifest.
         self.sources.clear();
         self.session = None;
+    }
+}
+
+/// The engine form of one SMART sample (OR-014, 2.139).
+fn engine_smart_status(sample: crate::smart::SmartSample) -> fm_engine::EngineReplaySmartStatus {
+    fm_engine::EngineReplaySmartStatus {
+        health: match sample.health {
+            crate::smart::SmartHealth::Passed => fm_engine::EngineReplaySmartHealth::Passed,
+            crate::smart::SmartHealth::Warning => fm_engine::EngineReplaySmartHealth::Warning,
+            crate::smart::SmartHealth::Failed => fm_engine::EngineReplaySmartHealth::Failed,
+            crate::smart::SmartHealth::Unknown => fm_engine::EngineReplaySmartHealth::Unknown,
+        },
+        temperature_celsius: sample.temperature_celsius,
+        percentage_used: sample.percentage_used,
     }
 }
 

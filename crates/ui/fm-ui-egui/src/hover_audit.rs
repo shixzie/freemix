@@ -2704,6 +2704,11 @@ pub(crate) fn replay_status() -> fm_protocol::ReplayStatusMessage {
             bytes_per_second: 24_000_000,
             remaining_seconds: Some(300),
             level: fm_protocol::ReplayStorageLevel::Warning,
+            smart: Some(fm_protocol::ReplaySmartStatus {
+                health: fm_protocol::ReplaySmartHealth::Passed,
+                temperature_celsius: Some(35),
+                percentage_used: Some(4),
+            }),
         }),
     }
 }

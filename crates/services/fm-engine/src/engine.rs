@@ -3306,6 +3306,12 @@ impl Engine {
         self.replay.set_storage_free(free);
     }
 
+    /// Records the replay root drive's SMART status, as the media plane last
+    /// sampled it (OR-014, 2.139).
+    pub fn set_replay_storage_smart(&mut self, smart: Option<crate::EngineReplaySmartStatus>) {
+        self.replay.set_storage_smart(smart);
+    }
+
     /// Reports that an external replay recording recorded engine frame
     /// `frame` of source `input` as stream frame `stream_frame` (OR-012).
     /// Returns whether it was taken: the input is recorded and the frame

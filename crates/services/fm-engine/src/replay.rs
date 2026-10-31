@@ -287,6 +287,23 @@ pub enum EngineReplayStorageLevel {
     Full,
 }
 
+/// A drive's SMART self-assessment (OR-014, 2.139).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EngineReplaySmartHealth {
+    Passed,
+    Warning,
+    Failed,
+    Unknown,
+}
+
+/// The SMART health of the drive holding the replay root (OR-014, 2.139).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EngineReplaySmartStatus {
+    pub health: EngineReplaySmartHealth,
+    pub temperature_celsius: Option<u16>,
+    pub percentage_used: Option<u8>,
+}
+
 /// Free space and the observed write rate of the replay root (OR-014).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EngineReplayStorageStatus {
@@ -297,6 +314,8 @@ pub struct EngineReplayStorageStatus {
     /// Seconds of recording left at `bytes_per_second`, when it is nonzero.
     pub remaining_seconds: Option<u64>,
     pub level: EngineReplayStorageLevel,
+    /// The root drive's SMART status, when the daemon samples it (2.139).
+    pub smart: Option<EngineReplaySmartStatus>,
 }
 
 /// Seconds of storage left that still reads as a warning.
@@ -612,6 +631,9 @@ pub(crate) struct ReplayRuntime {
     deferred_exports: BTreeMap<u64, ReelExportPlan>,
     /// Free bytes on the storage root, as the daemon last sampled it.
     storage_free: Option<u64>,
+    /// The root drive's SMART status, as the daemon last sampled it
+    /// (OR-014, 2.139).
+    storage_smart: Option<EngineReplaySmartStatus>,
     /// Bumped whenever anything clients see changes.
     generation: u64,
 }
@@ -669,6 +691,7 @@ impl ReplayRuntime {
             export_meta: BTreeMap::new(),
             deferred_exports: BTreeMap::new(),
             storage_free: None,
+            storage_smart: None,
             generation: 0,
         };
         runtime.restart(ReplaySettings::default());
@@ -863,6 +886,16 @@ impl ReplayRuntime {
         self.touch();
     }
 
+    /// Records the root drive's SMART status, as the daemon sampled it, and
+    /// announces the change (OR-014, 2.139).
+    pub(crate) fn set_storage_smart(&mut self, smart: Option<EngineReplaySmartStatus>) {
+        if self.storage_smart == smart {
+            return;
+        }
+        self.storage_smart = smart;
+        self.touch();
+    }
+
     /// Free space and the observed write rate of the storage root, when the
     /// daemon has sampled it.
     fn storage_status(&self) -> Option<EngineReplayStorageStatus> {
@@ -906,6 +939,7 @@ impl ReplayRuntime {
             bytes_per_second: rate,
             remaining_seconds,
             level,
+            smart: self.storage_smart,
         })
     }
 

@@ -4595,6 +4595,14 @@ Protocol 2.125 reports replay storage health (OR-014).
   time is the free space divided by that rate. Native `freemixd` samples its
   replay root at most once a second in whole mebibytes; the simulated daemon
   sends `-`.
+- Protocol 2.139 appends the root drive's SMART status to that record when
+  the daemon knows it: `:<health>:<temperature or ->:<percentage used or ->`,
+  where `health` is `passed`, `warning`, `failed`, or `unknown`, the
+  temperature is whole degrees Celsius (at most 200), and the percentage is
+  whole endurance used (at most 100). Native `freemixd` resolves the block
+  device behind the root from `/proc/self/mountinfo`, runs
+  `smartctl -j -H -A` off the frame loop at most once a minute, and leaves
+  the suffix off when the device, the tool, or a verdict is unavailable.
 - Studio's Replay panel shows the free space, the predicted time left, and
   an OK / LOW / CRITICAL / FULL lamp; `freemix-cli` prints a `ReplayStorage`
   line.

@@ -2441,6 +2441,7 @@ dependencies = [
  "rcgen",
  "ring",
  "rustls",
+ "serde_json",
  "signal-hook",
  "tempfile",
  "tungstenite",

@@ -10658,6 +10658,16 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReplayStorageNoSpace,
         t("{free} libres · la grabación se detendrá"),
     ),
+    (Msg::ReplaySmartPassed, t("SMART correcto")),
+    (Msg::ReplaySmartWarning, t("Aviso SMART")),
+    (Msg::ReplaySmartFailed, t("SMART con fallos")),
+    (Msg::ReplaySmartUnknown, t("SMART desconocido")),
+    (
+        Msg::ReplaySmartHover,
+        t("El estado que el disco de la raíz de repetición informa al servidor"),
+    ),
+    (Msg::ReplaySmartTemperature, t("{temperature} °C")),
+    (Msg::ReplaySmartUsed, t("{used}% de resistencia usada")),
     (Msg::ReplayLink, t("VINCULAR")),
     (
         Msg::ReplayLinkHover,
