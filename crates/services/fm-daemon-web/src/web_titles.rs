@@ -63,10 +63,10 @@ use fm_protocol::{
 };
 
 /// How often the daemon looks at the titles' phases.
-pub(crate) const TITLE_PHASES_CHECK: Duration = Duration::from_millis(100);
+pub const TITLE_PHASES_CHECK: Duration = Duration::from_millis(100);
 /// How often `title_phases` is re-sent while a title is taken or shown, so
 /// a client's extrapolated playhead never drifts far.
-pub(crate) const TITLE_PHASES_REFRESH: Duration = Duration::from_secs(1);
+pub const TITLE_PHASES_REFRESH: Duration = Duration::from_secs(1);
 
 /// What a client cannot extrapolate of one title's phase: a change sends a
 /// record at once. `phase_frame` advances with the frame and is not part.
@@ -76,7 +76,7 @@ type PhaseKey = (WireInputId, TitlePhase, u64, Option<TitleTimelineStatus>);
 /// record when a phase, phase length, or timeline changes, and a refresh
 /// every [`TITLE_PHASES_REFRESH`] while any title is taken or shown.
 #[derive(Default)]
-pub(crate) struct PhasePacer {
+pub struct PhasePacer {
     checked: Option<Instant>,
     sent: Option<Instant>,
     key: Vec<PhaseKey>,
@@ -85,7 +85,7 @@ pub(crate) struct PhasePacer {
 impl PhasePacer {
     /// The record to send at `now`, if any. `demand` is whether any session
     /// takes the record; `phases` is called at most once per check.
-    pub(crate) fn poll(
+    pub fn poll(
         &mut self,
         now: Instant,
         demand: bool,
@@ -127,10 +127,10 @@ impl PhasePacer {
 
 /// The fields each title hides from browsers, by input.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(crate) struct HiddenFields(BTreeMap<WireInputId, BTreeSet<WireTitleFieldId>>);
+pub struct HiddenFields(BTreeMap<WireInputId, BTreeSet<WireTitleFieldId>>);
 
 impl HiddenFields {
-    pub(crate) fn new(hidden: Vec<(WireInputId, Vec<WireTitleFieldId>)>) -> Self {
+    pub fn new(hidden: Vec<(WireInputId, Vec<WireTitleFieldId>)>) -> Self {
         Self(
             hidden
                 .into_iter()
@@ -178,7 +178,7 @@ impl HiddenFields {
 
 /// A cue list as a Web session sees it: each action setting a field hidden
 /// from it carries the marker in place of its value (Protocol 2.104).
-pub(crate) fn web_cue_list(list: &mut CueListStatus, hidden: &HiddenFields) {
+pub fn web_cue_list(list: &mut CueListStatus, hidden: &HiddenFields) {
     for cue in &mut list.spec.cues {
         hidden.redact(&mut cue.actions);
     }
@@ -196,7 +196,7 @@ fn withhold_cue_fault(state: &mut fm_protocol::CueRunStatus) {
 }
 
 /// A shortcut as a Web session sees it (see [`web_cue_list`]).
-pub(crate) fn web_shortcut(shortcut: &mut ShortcutStatus, hidden: &HiddenFields) {
+pub fn web_shortcut(shortcut: &mut ShortcutStatus, hidden: &HiddenFields) {
     if let WireShortcutAction::Actions(actions) = &mut shortcut.spec.action {
         hidden.redact(actions);
     }
@@ -204,14 +204,14 @@ pub(crate) fn web_shortcut(shortcut: &mut ShortcutStatus, hidden: &HiddenFields)
 
 /// Whether `actions` set any title field, and so may read differently to
 /// a Web session after an exposure change.
-pub(crate) fn sets_title_values(actions: &[WireCueAction]) -> bool {
+pub fn sets_title_values(actions: &[WireCueAction]) -> bool {
     actions
         .iter()
         .any(|action| action.title_value_field().is_some())
 }
 
 /// A title's state as a Web session sees it: hidden fields left out.
-pub(crate) fn web_title_state(mut state: TitleStateMessage) -> TitleStateMessage {
+pub fn web_title_state(mut state: TitleStateMessage) -> TitleStateMessage {
     state.fields.retain(|status| status.exposed);
     state
 }
@@ -222,7 +222,7 @@ pub(crate) fn web_title_state(mut state: TitleStateMessage) -> TitleStateMessage
 /// when the event is queued, so they hold every value up to then; a
 /// `title_changed` already queued behind them names an older field
 /// revision, which a client skips.
-pub(crate) fn web_title_states(
+pub fn web_title_states(
     states: Vec<TitleStateMessage>,
     inputs: &[WireInputId],
 ) -> Vec<TitleStateMessage> {
@@ -239,7 +239,7 @@ pub(crate) fn web_title_states(
 /// fields a `cue_run_changed`, `script_ran`, or `shortcut_fired` event set,
 /// since a page learns title values and field revisions only from
 /// `title_changed` and `title_state`. Empty for any other record.
-pub(crate) fn resync_inputs(message: &WireMessage) -> Vec<WireInputId> {
+pub fn resync_inputs(message: &WireMessage) -> Vec<WireInputId> {
     let WireMessage::Event(event) = message else {
         return Vec::new();
     };
@@ -262,7 +262,7 @@ pub(crate) fn resync_inputs(message: &WireMessage) -> Vec<WireInputId> {
 /// A live record as a Web session sees it: title values (of title changes
 /// and of cue, script, and shortcut runs) and exposure without hidden
 /// fields. Everything else passes unchanged.
-pub(crate) fn web_live_message(message: WireMessage, hidden: &HiddenFields) -> WireMessage {
+pub fn web_live_message(message: WireMessage, hidden: &HiddenFields) -> WireMessage {
     let WireMessage::Event(mut event) = message else {
         return message;
     };
@@ -335,7 +335,7 @@ fn withhold_fault(run: &mut ScriptRunStatus) {
 /// A command result as a Web session sees it: a refused script run (of
 /// `script_run`, or a cue or shortcut step) worded by its typed reason
 /// alone, since the failure's message may quote the source.
-pub(crate) fn web_result(result: &mut CommandResult) {
+pub fn web_result(result: &mut CommandResult) {
     if let CommandResult::Rejected {
         message,
         reason: Some(reason @ RefusalReason::ScriptFailed { .. }),
@@ -350,7 +350,7 @@ pub(crate) fn web_result(result: &mut CommandResult) {
 /// [`web_live_message`] filters it, and a cue list, shortcut, or script
 /// state record redacted as the matching `_changed` event is. A
 /// `title_state` must already be a Web session's (see [`web_title_state`]).
-pub(crate) fn web_message(message: WireMessage, hidden: &HiddenFields) -> WireMessage {
+pub fn web_message(message: WireMessage, hidden: &HiddenFields) -> WireMessage {
     match message {
         WireMessage::CueListState(mut state) => {
             web_cue_list(&mut state.list, hidden);
@@ -372,7 +372,7 @@ pub(crate) fn web_message(message: WireMessage, hidden: &HiddenFields) -> WireMe
 /// Whether `message` changes which title fields Web sessions see, so the
 /// cue lists and shortcuts that set title fields are re-sent to them
 /// (Protocol 2.104).
-pub(crate) fn exposure_changed(message: &WireMessage) -> bool {
+pub fn exposure_changed(message: &WireMessage) -> bool {
     matches!(
         message,
         WireMessage::Event(event)
@@ -455,14 +455,14 @@ fn resolve_shortcut(
 }
 
 /// The stored definitions a Web session's edit may keep hidden values of.
-pub(crate) struct StoredDefinitions {
-    pub(crate) cue_lists: Vec<CueListStatus>,
-    pub(crate) shortcuts: Vec<ShortcutStatus>,
+pub struct StoredDefinitions {
+    pub cue_lists: Vec<CueListStatus>,
+    pub shortcuts: Vec<ShortcutStatus>,
 }
 
 /// Whether `command` is a cue list, shortcut, or script edit that
 /// [`web_definition_edit`] must see before a Web session's command runs.
-pub(crate) const fn is_definition_edit(command: &CommandMessage) -> bool {
+pub const fn is_definition_edit(command: &CommandMessage) -> bool {
     matches!(
         command.payload,
         CommandPayload::SetCueList { .. }
@@ -474,7 +474,7 @@ pub(crate) const fn is_definition_edit(command: &CommandMessage) -> bool {
 /// A Web session's cue list, shortcut, or script edit as it executes
 /// (Protocol 2.104): each marker it sends back replaced by the stored
 /// action it stands for, or the refusal it meets. `None` lets it run.
-pub(crate) fn web_definition_edit(
+pub fn web_definition_edit(
     command: &mut CommandMessage,
     hidden: &HiddenFields,
     stored: &StoredDefinitions,
@@ -520,7 +520,7 @@ pub(crate) fn web_definition_edit(
 
 /// Whether `command` is a fire [`web_fire_refusal`] must see before a Web
 /// session's command runs.
-pub(crate) const fn is_fire(command: &CommandMessage) -> bool {
+pub const fn is_fire(command: &CommandMessage) -> bool {
     matches!(
         command.payload,
         CommandPayload::CueControl {
@@ -537,7 +537,7 @@ pub(crate) const fn is_fire(command: &CommandMessage) -> bool {
 /// title fields the session sees. An action whose value the session sees
 /// only as the hidden marker may not write into a field it sees. `None`
 /// lets the fire run.
-pub(crate) fn web_fire_refusal(
+pub fn web_fire_refusal(
     command: &CommandMessage,
     writes: &[(WireCueAction, Option<WireInputId>)],
     hidden: &HiddenFields,
@@ -565,9 +565,7 @@ pub(crate) fn web_fire_refusal(
 }
 
 /// The title fields a Web session sees: each title's exposed fields.
-pub(crate) fn visible_fields(
-    states: &[TitleStateMessage],
-) -> BTreeSet<(WireInputId, WireTitleFieldId)> {
+pub fn visible_fields(states: &[TitleStateMessage]) -> BTreeSet<(WireInputId, WireTitleFieldId)> {
     states
         .iter()
         .flat_map(|state| {
@@ -582,7 +580,7 @@ pub(crate) fn visible_fields(
 
 /// The refusal a Web session's command meets before it executes: changing
 /// exposure, or naming a field its title hides. `None` lets it run.
-pub(crate) fn web_command_refusal(
+pub fn web_command_refusal(
     command: &CommandMessage,
     hidden: &HiddenFields,
     current_revision: u64,

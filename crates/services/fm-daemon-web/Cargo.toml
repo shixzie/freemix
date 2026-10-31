@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 fm-auth = { path = "../fm-auth" }
 fm-codec-image = { path = "../../io/fm-codec-image" }
+fm-command = { path = "../../foundation/fm-command" }
 fm-daemon-arguments = { path = "../fm-daemon-arguments" }
 fm-frame = { path = "../../media/fm-frame" }
 fm-persistence = { path = "../fm-persistence" }

@@ -1773,6 +1773,7 @@ version = "0.1.0"
 dependencies = [
  "fm-auth",
  "fm-codec-image",
+ "fm-command",
  "fm-daemon-arguments",
  "fm-frame",
  "fm-persistence",
