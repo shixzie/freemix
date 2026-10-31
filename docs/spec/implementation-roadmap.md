@@ -3842,7 +3842,8 @@ bitrate and reported packet loss, aggregates the bounded source-sync records
 fullest recorder or stream queue's utilization. Each sample also
 records `cpu.process_utilization`, the daemon process's user plus system time
 from `/proc/self/stat` over wall time as a share of every logical CPU
-(unavailable off Linux; FFmpeg children are not counted), and
+(unavailable off Linux; child `FFmpeg` encoders are included when `/proc`
+lists them), and
 `gpu.utilization`, which is a proxy rather than a vendor counter: the GPU
 time of the native compositor's timestamped fullscreen render passes over
 wall time, so it omits uploads, readbacks, encoders, and other processes, is
@@ -3895,8 +3896,8 @@ gaps: no input-health or
 hardware-encoder session sampling, and the simulated daemon has no network,
 sync, or encoder readings (an unsupported reading stays unknown rather than
 zero); a show changes each rule's thresholds, hold, severity, and switch but
-not the reading it watches, and cannot add rules; the CPU reading
-excludes child encoders and the GPU reading is a compositor-pass proxy. The
+not the reading it watches, and cannot add rules; the GPU reading is a
+compositor-pass proxy. The
 Web operator page now lists the daemon's recent health notifications
 (firing, resolved, and reminder) with rule, severity, and age. `RC-015`
 remains planned.

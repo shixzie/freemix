@@ -4,8 +4,9 @@
 //! `/proc/self/stat` (fields 14 and 15, in `USER_HZ` clock ticks) and divides
 //! the growth between two samples by the wall time between them times the
 //! logical CPUs the process may run on. The result is the daemon process's
-//! share of the whole machine, `0..=1`; child processes (`FFmpeg` encoders) are
-//! not included. Other platforms report no reading.
+//! share of the whole machine, `0..=1`. Child processes (`FFmpeg` encoders)
+//! are included when `/proc` lists them, so a native daemon's encoders count
+//! against the reading. Other platforms report no reading.
 
 use std::time::{Duration, Instant};
 
@@ -61,12 +62,54 @@ impl Default for CpuSampler {
     }
 }
 
-/// The process's user plus system CPU time so far.
+/// The process's user plus system CPU time so far, with its children's.
 #[cfg(target_os = "linux")]
 fn process_cpu_time() -> Option<Duration> {
-    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
-    let ticks = proc_stat_cpu_ticks(&stat)?;
+    let mut ticks = 0_u64;
+    let mut seen = std::collections::BTreeSet::new();
+    collect_cpu_ticks(std::process::id(), 0, &mut seen, &mut ticks);
     Some(Duration::from_millis(ticks.saturating_mul(1_000) / USER_HZ))
+}
+
+/// Most processes one sample sums, so a runaway fork cannot make sampling
+/// unbounded.
+#[cfg(target_os = "linux")]
+const MAX_CPU_PROCESSES: usize = 128;
+/// Deepest descendant chain one sample follows.
+#[cfg(target_os = "linux")]
+const MAX_CPU_DEPTH: u32 = 4;
+
+/// Adds `pid`'s CPU ticks and its descendants' to `ticks`.
+#[cfg(target_os = "linux")]
+fn collect_cpu_ticks(
+    pid: u32,
+    depth: u32,
+    seen: &mut std::collections::BTreeSet<u32>,
+    ticks: &mut u64,
+) {
+    if depth > MAX_CPU_DEPTH || seen.len() >= MAX_CPU_PROCESSES || !seen.insert(pid) {
+        return;
+    }
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        && let Some(process) = proc_stat_cpu_ticks(&stat)
+    {
+        *ticks = ticks.saturating_add(process);
+    }
+    // A child belongs to the thread that spawned it, so every task's
+    // children file is read.
+    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+        return;
+    };
+    for task in tasks.flatten() {
+        let Ok(children) = std::fs::read_to_string(task.path().join("children")) else {
+            continue;
+        };
+        for child in children.split_ascii_whitespace() {
+            if let Ok(child) = child.parse::<u32>() {
+                collect_cpu_ticks(child, depth + 1, seen, ticks);
+            }
+        }
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
