@@ -159,17 +159,15 @@ fn encode_transition(transition: ReplayTransition) -> String {
 }
 
 fn decode_transition(value: &str) -> Result<ReplayTransition, CodecError> {
-    match value {
-        "cut" => Ok(ReplayTransition::CUT),
-        _ => {
-            let Some(frames) = value.strip_prefix("fade:") else {
-                return Err(invalid("transition", value));
-            };
-            let frames = parse_number("transition", frames)?;
-            ReplayTransition::new(ReplayTransitionKind::Fade, frames)
-                .map_err(|_| invalid("transition", value))
-        }
+    if value == "cut" {
+        return Ok(ReplayTransition::CUT);
     }
+    let Some(frames) = value.strip_prefix("fade:") else {
+        return Err(invalid("transition", value));
+    };
+    let frames = parse_number("transition", frames)?;
+    ReplayTransition::new(ReplayTransitionKind::Fade, frames)
+        .map_err(|_| invalid("transition", value))
 }
 
 fn decode_settings(fields: &mut dyn FieldSource) -> Result<ReplaySettings, CodecError> {

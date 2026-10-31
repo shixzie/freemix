@@ -348,6 +348,7 @@ fn server() -> ServerIdentity {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one field per replay status record
 fn status(request_id: Option<&str>) -> ReplayStatusMessage {
     ReplayStatusMessage {
         server: server(),

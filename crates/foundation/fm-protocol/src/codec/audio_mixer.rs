@@ -1145,6 +1145,7 @@ pub(super) fn decode_plugin_slots(value: &str) -> Result<Vec<crate::PluginChainS
 }
 
 /// Decodes an operation named by `payload`, or `None` for another payload.
+#[allow(clippy::too_many_lines)] // one arm per audio mixer operation
 pub(super) fn decode_operation(
     payload: &str,
     fields: &mut dyn FieldSource,

@@ -1129,6 +1129,7 @@ fn bus(letter: char) -> fm_types::audio_bus::AuxBusNumber {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one operation per aux bus command
 fn aux_bus_commands_have_an_exact_wire_form_and_are_strict() {
     for (operation, fields) in [
         (
