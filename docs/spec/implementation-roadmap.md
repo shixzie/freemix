@@ -4128,11 +4128,12 @@ bounded item lists, and live updates spliced in at the next unseen item so
 visible text never jumps; crawls render above scene elements through the CPU
 reference renderer with exact pixel tests. A typed scoreboard covers team
 names, abbreviations, scores, a featured player, the period, per-team
-rosters, and a shot clock whose duration and presence follow the sport (24
+rosters (atomic replacement, clearing, and jersey-number selection), and a
+shot clock whose duration and presence follow the sport (24
 seconds for basketball, 40 for football, 30 for hockey, none for soccer) and
 that operators can reset to another duration, with presets, atomic
 revision-checked action batches, saturating increment/decrement shortcuts,
-tenths clock formats, and a frame-exact
+runtime-selectable minute, tenths, and hour formats, and a frame-exact
 count-up or count-down game clock whose expiry is reported once; changed
 values publish onto template fields in one scene revision, and a strict
 key/value parser maps external data onto actions. A strict snapshot
