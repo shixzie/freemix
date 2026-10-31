@@ -5599,7 +5599,10 @@ removes coverage from earlier strokes only, per-author laser pointers expire
 against a caller-supplied clock outside the undoable operation log, an author
 limit bounds participants, and ten fixed shortcut slots carry validated tool
 presets. Deterministic CPU rendering exports straight or premultiplied RGBA.
-Remaining gaps: no text primitives or custom image stamps, no GPU renderer or
+An image stamp places up to a 4096-pixel-side RGBA picture into the
+rectangle between its first and last points, nearest-neighbor sampled and
+alpha-blended like every other stroke. Remaining gaps: no text primitives,
+no GPU renderer or
 persistence, no protocol, browser, or device input integration, no
 low-latency program/input preview, no web monitor, and no routing of the layer
 into the compositor. Laser pointers are not replicated, so item 10 remains
