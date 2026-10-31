@@ -4885,7 +4885,8 @@ help. Gaps: a jump to an arbitrary item is not prefetched (Last is); the CLI ste
 (`input-media-list-navigate` and its `remote-` form) and edits its options and
 items (`input-media-list-options`, `input-media-list-item`); `fm-vmix-compat`
 translates vMix's `NextItem`, `PreviousItem`, `SelectIndex`, `NextPicture`,
-and `PreviousPicture` verbs onto page navigation (no vMix HTTP/TCP server is
+and `PreviousPicture` verbs onto page navigation and `Play`, `Pause`, `Stop`,
+and `PlayPause` onto media transport (no vMix HTTP/TCP server is
 wired yet); no cross-input GO bank, and Linux-only native evidence. The generic
 `page_navigate` step and the cue `page` action drive a list too: a page step
 naming a media list is rewritten to the list's own `navigate` (same
