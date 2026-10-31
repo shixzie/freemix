@@ -165,6 +165,41 @@ fn project_asset_audit_reports_all_failures_in_stable_order() {
 }
 
 #[test]
+fn a_folder_slideshow_audits_its_source_folder() {
+    let temp = TestDirectory::new("folder-audit");
+    let store = temp.store();
+    fs::create_dir_all(store.assets_root().join("slides")).unwrap();
+    fs::write(store.assets_root().join("picture.png"), b"asset").unwrap();
+    let slideshow = |uri: &str| {
+        InputKind::Slideshow(fm_types::still::SlideshowConfig::new(
+            fm_types::still::SlideshowSource::Folder {
+                asset_uri: uri.to_owned(),
+            },
+        ))
+    };
+    // A folder resolves; a file passed as a folder and a missing folder do
+    // not.
+    let project = stored_project([], (20, slideshow("asset://slides")));
+    assert_eq!(store.audit_assets(&project), Vec::new());
+    let project = stored_project([], (20, slideshow("asset://picture.png")));
+    assert_eq!(
+        store.audit_assets(&project),
+        vec![AssetAuditIssue {
+            input_id: input_id(20),
+            reason: AssetAuditReason::NotRegularFile,
+        }]
+    );
+    let project = stored_project([], (20, slideshow("asset://missing")));
+    assert_eq!(
+        store.audit_assets(&project),
+        vec![AssetAuditIssue {
+            input_id: input_id(20),
+            reason: AssetAuditReason::MissingAsset,
+        }]
+    );
+}
+
+#[test]
 fn resolves_nested_regular_file_beneath_assets_root() {
     let temp = TestDirectory::new("nested");
     let store = temp.store();
