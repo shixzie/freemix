@@ -5542,9 +5542,10 @@ impl CropRect {
     pub fn fits_source(self) -> bool {
         self.width != 0
             && self.height != 0
-            && self.x.checked_add(self.width).is_some_and(|right| {
-                right <= MAX_SOURCE_CROP_SIDE
-            })
+            && self
+                .x
+                .checked_add(self.width)
+                .is_some_and(|right| right <= MAX_SOURCE_CROP_SIDE)
             && self
                 .y
                 .checked_add(self.height)

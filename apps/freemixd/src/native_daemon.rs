@@ -1128,13 +1128,22 @@ impl NativeDaemon {
         let recording_parents = recording_parents
             .into_iter()
             .flatten()
-            .map(recording_parent);
+            .map(recording_parent)
+            .collect::<Vec<_>>();
         let local_ancestors = self
             .local_output_dirs
             .iter()
             .filter_map(|directory| disk::existing_ancestor(directory));
         let mut minimum: Option<u64> = None;
-        for path in recording_parents.chain(local_ancestors) {
+        let mut recording_minimum: Option<u64> = None;
+        for path in &recording_parents {
+            if let Ok(available) = disk::available_bytes(path) {
+                recording_minimum =
+                    Some(recording_minimum.map_or(available, |current| current.min(available)));
+                minimum = Some(minimum.map_or(available, |current| current.min(available)));
+            }
+        }
+        for path in local_ancestors {
             if let Ok(available) = disk::available_bytes(path) {
                 minimum = Some(minimum.map_or(available, |current| current.min(available)));
             }
@@ -1143,6 +1152,16 @@ impl NativeDaemon {
             return;
         };
         self.disk_free_bytes = Some(available);
+        // A program recorder stops at the recording floor exactly like the
+        // replay root does (OR-014): the segment is finalized cleanly and
+        // the slot reports a disk-full failure.
+        if recording_minimum.is_some_and(|free| free < disk::RECORDING_MINIMUM_FREE_BYTES) {
+            for slot in &mut self.recorders {
+                if let ProgramRecording::Running(recorder) = slot {
+                    recorder.fail("storage:low_space".to_owned(), false);
+                }
+            }
+        }
         match self.disk_alert.observe(available) {
             fm_observability::AlertTransition::Fired => {
                 eprintln!("FREEMIXD_DISK\tv=1\tstate=low\tfree_bytes={available}");

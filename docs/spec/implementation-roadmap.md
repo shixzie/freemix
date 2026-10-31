@@ -179,7 +179,7 @@ there come before any new breadth below.
     Replay panel and the CLI record up to eight inputs and render their angles
     in an adaptive grid (Protocol 2.127), now led by the input and its linked
     A/B partner as channel tiles; storage health reaches Studio and the CLI (Protocol 2.125),
-    without SMART queries or `fm-record` low-space integration (see the
+    without SMART queries (see the
     Phase 7 boundary).
 11. **Highlight reels, end to end (`OR-013`).** The show persists up to eight
     reels of up to 64 clips (Protocol 2.107, schema 83), the engine compiles
@@ -5984,8 +5984,10 @@ controller surface remains; the native daemon samples
 its replay root's free space and reports the predicted recording time at the
 observed write rate (Protocol 2.125, shown in Studio and the CLI), and a
 root below the recorder's 512 MiB floor pauses recording (`storage:low_space`)
-until a later sample clears it; SMART queries remain; and no storage profile
-is certified. `OR-014` remains planned.
+until a later sample clears it, and a program recorder whose output filesystem
+crosses the same floor stops its segment cleanly with `storage:low_space`
+(reported as a disk-full failure); SMART queries remain; and no storage
+profile is certified. `OR-014` remains planned.
 
 Current end-to-end slice for item 7: the show persists up to eight highlight
 reels of up to 64 clips (Protocol 2.107, schema 83); each clip names a captured
