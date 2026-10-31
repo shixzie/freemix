@@ -907,6 +907,18 @@ pub(super) fn run(
             return Ok(shutdown_for_reason(reason, &mut peers, control));
         }
 
+        // A Program frame that came due while the last pass served peers,
+        // devices, or the web gateway is realized before this pass's own
+        // peer work, so a slow write or handshake cannot stack a second
+        // pass in front of an overdue frame. The later tick still catches
+        // up a loop that is more than one frame behind.
+        if let Some(native) = native.as_deref_mut()
+            && let Err(error) = native.tick_if_due(&mut control.borrow_mut(), authority)
+        {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
+        }
+
         if let Some(web) = web {
             loop {
                 let Ok(Some(event)) = web.try_event() else {

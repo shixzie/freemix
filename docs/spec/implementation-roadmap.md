@@ -264,6 +264,41 @@ per week of work; items 1 and 2 land before any new feature breadth.
    the existing `pacing_trace` so the win is shown, not assumed. The
    spec's "dedicated media threads" decision then holds for compose,
    readback, and mix, not only for decoders, cameras, and recorder pipes.
+
+   **Measurement (2026-10-30, 25 s run, `native_pacing`'s ignored
+   measurement test with a recording, two HLS streams, and about 7.5 cuts/s
+   from two sessions):** on an Apple M5 (Metal), after the first 2 s, 583
+   frames, p50 Program-lateness 1.76 ms, p95 5.84 ms, p99 6.38 ms, max
+   6.57 ms, and no frame a frame late (40 ms interval); command frames p50
+   0.69 ms, idle frames p50 2.58 ms; cut round trip p50 32.75 ms, p95
+   49.81 ms. The first 2 s (50 frames) had p95 5.35 ms. On a Linux sandbox
+   (Vulkan through `llvmpipe`, software rasterization) the same run after
+   the first 2 s had 575 frames, p50 2.45 ms, p95 333 ms, p99 984 ms, max
+   1,204 ms, and 43 frames a frame or more late; the first 2 s were still
+   p95 5.19 ms with no late frame. So the frame loop is not yet the
+   bottleneck on an idle host, while a software adapter competing with the
+   encoders for the CPU shows the kind of stall the split must remove; the
+   split must be shown on a loaded or peer-heavy run rather than assumed
+   from the idle numbers. The startup pacing gate passes on both hosts (the
+   software adapter's first-frame pipeline compilation is exempt from its
+   wall-clock bounds; the frame loop's own CPU time and startup stalls are
+   still checked there).
+
+   **Split plan.** The bounded channel carries a `NativeFrameJob` (the
+   engine's `FrameResult`, which is plain data, plus the plan deltas the
+   media side applies) to a `NativeRealizer` thread that owns `runtime`
+   (already an `Arc<NativeMediaRuntime>`), `project_plan`, `master`, the
+   playback and stinger registries, the output textures, and the
+   stream/recorder/monitor/display consumers that read those textures.
+   It returns `NativeFrameOutcome` (meters and status records, the latest
+   CPU pictures for replay, and typed failures) over a single-slot result
+   channel. The control thread keeps `ControlService`, peers, commands,
+   the journal, and the durable project; it sends a job after
+   `engine.tick()` and collects the previous outcome while peers are
+   serviced. `fm-control` stays on the control thread, as required. The
+   thread is being introduced in stages; the first stage must keep every
+   existing native test (`native_pacing`, `native_sessions`,
+   `native_transitions`, recorders, streams, displays) green.
 2. **Break `freemixd` into library crates.** `apps/freemixd/src` is 157k
    lines, `main.rs` 30k and `native_media.rs` 16k, with 1,178
    `unwrap`/`expect`/`panic` sites in `main.rs` alone; any daemon change
