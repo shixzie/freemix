@@ -324,6 +324,25 @@ per week of work; items 1 and 2 land before any new feature breadth.
    strip-DSP, replay, and media-file suites stay green on the M5 and the
    Linux startup pacing gate passes.
 
+   **Fourth stage (landed).** The frame is now split into begin and finish:
+   `begin_frame_if_due` applies source reports and playback coverage, ticks
+   `fm-control`, applies the frame's plan updates, and submits the audio and
+   video jobs before returning to the pass loop; the loop then serves peer
+   reads/writes, thumbnails, and shutdown checks, and `finish_frame`
+   collects both realizers and runs the frame's consumers. Only the
+   realization span (submission to collect plus consumers) is traced, so a
+   peer wait shows as overlap rather than frame-lateness. Media-list end
+   triggers now run before the frame begins, since a command between the
+   two would see the playback registries held by the compose. The native
+   pacing, transition, display, Preview-tap, audio-only, strip-DSP, replay,
+   media-file, and media-list suites stay green on the M5; the pacing gate
+   and transitions pass on the Linux sandbox (transitions alone; the
+   combined run starves lavapipe when two suites run at once). Source
+   ingestion and grade uploads still run on the control thread, and the
+   monitor/display/stream/recorder consumers run in `finish_frame` on the
+   control thread; moving them, and moving `NativeMediaRuntime` ownership,
+   is the remaining stage.
+
    **Split plan.** The bounded channel carries a `NativeFrameJob` (the
    engine's `FrameResult`, which is plain data, plus the plan deltas the
    media side applies) to a `NativeRealizer` thread that owns `runtime`

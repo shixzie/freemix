@@ -707,6 +707,9 @@ struct NativeDaemon {
     stingers: Option<freemixd::native_media::NativeSourcePlayback>,
     /// The GPU compose thread.
     video: native_video_realizer::NativeVideoHandle,
+    /// A frame submitted to the audio and video realizers, waiting for the
+    /// pass's peer work to finish before its consumers run.
+    pending_frame: Option<PendingFrame>,
     projected_frame: Option<FrameResult>,
     runtime: Arc<NativeMediaRuntime>,
     resolved_sources: Arc<Vec<NativeResolvedSource>>,
@@ -5175,6 +5178,21 @@ fn realized_stream_state(
     }
 }
 
+/// A frame begun but not finished: both realizers have its jobs and the
+/// control loop will collect them after servicing peers (structural item 1).
+#[cfg(feature = "native-media")]
+struct PendingFrame {
+    deadline: Instant,
+    started: Instant,
+    command: bool,
+    monitor_frame: Option<(u64, InputId)>,
+    preview_source: Option<FrameResult>,
+    shows_preview: bool,
+    fade_to_black_excluded: Vec<fm_types::OutputId>,
+    trace_before: Option<pacing_trace::CpuCounters>,
+    events: Vec<RuntimeEventMessage>,
+}
+
 #[cfg(feature = "native-media")]
 #[derive(Debug)]
 enum NativeRealizationError {
@@ -5364,6 +5382,7 @@ impl NativeDaemon {
             playback: Some(playback),
             stingers: Some(stingers),
             video,
+            pending_frame: None,
             projected_frame: None,
             runtime,
             resolved_sources: Arc::new(resolved_sources),
@@ -6559,13 +6578,12 @@ impl NativeDaemon {
     /// exact scene preview composed off the loop (shared frames, no copy,
     /// no GPU work).
     fn live_source_frames(&self) -> scene_preview::LiveSourceFrames {
-        scene_preview::LiveSourceFrames::snapshot(
-            &self
-                .playback
-                .as_ref()
-                .expect("the video realizer holds the playback")
-                .latest_frames(),
-        )
+        let Some(playback) = self.playback.as_ref() else {
+            // A frame's compose holds the playback until the pass collects
+            // it; thumbnails skip this pass's live frames.
+            return scene_preview::LiveSourceFrames::default();
+        };
+        scene_preview::LiveSourceFrames::snapshot(&playback.latest_frames())
     }
 
     /// Consumes every tap's latest encoded monitor frame group, Preview
@@ -7173,25 +7191,46 @@ impl NativeDaemon {
         started: Instant,
         command: bool,
     ) -> AppResult<Vec<RuntimeEventMessage>> {
-        // The counters are read outside the realization they bracket.
+        // The counters are read outside the realization they bracket. The
+        // synchronous path collects at once; the pass loop uses the split
+        // `begin_frame_if_due`/`finish_frame` instead so peer work runs
+        // between the submission and the collect.
         let before = self
             .pacing_trace
             .as_ref()
             .and_then(|_| pacing_trace::CpuCounters::read());
-        let realize_started = Instant::now();
-        let events = self.realize_one(control, server)?;
-        if let Some(trace) = &mut self.pacing_trace {
-            let finished = Instant::now();
-            let counters = before.zip(pacing_trace::CpuCounters::read());
-            trace.frame(
-                deadline,
-                started,
-                (realize_started, finished),
-                counters,
-                command,
-            );
+        self.begin_frame(control, server, deadline, started, command, before)?;
+        self.finish_frame(control, server)
+    }
+
+    /// Begins the frame due now, if any, and leaves its audio and video jobs
+    /// with the realizers; [`Self::finish_frame`] collects them after the
+    /// pass's peer work.
+    fn begin_frame_if_due(
+        &mut self,
+        control: &mut ControlService<Policy>,
+        server: &ServerIdentity,
+    ) -> AppResult<()> {
+        self.anchor_pacing();
+        #[cfg(feature = "display-surface")]
+        for display in &mut self.displays {
+            display
+                .service_control(self.runtime.context())
+                .map_err(|error| -> Box<dyn Error> { Box::new(AppFailure(error)) })?;
         }
-        Ok(events)
+        self.apply_file_reports(control)?;
+        let covered = self.service_playback(control)?;
+        let host_deadline = self.next_deadline()?;
+        let now = Instant::now();
+        if now < host_deadline || !covered {
+            return Ok(());
+        }
+        self.telemetry.observe_host_lateness(host_deadline, now);
+        let before = self
+            .pacing_trace
+            .as_ref()
+            .and_then(|_| pacing_trace::CpuCounters::read());
+        self.begin_frame(control, server, host_deadline, now, false, before)
     }
 
     /// Hands the engine every media-file growth, completion, and fault the
@@ -7534,11 +7573,15 @@ impl NativeDaemon {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn realize_one(
+    fn begin_frame(
         &mut self,
         control: &mut ControlService<Policy>,
         server: &ServerIdentity,
-    ) -> AppResult<Vec<RuntimeEventMessage>> {
+        deadline: Instant,
+        started: Instant,
+        command: bool,
+        trace_before: Option<pacing_trace::CpuCounters>,
+    ) -> AppResult<()> {
         // Accepted StreamStart commands start on this frame boundary, before
         // the frame is produced, so the first fed pair is the next real frame.
         self.start_pending_streams();
@@ -7554,13 +7597,6 @@ impl NativeDaemon {
         let monitor_output = &mut self.monitor_output;
         let project_plan = &mut self.project_plan;
         let projected_frame = self.projected_frame.as_ref();
-        let latest_output = &mut self.latest_output;
-        let latest_project_outputs = &mut self.latest_project_outputs;
-        let mut audio = None;
-        let mut live_audio = None;
-        let mut override_audio = Vec::new();
-        let mut audio_meters = None;
-        let mut rendered_audio = std::collections::BTreeMap::new();
         let mut fade_to_black_excluded = Vec::new();
         let monitor_tap = &self.monitor;
         let mut monitor_frame = None;
@@ -7632,8 +7668,8 @@ impl NativeDaemon {
                     replay_inputs: replay_inputs.clone(),
                 })
                 .map_err(NativeRealizationError::RealizerThread)?;
-            let composed = video
-                .render(native_video_realizer::VideoRenderJob {
+            video
+                .submit(native_video_realizer::VideoRenderJob {
                     frame: frame.clone(),
                     plan: project_plan.clone(),
                     playback: playback
@@ -7644,29 +7680,76 @@ impl NativeDaemon {
                         .expect("a compose collected its stingers before the next"),
                 })
                 .map_err(NativeRealizationError::RealizerThread)?;
-            *playback = Some(composed.playback);
-            *stinger_slot = Some(composed.stingers);
-            match composed.result.map_err(NativeRealizationError::Video)? {
-                native_video_realizer::NativeVideoFrame::Program(output) => {
-                    *latest_output = Some(output);
-                    latest_project_outputs.clear();
-                }
-                native_video_realizer::NativeVideoFrame::Outputs(outputs) => {
-                    *latest_project_outputs = outputs;
-                    *latest_output = None;
-                }
-            }
-            let mixed = audio_handle
-                .collect_render()
-                .map_err(NativeRealizationError::RealizerThread)?;
-            audio = Some(mixed.block);
-            live_audio = mixed.live;
-            override_audio = mixed.overrides;
-            audio_meters = mixed.meters;
-            rendered_audio = mixed.rendered;
             fade_to_black_excluded.clone_from(&frame.fade_to_black_excluded_outputs);
             Ok::<(), NativeRealizationError>(())
         })?;
+        self.pending_frame = Some(PendingFrame {
+            deadline,
+            started,
+            command,
+            monitor_frame,
+            preview_source,
+            shows_preview,
+            fade_to_black_excluded,
+            trace_before,
+            events: outcome.runtime_events,
+        });
+        Ok(())
+    }
+
+    /// Collects the frame `begin_frame` submitted and runs its consumers,
+    /// after the pass serviced its peers.
+    ///
+    /// # Errors
+    ///
+    /// Returns a realizer or consumer failure.
+    #[allow(clippy::too_many_lines)] // one pass over the frame's consumers
+    fn finish_frame(
+        &mut self,
+        control: &mut ControlService<Policy>,
+        server: &ServerIdentity,
+    ) -> AppResult<Vec<RuntimeEventMessage>> {
+        let Some(pending) = self.pending_frame.take() else {
+            return Ok(Vec::new());
+        };
+        let PendingFrame {
+            deadline,
+            started: frame_started,
+            command,
+            monitor_frame,
+            preview_source,
+            shows_preview,
+            fade_to_black_excluded,
+            trace_before,
+            events,
+        } = pending;
+        let finish_started = Instant::now();
+        let composed = self
+            .video
+            .collect()
+            .map_err(NativeRealizationError::RealizerThread)?;
+        self.playback = Some(composed.playback);
+        self.stingers = Some(composed.stingers);
+        match composed.result.map_err(NativeRealizationError::Video)? {
+            native_video_realizer::NativeVideoFrame::Program(output) => {
+                self.latest_output = Some(output);
+                self.latest_project_outputs.clear();
+            }
+            native_video_realizer::NativeVideoFrame::Outputs(outputs) => {
+                self.latest_project_outputs = outputs;
+                self.latest_output = None;
+            }
+        }
+        let mixed = self
+            .audio
+            .collect_render()
+            .map_err(NativeRealizationError::RealizerThread)?;
+        let audio = Some(mixed.block);
+        let live_audio = mixed.live;
+        let override_audio = mixed.overrides;
+        let audio_meters = mixed.meters;
+        let rendered_audio = mixed.rendered;
+
         if let Some(meters) = audio_meters {
             let sequence = self
                 .audio_meter_sequence
@@ -7867,7 +7950,18 @@ impl NativeDaemon {
         self.advance_stream_routes(server)?;
         self.sample_disk_space(now);
         self.observe_native_telemetry();
-        Ok(outcome.runtime_events)
+        if let Some(trace) = &mut self.pacing_trace {
+            let finished = Instant::now();
+            let counters = trace_before.zip(pacing_trace::CpuCounters::read());
+            trace.frame(
+                deadline,
+                frame_started,
+                (finish_started, finished),
+                counters,
+                command,
+            );
+        }
+        Ok(events)
     }
 
     #[allow(clippy::unused_self)]

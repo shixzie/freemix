@@ -59,6 +59,8 @@ enum VideoCommand {
 /// The control side's handle to the video realizer thread.
 pub(crate) struct NativeVideoHandle {
     commands: SyncSender<VideoCommand>,
+    /// The compose submitted and not collected yet.
+    pending: Option<Receiver<VideoRenderOutcome>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -75,17 +77,20 @@ impl NativeVideoHandle {
             .spawn(move || video_thread(&runtime, &receiver))?;
         Ok(Self {
             commands,
+            pending: None,
             thread: Some(thread),
         })
     }
 
-    /// Composes one job and waits for its pictures.
+    /// Submits one compose; [`Self::collect`] waits for its pictures.
     ///
     /// # Errors
     ///
-    /// Returns the video thread stopping; a compose failure is in the
-    /// outcome, so the caller can restore the registries.
-    pub(crate) fn render(&mut self, job: VideoRenderJob) -> Result<VideoRenderOutcome, String> {
+    /// Returns the video thread stopping or a compose already submitted.
+    pub(crate) fn submit(&mut self, job: VideoRenderJob) -> Result<(), String> {
+        if self.pending.is_some() {
+            return Err("a previous video compose was not collected".to_owned());
+        }
         let (reply, answer) = sync_channel(0);
         self.commands
             .send(VideoCommand::Render {
@@ -93,6 +98,21 @@ impl NativeVideoHandle {
                 reply,
             })
             .map_err(|_| "the video thread stopped".to_owned())?;
+        self.pending = Some(answer);
+        Ok(())
+    }
+
+    /// Waits for the submitted compose.
+    ///
+    /// # Errors
+    ///
+    /// Returns the video thread stopping; a compose failure is in the
+    /// outcome, so the caller can restore the registries.
+    pub(crate) fn collect(&mut self) -> Result<VideoRenderOutcome, String> {
+        let answer = self
+            .pending
+            .take()
+            .ok_or_else(|| "no video compose was submitted".to_owned())?;
         answer
             .recv()
             .map_err(|_| "the video thread stopped".to_owned())

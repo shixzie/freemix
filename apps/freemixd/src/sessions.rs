@@ -907,18 +907,6 @@ pub(super) fn run(
             return Ok(shutdown_for_reason(reason, &mut peers, control));
         }
 
-        // A Program frame that came due while the last pass served peers,
-        // devices, or the web gateway is realized before this pass's own
-        // peer work, so a slow write or handshake cannot stack a second
-        // pass in front of an overdue frame. The later tick still catches
-        // up a loop that is more than one frame behind.
-        if let Some(native) = native.as_deref_mut()
-            && let Err(error) = native.tick_if_due(&mut control.borrow_mut(), authority)
-        {
-            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
-            return Err(error);
-        }
-
         if let Some(web) = web {
             loop {
                 let Ok(Some(event)) = web.try_event() else {
@@ -1399,20 +1387,6 @@ pub(super) fn run(
         }
         // The control borrow ends before a failure shuts the peers down,
         // which borrows it again.
-        let ticked = match native.as_deref_mut() {
-            Some(native) => native.tick_if_due(&mut control.borrow_mut(), authority),
-            None => simulated_pacer.poll(
-                &mut control.borrow_mut(),
-                authority,
-                durable.project().settings().frame_rate,
-                durable.position().frames_rendered,
-                Instant::now(),
-            ),
-        };
-        if let Err(error) = ticked {
-            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
-            return Err(error);
-        }
         let settling = control.borrow().work_in_flight();
         if !settling
             && let Err(error) = runtime.end_triggers.borrow_mut().poll(
@@ -1426,6 +1400,20 @@ pub(super) fn run(
                 ready_turn.is_none(),
             )
         {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
+        }
+        let ticked = match native.as_deref_mut() {
+            Some(native) => native.begin_frame_if_due(&mut control.borrow_mut(), authority),
+            None => simulated_pacer.poll(
+                &mut control.borrow_mut(),
+                authority,
+                durable.project().settings().frame_rate,
+                durable.position().frames_rendered,
+                Instant::now(),
+            ),
+        };
+        if let Err(error) = ticked {
             shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
             return Err(error);
         }
@@ -1657,6 +1645,14 @@ pub(super) fn run(
         }
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
             return Ok(shutdown_for_reason(reason, &mut peers, control));
+        }
+        // The frame's audio and video jobs ran while the pass served its
+        // peers; collect them and run the frame's consumers now.
+        if let Some(native) = native.as_deref_mut()
+            && let Err(error) = native.finish_frame(&mut control.borrow_mut(), authority)
+        {
+            shutdown_peers(&mut peers, control, &ShutdownQueue::Replace);
+            return Err(error);
         }
         // Preview's composite and tap use the slack left after this pass's
         // peer work, never the slot before the next Program frame.
