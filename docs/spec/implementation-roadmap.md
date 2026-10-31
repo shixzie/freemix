@@ -5443,15 +5443,25 @@ moves between air and Preview or is taken again, is identical under journal
 replay because it is derived from realized engine state per frame, and is
 saved in `project.json` `title_timelines` so a restored daemon continues it;
 clock titles refresh at the bounded title rate. `freemix-cli title-input-add`
-imports clock templates. Remaining gaps: no shared project or engine clock
-registry, so title clocks are per title, not operator-controllable timers,
-and not exposed through the protocol, CLI commands, or UI; no project-level
+imports clock templates. A show now defines its own named production clocks
+(SW-013, schema 106): timer (count up or down, preset, optional count-up
+limit, stop or overrun, duration format), time of day (canonical POSIX zone
+and preset), media remaining, or stream/record/replay/MultiCorder/external
+session timer, persisted strictly in `project.json` and canonicalized on
+load; `freemix-cli clock-add`, `clock-remove`, and `clock-list` author them
+offline. The engine builds a live `fm-clock` registry from those definitions
+on start and restore, advances timers on its monotonic frame clock, and
+exposes the readings plus start, pause, reset, set, adjust, preset, zone, and
+format controls to callers. Remaining gaps: the registry is not yet on the
+control protocol, so clients, Studio, the Web pages, and cues cannot read or
+drive it; titles still read their own template clocks rather than the shared
+registry; media and session clocks have no engine feed yet; no project-level
 time zone (each time-of-day clock names its zone); templates cannot show
-media remaining, session, or playlist clocks; designer compositions and crawls take no clock
-source; an IANA `TZif` parser exists (`fm_clock::production::TzifZone`) but
-title clocks still name POSIX rules; no leap seconds, drop-frame timecode,
-playback-speed-aware media remaining, or locale formats. `SW-013` remains
-planned.
+media remaining, session, or playlist clocks; designer compositions and
+crawls take no clock source; an IANA `TZif` parser exists
+(`fm_clock::production::TzifZone`) but title clocks still name POSIX rules;
+no leap seconds, drop-frame timecode, playback-speed-aware media remaining,
+or locale formats. `SW-013` remains planned.
 
 
 Current implementation boundary for item 8: `fm-automation` provides a
