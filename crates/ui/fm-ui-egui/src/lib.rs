@@ -1534,6 +1534,17 @@ fn value_intent(state: &StudioUiState, target: MidiValueTarget, input: MidiInput
     }
 }
 
+/// The 0-127 lamp or motor position one continuous value shows for `state`.
+fn value_feedback(state: &StudioUiState, target: MidiValueTarget) -> Option<u8> {
+    match target {
+        MidiValueTarget::MonitorLevel => {
+            let gain = state.view.as_ref()?.audio_mixer.monitor.gain_millidb;
+            let clamped = gain.clamp(-96_000, 24_000);
+            u8::try_from((clamped + 96_000) * 127 / 120_000).ok()
+        }
+    }
+}
+
 /// The lamp state of one console action: `Some(true)` while it shows an
 /// active state, `Some(false)` while it shows an inactive one, `None` when
 /// the action has no visible state.
@@ -2194,7 +2205,8 @@ impl StudioShell {
     /// action has no visible state report nothing.
     #[must_use]
     pub fn midi_feedback(&self, state: &StudioUiState) -> Vec<MidiFeedback> {
-        self.key_profiles
+        let mut feedback: Vec<MidiFeedback> = self
+            .key_profiles
             .midi
             .bindings()
             .filter_map(|(trigger, action)| {
@@ -2203,7 +2215,16 @@ impl StudioShell {
                     value: if lit { 127 } else { 0 },
                 })
             })
-            .collect()
+            .collect();
+        feedback.extend(
+            self.key_profiles
+                .midi
+                .value_bindings()
+                .filter_map(|(trigger, target)| {
+                    value_feedback(state, target).map(|value| MidiFeedback { trigger, value })
+                }),
+        );
+        feedback
     }
 
     /// Tells the console which MIDI controllers the host reads, by name.
@@ -5226,5 +5247,49 @@ mod tests {
             ] => assert_eq!(*gain_millidb, 24_000),
             other => panic!("unexpected intents: {other:?}"),
         }
+    }
+    /// RC-005: a controller bound to the monitor level receives the current
+    /// level as a 0-127 value, so a motor fader follows the console.
+    #[test]
+    fn midi_value_feedback_maps_the_monitor_level() {
+        let mut shell = StudioShell::default();
+        let mut state = crate::hover_audit::bank_fixture();
+        let trigger = MidiTrigger::new(MidiControlKind::Control, 1, 7).unwrap();
+        assert!(
+            shell
+                .key_profiles
+                .midi
+                .bind_value(trigger, MidiValueTarget::MonitorLevel)
+        );
+        state
+            .view
+            .as_mut()
+            .unwrap()
+            .audio_mixer
+            .monitor
+            .gain_millidb = 0;
+        assert_eq!(
+            shell.midi_feedback(&state),
+            [MidiFeedback {
+                trigger,
+                value: 101
+            }]
+        );
+        state
+            .view
+            .as_mut()
+            .unwrap()
+            .audio_mixer
+            .monitor
+            .gain_millidb = 24_000;
+        assert_eq!(shell.midi_feedback(&state)[0].value, 127);
+        state
+            .view
+            .as_mut()
+            .unwrap()
+            .audio_mixer
+            .monitor
+            .gain_millidb = -96_000;
+        assert_eq!(shell.midi_feedback(&state)[0].value, 0);
     }
 }
