@@ -2955,6 +2955,11 @@ fn operator_page_edits_strip_fx_within_the_session_role() {
         "fxServerCode(target) !== edit.retry.base",
         "function fxGate(target) {\n    return gate(\"audio\", target === \"master\" || target.startsWith(\"aux:\") ? undefined : target);\n  }",
         "id=\"fx-panel\"",
+        "show.auxBuses = parseAuxBuses(required(record, \"audio_aux_buses\"))",
+        "[\"payload\", \"audio_aux_bus_level\"], [\"bus\", target.slice(4).toUpperCase()]",
+        "required(record, \"operation\") === \"audio_aux_bus_level\"",
+        "required(record, \"operation\") === \"audio_aux_bus_dsp\"",
+        "row.querySelector(\".mute\").addEventListener(\"click\", () => toggleAuxMute(target));",
     ] {
         assert!(page.contains(source), "{source}");
     }
