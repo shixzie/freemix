@@ -874,6 +874,13 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Imports every local file an M3U/M3U8 playlist names into the bundle
+    /// and appends it to a media list (IN-006).
+    InputMediaListImport {
+        path: PathBuf,
+        input: u128,
+        playlist: PathBuf,
+    },
     /// One input lifecycle edit (IN-026), locally (category list,
     /// category, colour label, pause, close) or on a server (also
     /// duplicate, source replacement, and batch import).
@@ -2869,6 +2876,17 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                 shuffle_seed,
                 key,
                 expected_revision,
+            })
+        }
+        "input-media-list-import" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let playlist = required_path(&mut arguments, "playlist path")?;
+            reject_extra(&mut arguments)?;
+            Ok(Command::InputMediaListImport {
+                path,
+                input,
+                playlist,
             })
         }
         "input-media-list-item" => {

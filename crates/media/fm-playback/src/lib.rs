@@ -12,6 +12,7 @@ mod clip;
 mod image_folder;
 mod image_sequence;
 mod list;
+mod m3u;
 mod media;
 mod playlist;
 mod slideshow;
@@ -37,6 +38,10 @@ pub use list::{
     ActivationCause, ListAction, ListControlError, ListError, ListEvent, ListGo, ListGoError,
     ListItem, ListOptions, ListPlayer, ListTick, ListTickError, MAX_LIST_GO_RECORDS,
     MAX_LIST_ITEMS, MAX_PENDING_LIST_GO, MediaList, list_play_order,
+};
+pub use m3u::{
+    M3uEntry, M3uError, MAX_M3U_BYTES, MAX_M3U_ENTRIES, MAX_M3U_PATH_BYTES, MAX_M3U_TITLE_BYTES,
+    parse_m3u,
 };
 pub use media::{
     AudioPlan, AudioSpeedPolicy, AudioTrack, MAX_PLAYBACK_RATE, MIN_PLAYBACK_RATE,

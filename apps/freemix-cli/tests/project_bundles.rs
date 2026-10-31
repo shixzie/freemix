@@ -817,3 +817,82 @@ fn title_apply_row_writes_a_mapped_row_into_the_project() {
     );
     assert_eq!(fields[1].revision, 2);
 }
+
+#[test]
+fn input_media_list_import_appends_playlist_files() {
+    let root = TempRoot::new();
+    let show = root.path("list.freemix");
+    new_project(&show, "List");
+    assert_success(&run(&[
+        "media-input-add",
+        text(&show),
+        "9",
+        "Clip",
+        "asset://clip.mkv",
+    ]));
+    let store = ProjectStore::new(&show).unwrap();
+    let stored = store.load().unwrap();
+    let mut project = stored.project().clone();
+    project.set_media_lists(
+        [(
+            input(9),
+            fm_model::MediaList::new(
+                vec![fm_model::MediaListItem::new(1, "asset://clip.mkv")],
+                fm_model::MediaListOptions::default(),
+            )
+            .unwrap(),
+        )]
+        .into_iter()
+        .collect(),
+    );
+    store.save(&stored.with_project(project).unwrap()).unwrap();
+
+    let first = root.path("first.mp4");
+    fs::write(&first, b"one").unwrap();
+    let clips = root.path("clips");
+    fs::create_dir_all(&clips).unwrap();
+    fs::write(clips.join("second.mkv"), b"two").unwrap();
+    let playlist = root.path("list.m3u");
+    fs::write(
+        &playlist,
+        "#EXTM3U\n#EXTINF:5,Second clip\nclips/second.mkv\nfirst.mp4\n",
+    )
+    .unwrap();
+
+    let out = assert_success(&run(&[
+        "input-media-list-import",
+        text(&show),
+        "9",
+        text(&playlist),
+    ]));
+    assert!(out.contains("media-list-import:"), "{out}");
+    assert_eq!(
+        out.lines().last(),
+        Some("input=9 items=3 added=2")
+    );
+    let loaded = load(&show);
+    let list = loaded.project().media_list(input(9)).unwrap();
+    assert_eq!(list.items.len(), 3);
+    assert_eq!(list.items[1].id, 2);
+    assert_eq!(list.items[1].title.as_deref(), Some("Second clip"));
+    assert_eq!(list.items[2].title.as_deref(), Some("first"));
+    assert_eq!(list.active, 1);
+    for item in &list.items[1..] {
+        let key = item.asset_uri.strip_prefix("asset://").unwrap();
+        assert!(show.join("assets").join(key).is_file(), "{}", item.asset_uri);
+    }
+
+    // A missing entry refuses the whole import before anything is copied.
+    let manifest = fs::read(show.join("project.json")).unwrap();
+    fs::write(&playlist, "missing.mp4\n").unwrap();
+    assert_failure_contains(
+        &run(&[
+            "input-media-list-import",
+            text(&show),
+            "9",
+            text(&playlist),
+        ]),
+        "not a file",
+    );
+    assert_eq!(fs::read(show.join("project.json")).unwrap(), manifest);
+}

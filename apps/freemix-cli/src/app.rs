@@ -72,9 +72,9 @@ static PROJECT_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static PPM_OUTPUT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
-struct ProjectEngine {
+pub(crate) struct ProjectEngine {
     project: Project,
-    engine: Engine,
+    pub(crate) engine: Engine,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -816,6 +816,11 @@ pub fn run(command: Command) -> AppResult<()> {
                 expected_revision,
             )?;
         }
+        Command::InputMediaListImport {
+            path,
+            input,
+            playlist,
+        } => crate::media_list_import::import(&path, input, &playlist)?,
         Command::InputLifecycle {
             target,
             operation,
@@ -3015,7 +3020,7 @@ fn engine_from_project(project: Project) -> AppResult<ProjectEngine> {
     Ok(ProjectEngine { project, engine })
 }
 
-fn mutate(
+pub(crate) fn mutate(
     path: &Path,
     command: EngineCommand,
     ticks: u32,
@@ -4880,7 +4885,7 @@ fn load_engine(path: &Path) -> AppResult<ProjectEngine> {
 }
 
 /// Restores an engine for reporting only, without opening the journal.
-fn inspect_engine(path: &Path) -> AppResult<ProjectEngine> {
+pub(crate) fn inspect_engine(path: &Path) -> AppResult<ProjectEngine> {
     restore_project_engine(path, &inspect_stored_project(path)?)
 }
 
@@ -7022,6 +7027,7 @@ Usage:
   freemix-cli remote-input-media-list-navigate <address> <input-id> <next|previous|first|last|goto <position>|item <id>> [--key <key>] [--expect <revision>]
   freemix-cli input-media-list-options <show.freemix> <input-id> <auto-next on|off> <auto-first on|off> <loop on|off> <shuffle seed|off> [--key <key>] [--expect <revision>]
   freemix-cli input-media-list-item <show.freemix> <input-id> add <asset://key> <title|-> | remove <item-id> [--key <key>] [--expect <revision>]
+  freemix-cli input-media-list-import <show.freemix> <input-id> <playlist.m3u>
   freemix-cli input-pages <show.freemix>
   freemix-cli input-page <show.freemix> <input-id> <next|previous|first|last|goto <page>> [--key <key>] [--expect <revision>]
   freemix-cli input-categories <show.freemix> [<id>=<name>...] [--key <key>] [--expect <revision>]

@@ -4848,9 +4848,12 @@ Programmed GO (Play, Next, Previous, First, Stop) lands at an absolute or
 relative frame, is idempotent by ID, and records executed, ignored, or
 cancelled outcomes under explicit item, pending, and history limits. Remaining
 gaps: no daemon, protocol, persistence, or vMix API wiring; a cross-input
-`ListGoBank` model exists but nothing drives it; no M3U or file-list import,
-no transitions or variable speed between items, and no real-media
-acceptance. `IN-006` and `OR-015` remain planned.
+`ListGoBank` model exists but nothing drives it; `fm-playback` parses bounded
+M3U/M3U8 local-file playlists (`#EXTINF` titles, comments, BOM, CRLF) and
+`freemix-cli input-media-list-import` imports each named file into the bundle
+and appends it to a saved media list, but list items still have no video
+transitions beyond the per-list one and no variable speed between items, and
+there is no real-media acceptance. `IN-006` and `OR-015` remain planned.
 
 Current implementation boundary for item 5 Media List inputs (`IN-006`): a
 list input is a media input whose source is its active item's file, plus a

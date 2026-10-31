@@ -2328,6 +2328,7 @@ dependencies = [
  "fm-grade",
  "fm-model",
  "fm-persistence",
+ "fm-playback",
  "fm-plugin-host-api",
  "fm-presentations",
  "fm-preset-file",

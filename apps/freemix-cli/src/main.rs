@@ -2,6 +2,7 @@ mod app;
 mod args;
 mod auto_key;
 mod grading;
+mod media_list_import;
 mod presets;
 mod project_bundle;
 mod remote;
