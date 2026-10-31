@@ -42,6 +42,7 @@ pub use visca_ip_transport::{
 };
 pub use visca_udp_adapter::{ViscaUdpAdapter, ViscaUdpCamera};
 pub use virtual_input::{
-    MAX_PRESET_THUMBNAIL_BYTES, MAX_PRESET_VIRTUAL_INPUTS, MAX_PRESET_VIRTUAL_INPUT_NAME_BYTES,
-    PresetSwitch, PresetVirtualInput, PresetVirtualInputError, PresetVirtualInputs,
+    MAX_PRESET_THUMBNAIL_BYTES, MAX_PRESET_VIRTUAL_INPUTS, MAX_PRESET_VIRTUAL_INPUT_DOCUMENT_BYTES,
+    MAX_PRESET_VIRTUAL_INPUT_NAME_BYTES, PresetSwitch, PresetVirtualInput,
+    PresetVirtualInputDocumentError, PresetVirtualInputError, PresetVirtualInputs,
 };

@@ -9,6 +9,9 @@
 use core::fmt;
 use std::collections::BTreeMap;
 
+/// Largest canonical preset virtual-input document, in bytes.
+pub const MAX_PRESET_VIRTUAL_INPUT_DOCUMENT_BYTES: usize = 256 * 1024;
+
 use crate::{CameraId, PresetId, PresetVirtualInputId, PtzIntent};
 
 /// Most preset virtual inputs one registry may hold.
@@ -219,6 +222,163 @@ impl PresetVirtualInputs {
     }
 }
 
+/// Why a preset virtual-input document is invalid.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PresetVirtualInputDocumentError {
+    TooLarge { maximum: usize },
+    Version { found: String },
+    Line { index: usize },
+    Invalid(PresetVirtualInputError),
+}
+
+impl fmt::Display for PresetVirtualInputDocumentError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLarge { maximum } => {
+                write!(formatter, "preset virtual-input document exceeds {maximum} bytes")
+            }
+            Self::Version { found } => {
+                write!(formatter, "preset virtual-input document version {found:?} is not 1")
+            }
+            Self::Line { index } => {
+                write!(formatter, "preset virtual-input line {index} is malformed")
+            }
+            Self::Invalid(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for PresetVirtualInputDocumentError {}
+
+impl PresetVirtualInputs {
+    /// Serializes the registry as a strict, versioned text document.
+    #[must_use]
+    pub fn to_document(&self) -> String {
+        use core::fmt::Write as _;
+        let mut output = String::from("freemix-ptz-presets 1
+");
+        let _ = writeln!(output, "count {}", self.entries.len());
+        for input in self.entries.values() {
+            let _ = writeln!(
+                output,
+                "preset {} {} {} {} {}",
+                encode_text(input.id.camera_id().as_str()),
+                input.id.preset_id().get(),
+                u8::from(input.enabled),
+                encode_text(&input.name),
+                input
+                    .thumbnail
+                    .as_ref()
+                    .map_or_else(|| "none".to_owned(), |thumbnail| encode_text(thumbnail)),
+            );
+        }
+        output
+    }
+
+    /// Parses a strict preset virtual-input document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PresetVirtualInputDocumentError`] for an oversized,
+    /// malformed, or out-of-contract document without accepting a partial
+    /// result.
+    pub fn from_document(
+        document: &str,
+    ) -> Result<Self, PresetVirtualInputDocumentError> {
+        if document.len() > MAX_PRESET_VIRTUAL_INPUT_DOCUMENT_BYTES {
+            return Err(PresetVirtualInputDocumentError::TooLarge {
+                maximum: MAX_PRESET_VIRTUAL_INPUT_DOCUMENT_BYTES,
+            });
+        }
+        let mut lines = document.lines().enumerate();
+        let Some((_, header)) = lines.next() else {
+            return Err(PresetVirtualInputDocumentError::Line { index: 1 });
+        };
+        if header != "freemix-ptz-presets 1" {
+            return Err(PresetVirtualInputDocumentError::Version {
+                found: header.to_owned(),
+            });
+        }
+        let Some((_, count_line)) = lines.next() else {
+            return Err(PresetVirtualInputDocumentError::Line { index: 2 });
+        };
+        let Some(count) = count_line.strip_prefix("count ") else {
+            return Err(PresetVirtualInputDocumentError::Line { index: 2 });
+        };
+        let count: usize = count
+            .parse()
+            .map_err(|_| PresetVirtualInputDocumentError::Line { index: 2 })?;
+        if count > MAX_PRESET_VIRTUAL_INPUTS {
+            return Err(PresetVirtualInputDocumentError::Invalid(
+                PresetVirtualInputError::TooMany,
+            ));
+        }
+        let mut inputs = Self::new();
+        let mut index = 2;
+        for _ in 0..count {
+            let Some((line_index, line)) = lines.next() else {
+                return Err(PresetVirtualInputDocumentError::Line { index: index + 1 });
+            };
+            index = line_index + 2;
+            let bad = || PresetVirtualInputDocumentError::Line { index };
+            let parts: Vec<&str> = line.split(' ').collect();
+            let [prefix, camera, preset, enabled, name, thumbnail] = parts[..] else {
+                return Err(bad());
+            };
+            if prefix != "preset" {
+                return Err(bad());
+            }
+            let camera = CameraId::new(decode_text(camera).ok_or_else(bad)?).map_err(|_| bad())?;
+            let preset: u16 = preset.parse().map_err(|_| bad())?;
+            let enabled = match enabled {
+                "0" => false,
+                "1" => true,
+                _ => return Err(bad()),
+            };
+            let name = decode_text(name).ok_or_else(bad)?;
+            let thumbnail = match thumbnail {
+                "none" => None,
+                thumbnail => Some(decode_text(thumbnail).ok_or_else(bad)?),
+            };
+            let input = PresetVirtualInput {
+                id: PresetVirtualInputId::new(camera, PresetId::new(preset)),
+                name,
+                thumbnail,
+                enabled,
+            };
+            inputs
+                .insert(input)
+                .map_err(PresetVirtualInputDocumentError::Invalid)?;
+        }
+        if lines.next().is_some() {
+            return Err(PresetVirtualInputDocumentError::Line { index: index + 1 });
+        }
+        Ok(inputs)
+    }
+}
+
+fn encode_text(text: &str) -> String {
+    use core::fmt::Write as _;
+    let mut output = String::from("x");
+    for byte in text.bytes() {
+        let _ = write!(output, "{byte:02x}");
+    }
+    output
+}
+
+fn decode_text(token: &str) -> Option<String> {
+    let hex = token.strip_prefix('x')?;
+    if !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for chunk in hex.as_bytes().chunks(2) {
+        let pair = core::str::from_utf8(chunk).ok()?;
+        bytes.push(u8::from_str_radix(pair, 16).ok()?);
+    }
+    String::from_utf8(bytes).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,5 +446,29 @@ mod tests {
             inputs.insert(entry("cam", 999, "Overflow")),
             Err(PresetVirtualInputError::TooMany)
         );
+    }
+
+    #[test]
+    fn documents_round_trip_and_reject_non_canonical_or_malformed_input() {
+        let mut inputs = PresetVirtualInputs::new();
+        inputs
+            .insert(entry("cam-a", 1, "Wide").with_thumbnail("asset://thumbs/wide.png"))
+            .unwrap();
+        inputs.insert(entry("cam-b", 2, "Close")).unwrap();
+        let document = inputs.to_document();
+        assert_eq!(PresetVirtualInputs::from_document(&document).unwrap(), inputs);
+        for malformed in [
+            document.replacen("freemix-ptz-presets 1", "freemix-ptz-presets 2", 1),
+            document.replacen("count 2", "count 1", 1),
+            document.replacen("count 2", "count 3", 1),
+            document.replacen("preset x", "preset", 1),
+            document.replacen("count 2", "count 2 ", 1),
+            format!("{document}extra\n"),
+        ] {
+            assert!(
+                PresetVirtualInputs::from_document(&malformed).is_err(),
+                "{malformed:?}"
+            );
+        }
     }
 }
