@@ -5167,6 +5167,9 @@ fn engine_audio_mixer_edit(edit: AudioMixerArgs) -> AppResult<fm_engine::EngineA
                     .transpose()?,
             }
         }
+        AudioMixerArgs::AuxDevice { bus, device } => {
+            fm_engine::EngineAudioMixerEdit::SetAuxBusDevice { bus, device }
+        }
     })
 }
 
@@ -5260,6 +5263,9 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
         }
         fm_engine::EngineAudioMixerEdit::SetAuxBusDsp { bus, chain } => {
             fm_protocol::AudioMixerOperation::SetAuxBusDsp { bus, chain }
+        }
+        fm_engine::EngineAudioMixerEdit::SetAuxBusDevice { bus, device } => {
+            fm_protocol::AudioMixerOperation::SetAuxBusDevice { bus, device }
         }
         fm_engine::EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => {
             fm_protocol::AudioMixerOperation::SetOutputBus {
@@ -5368,6 +5374,7 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppRes
                     muted: value.muted,
                 },
                 dsp: value.dsp,
+                device: value.device.clone(),
             },
         )?;
     }
@@ -5512,6 +5519,7 @@ fn sync_audio_mixer(project: &mut Project, show: &ShowState) -> AppResult<()> {
                         .expect("engine aux bus gain is bounded by the model contract"),
                     muted: value.state.muted,
                     dsp: value.dsp,
+                    device: value.device.clone(),
                 },
             )
             .map_err(|error| AppFailure(format!("project cannot take aux {bus}: {error}")))?;

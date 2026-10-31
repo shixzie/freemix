@@ -140,6 +140,11 @@ pub(crate) struct NativeDaemon {
     /// The headphone output: the monitor bus on a local audio device at its
     /// own level (AU-001).
     pub(crate) monitor_output: freemixd::monitor_output::MonitorOutputSlot,
+    /// Each aux bus on its own local audio device (AU-002, Protocol 2.135),
+    /// bus A first, at unity: the mixer already applied the bus fader and
+    /// mute.
+    pub(crate) aux_bus_outputs:
+        [freemixd::monitor_output::MonitorOutputSlot; fm_model::AUX_BUS_COUNT],
     pub(crate) stream_status_sequence: u64,
     pub(crate) pending_stream_status: Option<StreamStatusMessage>,
     /// Realized recorder slot bookkeeping behind `recorder_status`
@@ -435,6 +440,18 @@ impl NativeDaemon {
                     monitor.muted,
                 )
             },
+            aux_bus_outputs: std::array::from_fn(|index| {
+                let bus = stored.project().aux_buses().get(
+                    fm_model::AuxBusNumber::new(u8::try_from(index + 1).unwrap())
+                        .expect("aux bus numbers are 1 through 7"),
+                );
+                freemixd::monitor_output::MonitorOutputSlot::new(
+                    "ffmpeg".into(),
+                    bus.device.clone(),
+                    0,
+                    false,
+                )
+            }),
             stream_status_sequence: 0,
             pending_stream_status: None,
             recorder_status: recorder_status::RecorderStatusTracker::default(),
@@ -2557,6 +2574,7 @@ impl NativeDaemon {
         let video = &mut self.video;
         let audio_handle = &mut self.audio;
         let monitor_output = &mut self.monitor_output;
+        let aux_bus_outputs = &mut self.aux_bus_outputs;
         let project_plan = &mut self.project_plan;
         let projected_frame = self.projected_frame.as_ref();
         let mut fade_to_black_excluded = Vec::new();
@@ -2612,8 +2630,17 @@ impl NativeDaemon {
                     fm_engine::EngineAudioMixerUpdate::AuxBusDsp { bus, ref chain } => {
                         project_plan.set_aux_bus_dsp(bus, **chain);
                     }
+                    fm_engine::EngineAudioMixerUpdate::AuxBusDevice {
+                        bus,
+                        ref device,
+                    } => {
+                        aux_bus_outputs[bus.index()].set_device(device.clone());
+                    }
                     fm_engine::EngineAudioMixerUpdate::OutputAuxBus { output, bus } => {
                         project_plan.set_output_aux_bus(output, bus);
+                    }
+                    fm_engine::EngineAudioMixerUpdate::OutputMixMinus { output, input } => {
+                        project_plan.set_output_mix_minus(output, input);
                     }
                     fm_engine::EngineAudioMixerUpdate::MonitorDevice(ref device) => {
                         monitor_output.set_device(device.clone());
@@ -2747,6 +2774,14 @@ impl NativeDaemon {
                 .map_err(|_| AppFailure("audio meter interval exceeds memory".into()))?;
             self.monitor_output
                 .push(&meters.monitor_planes, samples, meters.sample_rate);
+            for (index, output) in self.aux_bus_outputs.iter_mut().enumerate() {
+                let start = index * meters.channels;
+                output.push(
+                    &meters.aux_planes[start..start + meters.channels],
+                    samples,
+                    meters.sample_rate,
+                );
+            }
             let output = self.monitor_output.state();
             self.pending_audio_meters = Some(audio_meters_message(
                 server,

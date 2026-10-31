@@ -99,6 +99,8 @@ pub(crate) struct OwnedAudioMeters {
     pub dynamics: Vec<(Option<InputId>, DspDynamicsReading)>,
     pub loudness: Vec<(Option<InputId>, LoudnessReading)>,
     pub aux: Vec<ChannelMeter>,
+    /// Every aux bus's samples, bus-major (AU-002, Protocol 2.135).
+    pub aux_planes: Vec<Vec<f32>>,
 }
 
 /// One frame's mixed audio and the status the control thread publishes.
@@ -445,6 +447,7 @@ fn owned_meters(meters: &NativeAudioMeters<'_>) -> OwnedAudioMeters {
         dynamics: meters.dynamics.to_vec(),
         loudness: meters.loudness.to_vec(),
         aux: meters.aux.to_vec(),
+        aux_planes: meters.aux_planes.to_vec(),
     }
 }
 

@@ -15,7 +15,7 @@ pub use fm_types::audio_bus::{
 
 use crate::InputGainMilliDb;
 
-/// One aux bus's name, fader, mute, and DSP chain.
+/// One aux bus's name, fader, mute, DSP chain, and output device.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuxBus {
     pub name: String,
@@ -23,11 +23,14 @@ pub struct AuxBus {
     pub muted: bool,
     /// The bus's DSP chain (AU-002), after its fader and mute.
     pub dsp: fm_types::strip_dsp::StripDsp,
+    /// The local audio output device the bus plays on (AU-002), or `None`
+    /// for meter-only.
+    pub device: Option<String>,
 }
 
 impl AuxBus {
     /// The default aux bus `number`: named "Bus A" through "Bus G", at
-    /// unity, unmuted.
+    /// unity, unmuted, metered only.
     #[must_use]
     pub fn default_for(number: AuxBusNumber) -> Self {
         Self {
@@ -35,6 +38,7 @@ impl AuxBus {
             gain: InputGainMilliDb::UNITY,
             muted: false,
             dsp: fm_types::strip_dsp::StripDsp::DEFAULT,
+            device: None,
         }
     }
 }

@@ -3151,6 +3151,15 @@ fn draw_bus_mixer_contents(
     let edit_enabled = ready && state.can_edit_project;
     let audio_reason = unavailable_reason(state, Capability::Audio);
     let edit_reason = unavailable_reason(state, Capability::EditProject);
+    // The bus output pickers need the server's device list; ask for it when
+    // the window first shows and then every few seconds while it stays open.
+    let asked_id = ui.make_persistent_id("bus-mixer-devices-listed-at");
+    let now = ui.input(|input| input.time);
+    let asked = ui.data(|data| data.get_temp::<f64>(asked_id));
+    if asked.is_none_or(|asked| now < asked || now - asked >= OUTPUT_LIST_REFRESH_SECONDS) {
+        ui.data_mut(|data| data.insert_temp(asked_id, now));
+        intents.push(StudioIntent::RequestAudioOutputDevices);
+    }
     ui.label(caption(l.text(Msg::BusMixerNote)));
     ui.add_space(6.0);
     for (number, bus) in fm_types::audio_bus::AuxBusNumber::ALL
@@ -3232,6 +3241,75 @@ fn draw_bus_mixer_contents(
                     .monospace()
                     .color(muted_color()),
             );
+            // The bus's local output device (Protocol 2.135): meter-only or
+            // one of the server's listed outputs.
+            let current = bus.device.as_deref();
+            let inventory = view.audio_output_inventory.as_ref();
+            let shown = current.map_or_else(
+                || l.text(Msg::BusMixerDeviceNone).to_owned(),
+                |device| {
+                    inventory
+                        .and_then(|inventory| inventory.device(device))
+                        .map_or_else(
+                            || l.text(Msg::BusMixerDeviceMissing).to_owned(),
+                            |device| {
+                                if device.description.is_empty() {
+                                    device.device.clone()
+                                } else {
+                                    device.description.clone()
+                                }
+                            },
+                        )
+                },
+            );
+            let mut pick = None;
+            egui::ComboBox::from_id_salt(("bus-mixer-device", number.index()))
+                .selected_text(shown)
+                .width(120.0)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(current.is_none(), l.text(Msg::BusMixerDeviceNone))
+                        .clicked()
+                    {
+                        pick = Some(None);
+                    }
+                    match inventory {
+                        Some(inventory) if inventory.devices.is_empty() => {
+                            ui.label(RichText::new(l.text(Msg::BusMixerNoDeviceList)).weak());
+                        }
+                        Some(inventory) => {
+                            for device in &inventory.devices {
+                                let label = if device.description.is_empty() {
+                                    device.device.clone()
+                                } else {
+                                    device.description.clone()
+                                };
+                                if ui
+                                    .selectable_label(
+                                        current == Some(device.device.as_str()),
+                                        label,
+                                    )
+                                    .clicked()
+                                {
+                                    pick = Some(Some(device.device.clone()));
+                                }
+                            }
+                        }
+                        None => {
+                            ui.label(RichText::new(l.text(Msg::BusMixerNoDeviceList)).weak());
+                        }
+                    }
+                })
+                .response
+                .hint(l.text(Msg::BusMixerDeviceHover), edit_reason);
+            if let Some(device) = pick {
+                intents.push(StudioIntent::AudioMixer(
+                    fm_protocol::AudioMixerOperation::SetAuxBusDevice {
+                        bus: number,
+                        device,
+                    },
+                ));
+            }
         });
         ui.horizontal(|ui| {
             ui.label(caption(l.text(Msg::BusMixerDsp)));

@@ -18,7 +18,7 @@ use fm_protocol::{
     encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.134\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.135\tid=a\tidempotency_key=k";
 
 fn scene(value: u128) -> WireSceneId {
     WireSceneId::new(NonZeroU128::new(value).unwrap())

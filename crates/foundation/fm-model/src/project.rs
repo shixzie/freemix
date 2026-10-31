@@ -933,7 +933,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(94);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(95);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1386,6 +1386,10 @@ impl Project {
         value: crate::AuxBus,
     ) -> Result<(), SetAudioMixerError> {
         crate::validate_audio_group_name(&value.name).map_err(SetAudioMixerError::Label)?;
+        if let Some(device) = &value.device {
+            crate::validate_audio_monitor_device(device)
+                .map_err(SetAudioMixerError::MonitorDevice)?;
+        }
         self.aux_buses.set(bus, value);
         Ok(())
     }
@@ -1408,6 +1412,33 @@ impl Project {
         dsp: fm_types::strip_dsp::StripDsp,
     ) {
         self.aux_buses.set_dsp(bus, dsp);
+    }
+
+    /// The local output device aux bus `bus` plays on, or `None`.
+    #[must_use]
+    pub fn aux_bus_device(&self, bus: crate::AuxBusNumber) -> Option<&str> {
+        self.aux_buses.get(bus).device.as_deref()
+    }
+
+    /// Sets aux bus `bus`'s local output device, or `None` for meter-only.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SetAudioMixerError::MonitorDevice`] for an unusable name;
+    /// nothing changes.
+    pub fn set_aux_bus_device(
+        &mut self,
+        bus: crate::AuxBusNumber,
+        device: Option<String>,
+    ) -> Result<(), SetAudioMixerError> {
+        if let Some(device) = &device {
+            crate::validate_audio_monitor_device(device)
+                .map_err(SetAudioMixerError::MonitorDevice)?;
+        }
+        let mut value = self.aux_buses.get(bus).clone();
+        value.device = device;
+        self.aux_buses.set(bus, value);
+        Ok(())
     }
 
     /// The outputs that hear an aux bus instead of Master (AU-002, schema

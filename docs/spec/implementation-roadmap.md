@@ -5,7 +5,7 @@
 ## What's next
 
 Audited against source, tests, and `parity.toml` at protocol 2.68 / schema 59
-(2026-10-19); items refreshed through protocol 2.134 / schema 94 (2026-10-31,
+(2026-10-19); items refreshed through protocol 2.135 / schema 95 (2026-10-31,
 at `efee1ebf`). Every parity row is still `planned` (or `blocked`); these are
 the highest-value remaining feature items, ranked. The structural work the
 2026-10-30 architecture review found (the daemon's size and its one-thread
@@ -221,7 +221,10 @@ there come before any new breadth below.
     now leave one input out of its feed (mix-minus, Protocol 2.134, schema
     94), chosen in Studio's BUSES window and the CLI, and the native mixer
     re-sums the feed without that strip exactly as the bus with the send
-    disabled, chain processing included. Remaining: device or network
+    disabled, chain processing included. Each bus can now play on its own
+    local audio output device (Protocol 2.135, schema 95), chosen in
+    Studio's BUSES window and the CLI (`audio-aux-device`), with the
+    device reopened on its own after a failure. Remaining: network
     destinations are not wired, and the legacy
     project audio bus graph is unchanged (see the Phase 3 `AU-002`
     boundary).
@@ -2702,7 +2705,12 @@ BUSES window and the CLI choose it, and the native daemon renders a
 separate feed per such output in the same mixer pass, re-summing the bus
 without the strip — bit-identical to the bus with that send disabled,
 through its DSP chain — and gives that feed the output's own Fade-to-Black
-trajectory. Remaining gaps: device or network destinations; the legacy
+trajectory. Each bus also names an optional local output device (Protocol
+2.135, schema 95): the native daemon's per-bus output slot plays the
+rendered bus after its fader, mute, and chain on `ffmpeg`'s ALSA output,
+with the same lazy open, retry, and hot-plug behavior as the monitor bus,
+and Studio's BUSES window and the CLI choose it. Remaining gaps: network
+destinations; the legacy
 project audio bus graph and each output's `audio_source` are unchanged.
 `AU-002` remains planned.
 

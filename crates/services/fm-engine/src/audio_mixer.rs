@@ -106,17 +106,21 @@ pub struct EngineAuxBus {
     pub state: EngineAudioGroupState,
     /// The bus's DSP chain, after its fader and mute.
     pub dsp: StripDsp,
+    /// The local audio output device the bus plays on (2.135), or `None`
+    /// for meter-only.
+    pub device: Option<String>,
 }
 
 impl EngineAuxBus {
     /// The default aux bus `bus`: "Bus A" through "Bus G" at unity,
-    /// unmuted.
+    /// unmuted, metered only.
     #[must_use]
     pub fn default_for(bus: AuxBusNumber) -> Self {
         Self {
             name: format!("Bus {}", bus.letter()),
             state: EngineAudioGroupState::default(),
             dsp: StripDsp::DEFAULT,
+            device: None,
         }
     }
 }
@@ -218,6 +222,12 @@ pub enum EngineAudioMixerEdit {
         /// Boxed: a chain is larger than every other command's payload.
         chain: Box<StripDsp>,
     },
+    /// Plays an aux bus on a local audio output device, or on none
+    /// (AU-002, 2.135). A project edit.
+    SetAuxBusDevice {
+        bus: AuxBusNumber,
+        device: Option<String>,
+    },
     /// Makes `output` hear aux bus `bus`, or Master for `None` (AU-002). A
     /// project edit.
     SetOutputAuxBus {
@@ -307,6 +317,7 @@ impl EngineAudioMixerEdit {
             | Self::RenameAuxBus { .. }
             | Self::SetAuxBusLevel { .. }
             | Self::SetAuxBusDsp { .. }
+            | Self::SetAuxBusDevice { .. }
             | Self::SetOutputAuxBus { .. }
             | Self::SetOutputMixMinus { .. } => None,
         }
@@ -379,6 +390,12 @@ pub enum EngineAudioMixerUpdate {
         bus: AuxBusNumber,
         chain: Box<StripDsp>,
     },
+    /// An aux bus's local output device changed, even if unchanged, so the
+    /// media plane reopens it (AU-002, 2.135).
+    AuxBusDevice {
+        bus: AuxBusNumber,
+        device: Option<String>,
+    },
     /// An output now hears an aux bus, or Master for `None` (AU-002).
     OutputAuxBus {
         output: OutputId,
@@ -436,6 +453,10 @@ impl EngineAudioMixerUpdate {
             EngineAudioMixerEdit::SetAuxBusDsp { bus, chain } => Some(Self::AuxBusDsp {
                 bus: *bus,
                 chain: chain.clone(),
+            }),
+            EngineAudioMixerEdit::SetAuxBusDevice { bus, device } => Some(Self::AuxBusDevice {
+                bus: *bus,
+                device: device.clone(),
             }),
             EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => Some(Self::OutputAuxBus {
                 output: *output,
@@ -657,6 +678,7 @@ pub(crate) fn apply(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Resul
         EngineAudioMixerEdit::RenameAuxBus { .. }
         | EngineAudioMixerEdit::SetAuxBusLevel { .. }
         | EngineAudioMixerEdit::SetAuxBusDsp { .. }
+        | EngineAudioMixerEdit::SetAuxBusDevice { .. }
         | EngineAudioMixerEdit::SetOutputAuxBus { .. }
         | EngineAudioMixerEdit::SetOutputMixMinus { .. } => apply_aux(state, edit),
     }
@@ -696,6 +718,20 @@ fn apply_aux(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Result<(), R
                 )
             })?;
             state.aux_bus_mut(*bus).state = *level;
+            Ok(())
+        }
+        EngineAudioMixerEdit::SetAuxBusDevice { bus, device } => {
+            if let Some(device) = device {
+                fm_model::validate_audio_monitor_device(device).map_err(|error| {
+                    rejection(
+                        RejectionCode::InvalidCommand,
+                        "device",
+                        "invalid",
+                        error.to_string(),
+                    )
+                })?;
+            }
+            state.aux_bus_mut(*bus).device.clone_from(device);
             Ok(())
         }
         EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => {
@@ -849,6 +885,12 @@ pub(crate) fn inverse(
             Some(EngineAudioMixerEdit::SetAuxBusDsp {
                 bus: *bus,
                 chain: Box::new(state.aux_bus(*bus).dsp),
+            })
+        }
+        EngineAudioMixerEdit::SetAuxBusDevice { bus, .. } => {
+            Some(EngineAudioMixerEdit::SetAuxBusDevice {
+                bus: *bus,
+                device: state.aux_bus(*bus).device.clone(),
             })
         }
         EngineAudioMixerEdit::SetOutputAuxBus { output, .. } => state

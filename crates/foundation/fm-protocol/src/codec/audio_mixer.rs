@@ -23,7 +23,9 @@
 //!
 //! * `audio_aux_buses` (Protocol 2.118) is seven comma-separated
 //!   `<name>~<gain_millidb>~<muted 0|1>` entries, bus A first, each name
-//!   percent-escaped and non-blank.
+//!   percent-escaped and non-blank. `audio_aux_bus_devices` (Protocol
+//!   2.135) lists the buses that play on a local output device as
+//!   `<bus>~<device>` entries, bus A first, each device percent-escaped.
 //! * Each `outputs` entry ends with the aux bus letter the output hears, or
 //!   `-` for Master (Protocol 2.118), then the input its mix-minus feed
 //!   leaves out or `-` for a full mix (Protocol 2.134). An
@@ -254,6 +256,7 @@ fn decode_aux_buses(value: &str) -> Result<[AuxBusStatus; AUX_BUS_COUNT], CodecE
                 gain_millidb: parse_gain("audio_aux_buses", gain)?,
                 muted: parse_flag("audio_aux_buses", muted)?,
                 dsp,
+                device: None,
             })
         })
         .take(AUX_BUS_COUNT + 1)
@@ -261,6 +264,50 @@ fn decode_aux_buses(value: &str) -> Result<[AuxBusStatus; AUX_BUS_COUNT], CodecE
     buses
         .try_into()
         .map_err(|_| invalid("audio_aux_buses", value))
+}
+
+/// Encodes a snapshot's `audio_aux_bus_devices`: sparse `<bus>~<device>`
+/// entries, bus A first, each device percent-escaped (2.135).
+fn encode_aux_bus_devices(buses: &[AuxBusStatus; AUX_BUS_COUNT]) -> Result<String, CodecError> {
+    let mut entries = Vec::new();
+    for (bus, status) in AuxBusNumber::ALL.into_iter().zip(buses) {
+        let Some(device) = &status.device else {
+            continue;
+        };
+        if !audio_monitor_device_is_valid(device) {
+            return Err(invalid("audio_aux_bus_devices", device.clone()));
+        }
+        entries.push(format!("{}~{}", bus.letter(), escape_bounded(device)?));
+    }
+    Ok(entries.join(","))
+}
+
+/// Applies a snapshot's sparse `audio_aux_bus_devices` to `buses`.
+fn decode_aux_bus_devices(
+    value: &str,
+    buses: &mut [AuxBusStatus; AUX_BUS_COUNT],
+) -> Result<(), CodecError> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    let mut previous = None;
+    for entry in value.split(',') {
+        let mut parts = entry.split('~');
+        let (Some(bus), Some(device), None) = (parts.next(), parts.next(), parts.next()) else {
+            return Err(CodecError::InvalidRecord);
+        };
+        let bus = parse_bus("audio_aux_bus_devices", bus)?;
+        if previous.is_some_and(|previous| bus <= previous) {
+            return Err(invalid("audio_aux_bus_devices", entry));
+        }
+        previous = Some(bus);
+        let device = unescape(device)?;
+        if !audio_monitor_device_is_valid(&device) {
+            return Err(invalid("audio_aux_bus_devices", device));
+        }
+        buses[bus.index()].device = Some(device);
+    }
+    Ok(())
 }
 
 /// Encodes a snapshot's `input_audio_labels`: each label raw behind its
@@ -607,11 +654,20 @@ pub(super) fn encode_status(
         ));
     }
     push("audio_strip_send_states", status.send_states.to_string())?;
-    push("audio_aux_buses", encode_aux_buses(&status.aux_buses)?)
+    push("audio_aux_buses", encode_aux_buses(&status.aux_buses)?)?;
+    push(
+        "audio_aux_bus_devices",
+        encode_aux_bus_devices(&status.aux_buses)?,
+    )
 }
 
 /// Decodes the snapshot mixer fields.
 pub(super) fn decode_status(fields: &mut dyn FieldSource) -> Result<AudioMixerStatus, CodecError> {
+    let mut aux_buses = decode_aux_buses(&fields.required("audio_aux_buses")?)?;
+    decode_aux_bus_devices(
+        &fields.required("audio_aux_bus_devices")?,
+        &mut aux_buses,
+    )?;
     Ok(AudioMixerStatus {
         groups: decode_groups(&fields.required("audio_groups")?)?,
         solo_mode: parse_solo_mode("audio_solo_mode", &fields.required("audio_solo_mode")?)?,
@@ -632,7 +688,7 @@ pub(super) fn decode_status(fields: &mut dyn FieldSource) -> Result<AudioMixerSt
                 .filter(|count| *count <= crate::MAX_AUDIO_SEND_STATES)
                 .ok_or_else(|| invalid("audio_strip_send_states", value))?
         },
-        aux_buses: decode_aux_buses(&fields.required("audio_aux_buses")?)?,
+        aux_buses,
     })
 }
 
@@ -948,6 +1004,10 @@ pub(super) fn encode_operation(
             push("bus", bus.letter().to_string())?;
             push("chain", encode_chain("chain", chain)?)
         }
+        AudioMixerOperation::SetAuxBusDevice { bus, device } => {
+            push("bus", bus.letter().to_string())?;
+            push("device", device.clone().unwrap_or_default())
+        }
         AudioMixerOperation::SetOutputBus { output, bus } => {
             push("output", output.to_string())?;
             push(
@@ -1131,6 +1191,20 @@ pub(super) fn decode_operation(
             bus: parse_bus("bus", &fields.required("bus")?)?,
             chain: Box::new(decode_chain("chain", &fields.required("chain")?)?),
         },
+        "audio_aux_bus_device" => {
+            let bus = parse_bus("bus", &fields.required("bus")?)?;
+            let device = fields.required("device")?;
+            AudioMixerOperation::SetAuxBusDevice {
+                bus,
+                device: if device.is_empty() {
+                    None
+                } else if audio_monitor_device_is_valid(&device) {
+                    Some(device)
+                } else {
+                    return Err(invalid("device", device));
+                },
+            }
+        }
         "audio_plugin_chain" => AudioMixerOperation::SetPluginChain {
             target: decode_target("target", &fields.required("target")?)?,
             slots: decode_plugin_slots(&fields.required("plugins")?)?,

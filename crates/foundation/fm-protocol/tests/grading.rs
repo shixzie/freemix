@@ -31,7 +31,7 @@ fn command(payload: CommandPayload) -> WireMessage {
     })
 }
 
-const PREFIX: &str = "command\tprotocol=2.134\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.135\tid=a\tidempotency_key=k";
 
 fn cursor() -> EventCursor {
     EventCursor {

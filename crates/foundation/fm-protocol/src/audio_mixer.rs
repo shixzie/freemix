@@ -271,10 +271,14 @@ pub struct AuxBusStatus {
     pub muted: bool,
     /// The bus's DSP chain, after its fader and mute (2.133).
     pub dsp: StripDsp,
+    /// The local audio output device the bus plays on (2.135), or `None`
+    /// for meter-only.
+    pub device: Option<String>,
 }
 
 impl AuxBusStatus {
-    /// The default aux bus `bus`: "Bus A" through "Bus G" at unity, unmuted.
+    /// The default aux bus `bus`: "Bus A" through "Bus G" at unity,
+    /// unmuted, metered only.
     #[must_use]
     pub fn default_for(bus: AuxBusNumber) -> Self {
         Self {
@@ -282,6 +286,7 @@ impl AuxBusStatus {
             gain_millidb: 0,
             muted: false,
             dsp: StripDsp::DEFAULT,
+            device: None,
         }
     }
 }
@@ -436,6 +441,9 @@ impl AudioMixerStatus {
             | AudioMixerOperation::SetPluginChain { .. } => {}
             AudioMixerOperation::SetAuxBusDsp { bus, chain } => {
                 self.aux_buses[bus.index()].dsp = **chain;
+            }
+            AudioMixerOperation::SetAuxBusDevice { bus, device } => {
+                self.aux_buses[bus.index()].device.clone_from(device);
             }
             AudioMixerOperation::RenameGroup { group, name } => {
                 if audio_group_is_valid(*group) {
@@ -613,6 +621,12 @@ pub enum AudioMixerOperation {
         output: WireOutputId,
         input: Option<WireInputId>,
     },
+    /// Plays aux bus `bus` on a local audio output device, or on none
+    /// (meter-only) (2.135). A project edit.
+    SetAuxBusDevice {
+        bus: AuxBusNumber,
+        device: Option<String>,
+    },
     /// Replaces a strip's or the Master's plugin chain (2.128, AU-006). A
     /// live operation: chains are runtime state.
     SetPluginChain {
@@ -642,6 +656,7 @@ impl AudioMixerOperation {
             Self::SetAuxBusDsp { .. } => "audio_aux_bus_dsp",
             Self::SetOutputBus { .. } => "audio_output_bus",
             Self::SetOutputMixMinus { .. } => "audio_output_mix_minus",
+            Self::SetAuxBusDevice { .. } => "audio_aux_bus_device",
             Self::SetPluginChain { .. } => "audio_plugin_chain",
         }
     }

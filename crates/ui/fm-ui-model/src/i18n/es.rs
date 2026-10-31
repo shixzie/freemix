@@ -3834,6 +3834,19 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         ),
     ),
     (Msg::BusMixerFullMix, t("Mezcla completa")),
+    (Msg::BusMixerDevice, t("Salida")),
+    (
+        Msg::BusMixerDeviceHover,
+        t(
+            "La salida de audio local en la que suena este bus; Solo medidor lo mantiene en silencio",
+        ),
+    ),
+    (Msg::BusMixerDeviceNone, t("Solo medidor")),
+    (Msg::BusMixerDeviceMissing, t("Dispositivo no listado")),
+    (
+        Msg::BusMixerNoDeviceList,
+        t("Este servidor no lista salidas de audio"),
+    ),
     (Msg::BusMixerNoOutputs, t("Este proyecto no tiene salidas.")),
     (
         Msg::BusMixerMeterHover,

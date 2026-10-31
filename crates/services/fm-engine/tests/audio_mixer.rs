@@ -1118,3 +1118,61 @@ fn output_mix_minus_names_a_known_input_and_undoes_exactly() {
         Some(input(3))
     );
 }
+
+#[test]
+fn aux_bus_devices_are_project_edits_that_undo_and_refuse_unusable_names() {
+    let mut engine = engine();
+    assert_eq!(engine.show().aux_bus(aux('B')).device, None);
+    accept(
+        &mut engine,
+        "aux-device",
+        mixer(EngineAudioMixerEdit::SetAuxBusDevice {
+            bus: aux('B'),
+            device: Some("plughw:CARD=Headset,DEV=0".into()),
+        }),
+    );
+    assert_eq!(
+        engine.show().aux_bus(aux('B')).device.as_deref(),
+        Some("plughw:CARD=Headset,DEV=0")
+    );
+    let frame = engine.tick().unwrap();
+    assert!(frame.audio_mixer_updates.contains(
+        &EngineAudioMixerUpdate::AuxBusDevice {
+            bus: aux('B'),
+            device: Some("plughw:CARD=Headset,DEV=0".into()),
+        }
+    ));
+    undo(&mut engine, "undo-aux-device");
+    assert_eq!(engine.show().aux_bus(aux('B')).device, None);
+    redo(&mut engine, "redo-aux-device");
+    assert_eq!(
+        engine.show().aux_bus(aux('B')).device.as_deref(),
+        Some("plughw:CARD=Headset,DEV=0")
+    );
+    // An unusable device is refused without changing the show.
+    for bad in ["two words", "-report", ""] {
+        let outcome = execute(
+            &mut engine,
+            "bad-aux-device",
+            mixer(EngineAudioMixerEdit::SetAuxBusDevice {
+                bus: aux('B'),
+                device: Some(bad.into()),
+            }),
+        );
+        assert_eq!(rejection(&outcome).code, RejectionCode::InvalidCommand);
+    }
+    assert_eq!(
+        engine.show().aux_bus(aux('B')).device.as_deref(),
+        Some("plughw:CARD=Headset,DEV=0")
+    );
+    // Clearing it is its own undoable edit.
+    accept(
+        &mut engine,
+        "clear-aux-device",
+        mixer(EngineAudioMixerEdit::SetAuxBusDevice {
+            bus: aux('B'),
+            device: None,
+        }),
+    );
+    assert_eq!(engine.show().aux_bus(aux('B')).device, None);
+}

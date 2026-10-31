@@ -159,6 +159,12 @@ pub enum AudioMixerArgs {
         bus: fm_model::AuxBusNumber,
         chain: fm_types::strip_dsp::StripDsp,
     },
+    /// `audio-aux-device <A-G> <device|none>`: the local audio output bus A–G
+    /// plays on (AU-002).
+    AuxDevice {
+        bus: fm_model::AuxBusNumber,
+        device: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2348,6 +2354,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "audio-aux-name"
         | "audio-aux-level"
         | "audio-aux-dsp"
+        | "audio-aux-device"
         | "audio-output-aux"
         | "audio-output-mix-minus"
         | "remote-audio-label"
@@ -2364,6 +2371,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-audio-aux-name"
         | "remote-audio-aux-level"
         | "remote-audio-aux-dsp"
+        | "remote-audio-aux-device"
         | "remote-audio-output-aux"
         | "remote-audio-output-mix-minus") => parse_audio_mixer(mixer, arguments),
         "remote-audio-output-devices" => {
@@ -3534,6 +3542,14 @@ fn parse_audio_mixer(
             bus: aux_bus(&required(&mut arguments, "aux bus")?)?,
             chain: parse_dsp_chain(&required(&mut arguments, "DSP preset or chain code")?)?,
         },
+        "audio-aux-device" => {
+            let bus = aux_bus(&required(&mut arguments, "aux bus")?)?;
+            let device = required(&mut arguments, "output device")?;
+            AudioMixerArgs::AuxDevice {
+                bus,
+                device: (device != "none").then_some(device),
+            }
+        }
         "audio-output-aux" => {
             let output = number(&required(&mut arguments, "output")?, "output")?;
             let bus = required(&mut arguments, "aux bus")?;

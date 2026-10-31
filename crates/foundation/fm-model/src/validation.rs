@@ -128,6 +128,15 @@ fn validate_aux_buses(project: &Project, errors: &mut Vec<ValidationError>) {
                 kind: ValidationErrorKind::OutOfRange,
             });
         }
+        if let Some(device) = &bus.device
+            && crate::validate_audio_monitor_device(device).is_err()
+        {
+            errors.push(ValidationError {
+                entity: None,
+                field: "aux_buses.device",
+                kind: ValidationErrorKind::OutOfRange,
+            });
+        }
     }
     for &output in project.output_aux_buses().keys() {
         if !project

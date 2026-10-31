@@ -954,6 +954,10 @@ impl ShowState {
         value: crate::EngineAuxBus,
     ) -> Result<(), ShowError> {
         fm_model::validate_audio_group_name(&value.name).map_err(ShowError::InvalidAudioMixer)?;
+        if let Some(device) = &value.device {
+            fm_model::validate_audio_monitor_device(device)
+                .map_err(|_| ShowError::InvalidAudioMonitorDevice)?;
+        }
         crate::audio_mixer::validate_group_state(value.state)
             .map_err(|_| ShowError::InvalidAudioGroupGain(value.state.gain_millidb))?;
         self.aux_buses[bus.index()] = value;

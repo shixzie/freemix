@@ -15,7 +15,7 @@ use fm_protocol::{
 };
 use fm_types::strip_dsp::{STRIP_DSP_CODE_LEN, StripDsp, StripDspPreset};
 
-const PREFIX: &str = "command\tprotocol=2.134\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.135\tid=a\tidempotency_key=k";
 
 fn input(value: u128) -> WireInputId {
     WireInputId::new(core::num::NonZeroU128::new(value).unwrap())
@@ -182,7 +182,7 @@ fn mixer() -> AudioMixerStatus {
 
 #[test]
 fn the_current_protocol_version_is_pinned() {
-    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 134));
+    assert_eq!(CURRENT_PROTOCOL_VERSION, ProtocolVersion::new(2, 135));
 }
 
 #[test]
@@ -538,7 +538,7 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
     );
     assert!(
         line.ends_with(&format!(
-            "\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CMics%252C%2520wireless%7E-12000%7E1%7E1%7E3%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=pfl\taudio_monitor=%7E0%7E0\tinput_audio_labels=1%7E8%3AHost%7Emic%2C2%7E5%3AGuest\taudio_master_dsp={}\taudio_strip_dsp_states=0\taudio_strip_send_states=0\taudio_aux_buses=Bus%2520A%7E0%7E0%2CBus%2520B%7E0%7E0%2CBus%2520C%7E0%7E0%2CBus%2520D%7E0%7E0%2CBus%2520E%7E0%7E0%2CBus%2520F%7E0%7E0%2CBus%2520G%7E0%7E0\tfade_to_black_excluded_outputs=8\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\talert_rules=\ttransitions_in_flight=\n",
+            "\taudio_groups=Group%25201%7E0%7E0%7E0%7E-%2CMics%252C%2520wireless%7E-12000%7E1%7E1%7E3%2CGroup%25203%7E0%7E0%7E0%7E-%2CGroup%25204%7E0%7E0%7E0%7E-\taudio_solo_mode=pfl\taudio_monitor=%7E0%7E0\tinput_audio_labels=1%7E8%3AHost%7Emic%2C2%7E5%3AGuest\taudio_master_dsp={}\taudio_strip_dsp_states=0\taudio_strip_send_states=0\taudio_aux_buses=Bus%2520A%7E0%7E0%2CBus%2520B%7E0%7E0%2CBus%2520C%7E0%7E0%2CBus%2520D%7E0%7E0%2CBus%2520E%7E0%7E0%2CBus%2520F%7E0%7E0%2CBus%2520G%7E0%7E0\taudio_aux_bus_devices=\tfade_to_black_excluded_outputs=8\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\talert_rules=\ttransitions_in_flight=\n",
             fm_types::strip_dsp::StripDsp::DEFAULT.code()
         )),
         "{line}"
@@ -556,7 +556,7 @@ fn snapshot_carries_groups_labels_strip_groups_and_ftb_exclusions() {
     );
     let line = round_trip(&snapshot(AudioMixerStatus::default(), Vec::new()));
     assert!(
-        line.ends_with(&format!("\tinput_audio_labels=\taudio_master_dsp={}\taudio_strip_dsp_states=0\taudio_strip_send_states=0\taudio_aux_buses=Bus%2520A%7E0%7E0%2CBus%2520B%7E0%7E0%2CBus%2520C%7E0%7E0%2CBus%2520D%7E0%7E0%2CBus%2520E%7E0%7E0%2CBus%2520F%7E0%7E0%2CBus%2520G%7E0%7E0\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\talert_rules=\ttransitions_in_flight=\n", fm_types::strip_dsp::StripDsp::DEFAULT.code())),
+        line.ends_with(&format!("\tinput_audio_labels=\taudio_master_dsp={}\taudio_strip_dsp_states=0\taudio_strip_send_states=0\taudio_aux_buses=Bus%2520A%7E0%7E0%2CBus%2520B%7E0%7E0%2CBus%2520C%7E0%7E0%2CBus%2520D%7E0%7E0%2CBus%2520E%7E0%7E0%2CBus%2520F%7E0%7E0%2CBus%2520G%7E0%7E0\taudio_aux_bus_devices=\tfade_to_black_excluded_outputs=\tfade_to_black_output_durations=\tfade_to_black_curve=linear\tdisplay_outputs=\tdisplay_output_states=\tnetwork_streams=\tcapture_inputs=\tsystem_audio_inputs=\tscreen_capture_inputs=\tstream_targets=\tlive_lan=0%7Eprogram%7E8%7E0\tlive_lan_status=off%7E0%7E0%7E\talert_rules=\ttransitions_in_flight=\n", fm_types::strip_dsp::StripDsp::DEFAULT.code())),
         "{line}"
     );
 
@@ -1168,6 +1168,20 @@ fn aux_bus_commands_have_an_exact_wire_form_and_are_strict() {
             "payload=audio_output_mix_minus\toutput=8\tinput=-",
         ),
         (
+            AudioMixerOperation::SetAuxBusDevice {
+                bus: bus('B'),
+                device: Some("plughw:CARD=Headset,DEV=0".into()),
+            },
+            "payload=audio_aux_bus_device\tbus=B\tdevice=plughw%3ACARD%3DHeadset%2CDEV%3D0",
+        ),
+        (
+            AudioMixerOperation::SetAuxBusDevice {
+                bus: bus('B'),
+                device: None,
+            },
+            "payload=audio_aux_bus_device\tbus=B\tdevice=",
+        ),
+        (
             AudioMixerOperation::RenameAuxBus {
                 bus: bus('A'),
                 name: "Stage".into(),
@@ -1212,6 +1226,10 @@ fn aux_bus_commands_have_an_exact_wire_form_and_are_strict() {
         "payload=audio_output_mix_minus\toutput=8\tinput=01",
         "payload=audio_output_mix_minus\toutput=8",
         "payload=audio_output_mix_minus\tinput=1",
+        "payload=audio_aux_bus_device\tbus=H\tdevice=default",
+        "payload=audio_aux_bus_device\tbus=B\tdevice=two words",
+        "payload=audio_aux_bus_device\tbus=B\tdevice=-report",
+        "payload=audio_aux_bus_device\tbus=B",
         "payload=audio_aux_bus_name\tbus=A\tname=%20",
         "payload=audio_aux_bus_name\tbus=Z\tname=Stage",
     ] {
@@ -1286,18 +1304,20 @@ fn snapshot_carries_aux_buses_and_output_buses_strictly() {
         gain_millidb: -3_000,
         muted: true,
         dsp: chain,
+        device: None,
     };
     let mut message = snapshot(status, Vec::new());
     let WireMessage::Snapshot(snapshot) = &mut message else {
         unreachable!()
     };
     snapshot.outputs[0].aux_bus = Some(bus('B'));
+    snapshot.audio_mixer.aux_buses[1].device = Some("default".into());
     let line = round_trip(&message);
     assert!(
         line.contains(&format!(
             "\taudio_aux_buses=Bus%2520A%7E0%7E0%2CStage%252C%2520left%7E-3000%7E1%7E{}\
              %2CBus%2520C%7E0%7E0%2CBus%2520D%7E0%7E0%2CBus%2520E%7E0%7E0%2CBus%2520F%7E0%7E0\
-             %2CBus%2520G%7E0%7E0\tfade_to_black",
+             %2CBus%2520G%7E0%7E0\taudio_aux_bus_devices=B%7Edefault\tfade_to_black",
             chain.code()
         )),
         "{line}"
@@ -1315,6 +1335,17 @@ fn snapshot_carries_aux_buses_and_output_buses_strictly() {
         ("7%7EOutput%25207%7EB%7E-", "7%7EOutput%25207%7EB%7E0"),
         ("7%7EOutput%25207%7EB%7E-", "7%7EOutput%25207%7EB%7E01"),
         ("7%7EOutput%25207%7EB%7E-", "7%7EOutput%25207%7EB%7E1x"),
+        ("audio_aux_bus_devices=B%7Edefault", "audio_aux_bus_devices=H%7Edefault"),
+        ("audio_aux_bus_devices=B%7Edefault", "audio_aux_bus_devices=B%7E"),
+        ("audio_aux_bus_devices=B%7Edefault", "audio_aux_bus_devices=B%7Edefault%7EC"),
+        (
+            "audio_aux_bus_devices=B%7Edefault",
+            "audio_aux_bus_devices=B%7Edefault%2CB%7Edefault",
+        ),
+        (
+            "audio_aux_bus_devices=B%7Edefault",
+            "audio_aux_bus_devices=B%7Etwo%2520words",
+        ),
         ("%2CBus%2520G%7E0%7E0\t", "\t"),
         ("Bus%2520C%7E0%7E0", "%2520%7E0%7E0"),
         ("Bus%2520C%7E0%7E0", "Bus%2520C%7E24001%7E0"),

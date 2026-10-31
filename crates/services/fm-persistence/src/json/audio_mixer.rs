@@ -9,7 +9,7 @@
 //!   {"name": "Group 4", "gain_milli_db": 0, "muted": false, "soloed": false, "parent": null}
 //! ],
 //! "aux_buses": [
-//!   {"name": "Bus A", "gain_milli_db": 0, "muted": false},
+//!   {"name": "Bus A", "gain_milli_db": 0, "muted": false, "device": null},
 //!   ... seven buses, A first ...
 //! ],
 //! "output_aux_buses": [{"output": 4, "bus": "B"}],
@@ -87,6 +87,15 @@ pub(crate) fn write_audio_mixer(output: &mut String, project: &fm_model::Project
         )
         .expect("writing to a string cannot fail");
         super::strip_dsp::write_strip_dsp(output, &bus.dsp);
+        output.push_str(", \"device\": ");
+        match &bus.device {
+            Some(device) => {
+                output.push('"');
+                escape_string(output, device);
+                output.push('"');
+            }
+            None => output.push_str("null"),
+        }
         output.push('}');
     }
     output.push_str("\n    ],\n    \"output_aux_buses\": [");
@@ -253,12 +262,19 @@ pub(crate) fn parse_aux_buses(object: &mut Object) -> Result<AuxBuses, DecodeErr
         })?;
         let muted = object.boolean("muted")?;
         let dsp = super::strip_dsp::parse_strip_dsp(object.take("dsp")?, "aux bus DSP")?;
+        let device = parse_optional(object.take("device")?, |value| {
+            let Value::String(device) = value else {
+                return Err(syntax("aux bus device must be a string or null"));
+            };
+            Ok(device)
+        })?;
         object.finish()?;
         Ok(AuxBus {
             name,
             gain,
             muted,
             dsp,
+            device,
         })
     })?;
     let buses: [AuxBus; AUX_BUS_COUNT] = buses

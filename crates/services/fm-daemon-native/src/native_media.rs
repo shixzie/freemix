@@ -3294,6 +3294,9 @@ pub struct NativeAudioMeters<'a> {
     /// Every aux bus's meters, bus A first, each in Master channel order
     /// (Protocol 2.120, AU-002).
     pub aux: &'a [ChannelMeter],
+    /// Every aux bus's samples, bus-major, one plane per Master channel; the
+    /// first `end_sample - start_sample` samples are valid (AU-002).
+    pub aux_planes: &'a [Vec<f32>],
 }
 
 struct StagedAudioPadding {
@@ -4325,6 +4328,7 @@ impl NativeMasterRuntime {
             dynamics: &self.scratch.dynamics,
             loudness: &self.scratch.loudness,
             aux: &self.scratch.aux_meters,
+            aux_planes: &self.scratch.aux,
         })
     }
 
@@ -4567,7 +4571,8 @@ impl NativeMasterRuntime {
                 | fm_engine::EngineAudioMixerUpdate::LoudnessReset { .. }
                 | fm_engine::EngineAudioMixerUpdate::PluginChain { .. }
                 | fm_engine::EngineAudioMixerUpdate::OutputAuxBus { .. }
-                | fm_engine::EngineAudioMixerUpdate::OutputMixMinus { .. } => {}
+                | fm_engine::EngineAudioMixerUpdate::OutputMixMinus { .. }
+                | fm_engine::EngineAudioMixerUpdate::AuxBusDevice { .. } => {}
                 // An aux bus fader ramps like a group fader (AU-002).
                 fm_engine::EngineAudioMixerUpdate::AuxBusLevel { bus, state } => {
                     mixer.set_aux_bus_state(

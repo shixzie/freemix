@@ -6023,6 +6023,9 @@ fn validate_audio_mixer_change(
             fm_protocol::audio_label_is_valid(name, false)
         }
         fm_protocol::AudioMixerOperation::SetAuxBusDsp { chain, .. } => chain.validate().is_ok(),
+        fm_protocol::AudioMixerOperation::SetAuxBusDevice { device, .. } => device
+            .as_deref()
+            .is_none_or(fm_protocol::audio_monitor_device_is_valid),
         fm_protocol::AudioMixerOperation::SetOutputBus { output, .. } => state
             .outputs
             .iter()
