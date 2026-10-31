@@ -51,6 +51,7 @@ mod fade_to_black;
 mod gating;
 mod health;
 mod health_alerts;
+mod hid_bindings;
 #[doc(hidden)]
 pub mod hover_audit;
 mod input_bank;
@@ -66,7 +67,6 @@ mod media_transport;
 mod menu;
 mod meter_ballistics;
 mod midi_bindings;
-mod hid_bindings;
 mod mixer;
 mod monitors;
 mod network_stream_ui;
@@ -127,6 +127,7 @@ pub use edit_history::{
     stinger_edit_lock_reason,
 };
 pub use fade_to_black::{FadeToBlackAvailability, FadeToBlackGate, fade_to_black_availability};
+pub use hid_bindings::{HidBindings, HidInput, HidTrigger, MAX_HID_BINDINGS};
 pub use input_catalogue::{
     CatalogueAvailability, CatalogueRefusal, CatalogueRequest, MAX_LIVE_INPUTS, NewInputKind,
     add_input_availability, catalogue_refusal_code, catalogue_refusal_message, input_name_problem,
@@ -140,9 +141,6 @@ pub use menu::ConsoleLayout;
 pub use midi_bindings::{
     MAX_MIDI_BINDINGS, MidiBindings, MidiControlKind, MidiFeedback, MidiInput, MidiTrigger,
     MidiValueTarget,
-};
-pub use hid_bindings::{
-    HidBindings, HidInput, HidTrigger, MAX_HID_BINDINGS,
 };
 pub use network_stream_ui::OmtSource;
 pub use playlist::{
@@ -1774,8 +1772,8 @@ fn live_console_intents(state: &StudioUiState, action: ConsoleAction) -> Vec<Stu
                 )
             })
         }
-        ConsoleAction::ReplayShuttleForwardB => {
-            replay_ui::transport_player_for(state, true).and_then(|player| {
+        ConsoleAction::ReplayShuttleForwardB => replay_ui::transport_player_for(state, true)
+            .and_then(|player| {
                 replay_ui::transport_intent_for(
                     state,
                     true,
@@ -1784,8 +1782,7 @@ fn live_console_intents(state: &StudioUiState, action: ConsoleAction) -> Vec<Stu
                         rate_milli: 2_000,
                     },
                 )
-            })
-        }
+            }),
         _ => None,
     }
     .into_iter()

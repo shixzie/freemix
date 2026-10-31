@@ -933,7 +933,7 @@ impl std::fmt::Display for RenameSceneError {
 
 impl std::error::Error for RenameSceneError {}
 
-pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(97);
+pub const CURRENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new(98);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
@@ -1418,6 +1418,19 @@ impl Project {
     #[must_use]
     pub fn aux_bus_device(&self, bus: crate::AuxBusNumber) -> Option<&str> {
         self.aux_buses.get(bus).device.as_deref()
+    }
+
+    /// Whether aux bus `bus` is published as an OMT audio sender (AU-002).
+    #[must_use]
+    pub const fn aux_bus_omt(&self, bus: crate::AuxBusNumber) -> bool {
+        self.aux_buses.get(bus).omt
+    }
+
+    /// Publishes aux bus `bus` as an OMT audio sender, or stops it.
+    pub fn set_aux_bus_omt(&mut self, bus: crate::AuxBusNumber, omt: bool) {
+        let mut value = self.aux_buses.get(bus).clone();
+        value.omt = omt;
+        self.aux_buses.set(bus, value);
     }
 
     /// Sets aux bus `bus`'s local output device, or `None` for meter-only.

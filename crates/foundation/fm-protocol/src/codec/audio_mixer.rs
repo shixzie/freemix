@@ -257,6 +257,7 @@ fn decode_aux_buses(value: &str) -> Result<[AuxBusStatus; AUX_BUS_COUNT], CodecE
                 muted: parse_flag("audio_aux_buses", muted)?,
                 dsp,
                 device: None,
+                omt: false,
             })
         })
         .take(AUX_BUS_COUNT + 1)
@@ -306,6 +307,38 @@ fn decode_aux_bus_devices(
             return Err(invalid("audio_aux_bus_devices", device));
         }
         buses[bus.index()].device = Some(device);
+    }
+    Ok(())
+}
+
+/// Encodes a snapshot's `audio_aux_bus_omt`: the letters of the buses
+/// published as OMT audio senders, bus A first (2.138).
+fn encode_aux_bus_omt(buses: &[AuxBusStatus; AUX_BUS_COUNT]) -> String {
+    AuxBusNumber::ALL
+        .into_iter()
+        .zip(buses)
+        .filter(|(_, bus)| bus.omt)
+        .map(|(number, _)| number.letter().to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Applies a snapshot's `audio_aux_bus_omt` letters to `buses`.
+fn decode_aux_bus_omt(
+    value: &str,
+    buses: &mut [AuxBusStatus; AUX_BUS_COUNT],
+) -> Result<(), CodecError> {
+    if value.is_empty() {
+        return Ok(());
+    }
+    let mut previous = None;
+    for entry in value.split(',') {
+        let bus = parse_bus("audio_aux_bus_omt", entry)?;
+        if previous.is_some_and(|previous| bus <= previous) {
+            return Err(invalid("audio_aux_bus_omt", entry));
+        }
+        previous = Some(bus);
+        buses[bus.index()].omt = true;
     }
     Ok(())
 }
@@ -658,16 +691,15 @@ pub(super) fn encode_status(
     push(
         "audio_aux_bus_devices",
         encode_aux_bus_devices(&status.aux_buses)?,
-    )
+    )?;
+    push("audio_aux_bus_omt", encode_aux_bus_omt(&status.aux_buses))
 }
 
 /// Decodes the snapshot mixer fields.
 pub(super) fn decode_status(fields: &mut dyn FieldSource) -> Result<AudioMixerStatus, CodecError> {
     let mut aux_buses = decode_aux_buses(&fields.required("audio_aux_buses")?)?;
-    decode_aux_bus_devices(
-        &fields.required("audio_aux_bus_devices")?,
-        &mut aux_buses,
-    )?;
+    decode_aux_bus_devices(&fields.required("audio_aux_bus_devices")?, &mut aux_buses)?;
+    decode_aux_bus_omt(&fields.required("audio_aux_bus_omt")?, &mut aux_buses)?;
     Ok(AudioMixerStatus {
         groups: decode_groups(&fields.required("audio_groups")?)?,
         solo_mode: parse_solo_mode("audio_solo_mode", &fields.required("audio_solo_mode")?)?,
@@ -1008,6 +1040,10 @@ pub(super) fn encode_operation(
             push("bus", bus.letter().to_string())?;
             push("device", device.clone().unwrap_or_default())
         }
+        AudioMixerOperation::SetAuxBusOmt { bus, omt } => {
+            push("bus", bus.letter().to_string())?;
+            push("omt", u8::from(*omt).to_string())
+        }
         AudioMixerOperation::SetOutputBus { output, bus } => {
             push("output", output.to_string())?;
             push(
@@ -1205,6 +1241,10 @@ pub(super) fn decode_operation(
                 },
             }
         }
+        "audio_aux_bus_omt" => AudioMixerOperation::SetAuxBusOmt {
+            bus: parse_bus("bus", &fields.required("bus")?)?,
+            omt: parse_flag("omt", &fields.required("omt")?)?,
+        },
         "audio_plugin_chain" => AudioMixerOperation::SetPluginChain {
             target: decode_target("target", &fields.required("target")?)?,
             slots: decode_plugin_slots(&fields.required("plugins")?)?,

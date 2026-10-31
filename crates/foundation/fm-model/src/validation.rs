@@ -163,7 +163,11 @@ fn validate_aux_buses(project: &Project, errors: &mut Vec<ValidationError>) {
                 kind: ValidationErrorKind::MissingReference(EntityRef::Output(output)),
             });
         }
-        if !project.inputs().iter().any(|candidate| candidate.id == input) {
+        if !project
+            .inputs()
+            .iter()
+            .any(|candidate| candidate.id == input)
+        {
             errors.push(ValidationError {
                 entity: None,
                 field: "output_mix_minus",

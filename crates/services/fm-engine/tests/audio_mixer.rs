@@ -1136,12 +1136,14 @@ fn aux_bus_devices_are_project_edits_that_undo_and_refuse_unusable_names() {
         Some("plughw:CARD=Headset,DEV=0")
     );
     let frame = engine.tick().unwrap();
-    assert!(frame.audio_mixer_updates.contains(
-        &EngineAudioMixerUpdate::AuxBusDevice {
-            bus: aux('B'),
-            device: Some("plughw:CARD=Headset,DEV=0".into()),
-        }
-    ));
+    assert!(
+        frame
+            .audio_mixer_updates
+            .contains(&EngineAudioMixerUpdate::AuxBusDevice {
+                bus: aux('B'),
+                device: Some("plughw:CARD=Headset,DEV=0".into()),
+            })
+    );
     undo(&mut engine, "undo-aux-device");
     assert_eq!(engine.show().aux_bus(aux('B')).device, None);
     redo(&mut engine, "redo-aux-device");

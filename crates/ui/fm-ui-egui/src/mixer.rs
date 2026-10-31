@@ -3310,6 +3310,20 @@ fn draw_bus_mixer_contents(
                     },
                 ));
             }
+            // Publishing the bus as an OMT audio sender (Protocol 2.138).
+            let mut omt = bus.omt;
+            if ui
+                .add_enabled(
+                    edit_enabled,
+                    egui::Checkbox::new(&mut omt, l.text(Msg::BusMixerOmt)),
+                )
+                .hint(l.text(Msg::BusMixerOmtHover), edit_reason)
+                .changed()
+            {
+                intents.push(StudioIntent::AudioMixer(
+                    fm_protocol::AudioMixerOperation::SetAuxBusOmt { bus: number, omt },
+                ));
+            }
         });
         ui.horizontal(|ui| {
             ui.label(caption(l.text(Msg::BusMixerDsp)));
@@ -3416,11 +3430,7 @@ fn draw_bus_mixer_contents(
                         .selected_text(selected)
                         .width(140.0)
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut mix_minus,
-                                None,
-                                l.text(Msg::BusMixerFullMix),
-                            );
+                            ui.selectable_value(&mut mix_minus, None, l.text(Msg::BusMixerFullMix));
                             for (input, name) in view.inputs.iter().zip(&view.input_names) {
                                 ui.selectable_value(&mut mix_minus, Some(*input), name);
                             }

@@ -5699,7 +5699,8 @@ fn apply_change(state: &mut ProjectState, change: DurableChange) {
             {
                 status.aux_bus = *bus;
             }
-            if let fm_protocol::AudioMixerOperation::SetOutputMixMinus { output, input } = &operation
+            if let fm_protocol::AudioMixerOperation::SetOutputMixMinus { output, input } =
+                &operation
                 && let Some(status) = state
                     .outputs
                     .iter_mut()
@@ -6026,6 +6027,7 @@ fn validate_audio_mixer_change(
         fm_protocol::AudioMixerOperation::SetAuxBusDevice { device, .. } => device
             .as_deref()
             .is_none_or(fm_protocol::audio_monitor_device_is_valid),
+        fm_protocol::AudioMixerOperation::SetAuxBusOmt { .. } => true,
         fm_protocol::AudioMixerOperation::SetOutputBus { output, .. } => state
             .outputs
             .iter()

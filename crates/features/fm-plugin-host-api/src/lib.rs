@@ -4,8 +4,8 @@
 //! Loading a plugin here means advancing the engine-side lifecycle; process and
 //! runtime management belong to a host implementation.
 
-mod chain;
 mod catalog;
+mod chain;
 mod exchange;
 mod host;
 mod reference;

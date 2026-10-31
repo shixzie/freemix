@@ -102,7 +102,9 @@ impl Eq for HidBindings {}
 impl HidBindings {
     /// Every binding, by trigger.
     pub fn bindings(&self) -> impl Iterator<Item = (&HidTrigger, ConsoleAction)> + '_ {
-        self.bindings.iter().map(|(trigger, action)| (trigger, *action))
+        self.bindings
+            .iter()
+            .map(|(trigger, action)| (trigger, *action))
     }
 
     /// The trigger bound to `action`, if any.

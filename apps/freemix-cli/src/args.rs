@@ -149,10 +149,7 @@ pub enum AudioMixerArgs {
     },
     /// `audio-output-mix-minus <output> <input|none>`: the input an
     /// output's aux feed leaves out (AU-002).
-    OutputMixMinus {
-        output: u128,
-        input: Option<u128>,
-    },
+    OutputMixMinus { output: u128, input: Option<u128> },
     /// `audio-aux-dsp <A-G> <preset|chain code>`: an aux bus's DSP chain
     /// (AU-002).
     AuxDsp {
@@ -164,6 +161,12 @@ pub enum AudioMixerArgs {
     AuxDevice {
         bus: fm_model::AuxBusNumber,
         device: Option<String>,
+    },
+    /// `audio-aux-omt <A-G> on|off`: publishes the bus as an OMT audio
+    /// sender on its fixed port (AU-002).
+    AuxOmt {
+        bus: fm_model::AuxBusNumber,
+        omt: bool,
     },
 }
 
@@ -2365,6 +2368,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "audio-aux-level"
         | "audio-aux-dsp"
         | "audio-aux-device"
+        | "audio-aux-omt"
         | "audio-output-aux"
         | "audio-output-mix-minus"
         | "remote-audio-label"
@@ -2382,6 +2386,7 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         | "remote-audio-aux-level"
         | "remote-audio-aux-dsp"
         | "remote-audio-aux-device"
+        | "remote-audio-aux-omt"
         | "remote-audio-output-aux"
         | "remote-audio-output-mix-minus") => parse_audio_mixer(mixer, arguments),
         "remote-audio-output-devices" => {
@@ -3560,6 +3565,10 @@ fn parse_audio_mixer(
                 device: (device != "none").then_some(device),
             }
         }
+        "audio-aux-omt" => AudioMixerArgs::AuxOmt {
+            bus: aux_bus(&required(&mut arguments, "aux bus")?)?,
+            omt: boolean_choice(&required(&mut arguments, "OMT on|off")?, "OMT on|off")?,
+        },
         "audio-output-aux" => {
             let output = number(&required(&mut arguments, "output")?, "output")?;
             let bus = required(&mut arguments, "aux bus")?;

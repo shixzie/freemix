@@ -96,7 +96,7 @@ pub(crate) fn write_audio_mixer(output: &mut String, project: &fm_model::Project
             }
             None => output.push_str("null"),
         }
-        output.push('}');
+        write!(output, ", \"omt\": {}}}", bus.omt).expect("writing to a string cannot fail");
     }
     output.push_str("\n    ],\n    \"output_aux_buses\": [");
     for (index, (id, bus)) in project.output_aux_buses().iter().enumerate() {
@@ -268,6 +268,7 @@ pub(crate) fn parse_aux_buses(object: &mut Object) -> Result<AuxBuses, DecodeErr
             };
             Ok(device)
         })?;
+        let omt = object.boolean("omt")?;
         object.finish()?;
         Ok(AuxBus {
             name,
@@ -275,6 +276,7 @@ pub(crate) fn parse_aux_buses(object: &mut Object) -> Result<AuxBuses, DecodeErr
             muted,
             dsp,
             device,
+            omt,
         })
     })?;
     let buses: [AuxBus; AUX_BUS_COUNT] = buses

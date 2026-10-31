@@ -21,9 +21,7 @@ use std::{
     thread,
 };
 
-use fm_audio::{
-    AUX_BUS_COUNT, AuxBusOutput, AuxMixMinusFeeds, BusSend, MixBus,
-};
+use fm_audio::{AUX_BUS_COUNT, AuxBusOutput, AuxMixMinusFeeds, BusSend, MixBus};
 use fm_audio::{
     AudioCadenceOrigin, AudioRenderPlan, AudioSilenceSpan, AudioSynchronizerLimits, Balance,
     ChannelMapping, ChannelMeter, ClockMappedAudioSynchronizer, GroupState, InputState,
@@ -4572,7 +4570,10 @@ impl NativeMasterRuntime {
                 | fm_engine::EngineAudioMixerUpdate::PluginChain { .. }
                 | fm_engine::EngineAudioMixerUpdate::OutputAuxBus { .. }
                 | fm_engine::EngineAudioMixerUpdate::OutputMixMinus { .. }
-                | fm_engine::EngineAudioMixerUpdate::AuxBusDevice { .. } => {}
+                | fm_engine::EngineAudioMixerUpdate::AuxBusDevice { .. }
+                // The daemon's OMT audio senders take the rendered bus; the
+                // mixers never see them.
+                | fm_engine::EngineAudioMixerUpdate::AuxBusOmt { .. } => {}
                 // An aux bus fader ramps like a group fader (AU-002).
                 fm_engine::EngineAudioMixerUpdate::AuxBusLevel { bus, state } => {
                     mixer.set_aux_bus_state(
@@ -5516,7 +5517,9 @@ impl NativeMasterRuntime {
                 let Some(bus) = project.output_aux_bus(output) else {
                     continue;
                 };
-                self.scratch.aux_mix_minus_configs.push((native_aux_bus(bus), input));
+                self.scratch
+                    .aux_mix_minus_configs
+                    .push((native_aux_bus(bus), input));
                 self.scratch.aux_mix_minus_outputs.push(output);
             }
         }
@@ -5710,7 +5713,9 @@ impl NativeMasterRuntime {
                     .iter()
                     .position(|candidate| *candidate == output);
                 let source = match feed {
-                    Some(index) => &self.scratch.aux_mix_minus[index * channels..(index + 1) * channels],
+                    Some(index) => {
+                        &self.scratch.aux_mix_minus[index * channels..(index + 1) * channels]
+                    }
                     None => {
                         let start = bus.index() * channels;
                         &self.scratch.aux[start..start + channels]

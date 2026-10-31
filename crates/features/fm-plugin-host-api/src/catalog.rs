@@ -104,11 +104,10 @@ impl PluginCatalog {
             .collect();
         directories.sort();
         for directory in directories {
-            let shown = directory
-                .file_name()
-                .map_or_else(|| directory.display().to_string(), |name| {
-                    name.to_string_lossy().into_owned()
-                });
+            let shown = directory.file_name().map_or_else(
+                || directory.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
             if plugins.len() >= MAX_INSTALLED_PLUGINS {
                 skipped.push(SkippedPlugin {
                     directory: shown,
@@ -210,7 +209,9 @@ impl fmt::Display for CatalogError {
             Self::DuplicateField(field) => write!(formatter, "plugin manifest repeats {field}"),
             Self::MissingField(field) => write!(formatter, "plugin manifest lacks {field}"),
             Self::InvalidField(field) => write!(formatter, "plugin manifest field {field}"),
-            Self::TooManyCapabilities => formatter.write_str("plugin requests too many capabilities"),
+            Self::TooManyCapabilities => {
+                formatter.write_str("plugin requests too many capabilities")
+            }
             Self::DuplicateId(id) => write!(formatter, "plugin {id} is installed twice"),
             Self::TooManyPlugins => formatter.write_str("too many installed plugins"),
         }
@@ -221,8 +222,8 @@ impl std::error::Error for CatalogError {}
 
 fn read_manifest(directory: &Path) -> Result<InstalledPlugin, CatalogError> {
     let path = directory.join(MANIFEST_FILE);
-    let metadata = std::fs::metadata(&path)
-        .map_err(|error| CatalogError::Manifest(error.to_string()))?;
+    let metadata =
+        std::fs::metadata(&path).map_err(|error| CatalogError::Manifest(error.to_string()))?;
     if metadata.len() > MAX_MANIFEST_BYTES as u64 {
         return Err(CatalogError::TooLarge);
     }
@@ -372,13 +373,22 @@ mod tests {
     fn malformed_manifests_are_refused() {
         for (text, error) in [
             ("name=No id\n", CatalogError::MissingField("id".to_owned())),
-            ("id=two words\n", CatalogError::InvalidField("id".to_owned())),
+            (
+                "id=two words\n",
+                CatalogError::InvalidField("id".to_owned()),
+            ),
             (
                 "id=a\nid=b\n",
                 CatalogError::DuplicateField("id".to_owned()),
             ),
-            ("id=a\napi_major=x\n", CatalogError::InvalidField("api_major".to_owned())),
-            ("id=a\nunknown=1\n", CatalogError::InvalidField("unknown".to_owned())),
+            (
+                "id=a\napi_major=x\n",
+                CatalogError::InvalidField("api_major".to_owned()),
+            ),
+            (
+                "id=a\nunknown=1\n",
+                CatalogError::InvalidField("unknown".to_owned()),
+            ),
             ("id=a\nbroken\n", CatalogError::Syntax("broken".to_owned())),
         ] {
             assert_eq!(parse_manifest(text), Err(error), "{text:?}");
@@ -392,10 +402,8 @@ mod scan_tests {
     use std::fs;
 
     fn directory(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "fm-plugin-catalog-{}-{name}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("fm-plugin-catalog-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path

@@ -2554,7 +2554,9 @@ fn flv_channel_layout(layout: &ChannelLayout) -> Option<&'static str> {
 /// the format's exact ffmpeg layout, including 7.1 and discrete `{n}C`.
 fn output_channel_layout(kind: DestinationKind, format: &RecordFormat) -> Option<&'static str> {
     match kind {
-        DestinationKind::Rtmp | DestinationKind::Rtmps => flv_channel_layout(format.channel_layout()),
+        DestinationKind::Rtmp | DestinationKind::Rtmps => {
+            flv_channel_layout(format.channel_layout())
+        }
         DestinationKind::Srt | DestinationKind::Hls => Some(format.ffmpeg_channel_layout()),
     }
 }
@@ -4303,7 +4305,10 @@ mod tests {
                 flv_channel_layout(&ChannelLayout::stereo()),
             ),
         ] {
-            assert_eq!(output_channel_layout(kind, &format_with(ChannelLayout::stereo())), layout);
+            assert_eq!(
+                output_channel_layout(kind, &format_with(ChannelLayout::stereo())),
+                layout
+            );
             assert_eq!(layout, Some("stereo"));
         }
         assert_eq!(

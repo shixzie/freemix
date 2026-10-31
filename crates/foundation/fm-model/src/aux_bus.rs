@@ -15,6 +15,17 @@ pub use fm_types::audio_bus::{
 
 use crate::InputGainMilliDb;
 
+/// The TCP port aux bus A's OMT audio sender listens on (AU-002); each later
+/// bus adds its index, so buses A–G use 9300 through 9306.
+pub const AUX_OMT_BASE_PORT: u16 = 9_300;
+
+/// The OMT port aux bus `bus` listens on when it is published.
+#[must_use]
+#[allow(clippy::cast_possible_truncation)] // an aux bus index is 0 through 6
+pub const fn aux_omt_port(bus: AuxBusNumber) -> u16 {
+    AUX_OMT_BASE_PORT + bus.index() as u16
+}
+
 /// One aux bus's name, fader, mute, DSP chain, and output device.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuxBus {
@@ -26,6 +37,10 @@ pub struct AuxBus {
     /// The local audio output device the bus plays on (AU-002), or `None`
     /// for meter-only.
     pub device: Option<String>,
+    /// Whether the bus is published as an OMT audio sender on
+    /// [`AUX_OMT_BASE_PORT`](crate::AUX_OMT_BASE_PORT) plus its index
+    /// (AU-002, schema 98).
+    pub omt: bool,
 }
 
 impl AuxBus {
@@ -39,6 +54,7 @@ impl AuxBus {
             muted: false,
             dsp: fm_types::strip_dsp::StripDsp::DEFAULT,
             device: None,
+            omt: false,
         }
     }
 }

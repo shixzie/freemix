@@ -96,7 +96,9 @@ pub(crate) fn parse_replay(object: &mut Object) -> Result<ReplaySettings, Decode
         fm_types::replay::ReplayTransition::CUT
     } else {
         let Some(frames) = transition.strip_prefix("fade:") else {
-            return Err(syntax("replay transition must be \"cut\" or \"fade:<frames>\""));
+            return Err(syntax(
+                "replay transition must be \"cut\" or \"fade:<frames>\"",
+            ));
         };
         let frames = frames
             .parse::<u32>()

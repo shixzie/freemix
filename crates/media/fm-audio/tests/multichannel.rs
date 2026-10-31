@@ -772,11 +772,8 @@ fn embedding_map_preserves_layouts_through_a_round_trip() {
 
 #[test]
 fn five_one_to_stereo_lt_rt_uses_dolby_surround_coefficients() {
-    let matrix = GainMatrix::lt_rt(
-        StandardLayout::FivePointOne,
-        DownmixOptions::default(),
-    )
-    .unwrap();
+    let matrix =
+        GainMatrix::lt_rt(StandardLayout::FivePointOne, DownmixOptions::default()).unwrap();
     // Lt = L + g·C − g·Ls, Rt = R + g·C + g·Rs; LFE is discarded.
     assert_eq!(
         matrix.routes(),
@@ -829,7 +826,10 @@ fn five_one_to_mono_is_the_composite_stereo_fold() {
     let input = vec![vec![l], vec![r], vec![c], vec![lfe], vec![ls], vec![rs]];
     let mut output = outputs(1, 1);
     matrix.process(&input, &mut output).unwrap();
-    assert_eq!(output[0][0], 0.5 * l + 0.5 * r + c * G + 0.5 * ls * G + 0.5 * rs * G);
+    assert_eq!(
+        output[0][0],
+        0.5 * l + 0.5 * r + c * G + 0.5 * ls * G + 0.5 * rs * G
+    );
     // Normalization keeps an in-phase full-scale mix inside full scale.
     let normalized = GainMatrix::downmix(
         StandardLayout::FivePointOne,

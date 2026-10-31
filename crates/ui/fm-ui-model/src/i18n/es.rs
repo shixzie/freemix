@@ -3834,18 +3834,23 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         ),
     ),
     (Msg::BusMixerFullMix, t("Mezcla completa")),
-    (Msg::BusMixerDevice, t("Salida")),
+    (Msg::BusMixerDevice, t("Salida del bus")),
     (
         Msg::BusMixerDeviceHover,
         t(
             "La salida de audio local en la que suena este bus; Solo medidor lo mantiene en silencio",
         ),
     ),
-    (Msg::BusMixerDeviceNone, t("Solo medidor")),
+    (Msg::BusMixerDeviceNone, t("Solo medidor, sin salida")),
     (Msg::BusMixerDeviceMissing, t("Dispositivo no listado")),
     (
         Msg::BusMixerNoDeviceList,
         t("Este servidor no lista salidas de audio"),
+    ),
+    (Msg::BusMixerOmt, t("OMT")),
+    (
+        Msg::BusMixerOmtHover,
+        t("Publicar este bus como emisor de audio OMT en su puerto fijo, o detenerlo"),
     ),
     (Msg::BusMixerNoOutputs, t("Este proyecto no tiene salidas.")),
     (
@@ -10908,7 +10913,10 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ConsoleActionReplayPlayPauseB,
         t("Repetición B reproducir/pausar"),
     ),
-    (Msg::ConsoleActionReplayStepBackB, t("Repetición B paso atrás")),
+    (
+        Msg::ConsoleActionReplayStepBackB,
+        t("Repetición B paso atrás"),
+    ),
     (
         Msg::ConsoleActionReplayStepForwardB,
         t("Repetición B paso adelante"),
@@ -11050,8 +11058,6 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
         Msg::ReplayTransitionHover,
         t("Cómo entra en Programa una entrada de repetición al tomarla"),
     ),
-    (Msg::ReplayTransitionCut, t("Corte")),
-    (Msg::ReplayTransitionFade, t("Fundido")),
     (
         Msg::ReplayTransitionFramesHover,
         t("Fotogramas que dura el fundido"),

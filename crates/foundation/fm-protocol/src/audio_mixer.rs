@@ -274,6 +274,8 @@ pub struct AuxBusStatus {
     /// The local audio output device the bus plays on (2.135), or `None`
     /// for meter-only.
     pub device: Option<String>,
+    /// Whether the bus is published as an OMT audio sender (2.138).
+    pub omt: bool,
 }
 
 impl AuxBusStatus {
@@ -287,6 +289,7 @@ impl AuxBusStatus {
             muted: false,
             dsp: StripDsp::DEFAULT,
             device: None,
+            omt: false,
         }
     }
 }
@@ -444,6 +447,9 @@ impl AudioMixerStatus {
             }
             AudioMixerOperation::SetAuxBusDevice { bus, device } => {
                 self.aux_buses[bus.index()].device.clone_from(device);
+            }
+            AudioMixerOperation::SetAuxBusOmt { bus, omt } => {
+                self.aux_buses[bus.index()].omt = *omt;
             }
             AudioMixerOperation::RenameGroup { group, name } => {
                 if audio_group_is_valid(*group) {
@@ -627,6 +633,9 @@ pub enum AudioMixerOperation {
         bus: AuxBusNumber,
         device: Option<String>,
     },
+    /// Publishes aux bus `bus` as an OMT audio sender, or stops it (2.138).
+    /// A project edit.
+    SetAuxBusOmt { bus: AuxBusNumber, omt: bool },
     /// Replaces a strip's or the Master's plugin chain (2.128, AU-006). A
     /// live operation: chains are runtime state.
     SetPluginChain {
@@ -657,6 +666,7 @@ impl AudioMixerOperation {
             Self::SetOutputBus { .. } => "audio_output_bus",
             Self::SetOutputMixMinus { .. } => "audio_output_mix_minus",
             Self::SetAuxBusDevice { .. } => "audio_aux_bus_device",
+            Self::SetAuxBusOmt { .. } => "audio_aux_bus_omt",
             Self::SetPluginChain { .. } => "audio_plugin_chain",
         }
     }

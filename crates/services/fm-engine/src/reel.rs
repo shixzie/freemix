@@ -363,8 +363,7 @@ pub(crate) fn resolve_chunk(
                             frame: index,
                             weight_num: layer.plan.weight.numerator,
                             weight_den: layer.plan.weight.denominator,
-                            full_speed: layer.plan.speed.is_real_time()
-                                && !layer.plan.reverse,
+                            full_speed: layer.plan.speed.is_real_time() && !layer.plan.reverse,
                         })
                     })
                     .collect::<Result<Vec<_>, EngineReelError>>()?;

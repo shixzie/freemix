@@ -20,7 +20,7 @@ const INVERT_CUBE: &str =
 
 /// A slide in from 400 px left with a crop that opens over 20 frames,
 /// measured against a 400x100 box.
-const SWOOSH: &str = r#"{"schema_version": 97, "kind": "animation_preset", "name": "Swoosh",
+const SWOOSH: &str = r#"{"schema_version": 98, "kind": "animation_preset", "name": "Swoosh",
  "phase": "in", "timebase": "30/1", "frames": 20, "width": 400, "height": 100,
  "tracks": [
   {"property": "position_x", "keys": [{"frame": 0, "value": -400, "easing": "cubic-out"},

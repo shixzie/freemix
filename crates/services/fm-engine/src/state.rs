@@ -992,9 +992,7 @@ impl ShowState {
     /// The inputs each output's aux feed leaves out (AU-002 mix-minus),
     /// ascending.
     #[must_use]
-    pub const fn output_mix_minus(
-        &self,
-    ) -> &BTreeMap<fm_types::OutputId, fm_types::InputId> {
+    pub const fn output_mix_minus(&self) -> &BTreeMap<fm_types::OutputId, fm_types::InputId> {
         &self.output_mix_minus
     }
 

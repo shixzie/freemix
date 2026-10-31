@@ -1705,10 +1705,7 @@ pub(super) fn run(
             return Err(error);
         }
         // The as-run log follows every realized Program change (OR-015).
-        runtime
-            .as_run
-            .borrow_mut()
-            .sync(control.borrow().as_run());
+        runtime.as_run.borrow_mut().sync(control.borrow().as_run());
         thread::sleep(CLIENT_READ_POLL_INTERVAL);
     }
 }

@@ -109,6 +109,8 @@ pub struct EngineAuxBus {
     /// The local audio output device the bus plays on (2.135), or `None`
     /// for meter-only.
     pub device: Option<String>,
+    /// Whether the bus is published as an OMT audio sender (2.138).
+    pub omt: bool,
 }
 
 impl EngineAuxBus {
@@ -121,6 +123,7 @@ impl EngineAuxBus {
             state: EngineAudioGroupState::default(),
             dsp: StripDsp::DEFAULT,
             device: None,
+            omt: false,
         }
     }
 }
@@ -228,6 +231,9 @@ pub enum EngineAudioMixerEdit {
         bus: AuxBusNumber,
         device: Option<String>,
     },
+    /// Publishes an aux bus as an OMT audio sender, or stops it (AU-002,
+    /// 2.138). A project edit.
+    SetAuxBusOmt { bus: AuxBusNumber, omt: bool },
     /// Makes `output` hear aux bus `bus`, or Master for `None` (AU-002). A
     /// project edit.
     SetOutputAuxBus {
@@ -318,6 +324,7 @@ impl EngineAudioMixerEdit {
             | Self::SetAuxBusLevel { .. }
             | Self::SetAuxBusDsp { .. }
             | Self::SetAuxBusDevice { .. }
+            | Self::SetAuxBusOmt { .. }
             | Self::SetOutputAuxBus { .. }
             | Self::SetOutputMixMinus { .. } => None,
         }
@@ -396,6 +403,8 @@ pub enum EngineAudioMixerUpdate {
         bus: AuxBusNumber,
         device: Option<String>,
     },
+    /// An aux bus's OMT audio sender was enabled or stopped (AU-002, 2.138).
+    AuxBusOmt { bus: AuxBusNumber, omt: bool },
     /// An output now hears an aux bus, or Master for `None` (AU-002).
     OutputAuxBus {
         output: OutputId,
@@ -457,6 +466,10 @@ impl EngineAudioMixerUpdate {
             EngineAudioMixerEdit::SetAuxBusDevice { bus, device } => Some(Self::AuxBusDevice {
                 bus: *bus,
                 device: device.clone(),
+            }),
+            EngineAudioMixerEdit::SetAuxBusOmt { bus, omt } => Some(Self::AuxBusOmt {
+                bus: *bus,
+                omt: *omt,
             }),
             EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => Some(Self::OutputAuxBus {
                 output: *output,
@@ -679,6 +692,7 @@ pub(crate) fn apply(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Resul
         | EngineAudioMixerEdit::SetAuxBusLevel { .. }
         | EngineAudioMixerEdit::SetAuxBusDsp { .. }
         | EngineAudioMixerEdit::SetAuxBusDevice { .. }
+        | EngineAudioMixerEdit::SetAuxBusOmt { .. }
         | EngineAudioMixerEdit::SetOutputAuxBus { .. }
         | EngineAudioMixerEdit::SetOutputMixMinus { .. } => apply_aux(state, edit),
     }
@@ -732,6 +746,10 @@ fn apply_aux(state: &mut ShowState, edit: &EngineAudioMixerEdit) -> Result<(), R
                 })?;
             }
             state.aux_bus_mut(*bus).device.clone_from(device);
+            Ok(())
+        }
+        EngineAudioMixerEdit::SetAuxBusOmt { bus, omt } => {
+            state.aux_bus_mut(*bus).omt = *omt;
             Ok(())
         }
         EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => {
@@ -891,6 +909,12 @@ pub(crate) fn inverse(
             Some(EngineAudioMixerEdit::SetAuxBusDevice {
                 bus: *bus,
                 device: state.aux_bus(*bus).device.clone(),
+            })
+        }
+        EngineAudioMixerEdit::SetAuxBusOmt { bus, .. } => {
+            Some(EngineAudioMixerEdit::SetAuxBusOmt {
+                bus: *bus,
+                omt: state.aux_bus(*bus).omt,
             })
         }
         EngineAudioMixerEdit::SetOutputAuxBus { output, .. } => state

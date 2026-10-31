@@ -38,9 +38,7 @@ use fm_protocol::{
     ReplayStatusMessage, ReplayStorageLevel, ReplayStorageStatus, reel_export_path_is_valid,
     reel_name_is_valid, replay_event_name_is_valid,
 };
-use fm_types::replay::{
-    MAX_REPLAY_TRANSITION_FRAMES, ReplayTransition, ReplayTransitionKind,
-};
+use fm_types::replay::{MAX_REPLAY_TRANSITION_FRAMES, ReplayTransition, ReplayTransitionKind};
 use fm_types::{FrameRate, InputId};
 
 use crate::console_keymap::ConsoleAction;
@@ -389,11 +387,7 @@ pub(crate) struct JogAcceleration {
 }
 
 impl JogAcceleration {
-    pub(crate) fn step(
-        &mut self,
-        action: ConsoleAction,
-        now: std::time::Instant,
-    ) -> i32 {
+    pub(crate) fn step(&mut self, action: ConsoleAction, now: std::time::Instant) -> i32 {
         let repeated = self.action == Some(action)
             && self
                 .at
@@ -866,22 +860,22 @@ fn draw_transition(
         ui.label(l.text(Msg::ReplayTransition))
             .on_hover_text(l.text(Msg::ReplayTransitionHover));
         let selected = match current.kind {
-            ReplayTransitionKind::Cut => l.text(Msg::ReplayTransitionCut).to_owned(),
-            ReplayTransitionKind::Fade => l.text(Msg::ReplayTransitionFade).to_owned(),
+            ReplayTransitionKind::Cut => l.text(Msg::TransitionCut).to_owned(),
+            ReplayTransitionKind::Fade => l.text(Msg::TransitionFade).to_owned(),
         };
         ComboBox::from_id_salt("studio-replay-transition")
             .selected_text(selected)
             .width(90.0)
             .show_ui(ui, |ui| {
                 if ui
-                    .selectable_label(current.is_cut(), l.text(Msg::ReplayTransitionCut))
+                    .selectable_label(current.is_cut(), l.text(Msg::TransitionCut))
                     .clicked()
                     && !current.is_cut()
                 {
                     intents.push(configure(ReplayTransition::CUT));
                 }
                 if ui
-                    .selectable_label(!current.is_cut(), l.text(Msg::ReplayTransitionFade))
+                    .selectable_label(!current.is_cut(), l.text(Msg::TransitionFade))
                     .clicked()
                     && current.is_cut()
                 {
@@ -912,7 +906,8 @@ fn draw_transition(
         } else {
             ui.data_mut(|data| data.remove::<u32>(id));
         }
-        if (response.drag_stopped() || response.lost_focus()) && frames != current.duration_frames
+        if (response.drag_stopped() || response.lost_focus())
+            && frames != current.duration_frames
             && let Ok(transition) = ReplayTransition::new(ReplayTransitionKind::Fade, frames)
         {
             intents.push(configure(transition));
@@ -2783,10 +2778,7 @@ mod tests {
         // Another action starts over.
         assert_eq!(jog.step(ConsoleAction::ReplayStepBack, after(250)), 1);
         // A pause starts over too.
-        assert_eq!(
-            jog.step(ConsoleAction::ReplayStepForward, after(2_000)),
-            1
-        );
+        assert_eq!(jog.step(ConsoleAction::ReplayStepForward, after(2_000)), 1);
         // The step caps at 30 frames.
         let mut jog = JogAcceleration::default();
         let mut frames = 0;
@@ -2795,5 +2787,4 @@ mod tests {
         }
         assert_eq!(frames, JOG_MAX_FRAMES);
     }
-
 }

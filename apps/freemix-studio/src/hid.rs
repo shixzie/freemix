@@ -130,7 +130,12 @@ fn is_panel(name: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn scan(root: &std::path::Path, events: &SyncSender<HidEvent>, stop: &Arc<Mutex<bool>>, repaint: &egui::Context) {
+fn scan(
+    root: &std::path::Path,
+    events: &SyncSender<HidEvent>,
+    stop: &Arc<Mutex<bool>>,
+    repaint: &egui::Context,
+) {
     let mut opened = BTreeSet::new();
     let mut last_devices = Vec::new();
     while !*stop.lock().unwrap_or_else(PoisonError::into_inner) {
@@ -145,13 +150,9 @@ fn scan(root: &std::path::Path, events: &SyncSender<HidEvent>, stop: &Arc<Mutex<
                     continue;
                 }
                 let path = entry.path();
-                let name = fs::read_to_string(
-                    format!(
-                        "/sys/class/input/{file_name}/device/name"
-                    ),
-                )
-                .map(|name| name.trim().to_owned())
-                .unwrap_or_else(|_| file_name.to_owned());
+                let name = fs::read_to_string(format!("/sys/class/input/{file_name}/device/name"))
+                    .map(|name| name.trim().to_owned())
+                    .unwrap_or_else(|_| file_name.to_owned());
                 if !is_panel(&name) {
                     continue;
                 }

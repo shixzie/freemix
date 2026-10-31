@@ -266,6 +266,10 @@ pub(super) fn engine_command(operation: &AudioMixerOperation) -> EngineCommand {
                 device: device.clone(),
             }
         }
+        AudioMixerOperation::SetAuxBusOmt { bus, omt } => EngineAudioMixerEdit::SetAuxBusOmt {
+            bus: *bus,
+            omt: *omt,
+        },
         AudioMixerOperation::SetOutputBus { output, bus } => {
             EngineAudioMixerEdit::SetOutputAuxBus {
                 output: output.to_domain(),
@@ -370,6 +374,10 @@ pub(super) fn wire_operation(edit: &EngineAudioMixerEdit) -> AudioMixerOperation
                 device: device.clone(),
             }
         }
+        EngineAudioMixerEdit::SetAuxBusOmt { bus, omt } => AudioMixerOperation::SetAuxBusOmt {
+            bus: *bus,
+            omt: *omt,
+        },
         EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => {
             AudioMixerOperation::SetOutputBus {
                 output: WireOutputId::from_domain(*output),
@@ -471,6 +479,7 @@ pub(super) fn wire_status(show: &ShowState) -> AudioMixerStatus {
             muted: bus.state.muted,
             dsp: bus.dsp,
             device: bus.device,
+            omt: bus.omt,
         }),
     }
 }

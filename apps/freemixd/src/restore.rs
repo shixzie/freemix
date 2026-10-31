@@ -617,6 +617,7 @@ pub(crate) fn restore_input_audio_strips(
                 },
                 dsp: value.dsp,
                 device: value.device.clone(),
+                omt: value.omt,
             },
         )?;
     }
@@ -794,6 +795,7 @@ pub(crate) fn sync_project_audio_mixer(
                     muted: value.state.muted,
                     dsp: value.dsp,
                     device: value.device.clone(),
+                    omt: value.omt,
                 },
             )
             .map_err(|error| AppFailure(format!("project cannot take aux {bus}: {error}")))?;

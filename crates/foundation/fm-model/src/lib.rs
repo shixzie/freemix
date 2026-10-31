@@ -32,8 +32,8 @@ pub use audio_mixer::{
     validate_audio_strip_label,
 };
 pub use aux_bus::{
-    AUX_BUS_COUNT, AudioBusMask, AudioSends, AudioSendsError, AuxBus, AuxBusNumber, AuxBuses,
-    BusSendState, SendTap,
+    AUX_BUS_COUNT, AUX_OMT_BASE_PORT, AudioBusMask, AudioSends, AudioSendsError, AuxBus,
+    AuxBusNumber, AuxBuses, BusSendState, SendTap, aux_omt_port,
 };
 pub use cue::{
     CUE_OVERLAY_CHANNELS, Cue, CueAction, CueArmed, CueFault, CueList, CueListError,

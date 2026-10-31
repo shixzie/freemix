@@ -11,7 +11,7 @@ use fm_protocol::{
     WireMessage, WireOverlayChannelId, WireStingerSlotId, decode_line, encode_line,
 };
 
-const PREFIX: &str = "command\tprotocol=2.137\tid=a\tidempotency_key=k";
+const PREFIX: &str = "command\tprotocol=2.138\tid=a\tidempotency_key=k";
 
 fn command(payload: CommandPayload) -> WireMessage {
     WireMessage::Command(CommandMessage {

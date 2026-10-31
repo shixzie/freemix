@@ -169,6 +169,7 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
                 muted: true,
                 dsp: fm_types::strip_dsp::StripDsp::DEFAULT,
                 device: Some("plughw:CARD=Headset,DEV=0".into()),
+                omt: true,
             },
         )
         .unwrap();
@@ -196,11 +197,15 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
     );
     assert_eq!(loaded.project().output_aux_bus(OutputId::new(id(40))), None);
     assert_eq!(
-        loaded.project().output_mix_minus_input(OutputId::new(id(41))),
+        loaded
+            .project()
+            .output_mix_minus_input(OutputId::new(id(41))),
         Some(host)
     );
     assert_eq!(
-        loaded.project().output_mix_minus_input(OutputId::new(id(40))),
+        loaded
+            .project()
+            .output_mix_minus_input(OutputId::new(id(40))),
         None
     );
     assert_eq!(loaded.project().aux_buses().get(stage).name, "Stage");
@@ -235,7 +240,7 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
     );
 
     let text = fs::read_to_string(directory.path("show.freemix/project.json")).unwrap();
-    assert!(text.contains("\"schema_version\": 95"));
+    assert!(text.contains("\"schema_version\": 98"));
     assert!(text.contains(
         "{\"input\": 10, \"gain_milli_db\": 0, \"balance_basis_points\": 0, \"pan_basis_points\": -2500, \"delay_samples\": 0, \"muted\": false, \"soloed\": false, \"follow_video\": true, \"sends\": \"M,A@-6000p,C@0\", \"label\": \"Host \\\"mic\\\" 1\", \"group\": 2, \"dsp\": null, \"plugins\": null}"
     ), "{text}");
@@ -243,7 +248,7 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
         "\"follow_video\": true, \"sends\": \"M\", \"label\": \"\", \"group\": null, \"dsp\": null, \"plugins\": null}"
     ));
     assert!(text.contains(
-        "\"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Hosts\", \"gain_milli_db\": -6000, \"muted\": true, \"soloed\": true, \"parent\": 3},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"aux_buses\": [\n      {\"name\": \"Bus A\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"device\": null},\n      {\"name\": \"Stage\", \"gain_milli_db\": -3000, \"muted\": true, \"dsp\": null, \"device\": \"plughw:CARD=Headset,DEV=0\"},\n      {\"name\": \"Bus C\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"device\": null},\n      {\"name\": \"Bus D\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"device\": null},\n      {\"name\": \"Bus E\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"device\": null},\n      {\"name\": \"Bus F\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"device\": null},\n      {\"name\": \"Bus G\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"device\": null}\n    ],\n    \"output_aux_buses\": [{\"output\": 41, \"bus\": \"B\"}],\n    \"output_mix_minus\": [{\"output\": 41, \"input\": 10}],\n    \"audio_solo_mode\": \"pfl\",\n    \"audio_monitor_output\": {\"device\": null, \"gain_milli_db\": 0, \"muted\": false},\n    \"master_audio_dsp\": null,\n    \"master_audio_plugins\": null,\n    \"fade_to_black_excluded_outputs\": [41],\n    \"fade_to_black_output_durations\": [{\"output\": 40, \"duration_frames\": 45}],\n    \"fade_to_black_curve\": \"ease\",\n    \"display_outputs\": [],\n    \"live_lan\": {\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null},\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null}\n  },"
+        "\"audio_groups\": [\n      {\"name\": \"Group 1\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Hosts\", \"gain_milli_db\": -6000, \"muted\": true, \"soloed\": true, \"parent\": 3},\n      {\"name\": \"Group 3\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null},\n      {\"name\": \"Group 4\", \"gain_milli_db\": 0, \"muted\": false, \"soloed\": false, \"parent\": null}\n    ],\n    \"aux_buses\": [\n      {\"name\": \"Bus A\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"device\": null, \"omt\": false},\n      {\"name\": \"Stage\", \"gain_milli_db\": -3000, \"muted\": true, \"dsp\": null, \"device\": \"plughw:CARD=Headset,DEV=0\", \"omt\": true},\n      {\"name\": \"Bus C\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"device\": null, \"omt\": false},\n      {\"name\": \"Bus D\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"device\": null, \"omt\": false},\n      {\"name\": \"Bus E\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"device\": null, \"omt\": false},\n      {\"name\": \"Bus F\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"device\": null, \"omt\": false},\n      {\"name\": \"Bus G\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"device\": null, \"omt\": false}\n    ],\n    \"output_aux_buses\": [{\"output\": 41, \"bus\": \"B\"}],\n    \"output_mix_minus\": [{\"output\": 41, \"input\": 10}],\n    \"audio_solo_mode\": \"pfl\",\n    \"audio_monitor_output\": {\"device\": null, \"gain_milli_db\": 0, \"muted\": false},\n    \"master_audio_dsp\": null,\n    \"master_audio_plugins\": null,\n    \"fade_to_black_excluded_outputs\": [41],\n    \"fade_to_black_output_durations\": [{\"output\": 40, \"duration_frames\": 45}],\n    \"fade_to_black_curve\": \"ease\",\n    \"display_outputs\": [],\n    \"live_lan\": {\"enabled\": false, \"source\": \"program\", \"max_viewers\": 8, \"pin\": null},\n    \"scripts\": [],\n    \"script_runs\": {\"last_run\": 0, \"runs\": [], \"faults\": []},\n    \"shortcuts\": [],\n    \"media_lists\": [],\n    \"title_timelines\": [],\n    \"screen_capture_restore_tokens\": [],\n    \"replay\": {\"sources\": [], \"retention_seconds\": 600, \"storage_root\": null, \"auto_return\": null, \"transition\": \"cut\"}\n  },"
     ), "{text}");
 
     for (from, to) in [
@@ -262,7 +267,7 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
             "{\"output\": 41, \"bus\": \"B\"}, {\"output\": 41, \"bus\": \"C\"}",
         ),
         (
-            ",\n      {\"name\": \"Bus G\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"device\": null}",
+            ",\n      {\"name\": \"Bus G\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"device\": null, \"omt\": false}",
             "",
         ),
         (
@@ -270,9 +275,12 @@ fn pan_labels_groups_and_fade_to_black_outputs_round_trip_exactly() {
             "{\"name\": \"Bus C\", \"gain_milli_db\": 24001,",
         ),
         ("\"device\": null", "\"device\": 1"),
+        ("\"omt\": true", "\"omt\": 1"),
+        ("\"omt\": true", "\"omt\": null"),
+        ("\"omt\": false", "\"omt\": 0"),
         (
-            "{\"name\": \"Bus A\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"device\": null}",
-            "{\"name\": \"Bus A\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null}",
+            "{\"name\": \"Bus A\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"device\": null, \"omt\": false}",
+            "{\"name\": \"Bus A\", \"gain_milli_db\": 0, \"muted\": false, \"dsp\": null, \"omt\": false}",
         ),
         (
             "\n    \"output_aux_buses\": [{\"output\": 41, \"bus\": \"B\"}],",

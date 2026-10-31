@@ -801,10 +801,7 @@ impl GainMatrix {
         clippy::cast_possible_truncation,
         reason = "coefficients are computed in f64 and rounded once to f32"
     )]
-    pub fn lt_rt(
-        from: StandardLayout,
-        options: DownmixOptions,
-    ) -> Result<Self, MultichannelError> {
+    pub fn lt_rt(from: StandardLayout, options: DownmixOptions) -> Result<Self, MultichannelError> {
         const G: f64 = core::f64::consts::FRAC_1_SQRT_2;
         if from != StandardLayout::FivePointOne {
             return Err(MultichannelError::UnsupportedConversion {
@@ -838,11 +835,7 @@ impl GainMatrix {
                 gain: (gain / scale) as f32,
             }
         });
-        Self::new(
-            from.layout(),
-            StandardLayout::Stereo.layout(),
-            &compiled,
-        )
+        Self::new(from.layout(), StandardLayout::Stereo.layout(), &compiled)
     }
 
     /// Upmix by duplication between catalogued layouts with more output than

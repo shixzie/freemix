@@ -5171,6 +5171,9 @@ fn engine_audio_mixer_edit(edit: AudioMixerArgs) -> AppResult<fm_engine::EngineA
         AudioMixerArgs::AuxDevice { bus, device } => {
             fm_engine::EngineAudioMixerEdit::SetAuxBusDevice { bus, device }
         }
+        AudioMixerArgs::AuxOmt { bus, omt } => {
+            fm_engine::EngineAudioMixerEdit::SetAuxBusOmt { bus, omt }
+        }
     })
 }
 
@@ -5267,6 +5270,9 @@ fn wire_audio_mixer_operation(edit: AudioMixerArgs) -> AppResult<fm_protocol::Au
         }
         fm_engine::EngineAudioMixerEdit::SetAuxBusDevice { bus, device } => {
             fm_protocol::AudioMixerOperation::SetAuxBusDevice { bus, device }
+        }
+        fm_engine::EngineAudioMixerEdit::SetAuxBusOmt { bus, omt } => {
+            fm_protocol::AudioMixerOperation::SetAuxBusOmt { bus, omt }
         }
         fm_engine::EngineAudioMixerEdit::SetOutputAuxBus { output, bus } => {
             fm_protocol::AudioMixerOperation::SetOutputBus {
@@ -5376,6 +5382,7 @@ fn restore_input_audio_strips(show: &mut ShowState, project: &Project) -> AppRes
                 },
                 dsp: value.dsp,
                 device: value.device.clone(),
+                omt: value.omt,
             },
         )?;
     }
@@ -5521,6 +5528,7 @@ fn sync_audio_mixer(project: &mut Project, show: &ShowState) -> AppResult<()> {
                     muted: value.state.muted,
                     dsp: value.dsp,
                     device: value.device.clone(),
+                    omt: value.omt,
                 },
             )
             .map_err(|error| AppFailure(format!("project cannot take aux {bus}: {error}")))?;
@@ -6310,11 +6318,12 @@ fn print_audio_buses(project: &Project) {
             value.dsp.code()
         };
         println!(
-            "audio_aux_bus bus={} name={:?} gain_millidb={} muted={} dsp={dsp}",
+            "audio_aux_bus bus={} name={:?} gain_millidb={} muted={} dsp={dsp} omt={}",
             bus.letter(),
             value.name,
             value.gain.get(),
-            value.muted
+            value.muted,
+            value.omt
         );
     }
 }

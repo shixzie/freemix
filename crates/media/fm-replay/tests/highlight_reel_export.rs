@@ -859,8 +859,11 @@ fn a_reverse_clip_plays_its_trimmed_range_backward() {
     assert!(first > second && second > last);
     assert_eq!(first, ts(SECOND - 1));
     assert_eq!(last, ts(FRAME - 1));
-    assert_eq!(compiled.layers_at(50), Err(ReelError::FrameOutOfRange {
-        frame: 50,
-        total: 50,
-    }));
+    assert_eq!(
+        compiled.layers_at(50),
+        Err(ReelError::FrameOutOfRange {
+            frame: 50,
+            total: 50,
+        })
+    );
 }

@@ -768,6 +768,7 @@ fn decode_command_payload(
         | "audio_aux_bus_level"
         | "audio_aux_bus_dsp"
         | "audio_aux_bus_device"
+        | "audio_aux_bus_omt"
         | "audio_output_bus"
         | "audio_output_mix_minus"
         | "audio_plugin_chain") => CommandPayload::AudioMixer(

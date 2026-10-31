@@ -2717,8 +2717,15 @@ trajectory. Each bus also names an optional local output device (Protocol
 2.135, schema 95): the native daemon's per-bus output slot plays the
 rendered bus after its fader, mute, and chain on `ffmpeg`'s ALSA output,
 with the same lazy open, retry, and hot-plug behavior as the monitor bus,
-and Studio's BUSES window and the CLI choose it. Remaining gaps: network
-destinations; the legacy
+and Studio's BUSES window and the CLI choose it. A bus can also be published
+as an OMT audio sender (Protocol 2.138, schema 98): the native daemon binds
+one `fm_io_omt::Sender` per published bus on `0.0.0.0:9300`–`9306` (bus A
+through G), feeds it the rendered bus's samples at every audio-meter
+interval with the interval's start sample as the OMT timestamp, and starts
+or stops the sender from the live mixer update; Studio's BUSES window has
+the OMT toggle and the CLI has `audio-aux-omt <A-G> on|off`. Remaining gaps:
+network destinations other than OMT, and
+the legacy
 project audio bus graph and each output's `audio_source` are unchanged.
 `AU-002` remains planned.
 

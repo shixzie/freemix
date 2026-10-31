@@ -704,7 +704,11 @@ impl NativeReplay {
             .map(|entry| entry.path())
             .collect();
         sessions.sort_by_key(|path| {
-            std::cmp::Reverse(fs::metadata(path).and_then(|metadata| metadata.modified()).ok())
+            std::cmp::Reverse(
+                fs::metadata(path)
+                    .and_then(|metadata| metadata.modified())
+                    .ok(),
+            )
         });
         let mut restored_session = None;
         for session in &sessions {
@@ -835,16 +839,9 @@ impl NativeReplay {
                         path,
                         frames,
                         bytes,
-                    }) => Self::catalog(
-                        &self.session,
-                        host,
-                        input,
-                        run,
-                        index,
-                        path,
-                        frames,
-                        bytes,
-                    ),
+                    }) => {
+                        Self::catalog(&self.session, host, input, run, index, path, frames, bytes)
+                    }
                     Ok(RunEvent::Stopped) => {
                         self.sources.get_mut(&input).expect("source").state = SourceState::Idle;
                         break;
@@ -910,7 +907,15 @@ fn manifest_header_matches(text: &str, format: ReplayFormat) -> bool {
         return false;
     };
     let parts: Vec<&str> = line.split('\t').collect();
-    let ["format", width, height, numerator, denominator, clock, _sources] = parts.as_slice()
+    let [
+        "format",
+        width,
+        height,
+        numerator,
+        denominator,
+        clock,
+        _sources,
+    ] = parts.as_slice()
     else {
         return false;
     };
@@ -918,8 +923,7 @@ fn manifest_header_matches(text: &str, format: ReplayFormat) -> bool {
         && height.parse::<u32>().ok() == Some(format.height)
         && numerator.parse::<u32>().ok() == Some(format.rate.numerator())
         && denominator.parse::<u32>().ok() == Some(format.rate.denominator())
-        && clock.parse::<u128>().ok().and_then(NonZeroU128::new)
-            == Some(format.clock_domain.get())
+        && clock.parse::<u128>().ok().and_then(NonZeroU128::new) == Some(format.clock_domain.get())
 }
 
 /// One closed segment a session manifest names.
@@ -938,8 +942,16 @@ fn parse_manifest_segments(text: &str, session: &Path) -> Vec<RestoredSegment> {
     let mut segments = Vec::new();
     for line in text.lines().skip(1) {
         let parts: Vec<&str> = line.split('\t').collect();
-        let ["segment", input, index, first_frame, first_stream_frame, frames, bytes, relative] =
-            parts.as_slice()
+        let [
+            "segment",
+            input,
+            index,
+            first_frame,
+            first_stream_frame,
+            frames,
+            bytes,
+            relative,
+        ] = parts.as_slice()
         else {
             continue;
         };
@@ -951,20 +963,13 @@ fn parse_manifest_segments(text: &str, session: &Path) -> Vec<RestoredSegment> {
         else {
             continue;
         };
-        let (
-            Ok(index),
-            Ok(first_frame),
-            Ok(first_stream_frame),
-            Ok(frames),
-            Ok(bytes),
-        ) = (
+        let (Ok(index), Ok(first_frame), Ok(first_stream_frame), Ok(frames), Ok(bytes)) = (
             index.parse::<u64>(),
             first_frame.parse::<u64>(),
             first_stream_frame.parse::<u64>(),
             frames.parse::<u64>(),
             bytes.parse::<u64>(),
-        )
-        else {
+        ) else {
             continue;
         };
         if frames == 0 {
@@ -2023,10 +2028,6 @@ mod tests {
         replay.min_free_bytes = u64::MAX;
         replay.sync(&mut engine);
         assert!(replay.low_space);
-        assert!(matches!(
-            replay.sources[&input(1)].state,
-            SourceState::Idle
-        ));
+        assert!(matches!(replay.sources[&input(1)].state, SourceState::Idle));
     }
-
 }

@@ -241,7 +241,9 @@ impl ConsoleAction {
             Self::ReplayStepBackB => l.text(Msg::ConsoleActionReplayStepBackB).to_owned(),
             Self::ReplayStepForwardB => l.text(Msg::ConsoleActionReplayStepForwardB).to_owned(),
             Self::ReplayShuttleBackB => l.text(Msg::ConsoleActionReplayShuttleBackB).to_owned(),
-            Self::ReplayShuttleForwardB => l.text(Msg::ConsoleActionReplayShuttleForwardB).to_owned(),
+            Self::ReplayShuttleForwardB => {
+                l.text(Msg::ConsoleActionReplayShuttleForwardB).to_owned()
+            }
         }
     }
 }

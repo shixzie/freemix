@@ -145,6 +145,11 @@ pub(crate) struct NativeDaemon {
     /// mute.
     pub(crate) aux_bus_outputs:
         [freemixd::monitor_output::MonitorOutputSlot; fm_model::AUX_BUS_COUNT],
+    /// Each published aux bus's OMT audio sender (AU-002, Protocol 2.138),
+    /// bus A first; `None` for a bus that is not published. The sender binds
+    /// `0.0.0.0` on the bus's fixed port and is fed the bus's mixed samples
+    /// at every audio-meter interval.
+    pub(crate) aux_bus_omt: [Option<fm_io_omt::Sender>; fm_model::AUX_BUS_COUNT],
     pub(crate) stream_status_sequence: u64,
     pub(crate) pending_stream_status: Option<StreamStatusMessage>,
     /// Realized recorder slot bookkeeping behind `recorder_status`
@@ -223,6 +228,51 @@ pub(crate) struct NativeDaemon {
     pub(crate) replay: Option<native_replay::NativeReplay>,
     /// The highlight reel exports (OR-013).
     pub(crate) reel: Option<native_reel::NativeReel>,
+}
+
+/// Binds an OMT audio sender for every aux bus the project publishes
+/// (AU-002, Protocol 2.138); buses A–G listen on their fixed port. A port
+/// that cannot be bound leaves the bus unpublished, like an unusable local
+/// output device: the show keeps running.
+#[cfg(feature = "native-media")]
+fn bind_aux_bus_omt_senders(
+    project: &fm_model::Project,
+) -> [Option<fm_io_omt::Sender>; fm_model::AUX_BUS_COUNT] {
+    let mut senders: [Option<fm_io_omt::Sender>; fm_model::AUX_BUS_COUNT] =
+        std::array::from_fn(|_| None);
+    for (bus, value) in project.aux_buses().iter() {
+        if value.omt {
+            set_aux_bus_omt_sender(&mut senders[bus.index()], bus, true);
+        }
+    }
+    senders
+}
+
+/// Starts or stops aux bus `bus`'s OMT audio sender, logging a bind failure
+/// once; a later enable retries the bind.
+#[cfg(feature = "native-media")]
+fn set_aux_bus_omt_sender(
+    slot: &mut Option<fm_io_omt::Sender>,
+    bus: fm_model::AuxBusNumber,
+    omt: bool,
+) {
+    if !omt {
+        *slot = None;
+        return;
+    }
+    if slot.is_some() {
+        return;
+    }
+    let port = fm_model::aux_omt_port(bus);
+    match fm_io_omt::Sender::bind(("0.0.0.0", port)) {
+        Ok(sender) => *slot = Some(sender),
+        Err(error) => {
+            eprintln!(
+                "aux bus {} OMT sender cannot bind 0.0.0.0:{port}: {error}",
+                bus.letter()
+            );
+        }
+    }
 }
 
 #[cfg(feature = "native-media")]
@@ -452,6 +502,7 @@ impl NativeDaemon {
                     false,
                 )
             }),
+            aux_bus_omt: bind_aux_bus_omt_senders(stored.project()),
             stream_status_sequence: 0,
             pending_stream_status: None,
             recorder_status: recorder_status::RecorderStatusTracker::default(),
@@ -2575,6 +2626,7 @@ impl NativeDaemon {
         let audio_handle = &mut self.audio;
         let monitor_output = &mut self.monitor_output;
         let aux_bus_outputs = &mut self.aux_bus_outputs;
+        let aux_bus_omt = &mut self.aux_bus_omt;
         let project_plan = &mut self.project_plan;
         let projected_frame = self.projected_frame.as_ref();
         let mut fade_to_black_excluded = Vec::new();
@@ -2630,11 +2682,11 @@ impl NativeDaemon {
                     fm_engine::EngineAudioMixerUpdate::AuxBusDsp { bus, ref chain } => {
                         project_plan.set_aux_bus_dsp(bus, **chain);
                     }
-                    fm_engine::EngineAudioMixerUpdate::AuxBusDevice {
-                        bus,
-                        ref device,
-                    } => {
+                    fm_engine::EngineAudioMixerUpdate::AuxBusDevice { bus, ref device } => {
                         aux_bus_outputs[bus.index()].set_device(device.clone());
+                    }
+                    fm_engine::EngineAudioMixerUpdate::AuxBusOmt { bus, omt } => {
+                        set_aux_bus_omt_sender(&mut aux_bus_omt[bus.index()], bus, omt);
                     }
                     fm_engine::EngineAudioMixerUpdate::OutputAuxBus { output, bus } => {
                         project_plan.set_output_aux_bus(output, bus);
@@ -2781,6 +2833,21 @@ impl NativeDaemon {
                     samples,
                     meters.sample_rate,
                 );
+            }
+            // Published aux buses go out as OMT audio at their fixed ports,
+            // timestamped from the interval's first sample (AU-002, 2.138).
+            let timestamp = i64::try_from(
+                u128::from(meters.start_sample) * 10_000_000
+                    / u128::from(meters.sample_rate.max(1)),
+            )
+            .unwrap_or(i64::MAX);
+            for (index, sender) in self.aux_bus_omt.iter().enumerate() {
+                let Some(sender) = sender else { continue };
+                let start = index * meters.channels;
+                let planes = meters.aux_planes[start..start + meters.channels].to_vec();
+                if let Ok(frame) = fm_io_omt::AudioFrame::new(meters.sample_rate, planes) {
+                    let _ = sender.send_audio(&frame.at(timestamp));
+                }
             }
             let output = self.monitor_output.state();
             self.pending_audio_meters = Some(audio_meters_message(
