@@ -1311,11 +1311,18 @@ struct Canvas<'a> {
 }
 
 impl Canvas<'_> {
-    /// Whether every active design clip contains pixel `(x, y)`.
-    fn unclipped(&self, x: u32, y: u32) -> bool {
-        self.clips
-            .iter()
-            .all(|clip| clip.contains(i64::from(x), i64::from(y)))
+    /// The product of every active design clip's coverage at pixel `(x, y)`,
+    /// `0..=255`. An empty clip list is fully covered.
+    fn clip_coverage(&self, x: u32, y: u32) -> u8 {
+        let mut coverage = u16::from(u8::MAX);
+        for clip in &self.clips {
+            let value = u16::from(clip.coverage(i64::from(x), i64::from(y)));
+            if value == 0 {
+                return 0;
+            }
+            coverage = coverage * value / u16::from(u8::MAX);
+        }
+        u8::try_from(coverage).unwrap_or(u8::MAX)
     }
 
     fn fill(&mut self, color: Color) {
@@ -1497,7 +1504,8 @@ impl Canvas<'_> {
     /// `destination = source_scaled + round(destination * (255 - source_alpha) / 255)`
     /// with saturating addition.
     fn blend_premultiplied(&mut self, x: u32, y: u32, pixel: Rgba8, opacity: u8) {
-        if !self.unclipped(x, y) {
+        let coverage = self.clip_coverage(x, y);
+        if coverage == 0 {
             return;
         }
         let Some(offset) = pixel_offset(self.width, x, y) else {
@@ -1509,6 +1517,7 @@ impl Canvas<'_> {
         else {
             return;
         };
+        let opacity = multiply_u8(opacity, coverage);
         let alpha = multiply_u8(pixel.a, opacity);
         let source = [
             multiply_u8(pixel.r, opacity),
@@ -1536,7 +1545,8 @@ impl Canvas<'_> {
 
     /// Source-over blend of `color` scaled by `alpha` into premultiplied RGBA8.
     fn blend_pixel(&mut self, x: u32, y: u32, color: Color, alpha: u8) {
-        if !self.unclipped(x, y) {
+        let coverage = self.clip_coverage(x, y);
+        if coverage == 0 {
             return;
         }
         let Some(offset) = pixel_offset(self.width, x, y) else {
@@ -1548,6 +1558,7 @@ impl Canvas<'_> {
         else {
             return;
         };
+        let alpha = multiply_u8(alpha, coverage);
         let source = premultiply(color, alpha);
         let inverse = u8::MAX - source[3];
         // Premultiplied source-over, identical for colour and alpha channels.

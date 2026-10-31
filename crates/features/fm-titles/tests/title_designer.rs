@@ -379,7 +379,7 @@ fn group_opacity_composes_with_one_rounding() {
 }
 
 #[test]
-fn rounded_rect_mask_clips_exact_pixels() {
+fn rounded_rect_mask_anti_aliases_its_edges() {
     let mut masked = editor(16, 12);
     let mask = ClipMask::rounded(bounds(2, 1, 12, 10), 4);
     add_group(
@@ -394,32 +394,29 @@ fn rounded_rect_mask_clips_exact_pixels() {
     );
     let alpha = render_alpha(masked.document(), ClipState::Static);
 
-    // Per mask row, the inclusive local x span inside a 12x10 radius-4 mask:
-    // pixel centers tested exactly against circles of radius 4.
-    let spans = [
-        (2, 9),
-        (1, 10),
-        (0, 11),
-        (0, 11),
-        (0, 11),
-        (0, 11),
-        (0, 11),
-        (0, 11),
-        (1, 10),
-        (2, 9),
-    ];
+    // Outside the mask rectangle nothing is painted, however close.
     for y in 0..12_usize {
         for x in 0..16_usize {
-            let inside = (1..11).contains(&y) && {
-                let (low, high) = spans[y - 1];
-                (2 + low..=2 + high).contains(&x)
-            };
-            let expected = if inside { 255 } else { 0 };
-            assert_eq!(alpha[y * 16 + x], expected, "pixel ({x}, {y})");
+            if !(2..14).contains(&x) || !(1..11).contains(&y) {
+                assert_eq!(alpha[y * 16 + x], 0, "pixel ({x}, {y})");
+            }
         }
     }
-    let painted = alpha.iter().filter(|value| **value != 0).count();
-    assert_eq!(painted, 120 - 4 * 3);
+    // Straight edges are pixel-aligned and fully covered, including the left
+    // column away from the rounded corners.
+    for y in 4..8_usize {
+        assert_eq!(alpha[y * 16 + 2], 255, "row {y}");
+    }
+    // A rounded corner fades: at least one pixel there is partly covered and
+    // never fully opaque, proving the edge is sampled rather than stepped.
+    let corner = (1..5)
+        .flat_map(|y| (1..5).map(move |x| (x, y)))
+        .map(|(x, y)| alpha[y * 16 + x])
+        .collect::<Vec<_>>();
+    assert!(
+        corner.iter().any(|value| *value > 0 && *value < 255),
+        "{corner:?}"
+    );
 
     // An oversized radius is limited to half the shorter side.
     let mut pill = editor(8, 4);
@@ -440,10 +437,14 @@ fn rounded_rect_mask_clips_exact_pixels() {
         2
     );
     let alpha = render_alpha(pill.document(), ClipState::Static);
-    let row = |y: usize| -> Vec<u8> { alpha[y * 8..y * 8 + 8].to_vec() };
-    assert_eq!(row(0), vec![0, 255, 255, 255, 255, 255, 255, 0]);
-    assert_eq!(row(1), vec![255; 8]);
-    assert_eq!(row(3), row(0));
+    // Columns clear of the corner arcs are fully covered on every row.
+    for y in 0..4_usize {
+        assert_eq!(alpha[y * 8 + 2], 255, "row {y}");
+        assert_eq!(alpha[y * 8 + 5], 255, "row {y}");
+    }
+    // The corner pixels fade instead of snapping on.
+    assert!(alpha[0] > 0 && alpha[0] < 255, "{alpha:?}");
+    assert!(alpha[7] > 0 && alpha[7] < 255, "{alpha:?}");
 }
 
 #[test]

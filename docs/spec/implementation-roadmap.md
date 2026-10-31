@@ -4133,7 +4133,7 @@ travel with the flattened template. A designer edit API maps keyframe add,
 remove, retime, phase stretch, and every other clip edit onto atomic
 `fm-animation` edits and validates the whole document, with bounded snapshot
 undo and redo. Remaining gaps: group transforms are translation and opacity
-only, mask edges are not anti-aliased, rendering is CPU-only, and there is no
+only, rendering is CPU-only, and there is no
 designer UI, live field editor, design persistence, protocol, or engine
 playback. `GX-002` remains planned.
 
