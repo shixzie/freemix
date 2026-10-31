@@ -379,6 +379,51 @@ fn decode_text(token: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
+/// Why switching a preset virtual input failed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PresetSwitchError {
+    Input(PresetVirtualInputError),
+    Adapter(crate::AdapterError),
+}
+
+impl fmt::Display for PresetSwitchError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Input(error) => error.fmt(formatter),
+            Self::Adapter(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for PresetSwitchError {}
+
+impl From<PresetVirtualInputError> for PresetSwitchError {
+    fn from(error: PresetVirtualInputError) -> Self {
+        Self::Input(error)
+    }
+}
+
+impl PresetVirtualInputs {
+    /// Switches `id` on `adapter`: resolves the enabled entry to its camera
+    /// and applies the preset recall.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`PresetSwitchError::Input`] for an unknown or disabled
+    /// entry, or [`PresetSwitchError::Adapter`] when the camera refuses the
+    /// recall.
+    pub fn switch_camera(
+        &self,
+        id: &PresetVirtualInputId,
+        adapter: &mut impl crate::PtzAdapter,
+    ) -> Result<crate::CommandOutcome, PresetSwitchError> {
+        let switch = self.switch(id)?;
+        adapter
+            .execute(&switch.camera, switch.intent())
+            .map_err(PresetSwitchError::Adapter)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,4 +516,37 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn an_enabled_entry_switches_its_camera_preset() {
+        use crate::{FakeViscaAdapter, FakeViscaCamera, PresetId, PtzAdapter, PtzIntent};
+        let mut inputs = PresetVirtualInputs::new();
+        inputs.insert(entry("cam-a", 3, "Wide")).unwrap();
+        let mut adapter = FakeViscaAdapter::new([FakeViscaCamera::new(
+            CameraId::new("cam-a").unwrap(),
+            "Cam",
+        )]);
+        adapter
+            .execute(
+                &CameraId::new("cam-a").unwrap(),
+                PtzIntent::SavePreset {
+                    id: PresetId::new(3),
+                    name: "Wide".into(),
+                },
+            )
+            .unwrap();
+        let outcome = inputs
+            .switch_camera(&id("cam-a", 3), &mut adapter)
+            .unwrap();
+        assert_eq!(
+            outcome.applied,
+            PtzIntent::RecallPreset(PresetId::new(3))
+        );
+        inputs.set_enabled(&id("cam-a", 3), false).unwrap();
+        assert!(matches!(
+            inputs.switch_camera(&id("cam-a", 3), &mut adapter),
+            Err(PresetSwitchError::Input(PresetVirtualInputError::Disabled(_)))
+        ));
+    }
+
 }
