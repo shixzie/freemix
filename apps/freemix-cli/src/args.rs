@@ -878,6 +878,15 @@ pub enum Command {
         key: Option<String>,
         expected_revision: Option<u64>,
     },
+    /// Replaces a saved media list's per-list transition (IN-006).
+    InputMediaListTransition {
+        path: PathBuf,
+        input: u128,
+        kind: fm_model::MediaListTransitionKind,
+        frames: u32,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     /// Appends or removes one item of a saved media list (IN-006).
     InputMediaListItem {
         path: PathBuf,
@@ -2951,6 +2960,27 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
                 auto_first,
                 loop_list,
                 shuffle_seed,
+                key,
+                expected_revision,
+            })
+        }
+        "input-media-list-transition" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let input = number(&required(&mut arguments, "input")?, "input")?;
+            let token = required(&mut arguments, "transition kind")?;
+            let kind = fm_model::MediaListTransitionKind::from_token(&token).ok_or_else(|| {
+                ArgsError::InvalidChoice {
+                    field: "transition kind (cut, fade, dip, or wipe)",
+                    value: token,
+                }
+            })?;
+            let frames = number(&required(&mut arguments, "frames")?, "frames")?;
+            let (key, expected_revision) = command_options(arguments)?;
+            Ok(Command::InputMediaListTransition {
+                path,
+                input,
+                kind,
+                frames,
                 key,
                 expected_revision,
             })

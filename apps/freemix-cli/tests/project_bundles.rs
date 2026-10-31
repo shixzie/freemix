@@ -1075,6 +1075,22 @@ fn input_media_list_item_edits_title_and_marks() {
     );
     assert_eq!(list.active, 1);
 
+    // The list's own transition is editable.
+    assert_success(&run(&[
+        "input-media-list-transition",
+        text(&show),
+        "9",
+        "fade",
+        "30",
+    ]));
+    let loaded = load(&show);
+    let list = loaded.project().media_list(input(9)).unwrap();
+    assert_eq!(
+        list.options.transition.kind,
+        fm_model::MediaListTransitionKind::Fade
+    );
+    assert_eq!(list.options.transition.duration_frames, 30);
+
     // An out mark at or before the in mark is refused and leaves the list
     // unchanged (the rejected command's receipt still advances the project).
     let before = load(&show);

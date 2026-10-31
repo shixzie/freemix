@@ -4920,8 +4920,9 @@ cuts. The simulated daemon runs the timing without compositing its
 synthetic pictures. Studio's list card edits the transition with hover
 help. Gaps: a jump to an arbitrary item is not prefetched (Last is); the CLI steps a list
 (`input-media-list-navigate` and its `remote-` form) and edits its options and
-items, including an item's title, in/out marks, and position
-(`input-media-list-options`, `input-media-list-item`); `fm-vmix-compat`
+items, including an item's title, in/out marks, and position, and each
+list's transition (`input-media-list-options`, `input-media-list-item`,
+`input-media-list-transition`); `fm-vmix-compat`
 translates vMix's `NextItem`, `PreviousItem`, `SelectIndex`, `NextPicture`,
 and `PreviousPicture` verbs onto page navigation and `Play`, `Pause`, `Stop`,
 and `PlayPause` onto media transport (no vMix HTTP/TCP server is
