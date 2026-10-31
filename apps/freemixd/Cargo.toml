@@ -38,6 +38,7 @@ fm-color = { path = "../../crates/gpu/fm-color", optional = true }
 fm-command = { path = "../../crates/foundation/fm-command" }
 fm-compositor = { path = "../../crates/gpu/fm-compositor" }
 fm-control = { path = "../../crates/services/fm-control" }
+fm-daemon-journal = { path = "../../crates/services/fm-daemon-journal" }
 fm-engine = { path = "../../crates/services/fm-engine" }
 fm-frame = { path = "../../crates/media/fm-frame" }
 fm-gpu = { path = "../../crates/gpu/fm-gpu", optional = true }

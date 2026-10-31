@@ -1,0 +1,24 @@
+[package]
+name = "fm-daemon-journal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fm-auth = { path = "../fm-auth" }
+fm-command = { path = "../../foundation/fm-command" }
+fm-control = { path = "../fm-control" }
+fm-model = { path = "../../foundation/fm-model" }
+fm-persistence = { path = "../fm-persistence" }
+fm-presentations = { path = "../../features/fm-presentations" }
+fm-protocol = { path = "../../foundation/fm-protocol" }
+fm-sim = { path = "../../media/fm-sim" }
+fm-titles = { path = "../../features/fm-titles" }
+fm-types = { path = "../../foundation/fm-types" }
+
+[dev-dependencies]
+tempfile = "3.20"
+
+[lints]
+workspace = true

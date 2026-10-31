@@ -17,7 +17,6 @@ use fm_control::ControlService;
 use fm_engine::{CompiledProjectGrades, EngineLut};
 use fm_model::{LutId, Project};
 use fm_persistence::ProjectStore;
-use fm_protocol::{CommandMessage, CommandPayload};
 
 /// Every imported LUT of `project` whose bundled file loads and matches its
 /// record. A LUT that does not load is reported on stderr and left out: its
@@ -41,25 +40,6 @@ pub(crate) fn load_grade_luts(
             }
         })
         .collect()
-}
-
-/// Writes the LUT an accepted `grade_lut_import` carries into the bundle.
-///
-/// Called before the command's journal batch is appended, so a crash after
-/// the append always finds the file; a crash before it leaves an unreferenced
-/// file. Bundled LUT files are immutable
-/// ([`ProjectStore::write_lut_source`]): the same text under the same id is
-/// accepted again (replay, redo, a retried import), while different text
-/// under an id that already has a file (a removed LUT, which older manifests
-/// and autosaves still name) is refused with [`fm_persistence::LutError::IdReused`].
-pub(crate) fn write_imported_lut(
-    store: &ProjectStore,
-    command: &CommandMessage,
-) -> Result<(), fm_persistence::LutError> {
-    let CommandPayload::ImportGradeLut { lut, data, .. } = &command.payload else {
-        return Ok(());
-    };
-    store.write_lut_source(LutId::new(*lut), data)
 }
 
 /// Compiled grades of one show, cached per durable revision.

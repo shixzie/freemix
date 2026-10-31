@@ -799,7 +799,7 @@ pub(super) fn run(
     )?;
     // Document pages render off this loop too (IN-014).
     let documents = store.documents().cloned().unwrap_or_default();
-    let document_pages = crate::documents::PageWorker::spawn(Arc::clone(&documents))?;
+    let document_pages = fm_daemon_journal::documents::PageWorker::spawn(Arc::clone(&documents))?;
     // What the server can capture is listed off this loop too (IN-011).
     let screen_capture_targets = crate::screen_capture_targets::ScreenCaptureTargets::spawn(
         crate::screen_capture_targets::enumerator(native.is_some()),
@@ -1230,7 +1230,7 @@ pub(super) fn run(
         // A document whose status changed off this loop (a conversion
         // finished, or the daemon just started) reports it (IN-014).
         if documents.take_changed() {
-            crate::documents::sync(&mut control.borrow_mut(), authority, &documents)?;
+            fm_daemon_journal::documents::sync(&mut control.borrow_mut(), authority, &documents)?;
         }
         // Media list item lengths (Protocol 2.91): the worker learns every
         // item asset after each revision, and a changed report republishes
@@ -2075,7 +2075,7 @@ struct Runtime<'a> {
     /// The web gateway's pairing and devices (Protocol 2.71), when it runs.
     web_access: Option<&'a std::sync::Arc<crate::web::WebAccess>>,
     /// Answers document page requests off this loop (IN-014).
-    document_pages: &'a crate::documents::PageWorker,
+    document_pages: &'a fm_daemon_journal::documents::PageWorker,
     /// Lists what the server can capture off this loop (IN-011).
     screen_capture_targets: &'a crate::screen_capture_targets::ScreenCaptureTargets,
     process_shutdown: &'a ProcessShutdown,

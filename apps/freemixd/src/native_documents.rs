@@ -28,9 +28,9 @@ use fm_frame::{ClockDomainId, CpuVideoFrame};
 use fm_model::Project;
 use fm_types::{FrameRate, InputId};
 
-use crate::documents::{DocumentPages, page_premultiplied};
 use crate::native_files::timing_at;
 use crate::native_titles::title_source_frame;
+use fm_daemon_journal::documents::{DocumentPages, page_premultiplied};
 
 /// How often a page that did not render is tried again.
 pub(crate) const RETRY_INTERVAL: Duration = Duration::from_millis(500);

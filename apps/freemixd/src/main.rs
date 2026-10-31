@@ -105,11 +105,11 @@ mod desktop_capture;
 mod desktop_windows;
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 mod disk;
-mod documents;
+use fm_daemon_journal::documents;
 mod grading;
 mod hls_server;
 mod input_thumbnails;
-mod journal;
+use fm_daemon_journal as journal;
 mod latest_record;
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 mod live_lan;
@@ -15653,22 +15653,7 @@ fn rejected_submission(
 ///
 /// Raised directly where the refusal is decided (a Stinger slot still
 /// realizing) or derived by [`staging_refusal`] from a staging error.
-#[derive(Debug)]
-pub(crate) struct CommandRefusal {
-    code: RejectionCode,
-    retryable: bool,
-    message: String,
-    /// The typed reason clients word in their language (Protocol 2.45).
-    reason: Option<fm_protocol::RefusalReason>,
-}
-
-impl fmt::Display for CommandRefusal {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}: {}", self.code.as_str(), self.message)
-    }
-}
-
-impl Error for CommandRefusal {}
+use fm_daemon_journal::CommandRefusal;
 
 /// Classifies an error raised while staging a command, before
 /// `DurableStore::record`, into a refusal of that command, or returns the

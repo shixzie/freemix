@@ -1639,6 +1639,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "fm-daemon-journal"
+version = "0.1.0"
+dependencies = [
+ "fm-auth",
+ "fm-command",
+ "fm-control",
+ "fm-model",
+ "fm-persistence",
+ "fm-presentations",
+ "fm-protocol",
+ "fm-sim",
+ "fm-titles",
+ "fm-types",
+ "tempfile",
+]
+
+[[package]]
 name = "fm-data"
 version = "0.1.0"
 dependencies = [
@@ -2225,6 +2242,7 @@ dependencies = [
  "fm-command",
  "fm-compositor",
  "fm-control",
+ "fm-daemon-journal",
  "fm-engine",
  "fm-frame",
  "fm-gpu",

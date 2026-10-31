@@ -35,8 +35,8 @@ use freemixd::native_media::{
 };
 
 use crate::native_replay::{ReplayFormat, ReplayPlayers};
-use crate::{NativeMonitorTap, NativeTapCounters};
 use crate::native_slides::NativeSlides;
+use crate::{NativeMonitorTap, NativeTapCounters};
 
 /// One compose's inputs.
 pub(crate) struct VideoRenderJob {
