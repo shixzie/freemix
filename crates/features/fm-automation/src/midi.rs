@@ -513,9 +513,11 @@ impl MidiParser {
 /// Converts channel-voice messages into typed control events.
 ///
 /// Controllers `0..=31` can be marked 14-bit. For a 14-bit controller the MSB
-/// (controller `n`) immediately emits `msb << 7` (MIDI resets the LSB to zero
-/// on MSB reception) and the paired LSB (controller `n + 32`) emits the
-/// combined `msb << 7 | lsb` using the latest MSB, defaulting to zero.
+/// (controller `n`) is held, emitting nothing, until the paired LSB
+/// (controller `n + 32`) arrives; the LSB then emits the combined
+/// `msb << 7 | lsb` using the latest MSB, defaulting to zero. Holding the MSB
+/// across ticks keeps a pair that straddles a tick boundary from surfacing the
+/// `msb << 7` intermediate.
 #[derive(Clone, Debug, Default)]
 pub struct MidiControlDecoder {
     high_resolution: [u32; 16],
@@ -592,7 +594,7 @@ impl MidiControlDecoder {
                 channel,
                 controller,
                 value,
-            } => Some(self.control_change(channel, controller, value)),
+            } => self.control_change(channel, controller, value),
             MidiMessage::ProgramChange { channel, program } => event(
                 ControlId::MidiProgram { channel, program },
                 ControlValue::Button {
@@ -618,25 +620,24 @@ impl MidiControlDecoder {
         }
     }
 
-    fn control_change(&mut self, channel: MidiChannel, controller: u8, value: u8) -> ControlEvent {
+    fn control_change(
+        &mut self,
+        channel: MidiChannel,
+        controller: u8,
+        value: u8,
+    ) -> Option<ControlEvent> {
         let slot = usize::from(channel.index());
         if self.is_high_resolution(channel, controller) {
+            // Hold the MSB until its LSB arrives, even across ticks: emitting
+            // `msb << 7` here would jump the control by up to 127 steps and
+            // back on the next message.
             self.msb[slot][usize::from(controller)] = value;
-            return ControlEvent {
-                control: ControlId::MidiCc14 {
-                    channel,
-                    controller,
-                },
-                value: ControlValue::Absolute {
-                    raw: join14(0, value),
-                    max: MIDI_14BIT_MAX,
-                },
-            };
+            return None;
         }
         if (32..64).contains(&controller) && self.is_high_resolution(channel, controller - 32) {
             let msb_controller = controller - 32;
             let msb = self.msb[slot][usize::from(msb_controller)];
-            return ControlEvent {
+            return Some(ControlEvent {
                 control: ControlId::MidiCc14 {
                     channel,
                     controller: msb_controller,
@@ -645,9 +646,9 @@ impl MidiControlDecoder {
                     raw: join14(value, msb),
                     max: MIDI_14BIT_MAX,
                 },
-            };
+            });
         }
-        ControlEvent {
+        Some(ControlEvent {
             control: ControlId::MidiCc {
                 channel,
                 controller,
@@ -656,6 +657,6 @@ impl MidiControlDecoder {
                 raw: u16::from(value),
                 max: 127,
             },
-        }
+        })
     }
 }

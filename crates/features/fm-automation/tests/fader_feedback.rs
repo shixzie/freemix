@@ -101,34 +101,35 @@ fn seven_bit_fader_burst_coalesces_to_latest_value_per_tick() {
 }
 
 #[test]
-fn fourteen_bit_pairs_never_surface_the_msb_only_intermediate_within_a_tick() {
+fn fourteen_bit_pairs_never_surface_the_msb_only_intermediate() {
     let mut decoder = MidiControlDecoder::default();
     decoder.enable_14bit(ch(0), 7).unwrap();
     let mut coalescer = ControlCoalescer::new(8).unwrap();
-    // Three MSB/LSB pairs moving 0x1000 -> 0x1F7F. Each MSB alone decodes to
-    // `msb << 7` (MIDI resets the LSB), a transient glitch.
+    // Three MSB/LSB pairs moving 0x1000 -> 0x1F7F. Each MSB is held until its
+    // LSB arrives, so the intermediate `msb << 7` never reaches a tick.
     let mut raw_values = Vec::new();
     for (msb, lsb) in [(0x20, 0x00), (0x30, 0x40), (0x3E, 0x7F)] {
-        for message in [
-            MidiMessage::ControlChange {
-                channel: ch(0),
-                controller: 7,
-                value: msb,
-            },
-            MidiMessage::ControlChange {
+        assert!(
+            decoder
+                .decode(&MidiMessage::ControlChange {
+                    channel: ch(0),
+                    controller: 7,
+                    value: msb,
+                })
+                .is_none(),
+            "the MSB is held"
+        );
+        let event = decoder
+            .decode(&MidiMessage::ControlChange {
                 channel: ch(0),
                 controller: 39,
                 value: lsb,
-            },
-        ] {
-            let event = decoder.decode(&message).unwrap();
-            raw_values.push(event.value);
-            coalescer.offer("X-Touch", event, ts(1)).unwrap();
-        }
+            })
+            .unwrap();
+        raw_values.push(event.value);
+        coalescer.offer("X-Touch", event, ts(1)).unwrap();
     }
-    // The raw decoded stream contains the MSB-only value `0x3E << 7` just
-    // before the final combined value; the tick only surfaces the latter.
-    assert!(raw_values.contains(&ControlValue::Absolute {
+    assert!(!raw_values.contains(&ControlValue::Absolute {
         raw: 0x3E << 7,
         max: 16_383
     }));
@@ -144,7 +145,45 @@ fn fourteen_bit_pairs_never_surface_the_msb_only_intermediate_within_a_tick() {
                 raw: (0x3E << 7) | 0x7F,
                 max: 16_383
             },
-            5
+            2
+        )]
+    );
+
+    // A pair that straddles a tick boundary holds the MSB through the empty
+    // tick and applies only the combined value in the next.
+    let mut decoder = MidiControlDecoder::default();
+    decoder.enable_14bit(ch(0), 7).unwrap();
+    let mut coalescer = ControlCoalescer::new(8).unwrap();
+    assert!(
+        decoder
+            .decode(&MidiMessage::ControlChange {
+                channel: ch(0),
+                controller: 7,
+                value: 0x20,
+            })
+            .is_none()
+    );
+    assert!(coalescer.drain().is_empty());
+    let event = decoder
+        .decode(&MidiMessage::ControlChange {
+            channel: ch(0),
+            controller: 39,
+            value: 0x01,
+        })
+        .unwrap();
+    coalescer.offer("X-Touch", event, ts(2)).unwrap();
+    assert_eq!(
+        summary(&coalescer.drain()),
+        vec![(
+            ControlId::MidiCc14 {
+                channel: ch(0),
+                controller: 7
+            },
+            ControlValue::Absolute {
+                raw: (0x20 << 7) | 0x01,
+                max: 16_383
+            },
+            0
         )]
     );
 }

@@ -5409,8 +5409,10 @@ a per-device byte-rate limit of encoded feedback bytes per second, and
 acknowledged-level echo suppression. `fm-audio` adds a `GainSmoother` whose
 per-sample linear ramps
 have a guaranteed step bound and land bit-exactly on target across block
-splits and retargets. Remaining gaps: no daemon, Studio, CLI, or real-time
-mixer wiring; cross-tick 14-bit glitches are only smoothed, not held; ramps are
+splits and retargets. A 14-bit controller's MSB is now held until its LSB
+arrives, so a pair that straddles a tick boundary never surfaces the
+intermediate value. Remaining gaps: no daemon, Studio, CLI, or real-time
+mixer wiring; ramps are
 linear in gain with no fader taper; and there is no end-to-end
 device-to-audio test or motor-fader
 hardware evidence. `AU-009` remains planned.
