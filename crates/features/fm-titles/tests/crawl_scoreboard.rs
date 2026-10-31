@@ -1175,6 +1175,67 @@ fn rosters_refuse_a_full_one() {
 }
 
 #[test]
+fn a_player_can_be_featured_by_jersey_number() {
+    let mut board = board(GameClockConfig {
+        direction: ClockDirection::CountDown,
+        format: ClockFormat::MinutesSeconds,
+        frame_rate: FrameRate::new(30, 1).unwrap(),
+        initial_ms: 90_000,
+        limit_ms: None,
+    });
+    let jane = Player {
+        number: Some(23),
+        name: "Jane Doe".into(),
+    };
+    let sam = Player {
+        number: Some(7),
+        name: "Sam Roe".into(),
+    };
+    board
+        .apply(
+            0,
+            0,
+            &[
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Home,
+                    player: jane,
+                },
+                ScoreboardAction::AddRosterPlayer {
+                    side: TeamSide::Home,
+                    player: sam.clone(),
+                },
+                ScoreboardAction::SelectPlayerByNumber {
+                    side: TeamSide::Home,
+                    number: 7,
+                },
+            ],
+        )
+        .unwrap();
+    assert_eq!(board.team(TeamSide::Home).player, Some(sam));
+    assert_eq!(
+        board.apply(
+            1,
+            1,
+            &[ScoreboardAction::SelectPlayerByNumber {
+                side: TeamSide::Home,
+                number: 99,
+            }],
+        ),
+        Err(ScoreboardError::RosterNumberNotFound {
+            side: TeamSide::Home,
+            number: 99,
+        })
+    );
+    board
+        .apply_external(1, 2, &[("home.roster.number", "23")])
+        .unwrap();
+    assert_eq!(
+        board.team(TeamSide::Home).player.as_ref().unwrap().number,
+        Some(23)
+    );
+}
+
+#[test]
 fn sport_presets_carry_their_rules_and_clocks() {
     let rate = FrameRate::new(25, 1).unwrap();
     let basketball = ScoreboardPreset::Basketball

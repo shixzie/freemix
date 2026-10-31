@@ -431,6 +431,12 @@ pub enum ScoreboardAction {
         side: TeamSide,
         index: Option<usize>,
     },
+    /// Features the roster entry wearing `number`; refused when no roster
+    /// entry has it.
+    SelectPlayerByNumber {
+        side: TeamSide,
+        number: u16,
+    },
     /// Saturates at `1..=max_period`.
     AdjustPeriod {
         delta: i32,
@@ -512,6 +518,10 @@ pub enum ScoreboardError {
         index: usize,
         len: usize,
     },
+    RosterNumberNotFound {
+        side: TeamSide,
+        number: u16,
+    },
     ClockOutOfRange {
         value_ms: u64,
         maximum: u64,
@@ -569,6 +579,9 @@ impl fmt::Display for ScoreboardError {
                     formatter,
                     "{side:?} roster index {index} is outside 0..{len}"
                 )
+            }
+            Self::RosterNumberNotFound { side, number } => {
+                write!(formatter, "{side:?} roster has no player number {number}")
             }
             Self::ClockOutOfRange { value_ms, maximum } => {
                 write!(formatter, "clock value {value_ms}ms exceeds {maximum}ms")
@@ -902,6 +915,9 @@ impl Scoreboard {
             ScoreboardAction::SelectRosterPlayer { side, index } => {
                 self.select_roster_player(*side, *index)?;
             }
+            ScoreboardAction::SelectPlayerByNumber { side, number } => {
+                self.select_player_by_number(*side, *number)?;
+            }
             ScoreboardAction::AdjustPeriod { delta } => {
                 let wanted = i64::from(self.period) + i64::from(*delta);
                 let clamped = wanted.clamp(1, i64::from(max_period));
@@ -992,6 +1008,22 @@ impl Scoreboard {
                 },
             )?),
         };
+        Ok(())
+    }
+
+    fn select_player_by_number(
+        &mut self,
+        side: TeamSide,
+        number: u16,
+    ) -> Result<(), ScoreboardError> {
+        let team = self.team_mut(side);
+        let player = team
+            .roster
+            .iter()
+            .find(|player| player.number == Some(number))
+            .cloned()
+            .ok_or(ScoreboardError::RosterNumberNotFound { side, number })?;
+        team.player = Some(player);
         Ok(())
     }
 
@@ -1091,6 +1123,7 @@ fn check_text(text: &str) -> Result<(), ScoreboardError> {
 /// | `<side>.roster.add` | `name` or `number name` | [`ScoreboardAction::AddRosterPlayer`] |
 /// | `<side>.roster.remove` | decimal index | [`ScoreboardAction::RemoveRosterPlayer`] |
 /// | `<side>.roster.select` | decimal index or `""` to clear | [`ScoreboardAction::SelectRosterPlayer`] |
+/// | `<side>.roster.number` | decimal jersey number | [`ScoreboardAction::SelectPlayerByNumber`] |
 /// | `period` | decimal `u16` | [`ScoreboardAction::SetPeriod`] |
 /// | `clock.ms` | decimal `u64` | [`ScoreboardAction::SetClock`] |
 /// | `clock.running` | `true` / `false` | start / stop |
@@ -1171,6 +1204,10 @@ fn external_action(
             } else {
                 Some(parse_unsigned(value).ok_or(invalid)?)
             },
+        },
+        (Some(side), "roster.number") => ScoreboardAction::SelectPlayerByNumber {
+            side,
+            number: parse_unsigned(value).ok_or(invalid)?,
         },
         (None, "period") => ScoreboardAction::SetPeriod {
             period: parse_unsigned(value).ok_or(invalid)?,
