@@ -1694,8 +1694,10 @@ name = "fm-daemon-journal"
 version = "0.1.0"
 dependencies = [
  "fm-auth",
+ "fm-codec-image",
  "fm-command",
  "fm-control",
+ "fm-frame",
  "fm-model",
  "fm-persistence",
  "fm-presentations",

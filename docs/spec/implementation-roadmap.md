@@ -5306,8 +5306,9 @@ Current implementation boundary for still image and slideshow inputs
   and the Studio forms and panel.
 
 Remaining gaps:
-- Studio has no per-slide picture thumbnails in the strip (numbered names
-  only) and no native file or folder dialog;
+- Studio's slide strip now shows picture thumbnails around the slide on air
+  (read through the paged page worker) but still has no native file or
+  folder dialog;
 - captions are metadata and labels only; nothing draws them on the picture;
 - only cut and fade transitions exist; OSC and scripts cannot step slides
   (console keys bound to Next slide and Previous slide can);

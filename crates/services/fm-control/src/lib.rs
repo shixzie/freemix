@@ -1942,6 +1942,13 @@ impl<A: AuthorizationHook> ControlService<A> {
         still::slideshow_slides(&self.engine, request)
     }
 
+    /// The asset URI of zero-based slide `index` of slideshow `input`, if
+    /// it lists one (IN-009).
+    #[must_use]
+    pub fn slideshow_slide(&self, input: fm_types::InputId, index: u32) -> Option<String> {
+        still::slideshow_slide(&self.engine, input, index)
+    }
+
     /// Installs the pictures the server found in a folder slideshow's
     /// folder (see [`Engine::set_slideshow_listing`]). Runtime state; the
     /// next frame reports the change.

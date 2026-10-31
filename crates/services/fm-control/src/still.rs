@@ -67,6 +67,18 @@ pub(crate) fn frame_status(frame: &EngineSlideshowFrame) -> SlideshowPageStatus 
     }
 }
 
+/// The asset URI of zero-based slide `index` of `input`, if it lists one.
+pub(crate) fn slideshow_slide(
+    engine: &Engine,
+    input: fm_types::InputId,
+    index: u32,
+) -> Option<String> {
+    engine
+        .slideshow_listing(input)
+        .get(usize::try_from(index).ok()?)
+        .map(|slide| slide.asset_uri.to_string())
+}
+
 /// Answers a listing request: as many slides from the requested offset as
 /// the request and [`MAX_SLIDESHOW_SLIDES_BYTES`] allow.
 pub(crate) fn slideshow_slides(

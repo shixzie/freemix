@@ -17,13 +17,15 @@
 
 use egui::{RichText, Ui};
 use fm_protocol::{
-    ImageInputConfig, PagedNavigation, SlideOrder, SlideTransitionStyle, SlideshowConfig,
-    SlideshowItem, SlideshowSource, WireStillSource,
+    ImageInputConfig, PagedNavigation, PagedPageKey, PagedPageRequest, SlideOrder,
+    SlideTransitionStyle, SlideshowConfig, SlideshowItem, SlideshowSource, WireInputId,
+    WireStillSource,
 };
 use fm_types::{FrameRate, InputId, OutputScaling};
 use fm_ui_model::{ClientView, StillInputStatus};
 
 use crate::StudioIntent;
+use crate::StudioUiState;
 use crate::gating::Hint;
 use crate::input_catalogue::kind_key;
 use crate::l10n::{Arg, Locale, Msg};
@@ -509,6 +511,52 @@ pub(crate) fn missing_window(still: &StillInputStatus) -> Option<u32> {
     }
 }
 
+/// Thumbnails in a slide strip: the slide on air and up to this many on
+/// each side.
+pub const SLIDE_THUMBNAIL_REACH: u32 = 4;
+
+/// The slide thumbnail requests a strip around the on-air slide still
+/// needs: slides with no answer yet, not already asked at this listing
+/// generation. Marks them asked.
+#[must_use]
+pub(crate) fn wanted_slide_thumbnails(
+    state: &StudioUiState,
+    input: InputId,
+    still: &StillInputStatus,
+    asked: &mut std::collections::BTreeSet<(PagedPageKey, u64)>,
+) -> Vec<PagedPageRequest> {
+    if still.listing.is_none() || still.status.page.count == 0 {
+        return Vec::new();
+    }
+    let generation = still.status.generation;
+    let page = still.status.page.index;
+    let count = still.status.page.count;
+    let first = page.saturating_sub(SLIDE_THUMBNAIL_REACH);
+    let end = page
+        .saturating_add(SLIDE_THUMBNAIL_REACH)
+        .saturating_add(1)
+        .min(count);
+    let input = WireInputId::from_domain(input);
+    (first..end)
+        .filter_map(|slide| {
+            let key = PagedPageKey {
+                input,
+                page: slide,
+                thumbnail: true,
+            };
+            if state.paged_pages.contains_key(&key) || !asked.insert((key, generation)) {
+                return None;
+            }
+            Some(PagedPageRequest {
+                request_id: format!("studio-slide-{input}-{slide}-{generation}"),
+                input,
+                page: slide,
+                thumbnail: true,
+            })
+        })
+        .collect()
+}
+
 /// `3 / 12`, or `0 / 0` with nothing listed.
 pub(crate) fn page_text(still: &StillInputStatus) -> String {
     let page = still.status.page;
@@ -525,6 +573,7 @@ pub(crate) fn page_text(still: &StillInputStatus) -> String {
 pub(crate) fn draw_slideshow_panel(
     ui: &mut Ui,
     l: Locale,
+    state: &StudioUiState,
     (input, name): (InputId, &str),
     still: &StillInputStatus,
     block: Option<&'static str>,
@@ -617,11 +666,26 @@ pub(crate) fn draw_slideshow_panel(
                     let title = slide.caption.as_deref().unwrap_or(file);
                     let text = format!("{}  {}", index + 1, title);
                     let tone = current.then_some(crate::theme::PREVIEW);
-                    if ui
-                        .add_enabled(
-                            block.is_none(),
-                            crate::playlist::key_button(&text, tone, 120.0),
+                    let key = PagedPageKey {
+                        input: WireInputId::from_domain(input),
+                        page: *index,
+                        thumbnail: true,
+                    };
+                    let texture = crate::documents_ui::thumbnail_texture(
+                        ui,
+                        key,
+                        state.paged_pages.get(&key),
+                    );
+                    let button = match &texture {
+                        Some(texture) => egui::Button::image(
+                            egui::Image::new(texture)
+                                .fit_to_exact_size(egui::Vec2::new(64.0, 36.0)),
                         )
+                        .min_size(egui::Vec2::new(64.0, 36.0)),
+                        None => crate::playlist::key_button(&text, tone, 120.0),
+                    };
+                    if ui
+                        .add_enabled(block.is_none(), button)
                         .hint(
                             &l.format(
                                 Msg::StSlideKeyHover,

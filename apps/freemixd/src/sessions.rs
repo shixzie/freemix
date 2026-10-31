@@ -2757,13 +2757,21 @@ impl Runtime<'_> {
                     return Ok(());
                 }
                 let input = request.input.to_domain();
-                let uri = self
-                    .control
-                    .borrow()
+                let control = self.control.borrow();
+                let source = control
                     .document_inputs()
                     .into_iter()
-                    .find_map(|(document, uri)| (document == input).then_some(uri));
-                self.document_pages.submit(peer.id, uri, request);
+                    .find_map(|(document, uri)| {
+                        (document == input)
+                            .then_some(fm_daemon_journal::documents::PageSource::Document(uri))
+                    })
+                    .or_else(|| {
+                        control
+                            .slideshow_slide(input, request.page)
+                            .map(fm_daemon_journal::documents::PageSource::Slide)
+                    });
+                drop(control);
+                self.document_pages.submit(peer.id, source, request);
                 Ok(())
             }
             _ => {

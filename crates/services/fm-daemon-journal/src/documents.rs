@@ -38,7 +38,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use fm_auth::Policy;
+use fm_codec_image::{StillDecodeLimits, decode_still_for_output};
 use fm_control::{ControlService, PagedSourceReport};
+use fm_frame::{
+    ClockDomainId, MediaTimestamp, MediaTiming, NormalizedDuration, NormalizedTimestamp,
+    OriginalTimestamp, SequenceNumber, TimeBase,
+};
 use fm_presentations::{
     DEFAULT_CONVERSION_TIMEOUT, DocumentError, DocumentInfo, MAX_DOCUMENT_BYTES, OfficeConverter,
     PdfDocument, RenderedPage,
@@ -49,6 +54,7 @@ use fm_protocol::{
     PagedPageRequest, ServerIdentity, bounded_paged_text, encode_qoi_rgb,
 };
 use fm_sim::ImageFrame;
+use fm_types::{OutputScaling, VideoDimensions};
 
 use crate::AppResult;
 
@@ -623,13 +629,66 @@ fn page_thumbnail(pages: &DocumentPages, uri: &str, page: u32) -> Option<PagedPa
     })
 }
 
+/// Answers one `paged_page_request` for slideshow slide asset `uri`
+/// (`None` when the input is not a slideshow): the slide's thumbnail
+/// fitted in the largest page thumbnail and shown over black. Decodes, so
+/// it runs on the page worker.
+pub fn slide_answer(
+    pages: &DocumentPages,
+    uri: Option<&str>,
+    request: PagedPageRequest,
+) -> PagedPageMessage {
+    let content = uri
+        .filter(|_| request.thumbnail)
+        .and_then(|uri| slide_thumbnail(pages, uri))
+        .unwrap_or(PagedPageContent::Unavailable);
+    PagedPageMessage {
+        request_id: request.request_id,
+        input: request.input,
+        page: request.page,
+        content,
+    }
+}
+
+fn slide_thumbnail(pages: &DocumentPages, uri: &str) -> Option<PagedPageContent> {
+    let (width, height) = (MAX_PAGED_THUMBNAIL_WIDTH, MAX_PAGED_THUMBNAIL_HEIGHT);
+    let bytes = pages.read(uri).ok()?;
+    let timing = still_timing(still_clock_domain())?;
+    let output = VideoDimensions::new(u32::from(width), u32::from(height))?;
+    let decoded = decode_still_for_output(
+        &bytes,
+        timing,
+        StillDecodeLimits::default(),
+        output,
+        OutputScaling::Fit,
+    )
+    .ok()?;
+    let payload = decoded.frame.payload();
+    let plane = payload.plane(0)?;
+    let data = encode_qoi_rgb(width, height, plane.bytes(), plane.stride(), 4)
+        .ok()
+        .filter(|data| data.len() <= MAX_PAGED_THUMBNAIL_BYTES)?;
+    Some(PagedPageContent::Thumbnail {
+        width,
+        height,
+        data,
+    })
+}
+
 /// Most page requests one peer may have waiting; an older one is dropped
 /// (a client asks again for what it still shows).
 const MAX_PENDING_PER_PEER: usize = 32;
 
+/// What a page request shows: a document page or a slideshow slide.
+#[derive(Clone, Debug)]
+pub enum PageSource {
+    Document(String),
+    Slide(String),
+}
+
 struct PageJob {
     peer: u64,
-    uri: Option<String>,
+    source: Option<PageSource>,
     request: PagedPageRequest,
 }
 
@@ -638,6 +697,24 @@ struct PageQueue {
     pending: VecDeque<PageJob>,
     finished: Vec<(u64, PagedPageMessage)>,
     shutdown: bool,
+}
+
+/// The clock domain a decoded still's (retained, timeless) frame carries.
+fn still_clock_domain() -> ClockDomainId {
+    ClockDomainId::new(core::num::NonZeroU128::MIN)
+}
+
+/// The timing of a retained still frame.
+fn still_timing(clock_domain: ClockDomainId) -> Option<MediaTiming> {
+    let time_base = TimeBase::new(1, 1_000_000_000).ok()?;
+    MediaTiming::new(
+        OriginalTimestamp::new(MediaTimestamp::new(0), time_base),
+        NormalizedTimestamp::from_nanos(0),
+        NormalizedDuration::from_nanos(1).ok()?,
+        clock_domain,
+        SequenceNumber::new(0),
+    )
+    .ok()
 }
 
 /// Answers `paged_page_request`s off the session loop, in order, at most
@@ -673,7 +750,15 @@ impl PageWorker {
                             queue = wake.wait(queue).unwrap_or_else(PoisonError::into_inner);
                         }
                     };
-                    let answer = page_answer(&pages, job.uri.as_deref(), job.request);
+                    let answer = match job.source.as_ref() {
+                        Some(PageSource::Document(uri)) => {
+                            page_answer(&pages, Some(uri.as_str()), job.request)
+                        }
+                        Some(PageSource::Slide(uri)) => {
+                            slide_answer(&pages, Some(uri.as_str()), job.request)
+                        }
+                        None => page_answer(&pages, None, job.request),
+                    };
                     lock(queue).finished.push((job.peer, answer));
                 }
             })?;
@@ -683,8 +768,9 @@ impl PageWorker {
         })
     }
 
-    /// Queues `peer`'s request for document asset `uri`. Never waits.
-    pub fn submit(&self, peer: u64, uri: Option<String>, request: PagedPageRequest) {
+    /// Queues `peer`'s request for document or slide asset `source`.
+    /// Never waits.
+    pub fn submit(&self, peer: u64, source: Option<PageSource>, request: PagedPageRequest) {
         let (queue, wake) = &*self.shared;
         let mut queue = lock(queue);
         if queue.pending.iter().filter(|job| job.peer == peer).count() >= MAX_PENDING_PER_PEER
@@ -692,7 +778,11 @@ impl PageWorker {
         {
             queue.pending.remove(oldest);
         }
-        queue.pending.push_back(PageJob { peer, uri, request });
+        queue.pending.push_back(PageJob {
+            peer,
+            source,
+            request,
+        });
         wake.notify_one();
     }
 
@@ -889,6 +979,46 @@ mod tests {
         assert!(pages.render("asset://talk.pptx", 0, 16, 9).is_none());
     }
 
+    #[test]
+    fn a_slideshow_slide_answers_a_thumbnail() {
+        // A 1x1 red PNG.
+        const PNG: &[u8] = &[
+            137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1,
+            8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 218, 99, 252, 207,
+            192, 80, 15, 0, 4, 133, 1, 128, 132, 169, 140, 33, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66,
+            96, 130,
+        ];
+        let root = bundle(&[("slide.png", PNG.to_vec())]);
+        let pages = DocumentPages::new(root.path(), None);
+        let request = PagedPageRequest {
+            request_id: "slide-thumbnail".into(),
+            input: fm_protocol::WireInputId::new(core::num::NonZeroU128::new(2).unwrap()),
+            page: 0,
+            thumbnail: true,
+        };
+        let answer = slide_answer(&pages, Some("asset://slide.png"), request);
+        assert!(
+            matches!(
+                answer.content,
+                PagedPageContent::Thumbnail { width, height, .. }
+                    if width == MAX_PAGED_THUMBNAIL_WIDTH && height == MAX_PAGED_THUMBNAIL_HEIGHT
+            ),
+            "{:?}",
+            answer.content
+        );
+        // A slide that is not a picture, or a notes request, answers nothing.
+        let request = PagedPageRequest {
+            request_id: "missing".into(),
+            input: fm_protocol::WireInputId::new(core::num::NonZeroU128::new(2).unwrap()),
+            page: 9,
+            thumbnail: true,
+        };
+        assert_eq!(
+            slide_answer(&pages, Some("asset://missing.png"), request).content,
+            PagedPageContent::Unavailable
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn removing_a_converting_input_stops_its_conversion() {
@@ -1059,8 +1189,16 @@ mod tests {
         }
 
         let worker = PageWorker::spawn(Arc::clone(&pages)).unwrap();
-        worker.submit(7, Some("asset://deck.pdf".into()), request(0, true));
-        worker.submit(7, Some("asset://deck.pdf".into()), request(1, false));
+        worker.submit(
+            7,
+            Some(PageSource::Document("asset://deck.pdf".into())),
+            request(0, true),
+        );
+        worker.submit(
+            7,
+            Some(PageSource::Document("asset://deck.pdf".into())),
+            request(1, false),
+        );
         let deadline = Instant::now() + Duration::from_secs(20);
         let mut answers = Vec::new();
         while answers.len() < 2 {

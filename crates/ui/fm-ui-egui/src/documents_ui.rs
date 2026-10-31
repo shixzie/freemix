@@ -336,7 +336,7 @@ fn sentence(text: &str) -> String {
 }
 
 /// The texture of one answered thumbnail, uploaded once per answer.
-fn thumbnail_texture(
+pub(crate) fn thumbnail_texture(
     ui: &Ui,
     key: PagedPageKey,
     answer: Option<&PagedPageAnswer>,
