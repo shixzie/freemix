@@ -390,6 +390,8 @@ struct StudioApp {
     osc: Option<OscReceiver>,
     /// The MIDI controllers this console reads (RC-005).
     midi: Option<crate::midi::MidiReader>,
+    /// The HID button panels this console reads (RC-005).
+    hid: Option<crate::hid::HidReader>,
     /// Lamp feedback to those controllers.
     midi_output: crate::midi::MidiOutput,
     /// The lamp states last sent, so only changes reach the controllers.
@@ -491,6 +493,10 @@ impl StudioApp {
             osc,
             midi: Some(crate::midi::MidiReader::start(
                 std::path::PathBuf::from(crate::midi::MIDI_ROOT),
+                creation_context.egui_ctx.clone(),
+            )),
+            hid: Some(crate::hid::HidReader::start(
+                std::path::PathBuf::from(crate::hid::HID_ROOT),
                 creation_context.egui_ctx.clone(),
             )),
             midi_output: crate::midi::MidiOutput::start(),
@@ -632,6 +638,27 @@ impl StudioApp {
             return;
         }
         for intent in self.shell.receive_midi(&self.state, &inputs) {
+            self.enqueue_intent(intent);
+        }
+    }
+
+    /// Hands the console this frame's HID button-panel messages (RC-005):
+    /// the panels read, and the buttons its bindings act on.
+    fn drain_hid(&mut self) {
+        let mut inputs = Vec::new();
+        for _ in 0..MIDI_EVENTS_PER_FRAME {
+            match self.hid.as_ref().map(crate::hid::HidReader::try_recv) {
+                Some(Ok(crate::hid::HidEvent::Devices(names))) => {
+                    self.shell.set_hid_devices(names);
+                }
+                Some(Ok(crate::hid::HidEvent::Input(input))) => inputs.push(input),
+                _ => break,
+            }
+        }
+        if inputs.is_empty() {
+            return;
+        }
+        for intent in self.shell.receive_hid(&self.state, &inputs) {
             self.enqueue_intent(intent);
         }
     }
@@ -778,6 +805,7 @@ impl eframe::App for StudioApp {
         self.check_worker_health();
         self.drain_osc();
         self.drain_midi();
+        self.drain_hid();
         self.drain_omt();
         self.refresh_midi_feedback();
         if self.state.external_notice.is_none() {
@@ -4464,6 +4492,7 @@ mod tests {
             shutdown_sent: false,
             osc: None,
             midi: None,
+            hid: None,
             midi_output: crate::midi::MidiOutput::start(),
             sent_midi_feedback: Vec::new(),
             omt: crate::omt::OmtDiscovery::disabled(),
@@ -7587,6 +7616,7 @@ mod tests {
             shutdown_sent: false,
             osc: Some(receiver),
             midi: None,
+            hid: None,
             midi_output: crate::midi::MidiOutput::start(),
             sent_midi_feedback: Vec::new(),
             omt: crate::omt::OmtDiscovery::disabled(),

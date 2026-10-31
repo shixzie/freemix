@@ -775,6 +775,9 @@ pub struct ConsoleKeyProfiles {
     /// This console's MIDI controller bindings (RC-005), saved with the
     /// profiles.
     pub midi: crate::midi_bindings::MidiBindings,
+    /// This console's HID controller bindings (RC-005), saved with the
+    /// profiles.
+    pub hid: crate::hid_bindings::HidBindings,
 }
 
 impl ConsoleKeyProfiles {
@@ -945,6 +948,7 @@ impl ConsoleKeyProfiles {
             }
         }
         entries.extend(self.midi.preference_entries());
+        entries.extend(self.hid.preference_entries());
         entries
     }
 
@@ -955,6 +959,9 @@ impl ConsoleKeyProfiles {
     pub fn apply_preference(&mut self, key: &str, value: &str) -> bool {
         if crate::midi_bindings::MidiBindings::is_preference_key(key) {
             return self.midi.apply_preference(key, value);
+        }
+        if crate::hid_bindings::HidBindings::is_preference_key(key) {
+            return self.hid.apply_preference(key, value);
         }
         if key == PROFILE_KEY {
             let choice = match value.strip_prefix("custom.") {
@@ -1068,6 +1075,7 @@ impl ConsoleKeyProfiles {
             active: ProfileChoice::default(),
             custom: vec![profile],
             midi: crate::midi_bindings::MidiBindings::default(),
+            hid: crate::hid_bindings::HidBindings::default(),
         };
         for (key, value) in single.preference_entries() {
             let field = key.strip_prefix("keymap.custom.1.")?;

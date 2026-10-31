@@ -6234,6 +6234,19 @@ pub(super) const CATALOG: &[(Msg, Entry)] = &[
             "Los controladores MIDI que lee esta consola; sus notas y controles accionan las acciones asignadas abajo, solo en esta consola",
         ),
     ),
+    (Msg::HidTriggerText, t("{device} · tecla {code}")),
+    (Msg::HidColumn, t("Botón HID")),
+    (Msg::HidDevices, t("Paneles de botones HID: {names}")),
+    (
+        Msg::HidNoDevices,
+        t("No hay ningún panel de botones HID conectado"),
+    ),
+    (
+        Msg::HidDevicesHover,
+        t(
+            "Los paneles de botones HID, como X-keys, que lee esta consola; sus botones accionan las acciones asignadas abajo, solo en esta consola",
+        ),
+    ),
     (Msg::MidiLearn, t("Aprender")),
     (Msg::MidiLearning, t("Pulsa un control… (clic para parar)")),
     (

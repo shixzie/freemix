@@ -66,6 +66,7 @@ mod media_transport;
 mod menu;
 mod meter_ballistics;
 mod midi_bindings;
+mod hid_bindings;
 mod mixer;
 mod monitors;
 mod network_stream_ui;
@@ -139,6 +140,9 @@ pub use menu::ConsoleLayout;
 pub use midi_bindings::{
     MAX_MIDI_BINDINGS, MidiBindings, MidiControlKind, MidiFeedback, MidiInput, MidiTrigger,
     MidiValueTarget,
+};
+pub use hid_bindings::{
+    HidBindings, HidInput, HidTrigger, MAX_HID_BINDINGS,
 };
 pub use network_stream_ui::OmtSource;
 pub use playlist::{
@@ -2074,6 +2078,8 @@ pub struct StudioShell {
     bus_mixer_open: bool,
     /// The MIDI controllers the host reads (RC-005), by name.
     midi_devices: Vec<String>,
+    /// The HID button panels the host reads (RC-005), by name.
+    hid_devices: Vec<String>,
     /// The panel the operator last clicked, which scoped project shortcut
     /// keys answer in (RC-004).
     focused_panel: Option<dock::PanelId>,
@@ -2315,6 +2321,34 @@ impl StudioShell {
     /// Tells the console which MIDI controllers the host reads, by name.
     pub fn set_midi_devices(&mut self, devices: Vec<String>) {
         self.midi_devices = devices;
+    }
+
+    /// Tells the console which HID button panels the host reads, by name.
+    pub fn set_hid_devices(&mut self, devices: Vec<String>) {
+        self.hid_devices = devices;
+    }
+
+    /// The intents this console's HID button panels' `inputs` press
+    /// (RC-005): each press drives its binding's console action under the
+    /// same gates as the action's key. While an action learns (the Key
+    /// profiles window's Learn), the first press binds it instead.
+    pub fn receive_hid(
+        &mut self,
+        state: &StudioUiState,
+        inputs: &[crate::hid_bindings::HidInput],
+    ) -> Vec<StudioIntent> {
+        let presses = self.key_profiles.hid.presses(inputs);
+        let mut intents = Vec::new();
+        for trigger in presses {
+            if let Some(action) = self.key_profiles_window.hid_learning.take() {
+                self.key_profiles.hid.bind(trigger, action);
+                continue;
+            }
+            if let Some(action) = self.key_profiles.hid.action(&trigger) {
+                intents.extend(self.console_action(state, action));
+            }
+        }
+        intents
     }
 
     /// The intents console action `action` sends now, gated as its key.
@@ -2815,6 +2849,7 @@ impl Default for StudioShell {
             key_profiles_window: key_profiles_ui::KeyProfilesWindow::default(),
             bus_mixer_open: false,
             midi_devices: Vec::new(),
+            hid_devices: Vec::new(),
             focused_panel: None,
             focused_window: None,
             chord: None,

@@ -251,8 +251,10 @@ there come before any new breadth below.
 15. **MIDI and controller surfaces (`RC-005`).** Studio reads ALSA raw MIDI
     ports on Linux, `CoreMIDI` on macOS, and `WinMM` on Windows, and binds
     notes, controls, and NRPN/RPN parameters to console actions, with LED
-    and motor-fader feedback through the router.
-    Remaining: no HID or X-keys input, and no MIDI 2.0 or GPIO (see
+    and motor-fader feedback through the router. On Linux it also reads
+    X-keys-style HID button panels from `/dev/input`, binds each button by
+    Learn, and saves the bindings with the key profile.
+    Remaining: no MIDI 2.0 or GPIO (see
     the Phase 5 boundary).
 
 Audio-only media files (`IN-005`, `IN-003`), ranked third in this audit, have
@@ -5369,10 +5371,15 @@ button and a motor fader follows the console. An NRPN or RPN is learned and
 driven by its 14-bit parameter number: the parser keeps each channel's
 selected parameter from the select controllers (99/98 and 101/100), reports
 the data entry (6) as that parameter's press, and sends a lamp state back as
-the parameter select followed by the data entry. Remaining gaps: no UDP
-transport or raw HID parsing; the bindings drive console
+the parameter select followed by the data entry. A Linux host also reads
+X-keys-style HID button panels from `/dev/input`: the panel's name and key
+code identify a button, Learn binds it to a console action, and the
+bindings are saved with the key profile as
+`keymap.hid.<len>:<device>.<code> = <action>`. Remaining gaps: no UDP
+transport; the bindings drive console
 actions (and so reach `freemixd` through them) but are not persisted in the
-project; and MIDI 2.0 and GPIO or network tally adapters are absent.
+project; HID panels are not read on macOS or Windows; and MIDI 2.0 and GPIO
+or network tally adapters are absent.
 `RC-005` and `RC-006` remain planned.
 
 Current implementation boundary for item 8 fader feedback (`AU-009`):
