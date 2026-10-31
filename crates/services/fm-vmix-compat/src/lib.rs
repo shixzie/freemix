@@ -363,6 +363,8 @@ pub enum CompatIntent {
     AllOverlaysOff,
     /// Toggle the Fade to Black state; the dispatcher reads the current state.
     ToggleFadeToBlack,
+    /// Rename one input (vMix's short name).
+    RenameInput { input: WireInputId, name: String },
 }
 
 /// A recognized function that this compatibility core cannot preserve.
@@ -647,6 +649,21 @@ fn translate(
             Ok(Translation::Compat(CompatIntent::SetInputMuted {
                 input: state.resolve_input(required(parameters, "Input")?)?,
                 muted: function == "AudioOff",
+            }))
+        }
+        "SetInputName" => {
+            allowed(parameters, &["Function", "Input", "Value"])?;
+            let input = state.resolve_input(required(parameters, "Input")?)?;
+            let name = required(parameters, "Value")?;
+            if name.is_empty() {
+                return Err(ParseError::InvalidParameter {
+                    parameter: "Value",
+                    reason: "an input name is not empty",
+                });
+            }
+            Ok(Translation::Compat(CompatIntent::RenameInput {
+                input,
+                name: name.to_owned(),
             }))
         }
         "SetText" => translate_set_text(parameters, state),

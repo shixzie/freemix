@@ -493,3 +493,17 @@ fn all_overlays_off_and_fade_to_black_are_toggle_intents() {
     );
     assert!(parse_http_query("Function=FadeToBlack&Input=1", &state).is_err());
 }
+
+#[test]
+fn set_input_name_becomes_a_rename_intent() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=SetInputName&Input=2&Value=Games", &state),
+        Ok(Translation::Compat(CompatIntent::RenameInput {
+            input: id(2),
+            name: "Games".into(),
+        }))
+    );
+    assert!(parse_http_query("Function=SetInputName&Input=2&Value=", &state).is_err());
+    assert!(parse_http_query("Function=SetInputName&Value=Games", &state).is_err());
+}
