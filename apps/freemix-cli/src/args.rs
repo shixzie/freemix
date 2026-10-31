@@ -834,6 +834,15 @@ pub enum Command {
     InputMediaList {
         path: PathBuf,
     },
+    /// Steps a media list input in a saved project (IN-006); a running
+    /// server takes `remote-input-media-list-navigate`.
+    InputMediaListNavigate {
+        target: MediaTarget,
+        input: u128,
+        navigation: fm_protocol::MediaListNavigation,
+        key: Option<String>,
+        expected_revision: Option<u64>,
+    },
     /// One input lifecycle edit (IN-026), locally (category list,
     /// category, colour label, pause, close) or on a server (also
     /// duplicate, source replacement, and batch import).
@@ -2728,6 +2737,14 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             reject_extra(&mut arguments)?;
             Ok(Command::InputPages { path })
         }
+        "input-media-list-navigate" => parse_input_media_list_navigate(
+            MediaTarget::Local(required_path(&mut arguments, "project path")?),
+            arguments,
+        ),
+        "remote-input-media-list-navigate" => parse_input_media_list_navigate(
+            MediaTarget::Remote(socket_address(&required(&mut arguments, "address")?)?),
+            arguments,
+        ),
         "help" | "--help" | "-h" => Ok(Command::Help),
         _ => {
             if let Some(operation) = command.strip_prefix("remote-input-media-") {
@@ -9123,6 +9140,42 @@ fn parse_input_page(
     let (key, expected_revision) = command_options(arguments)?;
     Ok(Command::InputPage {
         path,
+        input,
+        navigation,
+        key,
+        expected_revision,
+    })
+}
+
+/// `<input> next|previous|first|last|goto <position>|item <id>`, the
+/// position one-based (IN-006).
+fn parse_input_media_list_navigate(
+    target: MediaTarget,
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let input = number(&required(&mut arguments, "input")?, "input")?;
+    let value = required(&mut arguments, "list action")?;
+    let index = match value.as_str() {
+        "goto" => {
+            let position: u32 =
+                number(&required(&mut arguments, "item position")?, "item position")?;
+            Some(position.checked_sub(1).ok_or(ArgsError::InvalidNumber {
+                field: "item position (counted from 1)",
+                value: position.to_string(),
+            })?)
+        }
+        "item" => Some(number(&required(&mut arguments, "item")?, "item")?),
+        _ => None,
+    };
+    let navigation = fm_protocol::MediaListNavigation::from_token(&value, index).ok_or(
+        ArgsError::InvalidChoice {
+            field: "list action (next, previous, first, last, goto <position>, or item <id>)",
+            value,
+        },
+    )?;
+    let (key, expected_revision) = command_options(arguments)?;
+    Ok(Command::InputMediaListNavigate {
+        target,
         input,
         navigation,
         key,

@@ -688,6 +688,30 @@ pub fn run(command: Command) -> AppResult<()> {
                 );
             }
         }
+        Command::InputMediaListNavigate {
+            target,
+            input,
+            navigation,
+            key,
+            expected_revision,
+        } => {
+            let payload = fm_protocol::CommandPayload::MediaList {
+                input: fm_protocol::WireInputId::from_domain(input_id(input)?),
+                operation: fm_protocol::MediaListOperation::Navigate(navigation),
+            };
+            match target {
+                crate::args::MediaTarget::Local(path) => mutate(
+                    &path,
+                    fm_control::media_list_engine_command(&payload),
+                    1,
+                    key,
+                    expected_revision,
+                )?,
+                crate::args::MediaTarget::Remote(address) => {
+                    remote::execute(address, payload, key, expected_revision)?;
+                }
+            }
+        }
         Command::InputLifecycle {
             target,
             operation,
@@ -6815,6 +6839,8 @@ Usage:
   freemix-cli input-replace-media <show.freemix> <input-id> <asset://key>
   freemix-cli input-replace-scene <show.freemix> <input-id> <existing-scene-id>
   freemix-cli input-media-list <show.freemix>
+  freemix-cli input-media-list-navigate <show.freemix> <input-id> <next|previous|first|last|goto <position>|item <id>> [--key <key>] [--expect <revision>]
+  freemix-cli remote-input-media-list-navigate <address> <input-id> <next|previous|first|last|goto <position>|item <id>> [--key <key>] [--expect <revision>]
   freemix-cli input-pages <show.freemix>
   freemix-cli input-page <show.freemix> <input-id> <next|previous|first|last|goto <page>> [--key <key>] [--expect <revision>]
   freemix-cli input-categories <show.freemix> [<id>=<name>...] [--key <key>] [--expect <revision>]
