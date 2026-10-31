@@ -253,7 +253,7 @@ fn function_errors_and_unsupported_answer_immediately() {
         "FUNCTION ER input not found: 99\r\n"
     );
     assert_eq!(
-        line(&mut session, "FUNCTION AudioOn Input=1", &state),
+        line(&mut session, "FUNCTION AddInput", &state),
         "FUNCTION ER the function has no semantics in the current compatibility core\r\n"
     );
     assert_eq!(

@@ -352,6 +352,8 @@ pub enum CompatIntent {
     /// Set one input's volume as vMix's 0 through 100 percentage; the
     /// dispatcher maps it onto the strip's gain.
     SetInputVolume { input: WireInputId, percent: u8 },
+    /// Mute or unmute one input's audio strip.
+    SetInputMuted { input: WireInputId, muted: bool },
 }
 
 /// A recognized function that this compatibility core cannot preserve.
@@ -502,6 +504,7 @@ fn translate_function(
     translate(function, &parameters, state)
 }
 
+#[allow(clippy::too_many_lines)] // one arm per translated vMix function
 fn translate(
     function: &str,
     parameters: &[(String, String)],
@@ -606,6 +609,13 @@ fn translate(
             Ok(Translation::Compat(CompatIntent::SetInputVolume {
                 input: state.resolve_input(required(parameters, "Input")?)?,
                 percent,
+            }))
+        }
+        "AudioOn" | "AudioOff" => {
+            allowed(parameters, &["Function", "Input"])?;
+            Ok(Translation::Compat(CompatIntent::SetInputMuted {
+                input: state.resolve_input(required(parameters, "Input")?)?,
+                muted: function == "AudioOff",
             }))
         }
         "SetText" => translate_set_text(parameters, state),
@@ -885,8 +895,6 @@ fn known_unsupported(function: &str) -> bool {
         function,
         "StartStopRecording"
             | "StartStopStreaming"
-            | "AudioOn"
-            | "AudioOff"
             | "AddInput"
             | "FadeToBlack"
             | "OverlayInputAllOff"

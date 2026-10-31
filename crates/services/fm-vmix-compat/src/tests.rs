@@ -184,9 +184,9 @@ fn malformed_unknown_and_unsupported_are_distinct() {
         Err(ParseError::UnknownFunction("NoSuchFunction".to_owned()))
     );
     assert_eq!(
-        parse_http_query("Function=AudioOn&Input=1", &state),
+        parse_http_query("Function=AddInput", &state),
         Ok(Translation::Unsupported(UnsupportedReport {
-            function: "AudioOn".to_owned(),
+            function: "AddInput".to_owned(),
             reason: "the function has no semantics in the current compatibility core",
         }))
     );
@@ -436,4 +436,24 @@ fn set_volume_translates_the_percentage() {
         );
     }
     assert!(parse_http_query("Function=SetVolume&Input=2", &state).is_err());
+}
+
+#[test]
+fn audio_on_and_off_translate_to_a_mute_intent() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=AudioOff&Input=2", &state),
+        Ok(Translation::Compat(CompatIntent::SetInputMuted {
+            input: id(2),
+            muted: true,
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=AudioOn&Input=2", &state),
+        Ok(Translation::Compat(CompatIntent::SetInputMuted {
+            input: id(2),
+            muted: false,
+        }))
+    );
+    assert!(parse_http_query("Function=AudioOn", &state).is_err());
 }
