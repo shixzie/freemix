@@ -694,3 +694,47 @@ fn apply_adds_a_keyed_stream_target_with_a_supplied_key() {
     assert_eq!(target.protocol(), StreamProtocol::Rtmp);
     assert_eq!(target.key().unwrap().expose_secret(), "live-key-1234");
 }
+
+#[test]
+fn apply_removes_a_stream_target_absent_from_the_snapshot() {
+    let snapshot = without_entity(
+        &current(),
+        entity(SettingsSection::StreamTargets, Some(40)),
+    );
+    let mut project = project();
+    snapshot.apply_exported(&mut project).unwrap();
+    assert!(project.stream_targets().is_empty());
+}
+
+#[test]
+fn apply_removes_an_output_and_bus_after_the_stream_target_that_uses_them() {
+    let mut snapshot = without_entity(
+        &current(),
+        entity(SettingsSection::StreamTargets, Some(40)),
+    );
+    snapshot = without_entity(&snapshot, entity(SettingsSection::Outputs, Some(30)));
+    snapshot = without_entity(&snapshot, entity(SettingsSection::AudioBuses, Some(20)));
+    let mut project = project();
+    snapshot.apply_exported(&mut project).unwrap();
+    assert!(project.stream_targets().is_empty());
+    assert!(project.outputs().is_empty());
+    assert!(project.audio_buses().is_empty());
+}
+
+#[test]
+fn apply_refuses_to_remove_an_output_a_kept_stream_target_uses() {
+    let snapshot = without_entity(&current(), entity(SettingsSection::Outputs, Some(30)));
+    let mut project = project();
+    assert!(snapshot.apply_exported(&mut project).is_err());
+    assert_eq!(project.outputs().len(), 1);
+    assert_eq!(project.stream_targets().len(), 1);
+}
+
+#[test]
+fn apply_refuses_to_remove_a_bus_a_kept_output_uses() {
+    let snapshot = without_entity(&current(), entity(SettingsSection::AudioBuses, Some(20)));
+    let mut project = project();
+    assert!(snapshot.apply_exported(&mut project).is_err());
+    assert_eq!(project.audio_buses().len(), 1);
+    assert_eq!(project.outputs().len(), 1);
+}

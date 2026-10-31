@@ -645,9 +645,13 @@ impl SettingsSnapshot {
     /// Applies the format, restart policy, audio bus, output, and existing
     /// stream-target sections to `project`.
     ///
-    /// A keyless HLS stream target may be added; a keyed addition, a removal,
-    /// or a protocol change is refused, and a change to an existing target
-    /// must keep its protocol so unexported options keep their meaning. The
+    /// A keyless HLS stream target may be added and a keyed addition is
+    /// permitted through [`Self::apply_exported_with_keys`]; a protocol
+    /// change is refused, and a change to an existing target must keep its
+    /// protocol so unexported options keep their meaning. Entities absent
+    /// from the snapshot are removed once everything else has been applied,
+    /// in reference order (stream targets, outputs, then buses), and a
+    /// removal still referenced elsewhere refuses the whole import. The
     /// whole import is applied to a clone and committed only when every
     /// section succeeds.
     ///
@@ -678,6 +682,9 @@ impl SettingsSnapshot {
         apply_audio_buses(self, &mut candidate)?;
         apply_outputs(self, &mut candidate)?;
         apply_stream_targets(self, &mut candidate, stream_keys)?;
+        remove_absent_stream_targets(self, &mut candidate)?;
+        remove_absent_outputs(self, &mut candidate)?;
+        remove_absent_audio_buses(self, &mut candidate)?;
         *project = candidate;
         Ok(())
     }
@@ -961,7 +968,6 @@ fn apply_stream_targets(
     project: &mut Project,
     stream_keys: &BTreeMap<u128, String>,
 ) -> Result<(), SettingsApplyError> {
-    let mut present = BTreeSet::new();
     for entity in snapshot
         .entities()
         .into_iter()
@@ -972,7 +978,6 @@ fn apply_stream_targets(
                 key: "stream_targets".to_owned(),
             });
         };
-        present.insert(id);
         let key = format!("stream_targets.{id}");
         let existing = project
             .stream_targets()
@@ -985,13 +990,86 @@ fn apply_stream_targets(
             add_stream_target(snapshot, &key, entity, id, project, stream_keys)?;
         }
     }
-    for target in project.stream_targets() {
-        if !present.contains(&target.id().get()) {
-            return Err(SettingsApplyError::Model {
-                key: format!("stream_targets.{}", target.id().get()),
-                reason: "removing stream targets is not applied yet".to_owned(),
-            });
-        }
+    Ok(())
+}
+
+fn remove_absent_stream_targets(
+    snapshot: &SettingsSnapshot,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    let present: BTreeSet<NonZeroU128> = snapshot
+        .entities()
+        .into_iter()
+        .filter(|entity| entity.section() == SettingsSection::StreamTargets)
+        .filter_map(EntityKey::id)
+        .collect();
+    let absent: Vec<_> = project
+        .stream_targets()
+        .iter()
+        .map(fm_model::StreamTarget::id)
+        .filter(|target| !present.contains(&target.get()))
+        .collect();
+    for target in absent {
+        project
+            .remove_stream_target(target)
+            .map_err(|error| SettingsApplyError::Model {
+                key: format!("stream_targets.{}", target.get()),
+                reason: error.to_string(),
+            })?;
+    }
+    Ok(())
+}
+
+fn remove_absent_outputs(
+    snapshot: &SettingsSnapshot,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    let present: BTreeSet<NonZeroU128> = snapshot
+        .entities()
+        .into_iter()
+        .filter(|entity| entity.section() == SettingsSection::Outputs)
+        .filter_map(EntityKey::id)
+        .collect();
+    let absent: Vec<_> = project
+        .outputs()
+        .iter()
+        .map(|output| output.id)
+        .filter(|output| !present.contains(&output.get()))
+        .collect();
+    for output in absent {
+        project
+            .remove_output(output)
+            .map_err(|error| SettingsApplyError::Model {
+                key: format!("outputs.{}", output.get()),
+                reason: error.to_string(),
+            })?;
+    }
+    Ok(())
+}
+
+fn remove_absent_audio_buses(
+    snapshot: &SettingsSnapshot,
+    project: &mut Project,
+) -> Result<(), SettingsApplyError> {
+    let present: BTreeSet<NonZeroU128> = snapshot
+        .entities()
+        .into_iter()
+        .filter(|entity| entity.section() == SettingsSection::AudioBuses)
+        .filter_map(EntityKey::id)
+        .collect();
+    let absent: Vec<_> = project
+        .audio_buses()
+        .iter()
+        .map(|bus| bus.id)
+        .filter(|bus| !present.contains(&bus.get()))
+        .collect();
+    for bus in absent {
+        project
+            .remove_audio_bus(bus)
+            .map_err(|error| SettingsApplyError::Model {
+                key: format!("audio_buses.{}", bus.get()),
+                reason: error.to_string(),
+            })?;
     }
     Ok(())
 }
