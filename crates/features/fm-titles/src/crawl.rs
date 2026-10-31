@@ -90,18 +90,40 @@ impl CrawlMode {
     }
 }
 
+/// Largest logo width a crawl item may reserve, in pixels.
+pub const MAX_CRAWL_LOGO_WIDTH: u32 = 2_048;
+/// Gap between a crawl item's logo and its text, in pixels.
+pub const CRAWL_LOGO_GAP_PX: u32 = 8;
+/// Longest logo asset name, in bytes.
+pub const MAX_CRAWL_LOGO_ASSET_BYTES: usize = 256;
+
+/// An image drawn before one crawl item's text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CrawlLogo<'a> {
+    /// The renderer's asset name, e.g. `asset://logos/news.png`.
+    pub asset: &'a str,
+    /// Width reserved along the motion axis, in pixels.
+    pub width_px: u32,
+}
+
 /// One item of a crawl with optional per-item styling: `fill` overrides the
-/// crawl's fill colour for that item.
+/// crawl's fill colour for that item, and `logo` draws an image before its
+/// text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CrawlItem<'a> {
     pub text: &'a str,
     pub fill: Option<Color>,
+    pub logo: Option<CrawlLogo<'a>>,
 }
 
 impl<'a> CrawlItem<'a> {
     #[must_use]
     pub const fn text(text: &'a str) -> Self {
-        Self { text, fill: None }
+        Self {
+            text,
+            fill: None,
+            logo: None,
+        }
     }
 
     #[must_use]
@@ -109,7 +131,14 @@ impl<'a> CrawlItem<'a> {
         Self {
             text,
             fill: Some(fill),
+            logo: None,
         }
+    }
+
+    #[must_use]
+    pub const fn with_logo(mut self, logo: CrawlLogo<'a>) -> Self {
+        self.logo = Some(logo);
+        self
     }
 }
 
@@ -279,10 +308,17 @@ fn segment_extent(mode: CrawlMode, laid: &LaidText) -> u32 {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct MeasuredLogo {
+    asset: String,
+    width_px: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Measured {
     text: String,
     extent: u32,
     fill: Option<Color>,
+    logo: Option<MeasuredLogo>,
 }
 
 /// A contiguous stretch of tape driven by one item list.
@@ -311,6 +347,10 @@ pub struct CrawlSegment<'a> {
     pub text: &'a str,
     /// Per-item fill override; `None` uses the crawl's fill.
     pub fill: Option<Color>,
+    /// The item's logo asset name, if it has one.
+    pub logo_asset: Option<&'a str>,
+    /// The logo width reserved along the motion axis, in pixels.
+    pub logo_width_px: u32,
     /// Leading edge relative to the viewport origin along the motion axis:
     /// x from the viewport's left for a horizontal mode, y from its top for a
     /// vertical one.
@@ -370,6 +410,17 @@ pub enum CrawlError {
     BlankItem {
         index: usize,
     },
+    /// A logo's reserved width is zero or above the bound.
+    LogoTooWide {
+        index: usize,
+        width: u32,
+        maximum: u32,
+    },
+    /// A logo asset name is empty, oversized, or contains a control
+    /// character.
+    InvalidLogo {
+        index: usize,
+    },
     /// Items and the separator must not contain control characters
     /// (including newlines); a roll wraps by width instead.
     ControlCharacter {
@@ -413,6 +464,17 @@ impl fmt::Display for CrawlError {
                 write!(formatter, "crawl item {index} exceeds {maximum} characters")
             }
             Self::BlankItem { index } => write!(formatter, "crawl item {index} is blank"),
+            Self::LogoTooWide {
+                index,
+                width,
+                maximum,
+            } => write!(
+                formatter,
+                "crawl item {index} logo is {width}px wide, maximum is {maximum}px"
+            ),
+            Self::InvalidLogo { index } => {
+                write!(formatter, "crawl item {index} has an invalid logo asset")
+            }
             Self::ControlCharacter { index: Some(index) } => {
                 write!(formatter, "crawl item {index} contains a control character")
             }
@@ -500,12 +562,14 @@ impl Crawl {
                 text: String::new(),
                 extent: 0,
                 fill: None,
+                logo: None,
             }
         } else {
             Measured {
                 extent: measure.measure(&config.separator),
                 text: config.separator.clone(),
                 fill: None,
+                logo: None,
             }
         };
         let items = measure_items(items, measure)?;
@@ -802,6 +866,8 @@ impl Crawl {
                         kind: CrawlSegmentKind::Item { index },
                         text: &item.text,
                         fill: item.fill,
+                        logo_asset: item.logo.as_ref().map(|logo| logo.asset.as_str()),
+                        logo_width_px: item.logo.as_ref().map_or(0, |logo| logo.width_px),
                         offset: screen(offset),
                         extent: item.extent,
                         revision: epoch.revision,
@@ -821,6 +887,8 @@ impl Crawl {
                             kind: CrawlSegmentKind::Separator,
                             text: &self.separator.text,
                             fill: None,
+                            logo_asset: None,
+                            logo_width_px: 0,
                             offset: screen(separator_offset),
                             extent: self.separator.extent,
                             revision: epoch.revision,
@@ -876,14 +944,41 @@ fn measure_items(
         if item.text.trim().is_empty() {
             return Err(CrawlError::BlankItem { index });
         }
+        if let Some(logo) = item.logo {
+            if logo.width_px == 0 || logo.width_px > MAX_CRAWL_LOGO_WIDTH {
+                return Err(CrawlError::LogoTooWide {
+                    index,
+                    width: logo.width_px,
+                    maximum: MAX_CRAWL_LOGO_WIDTH,
+                });
+            }
+            if logo.asset.trim().is_empty()
+                || logo.asset.len() > MAX_CRAWL_LOGO_ASSET_BYTES
+                || logo.asset.chars().any(char::is_control)
+            {
+                return Err(CrawlError::InvalidLogo { index });
+            }
+        }
     }
     Ok(items
         .iter()
-        .map(|item| Measured {
-            text: item.text.to_owned(),
+        .map(|item| {
             // At least one pixel so walking the tape always progresses.
-            extent: measure.measure(item.text).max(1),
-            fill: item.fill,
+            let text_extent = measure.measure(item.text).max(1);
+            let extent = item.logo.map_or(text_extent, |logo| {
+                text_extent
+                    .saturating_add(logo.width_px)
+                    .saturating_add(CRAWL_LOGO_GAP_PX)
+            });
+            Measured {
+                text: item.text.to_owned(),
+                extent,
+                fill: item.fill,
+                logo: item.logo.map(|logo| MeasuredLogo {
+                    asset: logo.asset.to_owned(),
+                    width_px: logo.width_px,
+                }),
+            }
         })
         .collect())
 }

@@ -93,7 +93,7 @@ use crate::{
     HorizontalAlignment, ImageFilter, ImageFit, MissingFont, ResolvedClip, TickerSpec, TitleScene,
     VerticalAlignment,
     animation::{AnimSample, ElementAnimation},
-    crawl::{MAX_CRAWL_VISIBLE_SEGMENTS, layout_segment},
+    crawl::{CRAWL_LOGO_GAP_PX, MAX_CRAWL_VISIBLE_SEGMENTS, layout_segment},
     evaluate_clock, evaluate_production_clock, evaluate_ticker_position,
     font::ScaledFace,
     image,
@@ -1247,11 +1247,20 @@ fn draw_crawl(
             );
             break;
         }
+        let shifted = if segment.logo_width_px == 0 {
+            segment.offset
+        } else {
+            segment
+                .offset
+                .saturating_add(i64::from(segment.logo_width_px))
+                .saturating_add(i64::from(CRAWL_LOGO_GAP_PX))
+        };
+        draw_crawl_logo(canvas, segment, config, assets);
         let laid = layout_segment(&scaled, config.mode, config.bounds.width, segment.text);
         let forced = if config.mode.is_horizontal() {
-            (Some(segment.offset), None)
+            (Some(shifted), None)
         } else {
-            (None, Some(segment.offset))
+            (None, Some(shifted))
         };
         paint.paint_lines(canvas, &scaled, &laid, forced, state)?;
     }
@@ -1264,6 +1273,58 @@ fn draw_crawl(
         );
     }
     Ok(())
+}
+
+/// Draws one item's logo into its reserved tape slot, when it has one and the
+/// asset has decoded pixels.
+fn draw_crawl_logo(
+    canvas: &mut Canvas<'_>,
+    segment: &crate::crawl::CrawlSegment<'_>,
+    config: &crate::crawl::CrawlConfig,
+    assets: &AssetCatalog,
+) {
+    if segment.logo_width_px == 0 {
+        return;
+    }
+    let Some(asset) = segment.logo_asset else {
+        return;
+    };
+    let Some(frame) = assets.image(asset) else {
+        return;
+    };
+    let bounds = if config.mode.is_horizontal() {
+        Bounds {
+            x: crawl_coordinate(segment.offset),
+            y: config.bounds.y,
+            width: segment.logo_width_px,
+            height: config.bounds.height,
+        }
+    } else {
+        Bounds {
+            x: config.bounds.x,
+            y: crawl_coordinate(segment.offset),
+            width: config.bounds.width,
+            height: segment.logo_width_px,
+        }
+    };
+    canvas.image(
+        bounds,
+        frame,
+        ImageLayout {
+            fit: ImageFit::Contain,
+            filter: ImageFilter::Bilinear,
+            alignment: Alignment {
+                horizontal: HorizontalAlignment::Center,
+                vertical: VerticalAlignment::Center,
+            },
+        },
+        config.opacity,
+    );
+}
+
+/// A crawl offset as a bounded canvas coordinate.
+fn crawl_coordinate(value: i64) -> i32 {
+    i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
 }
 
 /// How a decoded image is fitted, aligned, and filtered inside its bounds.

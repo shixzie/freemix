@@ -4151,8 +4151,9 @@ key/value parser maps external data onto actions. A strict snapshot
 round-trips the whole operator state and serializes as a versioned text
 document. Remaining gaps:
 crawls are runtime overlays outside template z-order and the project schema,
-with no logos or easing and only a per-item fill override; the scoreboard has
-two teams and its document is not yet stored in `project.json`; and there are
+with per-item fill and logo images drawn before the text but no easing; the
+scoreboard has two teams and its document is not yet stored in `project.json`;
+and there are
 no feed transports, shortcut
 or control-surface wiring, or engine output. `GX-003` remains planned.
 

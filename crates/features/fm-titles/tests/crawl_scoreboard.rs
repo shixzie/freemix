@@ -7,13 +7,13 @@
 
 use fm_titles::{
     Alignment, AssetCatalog, Bounds, ClockDirection, ClockFormat, Color, Crawl, CrawlConfig,
-    CrawlError, CrawlItem, CrawlLayer, CrawlMeasure, CrawlMode, CrawlSegment, CrawlSegmentKind,
-    CrawlSpeed, Element, ElementId, ElementKind, FieldDefinition, FieldId, FieldValue,
-    FontCrawlMeasure, FontStyle, GameClockConfig, HorizontalAlignment, MAX_CRAWL_ITEMS,
-    MAX_ROSTER_PLAYERS, Player, ReferenceRenderer, Scoreboard, ScoreboardAction, ScoreboardBinding,
-    ScoreboardError, ScoreboardEvent, ScoreboardPreset, ScoreboardRules, ScoreboardSnapshot, Style,
-    TeamSide, TeamState, TemplateId, TitleId, TitleScene, TitleTemplate, UpdateError,
-    VerticalAlignment, actions_from_external,
+    CrawlError, CrawlItem, CrawlLayer, CrawlLogo, CrawlMeasure, CrawlMode, CrawlSegment,
+    CrawlSegmentKind, CrawlSpeed, Element, ElementId, ElementKind, FieldDefinition, FieldId,
+    FieldValue, FontCrawlMeasure, FontStyle, GameClockConfig, HorizontalAlignment,
+    MAX_CRAWL_ITEMS, MAX_CRAWL_LOGO_WIDTH, MAX_ROSTER_PLAYERS, Player, ReferenceRenderer,
+    Scoreboard, ScoreboardAction, ScoreboardBinding, ScoreboardError, ScoreboardEvent,
+    ScoreboardPreset, ScoreboardRules, ScoreboardSnapshot, Style, TeamSide, TeamState, TemplateId,
+    TitleId, TitleScene, TitleTemplate, UpdateError, VerticalAlignment, actions_from_external,
 };
 use fm_types::FrameRate;
 use std::fs;
@@ -1909,4 +1909,60 @@ fn external_key_values_map_onto_typed_actions() {
             .is_err()
     );
     assert_eq!(board, before);
+}
+
+#[test]
+fn a_crawl_item_reserves_room_for_a_logo() {
+    let config = crawl_config(
+        CrawlMode::CrawlRight,
+        Bounds {
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 20,
+        },
+        120,
+        (30, 1),
+    );
+    let logo = CrawlLogo {
+        asset: "asset://logos/news.png",
+        width_px: 40,
+    };
+    let item = CrawlItem::text("AAAA").with_logo(logo);
+    let crawl =
+        Crawl::new_styled(ElementId::new(nz(7)), config, &[item], &FixedMeasure(10)).unwrap();
+    let view = crawl.view(10).unwrap();
+    assert_eq!(view.segments.len(), 1);
+    let segment = &view.segments[0];
+    assert_eq!(segment.logo_asset, Some("asset://logos/news.png"));
+    assert_eq!(segment.logo_width_px, 40);
+    assert_eq!(segment.extent, 40 + 8 + 40);
+}
+
+#[test]
+fn invalid_crawl_logos_are_refused() {
+    let config = crawl_config(
+        CrawlMode::Crawl,
+        Bounds {
+            x: 0,
+            y: 0,
+            width: 200,
+            height: 20,
+        },
+        120,
+        (30, 1),
+    );
+    let refused = |asset: &str, width_px: u32| {
+        let item = CrawlItem::text("AAAA").with_logo(CrawlLogo { asset, width_px });
+        Crawl::new_styled(
+            ElementId::new(nz(7)),
+            config.clone(),
+            &[item],
+            &FixedMeasure(10),
+        )
+        .is_err()
+    };
+    assert!(refused("", 40));
+    assert!(refused("asset://x", 0));
+    assert!(refused("asset://x", MAX_CRAWL_LOGO_WIDTH + 1));
 }
