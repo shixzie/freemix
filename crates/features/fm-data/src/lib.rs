@@ -20,6 +20,7 @@ mod source;
 mod title;
 mod transform;
 mod value;
+mod xml;
 
 pub use adapters::{AdapterError, CsvRowsAdapter, DataAdapter, JsonObjectAdapter};
 pub use bind::{
@@ -55,6 +56,7 @@ pub use title::{
 };
 pub use transform::{Transform, TransformError, ValueSelector};
 pub use value::{DataValue, Decimal, DecimalError, ValueType};
+pub use xml::parse_xml;
 
 #[cfg(test)]
 mod tests;
