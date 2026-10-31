@@ -1243,14 +1243,15 @@ fn progress_length_error(payload: &[u8]) -> Box<dyn std::error::Error> {
     .into()
 }
 
-/// Seconds of show between two progress markers.
+/// Milliseconds of show between two progress markers.
 ///
 /// This is how much idle progress a SIGKILL can lose: a restarted daemon
 /// resumes at most this far behind the last frame it realized (a playlist
 /// entry on air runs at most this much longer). Each marker is one small
-/// journal commit — the same cost as one accepted command — so a one-second
-/// cadence bounds the journal's commit rate at one per second while idle.
-pub const PROGRESS_MARKER_SECONDS: u64 = 1;
+/// journal commit — the same cost as one accepted command — so a quarter-
+/// second cadence bounds the journal's commit rate at four per second while
+/// idle.
+pub const PROGRESS_MARKER_MILLIS: u64 = 250;
 
 /// Seconds of show between two folds of idle progress into the manifest.
 ///
@@ -1266,7 +1267,7 @@ pub const PROGRESS_FOLD_SECONDS: u64 = 300;
 ///
 /// Idle ticks are bounded by recorded frame numbers, so a damaged journal
 /// naming an absurd frame would otherwise keep startup ticking for hours or
-/// forever. With markers every [`PROGRESS_MARKER_SECONDS`] and folds every
+/// forever. With markers every [`PROGRESS_MARKER_MILLIS`] and folds every
 /// [`PROGRESS_FOLD_SECONDS`], an intact journal asks for minutes; a whole
 /// day is far beyond any show that checkpointed as designed and still
 /// replays in seconds.
@@ -1276,6 +1277,14 @@ pub const MAX_REPLAY_IDLE_SECONDS: u64 = 24 * 60 * 60;
 pub fn frames_in(seconds: u64, rate: FrameRate) -> u64 {
     let frames =
         u128::from(seconds) * u128::from(rate.numerator()) / u128::from(rate.denominator());
+    u64::try_from(frames).unwrap_or(u64::MAX).max(1)
+}
+
+/// Whole frames in `millis` milliseconds of show at `rate`, rounded down,
+/// at least one.
+pub fn frames_in_millis(millis: u64, rate: FrameRate) -> u64 {
+    let frames = u128::from(millis) * u128::from(rate.numerator())
+        / (1_000 * u128::from(rate.denominator()));
     u64::try_from(frames).unwrap_or(u64::MAX).max(1)
 }
 
@@ -1309,7 +1318,7 @@ impl ProgressCadence {
     /// A cadence for a show at `rate` whose durable position is at `frame`.
     pub fn new(rate: FrameRate, frame: u64) -> Self {
         Self::with_intervals(
-            frames_in(PROGRESS_MARKER_SECONDS, rate),
+            frames_in_millis(PROGRESS_MARKER_MILLIS, rate),
             frames_in(PROGRESS_FOLD_SECONDS, rate),
             frame,
         )
@@ -1448,9 +1457,18 @@ mod tests {
 
         let rate = FrameRate::new(30_000, 1_001).unwrap();
         let cadence = ProgressCadence::new(rate, 0);
-        assert_eq!(cadence.due(29, 0), ProgressDue::Marker);
-        assert_eq!(cadence.due(28, 0), ProgressDue::Nothing);
+        assert_eq!(cadence.due(6, 0), ProgressDue::Nothing);
+        assert_eq!(cadence.due(7, 0), ProgressDue::Marker);
         assert_eq!(frames_in(PROGRESS_FOLD_SECONDS, rate), 8_991);
+        assert_eq!(frames_in_millis(PROGRESS_MARKER_MILLIS, rate), 7);
+        assert_eq!(
+            frames_in_millis(PROGRESS_MARKER_MILLIS, FrameRate::new(25, 1).unwrap()),
+            6
+        );
+        assert_eq!(
+            frames_in_millis(PROGRESS_MARKER_MILLIS, FrameRate::new(1, 1).unwrap()),
+            1
+        );
         assert_eq!(frames_in(0, rate), 1);
     }
 

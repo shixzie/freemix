@@ -7816,13 +7816,15 @@ fn a_command_committed_mid_transition_replays_onto_its_frame() {
 }
 
 /// Idle frames a native daemon realizes after its last command survive a
-/// crash through the progress marker: markers land one second of frames
-/// apart, replay and recovery tick idle up to the newest one and land on
-/// its whole position, and a fold moves idle progress into the manifest.
+/// crash through the progress marker: markers land a quarter second of
+/// frames apart, replay and recovery tick idle up to the newest one and land
+/// on its whole position, and a fold moves idle progress into the manifest.
 #[test]
 fn idle_progress_markers_replay_past_the_last_command_and_fold_into_the_manifest() {
     use fm_protocol::{PlaylistEntrySpec, PlaylistLoopMode, PlaylistTransitionKind};
-    use journal::{DurableJournal, PROGRESS_FOLD_SECONDS, decode_progress, frames_in};
+    use journal::{
+        DurableJournal, PROGRESS_FOLD_SECONDS, decode_progress, frames_in, frames_in_millis,
+    };
 
     let directory = tempfile::tempdir().unwrap();
     let store = ProjectStore::new(directory.path().join("progress.freemix")).unwrap();
@@ -7833,7 +7835,7 @@ fn idle_progress_markers_replay_past_the_last_command_and_fold_into_the_manifest
     let server = test_server(&control.borrow());
     let mut durable = manifest.clone();
     let mut realized = Vec::new();
-    let marker_frames = frames_in(journal::PROGRESS_MARKER_SECONDS, rate);
+    let marker_frames = frames_in_millis(journal::PROGRESS_MARKER_MILLIS, rate);
     {
         let journal = DurableJournal::open(&store).unwrap();
         let result = native_paced_command(
@@ -7881,8 +7883,12 @@ fn idle_progress_markers_replay_past_the_last_command_and_fold_into_the_manifest
         }
         assert_eq!(
             markers,
-            [command_end + marker_frames, command_end + 2 * marker_frames],
-            "one marker per second of realized frames"
+            [
+                command_end + marker_frames,
+                command_end + 2 * marker_frames,
+                command_end + 3 * marker_frames
+            ],
+            "one marker per marker interval of realized frames"
         );
         assert_eq!(
             durable.position().frames_rendered,

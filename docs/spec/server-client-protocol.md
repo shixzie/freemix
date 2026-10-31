@@ -389,7 +389,7 @@ Protocol 2.25 adds the frame-driven project playlist (`OR-015` slice):
   (`FREEMIXD_JOURNAL progress=failed`) without stopping the show. Recovery
   ticks idle from the last recorded command up to a current marker and
   requires it to land on the marker's whole position, so a SIGKILL loses at
-  most one second of idle progress; a marker written above an older head is
+  most a quarter second of idle progress; a marker written above an older head is
   stale and ignored, and `--recover-to-checkpoint` discards it. Replay ticks
   at most 24 hours of idle frames (at the project frame rate) per recovery
   and refuses, before ticking, a journal that asks for more as damaged. The

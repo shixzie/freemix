@@ -814,7 +814,7 @@ fn checkpoint_native(
 /// The session loop calls [`Self::poll`] once per pass, right after the
 /// pacer's frame. The journal writes a marker or fold on its persistence
 /// worker, so neither delays a frame. A marker is one small journal commit per
-/// [`journal::PROGRESS_MARKER_SECONDS`]; a fold is a manifest checkpoint per
+/// [`journal::PROGRESS_MARKER_MILLIS`]; a fold is a manifest checkpoint per
 /// [`journal::PROGRESS_FOLD_SECONDS`]. Progress is only recorded at an idle
 /// frame boundary — the only position replay (and a checkpoint) can
 /// reproduce — so a pass with work in flight records nothing and the next

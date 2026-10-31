@@ -4925,8 +4925,8 @@ remove, reorder, enable/skip, duration, transition, loop mode) under
 Remaining gaps: the clocks wait while either daemon's frame loop realizes a
 transition or title phase, so a boundary falling inside one is cut on the
 first frame after it (its scheduled start, and so every later boundary, is
-kept); a SIGKILL still loses up to one second of idle progress (the marker
-cadence), although marker and fold writes now run as background jobs on the
+kept); a SIGKILL still loses up to a quarter second of idle progress (the
+marker cadence), although marker and fold writes now run as background jobs on the
 persistence worker, off the frame loop; simulated pacing anchors to the wall clock when a
 boundary becomes pending, so it is approximate across commands and the catch-up frames
 render synchronously, and controls such as Pause or Next execute at the
