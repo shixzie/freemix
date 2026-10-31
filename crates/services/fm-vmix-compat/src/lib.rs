@@ -346,6 +346,9 @@ pub enum CompatIntent {
     SetRecording { enabled: bool },
     /// Start or stop all streams or one zero-based stream index.
     SetStreaming { enabled: bool, stream: Option<u16> },
+    /// Toggle one media input's play/pause state; the dispatcher reads the
+    /// current transport state.
+    ToggleMediaPlayback { input: WireInputId },
 }
 
 /// A recognized function that this compatibility core cannot preserve.
@@ -569,6 +572,25 @@ fn translate(
             Ok(Translation::Protocol(CommandPayload::PageNavigate {
                 input,
                 navigation: fm_protocol::PagedNavigation::Goto(value - 1),
+            }))
+        }
+        "Play" | "Pause" | "Stop" => {
+            allowed(parameters, &["Function", "Input"])?;
+            let input = state.resolve_input(required(parameters, "Input")?)?;
+            let operation = match function {
+                "Play" => fm_protocol::MediaOperation::Play,
+                "Pause" => fm_protocol::MediaOperation::Pause,
+                _ => fm_protocol::MediaOperation::Stop,
+            };
+            Ok(Translation::Protocol(CommandPayload::Media {
+                input,
+                operation,
+            }))
+        }
+        "PlayPause" => {
+            allowed(parameters, &["Function", "Input"])?;
+            Ok(Translation::Compat(CompatIntent::ToggleMediaPlayback {
+                input: state.resolve_input(required(parameters, "Input")?)?,
             }))
         }
         "SetText" => translate_set_text(parameters, state),

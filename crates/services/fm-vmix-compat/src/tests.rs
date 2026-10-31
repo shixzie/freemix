@@ -334,3 +334,34 @@ fn list_navigation_verbs_translate_to_page_navigation() {
         assert!(parse_http_query(query, &state).is_err(), "{query}");
     }
 }
+
+#[test]
+fn media_transport_verbs_translate_exactly() {
+    let state = state();
+    for (function, operation) in [
+        ("Play", fm_protocol::MediaOperation::Play),
+        ("Pause", fm_protocol::MediaOperation::Pause),
+        ("Stop", fm_protocol::MediaOperation::Stop),
+    ] {
+        assert_eq!(
+            parse_http_query(&format!("Function={function}&Input=2"), &state),
+            Ok(Translation::Protocol(CommandPayload::Media {
+                input: id(2),
+                operation,
+            }))
+        );
+    }
+    assert_eq!(
+        parse_http_query("Function=PlayPause&Input=2", &state),
+        Ok(Translation::Compat(CompatIntent::ToggleMediaPlayback {
+            input: id(2)
+        }))
+    );
+    for query in [
+        "Function=Play",
+        "Function=Play&Input=2&Value=1",
+        "Function=PlayPause&Input=2&Input=3",
+    ] {
+        assert!(parse_http_query(query, &state).is_err(), "{query}");
+    }
+}
