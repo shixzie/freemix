@@ -120,6 +120,13 @@ pub struct MidiInput {
     pub value: u8,
 }
 
+/// One bound control's lamp: `value` 127 lights it, 0 darkens it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MidiFeedback {
+    pub trigger: MidiTrigger,
+    pub value: u8,
+}
+
 /// The console's MIDI bindings; see the module documentation.
 #[derive(Clone, Debug, Default)]
 pub struct MidiBindings {

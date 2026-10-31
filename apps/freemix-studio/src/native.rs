@@ -24,9 +24,10 @@ use fm_protocol::{
 use fm_types::OutputId;
 use fm_ui_egui::{
     CatalogueRefusal, CatalogueRequest, CommandRefusalNotice, ExternalStudioAction, GradeLutFile,
-    GradeRefusal, InputAudioStripUpdate, InputMoveDirection, PlaylistIntent, ReconnectStatus,
-    RecordingAction, StreamAction, StreamGroupAction, StudioConnectionStatus, StudioIntent,
-    StudioShell, StudioUiState, TerminalUncertaintyNotice, TitleUpdate, external_intent,
+    GradeRefusal, InputAudioStripUpdate, InputMoveDirection, MidiFeedback, PlaylistIntent,
+    ReconnectStatus, RecordingAction, StreamAction, StreamGroupAction, StudioConnectionStatus,
+    StudioIntent, StudioShell, StudioUiState, TerminalUncertaintyNotice, TitleUpdate,
+    external_intent,
 };
 use fm_ui_model::ClientView;
 use fm_ui_model::grade_editor::GradeCommand;
@@ -389,6 +390,10 @@ struct StudioApp {
     osc: Option<OscReceiver>,
     /// The MIDI controllers this console reads (RC-005).
     midi: Option<crate::midi::MidiReader>,
+    /// Lamp feedback to those controllers.
+    midi_output: crate::midi::MidiOutput,
+    /// The lamp states last sent, so only changes reach the controllers.
+    sent_midi_feedback: Vec<MidiFeedback>,
     osc_rejected: u64,
     osc_notice: Option<String>,
     /// Saves the language, clock, layout, UI scale, and theme for the next
@@ -483,6 +488,8 @@ impl StudioApp {
                 std::path::PathBuf::from(crate::midi::MIDI_ROOT),
                 creation_context.egui_ctx.clone(),
             )),
+            midi_output: crate::midi::MidiOutput::start(),
+            sent_midi_feedback: Vec::new(),
             osc_rejected: 0,
             osc_notice: None,
             preferences,
@@ -622,6 +629,25 @@ impl StudioApp {
         }
     }
 
+    /// Sends each bound control's lamp state when it changes (RC-005).
+    fn refresh_midi_feedback(&mut self) {
+        let feedback = self.shell.midi_feedback(&self.state);
+        if feedback == self.sent_midi_feedback {
+            return;
+        }
+        for item in &feedback {
+            let changed = self
+                .sent_midi_feedback
+                .iter()
+                .find(|old| old.trigger == item.trigger)
+                .is_none_or(|old| old.value != item.value);
+            if changed {
+                self.midi_output.send(*item);
+            }
+        }
+        self.sent_midi_feedback = feedback;
+    }
+
     fn drain_osc(&mut self) {
         for drained in 1..=OSC_ACTIONS_PER_FRAME {
             let Some(action) = self.osc.as_ref().and_then(|osc| osc.try_recv().ok()) else {
@@ -734,6 +760,7 @@ impl eframe::App for StudioApp {
         self.check_worker_health();
         self.drain_osc();
         self.drain_midi();
+        self.refresh_midi_feedback();
         if self.state.external_notice.is_none() {
             self.state
                 .external_notice
@@ -4418,6 +4445,8 @@ mod tests {
             shutdown_sent: false,
             osc: None,
             midi: None,
+            midi_output: crate::midi::MidiOutput::start(),
+            sent_midi_feedback: Vec::new(),
             osc_rejected: 0,
             osc_notice: None,
             preferences: PreferenceStore::new(
@@ -7535,6 +7564,8 @@ mod tests {
             shutdown_sent: false,
             osc: Some(receiver),
             midi: None,
+            midi_output: crate::midi::MidiOutput::start(),
+            sent_midi_feedback: Vec::new(),
             osc_rejected: 0,
             osc_notice: None,
             preferences: PreferenceStore::new(

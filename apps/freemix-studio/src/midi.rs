@@ -27,7 +27,7 @@ use std::thread;
 use std::time::Duration;
 
 use eframe::egui;
-use fm_ui_egui::{MidiControlKind, MidiInput, MidiTrigger};
+use fm_ui_egui::{MidiControlKind, MidiFeedback, MidiInput, MidiTrigger};
 
 /// Where Linux lists its raw MIDI ports.
 pub(crate) const MIDI_ROOT: &str = "/dev/snd";
@@ -309,6 +309,162 @@ impl NoteParser {
             }
         }
         inputs
+    }
+}
+
+/// Sends bound controls' lamp states back to the controllers (RC-005).
+pub(crate) struct MidiOutput {
+    feedback: SyncSender<MidiFeedback>,
+    stop: Arc<Mutex<bool>>,
+}
+
+impl MidiOutput {
+    /// Starts the feedback writer; controllers are listed once a second.
+    pub(crate) fn start() -> Self {
+        let (feedback, receiver) = mpsc::sync_channel(256);
+        let stop = Arc::new(Mutex::new(false));
+        let writer_stop = Arc::clone(&stop);
+        let _ = thread::Builder::new()
+            .name("freemix-midi-out".to_owned())
+            .spawn(move || {
+                #[cfg(target_os = "linux")]
+                write_linux(&receiver, &writer_stop);
+                #[cfg(not(target_os = "linux"))]
+                write_midir(&receiver, &writer_stop);
+            });
+        Self { feedback, stop }
+    }
+
+    /// Queues one lamp state; a full queue drops it rather than delaying the
+    /// console.
+    pub(crate) fn send(&self, feedback: MidiFeedback) {
+        let _ = self.feedback.try_send(feedback);
+    }
+}
+
+impl Drop for MidiOutput {
+    fn drop(&mut self) {
+        *self.stop.lock().unwrap_or_else(PoisonError::into_inner) = true;
+    }
+}
+
+/// The three bytes of a note-on or control-change lamp state.
+fn feedback_bytes(feedback: MidiFeedback) -> [u8; 3] {
+    let status = match feedback.trigger.kind {
+        MidiControlKind::Note => 0x90,
+        MidiControlKind::Control => 0xB0,
+    } | (feedback.trigger.channel - 1);
+    [status, feedback.trigger.number, feedback.value]
+}
+
+#[cfg(target_os = "linux")]
+fn write_linux(receiver: &Receiver<MidiFeedback>, stop: &Arc<Mutex<bool>>) {
+    use std::collections::BTreeMap;
+    use std::time::Instant;
+    let mut open: BTreeMap<PathBuf, std::fs::File> = BTreeMap::new();
+    let mut scanned = Instant::now()
+        .checked_sub(SCAN_INTERVAL)
+        .unwrap_or_else(Instant::now);
+    loop {
+        if *stop.lock().unwrap_or_else(PoisonError::into_inner) {
+            return;
+        }
+        if scanned.elapsed() >= SCAN_INTERVAL {
+            scanned = Instant::now();
+            let current: Vec<PathBuf> = ports(Path::new(MIDI_ROOT));
+            open.retain(|path, _| current.contains(path));
+            for path in current {
+                if open.contains_key(&path) {
+                    continue;
+                }
+                if let Ok(file) = std::fs::OpenOptions::new().write(true).open(&path) {
+                    open.insert(path, file);
+                }
+            }
+        }
+        match receiver.recv_timeout(Duration::from_millis(50)) {
+            Ok(feedback) => {
+                use std::io::Write as _;
+                let bytes = feedback_bytes(feedback);
+                for file in open.values_mut() {
+                    // A port that refuses feedback is left open: the reader
+                    // still uses it, and a later write may succeed.
+                    let _ = file.write_all(&bytes);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_midir(receiver: &Receiver<MidiFeedback>, stop: &Arc<Mutex<bool>>) {
+    let mut connections: Vec<(String, midir::MidiOutputConnection)> = Vec::new();
+    let mut scanned = std::time::Instant::now()
+        .checked_sub(SCAN_INTERVAL)
+        .unwrap_or_else(std::time::Instant::now);
+    loop {
+        if *stop.lock().unwrap_or_else(PoisonError::into_inner) {
+            return;
+        }
+        if scanned.elapsed() >= SCAN_INTERVAL {
+            scanned = std::time::Instant::now();
+            let Ok(probe) = midir::MidiOutput::new("FreeMix Studio feedback") else {
+                return;
+            };
+            let names: Vec<String> = probe
+                .ports()
+                .into_iter()
+                .filter_map(|port| probe.port_name(&port).ok())
+                .collect();
+            connections.retain(|(name, _)| names.contains(name));
+            for name in &names {
+                if connections.iter().any(|(connected, _)| connected == name) {
+                    continue;
+                }
+                let Ok(output) = midir::MidiOutput::new("FreeMix Studio feedback") else {
+                    break;
+                };
+                let Some(port) = output
+                    .ports()
+                    .into_iter()
+                    .find(|port| output.port_name(port).ok().as_deref() == Some(name.as_str()))
+                else {
+                    continue;
+                };
+                if let Ok(connection) = output.connect(&port, "freemix-feedback") {
+                    connections.push((name.clone(), connection));
+                }
+            }
+        }
+        match receiver.recv_timeout(Duration::from_millis(50)) {
+            Ok(feedback) => {
+                let bytes = feedback_bytes(feedback);
+                connections.retain_mut(|(_, connection)| connection.send(&bytes).is_ok());
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+#[cfg(test)]
+mod feedback_tests {
+    use super::*;
+
+    #[test]
+    fn feedback_bytes_are_note_on_and_control_change() {
+        let note = MidiFeedback {
+            trigger: MidiTrigger::new(MidiControlKind::Note, 2, 60).unwrap(),
+            value: 127,
+        };
+        assert_eq!(feedback_bytes(note), [0x91, 60, 127]);
+        let control = MidiFeedback {
+            trigger: MidiTrigger::new(MidiControlKind::Control, 16, 7).unwrap(),
+            value: 0,
+        };
+        assert_eq!(feedback_bytes(control), [0xBF, 7, 0]);
     }
 }
 

@@ -136,7 +136,9 @@ pub use media_transport::{
     MEDIA_SPEEDS, media_settings_block, media_transport_block, speed_label as media_speed_label,
 };
 pub use menu::ConsoleLayout;
-pub use midi_bindings::{MAX_MIDI_BINDINGS, MidiBindings, MidiControlKind, MidiInput, MidiTrigger};
+pub use midi_bindings::{
+    MAX_MIDI_BINDINGS, MidiBindings, MidiControlKind, MidiFeedback, MidiInput, MidiTrigger,
+};
 pub use playlist::{
     Countdown, EntryForm, EntryRole, ListEdit, PlaylistIntent, PlaylistPhase,
     TransportAvailability, control_block as playlist_control_block,
@@ -1513,6 +1515,34 @@ struct TBarKeys {
     kind: ManualTransitionKind,
 }
 
+/// The lamp state of one console action: `Some(true)` while it shows an
+/// active state, `Some(false)` while it shows an inactive one, `None` when
+/// the action has no visible state.
+fn action_led(state: &StudioUiState, action: ConsoleAction) -> Option<bool> {
+    let view = state.view.as_ref()?;
+    let input = |n: u8| view.inputs.get(usize::from(n).checked_sub(1)?).copied();
+    match action {
+        ConsoleAction::Preview(n) => input(n).map(|input| input == view.switcher.desired.preview),
+        ConsoleAction::Take(n) | ConsoleAction::QuickPlay(n) => {
+            input(n).map(|input| input == view.switcher.desired.program)
+        }
+        ConsoleAction::FadeToBlack => Some(view.switcher.desired_fade_to_black.target_active),
+        ConsoleAction::Overlay(n) => view
+            .desired_overlays
+            .iter()
+            .find(|overlay| overlay.channel == n)
+            .map(|overlay| overlay.active),
+        ConsoleAction::ReplayPlayPause => {
+            replay_ui::transport_player(state).map(|player| player.playing)
+        }
+        ConsoleAction::ReplayShuttleBack => replay_ui::transport_player(state)
+            .map(|player| player.shuttling && player.rate_milli < 0),
+        ConsoleAction::ReplayShuttleForward => replay_ui::transport_player(state)
+            .map(|player| player.shuttling && player.rate_milli > 0),
+        _ => None,
+    }
+}
+
 /// What a console action sends, given which controls are available: none
 /// when its control is unavailable or it names no input or favourite.
 #[allow(clippy::too_many_arguments)] // each value gates or parameterizes one action
@@ -2120,6 +2150,24 @@ impl StudioShell {
             }
         }
         intents
+    }
+
+    /// The MIDI lamps the console's bindings should show for `state`
+    /// (RC-005): the selected Preview and Program inputs, an active Fade to
+    /// Black or overlay, and the Replay player's transport. Bindings whose
+    /// action has no visible state report nothing.
+    #[must_use]
+    pub fn midi_feedback(&self, state: &StudioUiState) -> Vec<MidiFeedback> {
+        self.key_profiles
+            .midi
+            .bindings()
+            .filter_map(|(trigger, action)| {
+                action_led(state, action).map(|lit| MidiFeedback {
+                    trigger,
+                    value: if lit { 127 } else { 0 },
+                })
+            })
+            .collect()
     }
 
     /// Tells the console which MIDI controllers the host reads, by name.
@@ -5081,5 +5129,36 @@ mod tests {
         shell.show_shortcuts = false;
         shell.show_about = true;
         assert_eq!(run(&shell), (Vec::new(), 1));
+    }
+    /// RC-005: bound MIDI controls light the selected Preview and Program
+    /// inputs, and report nothing for actions without a visible state.
+    #[test]
+    fn midi_feedback_lights_bound_controls() {
+        let mut shell = StudioShell::default();
+        let mut state = crate::hover_audit::bank_fixture();
+        let trigger = MidiTrigger::new(MidiControlKind::Note, 1, 60).unwrap();
+        assert!(
+            shell
+                .key_profiles
+                .midi
+                .bind(trigger, ConsoleAction::Preview(1))
+        );
+        let first = state.view.as_ref().unwrap().inputs[0];
+        let second = state.view.as_ref().unwrap().inputs[1];
+        state.view.as_mut().unwrap().switcher.desired.preview = second;
+        assert_eq!(
+            shell.midi_feedback(&state),
+            [MidiFeedback { trigger, value: 0 }]
+        );
+        state.view.as_mut().unwrap().switcher.desired.preview = first;
+        assert_eq!(
+            shell.midi_feedback(&state),
+            [MidiFeedback {
+                trigger,
+                value: 127
+            }]
+        );
+        assert!(shell.key_profiles.midi.bind(trigger, ConsoleAction::Cut));
+        assert!(shell.midi_feedback(&state).is_empty());
     }
 }
