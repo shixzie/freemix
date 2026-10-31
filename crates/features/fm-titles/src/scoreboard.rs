@@ -503,6 +503,10 @@ pub enum ScoreboardAction {
         side: TeamSide,
         number: u16,
     },
+    /// Clears the roster and the featured player.
+    ClearRoster {
+        side: TeamSide,
+    },
     /// Saturates at `1..=max_period`.
     AdjustPeriod {
         delta: i32,
@@ -1051,6 +1055,11 @@ impl Scoreboard {
             ScoreboardAction::SelectPlayerByNumber { side, number } => {
                 self.select_player_by_number(*side, *number)?;
             }
+            ScoreboardAction::ClearRoster { side } => {
+                let team = self.team_mut(*side);
+                team.roster.clear();
+                team.player = None;
+            }
             ScoreboardAction::AdjustPeriod { delta } => {
                 let wanted = i64::from(self.period) + i64::from(*delta);
                 let clamped = wanted.clamp(1, i64::from(max_period));
@@ -1270,6 +1279,7 @@ fn check_text(text: &str) -> Result<(), ScoreboardError> {
 /// | `<side>.roster.remove` | decimal index | [`ScoreboardAction::RemoveRosterPlayer`] |
 /// | `<side>.roster.select` | decimal index or `""` to clear | [`ScoreboardAction::SelectRosterPlayer`] |
 /// | `<side>.roster.number` | decimal jersey number | [`ScoreboardAction::SelectPlayerByNumber`] |
+/// | `<side>.roster.clear` | `true` | [`ScoreboardAction::ClearRoster`] |
 /// | `period` | decimal `u16` | [`ScoreboardAction::SetPeriod`] |
 /// | `clock.ms` | decimal `u64` | [`ScoreboardAction::SetClock`] |
 /// | `clock.running` | `true` / `false` | start / stop |
@@ -1355,6 +1365,10 @@ fn external_action(
         (Some(side), "roster.number") => ScoreboardAction::SelectPlayerByNumber {
             side,
             number: parse_unsigned(value).ok_or(invalid)?,
+        },
+        (Some(side), "roster.clear") => match value {
+            "true" => ScoreboardAction::ClearRoster { side },
+            _ => return Err(invalid),
         },
         (None, "period") => ScoreboardAction::SetPeriod {
             period: parse_unsigned(value).ok_or(invalid)?,

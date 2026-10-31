@@ -1281,6 +1281,17 @@ fn a_player_can_be_featured_by_jersey_number() {
         board.team(TeamSide::Home).player.as_ref().unwrap().number,
         Some(23)
     );
+    board
+        .apply(
+            2,
+            3,
+            &[ScoreboardAction::ClearRoster {
+                side: TeamSide::Home,
+            }],
+        )
+        .unwrap();
+    assert!(board.team(TeamSide::Home).roster.is_empty());
+    assert_eq!(board.team(TeamSide::Home).player, None);
 }
 
 #[test]
