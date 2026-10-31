@@ -2116,6 +2116,7 @@ mod playlists {
                 id: 7,
                 input: input(entry_input),
                 duration_frames: 300,
+                follow_media: false,
                 transition: PlaylistTransitionKind::Fade,
                 transition_frames: 15,
                 enabled: true,
