@@ -1231,12 +1231,24 @@ pub(crate) struct ShortcutEntry {
 
 /// The shortcuts reference shown in Help; global keys are verified against
 /// [`studio_shortcuts`] by unit test.
-pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 43] = [
+pub(crate) const STUDIO_SHORTCUTS: [ShortcutEntry; 45] = [
     ShortcutEntry {
         group: ShortcutGroup::Switching,
         keys: "1 – 8",
         action: Msg::ShortcutSelectPreview.en(),
         key: Some(Key::Num1),
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Switching,
+        keys: "Shift+Left",
+        action: Msg::CueActSlidePrevious.en(),
+        key: None,
+    },
+    ShortcutEntry {
+        group: ShortcutGroup::Switching,
+        keys: "Shift+Right",
+        action: Msg::CueActSlideNext.en(),
+        key: None,
     },
     ShortcutEntry {
         group: ShortcutGroup::Switching,
