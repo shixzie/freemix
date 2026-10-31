@@ -3778,7 +3778,8 @@ legitimately come up later. This covers program recording, local HLS outputs,
 and one-shot network reachability only: there is no continuous network
 monitoring or bandwidth probe, and no GPU capability preflight beyond adapter
 creation. Low space now stops a program recorder at the 512 MiB floor
-(`storage:low_space`, reported as disk full), and each recorder slot reports
+(`storage:low_space`, reported as disk full) and a local HLS output whose
+filesystem falls below the same floor, and each recorder slot reports
 its output filesystem's free bytes in `recorder_status` (Protocol 2.140),
 beside the local HLS destinations' free bytes in `stream_status`. `OR-001`'s space status is
 now observable on the recording path, but the row still awaits its other

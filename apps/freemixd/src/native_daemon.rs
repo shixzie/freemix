@@ -1188,6 +1188,31 @@ impl NativeDaemon {
                 }
             }
         }
+        // A local HLS output whose filesystem fell below the recording floor
+        // stops at once with a disk-full failure (OR-001), like a recorder.
+        let low_streams = self
+            .streams
+            .iter()
+            .filter_map(|stream| {
+                let config = self.output_set.config(stream.destination_id)?;
+                if config.protocol() != OutputProtocol::Hls {
+                    return None;
+                }
+                let directory = PathBuf::from(config.endpoint().path());
+                let free = disk::existing_ancestor(&directory)
+                    .and_then(|path| disk::available_bytes(path).ok())?;
+                (free < disk::RECORDING_MINIMUM_FREE_BYTES).then_some(stream.target)
+            })
+            .collect::<Vec<_>>();
+        for target in low_streams {
+            if let Some(stream) = self
+                .streams
+                .iter_mut()
+                .find(|stream| stream.target == target)
+            {
+                stream.fail("storage:low_space", &mut self.output_set);
+            }
+        }
         match self.disk_alert.observe(available) {
             fm_observability::AlertTransition::Fired => {
                 eprintln!("FREEMIXD_DISK\tv=1\tstate=low\tfree_bytes={available}");

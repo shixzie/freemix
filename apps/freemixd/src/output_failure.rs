@@ -58,6 +58,9 @@ pub(crate) fn latched_stream_failure(notice: &str) -> OutputFailure {
     OutputFailure::new(match (stage, detail) {
         ("capture" | "readback" | "frame", _) => OutputFailureCode::CaptureFailed,
         ("transport", "budget_exhausted") => OutputFailureCode::ReconnectExhausted,
+        // A local HLS output stopped because its filesystem fell below the
+        // recording floor (OR-001).
+        ("storage", "low_space") => OutputFailureCode::DiskFull,
         _ => OutputFailureCode::InternalError,
     })
 }
