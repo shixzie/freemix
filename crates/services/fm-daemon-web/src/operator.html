@@ -348,6 +348,8 @@
       <span class="readout" data-value="gpu"><small>GPU</small><b></b><small>%</small></span>
     </div>
     <div id="health-rules" class="health" role="list" data-i18n-label="healthLabel" aria-label="Health alert rules"></div>
+    <h3 data-i18n="healthNotifications">Notifications</h3>
+    <div id="health-notifications" class="health" role="list" data-i18n-label="healthNotificationsLabel" aria-label="Recent health notifications"></div>
     <p id="health-note" class="why" aria-live="polite"></p>
     <p id="why-health" class="why" aria-live="polite"></p>
   </section>
@@ -456,6 +458,7 @@
       sync_degraded: "ruleSyncDegraded",
     };
     const SEVERITIES = { info: "severityInfo", warning: "severityWarning", critical: "severityCritical" };
+    const NOTIFICATION_KINDS = { firing: "healthNotificationFiring", resolved: "healthNotificationResolved", reminder: "healthNotificationReminder" };
     function count(text) {
       if (typeof text !== "string" || !/^(0|[1-9]\d*)$/.test(text) || !Number.isSafeInteger(Number(text))) {
         throw new Error("malformed health");
@@ -495,7 +498,17 @@
         if (until <= uptime) throw new Error("malformed health");
         silences.set(parts[0], until);
       }
-      return { uptime, cpu: permille("cpu_permille"), gpu: permille("gpu_permille"), alerts, silences };
+      const notifications = entries(fields, "notifications").map((parts) => {
+        if (parts.length !== 6 || !Object.hasOwn(RULES, parts[1]) || !Object.hasOwn(SEVERITIES, parts[2])
+          || !Object.hasOwn(NOTIFICATION_KINDS, parts[3])) throw new Error("malformed health");
+        const at = count(parts[4]);
+        if (at > uptime) throw new Error("malformed health");
+        return { sequence: count(parts[0]), rule: parts[1], severity: parts[2], kind: parts[3], at };
+      });
+      if (notifications.some((note, index) => index > 0 && note.sequence <= notifications[index - 1].sequence)) {
+        throw new Error("malformed health");
+      }
+      return { uptime, cpu: permille("cpu_permille"), gpu: permille("gpu_permille"), alerts, silences, notifications };
     }
     function rule(health, name, uptime) {
       const alert = health.alerts.get(name);
@@ -509,11 +522,12 @@
         silenced: silencedUntil !== undefined,
       };
     }
-    return { RULES, SEVERITIES, parse, rule };
+    return { RULES, SEVERITIES, NOTIFICATION_KINDS, parse, rule };
   })();
   // ---- Daemon health (RC-015) end ----
   const HEALTH_RULE_KEY = HEALTH.RULES;
   const HEALTH_SEVERITY_KEY = HEALTH.SEVERITIES;
+  const HEALTH_NOTIFICATION_KEY = HEALTH.NOTIFICATION_KINDS;
   const HEALTH_ACTION = {
     acknowledge: { label: "healthAcknowledge", hover: "healthAcknowledgeHover", command: "commandAcknowledge",
       durationMs: 15 * 60 * 1000 },
@@ -931,6 +945,12 @@
       commandSilence: "Silence {rule}",
       commandUnsilence: "Unsilence {rule}",
       healthStale: "These figures are stale: the daemon has not reported its health for a few seconds.",
+      healthNotifications: "Notifications",
+      healthNotificationsLabel: "Recent health notifications",
+      healthNotificationFiring: "{rule} started firing",
+      healthNotificationResolved: "{rule} resolved",
+      healthNotificationReminder: "{rule} still firing",
+      healthNotificationAt: "{age} ago",
       spanSeconds: "{n} s",
       spanMinutes: "{n} min",
       spanHours: "{h} h {m} min",
@@ -1315,6 +1335,12 @@
       commandSilence: "Silenciar {rule}",
       commandUnsilence: "Quitar el silencio de {rule}",
       healthStale: "Estas cifras están desactualizadas: el demonio no ha informado de su estado desde hace unos segundos.",
+      healthNotifications: "Notificaciones",
+      healthNotificationsLabel: "Notificaciones de estado recientes",
+      healthNotificationFiring: "{rule} empezó a fallar",
+      healthNotificationResolved: "{rule} se resolvió",
+      healthNotificationReminder: "{rule} sigue fallando",
+      healthNotificationAt: "hace {age}",
       spanSeconds: "{n} s",
       spanMinutes: "{n} min",
       spanHours: "{h} h {m} min",
@@ -1358,6 +1384,7 @@
     syncPanel: $("sync-panel"), syncHeading: $("sync-heading"), syncSources: $("sync-sources"), syncNote: $("sync-note"),
     healthPanel: $("health-panel"), healthHeading: $("health-heading"), healthUsage: $("health-usage"),
     healthRules: $("health-rules"), healthNote: $("health-note"), whyHealth: $("why-health"),
+    healthNotifications: $("health-notifications"),
   };
 
   const store = window.sessionStorage;
@@ -3063,6 +3090,24 @@
         button.title = reason || tr(spec.hover, { rule: name });
       }
     });
+    const notificationRows = health.notifications.map((note) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.setAttribute("role", "listitem");
+      row.innerHTML = "<span class=\"name\"></span><span class=\"state\"></span><p class=\"detail\"></p>";
+      row.querySelector(".name").textContent = tr(HEALTH_NOTIFICATION_KEY[note.kind], {
+        rule: tr(HEALTH_RULE_KEY[note.rule]),
+      });
+      row.querySelector(".state").textContent = tr(HEALTH_SEVERITY_KEY[note.severity]);
+      row.querySelector(".state").dataset.tone = note.severity === "critical" ? "failed"
+        : note.severity === "warning" ? "warn" : "ok";
+      row.querySelector(".detail").textContent = tr("healthNotificationAt", {
+        age: spanText(Math.max(0, uptime - note.at)),
+      });
+      return row;
+    });
+    ui.healthNotifications.hidden = notificationRows.length === 0;
+    ui.healthNotifications.replaceChildren(...notificationRows);
     const note = stale ? tr("healthStale") : "";
     if (ui.healthNote.textContent !== note) ui.healthNote.textContent = note;
     ui.whyHealth.textContent = sectionReason("transition");

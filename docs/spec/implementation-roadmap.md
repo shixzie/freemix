@@ -3893,8 +3893,10 @@ hardware-encoder session sampling, and the simulated daemon has no network,
 sync, or encoder readings (an unsupported reading stays unknown rather than
 zero); a show changes each rule's thresholds, hold, and switch but not its
 severity or the reading it watches, and cannot add rules; the CPU reading
-excludes child encoders and the GPU reading is a compositor-pass proxy; and
-the Web pages show no notification history. `RC-015` remains planned.
+excludes child encoders and the GPU reading is a compositor-pass proxy. The
+Web operator page now lists the daemon's recent health notifications
+(firing, resolved, and reminder) with rule, severity, and age. `RC-015`
+remains planned.
 
 
 Current implementation boundary for fault-tolerant recording (`OR-003`):
