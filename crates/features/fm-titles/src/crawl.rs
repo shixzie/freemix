@@ -733,6 +733,7 @@ impl Crawl {
     ///
     /// Returns [`CrawlError::FrameRegressed`] for a frame before the last
     /// accepted update: its pruned history can no longer be reproduced.
+    #[allow(clippy::too_many_lines)] // one walk with per-mode visibility and pruning
     pub fn view(&self, frame: u64) -> Result<CrawlView<'_>, CrawlError> {
         self.check_frame(frame)?;
         let distance = self.config.distance_at(frame);
