@@ -69,6 +69,7 @@ pub(crate) fn validate_project(project: &Project) -> Vec<ValidationError> {
     validate_scoreboards(project, &mut errors);
     validate_previews(project, &mut errors);
     validate_crawls(project, &mut errors);
+    validate_ptz_presets(project, &mut errors);
     validate_production_clocks(project, &mut errors);
     validate_grading(project, &mut errors);
     validate_animation_presets(project, &mut errors);
@@ -419,6 +420,18 @@ fn validate_production_clocks(project: &Project, errors: &mut Vec<ValidationErro
                 kind: ValidationErrorKind::MissingReference(EntityRef::Input(*input)),
             });
         }
+    }
+}
+
+fn validate_ptz_presets(project: &Project, errors: &mut Vec<ValidationError>) {
+    if let Some(document) = project.ptz_presets_document()
+        && (document.is_empty() || document.len() > crate::MAX_PTZ_PRESETS_DOCUMENT_BYTES)
+    {
+        errors.push(ValidationError {
+            entity: None,
+            field: "ptz_presets",
+            kind: ValidationErrorKind::OutOfRange,
+        });
     }
 }
 

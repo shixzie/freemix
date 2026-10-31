@@ -1067,6 +1067,19 @@ pub enum Command {
         path: PathBuf,
         input: u128,
     },
+    /// Validates a PTZ preset virtual-input document (IN-028).
+    PtzPresetsCheck {
+        path: PathBuf,
+    },
+    /// Stores a canonical PTZ preset virtual-input document (IN-028).
+    PtzPresetsImport {
+        path: PathBuf,
+        document: PathBuf,
+    },
+    /// Prints the project's PTZ preset virtual-input document (IN-028).
+    PtzPresetsExport {
+        path: PathBuf,
+    },
     /// `title-design-check <file.fmdesign>`: validate a designer document
     /// (GX-002).
     TitleDesignCheck {
@@ -2579,6 +2592,9 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
         "preview-check" => parse_preview_check(arguments),
         "preview-import" => parse_preview_import(arguments),
         "preview-export" => parse_preview_export(arguments),
+        "ptz-presets-check" => parse_ptz_presets_check(arguments),
+        "ptz-presets-import" => parse_ptz_presets_import(arguments),
+        "ptz-presets-export" => parse_ptz_presets_export(arguments),
         "title-design-check" => {
             let path = required_path(&mut arguments, "design path")?;
             reject_extra(&mut arguments)?;
@@ -4848,6 +4864,31 @@ fn parse_preview_export(
     let input = number(&required(&mut arguments, "input")?, "input")?;
     reject_extra(&mut arguments)?;
     Ok(Command::PreviewExport { path, input })
+}
+
+fn parse_ptz_presets_check(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "PTZ preset document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::PtzPresetsCheck { path })
+}
+
+fn parse_ptz_presets_import(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    let document = required_path(&mut arguments, "PTZ preset document")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::PtzPresetsImport { path, document })
+}
+
+fn parse_ptz_presets_export(
+    mut arguments: impl Iterator<Item = String>,
+) -> Result<Command, ArgsError> {
+    let path = required_path(&mut arguments, "project path")?;
+    reject_extra(&mut arguments)?;
+    Ok(Command::PtzPresetsExport { path })
 }
 
 fn parse_title_input_add(

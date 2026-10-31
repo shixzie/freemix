@@ -20,6 +20,7 @@ fm-playback = { path = "../../crates/media/fm-playback" }
 fm-persistence = { path = "../../crates/services/fm-persistence" }
 fm-plugin-host-api = { path = "../../crates/features/fm-plugin-host-api" }
 fm-preset-file = { path = "../../crates/foundation/fm-preset-file" }
+fm-ptz = { path = "../../crates/features/fm-ptz" }
 fm-presentations = { path = "../../crates/features/fm-presentations" }
 fm-protocol = { path = "../../crates/foundation/fm-protocol" }
 fm-sim = { path = "../../crates/media/fm-sim" }

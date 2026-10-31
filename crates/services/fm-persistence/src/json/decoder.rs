@@ -104,6 +104,7 @@ struct ProjectDto {
     production_clocks: Vec<fm_types::ProjectClock>,
     previews: std::collections::BTreeMap<fm_types::InputId, String>,
     crawls: std::collections::BTreeMap<fm_types::InputId, String>,
+    ptz_presets: Option<String>,
     screen_capture_restore_tokens: Vec<(fm_types::InputId, String)>,
 }
 
@@ -183,6 +184,7 @@ impl ProjectDto {
             production_clocks: super::production_clock::parse_production_clocks(&mut object)?,
             previews: super::preview::parse_previews(&mut object)?,
             crawls: super::crawl::parse_crawls(&mut object)?,
+            ptz_presets: super::ptz_presets::parse_ptz_presets(&mut object)?,
             screen_capture_restore_tokens:
                 super::screen_capture_tokens::parse_screen_capture_restore_tokens(&mut object)?,
         };
@@ -339,6 +341,7 @@ impl ProjectDto {
         project.restore_production_clocks(self.production_clocks);
         project.restore_previews(self.previews);
         project.restore_crawls(self.crawls);
+        project.restore_ptz_presets(self.ptz_presets);
         // A token of an unknown or other input, or an unusable token, is
         // reported by project validation.
         for (input, token) in self.screen_capture_restore_tokens {

@@ -16,6 +16,7 @@ mod media_list;
 mod media_playback;
 mod production_clock;
 mod preview;
+mod ptz_presets;
 mod network_stream;
 mod reel;
 mod replay;

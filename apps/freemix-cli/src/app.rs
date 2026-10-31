@@ -1109,6 +1109,9 @@ pub fn run(command: Command) -> AppResult<()> {
             document,
         } => preview_import(&path, input, &document)?,
         Command::PreviewExport { path, input } => preview_export(&path, input)?,
+        Command::PtzPresetsCheck { path } => ptz_presets_check(&path)?,
+        Command::PtzPresetsImport { path, document } => ptz_presets_import(&path, &document)?,
+        Command::PtzPresetsExport { path } => ptz_presets_export(&path)?,
         Command::SettingsImport {
             path,
             input,
@@ -6139,6 +6142,41 @@ fn settings_export(path: &Path, output: &Path) -> AppResult<()> {
     Ok(())
 }
 
+fn ptz_presets_check(path: &Path) -> AppResult<()> {
+    let text =
+        fs::read_to_string(path).map_err(|error| AppFailure(format!("PTZ presets: {error}")))?;
+    let inputs = fm_ptz::PresetVirtualInputs::from_document(&text)
+        .map_err(|error| AppFailure(format!("PTZ presets: {error}")))?;
+    println!("ptz-presets: {} entries", inputs.len());
+    Ok(())
+}
+
+fn ptz_presets_import(path: &Path, document: &Path) -> AppResult<()> {
+    let text = fs::read_to_string(document)
+        .map_err(|error| AppFailure(format!("PTZ presets import: {error}")))?;
+    let inputs = fm_ptz::PresetVirtualInputs::from_document(&text)
+        .map_err(|error| AppFailure(format!("PTZ presets import: {error}")))?;
+    let canonical = inputs.to_document();
+    let stored = load_stored_project(path)?;
+    let mut project = stored.project().clone();
+    project
+        .set_ptz_presets_document(canonical)
+        .map_err(|error| AppFailure(format!("PTZ presets import: {error}")))?;
+    ProjectStore::new(path)?.save(&stored.with_project(project)?)?;
+    println!("ptz-presets-import: {} entries", inputs.len());
+    Ok(())
+}
+
+fn ptz_presets_export(path: &Path) -> AppResult<()> {
+    let stored = inspect_stored_project(path)?;
+    let document = stored
+        .project()
+        .ptz_presets_document()
+        .ok_or_else(|| AppFailure("the project has no PTZ preset document".into()))?;
+    print!("{document}");
+    Ok(())
+}
+
 fn preview_check(path: &Path) -> AppResult<()> {
     let text = fs::read_to_string(path).map_err(|error| AppFailure(format!("preview: {error}")))?;
     let snapshot = fm_data::PreviewSnapshot::from_document(&text)
@@ -7447,6 +7485,9 @@ Usage:
   freemix-cli preview-check <preview.txt>
   freemix-cli preview-import <show.freemix> <title-input> <preview.txt>
   freemix-cli preview-export <show.freemix> <title-input>
+  freemix-cli ptz-presets-check <presets.txt>
+  freemix-cli ptz-presets-import <show.freemix> <presets.txt>
+  freemix-cli ptz-presets-export <show.freemix>
   freemix-cli title-design-check <design.fmdesign>
   freemix-cli title-apply-row <show.freemix> <input-id> <row.json> [--keep-live] [--preview]
   freemix-cli title-design-import <show.freemix> <design.fmdesign> --id <nonzero-input-id> --name <name> [--font <Family=path.ttf>]...

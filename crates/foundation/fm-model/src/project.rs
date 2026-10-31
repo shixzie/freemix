@@ -506,6 +506,26 @@ impl std::fmt::Display for ProjectCrawlError {
 
 impl std::error::Error for ProjectCrawlError {}
 
+/// Why the PTZ preset virtual-input document could not be stored.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PtzPresetsDocumentError {
+    Empty,
+    TooLarge { maximum: usize },
+}
+
+impl std::fmt::Display for PtzPresetsDocumentError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => formatter.write_str("PTZ preset document is empty"),
+            Self::TooLarge { maximum } => {
+                write!(formatter, "PTZ preset document exceeds {maximum} bytes")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PtzPresetsDocumentError {}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AddSceneLayerError {
     UnknownScene(SceneId),
@@ -1031,6 +1051,10 @@ pub const MAX_CRAWLS: usize = 256;
 /// `fm_titles::MAX_CRAWL_DOCUMENT_BYTES`.
 pub const MAX_CRAWL_DOCUMENT_BYTES: usize = 256 * 1024;
 
+/// Maximum bytes of the canonical PTZ preset virtual-input document
+/// (IN-028), matching `fm_ptz::MAX_PRESET_VIRTUAL_INPUT_DOCUMENT_BYTES`.
+pub const MAX_PTZ_PRESETS_DOCUMENT_BYTES: usize = 256 * 1024;
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SchemaVersion(u32);
 
@@ -1116,6 +1140,9 @@ pub struct Project {
     /// Each title input's canonical crawl document (GX-003, schema 106), by
     /// input.
     crawls: BTreeMap<InputId, String>,
+    /// The canonical PTZ preset virtual-input document (IN-028, schema 106),
+    /// if the show defines any.
+    ptz_presets: Option<String>,
 }
 
 impl Project {
@@ -1171,6 +1198,7 @@ impl Project {
             production_clocks: Vec::new(),
             previews: BTreeMap::new(),
             crawls: BTreeMap::new(),
+            ptz_presets: None,
         }
     }
 
@@ -2242,6 +2270,48 @@ impl Project {
     /// bound. Documents are parsed by the persistence layer.
     pub fn restore_crawls(&mut self, documents: BTreeMap<InputId, String>) {
         self.crawls = documents;
+    }
+
+    /// The canonical PTZ preset virtual-input document (IN-028, schema 106),
+    /// if the show defines any.
+    #[must_use]
+    pub fn ptz_presets_document(&self) -> Option<&str> {
+        self.ptz_presets.as_deref()
+    }
+
+    /// Stores the canonical PTZ preset virtual-input document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PtzPresetsDocumentError::Empty`] for an empty document and
+    /// [`PtzPresetsDocumentError::TooLarge`] past the bound. Nothing changes
+    /// on error.
+    pub fn set_ptz_presets_document(
+        &mut self,
+        document: String,
+    ) -> Result<(), PtzPresetsDocumentError> {
+        if document.is_empty() {
+            return Err(PtzPresetsDocumentError::Empty);
+        }
+        if document.len() > MAX_PTZ_PRESETS_DOCUMENT_BYTES {
+            return Err(PtzPresetsDocumentError::TooLarge {
+                maximum: MAX_PTZ_PRESETS_DOCUMENT_BYTES,
+            });
+        }
+        self.ptz_presets = Some(document);
+        Ok(())
+    }
+
+    /// Removes the PTZ preset virtual-input document.
+    pub fn remove_ptz_presets_document(&mut self) -> Option<String> {
+        self.ptz_presets.take()
+    }
+
+    /// Replaces the PTZ preset virtual-input document without checking it;
+    /// [`Project::validate`] reports one past the bound. The persistence
+    /// layer parses it.
+    pub fn restore_ptz_presets(&mut self, document: Option<String>) {
+        self.ptz_presets = document;
     }
 
     /// Every screen capture input's desktop restore token (IN-011, schema
