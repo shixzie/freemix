@@ -224,7 +224,7 @@ fn reels_round_trip_exactly_and_strictly_in_project_json() {
     // The previous schema is refused outright; no migration path exists.
     fs::write(
         &manifest,
-        text.replacen("\"schema_version\": 97", "\"schema_version\": 89", 1),
+        text.replacen("\"schema_version\": 99", "\"schema_version\": 89", 1),
     )
     .unwrap();
     assert!(matches!(
@@ -232,7 +232,7 @@ fn reels_round_trip_exactly_and_strictly_in_project_json() {
         Err(StoreError::Validation(
             ProjectValidationError::UnsupportedSchema {
                 found: 89,
-                supported: 97
+                supported: 99
             }
         ))
     ));

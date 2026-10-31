@@ -231,7 +231,7 @@ fn animation_presets_travel_between_projects_and_apply_to_scene_layers() {
         fs::write(
             &old,
             SWOOSH.replacen(
-                "\"schema_version\": 92",
+                "\"schema_version\": 99",
                 &format!("\"schema_version\": {schema}"),
                 1,
             ),
