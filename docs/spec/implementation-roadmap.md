@@ -4777,8 +4777,9 @@ re-reads one CSV or JSON file at a caller interval and emits only when its
 length or modification time changes, and a bounded XML reader that turns one
 document into nested typed elements (no DOCTYPE, entity expansion limited to
 the five named entities and numeric references), and reads RSS 2.0 and Atom
-feeds into rows of title, link, summary, published, and id. Remaining gaps:
-no XPath, HTML-table, spreadsheet,
+feeds into rows of title, link, summary, published, and id, and reads an
+HTML table's header and body cells into rows. Remaining gaps:
+no XPath, spreadsheet,
 Google Sheets, chat, or database adapters, no real network polling, and
 mapped values do not yet feed `fm-titles` templates, the project schema, or
 ticker updates. Item 4 remains incomplete and `GX-004` remains planned.

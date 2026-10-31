@@ -10,6 +10,7 @@ mod cache;
 mod feed;
 mod file;
 mod format;
+mod html;
 mod mapping;
 mod parse;
 mod preview;
@@ -36,6 +37,7 @@ pub use format::{
     DateInput, DatePattern, DateTimeFormat, DecimalRounding, FormatError, NumberFormat, SignStyle,
     Timestamp, UtcOffset,
 };
+pub use html::parse_html_table;
 pub use mapping::{FieldBinding, FieldMappingReport, Mapper, MappingReport, MappingStatus};
 pub use parse::{CsvOptions, ParseError, ParseErrorKind, ParseLimits, parse_csv, parse_json};
 pub use preview::{

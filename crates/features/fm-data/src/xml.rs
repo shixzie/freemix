@@ -271,7 +271,11 @@ fn element_value(
 }
 
 /// Decodes the five XML named entities and numeric character references.
-fn decode_entities(value: &str, offset: usize, text: &str) -> Result<String, ParseError> {
+pub(crate) fn decode_entities(
+    value: &str,
+    offset: usize,
+    text: &str,
+) -> Result<String, ParseError> {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
     while let Some(index) = rest.find('&') {
