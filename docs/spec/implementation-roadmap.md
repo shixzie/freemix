@@ -2632,10 +2632,8 @@ rotations, masks, safe areas, and multiview. Remaining gaps: a source crop
 is validated against a 16384-pixel source bound rather than the actual
 decoded source size, so an oversized crop reaches the compositor and shows
 black beyond the picture; no model, protocol, or UI fit setting (Studio
-monitor wells now follow the frame's shape); 8K stream ladders accept
-portrait and landscape rungs alike (the long edge is capped at 7680 and the
-short edge at 4320); and the native GPU path is untested. `SW-015` remains
-planned.
+monitor wells now follow the frame's shape); and the native GPU path is
+untested. `SW-015` remains planned.
 
 
 Current implementation boundary for IN-008 and IN-010: `fm-video::test_signal` generates 75%, 100%, and EBU bars plus a bars/ramp/PLUGE layout with exact BT.709/BT.601 narrow-range 8/10-bit Y'CbCr and full-range RGBA codes, and a static generator renders solid colour or bars once per setting instead of per frame. `fm-playback::image_sequence` discovers numbered sequences (padding, duplicate detection, reject/hold/skip gap policies), maps time or output frames to sequence frames exactly with Once/Loop/Hold ends, and bounds a prefetch cache; `fm-codec-image::ImageSequenceSource` decodes bounded PNG/JPEG frames of one size, preloads and pins a sequence, and suggests the first opaque frame as a stinger cut point. Still pictures as inputs (decode, ICC, fit/fill, reload) now have their own boundary under item 5 slideshows below; GPU-side generation, RP 219 raster geometry, daemon/CLI/model wiring, asynchronous decode, alpha video, and Studio controls are not implemented, so `IN-008` and `IN-010` remain planned.
