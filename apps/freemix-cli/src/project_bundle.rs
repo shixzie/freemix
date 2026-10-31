@@ -275,6 +275,63 @@ pub fn title_input_add(
     )
 }
 
+/// Imports a validated designer document (`GX-002`) as a stored template and
+/// adds a title input showing the flattened template's default fields.
+pub fn title_design_import(
+    path: &Path,
+    input: u128,
+    name: String,
+    design: &Path,
+    fonts: &[(String, PathBuf)],
+) -> AppResult<()> {
+    let store = ProjectStore::new(path)?;
+    // Refuse a non-bundle, a taken id, or an unusable name before copying
+    // anything: the add is rehearsed with a placeholder template URI.
+    let stored = load_stored_project(path)?;
+    let input = input_id(input)?;
+    stored
+        .project()
+        .clone()
+        .add_input_checked(fm_model::Input {
+            id: input,
+            name: name.clone(),
+            kind: InputKind::Title(TitleInput {
+                template_uri: "asset://titles/pending.fmtitle".to_owned(),
+                field_revision: 0,
+                fields: Vec::new(),
+            }),
+            required_capabilities: Vec::new(),
+        })?;
+    let design = fm_persistence::read_title_design_file(design)
+        .map_err(|error| AppFailure(format!("title design {}: {error}", design.display())))?;
+    let imported = store
+        .import_title_design(&design, fonts)
+        .map_err(|error| AppFailure(format!("title design import failed: {error}")))?;
+    println!(
+        "title-design-import: template {} {}",
+        imported.template_uri,
+        disposition_name(imported.disposition)
+    );
+    for font in &imported.fonts {
+        println!(
+            "font {:?} {} {}",
+            font.family,
+            font.asset_uri,
+            disposition_name(font.disposition)
+        );
+    }
+    add_input_with_kind(
+        path,
+        input,
+        name,
+        InputKind::Title(TitleInput {
+            template_uri: imported.template_uri,
+            field_revision: 0,
+            fields: title_field_defaults(&imported.stored.template),
+        }),
+    )
+}
+
 fn disposition_name(disposition: AssetDisposition) -> String {
     match disposition {
         AssetDisposition::Copied { bytes } => format!("copied bytes={bytes}"),

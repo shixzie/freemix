@@ -896,3 +896,77 @@ fn input_media_list_import_appends_playlist_files() {
     );
     assert_eq!(fs::read(show.join("project.json")).unwrap(), manifest);
 }
+
+#[test]
+fn title_design_import_flattens_a_design_into_a_title_input() {
+    let root = TempRoot::new();
+    let show = root.path("design.freemix");
+    new_project(&show, "Design");
+    let design = root.path("score.fmdesign");
+    let document = format!(
+        r##"{{
+  "contract": "freemix.title-design",
+  "schema_version": {CURRENT_SCHEMA_VERSION},
+  "id": 4,
+  "name": "Score bug",
+  "width": 640,
+  "height": 360,
+  "background": "#00000000",
+  "fields": [{{"id": 1, "name": "Score", "default": {{"type": "number", "value": 5}}}}],
+  "nodes": [],
+  "roots": [],
+  "children": [],
+  "animation": {{"timebase": "30/1", "revision": 0, "in_frames": 0, "out_frames": 0, "tracks": []}}
+}}"##
+    );
+    fs::write(&design, document).unwrap();
+    let out = assert_success(&run(&[
+        "title-design-import",
+        text(&show),
+        text(&design),
+        "--id",
+        "9",
+        "--name",
+        "Score bug",
+    ]));
+    assert!(
+        out.starts_with("title-design-import: template asset://titles/Score bug.fmtitle copied bytes="),
+        "{out}"
+    );
+    let loaded = load(&show);
+    let (revision, fields) = title_fields(&loaded, 9);
+    assert_eq!(revision, 0);
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0].value, fm_model::TitleFieldValue::Number(5));
+    assert_eq!(
+        loaded
+            .project()
+            .inputs()
+            .iter()
+            .find(|candidate| candidate.id == input(9))
+            .unwrap()
+            .name,
+        "Score bug"
+    );
+    let store = ProjectStore::new(&show).unwrap();
+    let stored = store.load_title_template("asset://titles/Score bug.fmtitle").unwrap();
+    assert_eq!(stored.template.fields.len(), 1);
+    assert!(stored.template.elements.is_empty());
+    assert_eq!(store.validate_titles(&loaded), Vec::new());
+
+    // A taken input id is refused before the design is imported.
+    let manifest = fs::read(show.join("project.json")).unwrap();
+    assert_failure_contains(
+        &run(&[
+            "title-design-import",
+            text(&show),
+            text(&design),
+            "--id",
+            "9",
+            "--name",
+            "Another",
+        ]),
+        "already exists",
+    );
+    assert_eq!(fs::read(show.join("project.json")).unwrap(), manifest);
+}

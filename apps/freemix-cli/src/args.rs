@@ -997,6 +997,17 @@ pub enum Command {
         /// that failed instead of refusing the whole row.
         keep_live: bool,
     },
+    /// `title-design-import <project> <design.fmdesign> --id <input>
+    /// --name <name> [--font <Family=path>]`: flattens a validated designer
+    /// document into a stored template and adds a title input (GX-002).
+    TitleDesignImport {
+        path: PathBuf,
+        input: u128,
+        name: String,
+        design: PathBuf,
+        /// `(family, font file)` pairs in command-line order.
+        fonts: Vec<(String, PathBuf)>,
+    },
     AudioStrip {
         path: PathBuf,
         input: u128,
@@ -2443,6 +2454,43 @@ pub fn parse(arguments: impl IntoIterator<Item = String>) -> Result<Command, Arg
             let path = required_path(&mut arguments, "design path")?;
             reject_extra(&mut arguments)?;
             Ok(Command::TitleDesignCheck { path })
+        }
+        "title-design-import" => {
+            let path = required_path(&mut arguments, "project path")?;
+            let design = required_path(&mut arguments, "design path")?;
+            let mut input = None;
+            let mut name = None;
+            let mut fonts = Vec::new();
+            while let Some(option) = arguments.next() {
+                match option.as_str() {
+                    "--id" => input = Some(number(&required(&mut arguments, "input")?, "input")?),
+                    "--name" => name = Some(nonblank(&mut arguments, "input name")?),
+                    "--font" => {
+                        let value = required(&mut arguments, "font")?;
+                        let Some((family, file)) = value.split_once('=') else {
+                            return Err(ArgsError::InvalidChoice {
+                                field: "font (expected Family=path)",
+                                value,
+                            });
+                        };
+                        if family.trim().is_empty() {
+                            return Err(ArgsError::BlankValue("font family"));
+                        }
+                        if file.is_empty() {
+                            return Err(ArgsError::BlankValue("font path"));
+                        }
+                        fonts.push((family.to_owned(), PathBuf::from(file)));
+                    }
+                    _ => return Err(ArgsError::UnknownOption(option)),
+                }
+            }
+            Ok(Command::TitleDesignImport {
+                path,
+                input: input.ok_or(ArgsError::MissingValue("--id"))?,
+                name: name.ok_or(ArgsError::MissingValue("--name"))?,
+                design,
+                fonts,
+            })
         }
         "title-apply-row" => {
             let path = required_path(&mut arguments, "project path")?;

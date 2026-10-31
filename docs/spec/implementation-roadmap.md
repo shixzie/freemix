@@ -4163,8 +4163,11 @@ undo and redo. Remaining gaps: group transforms are translation and opacity
 only, rendering is CPU-only, and there is no
 designer UI, live field editor, protocol, or engine playback; designs persist
 as strict `.fmdesign` documents (`fm-persistence::encode_title_design` /
-`decode_title_design`), and `freemix-cli title-design-check` validates one, but
-no designer UI or protocol reads them. `GX-002` remains planned.
+`decode_title_design`), `freemix-cli title-design-check` validates one, and
+`freemix-cli title-design-import` flattens a validated design into a stored
+`.fmtitle` template and adds a title input showing its default fields (fonts
+are supplied with `--font`, as for `title-input-add`), but no designer UI or
+protocol reads them. `GX-002` remains planned.
 
 Current implementation boundary for the keyframe animation editor (`GX-011`):
 `fm-animation` is the shared, pure model: Q16 easing presets with stable ids

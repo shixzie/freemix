@@ -82,7 +82,7 @@ use fm_titles::{
     ElementKind, FieldDefinition, FieldId, FieldType, FieldValue, FontError, FontFace, FontStyle,
     HorizontalAlignment, ImageFilter, ImageFit, ImageSource, MAX_FONT_BYTES, ProductionClockSpec,
     Style, TemplateId, TickerDirection, TickerSpec, TitleAnimation, TitleClock, TitleClockError,
-    TitleClockKind, TitleTemplate, VerticalAlignment,
+    TitleClockKind, TitleDesign, TitleTemplate, VerticalAlignment,
 };
 use fm_types::{FrameRate, InputId};
 
@@ -672,6 +672,40 @@ impl ProjectStore {
         if !declared_fonts.is_empty() {
             return Err(TitleImportError::SourceDeclaresFonts);
         }
+        let stem = template
+            .file_stem()
+            .map_or_else(|| "title".to_owned(), imported_key);
+        self.import_title_parts(parsed, clocks, fonts, &stem)
+    }
+
+    /// Imports a validated designer document (GX-002) as a stored template:
+    /// [`TitleDesign::to_template`] flattens its element tree, and the
+    /// template is written to `assets/titles/<design name>.fmtitle` through
+    /// the same validation, font import, and dedupe path as
+    /// [`Self::import_title_template`]. The design's group nodes and group
+    /// tracks are not part of the flattened template.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TitleImportError`] for a template, font, or bundle problem;
+    /// nothing is copied before validation succeeds.
+    pub fn import_title_design(
+        &self,
+        design: &TitleDesign,
+        fonts: &[(String, PathBuf)],
+    ) -> Result<ImportedTitleTemplate, TitleImportError> {
+        let template = design.to_template();
+        let stem = imported_key(OsStr::new(design.name()));
+        self.import_title_parts(template, Vec::new(), fonts, &stem)
+    }
+
+    fn import_title_parts(
+        &self,
+        parsed: TitleTemplate,
+        clocks: Vec<TitleClock>,
+        fonts: &[(String, PathBuf)],
+        stem: &str,
+    ) -> Result<ImportedTitleTemplate, TitleImportError> {
         validate_template_body(&parsed)?;
         check_font_table(&parsed, fonts.iter().map(|(family, _)| family.as_str()))?;
         check_clock_table(&parsed, &clocks)?;
@@ -730,9 +764,6 @@ impl ProjectStore {
         };
         let document = encode_title_template(&stored)?;
 
-        let stem = template
-            .file_stem()
-            .map_or_else(|| "title".to_owned(), imported_key);
         let base = format!("{TITLES_DIRECTORY}/{stem}.{TITLE_TEMPLATE_EXTENSION}");
         let (key, disposition) = place_bytes(&assets_root, &base, document.as_bytes())?;
         Ok(ImportedTitleTemplate {
