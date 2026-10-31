@@ -730,6 +730,28 @@ impl StudioApp {
                         .and_then(|list| self.shell.cue_list_key_intent(&self.state, list, key));
                     self.enqueue_osc_fire(intent, selected);
                     continue;
+                }
+                // A per-cue key (RC-017) fires or arms one cue by its 1-based
+                // position in a list named by 1-based project order.
+                OscAction::CueAt(key, list_number, cue_number, selected) => {
+                    let list = usize::try_from(list_number.get())
+                        .ok()
+                        .and_then(|number| number.checked_sub(1))
+                        .and_then(|index| {
+                            self.state
+                                .project_state
+                                .as_ref()
+                                .and_then(|project| project.cue_lists().get(index))
+                                .map(|list| list.id)
+                        });
+                    let cue = usize::try_from(cue_number.get()).ok();
+                    let intent = match (list, cue) {
+                        (Some(list), Some(cue)) => {
+                            self.shell.cue_at_key_intent(&self.state, list, cue, key)
+                        }
+                        _ => None,
+                    };
+                    self.enqueue_osc_fire(intent, selected);
                     continue;
                 }
                 // A project shortcut fires under its key's gates (RC-004);

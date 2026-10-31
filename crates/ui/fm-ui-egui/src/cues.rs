@@ -395,6 +395,51 @@ pub enum CueKey {
     Disarm,
 }
 
+/// The intent `key` sends for the cue at 1-based position `cue` of `list`,
+/// firing or arming that cue directly instead of the list's standby cue
+/// (RC-017). Only Go and Arm apply to one cue; the same gates as the panel's
+/// keys apply, with the chain starting at that cue.
+#[must_use]
+pub fn cue_key_intent(
+    state: &StudioUiState,
+    scripts: &[ScriptStatus],
+    list: &CueListStatus,
+    cue: usize,
+    typed_delay: &str,
+    key: CueKey,
+) -> Option<CueIntent> {
+    if control_block(state).is_some() {
+        return None;
+    }
+    let cue = list.spec.cues.get(cue.checked_sub(1)?)?;
+    if chain_block(state, scripts, list, cue.id).is_some() {
+        return None;
+    }
+    let operation = match key {
+        CueKey::Go => CueOperation::Go {
+            cue: Some(cue.id),
+            targets: WireTargetBindings::default(),
+        },
+        CueKey::Arm => CueOperation::Arm {
+            cue: Some(cue.id),
+            in_ms: parse_arm_delay(typed_delay)?,
+            targets: WireTargetBindings::default(),
+        },
+        CueKey::ArmIn(in_ms) => CueOperation::Arm {
+            cue: Some(cue.id),
+            in_ms: Some(in_ms).filter(|in_ms| (1..=MAX_CUE_ARM_MS).contains(in_ms))?,
+            targets: WireTargetBindings::default(),
+        },
+        CueKey::Previous | CueKey::Next | CueKey::Stop | CueKey::Reset | CueKey::Disarm => {
+            return None;
+        }
+    };
+    Some(CueIntent::Control {
+        list: list.id,
+        operation,
+    })
+}
+
 /// The intent `key` sends for `list`, with the panel keys' gates: every
 /// key needs [`control_block`] clear; GO and arming also need a cue on
 /// standby whose chain the session may fire ([`go_key_list`]); arming
@@ -927,6 +972,28 @@ impl CuePanel {
             state,
             project.scripts(),
             list,
+            self.arm_delay.as_deref().unwrap_or(DEFAULT_ARM_DELAY),
+            key,
+        )
+    }
+
+    /// The intent an external binding's `key` sends for the cue at 1-based
+    /// position `cue` of list `list` (RC-017), firing or arming that cue
+    /// directly.
+    pub(crate) fn cue_at_index_intent(
+        &self,
+        state: &StudioUiState,
+        list: u64,
+        cue: usize,
+        key: CueKey,
+    ) -> Option<CueIntent> {
+        let project = state.project_state.as_ref()?;
+        let list = project.cue_lists().iter().find(|found| found.id == list)?;
+        cue_key_intent(
+            state,
+            project.scripts(),
+            list,
+            cue,
             self.arm_delay.as_deref().unwrap_or(DEFAULT_ARM_DELAY),
             key,
         )

@@ -44,15 +44,25 @@ pub(crate) enum OscAction {
     CancelManualTransition,
     /// `/freemix/cue/<key>`: a key of the Cues panel's shown list (RC-017),
     /// or `/freemix/cue/list/<n>/<key>` for the list at 1-based project
-    /// order `n`. `/freemix/cue/arm` uses the panel's "Fire in" delay, or
-    /// its first `i` argument in milliseconds.
-    /// `go` takes an optional `i` and `arm` an optional second `i`: the
-    /// selected input (RC-004, see [`OscSelected`]).
+    /// order `n`; `/freemix/cue/list/<n>/cue/<m>/<key>` addresses one cue by
+    /// its 1-based position. `/freemix/cue/arm` uses the panel's "Fire in"
+    /// delay, or its first `i` argument in milliseconds. `go` takes an
+    /// optional `i` and `arm` an optional second `i`: the selected input
+    /// (RC-004, see [`OscSelected`]).
     Cue(fm_ui_egui::CueKey, OscSelected),
     /// `/freemix/cue/list/<n>/<key>`: a key of the cue list at 1-based
     /// position `n` in the project's list order (RC-017), instead of the
-    /// list the Cues panel shows.
+    /// list the Cues panel shows. `/freemix/cue/list/<n>/cue/<m>/<key>`
+    /// targets the cue at 1-based position `m` of that list (only `go` and
+    /// `arm` apply to a single cue).
     CueList(fm_ui_egui::CueKey, core::num::NonZeroU32, OscSelected),
+    /// `/freemix/cue/list/<n>/cue/<m>/<key>`: a key of one cue in list `n`.
+    CueAt(
+        fm_ui_egui::CueKey,
+        core::num::NonZeroU32,
+        core::num::NonZeroU32,
+        OscSelected,
+    ),
     /// `/freemix/user/<name>`: the project shortcut with OSC name `name`
     /// (RC-004), with an optional `i` argument, the selected input, and an
     /// optional `f` argument after it, the control's value from 0.0 to 1.0
@@ -377,29 +387,41 @@ fn decode(datagram: &[u8]) -> Result<OscAction, ()> {
         return Ok(OscAction::User(name, selected, value));
     }
     // A cue key may name its list by 1-based project order (RC-017):
-    // `/freemix/cue/list/<n>/<key>`. `go` takes an optional selected input;
-    // `arm` takes an optional delay and then an optional selected input.
+    // `/freemix/cue/list/<n>/<key>`, or one cue of that list with
+    // `/freemix/cue/list/<n>/cue/<m>/<key>`. `go` takes an optional selected
+    // input; `arm` takes an optional delay and then an optional selected
+    // input.
     if let Some(path) = address.strip_prefix("/freemix/cue/list/") {
-        let (number, kind) = path.split_once('/').ok_or(())?;
-        let list = number
-            .parse::<u32>()
-            .ok()
-            .and_then(core::num::NonZeroU32::new)
-            .ok_or(())?;
+        let parse_number = |number: &str| -> Result<core::num::NonZeroU32, ()> {
+            number
+                .parse::<u32>()
+                .ok()
+                .and_then(core::num::NonZeroU32::new)
+                .ok_or(())
+        };
+        let (number, rest) = path.split_once('/').ok_or(())?;
+        let list = parse_number(number)?;
+        let (cue, kind) = match rest.strip_prefix("cue/") {
+            Some(rest) => {
+                let (number, kind) = rest.split_once('/').ok_or(())?;
+                (Some(parse_number(number)?), kind)
+            }
+            None => (None, rest),
+        };
         let key = cue_key(kind).ok_or(())?;
         let arguments = datagram.get(end..).ok_or(())?;
         let parse_selected = |bytes: &[u8]| -> Result<core::num::NonZeroU32, ()> {
             let argument: [u8; 4] = bytes.try_into().map_err(|_| ())?;
             selected_argument(argument)?.ok_or(())
         };
+        let action = |key, selected| match cue {
+            Some(cue) => OscAction::CueAt(key, list, cue, selected),
+            None => OscAction::CueList(key, list, selected),
+        };
         if key == CueKey::Go {
             return match (types, arguments.len()) {
-                (",", 0) => Ok(OscAction::CueList(key, list, None)),
-                (",i", 4) => Ok(OscAction::CueList(
-                    key,
-                    list,
-                    Some(parse_selected(arguments)?),
-                )),
+                (",", 0) => Ok(action(key, None)),
+                (",i", 4) => Ok(action(key, Some(parse_selected(arguments)?))),
                 _ => Err(()),
             };
         }
@@ -422,12 +444,16 @@ fn decode(datagram: &[u8]) -> Result<OscAction, ()> {
                 }
             };
             let selected = selected.map(parse_selected).transpose()?;
-            return Ok(OscAction::CueList(key, list, selected));
+            return Ok(action(key, selected));
+        }
+        if cue.is_some() {
+            // Only go and arm name an action on a single cue.
+            return Err(());
         }
         if types != "," || !arguments.is_empty() {
             return Err(());
         }
-        return Ok(OscAction::CueList(key, list, None));
+        return Ok(action(key, None));
     }
     // A fire's optional selected input (RC-004): one `i` argument on
     // `/freemix/cue/go`.
@@ -981,6 +1007,64 @@ mod tests {
             with_types("/freemix/cue/list/2/go", ",ii", &[0, 0, 0, 1, 0, 0, 0, 1]),
             with_types("/freemix/cue/list/2/arm", ",i", &0_i32.to_be_bytes()),
             with_types("/freemix/cue/list/2/arm", ",f", &[0, 0, 0, 0]),
+        ] {
+            assert_eq!(decode(&datagram), Err(()));
+        }
+    }
+
+    /// RC-017: a cue key may name one cue of a list directly.
+    #[test]
+    fn osc_decoder_accepts_cue_addressed_cue_keys() {
+        let list = core::num::NonZeroU32::new(2).unwrap();
+        let cue = core::num::NonZeroU32::new(5).unwrap();
+        assert_eq!(
+            decode(&message("/freemix/cue/list/2/cue/5/go")),
+            Ok(OscAction::CueAt(CueKey::Go, list, cue, None))
+        );
+        assert_eq!(
+            decode(&message("/freemix/cue/list/2/cue/5/arm")),
+            Ok(OscAction::CueAt(CueKey::Arm, list, cue, None))
+        );
+        assert_eq!(
+            decode(&with_types(
+                "/freemix/cue/list/2/cue/5/go",
+                ",i",
+                &3_i32.to_be_bytes()
+            )),
+            Ok(OscAction::CueAt(
+                CueKey::Go,
+                list,
+                cue,
+                core::num::NonZeroU32::new(3)
+            ))
+        );
+        let mut arguments = 30_000_i32.to_be_bytes().to_vec();
+        arguments.extend_from_slice(&3_i32.to_be_bytes());
+        assert_eq!(
+            decode(&with_types(
+                "/freemix/cue/list/2/cue/5/arm",
+                ",ii",
+                &arguments
+            )),
+            Ok(OscAction::CueAt(
+                CueKey::ArmIn(30_000),
+                list,
+                cue,
+                core::num::NonZeroU32::new(3)
+            ))
+        );
+        for datagram in [
+            message("/freemix/cue/list/2/cue/0/go"),
+            message("/freemix/cue/list/2/cue/x/go"),
+            message("/freemix/cue/list/2/cue/5/next"),
+            message("/freemix/cue/list/2/cue/5/stop"),
+            message("/freemix/cue/list/2/cue/5"),
+            with_types("/freemix/cue/list/2/cue/5/next", ",", &[]),
+            with_types(
+                "/freemix/cue/list/2/cue/5/go",
+                ",ii",
+                &[0, 0, 0, 1, 0, 0, 0, 1],
+            ),
         ] {
             assert_eq!(decode(&datagram), Err(()));
         }
