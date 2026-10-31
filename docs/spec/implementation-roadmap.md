@@ -382,6 +382,22 @@ per week of work; items 1 and 2 land before any new feature breadth.
    passed to the worker per request rather than owned by it; making that
    ownership permanent is the next stage.
 
+   **Eighth stage (landed).** `NativeSourcePlayback` (both the source
+   playback registry and the stinger registry) is now owned permanently by
+   the video realizer. Control no longer holds either: live source pictures
+   from titles, documents, media files, network streams, system audio,
+   screen capture, capture devices, cameras, and stills travel as `ingest`
+   commands; the per-frame coverage wait, replay presentation, catalogue
+   insertion/removal, retained-byte limits, stinger replacement, and the
+   playback budget are request/response commands over the same bounded
+   channel. Control keeps only a shared `NativeLatestFrames` handle for
+   thumbnails and replay recording. Cameras ingest through the worker too.
+   Native pacing, transitions, replay, stills, display, Preview-tap,
+   strip-DSP, audio-only, media-file, and media-list suites pass on the M5;
+   the Linux pacing gate and transitions pass. `NativeMediaRuntime` is still
+   shared with the monitor tap and display presentation, which are the
+   remaining consumers.
+
    **Split plan.** The bounded channel carries a `NativeFrameJob` (the
    engine's `FrameResult`, which is plain data, plus the plan deltas the
    media side applies) to a `NativeRealizer` thread that owns `runtime`

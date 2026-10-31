@@ -1,19 +1,18 @@
 //! The native realizer's video compose handoff (structural item 1).
 //!
 //! The control pass loop keeps `fm-control`, peers, the journal, and the
-//! durable project. [`NativeVideoHandle`] runs the GPU compose and the
-//! Preview composite on a dedicated realizer thread. A job carries the engine
-//! frame, the plan, the compiled grades, and the source playback registries;
-//! the reply returns the registries with the pictures. Grade uploads happen
-//! on this thread too: the worker caches the prepared grades by the engine's
-//! compiled revision, so the control loop never uploads a grade and a
-//! Program and Preview compose share the same prepared textures.
+//! durable project. [`NativeVideoHandle`] runs GPU work on a dedicated
+//! realizer thread that owns the source playback and stinger registries, the
+//! slideshow cache, and the replay decode players. Control sends source
+//! frames, coverage waits, registry queries, replay presentations, and
+//! Program/Preview jobs over one bounded ordered channel; the worker ingests
+//! and composes, and returns pictures, recorded audio, latest CPU frames, and
+//! counters. Grade uploads also happen here, cached by the engine's compiled
+//! revision, so Program and Preview share one prepared set.
 //!
-//! The channel is bounded and carries one job at a time per kind; a compose
-//! is collected before the next submission of its kind. The runtime itself is
-//! shared as an `Arc<NativeMediaRuntime>` for now: source ingestion, monitor
-//! taps, and display presentation still use it on the control thread. Moving
-//! those to the realizer is the next stage.
+//! The runtime itself is shared as an `Arc<NativeMediaRuntime>` for now:
+//! monitor taps and display presentation still use it on the control thread.
+//! Moving those to the realizer is the next stage.
 
 use std::{
     sync::{
@@ -21,27 +20,26 @@ use std::{
         mpsc::{Receiver, SyncSender, sync_channel},
     },
     thread::{self, JoinHandle},
+    time::Instant,
 };
 
-use crate::native_replay::{ReplayFormat, ReplayPlayers};
-use crate::native_slides::NativeSlides;
-use std::time::Instant;
-
+use fm_clock::ClockTime;
 use fm_engine::{CompiledProjectGrades, EngineSlideshowFrame, FrameResult};
-use fm_frame::AudioBlock;
+use fm_frame::{AudioBlock, CpuVideoFrame};
 use fm_gpu::NativeTexture;
 use fm_types::{InputId, OutputScaling};
 use freemixd::native_media::{
     NativeMediaError, NativeMediaRuntime, NativeOutputFrame, NativeProjectGrades,
-    NativeProjectPlan, NativeSourcePlayback, NativeSourceRenderError,
+    NativeProjectPlan, NativeSourceLimits, NativeSourcePlayback, NativeSourceRenderError,
 };
+
+use crate::native_replay::{ReplayFormat, ReplayPlayers};
+use crate::native_slides::NativeSlides;
 
 /// One compose's inputs.
 pub(crate) struct VideoRenderJob {
     pub frame: FrameResult,
     pub plan: NativeProjectPlan,
-    pub playback: NativeSourcePlayback,
-    pub stingers: NativeSourcePlayback,
     /// The engine revision's compiled grades; the worker uploads them once
     /// per revision.
     pub grades: Arc<CompiledProjectGrades>,
@@ -63,33 +61,34 @@ pub(crate) enum NativeVideoFrame {
     Outputs(Vec<NativeOutputFrame>),
 }
 
-/// A compose's reply: the registries come back with the pictures.
+/// A compose's reply.
 pub(crate) struct VideoRenderOutcome {
-    pub playback: NativeSourcePlayback,
-    pub stingers: NativeSourcePlayback,
     pub result: Result<NativeVideoFrame, VideoError>,
+}
+
+/// A Preview composite's reply.
+pub(crate) struct PreviewRenderOutcome {
+    pub result: Result<NativeTexture, VideoError>,
+}
+
+/// A replay presentation's reply: the recorded audio to push before the
+/// audio render, and whether every player is covered.
+pub(crate) struct PresentReplayOutcome {
+    pub audio: Vec<(InputId, AudioBlock)>,
+    pub covered: bool,
+}
+
+/// What the playback registry holds right now.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PlaybackBudget {
+    pub limit: NativeSourceLimits,
+    pub retained_bytes: u64,
 }
 
 /// One replay presentation's inputs.
 pub(crate) struct PresentReplayJob {
     pub frame: FrameResult,
     pub deadline: Instant,
-    pub playback: NativeSourcePlayback,
-}
-
-/// A replay presentation's reply: the registries, the recorded audio to
-/// push before the audio render, and whether every player is covered.
-pub(crate) struct PresentReplayOutcome {
-    pub playback: NativeSourcePlayback,
-    pub audio: Vec<(InputId, AudioBlock)>,
-    pub covered: bool,
-}
-
-/// A Preview composite's reply.
-pub(crate) struct PreviewRenderOutcome {
-    pub playback: NativeSourcePlayback,
-    pub stingers: NativeSourcePlayback,
-    pub result: Result<NativeTexture, VideoError>,
 }
 
 /// Why a realizer compose failed.
@@ -121,12 +120,48 @@ enum VideoCommand {
         job: Box<VideoRenderJob>,
         reply: SyncSender<PreviewRenderOutcome>,
     },
-    ForgetSlide {
-        input: fm_types::InputId,
-    },
     PresentReplay {
         job: Box<PresentReplayJob>,
         reply: SyncSender<PresentReplayOutcome>,
+    },
+    Ingest {
+        input: InputId,
+        frame: CpuVideoFrame,
+        reply: SyncSender<Result<(), String>>,
+    },
+    Service {
+        deadline: ClockTime,
+        reply: SyncSender<Result<bool, String>>,
+    },
+    ServiceStinger {
+        input: InputId,
+        deadline: ClockTime,
+        reply: SyncSender<Result<bool, String>>,
+    },
+    PlaybackBudget {
+        reply: SyncSender<PlaybackBudget>,
+    },
+    InsertLiveSource {
+        input: InputId,
+        seed: CpuVideoFrame,
+        reply: SyncSender<Result<(), String>>,
+    },
+    RemoveSource {
+        input: InputId,
+    },
+    SetRetainedByteLimit {
+        limit: u64,
+    },
+    ValidateRetainedByteLimit {
+        limit: u64,
+        reply: SyncSender<bool>,
+    },
+    ReplaceStingers {
+        stingers: NativeSourcePlayback,
+        reply: SyncSender<NativeSourcePlayback>,
+    },
+    ForgetSlide {
+        input: InputId,
     },
     Shutdown,
 }
@@ -140,21 +175,34 @@ pub(crate) struct NativeVideoHandle {
 }
 
 impl NativeVideoHandle {
-    /// Spawns the compose thread on `runtime`.
+    /// Spawns the realizer thread, moving the playback and stinger registries
+    /// and the slideshow and replay state onto it.
     ///
     /// # Errors
     ///
     /// Returns the thread-spawn failure.
     pub(crate) fn spawn(
         runtime: Arc<NativeMediaRuntime>,
+        playback: NativeSourcePlayback,
+        stingers: NativeSourcePlayback,
         slides: NativeSlides,
         replay: ReplayFormat,
         name: &str,
     ) -> std::io::Result<Self> {
-        let (commands, receiver) = sync_channel(2);
+        let (commands, receiver) = sync_channel(4);
         let thread = thread::Builder::new()
             .name(name.to_owned())
-            .spawn(move || video_thread(&runtime, slides, ReplayPlayers::new(replay), &receiver))?;
+            .spawn(move || {
+                let mut realizer = VideoRealizer {
+                    runtime,
+                    playback,
+                    stingers,
+                    slides,
+                    replay: ReplayPlayers::new(replay),
+                    grades: PreparedGrades(None),
+                };
+                realizer.run(&receiver);
+            })?;
         Ok(Self {
             commands,
             pending: None,
@@ -163,8 +211,157 @@ impl NativeVideoHandle {
         })
     }
 
-    /// Presents every Replay input's recorded frame into `playback` and
-    /// returns the recorded audio to push before the audio render.
+    /// Ingests one live source picture.
+    ///
+    /// # Errors
+    ///
+    /// Returns the renderer's typed failure or its thread stopping.
+    pub(crate) fn ingest_frame(
+        &mut self,
+        input: InputId,
+        frame: CpuVideoFrame,
+    ) -> Result<(), String> {
+        let (reply, answer) = sync_channel(0);
+        self.commands
+            .send(VideoCommand::Ingest {
+                input,
+                frame,
+                reply,
+            })
+            .map_err(|_| "the video thread stopped".to_owned())?;
+        answer
+            .recv()
+            .map_err(|_| "the video thread stopped".to_owned())?
+    }
+
+    /// Waits for the frame's sources to be presented.
+    ///
+    /// # Errors
+    ///
+    /// Returns the renderer's typed failure or its thread stopping.
+    pub(crate) fn service_playback(&mut self, deadline: ClockTime) -> Result<bool, String> {
+        let (reply, answer) = sync_channel(0);
+        self.commands
+            .send(VideoCommand::Service { deadline, reply })
+            .map_err(|_| "the video thread stopped".to_owned())?;
+        answer
+            .recv()
+            .map_err(|_| "the video thread stopped".to_owned())?
+    }
+
+    /// Waits for one Stinger input's picture at `deadline`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the renderer's typed failure or its thread stopping.
+    pub(crate) fn service_stinger(
+        &mut self,
+        input: InputId,
+        deadline: ClockTime,
+    ) -> Result<bool, String> {
+        let (reply, answer) = sync_channel(0);
+        self.commands
+            .send(VideoCommand::ServiceStinger {
+                input,
+                deadline,
+                reply,
+            })
+            .map_err(|_| "the video thread stopped".to_owned())?;
+        answer
+            .recv()
+            .map_err(|_| "the video thread stopped".to_owned())?
+    }
+
+    /// The playback registry's current limits and retained bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the video thread stopping.
+    pub(crate) fn playback_budget(&mut self) -> Result<PlaybackBudget, String> {
+        let (reply, answer) = sync_channel(0);
+        self.commands
+            .send(VideoCommand::PlaybackBudget { reply })
+            .map_err(|_| "the video thread stopped".to_owned())?;
+        answer
+            .recv()
+            .map_err(|_| "the video thread stopped".to_owned())
+    }
+
+    /// Adds a live input's first picture to the registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns the renderer's typed failure or its thread stopping.
+    pub(crate) fn insert_live_source(
+        &mut self,
+        input: InputId,
+        seed: CpuVideoFrame,
+    ) -> Result<(), String> {
+        let (reply, answer) = sync_channel(0);
+        self.commands
+            .send(VideoCommand::InsertLiveSource { input, seed, reply })
+            .map_err(|_| "the video thread stopped".to_owned())?;
+        answer
+            .recv()
+            .map_err(|_| "the video thread stopped".to_owned())?
+    }
+
+    /// Drops a removed input's source.
+    ///
+    /// # Errors
+    ///
+    /// Returns the video thread stopping.
+    pub(crate) fn remove_source(&mut self, input: InputId) -> Result<(), String> {
+        self.commands
+            .send(VideoCommand::RemoveSource { input })
+            .map_err(|_| "the video thread stopped".to_owned())
+    }
+
+    /// Sets the registry's retained-byte limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns the video thread stopping.
+    pub(crate) fn set_retained_byte_limit(&mut self, limit: u64) -> Result<(), String> {
+        self.commands
+            .send(VideoCommand::SetRetainedByteLimit { limit })
+            .map_err(|_| "the video thread stopped".to_owned())
+    }
+
+    /// Whether `limit` can retain the current registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns the video thread stopping.
+    pub(crate) fn validate_retained_byte_limit(&mut self, limit: u64) -> Result<bool, String> {
+        let (reply, answer) = sync_channel(0);
+        self.commands
+            .send(VideoCommand::ValidateRetainedByteLimit { limit, reply })
+            .map_err(|_| "the video thread stopped".to_owned())?;
+        answer
+            .recv()
+            .map_err(|_| "the video thread stopped".to_owned())
+    }
+
+    /// Replaces the stinger registry, returning the retired one.
+    ///
+    /// # Errors
+    ///
+    /// Returns the video thread stopping.
+    pub(crate) fn replace_stingers(
+        &mut self,
+        stingers: NativeSourcePlayback,
+    ) -> Result<NativeSourcePlayback, String> {
+        let (reply, answer) = sync_channel(0);
+        self.commands
+            .send(VideoCommand::ReplaceStingers { stingers, reply })
+            .map_err(|_| "the video thread stopped".to_owned())?;
+        answer
+            .recv()
+            .map_err(|_| "the video thread stopped".to_owned())
+    }
+
+    /// Presents every Replay input's recorded frame and returns its audio.
     ///
     /// # Errors
     ///
@@ -173,16 +370,11 @@ impl NativeVideoHandle {
         &mut self,
         frame: FrameResult,
         deadline: Instant,
-        playback: NativeSourcePlayback,
     ) -> Result<PresentReplayOutcome, String> {
         let (reply, answer) = sync_channel(0);
         self.commands
             .send(VideoCommand::PresentReplay {
-                job: Box::new(PresentReplayJob {
-                    frame,
-                    deadline,
-                    playback,
-                }),
+                job: Box::new(PresentReplayJob { frame, deadline }),
                 reply,
             })
             .map_err(|_| "the video thread stopped".to_owned())?;
@@ -196,7 +388,7 @@ impl NativeVideoHandle {
     /// # Errors
     ///
     /// Returns the video thread stopping.
-    pub(crate) fn forget_slide(&mut self, input: fm_types::InputId) -> Result<(), String> {
+    pub(crate) fn forget_slide(&mut self, input: InputId) -> Result<(), String> {
         self.commands
             .send(VideoCommand::ForgetSlide { input })
             .map_err(|_| "the video thread stopped".to_owned())
@@ -226,8 +418,7 @@ impl NativeVideoHandle {
     ///
     /// # Errors
     ///
-    /// Returns the video thread stopping; a compose failure is in the
-    /// outcome, so the caller can restore the registries.
+    /// Returns the video thread stopping.
     pub(crate) fn collect(&mut self) -> Result<VideoRenderOutcome, String> {
         let answer = self
             .pending
@@ -262,8 +453,7 @@ impl NativeVideoHandle {
     ///
     /// # Errors
     ///
-    /// Returns the video thread stopping; a compose failure is in the
-    /// outcome, so the caller can restore the registries.
+    /// Returns the video thread stopping.
     pub(crate) fn collect_preview(&mut self) -> Result<PreviewRenderOutcome, String> {
         let answer = self
             .pending_preview
@@ -310,98 +500,167 @@ impl PreparedGrades {
     }
 }
 
-fn video_thread(
-    runtime: &NativeMediaRuntime,
-    mut slides: NativeSlides,
-    mut replay: ReplayPlayers,
-    commands: &Receiver<VideoCommand>,
-) {
-    let mut grades = PreparedGrades(None);
-    for command in commands {
-        match command {
-            VideoCommand::Render { job, reply } => {
-                let mut job = *job;
-                let result = grades
-                    .apply(runtime, &mut job.plan, job.grade_revision, &job.grades)
-                    .map_err(VideoError::Grades)
-                    .and_then(|()| {
-                        if let Some(slideshow) = job.slides.take() {
-                            slides
-                                .present(
-                                    runtime,
-                                    &mut job.playback,
-                                    &slideshow.frames,
-                                    &slideshow.ahead,
-                                )
-                                .map_err(VideoError::Render)?;
-                        }
-                        if job.plan.output_ids().is_empty() {
-                            runtime
+/// The realizer-owned media state.
+struct VideoRealizer {
+    runtime: Arc<NativeMediaRuntime>,
+    playback: NativeSourcePlayback,
+    stingers: NativeSourcePlayback,
+    slides: NativeSlides,
+    replay: ReplayPlayers,
+    grades: PreparedGrades,
+}
+
+impl VideoRealizer {
+    #[allow(clippy::too_many_lines)] // one arm per realizer command
+    fn run(&mut self, commands: &Receiver<VideoCommand>) {
+        for command in commands {
+            match command {
+                VideoCommand::Render { job, reply } => {
+                    let mut job = *job;
+                    let result = self
+                        .grades
+                        .apply(
+                            &self.runtime,
+                            &mut job.plan,
+                            job.grade_revision,
+                            &job.grades,
+                        )
+                        .map_err(VideoError::Grades)
+                        .and_then(|()| {
+                            if let Some(slideshow) = job.slides.take() {
+                                self.slides
+                                    .present(
+                                        &self.runtime,
+                                        &mut self.playback,
+                                        &slideshow.frames,
+                                        &slideshow.ahead,
+                                    )
+                                    .map_err(VideoError::Render)?;
+                            }
+                            if job.plan.output_ids().is_empty() {
+                                self.runtime
+                                    .render_project_frame_result_with_stingers_blocking(
+                                        self.playback.registry(),
+                                        self.stingers.registry(),
+                                        &job.plan,
+                                        &job.frame,
+                                    )
+                                    .map(NativeVideoFrame::Program)
+                                    .map_err(VideoError::Render)
+                            } else {
+                                self.runtime
+                                    .render_project_outputs_with_stingers_blocking(
+                                        self.playback.registry(),
+                                        self.stingers.registry(),
+                                        &job.plan,
+                                        &job.frame,
+                                    )
+                                    .map(NativeVideoFrame::Outputs)
+                                    .map_err(VideoError::Render)
+                            }
+                        });
+                    let _ = reply.send(VideoRenderOutcome { result });
+                }
+                VideoCommand::Preview { job, reply } => {
+                    let mut job = *job;
+                    let result = self
+                        .grades
+                        .apply(
+                            &self.runtime,
+                            &mut job.plan,
+                            job.grade_revision,
+                            &job.grades,
+                        )
+                        .map_err(VideoError::Grades)
+                        .and_then(|()| {
+                            self.runtime
                                 .render_project_frame_result_with_stingers_blocking(
-                                    job.playback.registry(),
-                                    job.stingers.registry(),
+                                    self.playback.registry(),
+                                    self.stingers.registry(),
                                     &job.plan,
                                     &job.frame,
                                 )
-                                .map(NativeVideoFrame::Program)
                                 .map_err(VideoError::Render)
-                        } else {
-                            runtime
-                                .render_project_outputs_with_stingers_blocking(
-                                    job.playback.registry(),
-                                    job.stingers.registry(),
-                                    &job.plan,
-                                    &job.frame,
-                                )
-                                .map(NativeVideoFrame::Outputs)
-                                .map_err(VideoError::Render)
-                        }
+                        });
+                    let _ = reply.send(PreviewRenderOutcome { result });
+                }
+                VideoCommand::PresentReplay { job, reply } => {
+                    let mut audio = Vec::new();
+                    let covered = self.replay.present(
+                        &job.frame,
+                        job.deadline,
+                        &self.runtime,
+                        &mut self.playback,
+                        &mut |input, block| audio.push((input, block.clone())),
+                    );
+                    let _ = reply.send(PresentReplayOutcome { audio, covered });
+                }
+                VideoCommand::Ingest {
+                    input,
+                    frame,
+                    reply,
+                } => {
+                    let answer = if self.playback.registry().contains(input) {
+                        self.runtime
+                            .ingest_live_video_frame_blocking(&mut self.playback, input, frame)
+                            .map_err(|error| error.to_string())
+                    } else {
+                        Ok(())
+                    };
+                    let _ = reply.send(answer);
+                }
+                VideoCommand::Service { deadline, reply } => {
+                    let answer = self
+                        .runtime
+                        .service_source_playback_blocking(&mut self.playback, deadline)
+                        .map_err(|error| error.to_string());
+                    let _ = reply.send(answer);
+                }
+                VideoCommand::ServiceStinger {
+                    input,
+                    deadline,
+                    reply,
+                } => {
+                    let answer = self
+                        .runtime
+                        .service_source_playback_for_input_blocking(
+                            &mut self.stingers,
+                            input,
+                            deadline,
+                        )
+                        .map_err(|error| error.to_string());
+                    let _ = reply.send(answer);
+                }
+                VideoCommand::PlaybackBudget { reply } => {
+                    let registry = self.playback.registry();
+                    let _ = reply.send(PlaybackBudget {
+                        limit: registry.limits(),
+                        retained_bytes: registry.retained_rgba16f_bytes(),
                     });
-                let _ = reply.send(VideoRenderOutcome {
-                    playback: job.playback,
-                    stingers: job.stingers,
-                    result,
-                });
+                }
+                VideoCommand::InsertLiveSource { input, seed, reply } => {
+                    let answer = self
+                        .runtime
+                        .insert_live_source_blocking(&mut self.playback, input, seed)
+                        .map_err(|error| error.to_string());
+                    let _ = reply.send(answer);
+                }
+                VideoCommand::RemoveSource { input } => {
+                    let _ = self.playback.remove_source(input);
+                }
+                VideoCommand::SetRetainedByteLimit { limit } => {
+                    self.playback.set_retained_byte_limit(limit);
+                }
+                VideoCommand::ValidateRetainedByteLimit { limit, reply } => {
+                    let _ = reply.send(self.playback.validate_retained_byte_limit(limit).is_ok());
+                }
+                VideoCommand::ReplaceStingers { stingers, reply } => {
+                    let retired = std::mem::replace(&mut self.stingers, stingers);
+                    let _ = reply.send(retired);
+                }
+                VideoCommand::ForgetSlide { input } => self.slides.forget(input),
+                VideoCommand::Shutdown => break,
             }
-            VideoCommand::Preview { job, reply } => {
-                let mut job = *job;
-                let result = grades
-                    .apply(runtime, &mut job.plan, job.grade_revision, &job.grades)
-                    .map_err(VideoError::Grades)
-                    .and_then(|()| {
-                        runtime
-                            .render_project_frame_result_with_stingers_blocking(
-                                job.playback.registry(),
-                                job.stingers.registry(),
-                                &job.plan,
-                                &job.frame,
-                            )
-                            .map_err(VideoError::Render)
-                    });
-                let _ = reply.send(PreviewRenderOutcome {
-                    playback: job.playback,
-                    stingers: job.stingers,
-                    result,
-                });
-            }
-            VideoCommand::ForgetSlide { input } => slides.forget(input),
-            VideoCommand::PresentReplay { job, reply } => {
-                let mut job = *job;
-                let mut audio = Vec::new();
-                let covered = replay.present(
-                    &job.frame,
-                    job.deadline,
-                    runtime,
-                    &mut job.playback,
-                    &mut |input, block| audio.push((input, block.clone())),
-                );
-                let _ = reply.send(PresentReplayOutcome {
-                    playback: job.playback,
-                    audio,
-                    covered,
-                });
-            }
-            VideoCommand::Shutdown => break,
         }
     }
 }

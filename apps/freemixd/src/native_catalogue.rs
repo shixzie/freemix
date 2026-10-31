@@ -311,18 +311,21 @@ pub(crate) struct PendingStill {
 
 impl NativeDaemon {
     /// What a catalogue change may use of this runtime now.
-    pub(crate) fn catalogue_budget(&self) -> NativeCatalogueBudget {
-        let registry = self
-            .playback
-            .as_ref()
-            .expect("the video realizer holds the playback")
-            .registry();
-        let limits = registry.limits();
+    pub(crate) fn catalogue_budget(&mut self) -> NativeCatalogueBudget {
+        let budget =
+            self.video
+                .playback_budget()
+                .unwrap_or(crate::native_video_realizer::PlaybackBudget {
+                    limit: freemixd::native_media::NativeSourceLimits::default(),
+                    retained_bytes: 0,
+                });
+        let sources = self.latest_frames.snapshot().into_keys().collect();
+        let limits = budget.limit;
         let (width, height) = self.picture_size;
         NativeCatalogueBudget {
-            sources: registry.inputs().collect(),
+            sources,
             max_sources: limits.max_media_inputs,
-            retained_bytes: registry.retained_rgba16f_bytes(),
+            retained_bytes: budget.retained_bytes,
             max_retained_bytes: limits.max_retained_rgba16f_bytes,
             frame_bytes: u64::from(width)
                 .saturating_mul(u64::from(height))
@@ -377,11 +380,10 @@ impl NativeDaemon {
             .iter()
             .filter(|input| project.media_list(**input).is_some())
             .filter_map(|input| {
-                self.playback
-                    .as_ref()
-                    .expect("the video realizer holds the playback")
-                    .latest_frames()
-                    .get(*input)
+                self.latest_frames
+                    .snapshot()
+                    .get(input)
+                    .cloned()
                     .map(|frame| (*input, frame))
             })
             .collect::<BTreeMap<_, _>>();
@@ -394,10 +396,7 @@ impl NativeDaemon {
             eprintln!("FREEMIXD_INPUT\tv=1\tinput={input}\tretired");
         }
         for input in &removed {
-            self.playback
-                .as_mut()
-                .expect("the video realizer holds the playback")
-                .remove_source(*input);
+            self.video.remove_source(*input).map_err(AppFailure)?;
         }
 
         let settings = project.settings();
@@ -548,22 +547,13 @@ impl NativeDaemon {
                 }
             };
             if let Some(seed) = seed {
-                self.runtime
-                    .insert_live_source_blocking(
-                        self.playback
-                            .as_mut()
-                            .expect("the video realizer holds the playback"),
-                        input,
-                        seed,
-                    )
+                self.video
+                    .insert_live_source(input, seed)
                     .map_err(|error| {
                         AppFailure(format!("native input {input} cannot start: {error}"))
                     })?;
             } else if replaced.contains(&input) {
-                self.playback
-                    .as_mut()
-                    .expect("the video realizer holds the playback")
-                    .remove_source(input);
+                self.video.remove_source(input).map_err(AppFailure)?;
             }
             eprintln!("FREEMIXD_INPUT\tv=1\tinput={input}\tstarted");
         }
@@ -600,14 +590,8 @@ impl NativeDaemon {
             let input = self.stills.swap_remove(index).input;
             match outcome {
                 Ok(frame) => {
-                    self.runtime
-                        .insert_live_source_blocking(
-                            self.playback
-                                .as_mut()
-                                .expect("the video realizer holds the playback"),
-                            input,
-                            frame.clone(),
-                        )
+                    self.video
+                        .insert_live_source(input, frame.clone())
                         .map_err(|error| {
                             AppFailure(format!("native still input {input} cannot start: {error}"))
                         })?;

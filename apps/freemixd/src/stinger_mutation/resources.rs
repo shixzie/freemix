@@ -174,12 +174,10 @@ impl NativeDaemon {
             match preflight.result.try_recv() {
                 Ok(Ok(mutation)) => {
                     let _ = preflight.worker.join();
-                    if self
-                        .playback
-                        .as_ref()
-                        .expect("the video realizer holds the playback")
+                    if !self
+                        .video
                         .validate_retained_byte_limit(mutation.ordinary_video_limit)
-                        .is_err()
+                        .map_err(AppFailure)?
                     {
                         self.stinger_retirements.discard(mutation)?;
                         return Ok(Some((Err(()), runtime_events)));
@@ -211,14 +209,13 @@ impl NativeDaemon {
         let Some(mutation) = self.pending_stinger_mutation.take() else {
             return Ok(());
         };
-        self.playback
-            .as_mut()
-            .expect("the video realizer holds the playback")
-            .set_retained_byte_limit(mutation.ordinary_video_limit);
+        self.video
+            .set_retained_byte_limit(mutation.ordinary_video_limit)
+            .map_err(AppFailure)?;
         let old_stingers = self
-            .stingers
-            .replace(mutation.stingers)
-            .expect("the video realizer holds the stingers");
+            .video
+            .replace_stingers(mutation.stingers)
+            .map_err(AppFailure)?;
         let old_audio = self
             .audio
             .replace_stinger_audio(mutation.audio)
