@@ -5298,9 +5298,9 @@ Remaining gaps:
   (console keys bound to Next slide and Previous slide can);
 - a host folder is copied once, so live edits follow the project's copy,
   not the original folder; there is no filesystem watch, only a 2 s rescan;
-- portable bundle export already copies a slideshow folder's pictures and
-  the asset audit now resolves the folder itself, but relink does not yet
-  treat a slideshow folder as an asset;
+- portable bundle export copies a slideshow folder's pictures, the asset
+  audit resolves the folder itself, and relink finds and imports a same-named
+  folder with pictures;
 - native Ken Burns crops are whole source pixels, a random order's next
   slide is prefetched approximately, and the slideshow textures are outside
   the media registry's retained-byte accounting;

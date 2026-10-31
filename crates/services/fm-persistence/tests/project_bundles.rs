@@ -1391,6 +1391,54 @@ fn relink_apply_rejects_stale_plans_and_occupied_keys() {
 }
 
 #[test]
+fn a_missing_slideshow_folder_is_relinked_as_a_folder() {
+    let temp = TestDirectory::new("relink-folder");
+    let store = temp.store("show.freemix");
+    let mut project = empty_project(1, "Show");
+    project.add_input(Input {
+        id: input_id(1),
+        name: "Slides".into(),
+        kind: InputKind::Slideshow(fm_types::still::SlideshowConfig::new(
+            fm_types::still::SlideshowSource::Folder {
+                asset_uri: "asset://slides".into(),
+            },
+        )),
+        required_capabilities: Vec::new(),
+    });
+    let project = stored(project);
+    store.save(&project).unwrap();
+    // A same-named folder holding pictures is imported whole; a same-named
+    // folder without pictures is not a candidate.
+    write(&temp.path("search/slides/one.png"), b"one");
+    write(&temp.path("search/slides/two.png"), b"two");
+    write(&temp.path("search/other/notes.txt"), b"not a picture");
+    let search = RelinkSearch::new(vec![temp.path("search")]);
+    let plan = store.plan_media_relink(&project, &search).unwrap();
+    assert_eq!(
+        plan.entries[0].resolution,
+        RelinkResolution::ImportFolder {
+            source: temp.path("search/slides"),
+            bytes: 6,
+        }
+    );
+    let outcome = store.apply_media_relink(&project, &plan).unwrap();
+    assert_eq!(outcome.relinked, [input_id(1)]);
+    assert_eq!(
+        fs::read(store.assets_root().join("slides/one.png")).unwrap(),
+        b"one"
+    );
+    assert_eq!(
+        fs::read(store.assets_root().join("slides/two.png")).unwrap(),
+        b"two"
+    );
+    assert!(
+        store
+            .resolve_asset_folder("asset://slides")
+            .is_ok_and(|path| path.is_dir())
+    );
+}
+
+#[test]
 fn relink_search_is_bounded() {
     let temp = TestDirectory::new("relink-bounded");
     let store = temp.store("show.freemix");

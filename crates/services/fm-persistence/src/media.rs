@@ -217,6 +217,9 @@ pub enum RelinkResolution {
     RewriteUri { asset_uri: String },
     /// A same-named external file: copy it to the input's original key.
     Import { source: PathBuf, bytes: u64 },
+    /// A same-named external folder with pictures: copy its pictures to the
+    /// input's original folder key (a folder slideshow).
+    ImportFolder { source: PathBuf, bytes: u64 },
     /// Several equally ranked candidates with different contents. Nothing is
     /// chosen automatically; candidates are sorted.
     Ambiguous { candidates: Vec<PathBuf> },
@@ -402,42 +405,66 @@ impl ProjectStore {
             .into_iter()
             .filter(|issue| media_uri(project, issue.input_id).is_some())
             .collect::<Vec<_>>();
-        let mut wanted = BTreeSet::new();
+        let mut wanted_files = BTreeSet::new();
+        let mut wanted_folders = BTreeSet::new();
         for issue in &issues {
-            if issue.reason == AssetAuditReason::MissingAsset
-                && let Some(name) = media_uri(project, issue.input_id)
-                    .and_then(|uri| asset_uri_key(uri).ok())
-                    .and_then(|key| key.rsplit('/').next())
-            {
-                wanted.insert(OsString::from(name));
+            if issue.reason != AssetAuditReason::MissingAsset {
+                continue;
+            }
+            let Some(name) = media_uri(project, issue.input_id)
+                .and_then(|uri| asset_uri_key(uri).ok())
+                .and_then(|key| key.rsplit('/').next())
+            else {
+                continue;
+            };
+            if media_is_folder(project, issue.input_id) {
+                wanted_folders.insert(OsString::from(name));
+            } else {
+                wanted_files.insert(OsString::from(name));
             }
         }
 
         let mut budget = search.max_entries;
         let mut truncated = false;
         let mut found: BTreeMap<OsString, Vec<Candidate>> = BTreeMap::new();
-        if !wanted.is_empty() {
+        let mut found_folders: BTreeMap<OsString, Vec<Candidate>> = BTreeMap::new();
+        if !wanted_files.is_empty() || !wanted_folders.is_empty() {
             let assets_root = fs::canonicalize(self.assets_root()).ok();
-            if let Some(root) = &assets_root {
-                truncated |=
-                    collect_named(root, 0, search.max_depth, &wanted, &mut budget, &mut found)?;
-            }
+            let mut roots = vec![(0usize, assets_root.clone())];
             for (index, directory) in search.directories.iter().enumerate() {
-                let directory = fs::canonicalize(directory)?;
-                if assets_root
-                    .as_ref()
-                    .is_some_and(|root| directory.starts_with(root))
+                roots.push((index + 1, Some(fs::canonicalize(directory)?)));
+            }
+            for (rank, directory) in roots {
+                let Some(directory) = directory else {
+                    continue;
+                };
+                if rank > 0
+                    && assets_root
+                        .as_ref()
+                        .is_some_and(|root| directory.starts_with(root))
                 {
                     continue;
                 }
-                truncated |= collect_named(
-                    &directory,
-                    index + 1,
-                    search.max_depth,
-                    &wanted,
-                    &mut budget,
-                    &mut found,
-                )?;
+                if !wanted_files.is_empty() {
+                    truncated |= collect_named(
+                        &directory,
+                        rank,
+                        search.max_depth,
+                        &wanted_files,
+                        &mut budget,
+                        &mut found,
+                    )?;
+                }
+                if !wanted_folders.is_empty() {
+                    truncated |= collect_named_folders(
+                        &directory,
+                        rank,
+                        search.max_depth,
+                        &wanted_folders,
+                        &mut budget,
+                        &mut found_folders,
+                    )?;
+                }
             }
         }
 
@@ -447,13 +474,21 @@ impl ProjectStore {
             let asset_uri = media_uri(project, issue.input_id)
                 .unwrap_or_default()
                 .to_owned();
+            let folder = media_is_folder(project, issue.input_id);
             let resolution = if issue.reason == AssetAuditReason::MissingAsset {
                 let name = asset_uri_key(&asset_uri)
                     .ok()
                     .and_then(|key| key.rsplit('/').next())
                     .unwrap_or_default();
-                let candidates = found.get(OsStr::new(name)).map_or(&[][..], Vec::as_slice);
-                choose(candidates, assets_root.as_deref())?
+                if folder {
+                    let candidates = found_folders
+                        .get(OsStr::new(name))
+                        .map_or(&[][..], Vec::as_slice);
+                    choose_folder(candidates, assets_root.as_deref())?
+                } else {
+                    let candidates = found.get(OsStr::new(name)).map_or(&[][..], Vec::as_slice);
+                    choose(candidates, assets_root.as_deref())?
+                }
             } else {
                 RelinkResolution::Unrelinkable
             };
@@ -528,6 +563,40 @@ impl ProjectStore {
                     }
                     relinked.push(entry.input_id);
                 }
+                RelinkResolution::ImportFolder { source, bytes } => {
+                    let pictures = folder_pictures(source)?;
+                    if pictures.iter().map(|(_, length)| length).sum::<u64>() != *bytes {
+                        return Err(BundleError::StalePlan {
+                            input: entry.input_id,
+                        });
+                    }
+                    let key = asset_uri_key(&entry.asset_uri)
+                        .map_err(|_| BundleError::StalePlan {
+                            input: entry.input_id,
+                        })?
+                        .to_owned();
+                    let parent = fsutil::create_parents_within(&self.assets_root(), &key)?
+                        .parent()
+                        .map_or_else(|| self.assets_root(), Path::to_path_buf);
+                    let destination = parent.join(key.rsplit('/').next().unwrap_or_default());
+                    fs::create_dir_all(&destination)?;
+                    if !fs::metadata(&destination).is_ok_and(|metadata| metadata.is_dir()) {
+                        return Err(BundleError::Collision { key });
+                    }
+                    for (name, _) in &pictures {
+                        let target = destination.join(name);
+                        match fsutil::copy_new_file(&source.join(name), &target) {
+                            Ok(copied) => imported_bytes += copied,
+                            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                                if !fsutil::same_contents(&source.join(name), &target)? {
+                                    return Err(BundleError::Collision { key });
+                                }
+                            }
+                            Err(error) => return Err(error.into()),
+                        }
+                    }
+                    relinked.push(entry.input_id);
+                }
                 RelinkResolution::Ambiguous { .. }
                 | RelinkResolution::NotFound
                 | RelinkResolution::Unrelinkable => unresolved.push(entry.input_id),
@@ -536,7 +605,12 @@ impl ProjectStore {
         let project = project.with_project(domain)?;
         for input in &relinked {
             let uri = media_uri(&project, *input).unwrap_or_default();
-            if self.resolve_asset_uri(uri).is_err() {
+            let resolved = if media_is_folder(&project, *input) {
+                self.resolve_asset_folder(uri)
+            } else {
+                self.resolve_asset_uri(uri)
+            };
+            if resolved.is_err() {
                 return Err(BundleError::StalePlan { input: *input });
             }
         }
@@ -569,7 +643,31 @@ pub(crate) fn media_uri(project: &StoredProject, input: InputId) -> Option<&str>
             | InputKind::Document(fm_model::DocumentInput { asset_uri, .. }) => {
                 Some(asset_uri.as_str())
             }
+            // A folder slideshow's source is a directory asset (IN-009).
+            InputKind::Slideshow(config) => match &config.source {
+                fm_types::still::SlideshowSource::Folder { asset_uri } => Some(asset_uri.as_str()),
+                fm_types::still::SlideshowSource::List(_) => None,
+            },
             _ => None,
+        })
+}
+
+/// Whether `input` names a slideshow folder rather than a media file.
+pub(crate) fn media_is_folder(project: &StoredProject, input: InputId) -> bool {
+    project
+        .project()
+        .inputs()
+        .iter()
+        .find(|candidate| candidate.id == input)
+        .is_some_and(|input| {
+            matches!(
+                &input.kind,
+                InputKind::Slideshow(config)
+                    if matches!(
+                        &config.source,
+                        fm_types::still::SlideshowSource::Folder { .. }
+                    )
+            )
         })
 }
 
@@ -629,6 +727,131 @@ fn collect_named(
         level = next;
     }
     Ok(false)
+}
+
+/// The picture files directly inside `folder`, as `(name, length)`, sorted.
+fn folder_pictures(folder: &Path) -> io::Result<Vec<(OsString, u64)>> {
+    let mut pictures = fs::read_dir(folder)?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(fm_types::still::is_image_file_name)
+        })
+        .map(|entry| Ok((entry.file_name(), entry.metadata()?.len())))
+        .collect::<io::Result<Vec<_>>>()?;
+    pictures.sort();
+    Ok(pictures)
+}
+
+/// Walks `root` breadth-first in sorted order, collecting directories whose
+/// names are wanted and that hold at least one picture. Returns whether the
+/// entry budget ran out.
+fn collect_named_folders(
+    root: &Path,
+    source_rank: usize,
+    max_depth: usize,
+    wanted: &BTreeSet<OsString>,
+    budget: &mut usize,
+    found: &mut BTreeMap<OsString, Vec<Candidate>>,
+) -> io::Result<bool> {
+    let mut level = vec![root.to_path_buf()];
+    for depth in 0..=max_depth {
+        let mut next = Vec::new();
+        for directory in level {
+            let mut children = match fs::read_dir(&directory) {
+                Ok(entries) => entries
+                    .map(|entry| entry.map(|entry| entry.path()))
+                    .collect::<io::Result<Vec<_>>>()?,
+                Err(error) if depth > 0 => {
+                    let _ = error;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            children.sort();
+            for child in children {
+                if *budget == 0 {
+                    return Ok(true);
+                }
+                *budget -= 1;
+                let Ok(link) = fs::symlink_metadata(&child) else {
+                    continue;
+                };
+                if !link.is_dir() {
+                    continue;
+                }
+                next.push(child.clone());
+                let Some(name) = child.file_name() else {
+                    continue;
+                };
+                if wanted.contains(name)
+                    && folder_pictures(&child).is_ok_and(|pictures| !pictures.is_empty())
+                {
+                    found
+                        .entry(name.to_os_string())
+                        .or_default()
+                        .push(Candidate {
+                            source_rank,
+                            depth,
+                            path: child,
+                        });
+                }
+            }
+        }
+        level = next;
+    }
+    Ok(false)
+}
+
+fn choose_folder(
+    candidates: &[Candidate],
+    assets_root: Option<&Path>,
+) -> Result<RelinkResolution, BundleError> {
+    let mut usable = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.source_rank != 0 || in_bundle_key(candidate, assets_root).is_some()
+        })
+        .collect::<Vec<_>>();
+    usable.sort_by(|left, right| {
+        (left.source_rank, left.depth, &left.path).cmp(&(
+            right.source_rank,
+            right.depth,
+            &right.path,
+        ))
+    });
+    let Some(best) = usable.first() else {
+        return Ok(RelinkResolution::NotFound);
+    };
+    let tier = usable
+        .iter()
+        .take_while(|candidate| {
+            candidate.source_rank == best.source_rank && candidate.depth == best.depth
+        })
+        .collect::<Vec<_>>();
+    let best_pictures = folder_pictures(&best.path)?;
+    for other in &tier[1..] {
+        if folder_pictures(&other.path)? != best_pictures {
+            return Ok(RelinkResolution::Ambiguous {
+                candidates: tier
+                    .iter()
+                    .map(|candidate| candidate.path.clone())
+                    .collect(),
+            });
+        }
+    }
+    if let Some(key) = in_bundle_key(best, assets_root) {
+        return Ok(RelinkResolution::RewriteUri {
+            asset_uri: asset_uri(&key),
+        });
+    }
+    Ok(RelinkResolution::ImportFolder {
+        source: best.path.clone(),
+        bytes: best_pictures.iter().map(|(_, bytes)| bytes).sum(),
+    })
 }
 
 fn choose(
