@@ -6269,6 +6269,20 @@ fn print_audio_buses(project: &Project) {
             bus.id, bus.name,
         );
     }
+    for (bus, value) in project.aux_buses().iter() {
+        let dsp = if value.dsp.is_default() {
+            "flat".to_owned()
+        } else {
+            value.dsp.code()
+        };
+        println!(
+            "audio_aux_bus bus={} name={:?} gain_millidb={} muted={} dsp={dsp}",
+            bus.letter(),
+            value.name,
+            value.gain.get(),
+            value.muted
+        );
+    }
 }
 
 /// A standalone live scene layer edit (no gesture) of layer `layer` of

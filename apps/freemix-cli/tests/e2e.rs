@@ -32,6 +32,18 @@ const TEST_CLI_TIMEOUT: Duration = Duration::from_secs(10);
 /// The absolute destination the OR-013 fake export writes to.
 const REEL_EXPORT_DESTINATION: &str = "/srv/reels/highlights.mp4";
 
+/// The aux-bus lines `audio-buses` appends after the legacy bus graph, for a
+/// project whose seven buses are still at their defaults.
+const DEFAULT_AUX_BUSES: &str = concat!(
+    "\naudio_aux_bus bus=A name=\"Bus A\" gain_millidb=0 muted=false dsp=flat",
+    "\naudio_aux_bus bus=B name=\"Bus B\" gain_millidb=0 muted=false dsp=flat",
+    "\naudio_aux_bus bus=C name=\"Bus C\" gain_millidb=0 muted=false dsp=flat",
+    "\naudio_aux_bus bus=D name=\"Bus D\" gain_millidb=0 muted=false dsp=flat",
+    "\naudio_aux_bus bus=E name=\"Bus E\" gain_millidb=0 muted=false dsp=flat",
+    "\naudio_aux_bus bus=F name=\"Bus F\" gain_millidb=0 muted=false dsp=flat",
+    "\naudio_aux_bus bus=G name=\"Bus G\" gain_millidb=0 muted=false dsp=flat",
+);
+
 struct FakeRemoteServer {
     address: SocketAddr,
     worker: JoinHandle<()>,
@@ -7086,9 +7098,12 @@ fn local_output_editing_persists_routes_and_names_and_rejects_unknown_references
     assert_success(&audio_buses);
     assert_eq!(
         stdout(&audio_buses),
-        concat!(
-            "audio_bus id=20 name=\"Master\" sends=[]\n",
-            "audio_bus id=21 name=\"Aux \\\"A\\\"\" sends=[]"
+        format!(
+            "{}{DEFAULT_AUX_BUSES}",
+            concat!(
+                "audio_bus id=20 name=\"Master\" sends=[]\n",
+                "audio_bus id=21 name=\"Aux \\\"A\\\"\" sends=[]"
+            )
         )
     );
     let outputs = invoke(&["outputs", context.project_path()]);
@@ -7328,7 +7343,7 @@ fn local_audio_bus_send_editing_is_atomic() {
     let assert_inventory = |expected| {
         let inventory = invoke(&["audio-buses", context.project_path()]);
         assert_success(&inventory);
-        assert_eq!(stdout(&inventory), expected);
+        assert_eq!(stdout(&inventory), format!("{expected}{DEFAULT_AUX_BUSES}"));
     };
     edit("audio-bus-send-add", "20", "21");
     assert_inventory(
