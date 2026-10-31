@@ -15,6 +15,7 @@ native-media = [
     "dep:fm-codec-ffmpeg",
     "dep:fm-color",
     "dep:fm-gpu",
+    "dep:fm-daemon-native",
     "dep:fm-io-linux",
     "dep:fm-io-macos",
     "dep:fm-io-network",
@@ -40,6 +41,7 @@ fm-compositor = { path = "../../crates/gpu/fm-compositor" }
 fm-control = { path = "../../crates/services/fm-control" }
 fm-daemon-arguments = { path = "../../crates/services/fm-daemon-arguments" }
 fm-daemon-journal = { path = "../../crates/services/fm-daemon-journal" }
+fm-daemon-native = { path = "../../crates/services/fm-daemon-native", optional = true }
 fm-daemon-web = { path = "../../crates/services/fm-daemon-web" }
 fm-engine = { path = "../../crates/services/fm-engine" }
 fm-frame = { path = "../../crates/media/fm-frame" }

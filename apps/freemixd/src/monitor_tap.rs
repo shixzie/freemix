@@ -60,6 +60,7 @@ use fm_compositor::{
     compile_scene, execute_cpu,
 };
 use fm_control::ControlService;
+use fm_daemon_native::overlay_layout::{overlay_border_width, overlay_transform};
 use fm_engine::CompiledProjectGrades;
 use fm_model::{InputKind, Project, SimulatedVideo};
 use fm_protocol::{
@@ -72,7 +73,6 @@ use fm_sim::{ImageFrame, Rgba8, SimulatedPipeline, SimulatedSource, SourcePatter
 use fm_switcher::{OverlayBorderPreset, OverlayPositionPreset};
 use fm_titles::{AnimSample, TitleAir};
 use fm_types::{InputId, VideoDimensions};
-use freemixd::overlay_layout::{overlay_border_width, overlay_transform};
 
 use crate::documents::DocumentPages;
 use crate::grading::GradeCache;

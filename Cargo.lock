@@ -1664,6 +1664,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "fm-daemon-native"
+version = "0.1.0"
+dependencies = [
+ "fm-audio",
+ "fm-clock",
+ "fm-codec-ffmpeg",
+ "fm-color",
+ "fm-command",
+ "fm-compositor",
+ "fm-engine",
+ "fm-frame",
+ "fm-gpu",
+ "fm-grade",
+ "fm-model",
+ "fm-persistence",
+ "fm-plugin-host-api",
+ "fm-scheduler",
+ "fm-sim",
+ "fm-switcher",
+ "fm-types",
+ "half",
+ "tempfile",
+]
+
+[[package]]
 name = "fm-daemon-web"
 version = "0.1.0"
 dependencies = [
@@ -2277,6 +2302,7 @@ dependencies = [
  "fm-control",
  "fm-daemon-arguments",
  "fm-daemon-journal",
+ "fm-daemon-native",
  "fm-daemon-web",
  "fm-engine",
  "fm-frame",

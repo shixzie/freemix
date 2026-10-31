@@ -1,0 +1,32 @@
+[package]
+name = "fm-daemon-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fm-audio = { path = "../../media/fm-audio" }
+fm-clock = { path = "../../media/fm-clock" }
+fm-codec-ffmpeg = { path = "../../io/fm-codec-ffmpeg" }
+fm-color = { path = "../../gpu/fm-color", features = ["native-wgpu"] }
+fm-compositor = { path = "../../gpu/fm-compositor", features = ["native-wgpu"] }
+fm-engine = { path = "../fm-engine" }
+fm-frame = { path = "../../media/fm-frame" }
+fm-gpu = { path = "../../gpu/fm-gpu", features = ["native-wgpu"] }
+fm-model = { path = "../../foundation/fm-model" }
+fm-plugin-host-api = { path = "../../features/fm-plugin-host-api" }
+fm-scheduler = { path = "../../media/fm-scheduler" }
+fm-sim = { path = "../../media/fm-sim" }
+fm-switcher = { path = "../../features/fm-switcher" }
+fm-types = { path = "../../foundation/fm-types" }
+
+[dev-dependencies]
+fm-command = { path = "../../foundation/fm-command" }
+fm-grade = { path = "../../foundation/fm-grade" }
+fm-persistence = { path = "../fm-persistence" }
+half = "2.7.1"
+tempfile = "3.20"
+
+[lints]
+workspace = true
