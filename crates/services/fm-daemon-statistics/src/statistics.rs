@@ -64,118 +64,118 @@ use fm_protocol::{
 };
 
 /// The shortest spacing of two statistics samples.
-pub(crate) const STATISTICS_INTERVAL: Duration = Duration::from_secs(1);
+pub const STATISTICS_INTERVAL: Duration = Duration::from_secs(1);
 
 /// The most frame lateness or GPU pass observations the native frame loop
 /// buffers between two samples; later ones are counted as dropped.
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
-pub(crate) const MAX_PENDING_OBSERVATIONS: usize = 1_024;
+pub const MAX_PENDING_OBSERVATIONS: usize = 1_024;
 
 /// Stable metric names.
-pub(crate) mod names {
+pub mod names {
     /// The daemon process's CPU utilization, `0..=1` of every logical CPU.
-    pub(crate) const CPU_UTILIZATION: &str = "cpu.process_utilization";
+    pub const CPU_UTILIZATION: &str = "cpu.process_utilization";
     /// Timestamped GPU render-pass time per wall time, `0..=1` (a proxy).
-    pub(crate) const GPU_UTILIZATION: &str = "gpu.utilization";
+    pub const GPU_UTILIZATION: &str = "gpu.utilization";
     /// How late the host woke for each realized frame, in milliseconds.
-    pub(crate) const FRAME_LATENESS_MS: &str = "frame.host_lateness_ms";
+    pub const FRAME_LATENESS_MS: &str = "frame.host_lateness_ms";
     /// Frames the native frame loop realized.
-    pub(crate) const FRAMES_REALIZED: &str = "frame.realized_total";
+    pub const FRAMES_REALIZED: &str = "frame.realized_total";
     /// Realized frames whose host lateness reached half a frame interval.
-    pub(crate) const FRAMES_LATE: &str = "frame.late_total";
+    pub const FRAMES_LATE: &str = "frame.late_total";
     /// The share of the frames realized since the previous sample that were
     /// late, `0..=1`.
-    pub(crate) const FRAME_LATE_RATIO: &str = "frame.late_ratio";
+    pub const FRAME_LATE_RATIO: &str = "frame.late_ratio";
     /// Pictures discarded on the way to an output: stream A/V pairs refused
     /// at admission plus display output frames dropped.
-    pub(crate) const FRAMES_DROPPED: &str = "frame.dropped_total";
+    pub const FRAMES_DROPPED: &str = "frame.dropped_total";
     /// Lateness or GPU observations the frame loop could not buffer.
-    pub(crate) const OBSERVATIONS_DROPPED: &str = "statistics.observations_dropped_total";
+    pub const OBSERVATIONS_DROPPED: &str = "statistics.observations_dropped_total";
     /// One GPU pass, in milliseconds.
-    pub(crate) const GPU_PASS_MS: &str = "gpu.pass_ms";
+    pub const GPU_PASS_MS: &str = "gpu.pass_ms";
     /// Audio blocks waiting in the master sink.
-    pub(crate) const AUDIO_SINK_DEPTH: &str = "audio.sink_depth";
+    pub const AUDIO_SINK_DEPTH: &str = "audio.sink_depth";
     /// Audio blocks the master sink dropped.
-    pub(crate) const AUDIO_SINK_DROPPED: &str = "audio.sink_dropped_total";
+    pub const AUDIO_SINK_DROPPED: &str = "audio.sink_dropped_total";
     /// Times an audio source stalled the master mix.
-    pub(crate) const AUDIO_SOURCE_STALLS: &str = "audio.source_stalls_total";
+    pub const AUDIO_SOURCE_STALLS: &str = "audio.source_stalls_total";
     /// Bytes of audio the master mix retains.
-    pub(crate) const AUDIO_RETAINED_BYTES: &str = "audio.retained_bytes";
+    pub const AUDIO_RETAINED_BYTES: &str = "audio.retained_bytes";
     /// A/V pairs queued across the running recorders.
-    pub(crate) const RECORDER_OUTSTANDING_PAIRS: &str = "recorder.outstanding_pairs";
+    pub const RECORDER_OUTSTANDING_PAIRS: &str = "recorder.outstanding_pairs";
     /// Bytes queued across the running recorders.
-    pub(crate) const RECORDER_RETAINED_BYTES: &str = "recorder.retained_bytes";
+    pub const RECORDER_RETAINED_BYTES: &str = "recorder.retained_bytes";
     /// A/V pairs admitted to stream targets.
-    pub(crate) const STREAM_ENQUEUED_PAIRS: &str = "stream.enqueued_pairs_total";
+    pub const STREAM_ENQUEUED_PAIRS: &str = "stream.enqueued_pairs_total";
     /// A/V pairs stream targets refused.
-    pub(crate) const STREAM_DROPPED_PAIRS: &str = "stream.dropped_pairs_total";
+    pub const STREAM_DROPPED_PAIRS: &str = "stream.dropped_pairs_total";
     /// Encoded monitor frames published, per `tap`.
-    pub(crate) const MONITOR_PUBLISHED: &str = "monitor.frames_published_total";
+    pub const MONITOR_PUBLISHED: &str = "monitor.frames_published_total";
     /// Monitor frames that failed to encode, per `tap`.
-    pub(crate) const MONITOR_FAILED: &str = "monitor.frames_failed_total";
+    pub const MONITOR_FAILED: &str = "monitor.frames_failed_total";
     /// Monitor frames skipped while a previous one was still in flight, per
     /// `tap`.
-    pub(crate) const MONITOR_SKIPPED: &str = "monitor.frames_skipped_total";
+    pub const MONITOR_SKIPPED: &str = "monitor.frames_skipped_total";
     /// Camera frames dropped by the platform or the ingest queue.
-    pub(crate) const CAMERA_DROPPED: &str = "camera.frames_dropped_total";
+    pub const CAMERA_DROPPED: &str = "camera.frames_dropped_total";
     /// Lowest free space across the configured output filesystems.
-    pub(crate) const DISK_FREE_BYTES: &str = "disk.free_bytes";
+    pub const DISK_FREE_BYTES: &str = "disk.free_bytes";
     /// Outputs (stream targets and recorder slots) that latched a failure.
-    pub(crate) const OUTPUTS_FAILED: &str = "output.failed";
+    pub const OUTPUTS_FAILED: &str = "output.failed";
     /// Started stream targets that have not latched a failure and were not
     /// deliberately stopped.
-    pub(crate) const NETWORK_ACTIVE_TARGETS: &str = "network.active_targets";
+    pub const NETWORK_ACTIVE_TARGETS: &str = "network.active_targets";
     /// Active stream targets whose transport is delivering or awaiting its
     /// first random-access pair.
-    pub(crate) const NETWORK_CONNECTED_TARGETS: &str = "network.connected_targets";
+    pub const NETWORK_CONNECTED_TARGETS: &str = "network.connected_targets";
     /// Active stream targets waiting out a reconnect backoff.
-    pub(crate) const NETWORK_RECONNECTING_TARGETS: &str = "network.reconnecting_targets";
+    pub const NETWORK_RECONNECTING_TARGETS: &str = "network.reconnecting_targets";
     /// Encoded outgoing bitrate summed over the active stream targets.
-    pub(crate) const NETWORK_BITRATE_KBPS: &str = "network.bitrate_kbps";
+    pub const NETWORK_BITRATE_KBPS: &str = "network.bitrate_kbps";
     /// The worst packet loss an active target's transport reported, in parts
     /// per million; absent while no transport reports one.
-    pub(crate) const NETWORK_PACKET_LOSS_PPM: &str = "network.packet_loss_ppm";
+    pub const NETWORK_PACKET_LOSS_PPM: &str = "network.packet_loss_ppm";
     /// Running live sources.
-    pub(crate) const SYNC_SOURCES: &str = "sync.sources";
+    pub const SYNC_SOURCES: &str = "sync.sources";
     /// Live sources whose clock loop is not running healthy.
-    pub(crate) const SYNC_DEGRADED_SOURCES: &str = "sync.degraded_sources";
+    pub const SYNC_DEGRADED_SOURCES: &str = "sync.degraded_sources";
     /// The largest absolute estimated drift across the live sources, in ppm.
-    pub(crate) const SYNC_MAX_DRIFT_PPM: &str = "sync.max_drift_ppm";
+    pub const SYNC_MAX_DRIFT_PPM: &str = "sync.max_drift_ppm";
     /// The largest audio backlog over its target across the live sources.
-    pub(crate) const SYNC_MAX_BACKLOG_RATIO: &str = "sync.max_backlog_ratio";
+    pub const SYNC_MAX_BACKLOG_RATIO: &str = "sync.max_backlog_ratio";
     /// A/V pairs queued across the running encoders whose queue was read.
-    pub(crate) const ENCODER_OUTSTANDING_PAIRS: &str = "encoder.outstanding_pairs";
+    pub const ENCODER_OUTSTANDING_PAIRS: &str = "encoder.outstanding_pairs";
     /// Those encoders' configured queue capacity, in pairs.
-    pub(crate) const ENCODER_CAPACITY_PAIRS: &str = "encoder.capacity_pairs";
+    pub const ENCODER_CAPACITY_PAIRS: &str = "encoder.capacity_pairs";
     /// The fullest running encoder queue, `0..=1`; absent while no output
     /// reports a queue.
-    pub(crate) const ENCODER_QUEUE_UTILIZATION: &str = "encoder.queue_utilization";
+    pub const ENCODER_QUEUE_UTILIZATION: &str = "encoder.queue_utilization";
     /// Sessions subscribed to the control plane.
-    pub(crate) const CONTROL_SUBSCRIBERS: &str = "control.subscribers";
+    pub const CONTROL_SUBSCRIBERS: &str = "control.subscribers";
     /// The control plane's current revision.
-    pub(crate) const CONTROL_REVISION: &str = "control.revision";
+    pub const CONTROL_REVISION: &str = "control.revision";
 }
 
 /// The most recent alert notifications kept for clients.
-pub(crate) const MAX_RECENT_NOTIFICATIONS: usize = 16;
+pub const MAX_RECENT_NOTIFICATIONS: usize = 16;
 
 /// One default alert rule.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct DefaultRule {
+pub struct DefaultRule {
     /// The rule ID, which is also its wire token.
-    pub(crate) id: &'static str,
-    pub(crate) metric: &'static str,
-    pub(crate) severity: AlertSeverity,
+    pub id: &'static str,
+    pub metric: &'static str,
+    pub severity: AlertSeverity,
     /// `true` for a per-second rate of the metric, `false` for its value.
-    pub(crate) rate: bool,
-    pub(crate) direction: ThresholdDirection,
+    pub rate: bool,
+    pub direction: ThresholdDirection,
 }
 
 /// Every default rule, in [`HealthAlertRule::ALL`] order (which is also the
 /// wire order), so the engine's insertion order matches the protocol. Their
 /// thresholds and holds are the show's settings, else each rule's
 /// [`HealthAlertRule::defaults`].
-pub(crate) const DEFAULT_RULES: [DefaultRule; 9] = [
+pub const DEFAULT_RULES: [DefaultRule; 9] = [
     // The process keeps most of the machine busy for ten seconds.
     DefaultRule {
         id: "cpu_saturated",
@@ -254,21 +254,21 @@ pub(crate) const DEFAULT_RULES: [DefaultRule; 9] = [
 
 /// One firing alert.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ActiveAlert {
-    pub(crate) rule: RuleId,
-    pub(crate) severity: AlertSeverity,
+pub struct ActiveAlert {
+    pub rule: RuleId,
+    pub severity: AlertSeverity,
     /// When it fired, in statistics milliseconds.
-    pub(crate) since_ms: u64,
+    pub since_ms: u64,
     /// The latest reading (a rate for rate rules).
-    pub(crate) value: Option<f64>,
+    pub value: Option<f64>,
     /// When its acknowledgement ends (exclusive), in statistics
     /// milliseconds, once acknowledged.
-    pub(crate) acknowledged_until_ms: Option<u64>,
+    pub acknowledged_until_ms: Option<u64>,
 }
 
 /// Why an operator's alert action was refused (Protocol 2.109).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum AlertActionError {
+pub enum AlertActionError {
     /// Only a firing rule may be acknowledged.
     NotFiring,
     /// The daemon does not evaluate the rule.
@@ -277,7 +277,7 @@ pub(crate) enum AlertActionError {
 
 impl AlertActionError {
     /// The structured error code.
-    pub(crate) const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
             Self::NotFiring => "conflict",
             Self::UnknownRule => "not_found",
@@ -285,7 +285,7 @@ impl AlertActionError {
     }
 
     /// The English message.
-    pub(crate) const fn message(self) -> &'static str {
+    pub const fn message(self) -> &'static str {
         match self {
             Self::NotFiring => "only a firing alert can be acknowledged",
             Self::UnknownRule => "the daemon does not evaluate that alert rule",
@@ -337,7 +337,7 @@ fn default_engine(registry: &MetricRegistry) -> AlertEngine {
 }
 
 /// The `FREEMIXD_ALERT` stderr line of one notification.
-pub(crate) fn alert_record(notification: &AlertNotification) -> String {
+pub fn alert_record(notification: &AlertNotification) -> String {
     format!(
         "FREEMIXD_ALERT\tv=1\trule={}\tseverity={}\tkind={}\tat_ms={}\tvalue={}",
         notification.rule,
@@ -357,47 +357,47 @@ const GPU_PASS_EDGES_MS: [f64; 10] = [0.0, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 
 
 /// One monitor tap's whole-run totals.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct TapTotals {
-    pub(crate) published: u64,
-    pub(crate) failed: u64,
-    pub(crate) skipped: u64,
+pub struct TapTotals {
+    pub published: u64,
+    pub failed: u64,
+    pub skipped: u64,
 }
 
 /// The active stream targets' aggregate network state, from the shared
 /// output set's bounded per-target telemetry.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct NetworkSample {
+pub struct NetworkSample {
     /// Started targets that have not latched a failure and were not
     /// deliberately stopped.
-    pub(crate) active_targets: u64,
+    pub active_targets: u64,
     /// Active targets whose transport is delivering or awaiting its first
     /// random-access pair.
-    pub(crate) connected_targets: u64,
+    pub connected_targets: u64,
     /// Active targets waiting out a reconnect backoff.
-    pub(crate) reconnecting_targets: u64,
+    pub reconnecting_targets: u64,
     /// Encoded outgoing bitrate summed over the active targets, in kilobits
     /// per second.
-    pub(crate) bitrate_kbps: u64,
+    pub bitrate_kbps: u64,
     /// The worst packet loss an active target's transport reported, in parts
     /// per million; `None` while none reports one.
-    pub(crate) packet_loss_ppm: Option<u32>,
+    pub packet_loss_ppm: Option<u32>,
 }
 
 /// The running live sources' clock-sync health (Protocol 2.76).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct SyncSample {
+pub struct SyncSample {
     /// Running live sources.
-    pub(crate) sources: u64,
+    pub sources: u64,
     /// Sources whose clock loop is not running healthy: not
     /// [`SourceClockState::Running`], drifting more than
     /// [`SYNC_DEGRADED_DRIFT_PPM`], or holding more than
     /// [`SYNC_DEGRADED_BACKLOG_MULTIPLIER`] times their target backlog.
-    pub(crate) degraded_sources: u64,
+    pub degraded_sources: u64,
     /// The largest absolute estimated drift across the sources, in ppm.
-    pub(crate) max_drift_ppm: f64,
+    pub max_drift_ppm: f64,
     /// The largest audio backlog over its target across the sources, as a
     /// ratio; zero when no source reports a target.
-    pub(crate) max_backlog_ratio: f64,
+    pub max_backlog_ratio: f64,
 }
 
 /// A source counts as degraded past this absolute drift, in ppm.
@@ -408,7 +408,7 @@ const SYNC_DEGRADED_BACKLOG_MULTIPLIER: u64 = 2;
 impl SyncSample {
     /// Aggregates one bounded wire sample per running live source.
     #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
-    pub(crate) fn from_samples(samples: &[SourceSyncSample]) -> Self {
+    pub fn from_samples(samples: &[SourceSyncSample]) -> Self {
         let mut sync = Self {
             sources: u64::try_from(samples.len()).unwrap_or(u64::MAX),
             ..Self::default()
@@ -440,14 +440,14 @@ impl SyncSample {
 /// The running encoders' bounded queue state, from the running recorder
 /// slots and started stream targets.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) struct EncoderSample {
+pub struct EncoderSample {
     /// A/V pairs queued across the outputs whose queue was readable.
-    pub(crate) outstanding_pairs: u64,
+    pub outstanding_pairs: u64,
     /// Those outputs' configured queue capacity, in pairs.
-    pub(crate) capacity_pairs: u64,
+    pub capacity_pairs: u64,
     /// The fullest of those queues, `0..=1`; `None` when no output reported
     /// a queue this sample.
-    pub(crate) queue_utilization: Option<f64>,
+    pub queue_utilization: Option<f64>,
 }
 
 impl EncoderSample {
@@ -455,7 +455,7 @@ impl EncoderSample {
     /// queue cannot be read this sample is skipped by the caller, never
     /// folded as a fabricated empty queue.
     #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
-    pub(crate) fn observe(&mut self, outstanding_pairs: u64, capacity_pairs: u64) {
+    pub fn observe(&mut self, outstanding_pairs: u64, capacity_pairs: u64) {
         self.outstanding_pairs = self.outstanding_pairs.saturating_add(outstanding_pairs);
         self.capacity_pairs = self.capacity_pairs.saturating_add(capacity_pairs);
         if capacity_pairs == 0 {
@@ -473,46 +473,46 @@ impl EncoderSample {
 /// What the native frame loop observed since the previous sample (the
 /// observation lists) and in total (everything else).
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct NativeStatisticsSample {
+pub struct NativeStatisticsSample {
     /// The show's nominal frame interval, in milliseconds.
-    pub(crate) frame_interval_ms: f64,
+    pub frame_interval_ms: f64,
     /// Each realized frame's host lateness since the previous sample.
-    pub(crate) lateness_ms: Vec<f64>,
+    pub lateness_ms: Vec<f64>,
     /// Each completed GPU pass since the previous sample.
-    pub(crate) gpu_pass_ms: Vec<f64>,
+    pub gpu_pass_ms: Vec<f64>,
     /// Whether the adapter timestamps GPU passes at all.
-    pub(crate) gpu_timing: bool,
+    pub gpu_timing: bool,
     /// Observations dropped because the buffers were full, in total.
-    pub(crate) observations_dropped: u64,
-    pub(crate) frames_dropped: u64,
-    pub(crate) audio_sink_depth: u64,
-    pub(crate) audio_sink_dropped: u64,
-    pub(crate) audio_source_stalls: u64,
-    pub(crate) audio_retained_bytes: u64,
-    pub(crate) recorder_outstanding_pairs: u64,
-    pub(crate) recorder_retained_bytes: u64,
-    pub(crate) stream_enqueued_pairs: u64,
-    pub(crate) stream_dropped_pairs: u64,
+    pub observations_dropped: u64,
+    pub frames_dropped: u64,
+    pub audio_sink_depth: u64,
+    pub audio_sink_dropped: u64,
+    pub audio_source_stalls: u64,
+    pub audio_retained_bytes: u64,
+    pub recorder_outstanding_pairs: u64,
+    pub recorder_retained_bytes: u64,
+    pub stream_enqueued_pairs: u64,
+    pub stream_dropped_pairs: u64,
     /// Program then Preview.
-    pub(crate) monitor: [TapTotals; 2],
-    pub(crate) camera_dropped: u64,
+    pub monitor: [TapTotals; 2],
+    pub camera_dropped: u64,
     /// `None` until the first successful disk sample.
-    pub(crate) disk_free_bytes: Option<u64>,
+    pub disk_free_bytes: Option<u64>,
     /// Outputs currently latched failed.
-    pub(crate) outputs_failed: u64,
+    pub outputs_failed: u64,
     /// The active stream targets' aggregate network state.
-    pub(crate) network: NetworkSample,
+    pub network: NetworkSample,
     /// The running live sources' clock-sync health.
-    pub(crate) sync: SyncSample,
+    pub sync: SyncSample,
     /// The running recorders' and stream targets' encoder queues.
-    pub(crate) encoder: EncoderSample,
+    pub encoder: EncoderSample,
 }
 
 /// What the control plane reports on either daemon.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ControlSample {
-    pub(crate) subscribers: u64,
-    pub(crate) revision: u64,
+pub struct ControlSample {
+    pub subscribers: u64,
+    pub revision: u64,
 }
 
 const MONITOR_TAPS: [&str; 2] = ["program", "preview"];
@@ -563,7 +563,7 @@ fn gpu_utilization(passes_ms: &[f64], wall_ms: f64) -> Option<f64> {
 
 /// The daemon's bounded metric registry and its sampling cadence.
 #[derive(Debug)]
-pub(crate) struct DaemonStatistics {
+pub struct DaemonStatistics {
     origin: Instant,
     registry: MetricRegistry,
     sampled_at: Option<Instant>,
@@ -586,7 +586,7 @@ pub(crate) struct DaemonStatistics {
 
 impl DaemonStatistics {
     /// Registers every named metric.
-    pub(crate) fn new(origin: Instant) -> Self {
+    pub fn new(origin: Instant) -> Self {
         let mut registry =
             MetricRegistry::new(RegistryLimits::default()).expect("default limits are valid");
         let histogram = |edges: &[f64]| {
@@ -656,23 +656,23 @@ impl DaemonStatistics {
     }
 
     /// The latest process CPU utilization, `0..=1`; `None` while unavailable.
-    pub(crate) const fn cpu_utilization(&self) -> Option<f64> {
+    pub const fn cpu_utilization(&self) -> Option<f64> {
         self.cpu_utilization
     }
 
     /// The latest GPU utilization proxy, `0..=1`; `None` while unavailable.
-    pub(crate) const fn gpu_utilization(&self) -> Option<f64> {
+    pub const fn gpu_utilization(&self) -> Option<f64> {
         self.gpu_utilization
     }
 
     /// The registry every metric lives in.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) const fn registry(&self) -> &MetricRegistry {
+    pub const fn registry(&self) -> &MetricRegistry {
         &self.registry
     }
 
     /// The registry as `fm-statistics-v1` text for the support bundle.
-    pub(crate) fn render(&self) -> String {
+    pub fn render(&self) -> String {
         StatisticsSnapshot::new(&self.registry)
             .with_alerts(&self.alerts)
             .render()
@@ -680,7 +680,7 @@ impl DaemonStatistics {
 
     /// Every firing alert, in rule ID order. The wire orders them by
     /// [`HealthAlertRule`] instead; [`Self::health`] sorts them.
-    pub(crate) fn active_alerts(&self) -> Vec<ActiveAlert> {
+    pub fn active_alerts(&self) -> Vec<ActiveAlert> {
         self.alerts
             .statuses()
             .filter_map(|status| match status.state {
@@ -697,12 +697,12 @@ impl DaemonStatistics {
     }
 
     /// The most recent notifications, oldest first.
-    pub(crate) fn recent_notifications(&self) -> impl ExactSizeIterator<Item = &AlertNotification> {
+    pub fn recent_notifications(&self) -> impl ExactSizeIterator<Item = &AlertNotification> {
         self.recent.iter()
     }
 
     /// The wire health sample at `now` (Protocol 2.100).
-    pub(crate) fn health(&self, now: Instant) -> DaemonHealth {
+    pub fn health(&self, now: Instant) -> DaemonHealth {
         let uptime_ms = self.millis(now);
         let mut alerts: Vec<HealthAlert> = self
             .active_alerts()
@@ -770,7 +770,7 @@ impl DaemonStatistics {
     /// hold (a switched-off rule is no longer evaluated, and a firing alert
     /// of a changed rule ends without a notification); the others keep
     /// their state, acknowledgements, and silences.
-    pub(crate) fn apply_alert_rules(&mut self, settings: &[AlertRuleSetting]) {
+    pub fn apply_alert_rules(&mut self, settings: &[AlertRuleSetting]) {
         if settings == self.alert_settings.as_slice() {
             return;
         }
@@ -795,7 +795,7 @@ impl DaemonStatistics {
         settings.clone_into(&mut self.alert_settings);
     }
 
-    pub(crate) fn alert_action(
+    pub fn alert_action(
         &mut self,
         rule: HealthAlertRule,
         action: HealthAlertAction,
@@ -845,7 +845,7 @@ impl DaemonStatistics {
 
     /// A `health_status` answering `request_id` (Protocol 2.109): the
     /// sample as of `now`, under the next sequence.
-    pub(crate) fn health_answer(
+    pub fn health_answer(
         &mut self,
         server: &ServerIdentity,
         now: Instant,
@@ -858,7 +858,7 @@ impl DaemonStatistics {
 
     /// The next `health_status` record (Protocol 2.100) for the sample just
     /// taken at `now`.
-    pub(crate) fn health_status(
+    pub fn health_status(
         &mut self,
         server: &ServerIdentity,
         now: Instant,
@@ -889,24 +889,24 @@ impl DaemonStatistics {
 
     /// Registry refusals so far.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) const fn errors(&self) -> u64 {
+    pub const fn errors(&self) -> u64 {
         self.errors
     }
 
     /// Milliseconds since the daemon's statistics origin.
-    pub(crate) fn millis(&self, now: Instant) -> u64 {
+    pub fn millis(&self, now: Instant) -> u64 {
         u64::try_from(now.saturating_duration_since(self.origin).as_millis()).unwrap_or(u64::MAX)
     }
 
     /// Whether a sample is due at `now`.
-    pub(crate) fn due(&self, now: Instant) -> bool {
+    pub fn due(&self, now: Instant) -> bool {
         self.sampled_at
             .is_none_or(|at| now.saturating_duration_since(at) >= STATISTICS_INTERVAL)
     }
 
     /// Records one sample taken at `now`: the control plane's, and the
     /// native frame loop's when this is a native daemon.
-    pub(crate) fn sample(
+    pub fn sample(
         &mut self,
         now: Instant,
         control: ControlSample,
@@ -1128,7 +1128,7 @@ impl DaemonStatistics {
 
     /// The current value of an unlabelled counter or gauge.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn value(&self, name: &'static str) -> Option<f64> {
+    pub fn value(&self, name: &'static str) -> Option<f64> {
         self.value_with(name, &LabelSet::new())
     }
 

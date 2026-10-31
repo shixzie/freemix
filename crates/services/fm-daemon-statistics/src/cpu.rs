@@ -16,7 +16,7 @@ const USER_HZ: u64 = 100;
 
 /// Samples the process's CPU time between calls.
 #[derive(Debug)]
-pub(crate) struct CpuSampler {
+pub struct CpuSampler {
     /// The previous reading and when it was taken.
     last: Option<(Instant, Duration)>,
     /// Logical CPUs available to the process, at least one.
@@ -24,7 +24,8 @@ pub(crate) struct CpuSampler {
 }
 
 impl CpuSampler {
-    pub(crate) fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         let cpus = std::thread::available_parallelism()
             .ok()
             .and_then(|count| u32::try_from(count.get()).ok())
@@ -35,7 +36,7 @@ impl CpuSampler {
     /// The process's CPU utilization since the previous call, `0..=1` of
     /// every logical CPU; `None` on the first call, when no wall time passed,
     /// and where the platform offers no reading.
-    pub(crate) fn sample(&mut self, now: Instant) -> Option<f64> {
+    pub fn sample(&mut self, now: Instant) -> Option<f64> {
         self.sample_with(now, process_cpu_time())
     }
 
@@ -51,6 +52,12 @@ impl CpuSampler {
             return None;
         }
         Some((cpu.saturating_sub(used).as_secs_f64() / wall).clamp(0.0, 1.0))
+    }
+}
+
+impl Default for CpuSampler {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

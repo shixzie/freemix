@@ -198,10 +198,12 @@ there come before any new breadth below.
     with `_omt._tcp` DNS-SD advertisement and browsing. A receiver now
     skips a frame whose payload is corrupt while its declared length is
     intact, so one bad frame never ends the stream; the skipped frames
-    count as dropped. Remaining: no discovery catalogue entry is wired
-    into the input catalogue, no VMX-compressed frames, no alpha or tally
-    round trip proven against another OMT implementation, and no hardware
-    certification (see the Phase 8 boundary).
+    count as dropped. Studio browses `_omt._tcp` and lists the senders it
+    finds in the Add Input network form when the URL is an `omt://` one, so
+    a discovered source fills the URL instead of being typed. Remaining: no
+    VMX-compressed frames, no alpha or tally round trip proven against
+    another OMT implementation, and no hardware certification (see the
+    Phase 8 boundary).
 13. **Aux buses through the show (`AU-002`).** Master plus aux buses A-G
     are live (Protocol 2.118, schema 90), metered on the wire (Protocol
     2.120), edited in Studio's BUSES window and the CLI, and a project
@@ -439,11 +441,12 @@ per week of work; items 1 and 2 land before any new feature breadth.
 
    **Progress (2026-10-31).** The journal and durable document pages, the
    command-line arguments and web settings, the web gateway, the native
-   media runtime and overlay layout, and the shared renderers (grades,
+   media runtime and overlay layout, the shared renderers (grades,
    stills, the CPU scene reference, title rendering, and the simulated
-   monitor tap) are now the library crates `fm-daemon-journal`,
-   `fm-daemon-arguments`, `fm-daemon-web`, `fm-daemon-native`,
-   `fm-overlay-layout`, and `fm-daemon-render`. The binary's 12.7k-line
+   monitor tap), and the daemon's statistics, CPU, and disk helpers are now
+   the library crates `fm-daemon-journal`, `fm-daemon-arguments`,
+   `fm-daemon-web`, `fm-daemon-native`, `fm-overlay-layout`,
+   `fm-daemon-render`, and `fm-daemon-statistics`. The binary's 12.7k-line
    unit-test module moved to `tests.rs`, so `main.rs` is 16.5k lines and
    `apps/freemixd/src` 77.5k, down from 157k. `xtask deps check` allows a
    service crate to depend on the simulation composition root, which the

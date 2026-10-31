@@ -1758,6 +1758,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fm-daemon-statistics"
+version = "0.1.0"
+dependencies = [
+ "fm-observability",
+ "fm-protocol",
+ "fs4",
+ "tempfile",
+]
+
+[[package]]
 name = "fm-daemon-web"
 version = "0.1.0"
 dependencies = [
@@ -2384,6 +2394,7 @@ dependencies = [
  "fm-daemon-journal",
  "fm-daemon-native",
  "fm-daemon-render",
+ "fm-daemon-statistics",
  "fm-daemon-web",
  "fm-engine",
  "fm-frame",

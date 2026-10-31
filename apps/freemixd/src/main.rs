@@ -99,15 +99,13 @@ mod audio_output_devices;
 // The free-space alert is constructed only by the native render loop; the
 // preflight and its constants are used in every build.
 mod clock_retry;
-mod cpu;
 mod cue_clock;
 #[cfg(feature = "native-media")]
 mod desktop_capture;
 #[cfg(feature = "native-media")]
 mod desktop_windows;
-#[cfg_attr(not(feature = "native-media"), allow(dead_code))]
-mod disk;
 use fm_daemon_journal::documents;
+use fm_daemon_statistics::{disk, statistics};
 mod hls_server;
 mod input_thumbnails;
 use fm_daemon_journal as journal;
@@ -178,7 +176,6 @@ mod scene_preview;
 mod screen_capture_targets;
 #[cfg(feature = "native-media")]
 mod source_wait;
-mod statistics;
 mod status_listener;
 #[cfg(feature = "native-media")]
 mod stinger_mutation;
