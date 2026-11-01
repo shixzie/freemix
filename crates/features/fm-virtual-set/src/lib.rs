@@ -5,6 +5,7 @@ mod geometry;
 mod id;
 mod model;
 mod plan_error;
+mod preset_document;
 mod presets;
 mod rational;
 mod render;
@@ -23,6 +24,7 @@ pub use model::{
     VirtualSetScene, WipeDirection,
 };
 pub use plan_error::PlanError;
+pub use preset_document::PresetDocumentError;
 pub use presets::{
     CameraDirector, MAX_PRESET_NAME_BYTES, MAX_PRESETS, PendingRecall, PresetStore,
     VirtualSetPreset,

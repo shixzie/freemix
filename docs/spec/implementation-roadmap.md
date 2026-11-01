@@ -6437,10 +6437,12 @@ background, keyed-talent, and foreground desk layers at independent parallax
 depths into output-pixel rectangles. Reflections and shadows are emitted as
 derived layer entries (a mirrored rectangle with fade rows, or an offset matte
 with zoom-scaled blur), and a bounded preset store recalls snapshots atomically
-at a scheduled frame. Remaining gaps: no compositor draws the plan, presets
+at a scheduled frame and now round-trips as a canonical
+`freemix-virtual-set-presets 1` document. Remaining gaps: no compositor draws
+the plan, presets
 hold only camera pose and timing, the planner is separate from the existing
 `VirtualSetScene` model, layers are axis-aligned rather than four-corner
-planes, and nothing reaches the engine, commands, persistence, or UI.
+planes, and nothing reaches the engine, commands, project persistence, or UI.
 `IN-021` remains planned.
 
 Current implementation boundary for item 4 (localization, `RC-016`):
