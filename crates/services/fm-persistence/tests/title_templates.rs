@@ -1143,14 +1143,11 @@ fn clock_tables_and_clock_content_are_strict() {
     let stored = clock_template();
     let encoded = encode_title_template(&stored).unwrap();
 
-    // The table covers exactly the clocks elements show.
+    // An element may name a shared show clock the template does not
+    // define; the render caller resolves it from the live registry.
     let mut missing = stored.clone();
     missing.clocks.retain(|clock| clock.name.as_str() != "To_3");
-    assert!(matches!(
-        encode_title_template(&missing),
-        Err(TitleTemplateError::InvalidClocks(TitleClockError::UndefinedClock { clock, .. }))
-            if clock.as_str() == "To_3"
-    ));
+    assert!(encode_title_template(&missing).is_ok());
     let mut unused = stored.clone();
     unused.clocks.push(TitleClock {
         name: clock_name("Spare"),
