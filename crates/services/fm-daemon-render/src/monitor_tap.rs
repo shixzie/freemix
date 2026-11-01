@@ -239,6 +239,9 @@ pub struct RealizedMonitorState {
     pub airs: Vec<(InputId, TitleAir)>,
     /// What every slideshow input shows, ascending by input (IN-009).
     pub slideshows: Vec<(InputId, SlidesShown)>,
+    /// The show's live production clocks, for title elements that name a
+    /// shared clock (SW-013).
+    pub clocks: fm_clock::production::ProductionClocks,
 }
 
 /// The realized fields whose change publishes a frame immediately.
@@ -282,6 +285,7 @@ impl RealizedMonitorState {
                 .map(|title| (title.input, title.air))
                 .collect(),
             slideshows: SlidesShown::all(control),
+            clocks: control.production_clock_registry().clone(),
         }
     }
 
@@ -772,7 +776,7 @@ impl SimulatedMonitorTap {
                 self.title_renders += 1;
             }
             let pipeline = self.pipeline.as_ref()?;
-            let keyed = title_render::render_title_at(
+            let keyed = title_render::render_title_at_with_clocks(
                 &self.titles,
                 input,
                 title,
@@ -782,6 +786,7 @@ impl SimulatedMonitorTap {
                     taken_frame,
                     pose,
                 ),
+                Some(&state.clocks),
                 pipeline.width(),
                 pipeline.height(),
             );
@@ -1404,6 +1409,7 @@ mod tests {
             scenes: Vec::new(),
             airs: Vec::new(),
             slideshows: Vec::new(),
+            clocks: fm_clock::production::ProductionClocks::new(),
         }
     }
 

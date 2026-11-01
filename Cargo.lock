@@ -1740,6 +1740,7 @@ name = "fm-daemon-render"
 version = "0.1.0"
 dependencies = [
  "fm-auth",
+ "fm-clock",
  "fm-codec-image",
  "fm-compositor",
  "fm-control",

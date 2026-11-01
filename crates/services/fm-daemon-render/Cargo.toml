@@ -11,6 +11,7 @@ native-media = ["fm-title-render/images"]
 
 [dependencies]
 fm-auth = { path = "../fm-auth" }
+fm-clock = { path = "../../media/fm-clock" }
 fm-codec-image = { path = "../../io/fm-codec-image" }
 fm-compositor = { path = "../../gpu/fm-compositor" }
 fm-control = { path = "../fm-control" }
