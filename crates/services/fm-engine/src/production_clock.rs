@@ -200,6 +200,10 @@ fn duration_format(format: ProjectDurationFormat) -> Result<DurationFormat, Rate
             numerator,
             denominator,
         } => DurationFormat::HoursMinutesSecondsFrames(FrameRate::new(numerator, denominator)?),
+        ProjectDurationFormat::HoursMinutesSecondsDropFrame {
+            numerator,
+            denominator,
+        } => DurationFormat::HoursMinutesSecondsDropFrame(FrameRate::new(numerator, denominator)?),
         ProjectDurationFormat::Compact => DurationFormat::Compact,
     })
 }

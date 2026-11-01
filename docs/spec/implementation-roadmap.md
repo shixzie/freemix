@@ -5500,7 +5500,10 @@ time zone (each time-of-day clock names its zone); templates cannot show
 media remaining, session, or playlist clocks; designer compositions and
 crawls take no clock source; an IANA `TZif` parser exists
 (`fm_clock::production::TzifZone`) but title clocks still name POSIX rules;
-no leap seconds, drop-frame timecode, playback-speed-aware media remaining,
+drop-frame timecode is available at 29.97 and 59.94 fps (project clocks and
+title templates encode the `hours_minutes_seconds_drop_frame` preset, and
+`clock-add --format hours_minutes_seconds_drop_frame:<num>/<den>` accepts it);
+there are no leap seconds, playback-speed-aware media remaining,
 or locale formats. `SW-013` remains planned.
 
 

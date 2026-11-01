@@ -4640,6 +4640,26 @@ fn parse_media_input_relink(
     })
 }
 
+fn project_duration_format(value: &str) -> Option<fm_types::ProjectDurationFormat> {
+    if let Some(rest) = value.strip_prefix("hours_minutes_seconds_drop_frame:") {
+        let (numerator, denominator) = rest.split_once('/')?;
+        return Some(
+            fm_types::ProjectDurationFormat::HoursMinutesSecondsDropFrame {
+                numerator: numerator.parse().ok()?,
+                denominator: denominator.parse().ok()?,
+            },
+        );
+    }
+    if let Some(rest) = value.strip_prefix("hours_minutes_seconds_frames:") {
+        let (numerator, denominator) = rest.split_once('/')?;
+        return Some(fm_types::ProjectDurationFormat::HoursMinutesSecondsFrames {
+            numerator: numerator.parse().ok()?,
+            denominator: denominator.parse().ok()?,
+        });
+    }
+    fm_types::ProjectDurationFormat::from_token(value)
+}
+
 #[allow(clippy::too_many_lines)]
 fn parse_clock_add(mut arguments: impl Iterator<Item = String>) -> Result<Command, ArgsError> {
     let path = required_path(&mut arguments, "project path")?;
@@ -4706,8 +4726,8 @@ fn parse_clock_add(mut arguments: impl Iterator<Item = String>) -> Result<Comman
             }
             "--format" => {
                 let value = required(&mut arguments, "duration format")?;
-                format = fm_types::ProjectDurationFormat::from_token(&value).ok_or(ArgsError::InvalidChoice {
-                    field: "duration format (hours_minutes_seconds, minutes_seconds, seconds, hours_minutes_seconds_tenths, minutes_seconds_tenths, hours_minutes_seconds_millis, or compact)",
+                format = project_duration_format(&value).ok_or(ArgsError::InvalidChoice {
+                    field: "duration format (hours_minutes_seconds, minutes_seconds, seconds, hours_minutes_seconds_tenths, minutes_seconds_tenths, hours_minutes_seconds_millis, compact, hours_minutes_seconds_frames:<num>/<den>, or hours_minutes_seconds_drop_frame:<num>/<den>)",
                     value,
                 })?;
             }

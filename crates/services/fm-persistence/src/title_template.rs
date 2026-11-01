@@ -1526,6 +1526,13 @@ fn write_display_format(output: &mut String, format: DisplayFormat) {
             rate.denominator()
         )
         .expect("writing to a string cannot fail"),
+        DisplayFormat::Duration(DurationFormat::HoursMinutesSecondsDropFrame(rate)) => write!(
+            output,
+            "{{\"type\": \"duration\", \"preset\": \"hours_minutes_seconds_drop_frame\", \"frame_rate\": {{\"numerator\": {}, \"denominator\": {}}}}}",
+            rate.numerator(),
+            rate.denominator()
+        )
+        .expect("writing to a string cannot fail"),
         DisplayFormat::Duration(format) => write!(
             output,
             "{{\"type\": \"duration\", \"preset\": \"{}\"}}",
@@ -1550,6 +1557,7 @@ const fn duration_preset_name(format: DurationFormat) -> &'static str {
         DurationFormat::MinutesSecondsTenths => "minutes_seconds_tenths",
         DurationFormat::HoursMinutesSecondsMillis => "hours_minutes_seconds_millis",
         DurationFormat::HoursMinutesSecondsFrames(_) => "hours_minutes_seconds_frames",
+        DurationFormat::HoursMinutesSecondsDropFrame(_) => "hours_minutes_seconds_drop_frame",
         DurationFormat::Compact => "compact",
     }
 }
@@ -1784,6 +1792,9 @@ fn parse_display_format(value: Value) -> Result<DisplayFormat, DecodeError> {
             "minutes_seconds_tenths" => DurationFormat::MinutesSecondsTenths,
             "hours_minutes_seconds_millis" => DurationFormat::HoursMinutesSecondsMillis,
             "hours_minutes_seconds_frames" => DurationFormat::HoursMinutesSecondsFrames(
+                parse_frame_rate(object.take("frame_rate")?)?,
+            ),
+            "hours_minutes_seconds_drop_frame" => DurationFormat::HoursMinutesSecondsDropFrame(
                 parse_frame_rate(object.take("frame_rate")?)?,
             ),
             "compact" => DurationFormat::Compact,

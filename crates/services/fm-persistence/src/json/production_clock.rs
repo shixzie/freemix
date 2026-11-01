@@ -110,6 +110,14 @@ fn write_duration_format(output: &mut String, format: ProjectDurationFormat) {
             "{{\"type\": \"duration\", \"preset\": \"hours_minutes_seconds_frames\", \"numerator\": {numerator}, \"denominator\": {denominator}}}"
         )
         .expect("writing to a string cannot fail"),
+        ProjectDurationFormat::HoursMinutesSecondsDropFrame {
+            numerator,
+            denominator,
+        } => write!(
+            output,
+            "{{\"type\": \"duration\", \"preset\": \"hours_minutes_seconds_drop_frame\", \"numerator\": {numerator}, \"denominator\": {denominator}}}"
+        )
+        .expect("writing to a string cannot fail"),
         format => write!(
             output,
             "{{\"type\": \"duration\", \"preset\": \"{}\"}}",
@@ -230,6 +238,10 @@ fn parse_duration_format(value: Value) -> Result<ProjectDurationFormat, DecodeEr
     let preset = format.string("preset")?;
     let parsed = match preset.as_str() {
         "hours_minutes_seconds_frames" => ProjectDurationFormat::HoursMinutesSecondsFrames {
+            numerator: format.u32("numerator")?,
+            denominator: format.u32("denominator")?,
+        },
+        "hours_minutes_seconds_drop_frame" => ProjectDurationFormat::HoursMinutesSecondsDropFrame {
             numerator: format.u32("numerator")?,
             denominator: format.u32("denominator")?,
         },

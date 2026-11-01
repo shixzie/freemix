@@ -149,7 +149,15 @@ pub enum ProjectDurationFormat {
     HoursMinutesSecondsTenths,
     MinutesSecondsTenths,
     HoursMinutesSecondsMillis,
-    HoursMinutesSecondsFrames { numerator: u32, denominator: u32 },
+    HoursMinutesSecondsFrames {
+        numerator: u32,
+        denominator: u32,
+    },
+    /// Drop-frame SMPTE timecode; only 30000/1001 and 60000/1001 are valid.
+    HoursMinutesSecondsDropFrame {
+        numerator: u32,
+        denominator: u32,
+    },
     Compact,
 }
 
@@ -164,6 +172,7 @@ impl ProjectDurationFormat {
             Self::MinutesSecondsTenths => "minutes_seconds_tenths",
             Self::HoursMinutesSecondsMillis => "hours_minutes_seconds_millis",
             Self::HoursMinutesSecondsFrames { .. } => "hours_minutes_seconds_frames",
+            Self::HoursMinutesSecondsDropFrame { .. } => "hours_minutes_seconds_drop_frame",
             Self::Compact => "compact",
         }
     }
@@ -346,13 +355,24 @@ impl ProjectClockKind {
 
 impl ProjectDurationFormat {
     fn validate(self, name: &str) -> Result<(), ProjectClockError> {
-        if let Self::HoursMinutesSecondsFrames {
-            numerator,
-            denominator,
-        } = self
-            && (numerator == 0 || denominator == 0)
-        {
-            return Err(ProjectClockError::InvalidFrameRate(name.to_owned()));
+        match self {
+            Self::HoursMinutesSecondsFrames {
+                numerator,
+                denominator,
+            } => {
+                if numerator == 0 || denominator == 0 {
+                    return Err(ProjectClockError::InvalidFrameRate(name.to_owned()));
+                }
+            }
+            Self::HoursMinutesSecondsDropFrame {
+                numerator,
+                denominator,
+            } => {
+                if !matches!((numerator, denominator), (30_000, 1_001) | (60_000, 1_001)) {
+                    return Err(ProjectClockError::InvalidFrameRate(name.to_owned()));
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
