@@ -599,11 +599,12 @@ impl SocialAggregator {
     }
 
     /// An empty aggregator with no provider state, for a desk restored from a
-    /// document that carries only its config and operators (GX-010).
+    /// document that carries its config, operators, and messages (GX-010).
+    /// Its queue capacity admits any document up to the document message cap.
     #[must_use]
     pub fn empty() -> Self {
         Self::new(
-            16,
+            65_536,
             ContentPolicy {
                 profanity: ProfanityPolicy::default(),
                 redactions: Vec::new(),
@@ -619,6 +620,18 @@ impl SocialAggregator {
     #[must_use]
     pub fn pending_len(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Every aggregated message, including moderated and expired ones.
+    #[must_use]
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
+
+    /// Authors blocked on one provider account.
+    #[must_use]
+    pub fn blocked_author_count(&self) -> usize {
+        self.blocked_authors.len()
     }
 
     #[must_use]

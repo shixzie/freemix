@@ -12,9 +12,9 @@ use std::num::NonZeroU64;
 use fm_titles::{FieldId, FieldValue, TitleScene, UpdateError};
 
 use crate::{
-    AccountId, AuthorId, IncomingMessage, IngestOutcome, MessageKey, ModerationState, OperatorId,
-    PollReport, ProviderError, ProviderId, SocialAggregator, SocialError, SocialMessage,
-    SocialProvider, Timestamp, TitleSourceField,
+    AccountId, AuthorId, BlockedAuthor, IncomingMessage, IngestOutcome, MessageKey, ModerationFlag,
+    ModerationState, OperatorId, PollReport, ProviderError, ProviderId, SocialAggregator,
+    SocialError, SocialMessage, SocialProvider, Timestamp, TitleSourceField,
 };
 
 /// Operator privilege, ordered from least to most privileged.
@@ -863,6 +863,9 @@ pub enum DeskDocumentError {
     OnAir,
     /// An audit line is malformed, out of sequence, or too large.
     Audit,
+    /// A message or blocked-author line is malformed, duplicated, out of
+    /// bounds, or names a message the desk state does not match.
+    Message,
 }
 
 impl fmt::Display for DeskDocumentError {
@@ -886,6 +889,7 @@ impl fmt::Display for DeskDocumentError {
             Self::TooManyRotation => "moderation desk document rotation exceeds its capacity",
             Self::OnAir => "moderation desk document on-air state is invalid",
             Self::Audit => "moderation desk document audit line is malformed or out of sequence",
+            Self::Message => "moderation desk document message state is malformed or inconsistent",
         })
     }
 }
@@ -918,11 +922,11 @@ impl Role {
 }
 
 impl ModerationDesk {
-    /// Encodes the desk's config, operators, hidden, rotation, on-air, and
-    /// audit state as canonical text:
+    /// Encodes the desk's config, operators, messages, hidden, rotation,
+    /// on-air, and audit state as canonical text:
     ///
     /// ```text
-    /// freemix-social-desk 3
+    /// freemix-social-desk 4
     /// config <audit> <rotation> <max operators> <dwell ms>
     /// operator <id hex> <role>
     /// sequence <next audit sequence>
@@ -933,17 +937,18 @@ impl ModerationDesk {
     /// rotation <provider hex> <account hex> <message hex>
     /// on-air <provider hex> <account hex> <message hex> <since ms> <manual|rotation> <generation>
     /// audit <seq> <at ms> <actor> <action> <result>
+    /// message <provider> <account> <message> <author> <name> <handle|none> <body> <created> <ingested> <expires|none> <moderation> <flags>...
+    /// blocked-author <provider> <account> <author>
     /// ```
     ///
-    /// Hidden keys ascend, rotation keys keep their rotation order, and the
-    /// on-air line is present only while a message is on air. Audit entries
-    /// follow in sequence order. Aggregated messages are not part of the
-    /// document; restored keys resolve only against messages the caller
-    /// supplies.
+    /// Hidden keys ascend, rotation keys keep their rotation order, the on-air
+    /// line is present only while a message is on air, audit entries follow in
+    /// sequence order, messages keep their ingestion order, and blocked
+    /// authors ascend.
     #[must_use]
     pub fn to_document(&self) -> String {
         use std::fmt::Write as _;
-        let mut output = String::from("freemix-social-desk 3\n");
+        let mut output = String::from("freemix-social-desk 4\n");
         writeln!(
             output,
             "config {} {} {} {}",
@@ -992,6 +997,35 @@ impl ModerationDesk {
             writeln!(output, "audit {}", audit_entry_document(entry))
                 .expect("writing to a string cannot fail");
         }
+        for key in &self.social.message_order {
+            if let Some(message) = self.social.messages.get(key) {
+                writeln!(output, "message {}", message_document(message))
+                    .expect("writing to a string cannot fail");
+            }
+        }
+        let mut blocked = self
+            .social
+            .blocked_authors
+            .iter()
+            .map(|author| {
+                (
+                    author.provider.as_str(),
+                    author.account.as_str(),
+                    author.author.as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        blocked.sort_unstable();
+        for (provider, account, author) in blocked {
+            writeln!(
+                output,
+                "blocked-author {} {} {}",
+                identity_document(provider),
+                identity_document(account),
+                identity_document(author)
+            )
+            .expect("writing to a string cannot fail");
+        }
         output
     }
 
@@ -1007,7 +1041,7 @@ impl ModerationDesk {
         social: SocialAggregator,
     ) -> Result<Self, DeskDocumentError> {
         let mut lines = document.lines();
-        if lines.next() != Some("freemix-social-desk 3") {
+        if lines.next() != Some("freemix-social-desk 4") {
             return Err(DeskDocumentError::Header);
         }
         let Some(config_line) = lines.next() else {
@@ -1182,10 +1216,73 @@ impl ModerationDesk {
             previous_at = entry.at;
             audit.push_back(entry);
         }
+        let mut messages = std::collections::HashMap::new();
+        let mut message_order = Vec::new();
+        let mut pending = VecDeque::new();
+        while state
+            .peek()
+            .is_some_and(|line| line.starts_with("message "))
+        {
+            let line = state.next().unwrap_or_default();
+            let message = message_from_line(line)?;
+            if messages.contains_key(&message.key) {
+                return Err(DeskDocumentError::DuplicateKey);
+            }
+            if message.ingested_at > last_time {
+                return Err(DeskDocumentError::Message);
+            }
+            if message.moderation == ModerationState::Pending {
+                if pending.len() >= social.queue_capacity {
+                    return Err(DeskDocumentError::Message);
+                }
+                pending.push_back(message.key.clone());
+            }
+            message_order.push(message.key.clone());
+            messages.insert(message.key.clone(), message);
+            if messages.len() > DESK_DOCUMENT_MAX_MESSAGES {
+                return Err(DeskDocumentError::Message);
+            }
+        }
+        let mut blocked_authors = std::collections::HashSet::new();
+        while state
+            .peek()
+            .is_some_and(|line| line.starts_with("blocked-author "))
+        {
+            let line = state.next().unwrap_or_default();
+            let author = blocked_author_from_line(line)?;
+            if !blocked_authors.insert(author) {
+                return Err(DeskDocumentError::Message);
+            }
+        }
         if state.next().is_some() {
             return Err(DeskDocumentError::State);
         }
+        for key in &hidden {
+            let message = messages.get(key).ok_or(DeskDocumentError::Message)?;
+            if message.moderation != ModerationState::Approved {
+                return Err(DeskDocumentError::Message);
+            }
+        }
+        for key in &rotation {
+            let message = messages.get(key).ok_or(DeskDocumentError::Message)?;
+            if message.moderation != ModerationState::Approved {
+                return Err(DeskDocumentError::Message);
+            }
+        }
+        if let Some(on_air) = &on_air {
+            let message = messages
+                .get(&on_air.key)
+                .ok_or(DeskDocumentError::Message)?;
+            if message.moderation != ModerationState::Approved {
+                return Err(DeskDocumentError::Message);
+            }
+        }
 
+        let mut social = social;
+        social.messages = messages;
+        social.message_order = message_order;
+        social.pending = pending;
+        social.blocked_authors = blocked_authors;
         Ok(Self {
             social,
             config,
@@ -1205,6 +1302,10 @@ impl ModerationDesk {
 
 /// Most hidden message keys one desk document may hold.
 const DESK_DOCUMENT_MAX_HIDDEN: usize = 65_536;
+/// Most aggregated messages one desk document may hold.
+const DESK_DOCUMENT_MAX_MESSAGES: usize = 65_536;
+/// Most moderation flags one restored message may carry.
+const DESK_DOCUMENT_MAX_FLAGS: usize = 256;
 
 fn state_line<'a>(
     state: &mut std::iter::Peekable<std::vec::IntoIter<&'a str>>,
@@ -1313,6 +1414,49 @@ fn audit_entry_document(entry: &AuditEntry) -> String {
         AuditResult::Failed(error) => {
             parts.push("failed".to_owned());
             push_desk_error(&mut parts, error);
+        }
+    }
+    parts.join(" ")
+}
+
+fn message_document(message: &SocialMessage) -> String {
+    let mut parts = Vec::new();
+    push_key(&mut parts, &message.key);
+    parts.push(identity_document(message.author_id.as_str()));
+    parts.push(identity_document(&message.author_name));
+    parts.push(match &message.author_handle {
+        Some(handle) => identity_document(handle),
+        None => "none".to_owned(),
+    });
+    parts.push(identity_document(&message.body));
+    parts.push(message.created_at.0.to_string());
+    parts.push(message.ingested_at.0.to_string());
+    parts.push(
+        message
+            .expires_at
+            .map_or_else(|| "none".to_owned(), |expires| expires.0.to_string()),
+    );
+    match &message.moderation {
+        ModerationState::Pending => parts.push("pending".to_owned()),
+        ModerationState::Approved => parts.push("approved".to_owned()),
+        ModerationState::Rejected { reason } => {
+            parts.push("rejected".to_owned());
+            parts.push(identity_document(reason));
+        }
+        ModerationState::Blocked => parts.push("blocked".to_owned()),
+        ModerationState::Expired => parts.push("expired".to_owned()),
+    }
+    parts.push(message.flags.len().to_string());
+    for flag in &message.flags {
+        match flag {
+            ModerationFlag::Profanity(text) => {
+                parts.push("profanity".to_owned());
+                parts.push(identity_document(text));
+            }
+            ModerationFlag::Redacted(text) => {
+                parts.push("redacted".to_owned());
+                parts.push(identity_document(text));
+            }
         }
     }
     parts.join(" ")
@@ -1460,11 +1604,11 @@ fn push_social_error(parts: &mut Vec<String>, error: &SocialError) {
     }
 }
 
-struct AuditTokens<'a> {
+struct FieldTokens<'a> {
     parts: std::vec::IntoIter<&'a str>,
 }
 
-impl<'a> AuditTokens<'a> {
+impl<'a> FieldTokens<'a> {
     fn new(rest: &'a str) -> Self {
         Self {
             parts: rest.split(' ').collect::<Vec<_>>().into_iter(),
@@ -1579,7 +1723,7 @@ fn audit_entry_from_line(line: &str) -> Result<AuditEntry, DeskDocumentError> {
     let rest = line
         .strip_prefix("audit ")
         .ok_or(DeskDocumentError::Audit)?;
-    let mut tokens = AuditTokens::new(rest);
+    let mut tokens = FieldTokens::new(rest);
     let sequence = tokens.u64()?;
     let at = Timestamp(tokens.u64()?);
     let actor = match tokens.take()? {
@@ -1605,6 +1749,87 @@ fn audit_entry_from_line(line: &str) -> Result<AuditEntry, DeskDocumentError> {
         actor,
         action,
         result,
+    })
+}
+
+fn message_from_line(line: &str) -> Result<SocialMessage, DeskDocumentError> {
+    message_from_tokens(line).map_err(|_| DeskDocumentError::Message)
+}
+
+fn message_from_tokens(line: &str) -> Result<SocialMessage, DeskDocumentError> {
+    let rest = line
+        .strip_prefix("message ")
+        .ok_or(DeskDocumentError::Message)?;
+    let mut tokens = FieldTokens::new(rest);
+    let key = tokens.key()?;
+    let author_id = AuthorId::new(tokens.identity()?);
+    let author_name = tokens.identity()?;
+    let author_handle = match tokens.take()? {
+        "none" => None,
+        token => Some(identity_text(token).ok_or(DeskDocumentError::Message)?),
+    };
+    let body = tokens.identity()?;
+    let created_at = Timestamp(tokens.u64()?);
+    let ingested_at = Timestamp(tokens.u64()?);
+    let expires_at = match tokens.take()? {
+        "none" => None,
+        token => Some(Timestamp(
+            token.parse().map_err(|_| DeskDocumentError::Message)?,
+        )),
+    };
+    let moderation = match tokens.take()? {
+        "pending" => ModerationState::Pending,
+        "approved" => ModerationState::Approved,
+        "rejected" => ModerationState::Rejected {
+            reason: tokens.identity()?,
+        },
+        "blocked" => ModerationState::Blocked,
+        "expired" => ModerationState::Expired,
+        _ => return Err(DeskDocumentError::Message),
+    };
+    let flag_count = tokens.usize()?;
+    if flag_count > DESK_DOCUMENT_MAX_FLAGS {
+        return Err(DeskDocumentError::Message);
+    }
+    let mut flags = Vec::with_capacity(flag_count);
+    for _ in 0..flag_count {
+        match tokens.take()? {
+            "profanity" => flags.push(ModerationFlag::Profanity(tokens.identity()?)),
+            "redacted" => flags.push(ModerationFlag::Redacted(tokens.identity()?)),
+            _ => return Err(DeskDocumentError::Message),
+        }
+    }
+    tokens.done()?;
+    Ok(SocialMessage {
+        key,
+        author_id,
+        author_name,
+        author_handle,
+        body,
+        created_at,
+        ingested_at,
+        expires_at,
+        moderation,
+        flags,
+    })
+}
+
+fn blocked_author_from_line(line: &str) -> Result<BlockedAuthor, DeskDocumentError> {
+    blocked_author_from_tokens(line).map_err(|_| DeskDocumentError::Message)
+}
+
+fn blocked_author_from_tokens(line: &str) -> Result<BlockedAuthor, DeskDocumentError> {
+    let rest = line
+        .strip_prefix("blocked-author ")
+        .ok_or(DeskDocumentError::Message)?;
+    let parts: Vec<&str> = rest.split(' ').collect();
+    let [provider, account, author] = parts.as_slice() else {
+        return Err(DeskDocumentError::Message);
+    };
+    Ok(BlockedAuthor {
+        provider: ProviderId::new(identity_text(provider).ok_or(DeskDocumentError::Message)?),
+        account: AccountId::new(identity_text(account).ok_or(DeskDocumentError::Message)?),
+        author: AuthorId::new(identity_text(author).ok_or(DeskDocumentError::Message)?),
     })
 }
 
@@ -1672,7 +1897,7 @@ mod document_tests {
 
     #[test]
     fn desk_documents_round_trip_config_operators_state_and_audit() {
-        let document = "freemix-social-desk 3\n\
+        let document = "freemix-social-desk 4\n\
                         config 512 16 4 4000\n\
                         operator 616c696365 admin\n\
                         operator 626f62 moderator\n\
@@ -1689,7 +1914,12 @@ mod document_tests {
                         audit 8 8500 operator 626f62 command approve 70726f76 61636374 6d34 denied permission-denied 626f62 moderator producer\n\
                         audit 9 8700 operator 616c696365 command hide 70726f76 61636374 6d33 failed hidden 70726f76 61636374 6d33\n\
                         audit 10 8900 operator 616c696365 command unblock 70726f76 61636374 617574686f72 failed author-not-blocked\n\
-                        audit 11 9000 operator 616c696365 command reject 70726f76 61636374 6d34 7370616d applied\n";
+                        audit 11 9000 operator 616c696365 command reject 70726f76 61636374 6d34 7370616d applied\n\
+                        message 70726f76 61636374 6d31 616c696365 416c696365 none 68656c6c6f 1000 2000 none approved 0\n\
+                        message 70726f76 61636374 6d32 626f62 426f62 40626f62 74776f 1500 2500 none approved 0\n\
+                        message 70726f76 61636374 6d33 6361726f6c 4361726f6c none 7468726565 1600 2600 12000 approved 0\n\
+                        message 70726f76 61636374 6d34 64617665 44617665 none 666f7572 1700 2700 none rejected 7370616d 1 profanity 7370616d\n\
+                        blocked-author 70726f76 61636374 626f62\n";
         let desk = ModerationDesk::from_document(document, social()).unwrap();
         assert_eq!(desk.config().audit_capacity, 512);
         assert_eq!(desk.config().rotation_capacity, 16);
@@ -1697,6 +1927,26 @@ mod document_tests {
         assert_eq!(desk.config().rotation_dwell.get(), 4000);
         assert_eq!(desk.role(&OperatorId::new("alice")), Some(Role::Admin));
         assert_eq!(desk.role(&OperatorId::new("bob")), Some(Role::Moderator));
+        assert_eq!(desk.social().message_count(), 4);
+        assert_eq!(desk.social().pending_len(), 0);
+        assert_eq!(desk.social().blocked_author_count(), 1);
+        let m2 = desk
+            .social()
+            .message(&MessageKey::new("prov", "acct", "m2"))
+            .unwrap();
+        assert_eq!(m2.author_handle.as_deref(), Some("@bob"));
+        assert_eq!(m2.moderation, ModerationState::Approved);
+        let m4 = desk
+            .social()
+            .message(&MessageKey::new("prov", "acct", "m4"))
+            .unwrap();
+        assert_eq!(
+            m4.moderation,
+            ModerationState::Rejected {
+                reason: "spam".to_owned()
+            }
+        );
+        assert_eq!(m4.flags, [ModerationFlag::Profanity("spam".to_owned())]);
         assert!(desk.is_hidden(&MessageKey::new("prov", "acct", "m1")));
         assert_eq!(
             desk.rotation(),
@@ -1754,7 +2004,7 @@ mod document_tests {
 
     #[test]
     fn desk_documents_round_trip_an_empty_state() {
-        let document = "freemix-social-desk 3\n\
+        let document = "freemix-social-desk 4\n\
                         config 512 16 4 4000\n\
                         operator 616c696365 admin\n\
                         sequence 1\n\
@@ -1772,14 +2022,14 @@ mod document_tests {
 
     #[test]
     fn desk_documents_are_strict() {
-        let base = "freemix-social-desk 3\n\
+        let base = "freemix-social-desk 4\n\
                     config 512 16 4 4000\n\
                     operator 616c696365 admin\n\
                     sequence 1\n\
                     rotation-cursor 0\n\
                     evicted 0\n\
                     last 9000\n";
-        let rotation = "freemix-social-desk 3\n\
+        let rotation = "freemix-social-desk 4\n\
                         config 512 1 4 4000\n\
                         operator 616c696365 admin\n\
                         sequence 1\n\
@@ -1787,7 +2037,7 @@ mod document_tests {
                         evicted 0\n\
                         last 9000\n\
                         rotation 70726f76 61636374 6d32\n";
-        let auditable = "freemix-social-desk 3\n\
+        let auditable = "freemix-social-desk 4\n\
                          config 512 16 4 4000\n\
                          operator 616c696365 admin\n\
                          sequence 3\n\
@@ -1800,14 +2050,14 @@ mod document_tests {
             String::new(),
             "freemix-social-desk 4\nconfig 1 1 1 1\n".to_owned(),
             "freemix-social-desk 2\nconfig 1 1 1 1\n".to_owned(),
-            "freemix-social-desk 3\n".to_owned(),
+            "freemix-social-desk 4\n".to_owned(),
             base.replacen("config 512 16 4 4000", "config 0 16 4 4000", 1),
             base.replacen("config 512 16 4 4000", "config 512 16 4 0", 1),
-            "freemix-social-desk 3\nconfig 512 16 4 4000\noperator 61 viewer\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
-            "freemix-social-desk 3\nconfig 512 16 1 4000\noperator 61 admin\noperator 62 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
-            "freemix-social-desk 3\nconfig 512 16 4 4000\noperator 62 admin\noperator 61 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
-            "freemix-social-desk 3\nconfig 512 16 4 4000\noperator 61 admin\noperator 61 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
-            "freemix-social-desk 3\nconfig 512 16 4 4000\noperator zz admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
+            "freemix-social-desk 4\nconfig 512 16 4 4000\noperator 61 viewer\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
+            "freemix-social-desk 4\nconfig 512 16 1 4000\noperator 61 admin\noperator 62 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
+            "freemix-social-desk 4\nconfig 512 16 4 4000\noperator 62 admin\noperator 61 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
+            "freemix-social-desk 4\nconfig 512 16 4 4000\noperator 61 admin\noperator 61 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
+            "freemix-social-desk 4\nconfig 512 16 4 4000\noperator zz admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\n".to_owned(),
             base.replacen("sequence 1", "sequence 0", 1),
             base.replacen("rotation-cursor 0", "rotation-cursor 1", 1),
             base.replacen("last 9000", "last nine", 1),
@@ -1850,7 +2100,7 @@ mod document_tests {
             format!("{auditable}audit 1 1000 operator 616c696365 command set-role 616c696365 superuser applied\n"),
             format!("{auditable}{applied}on-air 70726f76 61636374 6d32 8000 manual 1\n"),
             format!("{auditable}audit 1 1000 operator 616c696365 command feature 70726f76 61636374 6d32 applied\naudit 2 2000 operator 616c696365 command feature 70726f76 61636374 6d32 applied\n").replacen("config 512 16 4", "config 1 16 4", 1),
-            "freemix-social-desk 3\nconfig 512 16 4 4000\noperator 61 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\nextra\n".to_owned(),
+            "freemix-social-desk 4\nconfig 512 16 4 4000\noperator 61 admin\nsequence 1\nrotation-cursor 0\nevicted 0\nlast 0\nextra\n".to_owned(),
         ] {
             assert!(
                 ModerationDesk::from_document(&document, social()).is_err(),
