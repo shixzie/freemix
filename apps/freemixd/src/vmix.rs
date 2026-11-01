@@ -548,8 +548,17 @@ mod tests {
 
     #[test]
     fn free_input_ids_skip_used_identifiers() {
-        assert_eq!(free_input_id_from([]).unwrap().get().get(), 1);
-        assert_eq!(free_input_id_from([1, 2, 4]).unwrap().get().get(), 3);
+        assert_eq!(
+            free_input_id_from(std::iter::empty::<u128>())
+                .unwrap()
+                .get()
+                .get(),
+            1
+        );
+        assert_eq!(
+            free_input_id_from([1_u128, 2, 4]).unwrap().get().get(),
+            3
+        );
     }
 
     #[test]
