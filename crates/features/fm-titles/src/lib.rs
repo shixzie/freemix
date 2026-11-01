@@ -128,7 +128,8 @@ pub use on_air::{TitleAir, TitleAirFrame, TitleAirPhase, TitleAirTiming};
 pub use playback::{PlaybackError, PlaybackOutcome, PlaybackPhase, TitlePlayback};
 pub use production_clock::{
     ClockSource, ClockUnresolved, ProductionClockSpec, TitleClock, TitleClockError, TitleClockKind,
-    TitleClockTime, evaluate_production_clock, title_clock_registry, validate_title_clocks,
+    TitleClockTime, evaluate_production_clock, title_clock_registry, title_clock_registry_with,
+    validate_title_clocks,
 };
 pub use render::{
     CrawlLayer, Degradation, DegradedElement, MAX_FONT_SIZE_PX, MAX_GLYPH_RASTER_DIMENSION,

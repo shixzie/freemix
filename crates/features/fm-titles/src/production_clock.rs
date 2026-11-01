@@ -265,10 +265,10 @@ pub fn validate_title_clocks(
             continue;
         };
         let Some(kind) = defined.get(&spec.clock) else {
-            return Err(TitleClockError::UndefinedClock {
-                element: element.id,
-                clock: spec.clock.clone(),
-            });
+            // An element may name a show production clock the template does
+            // not define; it resolves from the shared registry at render
+            // time.
+            continue;
         };
         if let Some(format) = spec.format
             && !kind.accepts_format(format)
@@ -353,4 +353,35 @@ pub fn title_clock_registry(
 
 fn utc_nanos(instant: UtcInstant) -> i128 {
     i128::from(instant.unix_seconds()) * 1_000_000_000 + i128::from(instant.subsec_nanos())
+}
+
+/// Builds the registry a frame reads from the template's own `clocks` and,
+/// when an element names a clock the template does not define, from the
+/// shared show `registry` (`None` leaves such elements unresolved).
+///
+/// # Errors
+///
+/// Returns [`ProductionClockError`] for more than [`MAX_PRODUCTION_CLOCKS`]
+/// clocks or a duplicate name.
+pub fn title_clock_registry_with(
+    template: &TitleTemplate,
+    clocks: &[TitleClock],
+    time: TitleClockTime,
+    shared: Option<&ProductionClocks>,
+) -> Result<ProductionClocks, ProductionClockError> {
+    let mut registry = title_clock_registry(clocks, time)?;
+    let Some(shared) = shared else {
+        return Ok(registry);
+    };
+    for element in &template.elements {
+        let ElementKind::ProductionClock(spec) = &element.kind else {
+            continue;
+        };
+        if registry.get(&spec.clock).is_none()
+            && let Some(clock) = shared.get(&spec.clock)
+        {
+            registry.insert(spec.clock.clone(), clock.clone())?;
+        }
+    }
+    Ok(registry)
 }

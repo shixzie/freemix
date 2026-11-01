@@ -71,7 +71,7 @@ use fm_persistence::ProjectStore;
 use fm_titles::{
     AnimSample, AssetCatalog, ClockSource, Color, ElementKind, FieldId, FieldValue, ImageSource,
     MAX_FONT_BYTES, ReferenceRenderer, TitleClock, TitleClockKind, TitleClockTime, TitleId,
-    TitleTemplate, title_clock_registry,
+    TitleTemplate, title_clock_registry_with,
 };
 use fm_types::{FrameRate, InputId};
 use fm_video::ImageFrame;
@@ -635,6 +635,22 @@ pub fn render_title_at(
     width: u32,
     height: u32,
 ) -> Option<ImageFrame> {
+    render_title_at_with_clocks(assets, input, title, time, None, width, height)
+}
+
+/// [`render_title_at`] with the show's shared production clocks, which
+/// resolve element clocks the template does not define (`None` leaves them
+/// unresolved).
+#[must_use]
+pub fn render_title_at_with_clocks(
+    assets: &TitleAssets,
+    input: InputId,
+    title: &TitleInput,
+    time: TitleTime,
+    shared_clocks: Option<&fm_clock::production::ProductionClocks>,
+    width: u32,
+    height: u32,
+) -> Option<ImageFrame> {
     let loaded = assets.template(&title.template_uri)?;
     render_template_at(
         assets,
@@ -643,6 +659,7 @@ pub fn render_title_at(
         input,
         title,
         time,
+        shared_clocks,
         width,
         height,
     )
@@ -659,10 +676,12 @@ fn render_template_at(
     input: InputId,
     title: &TitleInput,
     time: TitleTime,
+    shared_clocks: Option<&fm_clock::production::ProductionClocks>,
     width: u32,
     height: u32,
 ) -> Option<ImageFrame> {
-    let output = render_template_output(assets, loaded, template, input, title, time).ok()?;
+    let output =
+        render_template_output(assets, loaded, template, input, title, time, shared_clocks).ok()?;
     if output.frame.width() == width && output.frame.height() == height {
         return Some(output.frame);
     }
@@ -718,10 +737,33 @@ pub fn render_title_output(
     title: &TitleInput,
     time: TitleTime,
 ) -> Result<fm_titles::RenderOutput, TitleRenderError> {
+    render_title_output_with_clocks(assets, input, title, time, None)
+}
+
+/// [`render_title_output`] with the show's shared production clocks.
+///
+/// # Errors
+///
+/// Same as [`render_title_output`].
+pub fn render_title_output_with_clocks(
+    assets: &TitleAssets,
+    input: InputId,
+    title: &TitleInput,
+    time: TitleTime,
+    shared_clocks: Option<&fm_clock::production::ProductionClocks>,
+) -> Result<fm_titles::RenderOutput, TitleRenderError> {
     let loaded = assets
         .template(&title.template_uri)
         .ok_or_else(|| TitleRenderError::TemplateNotLoaded(title.template_uri.clone()))?;
-    render_template_output(assets, &loaded, &loaded.current(), input, title, time)
+    render_template_output(
+        assets,
+        &loaded,
+        &loaded.current(),
+        input,
+        title,
+        time,
+        shared_clocks,
+    )
 }
 
 /// [`render_title_output`] with `template` (the loaded template's, or a
@@ -733,6 +775,7 @@ fn render_template_output(
     input: InputId,
     title: &TitleInput,
     time: TitleTime,
+    shared_clocks: Option<&fm_clock::production::ProductionClocks>,
 ) -> Result<fm_titles::RenderOutput, TitleRenderError> {
     let catalog = loaded.catalog_for(assets.store.as_ref(), title);
     let mut scene = template
@@ -746,12 +789,16 @@ fn render_template_output(
     scene
         .update_fields(scene.revision(), &updates)
         .map_err(TitleRenderError::Fields)?;
-    if loaded.clocks.is_empty() {
-        ReferenceRenderer.render_sampled(&scene, time.scene_time_ms(), &catalog, time.pose)
-    } else {
+    let uses_clocks = !loaded.clocks.is_empty()
+        || template
+            .elements
+            .iter()
+            .any(|element| matches!(element.kind, ElementKind::ProductionClock(_)));
+    if uses_clocks {
         let clock_time = time.clock_time();
         let registry =
-            title_clock_registry(&loaded.clocks, clock_time).map_err(TitleRenderError::Clocks)?;
+            title_clock_registry_with(template, &loaded.clocks, clock_time, shared_clocks)
+                .map_err(TitleRenderError::Clocks)?;
         ReferenceRenderer.render_sampled_with_clocks(
             &scene,
             time.scene_time_ms(),
@@ -759,6 +806,8 @@ fn render_template_output(
             time.pose,
             ClockSource::new(&registry, clock_time.at),
         )
+    } else {
+        ReferenceRenderer.render_sampled(&scene, time.scene_time_ms(), &catalog, time.pose)
     }
     .map_err(TitleRenderError::Render)
 }
@@ -781,7 +830,9 @@ pub fn render_title_preview(
     height: u32,
 ) -> Option<Vec<u8>> {
     let loaded = assets.template(&title.template_uri)?;
-    let frame = render_template_at(assets, &loaded, template, input, title, time, width, height)?;
+    let frame = render_template_at(
+        assets, &loaded, template, input, title, time, None, width, height,
+    )?;
     let row_bytes = usize::try_from(frame.width()).ok()?.checked_mul(4)?;
     let mut pixels =
         Vec::with_capacity(row_bytes.checked_mul(usize::try_from(frame.height()).ok()?)?);

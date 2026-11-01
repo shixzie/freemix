@@ -5483,9 +5483,10 @@ kind refuses the operation; the snapshot carries the show's clock names
 operation in the cue editor. A script's `clock NAME, OPERATION[,
 VALUE]` action performs the same operation under the same permission.
 Remaining gaps:
-there is no snapshot record or full clock UI; titles still read their own
-template clocks rather than the shared registry; a media clock can name an
-input and follows its playback
+there is no full clock UI; a title element may name a project production
+clock, which a caller-supplied shared registry resolves at render time (the
+template's own time-of-day, countdown-to, and since-take clocks still work
+too); a media clock can name an input and follows its playback
 through the engine, and stream, recording, replay, and MultiCorder session
 clocks start and stop with their source's activity (an external session clock
 stays stopped); no project-level
