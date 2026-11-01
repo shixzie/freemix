@@ -114,25 +114,37 @@ pub(crate) struct OpenedRecorder {
 
 /// One segment's authored track-map recording (AU-010).
 ///
-/// The map selects Master and aux bus channels into one interleaved WAV of
-/// mono, stereo, or multichannel tracks. The recorder writes beside the
-/// segment's MP4, using the same sample rate and a 16-bit linear-PCM body so
-/// it matches the `--record-wav` sidecar's format. The tracks are written
-/// from the same bus audio the mixer rendered for the frame, independent of
-/// the video encoder's backlog.
+/// Every file is a crash-safe `fm-record` WAV session: its first segment is
+/// `<name>.wav` beside the MP4, a write, sync, or creation failure re-homes
+/// the audio into `<name>-NNNN.wav` on the same root or on the configured
+/// fallback, and startup WAV recovery repairs a session a crash left open.
+/// The map selects Master and aux bus channels into one interleaved file or
+/// one file per track. Writes use the same bus audio the mixer rendered for
+/// the frame, independent of the video encoder's backlog.
 #[cfg(feature = "native-media")]
 pub(crate) struct TrackWavState {
     map: RecorderTrackMap,
     mode: TrackFileMode,
-    recorder: Option<TrackWavRecorder>,
+    writers: Vec<fm_record::ResilientWavWriter<recording_session::SessionStorage>>,
     paths: Vec<PathBuf>,
     scratch: Vec<Vec<f32>>,
+}
+
+/// The summed outcome of finalizing every track WAV in one segment.
+#[cfg(feature = "native-media")]
+#[derive(Debug, Default)]
+pub(crate) struct TrackWavFinish {
+    pub(crate) segments: u64,
+    pub(crate) data_bytes: u64,
+    pub(crate) failovers: u64,
+    pub(crate) failures: Vec<String>,
 }
 
 #[cfg(feature = "native-media")]
 impl TrackWavState {
     /// The interleaved track WAV path beside `segment`:
     /// `<stem>.tracks.wav`.
+    #[cfg(test)]
     pub(crate) fn path(segment: &Path) -> PathBuf {
         let stem = segment
             .file_stem()
@@ -140,34 +152,87 @@ impl TrackWavState {
         recording_parent(segment).join(format!("{stem}.tracks.wav"))
     }
 
-    /// Every file this map writes beside `segment`: one interleaved file or
-    /// one split file per track.
-    pub(crate) fn paths_for(
-        segment: &Path,
-        map: &RecorderTrackMap,
-        mode: TrackFileMode,
-    ) -> Vec<PathBuf> {
+    /// Every session name this map starts beside `segment`.
+    fn session_names(segment: &Path, map: &RecorderTrackMap, mode: TrackFileMode) -> Vec<String> {
+        const MAX: usize = 60;
         let stem = segment
             .file_stem()
             .map_or_else(|| "segment".into(), |stem| stem.to_string_lossy());
         match mode {
-            TrackFileMode::Interleaved => vec![Self::path(segment)],
+            TrackFileMode::Interleaved => {
+                let suffix = ".tracks";
+                let base = &stem[..stem.len().min(MAX - suffix.len())];
+                vec![format!("{base}{suffix}")]
+            }
             TrackFileMode::SplitPerTrack => map
                 .tracks()
                 .iter()
                 .enumerate()
                 .map(|(index, track)| {
-                    recording_parent(segment).join(fm_record::split_track_file_name(
-                        &stem,
-                        index,
-                        track.name(),
-                    ))
+                    let prefix = format!("_{:02}_", index + 1);
+                    let base = &stem[..stem.len().min(MAX - prefix.len() - 1)];
+                    let sanitized: String = track
+                        .name()
+                        .chars()
+                        .map(|character| {
+                            if character.is_ascii_alphanumeric() || character == '-' {
+                                character
+                            } else {
+                                '_'
+                            }
+                        })
+                        .collect();
+                    let room = MAX - base.len() - prefix.len();
+                    format!("{base}{prefix}{}", &sanitized[..sanitized.len().min(room)])
                 })
                 .collect(),
         }
     }
 
-    /// The files this recorder writes, in sink order.
+    /// Creates every crash-safe WAV session and writes its header before any
+    /// audio is accepted.
+    pub(crate) fn create(
+        map: RecorderTrackMap,
+        segment: &Path,
+        sample_rate: u32,
+        channels: u16,
+        fallback: Option<&Path>,
+    ) -> Result<Self, String> {
+        map.validate_against_channels(channels)
+            .map_err(|error| error.to_string())?;
+        let mode = TrackFileMode::from(map.layout());
+        let options = TrackWavOptions {
+            sample_rate,
+            format: WavSampleFormat::Pcm16,
+            large_file: LargeFilePolicy::Rf64WhenNeeded,
+            bext: None,
+            buffer_frames: 1024,
+        };
+        let specs = TrackWavRecorder::file_specs(&map, mode, &options);
+        let names = Self::session_names(segment, &map, mode);
+        let mut writers = Vec::with_capacity(names.len());
+        let mut paths = Vec::with_capacity(names.len());
+        for (name, spec) in names.iter().zip(&specs) {
+            let mut writer = recording_session::start_track_wav_session(name, segment, fallback)?;
+            let header = fm_record::encode_wav_header(spec, 0)
+                .map_err(|error| format!("track WAV header: {error}"))?;
+            writer
+                .push(&header)
+                .map_err(|error| format!("track WAV header: {error}"))?;
+            writers.push(writer);
+            paths.push(recording_parent(segment).join(format!("{name}.wav")));
+        }
+        let scratch = vec![Vec::new(); map.inventory().buses().len()];
+        Ok(Self {
+            map,
+            mode,
+            writers,
+            paths,
+            scratch,
+        })
+    }
+
+    /// The files this recorder started, in sink order.
     #[must_use]
     pub(crate) fn paths(&self) -> &[PathBuf] {
         &self.paths
@@ -179,44 +244,7 @@ impl TrackWavState {
         self.mode
     }
 
-    /// Creates the WAV and validates the map against the mixer's channel
-    /// count before any audio is written.
-    pub(crate) fn create(
-        map: RecorderTrackMap,
-        segment: &Path,
-        sample_rate: u32,
-        channels: u16,
-    ) -> Result<Self, String> {
-        map.validate_against_channels(channels)
-            .map_err(|error| error.to_string())?;
-        let mode = TrackFileMode::from(map.layout());
-        let paths = Self::paths_for(segment, &map, mode);
-        let mut sinks: Vec<Box<dyn fm_record::WavSink>> = Vec::with_capacity(paths.len());
-        for path in &paths {
-            let file = File::create(path)
-                .map_err(|error| format!("track WAV {}: {error}", path.display()))?;
-            sinks.push(Box::new(file));
-        }
-        let options = TrackWavOptions {
-            sample_rate,
-            format: WavSampleFormat::Pcm16,
-            large_file: LargeFilePolicy::Rf64WhenNeeded,
-            bext: None,
-            buffer_frames: 1024,
-        };
-        let recorder = TrackWavRecorder::create(map.clone(), mode, &options, sinks)
-            .map_err(|error| error.to_string())?;
-        let scratch = vec![Vec::new(); map.inventory().buses().len()];
-        Ok(Self {
-            map,
-            mode,
-            recorder: Some(recorder),
-            paths,
-            scratch,
-        })
-    }
-
-    /// Routes one frame's Master and aux bus audio into the track WAV.
+    /// Routes one frame's Master and aux bus audio into every session.
     ///
     /// `aux` is bus-major, each bus `mixer_channels` wide. The map's
     /// inventory may record fewer channels than the mixer exposes.
@@ -292,22 +320,46 @@ impl TrackWavState {
             .zip(&self.scratch)
             .map(|((bus, _), buffer)| (*bus, buffer.as_slice()))
             .collect();
-        self.recorder
-            .as_mut()
-            .ok_or_else(|| "track WAV is already finalized".to_owned())?
-            .write(frames, &buses)
-            .map_err(|error| error.to_string())
+        let buffers = match self.mode {
+            TrackFileMode::Interleaved => vec![
+                self.map
+                    .route_interleaved(frames, &buses)
+                    .map_err(|error| error.to_string())?,
+            ],
+            TrackFileMode::SplitPerTrack => self
+                .map
+                .route(frames, &buses)
+                .map_err(|error| error.to_string())?,
+        };
+        let mut encoded = Vec::new();
+        for (writer, buffer) in self.writers.iter_mut().zip(buffers) {
+            encoded.clear();
+            for sample in buffer {
+                fm_record::encode_sample(WavSampleFormat::Pcm16, sample, &mut encoded);
+            }
+            writer.push(&encoded).map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
-    /// Finalizes the WAV; idempotent so stop and drop can both call it.
-    pub(crate) fn finish(&mut self) -> Result<(), String> {
-        let Some(recorder) = self.recorder.take() else {
-            return Ok(());
-        };
-        recorder
-            .finalize()
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+    /// Finalizes every WAV session and reports what each one did.
+    pub(crate) fn finish(&mut self) -> TrackWavFinish {
+        let mut finish = TrackWavFinish::default();
+        for (file, writer) in std::mem::take(&mut self.writers).into_iter().enumerate() {
+            let report = writer.finish_report();
+            finish.segments = finish.segments.saturating_add(report.stats.segments_opened);
+            finish.data_bytes = finish.data_bytes.saturating_add(report.stats.data_bytes);
+            finish.failovers = finish.failovers.saturating_add(report.stats.failovers);
+            if let Some(error) = report.error {
+                finish.failures.push(format!("file {file}: {error}"));
+            }
+            if let Err(error) = report.snapshot {
+                finish
+                    .failures
+                    .push(format!("file {file} session: {error}"));
+            }
+        }
+        finish
     }
 }
 

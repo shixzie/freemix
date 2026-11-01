@@ -3843,11 +3843,16 @@ rotated, it checks the map's bus channels against the mixer and writes the
 map's interleaved `<segment stem>.tracks.wav` or split
 `<segment stem>_<NN>_<track>.wav` files beside the MP4 from the same Master
 and aux bus samples the mixer rendered, independent of the video encoder's
-backlog; stopping a segment finalizes every file and prints
-`FREEMIXD_RECORD_TRACK` with its mode and file count. Remaining gaps: the
-track WAVs are not inside the crash-safe session's failover, manifest, or
-recovery; they have no time or size rollover; and there is no UI for
-authoring or monitoring the tracks. WAV output is separate from the
+backlog. Every track file is its own crash-safe `SegmentFormat::Wav` session:
+it has a `<name>.wav.fmsession` manifest in every usable root, its
+`ResilientWavWriter` re-homes the audio to `<name>-NNNN.wav` on a write,
+sync, or creation failure (the same directory or `--record-fallback-dir`),
+and startup WAV recovery finds it by its derived name and repairs its sizes.
+Stopping a segment finalizes every file and prints `FREEMIXD_RECORD_TRACK`
+with its mode, file count, segments, bytes, failovers, and first failure.
+Remaining gaps: track sessions have no time or size rollover beyond RF64 and
+failover segments; there is no UI for authoring or monitoring the tracks.
+WAV output is separate from the
 crash-safe packet spool, and metadata stops at version-1 `bext` without iXML,
 loudness, or UMID. `AU-010` remains planned.
 

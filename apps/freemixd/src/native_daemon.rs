@@ -909,7 +909,14 @@ impl NativeDaemon {
         let audio = &stored.project().settings().audio;
         let channels = u16::try_from(audio.channels.channels().len())
             .map_err(|_| AppFailure("project audio channel count exceeds u16".into()))?;
-        self.start_track_wav_with(slot, segment, audio.sample_rate.hertz(), channels)
+        let fallback = self.segment_names.fallback().map(Path::to_path_buf);
+        self.start_track_wav_with(
+            slot,
+            segment,
+            audio.sample_rate.hertz(),
+            channels,
+            fallback.as_deref(),
+        )
     }
 
     fn start_track_wav_with(
@@ -918,13 +925,20 @@ impl NativeDaemon {
         segment: &Path,
         sample_rate: u32,
         channels: u16,
+        fallback: Option<&Path>,
     ) -> AppResult<()> {
         self.finish_track_wav(slot);
         let Some(map) = &self.record_track_maps[slot] else {
             return Ok(());
         };
-        let track = TrackWavState::create(map.as_ref().clone(), segment, sample_rate, channels)
-            .map_err(|error| AppFailure(format!("record track map: {error}")))?;
+        let track = TrackWavState::create(
+            map.as_ref().clone(),
+            segment,
+            sample_rate,
+            channels,
+            fallback,
+        )
+        .map_err(|error| AppFailure(format!("record track map: {error}")))?;
         self.record_track_wavs[slot] = Some(track);
         Ok(())
     }
@@ -940,17 +954,24 @@ impl NativeDaemon {
             "interleaved"
         };
         let files = track.paths().len();
-        match track.finish() {
-            Ok(()) => eprintln!(
-                "FREEMIXD_RECORD_TRACK\tv=1\tslot={}\tstatus=finalized\tmode={mode}\tfiles={files}",
-                slot + 1
-            ),
-            Err(error) => eprintln!(
-                "FREEMIXD_RECORD_TRACK\tv=1\tslot={}\tstatus=failed\tmode={mode}\tfiles={files}\terror={}",
-                slot + 1,
-                diagnostic_field(&error)
-            ),
-        }
+        let report = track.finish();
+        let status = if report.failures.is_empty() {
+            "finalized"
+        } else {
+            "failed"
+        };
+        let failure = report
+            .failures
+            .first()
+            .map_or_else(|| "none".to_owned(), |error| diagnostic_field(error));
+        eprintln!(
+            "FREEMIXD_RECORD_TRACK\tv=1\tslot={}\tstatus={status}\tmode={mode}\tfiles={}\tsegments={}\tbytes={}\tfailovers={}\tfailure={failure}",
+            slot + 1,
+            files,
+            report.segments,
+            report.data_bytes,
+            report.failovers,
+        );
     }
 
     /// Begins opening one slot's next segment for a configured output: the
@@ -2338,6 +2359,7 @@ impl NativeDaemon {
                 u16::try_from(format.channel_layout().channels().len()).unwrap_or(u16::MAX),
             )
         });
+        let track_fallback = self.segment_names.fallback().map(Path::to_path_buf);
         let mut rotated_segment: Option<PathBuf> = None;
         let rotated = next_format.map_err(Into::into).and_then(|format| {
             let timecode = recording_start_timecode(sequence.get(), format.frame_rate());
@@ -2374,7 +2396,13 @@ impl NativeDaemon {
                 let track = rotated_segment.zip(track_format).map_or(
                     Ok(()),
                     |(segment, (rate, channels))| {
-                        self.start_track_wav_with(slot, &segment, rate, channels)
+                        self.start_track_wav_with(
+                            slot,
+                            &segment,
+                            rate,
+                            channels,
+                            track_fallback.as_deref(),
+                        )
                     },
                 );
                 if let Err(error) = track {

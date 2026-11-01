@@ -17,6 +17,12 @@
 //! fallback, and free-space policy as the video session. Its records name the
 //! session `<stem>.wav`.
 //!
+//! An authored track map (AU-010) gets one such WAV session per file:
+//! `<stem>.tracks` for the interleaved layout or `<stem>_<NN>_<track>` for
+//! split. They use the same writer, failover, manifest, and recovery rules;
+//! [`derives_from`] includes their names so [`recover_interrupted`] repairs
+//! them beside the video session.
+//!
 //! While a segment records, [`RemainingTimeWatch`] samples the active
 //! directory's free space every few seconds and reports a
 //! `FREEMIXD_RECORDER_REMAINING` record each time the estimated remaining
@@ -44,11 +50,12 @@ use fm_codec_ffmpeg::record::{
 };
 use fm_record::{
     FileStorage, MAX_SESSION_NAME_BYTES, RecordingSession, RemainingTimeAlarm,
-    RemainingTimeTransition, ResilientWavConfig, ResilientWriterConfig, SESSION_MANIFEST_EXTENSION,
-    SESSION_WAV_SEGMENT_EXTENSION, SegmentFormat, SegmentOutcome, SessionConfig, SessionError,
-    SessionErrorRecord, SessionManifest, SessionRecovery, SessionSnapshot, SessionState,
-    SpaceLevel, SpacePreflight, SpaceThresholds, WavSegmentOutcome, WavSessionRecovery,
-    estimate_recording_space, preflight_recording_space, recover_session, recover_wav_session,
+    RemainingTimeTransition, ResilientWavConfig, ResilientWavWriter, ResilientWriterConfig,
+    SESSION_MANIFEST_EXTENSION, SESSION_WAV_SEGMENT_EXTENSION, SegmentFormat, SegmentOutcome,
+    SessionConfig, SessionError, SessionErrorRecord, SessionManifest, SessionRecovery,
+    SessionSnapshot, SessionState, SpaceLevel, SpacePreflight, SpaceThresholds, WavSegmentOutcome,
+    WavSessionRecovery, estimate_recording_space, preflight_recording_space, recover_session,
+    recover_wav_session,
 };
 
 use crate::disk;
@@ -263,6 +270,32 @@ fn session_config(
             .map_err(|error| error.to_string())?;
     }
     Ok(config)
+}
+
+/// Starts one track-map WAV session beside `segment`.
+///
+/// The session is named `name` and uses the segment's parent as its primary
+/// root and the configured fallback directory, so [`ResilientWavWriter`]'s
+/// failover and the WAV recovery scanner treat it exactly like a
+/// `--record-wav` sidecar.
+pub(crate) fn start_track_wav_session(
+    name: &str,
+    segment: &Path,
+    fallback: Option<&Path>,
+) -> Result<ResilientWavWriter<SessionStorage>, String> {
+    let primary = segment
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let primary = fs::canonicalize(primary).map_err(|error| format!("track WAV root: {error}"))?;
+    let config = session_config(name, &primary, fallback, SegmentFormat::Wav)?;
+    let storage: SessionStorage = FileStorage::new(disk::available_bytes);
+    let session = RecordingSession::start(config, storage)
+        .map_err(|error| format!("track WAV session: {error}"))?;
+    Ok(ResilientWavWriter::new(
+        session,
+        ResilientWavConfig::default(),
+    ))
 }
 
 fn same_directory(left: &Path, right: &Path) -> bool {
@@ -839,14 +872,29 @@ pub(crate) struct RecoveryScope<'a> {
     pub(crate) output: &'a Path,
 }
 
-/// Whether `name` is the configured stem or one of its derived `-NNN`
-/// segment names.
+/// Whether `name` is the configured stem, one of its derived `-NNN`
+/// segment names, or a track-map session beside it (`<stem>_tracks`,
+/// `<stem>_NN_<track>`).
 fn derives_from(name: &str, stem: &str) -> bool {
-    name == stem
-        || name
-            .strip_prefix(stem)
-            .and_then(|rest| rest.strip_prefix('-'))
-            .is_some_and(|digits| digits.len() == 3 && digits.bytes().all(|b| b.is_ascii_digit()))
+    if name == stem {
+        return true;
+    }
+    let Some(rest) = name.strip_prefix(stem) else {
+        return false;
+    };
+    if let Some(digits) = rest.strip_prefix('-') {
+        return digits.len() == 3 && digits.bytes().all(|b| b.is_ascii_digit());
+    }
+    let Some(rest) = rest.strip_prefix('_') else {
+        return rest == ".tracks";
+    };
+    if rest == "tracks" {
+        return true;
+    }
+    let Some((index, track)) = rest.split_once('_') else {
+        return false;
+    };
+    index.len() == 2 && index.bytes().all(|byte| byte.is_ascii_digit()) && !track.is_empty()
 }
 
 /// The newest intact manifest copy across `config`'s roots.
@@ -1200,6 +1248,11 @@ mod tests {
     fn derived_names_belong_to_their_stem_only() {
         assert!(derives_from("program", "program"));
         assert!(derives_from("program-002", "program"));
+        assert!(derives_from("program.tracks", "program"));
+        assert!(derives_from("program_01_Program", "program"));
+        assert!(!derives_from("program_02", "program"));
+        assert!(!derives_from("program_1_Program", "program"));
+        assert!(!derives_from("program_01_", "program"));
         assert!(!derives_from("program-02", "program"));
         assert!(!derives_from("program-0002", "program"));
         assert!(!derives_from("programs", "program"));

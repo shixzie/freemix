@@ -12813,7 +12813,7 @@ fn a_track_map_writes_master_and_aux_channels_beside_the_segment() {
         BusInventory::new(vec![(RecordBus::Master, 2), (RecordBus::Aux(bus), 2)]).unwrap(),
     )
     .unwrap();
-    let mut track = TrackWavState::create(map, &segment, 48_000, 2).unwrap();
+    let mut track = TrackWavState::create(map, &segment, 48_000, 2, None).unwrap();
     let timing = MediaTiming::new(
         OriginalTimestamp::new(
             MediaTimestamp::new(0),
@@ -12834,7 +12834,8 @@ fn a_track_map_writes_master_and_aux_channels_beside_the_segment() {
     .unwrap();
     let aux = vec![vec![0.0, 0.0], vec![0.75, 0.25]];
     track.write(&audio, &aux, 2).unwrap();
-    track.finish().unwrap();
+    let finish = track.finish();
+    assert!(finish.failures.is_empty(), "{:?}", finish.failures);
 
     let path = TrackWavState::path(&segment);
     let mut file = File::open(&path).unwrap();
@@ -12874,7 +12875,7 @@ fn a_split_track_map_writes_one_file_per_track() {
     )
     .unwrap()
     .with_layout(TrackMapLayout::SplitPerTrack);
-    let mut track = TrackWavState::create(map, &segment, 48_000, 2).unwrap();
+    let mut track = TrackWavState::create(map, &segment, 48_000, 2, None).unwrap();
     assert_eq!(track.mode(), fm_record::TrackFileMode::SplitPerTrack);
     assert_eq!(
         track
@@ -12904,7 +12905,8 @@ fn a_split_track_map_writes_one_file_per_track() {
     .unwrap();
     let aux = vec![vec![0.0, 0.0], vec![0.75, 0.25]];
     track.write(&audio, &aux, 2).unwrap();
-    track.finish().unwrap();
+    let finish = track.finish();
+    assert!(finish.failures.is_empty(), "{:?}", finish.failures);
 
     let program = track.paths()[0].clone();
     let bus_a = track.paths()[1].clone();
@@ -12923,4 +12925,121 @@ fn a_split_track_map_writes_one_file_per_track() {
         .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
         .collect();
     assert_eq!(samples, [24_576, 8192]);
+}
+
+/// AU-010: startup WAV recovery finds and repairs an interrupted track
+/// session by its derived name.
+#[cfg(feature = "native-media")]
+#[test]
+fn startup_recovery_finds_an_interrupted_track_wav_session() {
+    use fm_record::{LargeFilePolicy, WavSampleFormat, WavSpec, encode_wav_header};
+
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("primary");
+    fs::create_dir(&primary).unwrap();
+    let segment = primary.join("program.mp4");
+    let spec = WavSpec {
+        channels: 2,
+        sample_rate: 48_000,
+        format: WavSampleFormat::Pcm16,
+        channel_mask: 0,
+        large_file: LargeFilePolicy::Rf64WhenNeeded,
+        bext: None,
+    };
+    let mut writer =
+        recording_session::start_track_wav_session("program.tracks", &segment, None).unwrap();
+    writer.push(&encode_wav_header(&spec, 0).unwrap()).unwrap();
+    writer.push(&vec![0_u8; 48_000 * 4]).unwrap();
+    drop(writer);
+    assert!(primary.join("program.tracks.wav.fmsession").exists());
+
+    let records = recording_session::recover_interrupted(
+        &[recording_session::RecoveryScope {
+            slot: 1,
+            output: &segment,
+        }],
+        None,
+    );
+    assert!(
+        records.iter().any(|record| {
+            record.contains("FREEMIXD_RECORDING_WAV_RECOVERY")
+                && record.contains("\tsession=program.tracks.wav\t")
+                && record.contains("\tstatus=recovered\t")
+        }),
+        "{records:?}"
+    );
+}
+
+/// AU-010: a track WAV session follows the configured fallback directory
+/// when its primary root starts refusing writes.
+#[cfg(feature = "native-media")]
+#[test]
+fn a_track_wav_session_fails_over_to_the_fallback_root() {
+    use fm_record::{LargeFilePolicy, WavSampleFormat, WavSpec, encode_wav_header};
+
+    let directory = tempfile::tempdir().unwrap();
+    let primary = directory.path().join("primary");
+    let fallback = directory.path().join("fallback");
+    fs::create_dir(&primary).unwrap();
+    fs::create_dir(&fallback).unwrap();
+    let segment = primary.join("program.mp4");
+    let spec = WavSpec {
+        channels: 2,
+        sample_rate: 48_000,
+        format: WavSampleFormat::Pcm16,
+        channel_mask: 0,
+        large_file: LargeFilePolicy::Rf64WhenNeeded,
+        bext: None,
+    };
+    let mut writer =
+        recording_session::start_track_wav_session("program.tracks", &segment, Some(&fallback))
+            .unwrap();
+    writer.push(&encode_wav_header(&spec, 0).unwrap()).unwrap();
+    writer.push(&vec![0_u8; 48_000 * 4]).unwrap();
+    fs::set_permissions(
+        &primary,
+        std::os::unix::fs::PermissionsExt::from_mode(0o555),
+    )
+    .unwrap();
+    let permissions_bind = fs::File::create(primary.join("probe")).is_err();
+    if !permissions_bind {
+        fs::set_permissions(
+            &primary,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        return;
+    }
+    writer.request_rotation();
+    writer.push(&vec![0_u8; 96_000 * 4]).unwrap();
+    let report = writer.finish_report();
+    fs::set_permissions(
+        &primary,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let fallback_files: Vec<String> = fs::read_dir(&fallback)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        fallback_files
+            .iter()
+            .any(|name| name.contains("program.tracks")),
+        "stats={:?} error={:?} primary={:?} fallback={fallback_files:?}",
+        report.stats,
+        report.error,
+        fs::read_dir(&primary)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+    );
+    // The session opened its next segment on the fallback when the primary
+    // refused a new file. Some paths move roots during open rather than
+    // through a recorded write failure, so assert both the moved file and
+    // the second segment instead of only the failover counter.
+    assert!(report.stats.segments_opened >= 2, "{:?}", report.stats);
+    assert!(report.error.is_none(), "{:?}", report.error);
 }
