@@ -27,7 +27,7 @@ use fm_model::{
 use fm_persistence::{ProjectPosition, ProjectStore, RuntimeRouting, StoredProject};
 use fm_record::{
     BusInventory, Fmp4Integrity, RecordBus, RecordTrack, RecorderTrackMap, SessionManifest,
-    SessionState, TrackSource, read_wav_info, scan_fmp4_file,
+    SessionState, TrackMapLayout, TrackSource, read_wav_info, scan_fmp4_file,
 };
 use fm_types::audio_bus::AuxBusNumber;
 use fm_types::{
@@ -881,6 +881,57 @@ fn an_authored_track_map_writes_master_and_aux_channels_beside_the_segment() {
         lines(&stderr, "FREEMIXD_RECORD_TRACK")
             .iter()
             .any(|line| line.contains("\tslot=1\tstatus=finalized")),
+        "{stderr}"
+    );
+}
+
+/// AU-010: a split-layout map writes one WAV per track beside the segment.
+#[test]
+fn a_split_track_map_writes_one_file_per_track_beside_the_segment() {
+    if !tools_available() {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let project = directory.path().join("split.freemix");
+    save_recording_project(&project);
+    let aux_a = AuxBusNumber::new(1).unwrap();
+    let map = RecorderTrackMap::new(
+        vec![
+            RecordTrack::stereo("Program", TrackSource::master(0), TrackSource::master(1)),
+            RecordTrack::mono("Bus A", TrackSource::new(RecordBus::Aux(aux_a), 0)),
+        ],
+        BusInventory::new(vec![(RecordBus::Master, 2), (RecordBus::Aux(aux_a), 2)]).unwrap(),
+    )
+    .unwrap()
+    .with_layout(TrackMapLayout::SplitPerTrack);
+    ProjectStore::new(&project)
+        .unwrap()
+        .save_recorder_track_map(RecorderSlot::new(1).unwrap(), &map)
+        .unwrap();
+
+    let output = directory.path().join("program.mp4");
+    let mut arguments = os(&["--record-program"]);
+    arguments.push(output.into());
+    let Some(daemon) = DaemonProcess::start(&project, &arguments) else {
+        return;
+    };
+    let program_track = directory.path().join("program_01_Program.wav");
+    let bus_track = directory.path().join("program_02_Bus_A.wav");
+    wait_until("split track WAVs with audio", || {
+        program_track.is_file()
+            && bus_track.is_file()
+            && file_len(&program_track) > 4_096
+            && file_len(&bus_track) > 2_048
+    });
+    let stderr = daemon.stop();
+    let mut file = fs::File::open(&program_track).unwrap();
+    assert_eq!(read_wav_info(&mut file).unwrap().spec.channels, 2);
+    let mut file = fs::File::open(&bus_track).unwrap();
+    assert_eq!(read_wav_info(&mut file).unwrap().spec.channels, 1);
+    assert!(
+        lines(&stderr, "FREEMIXD_RECORD_TRACK")
+            .iter()
+            .any(|line| line.contains("\tslot=1\tstatus=finalized\tmode=split\tfiles=2")),
         "{stderr}"
     );
 }
