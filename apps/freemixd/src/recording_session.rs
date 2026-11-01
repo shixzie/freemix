@@ -282,20 +282,18 @@ pub(crate) fn start_track_wav_session(
     name: &str,
     segment: &Path,
     fallback: Option<&Path>,
+    writer_config: ResilientWavConfig,
 ) -> Result<ResilientWavWriter<SessionStorage>, String> {
     let primary = segment
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let primary = fs::canonicalize(primary).map_err(|error| format!("track WAV root: {error}"))?;
-    let config = session_config(name, &primary, fallback, SegmentFormat::Wav)?;
+    let session_config = session_config(name, &primary, fallback, SegmentFormat::Wav)?;
     let storage: SessionStorage = FileStorage::new(disk::available_bytes);
-    let session = RecordingSession::start(config, storage)
+    let session = RecordingSession::start(session_config, storage)
         .map_err(|error| format!("track WAV session: {error}"))?;
-    Ok(ResilientWavWriter::new(
-        session,
-        ResilientWavConfig::default(),
-    ))
+    Ok(ResilientWavWriter::new(session, writer_config))
 }
 
 fn same_directory(left: &Path, right: &Path) -> bool {

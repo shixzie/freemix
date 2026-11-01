@@ -12813,7 +12813,15 @@ fn a_track_map_writes_master_and_aux_channels_beside_the_segment() {
         BusInventory::new(vec![(RecordBus::Master, 2), (RecordBus::Aux(bus), 2)]).unwrap(),
     )
     .unwrap();
-    let mut track = TrackWavState::create(map, &segment, 48_000, 2, None).unwrap();
+    let mut track = TrackWavState::create_with_policy(
+        map,
+        &segment,
+        48_000,
+        2,
+        None,
+        TrackWavPolicy::default(),
+    )
+    .unwrap();
     let timing = MediaTiming::new(
         OriginalTimestamp::new(
             MediaTimestamp::new(0),
@@ -12875,7 +12883,15 @@ fn a_split_track_map_writes_one_file_per_track() {
     )
     .unwrap()
     .with_layout(TrackMapLayout::SplitPerTrack);
-    let mut track = TrackWavState::create(map, &segment, 48_000, 2, None).unwrap();
+    let mut track = TrackWavState::create_with_policy(
+        map,
+        &segment,
+        48_000,
+        2,
+        None,
+        TrackWavPolicy::default(),
+    )
+    .unwrap();
     assert_eq!(track.mode(), fm_record::TrackFileMode::SplitPerTrack);
     assert_eq!(
         track
@@ -12946,8 +12962,13 @@ fn startup_recovery_finds_an_interrupted_track_wav_session() {
         large_file: LargeFilePolicy::Rf64WhenNeeded,
         bext: None,
     };
-    let mut writer =
-        recording_session::start_track_wav_session("program.tracks", &segment, None).unwrap();
+    let mut writer = recording_session::start_track_wav_session(
+        "program.tracks",
+        &segment,
+        None,
+        fm_record::ResilientWavConfig::default(),
+    )
+    .unwrap();
     writer.push(&encode_wav_header(&spec, 0).unwrap()).unwrap();
     writer.push(&vec![0_u8; 48_000 * 4]).unwrap();
     drop(writer);
@@ -12991,9 +13012,13 @@ fn a_track_wav_session_fails_over_to_the_fallback_root() {
         large_file: LargeFilePolicy::Rf64WhenNeeded,
         bext: None,
     };
-    let mut writer =
-        recording_session::start_track_wav_session("program.tracks", &segment, Some(&fallback))
-            .unwrap();
+    let mut writer = recording_session::start_track_wav_session(
+        "program.tracks",
+        &segment,
+        Some(&fallback),
+        fm_record::ResilientWavConfig::default(),
+    )
+    .unwrap();
     writer.push(&encode_wav_header(&spec, 0).unwrap()).unwrap();
     writer.push(&vec![0_u8; 48_000 * 4]).unwrap();
     fs::set_permissions(
@@ -13042,4 +13067,77 @@ fn a_track_wav_session_fails_over_to_the_fallback_root() {
     // the second segment instead of only the failover counter.
     assert!(report.stats.segments_opened >= 2, "{:?}", report.stats);
     assert!(report.error.is_none(), "{:?}", report.error);
+}
+
+/// AU-010: track WAV sessions roll over on a time limit and a byte limit.
+#[cfg(feature = "native-media")]
+#[test]
+fn track_wav_sessions_roll_over_on_time_and_bytes() {
+    use fm_record::{BusInventory, RecordBus, RecordTrack, RecorderTrackMap, TrackSource};
+    use std::num::NonZeroU64;
+
+    let map = RecorderTrackMap::new(
+        vec![RecordTrack::stereo(
+            "Program",
+            TrackSource::master(0),
+            TrackSource::master(1),
+        )],
+        BusInventory::new(vec![(RecordBus::Master, 2)]).unwrap(),
+    )
+    .unwrap();
+    for (label, policy, frames) in [
+        (
+            "time",
+            TrackWavPolicy {
+                max_segment_bytes: None,
+                max_segment_duration: Some(std::time::Duration::from_millis(100)),
+            },
+            4_800_usize,
+        ),
+        (
+            "bytes",
+            TrackWavPolicy {
+                max_segment_bytes: NonZeroU64::new(100_000),
+                max_segment_duration: None,
+            },
+            48_000_usize,
+        ),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let segment = directory.path().join("show.mp4");
+        let mut track =
+            TrackWavState::create_with_policy(map.clone(), &segment, 48_000, 2, None, policy)
+                .unwrap();
+        for _ in 0..3 {
+            let timing = MediaTiming::new(
+                OriginalTimestamp::new(
+                    MediaTimestamp::new(0),
+                    fm_frame::TimeBase::new(1, 48_000).unwrap(),
+                ),
+                NormalizedTimestamp::from_nanos(0),
+                NormalizedDuration::from_nanos(
+                    u64::try_from(frames).unwrap() * 1_000_000_000 / 48_000,
+                )
+                .unwrap(),
+                native_clock_domain(),
+                SequenceNumber::new(0),
+            )
+            .unwrap();
+            let audio = AudioBlock::new(
+                timing,
+                SampleRate::new(48_000).unwrap(),
+                ChannelLayout::stereo(),
+                vec![vec![0.25; frames]; 2],
+            )
+            .unwrap();
+            track.write(&audio, &[], 2).unwrap();
+        }
+        let report = track.finish();
+        assert!(report.failures.is_empty(), "{label}: {:?}", report.failures);
+        assert!(report.segments >= 2, "{label}: {report:?}");
+        assert!(
+            directory.path().join("show.tracks-0002.wav").is_file(),
+            "{label}: the second track segment exists"
+        );
+    }
 }

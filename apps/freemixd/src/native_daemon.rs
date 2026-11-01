@@ -82,6 +82,9 @@ pub(crate) struct NativeDaemon {
     /// The open track WAV beside each slot's current segment (AU-010).
     #[cfg(feature = "native-media")]
     pub(crate) record_track_wavs: [Option<TrackWavState>; RECORDER_SLOTS],
+    /// Track WAV time and byte rollover limits (AU-010).
+    #[cfg(feature = "native-media")]
+    pub(crate) record_track_policy: TrackWavPolicy,
     /// Optional per-slot frame-boundary segment rotation target in seconds
     /// (`--record-segment-seconds` is slot 0 and `--record-segment-seconds-2`
     /// is slot 1). A slot whose entry is `None` never rotates automatically,
@@ -478,6 +481,7 @@ impl NativeDaemon {
             record_wav: false,
             record_track_maps,
             record_track_wavs: [None, None],
+            record_track_policy: TrackWavPolicy::from_environment(),
             record_segment_seconds: [None; RECORDER_SLOTS],
             record_bitrates: [None, None],
             record_audio_bitrates: [None, None],
@@ -931,12 +935,13 @@ impl NativeDaemon {
         let Some(map) = &self.record_track_maps[slot] else {
             return Ok(());
         };
-        let track = TrackWavState::create(
+        let track = TrackWavState::create_with_policy(
             map.as_ref().clone(),
             segment,
             sample_rate,
             channels,
             fallback,
+            self.record_track_policy,
         )
         .map_err(|error| AppFailure(format!("record track map: {error}")))?;
         self.record_track_wavs[slot] = Some(track);

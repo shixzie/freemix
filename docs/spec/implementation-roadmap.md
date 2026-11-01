@@ -3850,9 +3850,13 @@ sync, or creation failure (the same directory or `--record-fallback-dir`),
 and startup WAV recovery finds it by its derived name and repairs its sizes.
 Stopping a segment finalizes every file and prints `FREEMIXD_RECORD_TRACK`
 with its mode, file count, segments, bytes, failovers, and first failure.
-Remaining gaps: track sessions have no time or size rollover beyond RF64 and
-failover segments; there is no UI for authoring or monitoring the tracks.
-WAV output is separate from the
+`FREEMIXD_RECORD_TRACK_SEGMENT_SECONDS` and
+`FREEMIXD_RECORD_TRACK_SEGMENT_BYTES` set per-file time and byte rollover
+limits (1 second to 24 hours; 1 byte to 1 TiB); a track session then closes
+the whole file and continues in `<name>-NNNN.wav` under the same failover and
+recovery rules. Without either override a track file follows its MP4 segment
+and RF64 limits. Remaining gaps: there is no UI for authoring or monitoring
+the tracks. WAV output is separate from the
 crash-safe packet spool, and metadata stops at version-1 `bext` without iXML,
 loudness, or UMID. `AU-010` remains planned.
 

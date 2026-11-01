@@ -112,6 +112,44 @@ pub(crate) struct OpenedRecorder {
     pub(crate) session: RecorderSession,
 }
 
+/// Time and byte limits for one track WAV session segment.
+#[cfg(feature = "native-media")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct TrackWavPolicy {
+    /// Close a track file before its data exceeds this many bytes.
+    pub(crate) max_segment_bytes: Option<core::num::NonZeroU64>,
+    /// Close a track file after this much audio has been written to it.
+    pub(crate) max_segment_duration: Option<Duration>,
+}
+
+#[cfg(feature = "native-media")]
+impl TrackWavPolicy {
+    /// Reads the operator overrides from the environment:
+    /// `FREEMIXD_RECORD_TRACK_SEGMENT_BYTES` and
+    /// `FREEMIXD_RECORD_TRACK_SEGMENT_SECONDS`. An unparsable value is
+    /// reported and ignored rather than refusing the daemon.
+    pub(crate) fn from_environment() -> Self {
+        let mut policy = Self::default();
+        if let Ok(value) = std::env::var("FREEMIXD_RECORD_TRACK_SEGMENT_BYTES") {
+            match value.parse::<u64>() {
+                Ok(bytes) if (1..=1_099_511_627_776).contains(&bytes) => {
+                    policy.max_segment_bytes = core::num::NonZeroU64::new(bytes);
+                }
+                _ => eprintln!("FREEMIXD_RECORD_TRACK\tv=1\tstatus=invalid_bytes\tvalue={value}"),
+            }
+        }
+        if let Ok(value) = std::env::var("FREEMIXD_RECORD_TRACK_SEGMENT_SECONDS") {
+            match value.parse::<u64>() {
+                Ok(seconds) if (1..=86_400).contains(&seconds) => {
+                    policy.max_segment_duration = Some(Duration::from_secs(seconds));
+                }
+                _ => eprintln!("FREEMIXD_RECORD_TRACK\tv=1\tstatus=invalid_seconds\tvalue={value}"),
+            }
+        }
+        policy
+    }
+}
+
 /// One segment's authored track-map recording (AU-010).
 ///
 /// Every file is a crash-safe `fm-record` WAV session: its first segment is
@@ -128,6 +166,18 @@ pub(crate) struct TrackWavState {
     writers: Vec<fm_record::ResilientWavWriter<recording_session::SessionStorage>>,
     paths: Vec<PathBuf>,
     scratch: Vec<Vec<f32>>,
+    frames_written: u64,
+    rotation_every: Option<u64>,
+    next_rotation: Option<u64>,
+}
+
+/// Whole frames covering `duration` at `sample_rate`, at least one.
+#[cfg(feature = "native-media")]
+fn rotation_frames(duration: Duration, sample_rate: u32) -> u64 {
+    let frames = u128::from(sample_rate)
+        .saturating_mul(duration.as_nanos())
+        .div_ceil(1_000_000_000);
+    u64::try_from(frames).unwrap_or(u64::MAX).max(1)
 }
 
 /// The summed outcome of finalizing every track WAV in one segment.
@@ -190,13 +240,14 @@ impl TrackWavState {
     }
 
     /// Creates every crash-safe WAV session and writes its header before any
-    /// audio is accepted.
-    pub(crate) fn create(
+    /// audio is accepted, with explicit time and byte rollover limits.
+    pub(crate) fn create_with_policy(
         map: RecorderTrackMap,
         segment: &Path,
         sample_rate: u32,
         channels: u16,
         fallback: Option<&Path>,
+        policy: TrackWavPolicy,
     ) -> Result<Self, String> {
         map.validate_against_channels(channels)
             .map_err(|error| error.to_string())?;
@@ -210,10 +261,19 @@ impl TrackWavState {
         };
         let specs = TrackWavRecorder::file_specs(&map, mode, &options);
         let names = Self::session_names(segment, &map, mode);
+        let writer_config = fm_record::ResilientWavConfig {
+            max_segment_data_bytes: policy.max_segment_bytes,
+            ..fm_record::ResilientWavConfig::default()
+        };
+        let rotation_every = policy
+            .max_segment_duration
+            .map(|duration| rotation_frames(duration, sample_rate))
+            .filter(|frames| *frames > 0);
         let mut writers = Vec::with_capacity(names.len());
         let mut paths = Vec::with_capacity(names.len());
         for (name, spec) in names.iter().zip(&specs) {
-            let mut writer = recording_session::start_track_wav_session(name, segment, fallback)?;
+            let mut writer =
+                recording_session::start_track_wav_session(name, segment, fallback, writer_config)?;
             let header = fm_record::encode_wav_header(spec, 0)
                 .map_err(|error| format!("track WAV header: {error}"))?;
             writer
@@ -229,6 +289,9 @@ impl TrackWavState {
             writers,
             paths,
             scratch,
+            frames_written: 0,
+            rotation_every,
+            next_rotation: rotation_every,
         })
     }
 
@@ -257,6 +320,14 @@ impl TrackWavState {
         let frames = audio.sample_count();
         if frames == 0 {
             return Ok(());
+        }
+        if let (Some(every), Some(next)) = (self.rotation_every, self.next_rotation)
+            && self.frames_written >= next
+        {
+            for writer in &mut self.writers {
+                writer.request_rotation();
+            }
+            self.next_rotation = Some(next.saturating_add(every));
         }
         for (index, (bus, mapped)) in self.map.inventory().buses().iter().enumerate() {
             let mapped = usize::from(*mapped);
@@ -339,6 +410,9 @@ impl TrackWavState {
             }
             writer.push(&encoded).map_err(|error| error.to_string())?;
         }
+        self.frames_written = self
+            .frames_written
+            .saturating_add(u64::try_from(frames).unwrap_or(u64::MAX));
         Ok(())
     }
 
