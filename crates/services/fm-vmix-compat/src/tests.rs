@@ -745,6 +745,26 @@ fn add_input_translates_network_streams() {
 }
 
 #[test]
+fn media_state_reaches_the_xml_and_xpath_documents() {
+    let mut state = state();
+    state.inputs[1] = state.inputs[1]
+        .clone()
+        .with_media("Running", 1_500, Some(5_000));
+    let xml = state.xml();
+    assert!(
+        xml.contains("<state>Running</state><position>1500</position><duration>5000</duration>"),
+        "{xml}"
+    );
+    assert_eq!(state.xml_text("//input[2]/state"), Ok("Running".into()));
+    assert_eq!(state.xml_text("//input[2]/position"), Ok("1500".into()));
+    assert_eq!(state.xml_text("//input[2]/duration"), Ok("5000".into()));
+    assert!(matches!(
+        state.xml_text("//input[1]/state"),
+        Err(XPathError::NotFound)
+    ));
+}
+
+#[test]
 fn set_volume_translates_the_percentage() {
     let state = state();
     assert_eq!(

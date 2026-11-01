@@ -75,6 +75,13 @@ pub struct CompatInput {
     pub kind: String,
     /// Title text fields, in deterministic `SelectedIndex` order.
     pub text_fields: Vec<CompatTextField>,
+    /// vMix playback state (`Running`, `Paused`, or `Stopped`), when known;
+    /// omitted from the XML and XPath state when `None`.
+    pub state: Option<String>,
+    /// Source position in milliseconds, when known.
+    pub position_ms: Option<u64>,
+    /// Source duration in milliseconds, when known.
+    pub duration_ms: Option<u64>,
 }
 
 impl CompatInput {
@@ -86,6 +93,9 @@ impl CompatInput {
             title: title.into(),
             kind: kind.into(),
             text_fields: Vec::new(),
+            state: None,
+            position_ms: None,
+            duration_ms: None,
         }
     }
 
@@ -93,6 +103,20 @@ impl CompatInput {
     #[must_use]
     pub fn with_text_fields(mut self, fields: Vec<CompatTextField>) -> Self {
         self.text_fields = fields;
+        self
+    }
+
+    /// Adds the input's playback state, source position, and duration.
+    #[must_use]
+    pub fn with_media(
+        mut self,
+        state: impl Into<String>,
+        position_ms: u64,
+        duration_ms: Option<u64>,
+    ) -> Self {
+        self.state = Some(state.into());
+        self.position_ms = Some(position_ms);
+        self.duration_ms = duration_ms;
         self
     }
 }
@@ -263,6 +287,19 @@ impl CompatState {
                 output.push_str("\">");
                 escape_xml_into(&mut output, &field.value);
                 output.push_str("</text>");
+            }
+            if let Some(state) = &input.state {
+                output.push_str("<state>");
+                escape_xml_into(&mut output, state);
+                output.push_str("</state>");
+            }
+            if let Some(position) = input.position_ms {
+                write!(output, "<position>{position}</position>")
+                    .expect("writing to a String cannot fail");
+            }
+            if let Some(duration) = input.duration_ms {
+                write!(output, "<duration>{duration}</duration>")
+                    .expect("writing to a String cannot fail");
             }
             output.push_str("</input>");
         }

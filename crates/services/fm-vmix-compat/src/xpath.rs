@@ -296,20 +296,32 @@ impl CompatState {
                     ("title", input.title.clone()),
                 ],
                 text: input.title.clone(),
-                children: input
-                    .text_fields
-                    .iter()
-                    .enumerate()
-                    .map(|(field_index, field)| Node {
-                        name: "text",
-                        attributes: vec![
-                            ("index", field_index.to_string()),
-                            ("name", field.name.clone()),
-                        ],
-                        text: field.value.clone(),
-                        children: Vec::new(),
-                    })
-                    .collect(),
+                children: {
+                    let mut children: Vec<Node> = input
+                        .text_fields
+                        .iter()
+                        .enumerate()
+                        .map(|(field_index, field)| Node {
+                            name: "text",
+                            attributes: vec![
+                                ("index", field_index.to_string()),
+                                ("name", field.name.clone()),
+                            ],
+                            text: field.value.clone(),
+                            children: Vec::new(),
+                        })
+                        .collect();
+                    if let Some(state) = &input.state {
+                        children.push(Node::leaf("state", state.clone()));
+                    }
+                    if let Some(position) = input.position_ms {
+                        children.push(Node::leaf("position", position.to_string()));
+                    }
+                    if let Some(duration) = input.duration_ms {
+                        children.push(Node::leaf("duration", duration.to_string()));
+                    }
+                    children
+                },
             })
             .collect();
         let overlays = self

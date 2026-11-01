@@ -6381,7 +6381,8 @@ function surface now includes list and picture navigation, media transport
 Fade to Black, a configured transition duration and effect that a `Fade`
 without them uses (a configured `Cut` turns it into a cut), and
 recording/streaming toggles, input renaming, adding network-stream inputs,
-and playlist start/stop/next/previous in addition to the switcher, title,
+input playback state/position/duration in the XML and XPath state, and
+playlist start/stop/next/previous in addition to the switcher, title,
 recording, and streaming verbs. A nonblocking `VmixTcpServer` now binds a listener, accepts bounded
 sessions, reads capped lines, writes responses and subscription events, and
 calls a caller-supplied translation executor. Remaining gaps: no daemon
