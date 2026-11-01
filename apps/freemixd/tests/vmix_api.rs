@@ -194,7 +194,7 @@ fn the_daemon_serves_the_vmix_tcp_api() {
     assert_eq!(read_line(&mut reader), "FUNCTION OK Completed\r\n");
 
     writer
-        .write_all(b"FUNCTION AddInput Value=http://127.0.0.1:9/stream&Name=Extra\r\n")
+        .write_all(b"FUNCTION AddInput Value=http://127.0.0.1:9/stream&Input=Extra\r\n")
         .unwrap();
     assert_eq!(read_line(&mut reader), "FUNCTION OK Completed\r\n");
 
