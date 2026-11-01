@@ -536,6 +536,12 @@ pub enum CompatIntent {
     /// Replace one still input's picture from `url`; the dispatcher imports
     /// it into the project.
     SetImage { input: WireInputId, url: String },
+    /// Put one-based fullscreen output `output` on `input`, or turn it off
+    /// with `None`; the dispatcher maps it onto a display output.
+    SetOutputFullscreen {
+        output: u8,
+        input: Option<WireInputId>,
+    },
 }
 
 /// A recognized function that this compatibility core cannot preserve.
@@ -898,6 +904,29 @@ fn translate(
             }))
         }
         "SetText" => translate_set_text(parameters, state),
+        "SetOutputFullscreen" | "SetOutputFullscreen2" => {
+            allowed(parameters, &["Function", "Input", "Value"])?;
+            let output = u8::from(function == "SetOutputFullscreen2") + 1;
+            let off = optional(parameters, "Value").is_some_and(|value| value == "0");
+            let input = if off {
+                None
+            } else {
+                optional(parameters, "Input")
+                    .filter(|value| !value.is_empty())
+                    .map(|value| state.resolve_input(value))
+                    .transpose()?
+            };
+            if !off && input.is_none() {
+                return Ok(unsupported(
+                    function,
+                    "fullscreen needs an input or Value=0 to turn it off",
+                ));
+            }
+            Ok(Translation::Compat(CompatIntent::SetOutputFullscreen {
+                output,
+                input,
+            }))
+        }
         "SetImage" => {
             allowed(parameters, &["Function", "Input", "Value"])?;
             let input = state.resolve_input(required(parameters, "Input")?)?;
@@ -1269,11 +1298,7 @@ fn overlay_channel(function: &str) -> Option<u8> {
 fn known_unsupported(function: &str) -> bool {
     matches!(
         function,
-        "SetOutputFullscreen"
-            | "SetOutputFullscreen2"
-            | "StartExternal"
-            | "StopExternal"
-            | "StartStopExternal"
+        "StartExternal" | "StopExternal" | "StartStopExternal"
     ) || function.starts_with("SetVolumeChannel")
         || (function.starts_with("OverlayInput")
             && ["In", "Last", "Off", "Out", "Zoom"]

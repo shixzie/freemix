@@ -783,6 +783,31 @@ fn output_sources_reach_the_xml_and_xpath_documents() {
 }
 
 #[test]
+fn fullscreen_outputs_translate_exactly() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=SetOutputFullscreen&Input=2", &state),
+        Ok(Translation::Compat(CompatIntent::SetOutputFullscreen {
+            output: 1,
+            input: Some(id(2)),
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=SetOutputFullscreen2&Value=0", &state),
+        Ok(Translation::Compat(CompatIntent::SetOutputFullscreen {
+            output: 2,
+            input: None,
+        }))
+    );
+    assert!(matches!(
+        parse_http_query("Function=SetOutputFullscreen", &state),
+        Ok(Translation::Unsupported(_))
+    ));
+    assert!(parse_http_query("Function=SetOutputFullscreen&Input=2&Extra=1", &state).is_err());
+    assert!(parse_http_query("Function=SetOutputFullscreen&Input=99", &state).is_err());
+}
+
+#[test]
 fn set_image_translates_still_sources() {
     let state = state();
     assert_eq!(

@@ -6382,8 +6382,8 @@ SUBSCRIBE/UNSUBSCRIBE for TALLY and ACTS, VERSION, and QUIT. A hub of at most
 function surface now includes list and picture navigation, media transport
 (play, pause, stop, restart, seek, volume, and mute), overlay in/off/out/last/all-off,
 outputs 1-4 and the configured transition in the XML/XPath state, the
-`SetOutput` functions, Fade to Black, a configured transition duration and
-effect that a `Fade`
+`SetOutput` and fullscreen-output functions, Fade to Black, a configured
+transition duration and effect that a `Fade`
 without them uses (a configured `Cut` turns it into a cut), and
 recording/streaming toggles, input renaming, adding network-stream inputs,
 setting still images, input playback state/position/duration and mute/volume
