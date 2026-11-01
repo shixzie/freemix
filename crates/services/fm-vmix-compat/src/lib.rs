@@ -1,9 +1,10 @@
 //! Bounded, transport-independent translation for the documented vMix API surface.
 //!
-//! This crate deliberately does not listen on HTTP or TCP sockets. A server may
-//! pass an HTTP query string or one decoded TCP line to the parsers, execute the
-//! returned native command or compatibility intent, and render state from the
-//! same [`CompatState`] used for input resolution.
+//! This crate's translation core does not depend on a transport. Callers may
+//! pass an HTTP query string or one decoded TCP line to the parsers, execute
+//! the returned native command or compatibility intent, and render state from
+//! the same [`CompatState`] used for input resolution. [`VmixTcpServer`] is an
+//! optional nonblocking socket boundary around [`TcpHub`].
 //!
 //! Input references are resolved when parsing. vMix ordinals are one-based,
 //! `0` selects Preview, `-1` selects Active, names are case-sensitive, and the
