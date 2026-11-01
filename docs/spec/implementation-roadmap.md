@@ -6399,14 +6399,19 @@ in the XML and XPath state, and
 playlist start/stop/next/previous in addition to the switcher, title,
 recording, and streaming verbs. A nonblocking `VmixTcpServer` now binds a listener, accepts bounded
 sessions, reads capped lines, writes responses and subscription events, and
-calls a caller-supplied translation executor. Remaining gaps: no daemon
-runs the server yet, a partial function and state-document surface, XPath
+calls a caller-supplied translation executor. The daemon now serves it with
+`--vmix-listen` (loopback only until authentication exists): each session-loop
+pass builds `CompatState` from the authoritative snapshot and submits every
+`Translation::Protocol` through the control service under the daemon's Admin
+development principal, keeping compat-only transition settings between passes;
+a compat intent with no native translation is refused by name. Remaining
+gaps: no authentication, a partial function and state-document surface, XPath
 supports a bounded subset (unions of up to four paths, integer arithmetic
 and numeric attribute, `position()`, `last()`, `count()`, or
 `string-length()` comparisons, the child, descendant, self, parent, ancestor,
 and sibling axes, a final `text()` step, and `contains`/`starts-with`
 attribute predicates) but not the full language,
-a partial ACTS set, no authentication, and no byte
+a partial ACTS set, and no byte
 comparison
 against a real vMix 29 instance. `RC-009` remains planned.
 

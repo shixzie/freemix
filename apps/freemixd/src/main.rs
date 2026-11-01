@@ -244,6 +244,7 @@ mod sessions;
 mod sim_audio;
 #[cfg_attr(not(feature = "native-media"), allow(dead_code))]
 mod smart;
+mod vmix;
 use fm_daemon_web::{web_feed, web_titles};
 // The network preflight is wired only into the native daemon; every helper
 // still compiles (and is unit-tested) in every build.
@@ -606,6 +607,7 @@ fn run(command: Command) -> AppResult<()> {
             status_listen,
             hls_listen,
             live_lan_listen,
+            vmix_listen,
             once,
             native_media,
             fullscreen_program,
@@ -672,6 +674,7 @@ fn run(command: Command) -> AppResult<()> {
                     status_listen,
                     hls_listen,
                     live_lan_listen,
+                    vmix_listen,
                 },
                 once,
                 if native_media {

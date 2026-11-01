@@ -794,6 +794,7 @@ pub(super) fn run(
     process_shutdown: &ProcessShutdown,
     once: bool,
     web: Option<&WebGateway>,
+    mut vmix: Option<&mut crate::vmix::VmixBridge>,
     as_run_root: &std::path::Path,
 ) -> AppResult<DaemonShutdownReason> {
     let handshake_timeout =
@@ -942,6 +943,15 @@ pub(super) fn run(
     loop {
         if let Some(reason) = requested_daemon_shutdown(native.as_deref(), Some(process_shutdown)) {
             return Ok(shutdown_for_reason(reason, &mut peers, control));
+        }
+
+        // The vMix-compatible TCP API (RC-009) is polled once per pass. It
+        // never blocks, and every translated command goes through the same
+        // control service as a client command.
+        if let Some(bridge) = vmix.as_deref_mut() {
+            let now = crate::now_millis()?;
+            let mut control = control.borrow_mut();
+            bridge.poll(&mut control, principal, now);
         }
 
         // A Preview composite submitted at the end of the last pass is

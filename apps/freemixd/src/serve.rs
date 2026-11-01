@@ -54,6 +54,7 @@ pub(crate) struct ServeListeners {
     pub(crate) status_listen: Option<SocketAddr>,
     pub(crate) hls_listen: Option<SocketAddr>,
     pub(crate) live_lan_listen: Option<SocketAddr>,
+    pub(crate) vmix_listen: Option<SocketAddr>,
 }
 
 #[cfg(feature = "display-surface")]
@@ -90,6 +91,7 @@ pub(crate) fn serve_program_worker(
             status_listen: None,
             hls_listen: None,
             live_lan_listen: None,
+            vmix_listen: None,
         },
         once,
         NativeServeMode::Program(Box::new(ProgramServeSetup {
@@ -197,6 +199,7 @@ pub(crate) fn serve_inner(
         status_listen,
         hls_listen,
         live_lan_listen,
+        vmix_listen,
     } = listeners;
     if !listen.ip().is_loopback() {
         return Err(AppFailure(format!(
@@ -566,6 +569,15 @@ pub(crate) fn serve_inner(
         }
         None => None,
     };
+    // The vMix-compatible TCP API (RC-009). It binds loopback only until the
+    // protocol has authentication.
+    let mut vmix_bridge = match vmix_listen {
+        Some(address) => Some(crate::vmix::VmixBridge::new(
+            fm_vmix_compat::VmixTcpServer::bind(address)
+                .map_err(|error| AppFailure(format!("--vmix-listen: {error}")))?,
+        )),
+        None => None,
+    };
     server.mark_ready()?;
     process_shutdown.observe_service(server.status());
     let readiness = ReadinessRecord {
@@ -602,6 +614,15 @@ pub(crate) fn serve_inner(
         );
         std::io::stdout().flush()?;
     }
+    if let Some(bridge) = vmix_bridge.as_ref() {
+        println!(
+            "FREEMIXD_VMIX_READY\tv=1\taddress={}",
+            bridge
+                .address()
+                .map_err(|error| AppFailure(format!("--vmix-listen: {error}")))?
+        );
+        std::io::stdout().flush()?;
+    }
     if let Some(duration) = diagnostic_stop_after {
         process_shutdown.set_diagnostic_deadline(duration)?;
     }
@@ -624,6 +645,7 @@ pub(crate) fn serve_inner(
         &process_shutdown,
         once,
         web_gateway.as_ref(),
+        vmix_bridge.as_mut(),
         store.root(),
     );
     process_shutdown.status.begin_draining();

@@ -573,6 +573,7 @@ fn parses_serve_options() {
             status_listen: None,
             hls_listen: None,
             live_lan_listen: None,
+            vmix_listen: None,
             once: true,
             native_media: false,
             fullscreen_program: false,
@@ -719,6 +720,56 @@ fn parses_live_lan_listen_as_a_native_option() {
                 "--live-lan-listen",
             ]),
             "missing value for --live-lan-listen",
+        ),
+    ] {
+        assert_eq!(parse_args(arguments).unwrap_err().to_string(), expected);
+    }
+}
+
+/// RC-009: `--vmix-listen` is loopback-only and needs no native media.
+#[test]
+fn parses_vmix_listen_only_as_a_loopback_option() {
+    for arguments in [
+        strings(&["serve", "show.freemix", "--vmix-listen", "127.0.0.1:0"]),
+        strings(&["serve", "show.freemix", "--vmix-listen=127.0.0.1:0"]),
+    ] {
+        assert!(matches!(
+            parse_args(arguments).unwrap(),
+            Command::Serve {
+                vmix_listen: Some(address),
+                ..
+            } if address == "127.0.0.1:0".parse().unwrap()
+        ));
+    }
+    for (arguments, expected) in [
+        (
+            strings(&["serve", "show.freemix", "--vmix-listen", "0.0.0.0:8090"]),
+            "--vmix-listen must use a loopback address",
+        ),
+        (
+            strings(&[
+                "serve",
+                "show.freemix",
+                "--vmix-listen=127.0.0.1:1",
+                "--vmix-listen",
+                "127.0.0.1:2",
+            ]),
+            "duplicate option `--vmix-listen`",
+        ),
+        (
+            strings(&["serve", "show.freemix", "--vmix-listen"]),
+            "missing value for --vmix-listen",
+        ),
+        (
+            strings(&[
+                "serve",
+                "show.freemix",
+                "--native-media",
+                "--fullscreen-program",
+                "--vmix-listen",
+                "127.0.0.1:0",
+            ]),
+            "--vmix-listen cannot be combined with --fullscreen-program",
         ),
     ] {
         assert_eq!(parse_args(arguments).unwrap_err().to_string(), expected);
