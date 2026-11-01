@@ -164,7 +164,9 @@ fn xml_golden_is_deterministic_and_escaped() {
             "</inputs><overlays><overlay number=\"1\"></overlay><overlay number=\"2\">3</overlay>",
             "<overlay number=\"3\"></overlay><overlay number=\"4\"></overlay><overlay number=\"5\"></overlay>",
             "<overlay number=\"6\"></overlay><overlay number=\"7\"></overlay><overlay number=\"8\"></overlay>",
-            "</overlays><preview>2</preview><active>1</active><recording>True</recording><streaming>False</streaming></vmix>"
+            "</overlays><outputs><output number=\"1\"></output><output number=\"2\"></output>",
+            "<output number=\"3\"></output><output number=\"4\"></output></outputs>",
+            "<preview>2</preview><active>1</active><recording>True</recording><streaming>False</streaming></vmix>"
         )
     );
 }
@@ -722,6 +724,51 @@ fn overlay_last_restores_the_previous_input() {
     assert_eq!(
         state.restore_overlay(9),
         Err(StateError::InvalidOverlayChannel)
+    );
+}
+
+#[test]
+fn set_output_translates_exactly() {
+    let state = state();
+    assert_eq!(
+        parse_http_query("Function=SetOutput&Input=2", &state),
+        Ok(Translation::Compat(CompatIntent::SetOutput {
+            output: 1,
+            input: Some(id(2)),
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=SetOutput2&Input=3", &state),
+        Ok(Translation::Compat(CompatIntent::SetOutput {
+            output: 2,
+            input: Some(id(3)),
+        }))
+    );
+    assert_eq!(
+        parse_http_query("Function=SetOutput&Input=", &state),
+        Ok(Translation::Compat(CompatIntent::SetOutput {
+            output: 1,
+            input: None,
+        }))
+    );
+    assert!(parse_http_query("Function=SetOutput&Input=99", &state).is_err());
+    assert!(parse_http_query("Function=SetOutput&Input=2&Extra=1", &state).is_err());
+}
+
+#[test]
+fn output_sources_reach_the_xml_and_xpath_documents() {
+    let mut state = state();
+    state.set_output(1, Some(id(3))).unwrap();
+    let xml = state.xml();
+    assert!(
+        xml.contains("<outputs><output number=\"1\">3</output><output number=\"2\"></output>"),
+        "{xml}"
+    );
+    assert_eq!(state.xml_text("//outputs/output[1]"), Ok("3".into()));
+    assert_eq!(state.xml_text("//outputs/output[2]"), Ok(String::new()));
+    assert_eq!(
+        state.set_output(5, Some(id(1))),
+        Err(StateError::InvalidOutput)
     );
 }
 

@@ -39,6 +39,8 @@ pub const MAX_PARAMETER_VALUE_BYTES: usize = 4 * 1024;
 pub const MAX_INPUTS: usize = 1_000;
 /// Number of vMix 29 overlay channels represented by the compatibility model.
 pub const OVERLAY_CHANNELS: usize = 8;
+/// Number of vMix 29 output channels represented by the compatibility model.
+pub const OUTPUT_CHANNELS: usize = 4;
 
 const MAX_TRANSITION_MILLIS: u32 = 86_400_000;
 /// vMix's default transition duration, in milliseconds.
@@ -146,6 +148,8 @@ pub enum StateError {
     InputNotFound,
     /// Overlay channels are one-based and must be in `1..=8`.
     InvalidOverlayChannel,
+    /// Output channels are one-based and must be in `1..=4`.
+    InvalidOutput,
 }
 
 impl fmt::Display for StateError {
@@ -155,6 +159,7 @@ impl fmt::Display for StateError {
             Self::DuplicateInput => "compatibility state contains a duplicate input ID",
             Self::InputNotFound => "compatibility state refers to an unknown input",
             Self::InvalidOverlayChannel => "overlay channel must be between 1 and 8",
+            Self::InvalidOutput => "output channel must be between 1 and 4",
         })
     }
 }
@@ -177,6 +182,8 @@ pub struct CompatState {
     /// The input each overlay channel showed before its current one, for
     /// vMix's `OverlayInput<N>Last`.
     pub previous_overlays: [Option<WireInputId>; OVERLAY_CHANNELS],
+    /// One entry per one-based output channel.
+    pub outputs: [Option<WireInputId>; OUTPUT_CHANNELS],
     /// Recording activity exposed by XML.
     pub recording: bool,
     /// Streaming activity exposed by XML.
@@ -222,6 +229,7 @@ impl CompatState {
             preview,
             overlays: [None; OVERLAY_CHANNELS],
             previous_overlays: [None; OVERLAY_CHANNELS],
+            outputs: [None; OUTPUT_CHANNELS],
             recording: false,
             streaming: false,
             transition_millis: DEFAULT_TRANSITION_MILLIS,
@@ -270,6 +278,23 @@ impl CompatState {
         self.previous_overlays[index] = self.overlays[index];
         self.overlays[index] = previous;
         Ok(previous)
+    }
+
+    /// Sets or clears one-based output `output`'s source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an output outside `1..=4` or an absent input ID.
+    pub fn set_output(&mut self, output: u8, input: Option<WireInputId>) -> Result<(), StateError> {
+        let index = usize::from(output)
+            .checked_sub(1)
+            .filter(|index| *index < OUTPUT_CHANNELS)
+            .ok_or(StateError::InvalidOutput)?;
+        if input.is_some_and(|id| !self.inputs.iter().any(|candidate| candidate.id == id)) {
+            return Err(StateError::InputNotFound);
+        }
+        self.outputs[index] = input;
+        Ok(())
     }
 
     /// Renders deterministic vMix-shaped XML without an XML declaration.
@@ -340,9 +365,19 @@ impl CompatState {
             }
             output.push_str("</overlay>");
         }
+        output.push_str("</overlays><outputs>");
+        for (index, source) in self.outputs.iter().enumerate() {
+            write!(output, "<output number=\"{}\">", index + 1)
+                .expect("writing to a String cannot fail");
+            if let Some(input) = source {
+                write!(output, "{}", self.ordinal(*input).unwrap_or_default())
+                    .expect("writing to a String cannot fail");
+            }
+            output.push_str("</output>");
+        }
         write!(
             output,
-            "</overlays><preview>{}</preview><active>{}</active><recording>{}</recording><streaming>{}</streaming></vmix>",
+            "</outputs><preview>{}</preview><active>{}</active><recording>{}</recording><streaming>{}</streaming></vmix>",
             self.ordinal(self.preview).unwrap_or_default(),
             self.ordinal(self.active).unwrap_or_default(),
             vmix_bool(self.recording),
@@ -449,6 +484,12 @@ pub enum CompatIntent {
     /// Restore the input a one-based overlay channel showed before its
     /// current one; the dispatcher swaps them on the compatibility state.
     RestoreOverlay { channel: u8 },
+    /// Set (or clear with `None`) one-based output `output`'s source; the
+    /// dispatcher maps it onto a display output.
+    SetOutput {
+        output: u8,
+        input: Option<WireInputId>,
+    },
     /// Set one title field.
     SetText {
         input: WireInputId,
@@ -847,6 +888,23 @@ fn translate(
         }
         "SetText" => translate_set_text(parameters, state),
         "AddInput" => translate_add_input(parameters),
+        "SetOutput" | "SetOutput2" | "SetOutput3" | "SetOutput4" => {
+            allowed(parameters, &["Function", "Input"])?;
+            let output = match function {
+                "SetOutput" => 1,
+                "SetOutput2" => 2,
+                "SetOutput3" => 3,
+                _ => 4,
+            };
+            let input = optional(parameters, "Input")
+                .filter(|value| !value.is_empty())
+                .map(|value| state.resolve_input(value))
+                .transpose()?;
+            Ok(Translation::Compat(CompatIntent::SetOutput {
+                output,
+                input,
+            }))
+        }
         "StartRecording" | "StopRecording" => {
             allowed(parameters, &["Function"])?;
             Ok(Translation::Compat(CompatIntent::SetRecording {
@@ -1185,11 +1243,7 @@ fn overlay_channel(function: &str) -> Option<u8> {
 fn known_unsupported(function: &str) -> bool {
     matches!(
         function,
-        "SetOutput"
-            | "SetOutput2"
-            | "SetOutput3"
-            | "SetOutput4"
-            | "SetOutputFullscreen"
+        "SetOutputFullscreen"
             | "SetOutputFullscreen2"
             | "StartExternal"
             | "StopExternal"

@@ -349,6 +349,20 @@ impl CompatState {
                 children: Vec::new(),
             })
             .collect();
+        let outputs = self
+            .outputs
+            .iter()
+            .enumerate()
+            .map(|(index, source)| Node {
+                name: "output",
+                attributes: vec![("number", (index + 1).to_string())],
+                text: source
+                    .and_then(|input| self.ordinal(input))
+                    .map(|ordinal| ordinal.to_string())
+                    .unwrap_or_default(),
+                children: Vec::new(),
+            })
+            .collect();
         let ordinal_text = |id| {
             self.ordinal(id)
                 .map(|ordinal| ordinal.to_string())
@@ -371,6 +385,12 @@ impl CompatState {
                     attributes: Vec::new(),
                     text: String::new(),
                     children: overlays,
+                },
+                Node {
+                    name: "outputs",
+                    attributes: Vec::new(),
+                    text: String::new(),
+                    children: outputs,
                 },
                 Node::leaf("preview", ordinal_text(self.preview)),
                 Node::leaf("active", ordinal_text(self.active)),
