@@ -257,7 +257,7 @@ fn function_errors_and_unsupported_answer_immediately() {
     );
     assert_eq!(
         line(&mut session, "FUNCTION AddInput", &state),
-        "FUNCTION ER the function has no semantics in the current compatibility core\r\n"
+        "FUNCTION ER missing parameter: Value\r\n"
     );
     assert_eq!(
         line(&mut session, "FUNCTION Cut Mix=1", &state),
